@@ -192,6 +192,20 @@ std::size_t ByteReader::Remaining() const noexcept
     return input_.size() - position_;
 }
 
+ProtocolResult<std::uint8_t> ByteReader::ReadUint8() noexcept
+{
+    if (sizeof(std::uint8_t) > Remaining())
+    {
+        return ProtocolResult<std::uint8_t>::Failure(
+            ProtocolErrorCode::TruncatedInput,
+            AbsolutePosition());
+    }
+
+    const std::uint8_t value = ToUint8(input_[position_]);
+    position_ += sizeof(value);
+    return ProtocolResult<std::uint8_t>::Success(value);
+}
+
 ProtocolResult<std::span<const std::byte>> ByteReader::ReadBytes(
     const std::size_t byteCount) noexcept
 {
@@ -504,6 +518,20 @@ std::size_t ByteWriter::Remaining() const noexcept
 std::span<const std::byte> ByteWriter::WrittenBytes() const noexcept
 {
     return output_.first(position_);
+}
+
+ProtocolStatus ByteWriter::WriteUint8(const std::uint8_t value) noexcept
+{
+    if (sizeof(value) > Remaining())
+    {
+        return ProtocolStatus::Failure(
+            ProtocolErrorCode::OutputBufferTooSmall,
+            position_);
+    }
+
+    output_[position_] = static_cast<std::byte>(value);
+    position_ += sizeof(value);
+    return ProtocolStatus::Success();
 }
 
 ProtocolStatus ByteWriter::WriteUint16(const std::uint16_t value) noexcept
