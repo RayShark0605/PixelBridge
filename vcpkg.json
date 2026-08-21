@@ -1,0 +1,12 @@
+{
+  "name": "pixelbridge",
+  "version": "0.1.0",
+  "description": "PixelBridge third-party dependency manifest",
+  "builtin-baseline": "75672db6bd812b060482b0f00b5a16b18a0c0f07",
+  "dependencies": [
+    {
+      "name": "catch2",
+      "version>=": "3.15.0"
+    }
+  ]
+}

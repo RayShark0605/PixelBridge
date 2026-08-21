@@ -1,0 +1,7 @@
+# Build trees and IDE state
+build/
+build-*/
+.vs/
+*.user
+CMakeUserPresets.json
+target-dependency-graph.dot.*
