@@ -33,6 +33,7 @@ public:
     [[nodiscard]] std::size_t AbsolutePosition() const noexcept;
     [[nodiscard]] std::size_t Remaining() const noexcept;
 
+    [[nodiscard]] ProtocolResult<std::uint8_t> ReadUint8() noexcept;
     [[nodiscard]] ProtocolResult<std::uint16_t> ReadUint16() noexcept;
     [[nodiscard]] ProtocolResult<std::uint32_t> ReadUint32() noexcept;
     [[nodiscard]] ProtocolResult<std::uint64_t> ReadUint64() noexcept;
@@ -93,6 +94,7 @@ public:
     [[nodiscard]] std::size_t Remaining() const noexcept;
     [[nodiscard]] std::span<const std::byte> WrittenBytes() const noexcept;
 
+    [[nodiscard]] ProtocolStatus WriteUint8(std::uint8_t value) noexcept;
     [[nodiscard]] ProtocolStatus WriteUint16(std::uint16_t value) noexcept;
     [[nodiscard]] ProtocolStatus WriteUint32(std::uint32_t value) noexcept;
     [[nodiscard]] ProtocolStatus WriteUint64(std::uint64_t value) noexcept;

@@ -30,6 +30,23 @@ template <std::unsigned_integral TargetType, std::unsigned_integral SourceType>
     return ProtocolResult<TargetType>::Success(static_cast<TargetType>(value));
 }
 
+template <std::unsigned_integral ValueType>
+[[nodiscard]] ProtocolResult<ValueType> CheckedAddUnsigned(
+    const ValueType left,
+    const ValueType right,
+    const std::size_t errorOffset = 0) noexcept
+{
+    if (right > std::numeric_limits<ValueType>::max() - left)
+    {
+        return ProtocolResult<ValueType>::Failure(
+            ProtocolErrorCode::LengthOverflow,
+            errorOffset);
+    }
+
+    return ProtocolResult<ValueType>::Success(
+        static_cast<ValueType>(left + right));
+}
+
 [[nodiscard]] inline ProtocolResult<std::size_t> CheckedUint64ToSize(
     const std::uint64_t value,
     const std::size_t errorOffset = 0) noexcept
@@ -42,14 +59,15 @@ template <std::unsigned_integral TargetType, std::unsigned_integral SourceType>
     const std::size_t right,
     const std::size_t errorOffset = 0) noexcept
 {
-    if (right > std::numeric_limits<std::size_t>::max() - left)
-    {
-        return ProtocolResult<std::size_t>::Failure(
-            ProtocolErrorCode::LengthOverflow,
-            errorOffset);
-    }
+    return CheckedAddUnsigned(left, right, errorOffset);
+}
 
-    return ProtocolResult<std::size_t>::Success(left + right);
+[[nodiscard]] inline ProtocolResult<std::uint64_t> CheckedAddUint64(
+    const std::uint64_t left,
+    const std::uint64_t right,
+    const std::size_t errorOffset = 0) noexcept
+{
+    return CheckedAddUnsigned(left, right, errorOffset);
 }
 
 } // namespace pbprotocol

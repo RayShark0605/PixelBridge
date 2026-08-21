@@ -22,7 +22,27 @@ enum class ProtocolErrorCode : std::uint8_t
     UnknownMandatoryFeature,
     ConflictingFeatureFlags,
     TrailingBytes,
-    InvalidLengthPrefixWidth
+    InvalidLengthPrefixWidth,
+    UnsupportedProtocolMinor,
+    InvalidEnumValue,
+    InvalidRecordSize,
+    InvalidDescriptor,
+    InvalidResourcePolicy,
+    ResourceLimitExceeded,
+    ResourceExhausted,
+    SessionTagMismatch,
+    SessionMismatch,
+    UnknownSession,
+    SegmentOrdinalOutOfRange,
+    SegmentRangeOutOfBounds,
+    SegmentOverlap,
+    SegmentGap,
+    SegmentMapIncomplete,
+    DescriptorConflict,
+    InvalidWirehairProfile,
+    MissingFinalManifest,
+    DigestMismatch,
+    InternalDescriptorStateError
 };
 
 struct ProtocolError
