@@ -1,4 +1,5 @@
 add_library(PBProtocol
+    src/byte_io.cpp
     src/protocol_version.cpp)
 add_library(PB::PBProtocol ALIAS PBProtocol)
 
