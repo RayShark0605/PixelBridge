@@ -1,6 +1,6 @@
 #include "pbprotocol/protocol_types.h"
 
-#include <blake3.h>
+#include "pbprotocol/blake3_digest.h"
 
 #include <array>
 #include <cstdint>
@@ -13,37 +13,15 @@ namespace {
 
 constexpr std::string_view kSessionTagDomain = "PixelBridge SessionTag v1";
 
-[[nodiscard]] std::array<std::byte, kDigestBytes> ComputeBlake3(
-    const std::span<const std::byte> first,
-    const std::span<const std::byte> second = {}) noexcept
-{
-    blake3_hasher hasher{};
-    blake3_hasher_init(&hasher);
-    if (!first.empty())
-    {
-        blake3_hasher_update(&hasher, first.data(), first.size());
-    }
-    if (!second.empty())
-    {
-        blake3_hasher_update(&hasher, second.data(), second.size());
-    }
-
-    std::array<std::byte, kDigestBytes> digest{};
-    blake3_hasher_finalize(
-        &hasher,
-        reinterpret_cast<std::uint8_t*>(digest.data()),
-        digest.size());
-    return digest;
-}
-
 } // namespace
 
 SessionTag DeriveSessionTag(const SessionId& sessionId) noexcept
 {
     const auto domainBytes = std::as_bytes(std::span(kSessionTagDomain));
-    const std::array<std::byte, kDigestBytes> digest = ComputeBlake3(
-        domainBytes,
-        sessionId.bytes);
+    Blake3Hasher hasher;
+    hasher.Update(domainBytes);
+    hasher.Update(sessionId.bytes);
+    const std::array<std::byte, kDigestBytes> digest = hasher.Finalize();
 
     std::uint64_t tagValue = 0;
     for (std::size_t byteIndex = 0; byteIndex < sizeof(tagValue); byteIndex++)
@@ -58,7 +36,7 @@ SessionTag DeriveSessionTag(const SessionId& sessionId) noexcept
 
 WholeFileDigest GetEmptyBlake3WholeFileDigest() noexcept
 {
-    return WholeFileDigest{ComputeBlake3({})};
+    return WholeFileDigest{ComputeBlake3Digest({})};
 }
 
 } // namespace pbprotocol
