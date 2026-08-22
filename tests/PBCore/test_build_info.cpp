@@ -8,6 +8,6 @@ TEST_CASE("Build info exposes the CMake-injected project version", "[pbcore][bui
 {
     const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
 
-    REQUIRE_FALSE(buildInfo.productName.empty());
+    REQUIRE(buildInfo.productName == "PixelBridge");
     REQUIRE(buildInfo.version == std::string(PB_CORE_VERSION_STRING));
 }

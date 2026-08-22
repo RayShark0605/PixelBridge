@@ -1,5 +1,5 @@
-#include <pbcore/build_info.h>
-#include <pbprotocol/protocol_version.h>
+#include "pbcore/build_info.h"
+#include "pbprotocol/protocol_version.h"
 
 #include <iostream>
 
