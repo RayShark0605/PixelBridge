@@ -1,2 +1,7 @@
-# Benchmark targets are registered here when measurable workloads exist. No
-# placeholder executable is created because it could imply unverified results.
+add_executable(PBProtocolDescriptorStateBenchmark
+    descriptor_state_benchmark.cpp)
+
+target_link_libraries(PBProtocolDescriptorStateBenchmark
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)

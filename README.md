@@ -9,9 +9,13 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 | --- | --- |
 | `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | 应用（当前为控制台空壳，Qt 6 UI 在后续里程碑接入） |
 | `libs/PBCore`、`libs/PBProtocol` | 核心库（禁止依赖 Qt） |
-| `tools`、`fuzz`、`benchmarks` | 独立可选子图（骨架阶段无虚假占位 target） |
+| `tools`、`fuzz`、`benchmarks` | 独立可选子图；fuzz 与 descriptor-state benchmark 已有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
 | `docs` | 设计文档 |
+
+## Phase-0 协议状态
+
+当前 37/110/142/65-byte Session/Segment/Final payload 是 **Phase-0 provisional implementation slice**，不是完整正式 v1 wire 承诺。它仍缺少总体设计要求的 `SessionVisualProfileId` 等固定 Session 绑定，因而不得在后续 Data Plane/backend 接入时被误称为已冻结的正式 canonical v1 schema。当前状态、资源预算与升级前置条件见 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)。
 
 ## Target 与依赖边界
 
@@ -68,18 +72,19 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 
 ### 可选子图
 
-下列选项默认关闭，目前只建立隔离的 CMake 入口；在存在可测实现前不会创建假可执行文件：
+下列选项默认关闭。fuzz 与 benchmark 选项会创建下表列出的真实可执行 target；`tools/` 仍不会创建假 target：
 
 | 选项 | 默认值 | 子图 |
 | --- | --- | --- |
 | `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
-| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/` |
-| `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/` |
+| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz` |
+| `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark` |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
 
-可同时验证空扩展入口和 core-only 依赖隔离：
+可同时验证真实 fuzz/benchmark target、仍为空的 tools 扩展入口，以及
+core-only 依赖隔离：
 
 ```powershell
 cmake -S . -B build-extensions -G "Visual Studio 17 2022" -A x64 `

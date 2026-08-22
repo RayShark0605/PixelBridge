@@ -160,6 +160,18 @@ constexpr std::uint32_t kWirehairMaximumBlockBytes = 0x7FFFFFFFU;
             segmentCountOffset);
     }
 
+    if (originalFileSize != 0)
+    {
+        const std::uint64_t minimumSegmentCount = 1ULL +
+            ((originalFileSize - 1ULL) / resourcePolicy.maxRawSegmentBytes);
+        if (segmentCount < minimumSegmentCount)
+        {
+            return ProtocolStatus::Failure(
+                ProtocolErrorCode::ResourceLimitExceeded,
+                segmentCountOffset);
+        }
+    }
+
     const auto countSizeResult = CheckedUint64ToSize(
         segmentCount,
         segmentCountOffset);
@@ -363,7 +375,29 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxSegmentCount == 0 ||
         resourcePolicy.maxRawSegmentBytes == 0 ||
         resourcePolicy.maxEncodedSegmentBytes == 0 ||
-        resourcePolicy.maxOuterBlockBytes == 0)
+        resourcePolicy.maxOuterBlockBytes == 0 ||
+        resourcePolicy.maxDescriptorStateBytes == 0 ||
+        resourcePolicy.maxConcurrentSessions == 0 ||
+        resourcePolicy.maxTotalDescriptorStateBytes == 0 ||
+        resourcePolicy.maxDescriptorStateBytes ==
+            std::numeric_limits<std::uint64_t>::max() ||
+        resourcePolicy.maxConcurrentSessions ==
+            std::numeric_limits<std::uint64_t>::max() ||
+        resourcePolicy.maxTotalDescriptorStateBytes ==
+            std::numeric_limits<std::uint64_t>::max() ||
+        resourcePolicy.maxDescriptorStateBytes >
+            resourcePolicy.maxTotalDescriptorStateBytes)
+    {
+        return ProtocolStatus::Failure(
+            ProtocolErrorCode::InvalidResourcePolicy,
+            0);
+    }
+
+    const auto descriptorBudgetSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxDescriptorStateBytes);
+    const auto concurrentSessionCountResult = CheckedUint64ToSize(
+        resourcePolicy.maxConcurrentSessions);
+    if (!descriptorBudgetSizeResult || !concurrentSessionCountResult)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,
@@ -374,16 +408,8 @@ ProtocolStatus ValidateReceiverResourcePolicy(
 }
 
 ProtocolStatus ValidateSessionDescriptor(
-    const SessionDescriptor& descriptor,
-    const ReceiverResourcePolicy& resourcePolicy) noexcept
+    const SessionDescriptor& descriptor) noexcept
 {
-    const ProtocolStatus policyStatus = ValidateReceiverResourcePolicy(
-        resourcePolicy);
-    if (!policyStatus)
-    {
-        return policyStatus;
-    }
-
     const ProtocolVersion currentVersion = GetProtocolVersion();
     if (descriptor.protocolVersion.major != currentVersion.major)
     {
@@ -406,13 +432,27 @@ ProtocolStatus ValidateSessionDescriptor(
         return digestStatus;
     }
 
-    const ProtocolStatus shapeStatus = ValidateSessionShape(
+    return ValidateSessionShape(
         descriptor.originalFileSize,
         descriptor.segmentCount,
         kSessionSegmentCountOffset);
-    if (!shapeStatus)
+}
+
+ProtocolStatus ValidateSessionDescriptor(
+    const SessionDescriptor& descriptor,
+    const ReceiverResourcePolicy& resourcePolicy) noexcept
+{
+    const ProtocolStatus policyStatus = ValidateReceiverResourcePolicy(
+        resourcePolicy);
+    if (!policyStatus)
     {
-        return shapeStatus;
+        return policyStatus;
+    }
+
+    const ProtocolStatus descriptorStatus = ValidateSessionDescriptor(descriptor);
+    if (!descriptorStatus)
+    {
+        return descriptorStatus;
     }
 
     return ValidateResourceLimits(
@@ -527,14 +567,16 @@ ProtocolResult<std::uint64_t> GetDirectRepeatBlockCount(
     return ProtocolResult<std::uint64_t>::Success(blockCount);
 }
 
-ProtocolStatus ValidateSegmentDescriptor(
+namespace {
+
+[[nodiscard]] ProtocolStatus ValidateSegmentDescriptorImplementation(
     const SegmentDescriptor& descriptor,
     const SessionDescriptor& sessionDescriptor,
-    const ReceiverResourcePolicy& resourcePolicy) noexcept
+    const ReceiverResourcePolicy* const resourcePolicy) noexcept
 {
-    const ProtocolStatus sessionStatus = ValidateSessionDescriptor(
-        sessionDescriptor,
-        resourcePolicy);
+    const ProtocolStatus sessionStatus = resourcePolicy == nullptr
+        ? ValidateSessionDescriptor(sessionDescriptor)
+        : ValidateSessionDescriptor(sessionDescriptor, *resourcePolicy);
     if (!sessionStatus)
     {
         return sessionStatus;
@@ -564,13 +606,15 @@ ProtocolStatus ValidateSegmentDescriptor(
             ProtocolErrorCode::InvalidDescriptor,
             kSegmentEncodedSizeOffset);
     }
-    if (descriptor.rawSize > resourcePolicy.maxRawSegmentBytes)
+    if (resourcePolicy != nullptr &&
+        descriptor.rawSize > resourcePolicy->maxRawSegmentBytes)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
             kSegmentRawSizeOffset);
     }
-    if (descriptor.encodedSize > resourcePolicy.maxEncodedSegmentBytes)
+    if (resourcePolicy != nullptr &&
+        descriptor.encodedSize > resourcePolicy->maxEncodedSegmentBytes)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
@@ -582,7 +626,8 @@ ProtocolStatus ValidateSegmentDescriptor(
             ProtocolErrorCode::InvalidDescriptor,
             kSegmentOuterBlockBytesOffset);
     }
-    if (descriptor.outerBlockBytes > resourcePolicy.maxOuterBlockBytes)
+    if (resourcePolicy != nullptr &&
+        descriptor.outerBlockBytes > resourcePolicy->maxOuterBlockBytes)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
@@ -668,14 +713,39 @@ ProtocolStatus ValidateSegmentDescriptor(
     return ProtocolStatus::Success();
 }
 
-ProtocolStatus ValidateFinalManifest(
-    const FinalManifest& finalManifest,
+} // namespace
+
+ProtocolStatus ValidateSegmentDescriptor(
+    const SegmentDescriptor& descriptor,
+    const SessionDescriptor& sessionDescriptor) noexcept
+{
+    return ValidateSegmentDescriptorImplementation(
+        descriptor,
+        sessionDescriptor,
+        nullptr);
+}
+
+ProtocolStatus ValidateSegmentDescriptor(
+    const SegmentDescriptor& descriptor,
     const SessionDescriptor& sessionDescriptor,
     const ReceiverResourcePolicy& resourcePolicy) noexcept
 {
-    const ProtocolStatus sessionStatus = ValidateSessionDescriptor(
+    return ValidateSegmentDescriptorImplementation(
+        descriptor,
         sessionDescriptor,
-        resourcePolicy);
+        &resourcePolicy);
+}
+
+namespace {
+
+[[nodiscard]] ProtocolStatus ValidateFinalManifestImplementation(
+    const FinalManifest& finalManifest,
+    const SessionDescriptor& sessionDescriptor,
+    const ReceiverResourcePolicy* const resourcePolicy) noexcept
+{
+    const ProtocolStatus sessionStatus = resourcePolicy == nullptr
+        ? ValidateSessionDescriptor(sessionDescriptor)
+        : ValidateSessionDescriptor(sessionDescriptor, *resourcePolicy);
     if (!sessionStatus)
     {
         return sessionStatus;
@@ -697,15 +767,18 @@ ProtocolStatus ValidateFinalManifest(
     {
         return shapeStatus;
     }
-    const ProtocolStatus resourceStatus = ValidateResourceLimits(
-        finalManifest.originalFileSize,
-        finalManifest.segmentCount,
-        resourcePolicy,
-        kFinalOriginalFileSizeOffset,
-        kFinalSegmentCountOffset);
-    if (!resourceStatus)
+    if (resourcePolicy != nullptr)
     {
-        return resourceStatus;
+        const ProtocolStatus resourceStatus = ValidateResourceLimits(
+            finalManifest.originalFileSize,
+            finalManifest.segmentCount,
+            *resourcePolicy,
+            kFinalOriginalFileSizeOffset,
+            kFinalSegmentCountOffset);
+        if (!resourceStatus)
+        {
+            return resourceStatus;
+        }
     }
 
     if (finalManifest.sessionId != sessionDescriptor.sessionId)
@@ -742,6 +815,29 @@ ProtocolStatus ValidateFinalManifest(
     }
 
     return ProtocolStatus::Success();
+}
+
+} // namespace
+
+ProtocolStatus ValidateFinalManifest(
+    const FinalManifest& finalManifest,
+    const SessionDescriptor& sessionDescriptor) noexcept
+{
+    return ValidateFinalManifestImplementation(
+        finalManifest,
+        sessionDescriptor,
+        nullptr);
+}
+
+ProtocolStatus ValidateFinalManifest(
+    const FinalManifest& finalManifest,
+    const SessionDescriptor& sessionDescriptor,
+    const ReceiverResourcePolicy& resourcePolicy) noexcept
+{
+    return ValidateFinalManifestImplementation(
+        finalManifest,
+        sessionDescriptor,
+        &resourcePolicy);
 }
 
 ProtocolResult<std::size_t> GetSerializedSize(
@@ -793,12 +889,9 @@ ProtocolResult<std::size_t> GetSerializedSize(
 
 ProtocolStatus SerializeSessionDescriptor(
     const SessionDescriptor& descriptor,
-    const ReceiverResourcePolicy& resourcePolicy,
     const std::span<std::byte> output) noexcept
 {
-    const ProtocolStatus validationStatus = ValidateSessionDescriptor(
-        descriptor,
-        resourcePolicy);
+    const ProtocolStatus validationStatus = ValidateSessionDescriptor(descriptor);
     if (!validationStatus)
     {
         return validationStatus;
@@ -812,16 +905,30 @@ ProtocolStatus SerializeSessionDescriptor(
         });
 }
 
+ProtocolStatus SerializeSessionDescriptor(
+    const SessionDescriptor& descriptor,
+    const ReceiverResourcePolicy& resourcePolicy,
+    const std::span<std::byte> output) noexcept
+{
+    const ProtocolStatus validationStatus = ValidateSessionDescriptor(
+        descriptor,
+        resourcePolicy);
+    if (!validationStatus)
+    {
+        return validationStatus;
+    }
+
+    return SerializeSessionDescriptor(descriptor, output);
+}
+
 ProtocolStatus SerializeSegmentDescriptor(
     const SegmentDescriptor& descriptor,
     const SessionDescriptor& sessionDescriptor,
-    const ReceiverResourcePolicy& resourcePolicy,
     const std::span<std::byte> output) noexcept
 {
     const ProtocolStatus validationStatus = ValidateSegmentDescriptor(
         descriptor,
-        sessionDescriptor,
-        resourcePolicy);
+        sessionDescriptor);
     if (!validationStatus)
     {
         return validationStatus;
@@ -851,6 +958,45 @@ ProtocolStatus SerializeSegmentDescriptor(
         });
 }
 
+ProtocolStatus SerializeSegmentDescriptor(
+    const SegmentDescriptor& descriptor,
+    const SessionDescriptor& sessionDescriptor,
+    const ReceiverResourcePolicy& resourcePolicy,
+    const std::span<std::byte> output) noexcept
+{
+    const ProtocolStatus validationStatus = ValidateSegmentDescriptor(
+        descriptor,
+        sessionDescriptor,
+        resourcePolicy);
+    if (!validationStatus)
+    {
+        return validationStatus;
+    }
+
+    return SerializeSegmentDescriptor(descriptor, sessionDescriptor, output);
+}
+
+ProtocolStatus SerializeFinalManifest(
+    const FinalManifest& finalManifest,
+    const SessionDescriptor& sessionDescriptor,
+    const std::span<std::byte> output) noexcept
+{
+    const ProtocolStatus validationStatus = ValidateFinalManifest(
+        finalManifest,
+        sessionDescriptor);
+    if (!validationStatus)
+    {
+        return validationStatus;
+    }
+
+    return SerializeAtomically<kFinalManifestPayloadBytes>(
+        output,
+        [&finalManifest](ByteWriter& writer) noexcept
+        {
+            return WriteFinalManifest(finalManifest, writer);
+        });
+}
+
 ProtocolStatus SerializeFinalManifest(
     const FinalManifest& finalManifest,
     const SessionDescriptor& sessionDescriptor,
@@ -866,12 +1012,7 @@ ProtocolStatus SerializeFinalManifest(
         return validationStatus;
     }
 
-    return SerializeAtomically<kFinalManifestPayloadBytes>(
-        output,
-        [&finalManifest](ByteWriter& writer) noexcept
-        {
-            return WriteFinalManifest(finalManifest, writer);
-        });
+    return SerializeFinalManifest(finalManifest, sessionDescriptor, output);
 }
 
 ProtocolResult<SessionDescriptor> ParseSessionDescriptor(

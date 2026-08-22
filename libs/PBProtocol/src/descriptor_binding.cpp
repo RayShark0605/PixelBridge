@@ -4,11 +4,104 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <map>
+#include <memory>
+#include <memory_resource>
 #include <new>
 #include <stdexcept>
 #include <utility>
 
 namespace pbprotocol {
+
+namespace detail {
+
+struct DescriptorMemoryBudgetState
+{
+    std::size_t limitBytes = 0;
+    std::size_t bytesInUse = 0;
+};
+
+class DescriptorStateBudgetExceeded final : public std::bad_alloc
+{
+};
+
+class BoundedDescriptorMemoryResource final : public std::pmr::memory_resource
+{
+public:
+    BoundedDescriptorMemoryResource(
+        std::shared_ptr<DescriptorMemoryBudgetState> memoryBudgetState,
+        std::shared_ptr<std::pmr::memory_resource> upstreamMemoryResource) noexcept
+        : memoryBudgetState_(std::move(memoryBudgetState)),
+          upstreamMemoryResource_(std::move(upstreamMemoryResource))
+    {
+    }
+
+private:
+    [[nodiscard]] void* do_allocate(
+        const std::size_t bytes,
+        const std::size_t alignment) override
+    {
+        if (bytes > memoryBudgetState_->limitBytes -
+                memoryBudgetState_->bytesInUse)
+        {
+            throw DescriptorStateBudgetExceeded{};
+        }
+
+        void* const allocation = upstreamMemoryResource_->allocate(
+            bytes,
+            alignment);
+        memoryBudgetState_->bytesInUse += bytes;
+        return allocation;
+    }
+
+    void do_deallocate(
+        void* const allocation,
+        const std::size_t bytes,
+        const std::size_t alignment) override
+    {
+        if (bytes > memoryBudgetState_->bytesInUse)
+        {
+            std::terminate();
+        }
+
+        upstreamMemoryResource_->deallocate(allocation, bytes, alignment);
+        memoryBudgetState_->bytesInUse -= bytes;
+    }
+
+    [[nodiscard]] bool do_is_equal(
+        const std::pmr::memory_resource& other) const noexcept override
+    {
+        return this == &other;
+    }
+
+    std::shared_ptr<DescriptorMemoryBudgetState> memoryBudgetState_;
+    std::shared_ptr<std::pmr::memory_resource> upstreamMemoryResource_;
+};
+
+struct DescriptorBindingStorage
+{
+    DescriptorBindingStorage(
+        const std::size_t limitBytes,
+        std::shared_ptr<std::pmr::memory_resource> upstreamMemoryResource)
+        : memoryBudgetState(std::make_shared<DescriptorMemoryBudgetState>(
+              DescriptorMemoryBudgetState{limitBytes, 0})),
+          descriptorMemoryResource(
+              std::make_shared<BoundedDescriptorMemoryResource>(
+                  memoryBudgetState,
+                  std::move(upstreamMemoryResource))),
+          segmentsByOrdinal(descriptorMemoryResource.get()),
+          ordinalsByRawOffset(descriptorMemoryResource.get())
+    {
+    }
+
+    std::shared_ptr<DescriptorMemoryBudgetState> memoryBudgetState;
+    std::shared_ptr<std::pmr::memory_resource> descriptorMemoryResource;
+    std::pmr::map<std::uint64_t, SegmentDescriptor> segmentsByOrdinal;
+    std::pmr::map<std::uint64_t, std::uint64_t> ordinalsByRawOffset;
+};
+
+} // namespace detail
 
 namespace {
 
@@ -31,6 +124,46 @@ ProtocolResult<DescriptorBindingState> DescriptorBindingState::Create(
     SessionDescriptor sessionDescriptor,
     ReceiverResourcePolicy resourcePolicy)
 {
+    try
+    {
+        auto upstreamMemoryResource =
+            std::shared_ptr<std::pmr::memory_resource>(
+                std::pmr::new_delete_resource(),
+                [](std::pmr::memory_resource*) noexcept
+                {
+                });
+        return CreateWithMemoryResource(
+            std::move(sessionDescriptor),
+            std::move(resourcePolicy),
+            std::move(upstreamMemoryResource));
+    }
+    catch (const detail::DescriptorStateBudgetExceeded&)
+    {
+        return ProtocolResult<DescriptorBindingState>::Failure(
+            ProtocolErrorCode::ResourceLimitExceeded,
+            kSegmentOrdinalOffset);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ProtocolResult<DescriptorBindingState>::Failure(
+            ProtocolErrorCode::ResourceExhausted,
+            kSegmentOrdinalOffset);
+    }
+}
+
+ProtocolResult<DescriptorBindingState>
+DescriptorBindingState::CreateWithMemoryResource(
+    SessionDescriptor sessionDescriptor,
+    ReceiverResourcePolicy resourcePolicy,
+    std::shared_ptr<std::pmr::memory_resource> upstreamMemoryResource)
+{
+    if (!upstreamMemoryResource)
+    {
+        return ProtocolResult<DescriptorBindingState>::Failure(
+            ProtocolErrorCode::InvalidResourcePolicy,
+            0);
+    }
+
     const ProtocolStatus validationStatus = ValidateSessionDescriptor(
         sessionDescriptor,
         resourcePolicy);
@@ -47,22 +180,59 @@ ProtocolResult<DescriptorBindingState> DescriptorBindingState::Create(
         return FailureFrom<DescriptorBindingState>(segmentCountResult.Error());
     }
 
-    return ProtocolResult<DescriptorBindingState>::Success(
-        DescriptorBindingState(
-            std::move(sessionDescriptor),
-            std::move(resourcePolicy),
-            segmentCountResult.Value()));
+    const auto descriptorBudgetSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxDescriptorStateBytes,
+        kSegmentOrdinalOffset);
+    if (!descriptorBudgetSizeResult)
+    {
+        return FailureFrom<DescriptorBindingState>(
+            descriptorBudgetSizeResult.Error());
+    }
+
+    try
+    {
+        auto descriptorStorage =
+            std::make_unique<detail::DescriptorBindingStorage>(
+                descriptorBudgetSizeResult.Value(),
+                std::move(upstreamMemoryResource));
+
+        return ProtocolResult<DescriptorBindingState>::Success(
+            DescriptorBindingState(
+                std::move(sessionDescriptor),
+                std::move(resourcePolicy),
+                segmentCountResult.Value(),
+                std::move(descriptorStorage)));
+    }
+    catch (const detail::DescriptorStateBudgetExceeded&)
+    {
+        return ProtocolResult<DescriptorBindingState>::Failure(
+            ProtocolErrorCode::ResourceLimitExceeded,
+            kSegmentOrdinalOffset);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ProtocolResult<DescriptorBindingState>::Failure(
+            ProtocolErrorCode::ResourceExhausted,
+            kSegmentOrdinalOffset);
+    }
 }
 
 DescriptorBindingState::DescriptorBindingState(
     SessionDescriptor sessionDescriptor,
     ReceiverResourcePolicy resourcePolicy,
-    const std::size_t segmentCount) noexcept
+    const std::size_t segmentCount,
+    std::unique_ptr<detail::DescriptorBindingStorage> descriptorStorage) noexcept
     : sessionDescriptor_(std::move(sessionDescriptor)),
       resourcePolicy_(std::move(resourcePolicy)),
-      segmentCount_(segmentCount)
+      segmentCount_(segmentCount),
+      descriptorStorage_(std::move(descriptorStorage))
 {
 }
+
+DescriptorBindingState::~DescriptorBindingState() = default;
+
+DescriptorBindingState::DescriptorBindingState(
+    DescriptorBindingState&& other) noexcept = default;
 
 ProtocolResult<DescriptorBindDisposition>
 DescriptorBindingState::BindSessionDescriptor(
@@ -119,9 +289,9 @@ DescriptorBindingState::BindSegmentDescriptor(
         return FailureFrom<DescriptorBindDisposition>(validationStatus.Error());
     }
 
-    const auto existingOrdinal = segmentsByOrdinal_.find(
+    const auto existingOrdinal = descriptorStorage_->segmentsByOrdinal.find(
         descriptor.segmentOrdinal);
-    if (existingOrdinal != segmentsByOrdinal_.end())
+    if (existingOrdinal != descriptorStorage_->segmentsByOrdinal.end())
     {
         if (existingOrdinal->second == descriptor)
         {
@@ -135,7 +305,7 @@ DescriptorBindingState::BindSegmentDescriptor(
         return FailureFrom<DescriptorBindDisposition>(conflictStatus.Error());
     }
 
-    if (segmentsByOrdinal_.size() >= segmentCount_)
+    if (descriptorStorage_->segmentsByOrdinal.size() >= segmentCount_)
     {
         return ProtocolResult<DescriptorBindDisposition>::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
@@ -152,9 +322,9 @@ DescriptorBindingState::BindSegmentDescriptor(
     }
     const std::uint64_t rawEnd = rawEndResult.Value();
 
-    const auto nextOffset = ordinalsByRawOffset_.lower_bound(
+    const auto nextOffset = descriptorStorage_->ordinalsByRawOffset.lower_bound(
         descriptor.rawOffset);
-    if (nextOffset != ordinalsByRawOffset_.end() &&
+    if (nextOffset != descriptorStorage_->ordinalsByRawOffset.end() &&
         nextOffset->first < rawEnd)
     {
         const ProtocolStatus overlapStatus = LatchTerminalError(
@@ -162,13 +332,13 @@ DescriptorBindingState::BindSegmentDescriptor(
             kSegmentRawOffsetOffset);
         return FailureFrom<DescriptorBindDisposition>(overlapStatus.Error());
     }
-    if (nextOffset != ordinalsByRawOffset_.begin())
+    if (nextOffset != descriptorStorage_->ordinalsByRawOffset.begin())
     {
         auto previousOffset = nextOffset;
         previousOffset--;
-        const auto previousSegment = segmentsByOrdinal_.find(
+        const auto previousSegment = descriptorStorage_->segmentsByOrdinal.find(
             previousOffset->second);
-        if (previousSegment == segmentsByOrdinal_.end())
+        if (previousSegment == descriptorStorage_->segmentsByOrdinal.end())
         {
             const ProtocolStatus invariantStatus = LatchTerminalError(
                 ProtocolErrorCode::InternalDescriptorStateError,
@@ -200,9 +370,10 @@ DescriptorBindingState::BindSegmentDescriptor(
 
     try
     {
-        const auto ordinalInsertion = segmentsByOrdinal_.emplace(
-            descriptor.segmentOrdinal,
-            descriptor);
+        const auto ordinalInsertion =
+            descriptorStorage_->segmentsByOrdinal.emplace(
+                descriptor.segmentOrdinal,
+                descriptor);
         if (!ordinalInsertion.second)
         {
             const ProtocolStatus invariantStatus = LatchTerminalError(
@@ -214,12 +385,14 @@ DescriptorBindingState::BindSegmentDescriptor(
 
         try
         {
-            const auto offsetInsertion = ordinalsByRawOffset_.emplace(
-                descriptor.rawOffset,
-                descriptor.segmentOrdinal);
+            const auto offsetInsertion =
+                descriptorStorage_->ordinalsByRawOffset.emplace(
+                    descriptor.rawOffset,
+                    descriptor.segmentOrdinal);
             if (!offsetInsertion.second)
             {
-                segmentsByOrdinal_.erase(ordinalInsertion.first);
+                descriptorStorage_->segmentsByOrdinal.erase(
+                    ordinalInsertion.first);
                 const ProtocolStatus overlapStatus = LatchTerminalError(
                     ProtocolErrorCode::SegmentOverlap,
                     kSegmentRawOffsetOffset);
@@ -229,21 +402,31 @@ DescriptorBindingState::BindSegmentDescriptor(
         }
         catch (...)
         {
-            segmentsByOrdinal_.erase(ordinalInsertion.first);
+            descriptorStorage_->segmentsByOrdinal.erase(
+                ordinalInsertion.first);
             throw;
         }
     }
+    catch (const detail::DescriptorStateBudgetExceeded&)
+    {
+        const ProtocolStatus resourceStatus = LatchTerminalError(
+            ProtocolErrorCode::ResourceLimitExceeded,
+            kSegmentOrdinalOffset);
+        return FailureFrom<DescriptorBindDisposition>(resourceStatus.Error());
+    }
     catch (const std::bad_alloc&)
     {
-        return ProtocolResult<DescriptorBindDisposition>::Failure(
+        const ProtocolStatus resourceStatus = LatchTerminalError(
             ProtocolErrorCode::ResourceExhausted,
             kSegmentOrdinalOffset);
+        return FailureFrom<DescriptorBindDisposition>(resourceStatus.Error());
     }
     catch (const std::length_error&)
     {
-        return ProtocolResult<DescriptorBindDisposition>::Failure(
+        const ProtocolStatus resourceStatus = LatchTerminalError(
             ProtocolErrorCode::ResourceExhausted,
             kSegmentOrdinalOffset);
+        return FailureFrom<DescriptorBindDisposition>(resourceStatus.Error());
     }
 
     return ProtocolResult<DescriptorBindDisposition>::Success(
@@ -295,13 +478,14 @@ ProtocolStatus DescriptorBindingState::ValidateCompleteSegmentMap()
         return terminalStatus;
     }
 
-    if (segmentsByOrdinal_.size() != segmentCount_)
+    if (descriptorStorage_->segmentsByOrdinal.size() != segmentCount_)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::SegmentMapIncomplete,
             kSegmentOrdinalOffset);
     }
-    if (ordinalsByRawOffset_.size() != segmentsByOrdinal_.size())
+    if (descriptorStorage_->ordinalsByRawOffset.size() !=
+        descriptorStorage_->segmentsByOrdinal.size())
     {
         return LatchTerminalError(
             ProtocolErrorCode::InternalDescriptorStateError,
@@ -309,23 +493,26 @@ ProtocolStatus DescriptorBindingState::ValidateCompleteSegmentMap()
     }
 
     std::uint64_t expectedOrdinal = 0;
-    for (const auto& [segmentOrdinal, descriptor] : segmentsByOrdinal_)
+    for (const auto& [segmentOrdinal, descriptor] :
+         descriptorStorage_->segmentsByOrdinal)
     {
         static_cast<void>(descriptor);
         if (segmentOrdinal != expectedOrdinal)
         {
             return LatchTerminalError(
-                ProtocolErrorCode::SegmentGap,
+                ProtocolErrorCode::InternalDescriptorStateError,
                 kSegmentOrdinalOffset);
         }
         expectedOrdinal++;
     }
 
     std::uint64_t expectedRawOffset = 0;
-    for (const auto& [rawOffset, segmentOrdinal] : ordinalsByRawOffset_)
+    for (const auto& [rawOffset, segmentOrdinal] :
+         descriptorStorage_->ordinalsByRawOffset)
     {
-        const auto segment = segmentsByOrdinal_.find(segmentOrdinal);
-        if (segment == segmentsByOrdinal_.end())
+        const auto segment = descriptorStorage_->segmentsByOrdinal.find(
+            segmentOrdinal);
+        if (segment == descriptorStorage_->segmentsByOrdinal.end())
         {
             return LatchTerminalError(
                 ProtocolErrorCode::InternalDescriptorStateError,
@@ -411,7 +598,13 @@ const SessionDescriptor& DescriptorBindingState::GetSessionDescriptor() const no
 
 std::size_t DescriptorBindingState::BoundSegmentCount() const noexcept
 {
-    return segmentsByOrdinal_.size();
+    return descriptorStorage_->segmentsByOrdinal.size();
+}
+
+std::uint64_t DescriptorBindingState::DescriptorStateBytesInUse() const noexcept
+{
+    return static_cast<std::uint64_t>(
+        descriptorStorage_->memoryBudgetState->bytesInUse);
 }
 
 bool DescriptorBindingState::HasFinalManifest() const noexcept

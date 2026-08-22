@@ -44,6 +44,7 @@ enum class ProtocolErrorCode : std::uint8_t
     DigestMismatch,
     InternalDescriptorStateError,
     InternalInvariantViolation,
+    SessionTagCollision,
     CsprngFailure
 };
 
@@ -126,6 +127,9 @@ public:
         return HasValue();
     }
 
+    // Value() follows std::optional::value(): calling it on a failed result
+    // throws std::bad_optional_access. Callers must test HasValue() first, and
+    // noexcept code must not call Value() on an unchecked result.
     [[nodiscard]] ValueType& Value() &
     {
         return value_.value();

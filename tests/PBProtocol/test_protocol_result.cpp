@@ -2,6 +2,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <optional>
+
 TEST_CASE("Protocol status cannot represent a successful failure",
           "[pbprotocol][result][invariant]")
 {
@@ -57,4 +59,7 @@ TEST_CASE("Protocol result failures always carry a non-success error",
         pbprotocol::ProtocolError{
             pbprotocol::ProtocolErrorCode::LengthOverflow,
             17});
+    REQUIRE_THROWS_AS(
+        ordinaryFailure.Value(),
+        std::bad_optional_access);
 }

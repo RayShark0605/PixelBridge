@@ -3,5 +3,6 @@ build/
 build-*/
 .vs/
 *.user
+*.obj
 CMakeUserPresets.json
 target-dependency-graph.dot.*

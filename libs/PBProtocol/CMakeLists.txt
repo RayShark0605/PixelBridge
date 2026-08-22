@@ -13,6 +13,7 @@ target_sources(PBProtocol
         src/protocol_types.cpp
         src/protocol_version.cpp
         src/session_random.cpp
+        src/session_registry.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
@@ -27,7 +28,8 @@ target_sources(PBProtocol
             include/pbprotocol/protocol_result.h
             include/pbprotocol/protocol_types.h
             include/pbprotocol/protocol_version.h
-            include/pbprotocol/session_random.h)
+            include/pbprotocol/session_random.h
+            include/pbprotocol/session_registry.h)
 
 target_include_directories(PBProtocol
     PUBLIC

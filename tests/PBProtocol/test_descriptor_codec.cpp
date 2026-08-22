@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -121,9 +122,12 @@ constexpr std::array<std::byte, pbprotocol::kFinalManifestPayloadBytes>
 
 } // namespace
 
-TEST_CASE("Descriptor payloads match canonical golden bytes",
+TEST_CASE("Phase-0 provisional descriptor payloads match exact implementation bytes",
           "[pbprotocol][descriptor][wire][golden]")
 {
+    STATIC_REQUIRE(
+        pbprotocol::kDescriptorWireMaturity ==
+        pbprotocol::DescriptorWireMaturity::Phase0Provisional);
     const pbprotocol::ReceiverResourcePolicy resourcePolicy =
         pbprotocol::test::MakeResourcePolicy();
     const pbprotocol::SessionDescriptor sessionDescriptor =
@@ -180,6 +184,43 @@ TEST_CASE("Descriptor payloads match canonical golden bytes",
         resourcePolicy);
     REQUIRE(parsedFinalManifest);
     REQUIRE(parsedFinalManifest.Value() == finalManifest);
+}
+
+TEST_CASE("Segment parser rejects uint64 RawOffset addition overflow",
+          "[pbprotocol][descriptor][wire][overflow]")
+{
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(
+            std::numeric_limits<std::uint64_t>::max(),
+            1);
+    const pbprotocol::SegmentDescriptor segmentDescriptor =
+        pbprotocol::test::MakeDirectRepeatSegment(
+            sessionDescriptor, 0, 0, 2, 1);
+    std::array<
+        std::byte,
+        pbprotocol::kDirectRepeatSegmentDescriptorPayloadBytes> payload{};
+    REQUIRE(pbprotocol::SerializeSegmentDescriptor(
+        segmentDescriptor,
+        sessionDescriptor,
+        payload));
+
+    constexpr std::size_t rawOffsetFieldOffset = 16;
+    for (std::size_t byteIndex = 0; byteIndex < sizeof(std::uint64_t); byteIndex++)
+    {
+        payload[rawOffsetFieldOffset + byteIndex] = Byte(0xFF);
+    }
+
+    const auto parseResult = pbprotocol::ParseSegmentDescriptor(
+        payload,
+        sessionDescriptor,
+        resourcePolicy);
+    REQUIRE_FALSE(parseResult);
+    REQUIRE(
+        parseResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::LengthOverflow);
+    REQUIRE(parseResult.Error().offset == rawOffsetFieldOffset);
 }
 
 TEST_CASE("Wirehair Segment payload appends the canonical 32-byte profile",
