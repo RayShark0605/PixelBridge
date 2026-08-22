@@ -29,7 +29,7 @@ diagnostic, or missing `FUZZ_COMPLETED` line is a failed run.
 The mutation count is `0..8`, so exact valid seeds reach parser and state-
 machine success paths instead of every generated descriptor being corrupted.
 
-## Independent corpus replay
+## Independent corpus replay and conformance
 
 `fuzz/corpus/descriptor-resource` contains independently authored bytes rather
 than files emitted at runtime by the serializer under test:
@@ -39,7 +39,7 @@ than files emitted at runtime by the serializer under test:
 - `valid-final-manifest.bin`: matching fixed Session and zero digest;
 - `overflow-direct-segment.bin`: `RawOffset=UINT64_MAX`, `RawSize=1`.
 
-Replay each seed through the bounded MSVC runner with:
+Replay each seed through the bounded MSVC runner for a crash/sanitizer check:
 
 ```powershell
 $runner = '.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolDescriptorResourceFuzz.exe'
@@ -49,8 +49,12 @@ Get-ChildItem .\fuzz\corpus\descriptor-resource\*.bin | ForEach-Object {
 }
 ```
 
-Each successful replay reports `CORPUS_REPLAY_COMPLETED`. CTest also registers
-one deterministic replay test per corpus file on non-Clang builds.
+Each successful replay reports `CORPUS_REPLAY_NO_CRASH`. This runner deliberately
+does not claim that a valid seed was accepted or that a malformed seed produced
+the expected error. `PBProtocolTests` independently asserts the exact parsed
+fields, byte-for-byte reserialization, and the overflow seed's
+`LengthOverflow`/offset result. CTest also registers one no-crash replay per
+corpus file on non-Clang fuzz builds.
 
 ## Clang/libFuzzer + ASan/UBSan
 

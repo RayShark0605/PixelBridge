@@ -47,14 +47,11 @@ option(PB_BUILD_TOOLS "Build PixelBridge command-line tools" OFF)
 option(PB_BUILD_FUZZERS "Build PixelBridge fuzz targets" OFF)
 option(PB_BUILD_BENCHMARKS "Build PixelBridge benchmark targets" OFF)
 
-if (PB_BUILD_FUZZERS AND PB_BUILD_BENCHMARKS)
-    # The MSVC/Clang fuzz build instruments the shared PBProtocol target with
-    # AddressSanitizer; a non-instrumented benchmark in the same tree then fails
-    # to link (annotate_string/annotate_vector mismatch). Keep them in separate
-    # build directories, as documented in fuzz/README.md and benchmarks/README.md.
-    message(FATAL_ERROR
-        "PB_BUILD_FUZZERS and PB_BUILD_BENCHMARKS are mutually exclusive; configure separate build directories.")
-endif()
+# The fuzz build instruments the shared PBProtocol target; benchmark and fuzz
+# binaries therefore use separate build trees. Keep the policy in a standalone
+# helper so its complete option matrix has a fast configure-time regression.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PBBuildOptionValidation.cmake")
+PbValidateBuildOptions()
 
 if(PROJECT_IS_TOP_LEVEL)
     include(CTest)

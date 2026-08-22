@@ -371,6 +371,11 @@ template <std::size_t OutputBytes, typename WriteFunction>
 ProtocolStatus ValidateReceiverResourcePolicy(
     const ReceiverResourcePolicy& resourcePolicy) noexcept
 {
+    constexpr std::uint64_t maximumUint64 =
+        std::numeric_limits<std::uint64_t>::max();
+    constexpr std::uint32_t maximumUint32 =
+        std::numeric_limits<std::uint32_t>::max();
+
     if (resourcePolicy.maxAcceptedFileBytes == 0 ||
         resourcePolicy.maxSegmentCount == 0 ||
         resourcePolicy.maxRawSegmentBytes == 0 ||
@@ -379,12 +384,14 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxDescriptorStateBytes == 0 ||
         resourcePolicy.maxConcurrentSessions == 0 ||
         resourcePolicy.maxTotalDescriptorStateBytes == 0 ||
-        resourcePolicy.maxDescriptorStateBytes ==
-            std::numeric_limits<std::uint64_t>::max() ||
-        resourcePolicy.maxConcurrentSessions ==
-            std::numeric_limits<std::uint64_t>::max() ||
-        resourcePolicy.maxTotalDescriptorStateBytes ==
-            std::numeric_limits<std::uint64_t>::max() ||
+        resourcePolicy.maxAcceptedFileBytes == maximumUint64 ||
+        resourcePolicy.maxSegmentCount == maximumUint64 ||
+        resourcePolicy.maxRawSegmentBytes == maximumUint64 ||
+        resourcePolicy.maxEncodedSegmentBytes == maximumUint64 ||
+        resourcePolicy.maxOuterBlockBytes == maximumUint32 ||
+        resourcePolicy.maxDescriptorStateBytes == maximumUint64 ||
+        resourcePolicy.maxConcurrentSessions == maximumUint64 ||
+        resourcePolicy.maxTotalDescriptorStateBytes == maximumUint64 ||
         resourcePolicy.maxDescriptorStateBytes >
             resourcePolicy.maxTotalDescriptorStateBytes)
     {
@@ -393,11 +400,21 @@ ProtocolStatus ValidateReceiverResourcePolicy(
             0);
     }
 
+    const auto segmentCountSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxSegmentCount);
+    const auto rawSegmentSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxRawSegmentBytes);
+    const auto encodedSegmentSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxEncodedSegmentBytes);
     const auto descriptorBudgetSizeResult = CheckedUint64ToSize(
         resourcePolicy.maxDescriptorStateBytes);
     const auto concurrentSessionCountResult = CheckedUint64ToSize(
         resourcePolicy.maxConcurrentSessions);
-    if (!descriptorBudgetSizeResult || !concurrentSessionCountResult)
+    if (!segmentCountSizeResult ||
+        !rawSegmentSizeResult ||
+        !encodedSegmentSizeResult ||
+        !descriptorBudgetSizeResult ||
+        !concurrentSessionCountResult)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,

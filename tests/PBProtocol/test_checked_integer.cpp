@@ -72,6 +72,60 @@ TEST_CASE("CheckedNarrowUnsigned accepts exact fit and rejects one above",
         ProtocolError{ProtocolErrorCode::LengthNarrowing, 11});
 }
 
+TEST_CASE("CheckedNarrowUnsigned covers narrow same-width and widening paths",
+          "[pbprotocol][checked-integer][narrow]")
+{
+    const auto uint8ExactFit = CheckedNarrowUnsigned<std::uint8_t>(255U, 3);
+    REQUIRE(uint8ExactFit);
+    REQUIRE(uint8ExactFit.Value() == 255U);
+
+    const auto uint8Overflow = CheckedNarrowUnsigned<std::uint8_t>(256U, 4);
+    REQUIRE_FALSE(uint8Overflow);
+    REQUIRE(
+        uint8Overflow.Error() ==
+        ProtocolError{ProtocolErrorCode::LengthNarrowing, 4});
+
+    const auto sameWidth = CheckedNarrowUnsigned<std::uint64_t>(kMax, 5);
+    REQUIRE(sameWidth);
+    REQUIRE(sameWidth.Value() == kMax);
+
+    const auto widening = CheckedNarrowUnsigned<std::uint64_t>(
+        std::numeric_limits<std::uint32_t>::max(),
+        6);
+    REQUIRE(widening);
+    REQUIRE(
+        widening.Value() ==
+        std::numeric_limits<std::uint32_t>::max());
+}
+
+TEST_CASE("Checked add and multiply preserve narrow-type boundaries and offsets",
+          "[pbprotocol][checked-integer][add][mul]")
+{
+    const auto uint8AtMax = CheckedAddUnsigned<std::uint8_t>(254U, 1U, 8);
+    REQUIRE(uint8AtMax);
+    REQUIRE(uint8AtMax.Value() == 255U);
+
+    const auto uint8Overflow = CheckedAddUnsigned<std::uint8_t>(255U, 1U, 9);
+    REQUIRE_FALSE(uint8Overflow);
+    REQUIRE(
+        uint8Overflow.Error() ==
+        ProtocolError{ProtocolErrorCode::LengthOverflow, 9});
+
+    const auto zeroProduct = CheckedMultiplyUnsigned<std::uint32_t>(
+        0U,
+        std::numeric_limits<std::uint32_t>::max(),
+        10);
+    REQUIRE(zeroProduct);
+    REQUIRE(zeroProduct.Value() == 0U);
+
+    const auto multiplicationOverflow =
+        CheckedMultiplyUnsigned<std::uint32_t>(65536U, 65536U, 11);
+    REQUIRE_FALSE(multiplicationOverflow);
+    REQUIRE(
+        multiplicationOverflow.Error() ==
+        ProtocolError{ProtocolErrorCode::LengthOverflow, 11});
+}
+
 TEST_CASE("CheckedAddWithinLimit enforces overflow before the limit",
           "[pbprotocol][checked-integer][range]")
 {

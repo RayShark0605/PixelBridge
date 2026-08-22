@@ -55,7 +55,14 @@ set_tests_properties(PBStaticLibraryIsolationRun PROPERTIES
 add_test(NAME PBManifestDependencyBoundary
     COMMAND "${CMAKE_COMMAND}"
         "-DPB_MANIFEST_PATH=${PROJECT_SOURCE_DIR}/vcpkg.json"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyManifest.cmake")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyManifest.cmake")
+
+add_test(NAME PBBuildOptionValidation
+    COMMAND "${CMAKE_COMMAND}"
+        "-DPB_MODULE_DIR=${PROJECT_SOURCE_DIR}/cmake"
+        "-DPB_PROBE_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/BuildOptionValidationProbe.cmake"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyBuildOptionMatrix.cmake")
+set_tests_properties(PBBuildOptionValidation PROPERTIES TIMEOUT 30)
 
 function(PbAddForbiddenQtConfigureTest testName fixtureName expectedErrorRegex)
     add_test(NAME ${testName}

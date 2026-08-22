@@ -76,6 +76,14 @@ maps. A per-Session budget refusal returns terminal
 new admission. Session-registry admission failures occur before a Session is
 published and may be retried after capacity is released.
 
+Every receiver-policy field must be non-zero, finite, and representable in the
+implementation type used for its single allocation or container count. The
+maximum value of each field's integer type is an invalid unbounded sentinel,
+including the file, Segment, encoded/raw byte, and outer-block limits. The
+per-Session, concurrent-Session, and aggregate descriptor limits remain
+independent caps; admission applies the aggregate cap before publishing a new
+Session.
+
 The policy also rejects a Session whose declared map cannot possibly cover its
 file under `maxRawSegmentBytes`, including:
 
@@ -95,6 +103,37 @@ friend-only test seam; production registry creation always uses
 `DeriveSessionTag()`.
 
 The tag is routing metadata, not sender authentication.
+
+## CRC32C, BLAKE3, checked arithmetic, and SessionId status
+
+The Phase-0 primitive slice for CRC32C, allocation-free streaming BLAKE3-256,
+checked add/multiply/range/narrowing, deterministic SessionTag derivation, and
+Windows CSPRNG SessionId generation is implemented and covered by independent
+known-answer and boundary tests. The public BLAKE3 wrapper keeps the pinned
+third-party header and link dependency private, and protocol-critical digest
+paths do not allocate.
+
+These primitives have deliberately separate trust meanings:
+
+- CRC32C detects transport corruption and is not cryptographic integrity or
+  authentication;
+- unkeyed BLAKE3 provides strong integrity, but an in-band WholeFileDigest does
+  not authenticate the sender;
+- SessionTag is deterministic routing metadata and not an identity proof;
+- SessionId generation uses `BCryptGenRandom` with
+  `BCRYPT_USE_SYSTEM_PREFERRED_RNG`, fails closed on unsuccessful NTSTATUS, and
+  has no weaker fallback.
+
+Ordinary `WholeFileDigest` equality is an integrity comparison, not a
+constant-time authentication verifier. Any future MAC or signature must use a
+different type and a dedicated verification API rather than reusing this
+public digest type.
+
+`DescriptorBindingState` binds immutable expected FinalManifest metadata but
+does not expose a whole-file verification or publication decision. That
+decision requires a later recovery finalizer to sequentially read the actual
+`output.part`, compute the digest, compare it with the bound manifest, and only
+then perform the same-volume atomic rename.
 
 ## Remaining Phase-0 Gate scope
 

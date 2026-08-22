@@ -244,33 +244,6 @@ ProtocolStatus SessionRegistry::ValidateCompleteSegmentMap(
     return bindingStateResult.Value()->ValidateCompleteSegmentMap();
 }
 
-ProtocolStatus SessionRegistry::ValidateReadyForFinalVerification(
-    const SessionTag sessionTag)
-{
-    auto bindingStateResult = FindBindingState(sessionTag);
-    if (!bindingStateResult)
-    {
-        return ProtocolStatus::Failure(
-            bindingStateResult.Error().code,
-            bindingStateResult.Error().offset);
-    }
-    return bindingStateResult.Value()->ValidateReadyForFinalVerification();
-}
-
-ProtocolStatus SessionRegistry::VerifyWholeFileDigest(
-    const SessionTag sessionTag,
-    const WholeFileDigest& computedDigest)
-{
-    auto bindingStateResult = FindBindingState(sessionTag);
-    if (!bindingStateResult)
-    {
-        return ProtocolStatus::Failure(
-            bindingStateResult.Error().code,
-            bindingStateResult.Error().offset);
-    }
-    return bindingStateResult.Value()->VerifyWholeFileDigest(computedDigest);
-}
-
 ProtocolResult<bool> SessionRegistry::RemoveSession(
     const SessionId& sessionId) noexcept
 {

@@ -15,6 +15,18 @@
 
 namespace {
 
+template <typename StateType>
+concept HasDescriptorFinalVerificationApi = requires(
+    StateType& state,
+    const pbprotocol::WholeFileDigest& digest)
+{
+    state.ValidateReadyForFinalVerification();
+    state.VerifyWholeFileDigest(digest);
+};
+
+static_assert(
+    !HasDescriptorFinalVerificationApi<pbprotocol::DescriptorBindingState>);
+
 class FailOnAllocationMemoryResource final : public std::pmr::memory_resource
 {
 public:
@@ -181,8 +193,8 @@ TEST_CASE("Binding creation rejects untrusted huge SegmentCount before state exi
     resourcePolicy.maxSegmentCount = 1024;
     const pbprotocol::SessionDescriptor maliciousSession =
         pbprotocol::test::MakeSessionDescriptor(
-            std::numeric_limits<std::uint64_t>::max(),
-            std::numeric_limits<std::uint64_t>::max());
+            std::numeric_limits<std::uint64_t>::max() - 1ULL,
+            std::numeric_limits<std::uint64_t>::max() - 2ULL);
 
     const auto stateResult = pbprotocol::DescriptorBindingState::Create(
         maliciousSession,
@@ -770,7 +782,7 @@ TEST_CASE("Completed Segment Map rejects first middle and tail gaps",
     }
 }
 
-TEST_CASE("FinalManifest binding is immutable and gates digest verification",
+TEST_CASE("FinalManifest binding is immutable descriptor metadata",
           "[pbprotocol][binding][final][conflict]")
 {
     const pbprotocol::ReceiverResourcePolicy resourcePolicy =
@@ -786,7 +798,7 @@ TEST_CASE("FinalManifest binding is immutable and gates digest verification",
     const pbprotocol::FinalManifest finalManifest =
         pbprotocol::test::MakeFinalManifest(sessionDescriptor);
 
-    SECTION("insert repeat ready and verify")
+    SECTION("insert and repeat")
     {
         auto stateResult = pbprotocol::DescriptorBindingState::Create(
             sessionDescriptor,
@@ -794,13 +806,8 @@ TEST_CASE("FinalManifest binding is immutable and gates digest verification",
         REQUIRE(stateResult);
         auto state = std::move(stateResult).Value();
         REQUIRE(state.BindSegmentDescriptor(segmentDescriptor));
-
-        const pbprotocol::ProtocolStatus missingFinalStatus =
-            state.ValidateReadyForFinalVerification();
-        REQUIRE_FALSE(missingFinalStatus);
-        REQUIRE(
-            missingFinalStatus.Error().code ==
-            pbprotocol::ProtocolErrorCode::MissingFinalManifest);
+        REQUIRE(state.ValidateCompleteSegmentMap());
+        REQUIRE_FALSE(state.HasFinalManifest());
         REQUIRE_FALSE(state.HasTerminalError());
 
         const auto insertedResult = state.BindFinalManifest(finalManifest);
@@ -814,8 +821,6 @@ TEST_CASE("FinalManifest binding is immutable and gates digest verification",
             repeatedResult.Value() ==
             pbprotocol::DescriptorBindDisposition::Repeated);
         REQUIRE(state.HasFinalManifest());
-        REQUIRE(state.ValidateReadyForFinalVerification());
-        REQUIRE(state.VerifyWholeFileDigest(finalManifest.wholeFileDigest));
     }
 
     SECTION("different valid digest conflicts and locks")
@@ -858,38 +863,6 @@ TEST_CASE("FinalManifest binding is immutable and gates digest verification",
         REQUIRE(state.BindFinalManifest(finalManifest));
     }
 
-    SECTION("computed digest mismatch locks the session")
-    {
-        auto stateResult = pbprotocol::DescriptorBindingState::Create(
-            sessionDescriptor,
-            resourcePolicy);
-        REQUIRE(stateResult);
-        auto state = std::move(stateResult).Value();
-        REQUIRE(state.BindSegmentDescriptor(segmentDescriptor));
-        REQUIRE(state.BindFinalManifest(finalManifest));
-        auto wrongDigest = finalManifest.wholeFileDigest;
-        wrongDigest.bytes[0] ^= std::byte{0x01};
-
-        const pbprotocol::ProtocolStatus digestStatus =
-            state.VerifyWholeFileDigest(wrongDigest);
-        REQUIRE_FALSE(digestStatus);
-        REQUIRE(
-            digestStatus.Error().code ==
-            pbprotocol::ProtocolErrorCode::DigestMismatch);
-        REQUIRE(state.HasTerminalError());
-
-        const pbprotocol::ProtocolStatus correctRetry =
-            state.VerifyWholeFileDigest(finalManifest.wholeFileDigest);
-        REQUIRE_FALSE(correctRetry);
-        REQUIRE(
-            correctRetry.Error().code ==
-            pbprotocol::ProtocolErrorCode::DigestMismatch);
-        const auto bindRetry = state.BindFinalManifest(finalManifest);
-        REQUIRE_FALSE(bindRetry);
-        REQUIRE(
-            bindRetry.Error().code ==
-            pbprotocol::ProtocolErrorCode::DigestMismatch);
-    }
 }
 
 TEST_CASE("Zero-byte session has an empty map and fixed BLAKE3 manifest",
@@ -950,11 +923,10 @@ TEST_CASE("Zero-byte session has an empty map and fixed BLAKE3 manifest",
         resourcePolicy);
     REQUIRE(parsedFinalResult);
     REQUIRE(state.BindFinalManifest(parsedFinalResult.Value()));
-    REQUIRE(state.ValidateReadyForFinalVerification());
-    REQUIRE(state.VerifyWholeFileDigest(finalManifest.wholeFileDigest));
+    REQUIRE(state.HasFinalManifest());
 }
 
-TEST_CASE("Canonical payloads integrate through parsing binding and verification",
+TEST_CASE("Canonical payloads integrate through parsing and immutable binding",
           "[pbprotocol][binding][integration]")
 {
     const pbprotocol::ReceiverResourcePolicy resourcePolicy =
@@ -1028,6 +1000,5 @@ TEST_CASE("Canonical payloads integrate through parsing binding and verification
         resourcePolicy);
     REQUIRE(parsedFinalResult);
     REQUIRE(state.BindFinalManifest(parsedFinalResult.Value()));
-    REQUIRE(state.ValidateReadyForFinalVerification());
-    REQUIRE(state.VerifyWholeFileDigest(sourceFinal.wholeFileDigest));
+    REQUIRE(state.HasFinalManifest());
 }
