@@ -619,6 +619,30 @@ TEST_CASE("Checked uint64 to size conversion covers native and narrower bounds",
     }
 }
 
+TEST_CASE("Checked unsigned multiplication rejects overflow without wrapping",
+          "[pbprotocol][integer][overflow]")
+{
+    const auto exactResult = pbprotocol::CheckedMultiplyUint64(
+        std::numeric_limits<std::uint64_t>::max(),
+        1,
+        29);
+    REQUIRE(exactResult);
+    REQUIRE(
+        exactResult.Value() ==
+        std::numeric_limits<std::uint64_t>::max());
+
+    const auto overflowResult = pbprotocol::CheckedMultiplyUint64(
+        std::numeric_limits<std::uint64_t>::max(),
+        2,
+        31);
+    REQUIRE_FALSE(overflowResult);
+    REQUIRE(
+        overflowResult.Error() ==
+        pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::LengthOverflow,
+            31});
+}
+
 TEST_CASE("Partial parses and partial writes remain observable and atomic",
           "[pbprotocol][wire][partial]")
 {

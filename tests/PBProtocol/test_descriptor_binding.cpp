@@ -8,9 +8,69 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <memory_resource>
+#include <new>
 #include <utility>
 
 namespace {
+
+class FailOnAllocationMemoryResource final : public std::pmr::memory_resource
+{
+public:
+    void FailAfterSuccessfulAllocations(
+        const std::size_t successfulAllocations) noexcept
+    {
+        failedAllocationIndex_ = allocationCount_ + successfulAllocations;
+    }
+
+    [[nodiscard]] std::size_t OutstandingAllocations() const noexcept
+    {
+        return outstandingAllocations_;
+    }
+
+private:
+    [[nodiscard]] void* do_allocate(
+        const std::size_t bytes,
+        const std::size_t alignment) override
+    {
+        const std::size_t allocationIndex = allocationCount_;
+        allocationCount_++;
+        if (allocationIndex == failedAllocationIndex_)
+        {
+            throw std::bad_alloc{};
+        }
+
+        void* const allocation = std::pmr::new_delete_resource()->allocate(
+            bytes,
+            alignment);
+        outstandingAllocations_++;
+        return allocation;
+    }
+
+    void do_deallocate(
+        void* const allocation,
+        const std::size_t bytes,
+        const std::size_t alignment) override
+    {
+        std::pmr::new_delete_resource()->deallocate(
+            allocation,
+            bytes,
+            alignment);
+        outstandingAllocations_--;
+    }
+
+    [[nodiscard]] bool do_is_equal(
+        const std::pmr::memory_resource& other) const noexcept override
+    {
+        return this == &other;
+    }
+
+    std::size_t failedAllocationIndex_ =
+        std::numeric_limits<std::size_t>::max();
+    std::size_t allocationCount_ = 0;
+    std::size_t outstandingAllocations_ = 0;
+};
 
 void RequireSegmentConflict(
     const pbprotocol::SessionDescriptor& sessionDescriptor,
@@ -132,6 +192,179 @@ TEST_CASE("Binding creation rejects untrusted huge SegmentCount before state exi
     REQUIRE(
         stateResult.Error().code ==
         pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+}
+
+TEST_CASE("Descriptor state budget rejects before growth and allocation failure is terminal",
+          "[pbprotocol][binding][resource][allocation]")
+{
+    const pbprotocol::SessionDescriptor probeSession =
+        pbprotocol::test::MakeSessionDescriptor(3, 3);
+    pbprotocol::ReceiverResourcePolicy probePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+
+    auto probeStateResult = pbprotocol::DescriptorBindingState::Create(
+        probeSession,
+        probePolicy);
+    REQUIRE(probeStateResult);
+    auto probeState = std::move(probeStateResult).Value();
+    const std::uint64_t emptyStateBytes =
+        probeState.DescriptorStateBytesInUse();
+    REQUIRE(probeState.BindSegmentDescriptor(
+        pbprotocol::test::MakeDirectRepeatSegment(
+            probeSession, 0, 0, 1, 1)));
+    const std::uint64_t bytesPerBoundSegment =
+        probeState.DescriptorStateBytesInUse() - emptyStateBytes;
+    REQUIRE(bytesPerBoundSegment > 0);
+
+    SECTION("N entries fit and N plus one fails before either map grows")
+    {
+        constexpr std::uint64_t acceptedEntries = 2;
+        pbprotocol::ReceiverResourcePolicy boundedPolicy = probePolicy;
+        boundedPolicy.maxDescriptorStateBytes =
+            emptyStateBytes + (bytesPerBoundSegment * acceptedEntries);
+
+        auto stateResult = pbprotocol::DescriptorBindingState::Create(
+            probeSession,
+            boundedPolicy);
+        REQUIRE(stateResult);
+        auto state = std::move(stateResult).Value();
+
+        for (std::uint64_t segmentOrdinal = 0;
+             segmentOrdinal < acceptedEntries;
+             segmentOrdinal++)
+        {
+            REQUIRE(state.BindSegmentDescriptor(
+                pbprotocol::test::MakeDirectRepeatSegment(
+                    probeSession,
+                    segmentOrdinal,
+                    segmentOrdinal,
+                    1,
+                    1)));
+        }
+        REQUIRE(state.BoundSegmentCount() == acceptedEntries);
+        REQUIRE(
+            state.DescriptorStateBytesInUse() ==
+            boundedPolicy.maxDescriptorStateBytes);
+
+        const auto overBudgetResult = state.BindSegmentDescriptor(
+            pbprotocol::test::MakeDirectRepeatSegment(
+                probeSession, acceptedEntries, acceptedEntries, 1, 1));
+        REQUIRE_FALSE(overBudgetResult);
+        REQUIRE(
+            overBudgetResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+        REQUIRE(state.BoundSegmentCount() == acceptedEntries);
+        REQUIRE(
+            state.DescriptorStateBytesInUse() ==
+            boundedPolicy.maxDescriptorStateBytes);
+        REQUIRE(state.HasTerminalError());
+        REQUIRE(
+            state.TerminalError() ==
+            pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+    }
+
+    SECTION("second map allocation failure rolls back and locks the Session")
+    {
+        auto failingMemoryResource =
+            std::make_shared<FailOnAllocationMemoryResource>();
+        auto stateResult =
+            pbprotocol::DescriptorBindingState::CreateWithMemoryResource(
+                probeSession,
+                probePolicy,
+                failingMemoryResource);
+        REQUIRE(stateResult);
+        auto state = std::move(stateResult).Value();
+        const std::uint64_t bytesBeforeBinding =
+            state.DescriptorStateBytesInUse();
+        const std::size_t allocationsBeforeBinding =
+            failingMemoryResource->OutstandingAllocations();
+        failingMemoryResource->FailAfterSuccessfulAllocations(1);
+
+        const pbprotocol::SegmentDescriptor descriptor =
+            pbprotocol::test::MakeDirectRepeatSegment(
+                probeSession, 0, 0, 1, 1);
+        const auto allocationFailure = state.BindSegmentDescriptor(descriptor);
+        REQUIRE_FALSE(allocationFailure);
+        REQUIRE(
+            allocationFailure.Error().code ==
+            pbprotocol::ProtocolErrorCode::ResourceExhausted);
+        REQUIRE(state.BoundSegmentCount() == 0);
+        REQUIRE(
+            state.DescriptorStateBytesInUse() == bytesBeforeBinding);
+        REQUIRE(
+            failingMemoryResource->OutstandingAllocations() ==
+            allocationsBeforeBinding);
+        REQUIRE(state.HasTerminalError());
+
+        const auto retryResult = state.BindSegmentDescriptor(descriptor);
+        REQUIRE_FALSE(retryResult);
+        REQUIRE(
+            retryResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::ResourceExhausted);
+    }
+}
+
+TEST_CASE("Moved descriptor state keeps its PMR storage alive in both destruction orders",
+          "[pbprotocol][binding][resource][move][lifetime]")
+{
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(2, 2);
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    const pbprotocol::SegmentDescriptor firstDescriptor =
+        pbprotocol::test::MakeDirectRepeatSegment(
+            sessionDescriptor, 0, 0, 1, 1);
+    const pbprotocol::SegmentDescriptor secondDescriptor =
+        pbprotocol::test::MakeDirectRepeatSegment(
+            sessionDescriptor, 1, 1, 1, 1);
+
+    SECTION("moved-from result is destroyed before the state is used")
+    {
+        auto memoryResource =
+            std::make_shared<FailOnAllocationMemoryResource>();
+        {
+            auto state = [&]() -> pbprotocol::DescriptorBindingState
+            {
+                auto stateResult =
+                    pbprotocol::DescriptorBindingState::
+                        CreateWithMemoryResource(
+                            sessionDescriptor,
+                            resourcePolicy,
+                            memoryResource);
+                REQUIRE(stateResult);
+                return std::move(stateResult).Value();
+            }();
+
+            REQUIRE(state.BindSegmentDescriptor(firstDescriptor));
+            REQUIRE(state.BindSegmentDescriptor(secondDescriptor));
+            REQUIRE(state.ValidateCompleteSegmentMap());
+            REQUIRE(memoryResource->OutstandingAllocations() > 0);
+        }
+        REQUIRE(memoryResource->OutstandingAllocations() == 0);
+    }
+
+    SECTION("moved-from result outlives the moved state")
+    {
+        auto memoryResource =
+            std::make_shared<FailOnAllocationMemoryResource>();
+        {
+            auto stateResult =
+                pbprotocol::DescriptorBindingState::CreateWithMemoryResource(
+                    sessionDescriptor,
+                    resourcePolicy,
+                    memoryResource);
+            REQUIRE(stateResult);
+            {
+                auto state = std::move(stateResult).Value();
+                REQUIRE(state.BindSegmentDescriptor(firstDescriptor));
+                REQUIRE(state.BindSegmentDescriptor(secondDescriptor));
+                REQUIRE(state.ValidateCompleteSegmentMap());
+                REQUIRE(memoryResource->OutstandingAllocations() > 0);
+            }
+            REQUIRE(memoryResource->OutstandingAllocations() == 0);
+        }
+        REQUIRE(memoryResource->OutstandingAllocations() == 0);
+    }
 }
 
 TEST_CASE("SessionDescriptor binding is immutable and rejects different keys",
@@ -644,6 +877,18 @@ TEST_CASE("FinalManifest binding is immutable and gates digest verification",
             digestStatus.Error().code ==
             pbprotocol::ProtocolErrorCode::DigestMismatch);
         REQUIRE(state.HasTerminalError());
+
+        const pbprotocol::ProtocolStatus correctRetry =
+            state.VerifyWholeFileDigest(finalManifest.wholeFileDigest);
+        REQUIRE_FALSE(correctRetry);
+        REQUIRE(
+            correctRetry.Error().code ==
+            pbprotocol::ProtocolErrorCode::DigestMismatch);
+        const auto bindRetry = state.BindFinalManifest(finalManifest);
+        REQUIRE_FALSE(bindRetry);
+        REQUIRE(
+            bindRetry.Error().code ==
+            pbprotocol::ProtocolErrorCode::DigestMismatch);
     }
 }
 

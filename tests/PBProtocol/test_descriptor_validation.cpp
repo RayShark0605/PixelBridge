@@ -69,6 +69,77 @@ TEST_CASE("Zero initialized ReceiverResourcePolicy fails closed",
         pbprotocol::ProtocolErrorCode::InvalidResourcePolicy);
 }
 
+TEST_CASE("Receiver resource policy is finite and rejects impossible Session shapes",
+          "[pbprotocol][descriptor][policy][feasibility]")
+{
+    const pbprotocol::ReceiverResourcePolicy defaultPolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    REQUIRE(pbprotocol::ValidateReceiverResourcePolicy(defaultPolicy));
+    REQUIRE(
+        defaultPolicy.maxDescriptorStateBytes <
+        std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(
+        defaultPolicy.maxConcurrentSessions <
+        std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(
+        defaultPolicy.maxTotalDescriptorStateBytes <
+        std::numeric_limits<std::uint64_t>::max());
+
+    pbprotocol::ReceiverResourcePolicy impossiblePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    impossiblePolicy.maxRawSegmentBytes = 100;
+    const pbprotocol::SessionDescriptor impossibleSession =
+        pbprotocol::test::MakeSessionDescriptor(101, 1);
+
+    REQUIRE(pbprotocol::ValidateSessionDescriptor(impossibleSession));
+    const pbprotocol::ProtocolStatus impossibleStatus =
+        pbprotocol::ValidateSessionDescriptor(
+            impossibleSession,
+            impossiblePolicy);
+    REQUIRE_FALSE(impossibleStatus);
+    REQUIRE(
+        impossibleStatus.Error().code ==
+        pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+    REQUIRE(impossibleStatus.Error().offset == 28);
+
+    pbprotocol::ReceiverResourcePolicy unboundedPolicy{
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint32_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max()};
+    const pbprotocol::ProtocolStatus unboundedStatus =
+        pbprotocol::ValidateReceiverResourcePolicy(unboundedPolicy);
+    REQUIRE_FALSE(unboundedStatus);
+    REQUIRE(
+        unboundedStatus.Error().code ==
+        pbprotocol::ProtocolErrorCode::InvalidResourcePolicy);
+
+    auto zeroPerSessionBudget = defaultPolicy;
+    zeroPerSessionBudget.maxDescriptorStateBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroPerSessionBudget));
+
+    auto zeroSessionLimit = defaultPolicy;
+    zeroSessionLimit.maxConcurrentSessions = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroSessionLimit));
+
+    auto zeroAggregateBudget = defaultPolicy;
+    zeroAggregateBudget.maxTotalDescriptorStateBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroAggregateBudget));
+
+    auto contradictoryBudgets = defaultPolicy;
+    contradictoryBudgets.maxTotalDescriptorStateBytes =
+        contradictoryBudgets.maxDescriptorStateBytes - 1ULL;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        contradictoryBudgets));
+}
+
 TEST_CASE("Every receiver resource limit is inclusive and checked before use",
           "[pbprotocol][descriptor][policy][boundary]")
 {

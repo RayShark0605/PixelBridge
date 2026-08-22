@@ -44,7 +44,10 @@ namespace pbprotocol::test {
         1024,
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint32_t>::max()};
+        std::numeric_limits<std::uint32_t>::max(),
+        64ULL * 1024ULL * 1024ULL,
+        4,
+        256ULL * 1024ULL * 1024ULL};
 }
 
 [[nodiscard]] inline SessionDescriptor MakeSessionDescriptor(

@@ -6,8 +6,9 @@ ProtocolVersion GetProtocolVersion()
 {
     // Protocol baseline constant: the fixed bootstrap and control planes are
     // named PB-Bootstrap-1 and PB-Control-1, so the first protocol major is
-    // 1 and no minor revision exists yet. The protocol Golden Vectors lock
-    // the final serialized interpretation.
+    // 1 and no minor revision exists yet. The current descriptor payload slice
+    // is explicitly Phase-0 provisional; its implementation vectors do not
+    // freeze the incomplete descriptor schema as the formal v1 wire contract.
     const ProtocolVersion protocolVersion{1, 0};
     return protocolVersion;
 }

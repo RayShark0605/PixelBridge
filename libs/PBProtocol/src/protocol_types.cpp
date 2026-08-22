@@ -15,6 +15,23 @@ constexpr std::string_view kSessionTagDomain = "PixelBridge SessionTag v1";
 
 } // namespace
 
+ReceiverResourcePolicy GetDefaultReceiverResourcePolicy() noexcept
+{
+    constexpr std::uint64_t kibibyte = 1024ULL;
+    constexpr std::uint64_t mebibyte = 1024ULL * kibibyte;
+    constexpr std::uint64_t gibibyte = 1024ULL * mebibyte;
+
+    return ReceiverResourcePolicy{
+        500ULL * gibibyte,
+        65536ULL,
+        16ULL * mebibyte,
+        32ULL * mebibyte,
+        65535U,
+        64ULL * mebibyte,
+        4ULL,
+        256ULL * mebibyte};
+}
+
 SessionTag DeriveSessionTag(const SessionId& sessionId) noexcept
 {
     const auto domainBytes = std::as_bytes(std::span(kSessionTagDomain));

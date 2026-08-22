@@ -6,6 +6,7 @@ PbAddUnitTest(PBProtocolTests
     test_descriptor_validation.cpp
     test_feature_flags.cpp
     test_protocol_result.cpp
+    test_session_registry.cpp
     test_session_identifiers.cpp
     test_protocol_version.cpp
     test_blake3_digest.cpp

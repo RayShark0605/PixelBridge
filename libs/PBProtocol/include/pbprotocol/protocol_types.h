@@ -118,10 +118,20 @@ struct ReceiverResourcePolicy
     std::uint64_t maxRawSegmentBytes = 0;
     std::uint64_t maxEncodedSegmentBytes = 0;
     std::uint32_t maxOuterBlockBytes = 0;
+    // Both descriptor-state limits cover dynamic storage owned by Segment Map
+    // containers. The fixed state object is bounded separately by
+    // maxConcurrentSessions.
+    std::uint64_t maxDescriptorStateBytes = 0;
+    std::uint64_t maxConcurrentSessions = 0;
+    std::uint64_t maxTotalDescriptorStateBytes = 0;
 
     bool operator==(const ReceiverResourcePolicy&) const = default;
 };
 
+// This is a conservative local Phase-0 receiver policy, not a wire constant or
+// a certified throughput profile. Products may choose stricter validated
+// values, but must not replace these finite budgets with unbounded sentinels.
+[[nodiscard]] ReceiverResourcePolicy GetDefaultReceiverResourcePolicy() noexcept;
 [[nodiscard]] SessionTag DeriveSessionTag(const SessionId& sessionId) noexcept;
 [[nodiscard]] WholeFileDigest GetEmptyBlake3WholeFileDigest() noexcept;
 
