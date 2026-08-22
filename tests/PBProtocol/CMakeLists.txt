@@ -7,7 +7,11 @@ PbAddUnitTest(PBProtocolTests
     test_feature_flags.cpp
     test_protocol_result.cpp
     test_session_identifiers.cpp
-    test_protocol_version.cpp)
+    test_protocol_version.cpp
+    test_blake3_digest.cpp
+    test_checked_integer.cpp
+    test_crc32c.cpp
+    test_session_random.cpp)
 
 target_link_libraries(PBProtocolTests
     PRIVATE

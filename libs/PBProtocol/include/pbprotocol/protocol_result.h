@@ -43,7 +43,8 @@ enum class ProtocolErrorCode : std::uint8_t
     MissingFinalManifest,
     DigestMismatch,
     InternalDescriptorStateError,
-    InternalInvariantViolation
+    InternalInvariantViolation,
+    CsprngFailure
 };
 
 struct ProtocolError

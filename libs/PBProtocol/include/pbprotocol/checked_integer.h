@@ -47,6 +47,51 @@ template <std::unsigned_integral ValueType>
         static_cast<ValueType>(left + right));
 }
 
+template <std::unsigned_integral ValueType>
+[[nodiscard]] ProtocolResult<ValueType> CheckedMultiplyUnsigned(
+    const ValueType left,
+    const ValueType right,
+    const std::size_t errorOffset = 0) noexcept
+{
+    if (left != 0 && right > std::numeric_limits<ValueType>::max() / left)
+    {
+        return ProtocolResult<ValueType>::Failure(
+            ProtocolErrorCode::LengthOverflow,
+            errorOffset);
+    }
+
+    return ProtocolResult<ValueType>::Success(
+        static_cast<ValueType>(left * right));
+}
+
+// Checked addition with an inclusive upper bound: the sum must both fit in
+// ValueType and not exceed limit. Overflow is reported before the limit check
+// so a wrapping sum can never be misclassified as LengthLimitExceeded.
+template <std::unsigned_integral ValueType>
+[[nodiscard]] ProtocolResult<ValueType> CheckedAddWithinLimit(
+    const ValueType left,
+    const ValueType right,
+    const ValueType limit,
+    const std::size_t errorOffset = 0) noexcept
+{
+    if (right > std::numeric_limits<ValueType>::max() - left)
+    {
+        return ProtocolResult<ValueType>::Failure(
+            ProtocolErrorCode::LengthOverflow,
+            errorOffset);
+    }
+
+    const ValueType sum = static_cast<ValueType>(left + right);
+    if (sum > limit)
+    {
+        return ProtocolResult<ValueType>::Failure(
+            ProtocolErrorCode::LengthLimitExceeded,
+            errorOffset);
+    }
+
+    return ProtocolResult<ValueType>::Success(sum);
+}
+
 [[nodiscard]] inline ProtocolResult<std::size_t> CheckedUint64ToSize(
     const std::uint64_t value,
     const std::size_t errorOffset = 0) noexcept
@@ -68,6 +113,23 @@ template <std::unsigned_integral ValueType>
     const std::size_t errorOffset = 0) noexcept
 {
     return CheckedAddUnsigned(left, right, errorOffset);
+}
+
+[[nodiscard]] inline ProtocolResult<std::uint64_t> CheckedMultiplyUint64(
+    const std::uint64_t left,
+    const std::uint64_t right,
+    const std::size_t errorOffset = 0) noexcept
+{
+    return CheckedMultiplyUnsigned(left, right, errorOffset);
+}
+
+[[nodiscard]] inline ProtocolResult<std::uint64_t> CheckedAddUint64WithinLimit(
+    const std::uint64_t left,
+    const std::uint64_t right,
+    const std::uint64_t limit,
+    const std::size_t errorOffset = 0) noexcept
+{
+    return CheckedAddWithinLimit(left, right, limit, errorOffset);
 }
 
 } // namespace pbprotocol
