@@ -5,6 +5,11 @@ Session admission/routing, Segment Map insertion, overlap/conflict paths, and
 receiver resource limits. Each input creates only a fixed number of bounded
 states and at most 16 generated bind operations.
 
+The fuzzer and the benchmark targets are mutually exclusive in one build tree:
+the fuzz build instruments `PBProtocol` with AddressSanitizer, which breaks a
+non-instrumented benchmark link. CMake rejects configuring both at once; use
+separate build directories as shown below.
+
 ## MSVC x64 deterministic mutation + AddressSanitizer
 
 ```powershell

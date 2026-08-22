@@ -8,6 +8,10 @@ SessionTag is derived once before timing; the insertion interval covers
 descriptor construction, budget accounting, and both map insertions, but not
 repeated BLAKE3 tag derivation.
 
+The benchmark and the fuzzer targets are mutually exclusive in one build tree
+(the fuzz build instruments `PBProtocol` with AddressSanitizer); CMake rejects
+configuring both at once.
+
 ```powershell
 cmake -S . -B build-bench -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake `

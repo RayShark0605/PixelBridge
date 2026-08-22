@@ -25,12 +25,17 @@ elseif(MSVC)
     # The MSVC fallback is a deterministic mutation runner. AddressSanitizer is
     # applied to PBProtocol itself as well as the driver so library accesses are
     # instrumented rather than only the outer executable.
-    target_compile_options(PBProtocol PRIVATE /fsanitize=address)
+    # C5072: ASan requires debug info for useful reports; /WX would otherwise
+    # turn the warning into a hard error on non-RelWithDebInfo configurations.
+    target_compile_options(PBProtocol PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBProtocolDescriptorResourceFuzz
         PRIVATE
-            /fsanitize=address)
+            /Zi
+        /fsanitize=address)
+    # LNK4302: ASan asks for link-time debug info so reports can name symbols.
     target_link_options(PBProtocolDescriptorResourceFuzz
         PRIVATE
+            /DEBUG
             /INCREMENTAL:NO)
 
     get_filename_component(pbMsvcCompilerDirectory
