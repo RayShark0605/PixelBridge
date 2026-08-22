@@ -42,7 +42,8 @@ enum class ProtocolErrorCode : std::uint8_t
     InvalidWirehairProfile,
     MissingFinalManifest,
     DigestMismatch,
-    InternalDescriptorStateError
+    InternalDescriptorStateError,
+    InternalInvariantViolation
 };
 
 struct ProtocolError
@@ -65,7 +66,10 @@ public:
         const ProtocolErrorCode code,
         const std::size_t offset) noexcept
     {
-        return ProtocolStatus(ProtocolError{code, offset});
+        const ProtocolErrorCode failureCode = code == ProtocolErrorCode::None
+            ? ProtocolErrorCode::InternalInvariantViolation
+            : code;
+        return ProtocolStatus(ProtocolError{failureCode, offset});
     }
 
     [[nodiscard]] bool HasValue() const noexcept
@@ -105,7 +109,10 @@ public:
         const ProtocolErrorCode code,
         const std::size_t offset)
     {
-        return ProtocolResult(ProtocolError{code, offset});
+        const ProtocolErrorCode failureCode = code == ProtocolErrorCode::None
+            ? ProtocolErrorCode::InternalInvariantViolation
+            : code;
+        return ProtocolResult(ProtocolError{failureCode, offset});
     }
 
     [[nodiscard]] bool HasValue() const noexcept

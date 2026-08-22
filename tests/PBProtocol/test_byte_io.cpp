@@ -11,6 +11,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <vector>
 
 namespace {
 
@@ -19,7 +21,29 @@ namespace {
     return static_cast<std::byte>(value);
 }
 
+using BorrowedByteArray = std::array<std::byte, 2>;
+using OwnedByteVector = std::vector<std::byte>;
+
+static_assert(std::is_constructible_v<pbprotocol::ByteReader, BorrowedByteArray&>);
+static_assert(std::is_constructible_v<pbprotocol::ByteReader, OwnedByteVector&>);
+static_assert(
+    std::is_constructible_v<pbprotocol::ByteReader, std::span<const std::byte>>);
+static_assert(!std::is_constructible_v<pbprotocol::ByteReader, BorrowedByteArray>);
+static_assert(!std::is_constructible_v<pbprotocol::ByteReader, OwnedByteVector>);
+
 } // namespace
+
+TEST_CASE("ByteReader accepts live lvalue contiguous storage",
+          "[pbprotocol][lifetime]")
+{
+    std::vector<std::byte> input{Byte(0x34), Byte(0x12)};
+    pbprotocol::ByteReader reader(input);
+
+    const auto valueResult = reader.ReadUint16();
+    REQUIRE(valueResult);
+    REQUIRE(valueResult.Value() == 0x1234U);
+    REQUIRE(reader.RequireFullyConsumed());
+}
 
 TEST_CASE("Little-endian integers have exact wire bytes", "[pbprotocol][wire]")
 {
@@ -149,6 +173,61 @@ TEST_CASE("UTF-8 length-delimited fields validate and borrow their payload",
     REQUIRE(emptyResult);
     REQUIRE(emptyResult.Value().empty());
     REQUIRE(reader.RequireFullyConsumed());
+}
+
+TEST_CASE("UTF-8 length prefixes and limits use encoded byte counts",
+          "[pbprotocol][wire][utf8][length]")
+{
+    const std::string text{
+        "\xE5\x83\x8F"
+        "\xF0\x9F\x98\x80",
+        7};
+    REQUIRE(text.size() == 7);
+
+    const std::array<std::byte, 9> expectedWire{
+        Byte(0x07), Byte(0x00),
+        Byte(0xE5), Byte(0x83), Byte(0x8F),
+        Byte(0xF0), Byte(0x9F), Byte(0x98), Byte(0x80)};
+
+    std::array<std::byte, 9> output{};
+    output.fill(Byte(0xA5));
+    const std::array<std::byte, 9> originalOutput = output;
+    pbprotocol::ByteWriter writer(output);
+
+    const auto limitedWriteStatus = writer.WriteLengthDelimitedUtf8(
+        pbprotocol::LengthPrefixWidth::Uint16,
+        text,
+        6);
+    REQUIRE_FALSE(limitedWriteStatus);
+    REQUIRE(
+        limitedWriteStatus.Error().code ==
+        pbprotocol::ProtocolErrorCode::LengthLimitExceeded);
+    REQUIRE(writer.Position() == 0);
+    REQUIRE(output == originalOutput);
+
+    REQUIRE(writer.WriteLengthDelimitedUtf8(
+        pbprotocol::LengthPrefixWidth::Uint16,
+        text,
+        7));
+    REQUIRE(output == expectedWire);
+
+    pbprotocol::ByteReader limitedReader(expectedWire);
+    const auto limitedReadResult = limitedReader.ReadLengthDelimitedUtf8(
+        pbprotocol::LengthPrefixWidth::Uint16,
+        6);
+    REQUIRE_FALSE(limitedReadResult);
+    REQUIRE(
+        limitedReadResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::LengthLimitExceeded);
+    REQUIRE(limitedReader.Position() == 0);
+
+    pbprotocol::ByteReader exactReader(expectedWire);
+    const auto exactReadResult = exactReader.ReadLengthDelimitedUtf8(
+        pbprotocol::LengthPrefixWidth::Uint16,
+        7);
+    REQUIRE(exactReadResult);
+    REQUIRE(exactReadResult.Value() == text);
+    REQUIRE(exactReader.RequireFullyConsumed());
 }
 
 TEST_CASE("Truncated primitive and fixed reads leave the cursor unchanged",
@@ -434,6 +513,32 @@ TEST_CASE("Reserved and canonical padding validation report absolute offsets",
     REQUIRE(paddingReader.Position() == 0);
 }
 
+TEST_CASE("Canonical padding rejects every nonzero position atomically",
+          "[pbprotocol][wire][padding]")
+{
+    const std::array<std::size_t, 3> invalidIndices{0, 1, 2};
+    for (const std::size_t invalidIndex : invalidIndices)
+    {
+        CAPTURE(invalidIndex);
+        std::array<std::byte, 3> padding{};
+        padding[invalidIndex] = Byte(0x01);
+        pbprotocol::ByteReader reader(padding);
+
+        const auto status = reader.ReadCanonicalZeroPadding(padding.size());
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == pbprotocol::ProtocolErrorCode::NonCanonicalPadding);
+        REQUIRE(status.Error().offset == invalidIndex);
+        REQUIRE(reader.Position() == 0);
+    }
+
+    const std::array<std::byte, 3> canonicalPadding{};
+    pbprotocol::ByteReader reader(canonicalPadding);
+    REQUIRE(reader.ReadCanonicalZeroPadding(0));
+    REQUIRE(reader.Position() == 0);
+    REQUIRE(reader.ReadCanonicalZeroPadding(canonicalPadding.size()));
+    REQUIRE(reader.RequireFullyConsumed());
+}
+
 TEST_CASE("Canonical zero padding writer is bounded and deterministic",
           "[pbprotocol][wire][padding]")
 {
@@ -442,6 +547,10 @@ TEST_CASE("Canonical zero padding writer is bounded and deterministic",
     pbprotocol::ByteWriter writer(buffer);
 
     REQUIRE(writer.WriteUint16(0x1234U));
+    const std::array<std::byte, 5> beforeZeroLengthWrite = buffer;
+    REQUIRE(writer.WriteCanonicalZeroPadding(0));
+    REQUIRE(writer.Position() == sizeof(std::uint16_t));
+    REQUIRE(buffer == beforeZeroLengthWrite);
     REQUIRE(writer.WriteCanonicalZeroPadding(3));
     const std::array<std::byte, 5> expected{
         Byte(0x34), Byte(0x12), Byte(0x00), Byte(0x00), Byte(0x00)};

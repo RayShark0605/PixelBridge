@@ -5,6 +5,7 @@ PbAddUnitTest(PBProtocolTests
     test_descriptor_codec.cpp
     test_descriptor_validation.cpp
     test_feature_flags.cpp
+    test_protocol_result.cpp
     test_session_identifiers.cpp
     test_protocol_version.cpp)
 

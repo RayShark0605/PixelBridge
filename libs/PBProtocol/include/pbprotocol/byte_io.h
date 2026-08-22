@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <span>
 #include <string_view>
 
@@ -27,7 +29,16 @@ enum class LengthPrefixWidth : std::uint8_t
 class ByteReader
 {
 public:
+    // ByteReader stores a non-owning view. Direct construction from temporary
+    // owning ranges is rejected; an explicitly supplied span still carries the
+    // caller's guarantee that its backing storage outlives the reader.
     explicit ByteReader(std::span<const std::byte> input) noexcept;
+
+    template <typename InputRange>
+        requires(
+            !std::ranges::borrowed_range<InputRange> &&
+            std::constructible_from<std::span<const std::byte>, InputRange&&>)
+    explicit ByteReader(InputRange&&) = delete;
 
     [[nodiscard]] std::size_t Position() const noexcept;
     [[nodiscard]] std::size_t AbsolutePosition() const noexcept;
