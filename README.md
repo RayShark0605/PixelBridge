@@ -83,19 +83,36 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
 
-可同时验证真实 fuzz/benchmark target、仍为空的 tools 扩展入口，以及
-core-only 依赖隔离：
+fuzz 与 benchmark 共用 `PBProtocol`，但 fuzz 构建会对该静态库启用
+AddressSanitizer，因此两者必须使用不同 build directory。fuzz 配置示例：
 
 ```powershell
-cmake -S . -B build-extensions -G "Visual Studio 17 2022" -A x64 `
+cmake -S . -B build-fuzz-msvc -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake `
   -DBUILD_TESTING=OFF `
   -DPB_BUILD_TESTS=OFF `
   -DPB_BUILD_APPS=OFF `
   -DPB_BUILD_TOOLS=ON `
   -DPB_BUILD_FUZZERS=ON `
+  -DPB_BUILD_BENCHMARKS=OFF
+```
+
+benchmark 配置示例：
+
+```powershell
+cmake -S . -B build-bench -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DBUILD_TESTING=OFF `
+  -DPB_BUILD_TESTS=OFF `
+  -DPB_BUILD_APPS=OFF `
+  -DPB_BUILD_TOOLS=ON `
+  -DPB_BUILD_FUZZERS=OFF `
   -DPB_BUILD_BENCHMARKS=ON
 ```
+
+若在同一个 build directory 中同时启用两个选项，CMake 会以
+`mutually exclusive` 诊断拒绝配置。core-only 依赖隔离由标准 CTest
+fixture 独立验证；`tools/` 仍只是扩展入口，不创建假 target。
 
 输出 target 依赖图：
 

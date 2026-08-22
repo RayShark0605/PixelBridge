@@ -140,6 +140,92 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
         contradictoryBudgets));
 }
 
+TEST_CASE("Receiver resource policy rejects every unbounded sentinel independently",
+          "[pbprotocol][descriptor][policy][boundary]")
+{
+    SECTION("accepted file bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxAcceptedFileBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("segment count")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxSegmentCount =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("raw segment bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxRawSegmentBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("encoded segment bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxEncodedSegmentBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("outer block bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxOuterBlockBytes =
+            std::numeric_limits<std::uint32_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("descriptor state bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxDescriptorStateBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("concurrent sessions")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxConcurrentSessions =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("total descriptor state bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxTotalDescriptorStateBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+}
+
+TEST_CASE("Finite values immediately below protocol policy sentinels are accepted",
+          "[pbprotocol][descriptor][policy][boundary]")
+{
+    auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+    resourcePolicy.maxAcceptedFileBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxSegmentCount =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxRawSegmentBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxEncodedSegmentBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxOuterBlockBytes =
+        std::numeric_limits<std::uint32_t>::max() - 1U;
+
+    REQUIRE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+}
+
 TEST_CASE("Every receiver resource limit is inclusive and checked before use",
           "[pbprotocol][descriptor][policy][boundary]")
 {
@@ -327,12 +413,12 @@ TEST_CASE("RawOffset plus RawSize uses checked uint64 arithmetic",
     resourcePolicy.maxSegmentCount = 1;
     const pbprotocol::SessionDescriptor sessionDescriptor =
         pbprotocol::test::MakeSessionDescriptor(
-            std::numeric_limits<std::uint64_t>::max(),
+            std::numeric_limits<std::uint64_t>::max() - 1ULL,
             1);
     auto descriptor = pbprotocol::test::MakeDirectRepeatSegment(
         sessionDescriptor,
         0,
-        std::numeric_limits<std::uint64_t>::max() - 1,
+        std::numeric_limits<std::uint64_t>::max() - 1ULL,
         2);
 
     const auto status = pbprotocol::ValidateSegmentDescriptor(

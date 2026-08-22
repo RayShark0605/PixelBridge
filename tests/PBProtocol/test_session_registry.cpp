@@ -52,6 +52,18 @@ public:
 
 namespace {
 
+template <typename RegistryType>
+concept HasRegistryFinalVerificationApi = requires(
+    RegistryType& registry,
+    const pbprotocol::SessionTag sessionTag,
+    const pbprotocol::WholeFileDigest& digest)
+{
+    registry.ValidateReadyForFinalVerification(sessionTag);
+    registry.VerifyWholeFileDigest(sessionTag, digest);
+};
+
+static_assert(!HasRegistryFinalVerificationApi<pbprotocol::SessionRegistry>);
+
 constexpr std::uint64_t kForcedCollisionTagValue = 0x8877665544332211ULL;
 
 [[nodiscard]] pbprotocol::SessionTag DeriveForcedCollisionTag(
@@ -166,10 +178,6 @@ TEST_CASE("Session registry routes only established unique sessions",
     REQUIRE(registry.BindSegmentDescriptor(segmentDescriptor));
     REQUIRE(registry.BindFinalManifest(finalManifest));
     REQUIRE(registry.ValidateCompleteSegmentMap(sessionTag));
-    REQUIRE(registry.ValidateReadyForFinalVerification(sessionTag));
-    REQUIRE(registry.VerifyWholeFileDigest(
-        sessionTag,
-        finalManifest.wholeFileDigest));
 
     const auto removalResult = registry.RemoveSession(
         sessionDescriptor.sessionId);

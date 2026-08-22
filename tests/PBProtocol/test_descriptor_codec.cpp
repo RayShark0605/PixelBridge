@@ -193,7 +193,7 @@ TEST_CASE("Segment parser rejects uint64 RawOffset addition overflow",
         pbprotocol::test::MakeResourcePolicy();
     const pbprotocol::SessionDescriptor sessionDescriptor =
         pbprotocol::test::MakeSessionDescriptor(
-            std::numeric_limits<std::uint64_t>::max(),
+            std::numeric_limits<std::uint64_t>::max() - 1ULL,
             1);
     const pbprotocol::SegmentDescriptor segmentDescriptor =
         pbprotocol::test::MakeDirectRepeatSegment(

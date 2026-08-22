@@ -55,12 +55,6 @@ public:
         const FinalManifest& finalManifest);
 
     [[nodiscard]] ProtocolStatus ValidateCompleteSegmentMap();
-    [[nodiscard]] ProtocolStatus ValidateReadyForFinalVerification();
-    // This is a one-shot integrity decision. Callers must finish all .part
-    // writes and RawDigest checks before computing and passing the digest. A
-    // mismatch latches DigestMismatch and the Session cannot be retried.
-    [[nodiscard]] ProtocolStatus VerifyWholeFileDigest(
-        const WholeFileDigest& computedDigest);
 
     [[nodiscard]] const SessionDescriptor& GetSessionDescriptor() const noexcept;
     [[nodiscard]] std::size_t BoundSegmentCount() const noexcept;

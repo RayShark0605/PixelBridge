@@ -40,11 +40,11 @@ namespace pbprotocol::test {
 [[nodiscard]] inline ReceiverResourcePolicy MakeResourcePolicy() noexcept
 {
     return ReceiverResourcePolicy{
-        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max() - 1ULL,
         1024,
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint32_t>::max(),
+        std::numeric_limits<std::uint64_t>::max() - 1ULL,
+        std::numeric_limits<std::uint64_t>::max() - 1ULL,
+        std::numeric_limits<std::uint32_t>::max() - 1U,
         64ULL * 1024ULL * 1024ULL,
         4,
         256ULL * 1024ULL * 1024ULL};

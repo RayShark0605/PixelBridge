@@ -41,11 +41,6 @@ public:
 
     [[nodiscard]] ProtocolStatus ValidateCompleteSegmentMap(
         SessionTag sessionTag);
-    [[nodiscard]] ProtocolStatus ValidateReadyForFinalVerification(
-        SessionTag sessionTag);
-    [[nodiscard]] ProtocolStatus VerifyWholeFileDigest(
-        SessionTag sessionTag,
-        const WholeFileDigest& computedDigest);
 
     // Success(false) means no Session existed. Inconsistent routing or budget
     // state is reported as InternalDescriptorStateError rather than absence.

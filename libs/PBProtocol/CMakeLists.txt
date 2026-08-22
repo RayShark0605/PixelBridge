@@ -13,6 +13,7 @@ target_sources(PBProtocol
         src/protocol_types.cpp
         src/protocol_version.cpp
         src/session_random.cpp
+        src/session_random_internal.h
         src/session_registry.cpp
     PUBLIC
         FILE_SET HEADERS

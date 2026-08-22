@@ -328,7 +328,7 @@ int ReplayInputFile(const std::string_view inputPath)
 
     const std::size_t inputByteCount = static_cast<std::size_t>(inputSize);
     ExerciseInput(std::as_bytes(std::span(input).first(inputByteCount)));
-    std::cout << "CORPUS_REPLAY_COMPLETED path=" << inputPath
+    std::cout << "CORPUS_REPLAY_NO_CRASH path=" << inputPath
               << " bytes=" << inputByteCount << '\n';
     return 0;
 }

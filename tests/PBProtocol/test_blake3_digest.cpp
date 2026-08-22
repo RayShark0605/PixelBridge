@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -56,6 +57,19 @@ namespace {
     return data;
 }
 
+// Official BLAKE3 vector input: byte i is i modulo 251.
+[[nodiscard]] std::vector<std::byte> MakeOfficialVectorInput(
+    const std::size_t byteCount)
+{
+    std::vector<std::byte> data;
+    data.reserve(byteCount);
+    for (std::size_t index = 0; index < byteCount; index++)
+    {
+        data.push_back(static_cast<std::byte>(index % 251U));
+    }
+    return data;
+}
+
 [[nodiscard]] std::array<std::byte, pbprotocol::kDigestBytes> ComputeChunked(
     const std::span<const std::byte> data,
     const std::size_t chunkSize)
@@ -72,35 +86,59 @@ namespace {
 
 } // namespace
 
+static_assert(std::is_nothrow_default_constructible_v<pbprotocol::Blake3Hasher>);
+static_assert(std::is_nothrow_destructible_v<pbprotocol::Blake3Hasher>);
+static_assert(!std::is_copy_constructible_v<pbprotocol::Blake3Hasher>);
+static_assert(!std::is_copy_assignable_v<pbprotocol::Blake3Hasher>);
+static_assert(!std::is_move_constructible_v<pbprotocol::Blake3Hasher>);
+static_assert(!std::is_move_assignable_v<pbprotocol::Blake3Hasher>);
+static_assert(noexcept(pbprotocol::ComputeBlake3Digest({})));
+
 TEST_CASE("BLAKE3-256 matches the official test vectors",
           "[pbprotocol][blake3][kat]")
 {
     // Vectors from blake3 1.8.5 test_vectors/test_vectors.json (the pinned
-    // vcpkg revision): input bytes are i mod 251 and the expected value is
-    // the first 32 bytes of the XOF output. The empty vector also matches
-    // the WholeFileDigest golden in test_session_identifiers.cpp.
-    const std::array<std::byte, pbprotocol::kDigestBytes> emptyExpected =
-        ParseHex(
-            "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262");
-    REQUIRE(pbprotocol::ComputeBlake3Digest({}) == emptyExpected);
-
-    const std::array<std::byte, pbprotocol::kDigestBytes> threeByteExpected =
-        ParseHex(
-            "e1be4d7a8ab5560aa4199eea339849ba8e293d55ca0a81006726d184519e647f");
-    const std::array<std::byte, 3> threeBytes{
-        std::byte{0x00}, std::byte{0x01}, std::byte{0x02}};
-    REQUIRE(pbprotocol::ComputeBlake3Digest(threeBytes) == threeByteExpected);
-
-    // Exactly one 64-byte BLAKE3 chunk: exercises the final-chunk path.
-    const std::array<std::byte, pbprotocol::kDigestBytes> chunkExpected =
-        ParseHex(
-            "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98");
-    std::array<std::byte, 64> chunkInput{};
-    for (std::size_t index = 0; index < chunkInput.size(); index++)
+    // vcpkg revision). Inputs are i mod 251 and expected values are the first
+    // 32 XOF bytes. Lengths cover compression-block, chunk, and tree edges.
+    struct KnownAnswer
     {
-        chunkInput[index] = static_cast<std::byte>(index % 251u);
+        std::size_t inputByteCount;
+        std::string_view expectedHex;
+    };
+
+    constexpr KnownAnswer knownAnswers[] = {
+        {0,
+         "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"},
+        {3,
+         "e1be4d7a8ab5560aa4199eea339849ba8e293d55ca0a81006726d184519e647f"},
+        {63,
+         "e9bc37a594daad83be9470df7f7b3798297c3d834ce80ba85d6e207627b7db7b"},
+        {64,
+         "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98"},
+        {65,
+         "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee"},
+        {1023,
+         "10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11"},
+        {1024,
+         "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7"},
+        {1025,
+         "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444"},
+        {2048,
+         "e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a"},
+        {2049,
+         "5f4d72f40d7a5f82b15ca2b2e44b1de3c2ef86c426c95c1af0b6879522563030"},
+        {31744,
+         "62b6960e1a44bcc1eb1a611a8d6235b6b4b78f32e7abc4fb4c6cdcce94895c47"}};
+
+    for (const KnownAnswer& knownAnswer : knownAnswers)
+    {
+        CAPTURE(knownAnswer.inputByteCount);
+        const std::vector<std::byte> input = MakeOfficialVectorInput(
+            knownAnswer.inputByteCount);
+        const std::array<std::byte, pbprotocol::kDigestBytes> expected =
+            ParseHex(knownAnswer.expectedHex);
+        REQUIRE(pbprotocol::ComputeBlake3Digest(input) == expected);
     }
-    REQUIRE(pbprotocol::ComputeBlake3Digest(chunkInput) == chunkExpected);
 }
 
 TEST_CASE("BLAKE3-256 streaming equals one-shot for arbitrary chunking",
@@ -110,7 +148,8 @@ TEST_CASE("BLAKE3-256 streaming equals one-shot for arbitrary chunking",
     const std::array<std::byte, pbprotocol::kDigestBytes> reference =
         pbprotocol::ComputeBlake3Digest(pattern);
 
-    const std::size_t chunkSizes[] = {1u, 2u, 3u, 1000u};
+    const std::size_t chunkSizes[] = {
+        1U, 2U, 3U, 63U, 64U, 65U, 1000U, 1023U, 1024U, 1025U};
     for (const std::size_t chunkSize : chunkSizes)
     {
         REQUIRE(ComputeChunked(pattern, chunkSize) == reference);
@@ -123,6 +162,23 @@ TEST_CASE("BLAKE3-256 streaming equals one-shot for arbitrary chunking",
     hasher.Update(data.subspan(0, half));
     hasher.Update(data.subspan(half));
     REQUIRE(hasher.Finalize() == reference);
+}
+
+TEST_CASE("Whole-file digest values are derived from the file bytes",
+          "[pbprotocol][blake3][whole-file][integrity]")
+{
+    std::vector<std::byte> originalBytes = MakeOfficialVectorInput(65);
+    const pbprotocol::WholeFileDigest expectedDigest{
+        ParseHex(
+            "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee")};
+    const pbprotocol::WholeFileDigest computedDigest{
+        pbprotocol::ComputeBlake3Digest(originalBytes)};
+    REQUIRE(computedDigest == expectedDigest);
+
+    originalBytes[32] ^= std::byte{0x01};
+    const pbprotocol::WholeFileDigest mutatedDigest{
+        pbprotocol::ComputeBlake3Digest(originalBytes)};
+    REQUIRE(mutatedDigest != expectedDigest);
 }
 
 TEST_CASE("BLAKE3-256 empty updates are no-ops and Finalize is repeatable",

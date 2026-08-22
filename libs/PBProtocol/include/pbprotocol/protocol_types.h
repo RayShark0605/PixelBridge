@@ -22,6 +22,8 @@ struct SessionId
 
 struct SessionTag
 {
+    // Compact deterministic routing metadata. It is neither secret nor sender
+    // authentication, and collisions must be handled by SessionId binding.
     std::uint64_t value = 0;
 
     bool operator==(const SessionTag&) const = default;
@@ -43,6 +45,10 @@ struct EncodedDigest
 
 struct WholeFileDigest
 {
+    // Unkeyed BLAKE3-256 integrity metadata. When received in-band with the
+    // payload it does not authenticate the sender. Ordinary equality is not
+    // an authentication verifier; a future MAC or signature must use a
+    // distinct type and verification API.
     std::array<std::byte, kDigestBytes> bytes{};
 
     bool operator==(const WholeFileDigest&) const = default;

@@ -109,7 +109,6 @@ constexpr std::size_t kSessionIdOffset = 4;
 constexpr std::size_t kSegmentOrdinalOffset = 8;
 constexpr std::size_t kSegmentRawOffsetOffset = 16;
 constexpr std::size_t kFinalSessionIdOffset = 0;
-constexpr std::size_t kFinalWholeFileDigestOffset = 32;
 
 template <typename ValueType>
 [[nodiscard]] ProtocolResult<ValueType> FailureFrom(
@@ -550,42 +549,6 @@ ProtocolStatus DescriptorBindingState::ValidateCompleteSegmentMap()
         return LatchTerminalError(
             ProtocolErrorCode::SegmentGap,
             kSegmentRawOffsetOffset);
-    }
-
-    return ProtocolStatus::Success();
-}
-
-ProtocolStatus DescriptorBindingState::ValidateReadyForFinalVerification()
-{
-    const ProtocolStatus mapStatus = ValidateCompleteSegmentMap();
-    if (!mapStatus)
-    {
-        return mapStatus;
-    }
-    if (!finalManifest_.has_value())
-    {
-        return ProtocolStatus::Failure(
-            ProtocolErrorCode::MissingFinalManifest,
-            kFinalSessionIdOffset);
-    }
-
-    return ProtocolStatus::Success();
-}
-
-ProtocolStatus DescriptorBindingState::VerifyWholeFileDigest(
-    const WholeFileDigest& computedDigest)
-{
-    const ProtocolStatus readyStatus = ValidateReadyForFinalVerification();
-    if (!readyStatus)
-    {
-        return readyStatus;
-    }
-
-    if (computedDigest != finalManifest_->wholeFileDigest)
-    {
-        return LatchTerminalError(
-            ProtocolErrorCode::DigestMismatch,
-            kFinalWholeFileDigestOffset);
     }
 
     return ProtocolStatus::Success();

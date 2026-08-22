@@ -4,31 +4,27 @@
 
 #include <array>
 #include <cstddef>
-#include <memory>
 #include <span>
 
 namespace pbprotocol {
 
 // Streaming BLAKE3 with fixed 32-byte (BLAKE3-256) output. Wraps the pinned
 // vcpkg blake3 implementation; this header intentionally does not expose
-// <blake3.h>, so the library linkage stays PRIVATE. The hasher is owned by a
-// single thread, non-copyable, and movable: moves transfer ownership of the
-// underlying state.
+// <blake3.h>, so the library linkage stays PRIVATE. This unkeyed digest provides
+// integrity only. It is not a MAC and does not authenticate the sender.
 class Blake3Hasher
 {
 public:
     static constexpr std::size_t kDigestByteCount = kDigestBytes;
 
-    // Construction initializes an empty BLAKE3 stream. May throw
-    // std::bad_alloc because the implementation state is heap-allocated to
-    // keep <blake3.h> out of this header.
-    Blake3Hasher();
-    ~Blake3Hasher();
+    // Construction initializes an empty allocation-free BLAKE3 stream.
+    Blake3Hasher() noexcept;
+    ~Blake3Hasher() noexcept;
 
     Blake3Hasher(const Blake3Hasher&) = delete;
     Blake3Hasher& operator=(const Blake3Hasher&) = delete;
-    Blake3Hasher(Blake3Hasher&&) noexcept = default;
-    Blake3Hasher& operator=(Blake3Hasher&&) noexcept = default;
+    Blake3Hasher(Blake3Hasher&&) = delete;
+    Blake3Hasher& operator=(Blake3Hasher&&) = delete;
 
     // Appends data to the running stream. Empty updates are no-ops. The
     // pinned BLAKE3 C API performs no allocation here, so this cannot throw.
@@ -40,12 +36,16 @@ public:
     [[nodiscard]] std::array<std::byte, kDigestBytes> Finalize() const noexcept;
 
 private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+    // Pinned BLAKE3 1.8.5 currently requires less than this capacity. The
+    // implementation statically verifies both size and alignment before using
+    // the storage, so a dependency ABI change fails at build time.
+    static constexpr std::size_t kHasherStorageByteCount = 2048;
+    alignas(std::max_align_t)
+        std::array<std::byte, kHasherStorageByteCount> hasherStorage_{};
 };
 
 // One-shot convenience wrapper around Blake3Hasher.
 [[nodiscard]] std::array<std::byte, kDigestBytes> ComputeBlake3Digest(
-    const std::span<const std::byte> data);
+    const std::span<const std::byte> data) noexcept;
 
 } // namespace pbprotocol
