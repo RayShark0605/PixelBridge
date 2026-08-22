@@ -7,10 +7,17 @@
     {
       "name": "blake3",
       "version>=": "1.8.5"
-    },
-    {
-      "name": "catch2",
-      "version>=": "3.15.0"
     }
-  ]
+  ],
+  "features": {
+    "tests": {
+      "description": "Build the PixelBridge Catch2 test suite",
+      "dependencies": [
+        {
+          "name": "catch2",
+          "version>=": "3.15.0"
+        }
+      ]
+    }
+  }
 }
