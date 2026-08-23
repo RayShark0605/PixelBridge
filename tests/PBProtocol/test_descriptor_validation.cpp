@@ -1,5 +1,6 @@
 #include "descriptor_test_helpers.h"
 
+#include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/descriptor_codec.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -106,6 +107,12 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
         512ULL * 1024ULL * 1024ULL);
     REQUIRE(defaultPolicy.maxTotalOuterFecDecoderBytes ==
         1024ULL * 1024ULL * 1024ULL);
+    REQUIRE(defaultPolicy.maxControlRecordBytes == 65536);
+    REQUIRE(defaultPolicy.maxConcurrentControlReassemblies == 8);
+    REQUIRE(defaultPolicy.maxControlReassemblyBytes ==
+        1024ULL * 1024ULL);
+    REQUIRE(defaultPolicy.maxControlFragmentsPerRecord == 4096);
+    REQUIRE(defaultPolicy.maxControlReassemblyInactivityObservations == 16384);
 
     pbprotocol::ReceiverResourcePolicy impossiblePolicy =
         pbprotocol::test::MakeResourcePolicy();
@@ -148,6 +155,16 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
     unboundedPolicy.maxOuterFecDecoderBytes =
         std::numeric_limits<std::uint64_t>::max();
     unboundedPolicy.maxTotalOuterFecDecoderBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxControlRecordBytes =
+        std::numeric_limits<std::uint32_t>::max();
+    unboundedPolicy.maxConcurrentControlReassemblies =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxControlReassemblyBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxControlFragmentsPerRecord =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxControlReassemblyInactivityObservations =
         std::numeric_limits<std::uint64_t>::max();
     const pbprotocol::ProtocolStatus unboundedStatus =
         pbprotocol::ValidateReceiverResourcePolicy(unboundedPolicy);
@@ -202,6 +219,50 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
         contradictoryOuterFecBudgets.maxOuterFecDecoderBytes - 1ULL;
     REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
         contradictoryOuterFecBudgets));
+
+    auto tooSmallControlRecord = defaultPolicy;
+    tooSmallControlRecord.maxControlRecordBytes =
+        static_cast<std::uint32_t>(pbprotocol::kMinimumControlRecordBytes - 1U);
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        tooSmallControlRecord));
+
+    auto tooLargeControlRecord = defaultPolicy;
+    tooLargeControlRecord.maxControlRecordBytes =
+        static_cast<std::uint32_t>(pbprotocol::kMaximumControlRecordBytes + 1U);
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        tooLargeControlRecord));
+
+    auto zeroControlConcurrency = defaultPolicy;
+    zeroControlConcurrency.maxConcurrentControlReassemblies = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroControlConcurrency));
+
+    auto zeroControlBudget = defaultPolicy;
+    zeroControlBudget.maxControlReassemblyBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroControlBudget));
+
+    auto contradictoryControlBudget = defaultPolicy;
+    contradictoryControlBudget.maxControlReassemblyBytes =
+        contradictoryControlBudget.maxControlRecordBytes - 1ULL;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        contradictoryControlBudget));
+
+    auto zeroControlFragmentLimit = defaultPolicy;
+    zeroControlFragmentLimit.maxControlFragmentsPerRecord = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroControlFragmentLimit));
+
+    auto impossibleControlFragmentLimit = defaultPolicy;
+    impossibleControlFragmentLimit.maxControlFragmentsPerRecord =
+        impossibleControlFragmentLimit.maxControlRecordBytes + 1ULL;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        impossibleControlFragmentLimit));
+
+    auto zeroControlInactivityWindow = defaultPolicy;
+    zeroControlInactivityWindow.maxControlReassemblyInactivityObservations = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroControlInactivityWindow));
 }
 
 TEST_CASE("Receiver resource policy rejects every unbounded sentinel independently",
@@ -299,6 +360,46 @@ TEST_CASE("Receiver resource policy rejects every unbounded sentinel independent
     {
         auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
         resourcePolicy.maxTotalOuterFecDecoderBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("Control record bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxControlRecordBytes =
+            std::numeric_limits<std::uint32_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("concurrent Control reassemblies")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxConcurrentControlReassemblies =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("Control reassembly bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxControlReassemblyBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("Control fragments per record")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxControlFragmentsPerRecord =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("Control inactivity observations")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxControlReassemblyInactivityObservations =
             std::numeric_limits<std::uint64_t>::max();
         REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
     }

@@ -1305,18 +1305,18 @@ PB-Control-1 没有 unknown-type optional marker，因此 type `0` 和除 `1..3`
 
 `PB-Control-1` 的单条逻辑 Record 允许跨多个 Control Block 发送，但分片格式必须固定、可界定资源上限。
 
-推荐固定分片前缀：
+`PB-Control-Fragment-1` 的 canonical envelope 固定如下。所有多字节整数均为 Little Endian，字段间无 ABI padding：
 
-```text
-ControlRecordId    : uint64
-FragmentIndex      : uint16
-FragmentCount      : uint16
-TotalRecordBytes   : uint32
-FragmentBytes      : uint16
-Flags              : uint16
-FragmentPayload
-FragmentCrc32c
-```
+| Offset | Bytes | 字段 | v1 语义 |
+|---:|---:|---|---|
+| 0 | 8 | `ControlRecordId` | 当前 ControlEpoch / reset 窗口中的 `uint64` record key |
+| 8 | 2 | `FragmentIndex` | 从 0 开始 |
+| 10 | 2 | `FragmentCount` | `uint16`，至少为 1 |
+| 12 | 4 | `TotalRecordBytes` | 重组后的完整 PB-Control-1 record bytes |
+| 16 | 2 | `FragmentBytes` | 当前 payload bytes，至少为 1 |
+| 18 | 2 | `Flags` | v1 全部 reserved，必须为 0 |
+| 20 | N | `FragmentPayload` | PB-Control-1 canonical bytes 的连续区间 |
+| `20+N` | 4 | `FragmentCrc32c` | CRC-32C over bytes `[0, 20+N)` |
 
 v1 约束：
 
@@ -1324,16 +1324,29 @@ v1 约束：
 MaxControlRecordBytes = 64 KiB
 FragmentCount >= 1
 FragmentIndex < FragmentCount
+FragmentBytes >= 1
 sum(fragment bytes) == TotalRecordBytes
 ```
+
+因此分片 prefix 为 20 bytes，CRC 为 4 bytes，wire 层最大单分片 payload 为 65,535 bytes。`TotalRecordBytes` 必须位于 PB-Control-1 的 `30..65536`；`FragmentCount` 不得大于 `TotalRecordBytes`。单分片必须满足 `FragmentBytes == TotalRecordBytes`，多分片的每个 payload 必须严格小于 `TotalRecordBytes`。`FragmentBytes` 必须与当前输入的 exact length 一致；不接受尾随数据、隐式截断或零字节分片。
+
+给定同一 `(ControlRecordId, 完整 PB-Control-1 bytes, max fragment payload bytes)`，sender 按 index 顺序取连续区间，切分结果必须唯一。同一个 `ControlRecordId` 在窗口内不得改变总长度、分片数、切分或内容；下一轮 descriptor 广播必须使用新的 `ControlRecordId`。当前冻结只定义逻辑分片字节，不冻结 Control Block 的视觉容量、FEC、映射或重复 cadence。
+
+Golden Vector 使用第 8.4 节的 67-byte Control record、`ControlRecordId=0x0102030405060708` 和 24-byte sender payload capacity。三个分片 payload 长度为 `24/24/19`，serialized 长度为 `48/48/43`，CRC-32C 依次为 `0x9DCD5402`、`0xF3FF94D8`、`0x40106F66`。
 
 重组器必须设置：
 
 - 最大并发 Record 数；
 - 最大总重组内存；
-- 过期时间 / sequence window；
+- 单 record 最大分片数；
+- 基于调用方单调本地 observation ordinal 的 inactivity window；
 - 重复分片幂等；
-- 同一 `(RecordId, FragmentIndex)` 内容冲突立即丢弃整条 Record。
+- 同一 `(RecordId, FragmentIndex)` 内容或 record 元数据冲突立即 quarantine 整条 Record；
+- ControlEpoch 改变时显式 reset active、pending、completed 与 conflict 状态。
+
+Phase-0 默认本地策略为 8 个并发 record、1 MiB 总 PMR 重组预算、每 record 最多 4096 个分片、16384 个 observation 的 inactivity window。策略值不进入 wire；产品可以使用更严格的非零有限值。exact inactivity boundary 仍有效，仅当差值大于 window 时过期。重组 payload、分片索引/容器和完整 record 临时拼接空间都必须计入同一有界预算。conflict、expiry 和 reset 清理路径必须只析构/释放已有存储，不得为了构造“空容器”再次分配；即使 PMR upstream 已经返回资源耗尽，清理也不得触发 `terminate`。
+
+完整 record 必须进入唯一的 typed admission：PB-Control-1 envelope → record-type dispatch → `ReceiverResourcePolicy` → descriptor parser → envelope/payload `SessionTag` cross-check → immutable registry binding。禁止 payload 猜型或 silent fallback。完整但因 `UnknownSession` 或临时资源容量暂时不能 admission 的 record 可在同一有界窗口内由 exact duplicate 重试；语义错误和 descriptor/fragment conflict 为 terminal。成功 admission 后，同一 RecordId 的 exact duplicate 只返回 repetition，不得再次提交状态。
 
 Descriptor 是 immutable binding：
 

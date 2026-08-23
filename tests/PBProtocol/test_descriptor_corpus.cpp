@@ -33,6 +33,11 @@ namespace {
     resourcePolicy.maxOuterFecDecoderBytes = 16ULL * 1024ULL * 1024ULL;
     resourcePolicy.maxTotalOuterFecDecoderBytes =
         32ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxControlRecordBytes = 64U * 1024U;
+    resourcePolicy.maxConcurrentControlReassemblies = 4;
+    resourcePolicy.maxControlReassemblyBytes = 1024ULL * 1024ULL;
+    resourcePolicy.maxControlFragmentsPerRecord = 4096;
+    resourcePolicy.maxControlReassemblyInactivityObservations = 16384;
     return resourcePolicy;
 }
 

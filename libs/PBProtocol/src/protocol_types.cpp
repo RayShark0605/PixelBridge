@@ -37,6 +37,11 @@ ReceiverResourcePolicy GetDefaultReceiverResourcePolicy() noexcept
     resourcePolicy.maxActiveOuterFecDecoders = 4ULL;
     resourcePolicy.maxOuterFecDecoderBytes = 512ULL * mebibyte;
     resourcePolicy.maxTotalOuterFecDecoderBytes = 1024ULL * mebibyte;
+    resourcePolicy.maxControlRecordBytes = 64U * 1024U;
+    resourcePolicy.maxConcurrentControlReassemblies = 8ULL;
+    resourcePolicy.maxControlReassemblyBytes = 1ULL * mebibyte;
+    resourcePolicy.maxControlFragmentsPerRecord = 4096ULL;
+    resourcePolicy.maxControlReassemblyInactivityObservations = 16384ULL;
     return resourcePolicy;
 }
 

@@ -4,6 +4,12 @@ add_executable(PBProtocolDescriptorResourceFuzz
 add_executable(PBProtocolBootstrapControlFuzz
     bootstrap_control_fuzz.cpp)
 
+# Build the same structured driver without libFuzzer's replacement main so
+# post-checksum semantic reachability remains a deterministic CTest on every
+# compiler backend, including Clang/libFuzzer builds.
+add_executable(PBProtocolBootstrapControlStructuredSelfTest
+    bootstrap_control_fuzz.cpp)
+
 add_executable(PBCompressionZstdBoundaryFuzz
     compression_zstd_boundary_fuzz.cpp)
 
@@ -19,6 +25,11 @@ target_link_libraries(PBProtocolDescriptorResourceFuzz
         PB::PBProtocol)
 
 target_link_libraries(PBProtocolBootstrapControlFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)
+
+target_link_libraries(PBProtocolBootstrapControlStructuredSelfTest
     PRIVATE
         PB::CompilerSettings
         PB::PBProtocol)
@@ -80,6 +91,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_link_options(PBProtocolBootstrapControlFuzz
         PRIVATE
             -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBProtocolBootstrapControlStructuredSelfTest
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
+    target_link_options(PBProtocolBootstrapControlStructuredSelfTest
+        PRIVATE
+            -fsanitize=address,undefined)
     target_compile_options(PBCompressionZstdBoundaryFuzz
         PRIVATE
             -fno-omit-frame-pointer
@@ -143,6 +161,14 @@ elseif(MSVC)
         PRIVATE
             /DEBUG
             /INCREMENTAL:NO)
+    target_compile_options(PBProtocolBootstrapControlStructuredSelfTest
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBProtocolBootstrapControlStructuredSelfTest
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
     target_compile_options(PBCompressionZstdBoundaryFuzz
         PRIVATE
             /Zi
@@ -187,6 +213,13 @@ elseif(MSVC)
             "${pbMsvcAsanRuntime}"
             "$<TARGET_FILE_DIR:PBProtocolBootstrapControlFuzz>"
         VERBATIM)
+    add_custom_command(
+        TARGET PBProtocolBootstrapControlStructuredSelfTest
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${pbMsvcAsanRuntime}"
+            "$<TARGET_FILE_DIR:PBProtocolBootstrapControlStructuredSelfTest>"
+        VERBATIM)
     add_custom_command(TARGET PBCompressionZstdBoundaryFuzz POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${pbMsvcAsanRuntime}"
@@ -211,6 +244,15 @@ else()
 endif()
 
 if(BUILD_TESTING)
+    add_test(
+        NAME PBProtocolBootstrapControlStructuredSelfTest
+        COMMAND PBProtocolBootstrapControlStructuredSelfTest --self-test)
+    set_tests_properties(
+        PBProtocolBootstrapControlStructuredSelfTest
+        PROPERTIES
+            LABELS "fuzz;pbprotocol;bootstrap;control;fragment;receiver;structured"
+            TIMEOUT 30)
+
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         add_test(
             NAME PBProtocolDescriptorResourceFuzzSmoke
@@ -342,7 +384,19 @@ if(BUILD_TESTING)
                 valid-bootstrap
                 valid-control-session
                 bad-bootstrap-crc
-                bad-control-crc)
+                bad-control-crc
+                valid-fragment-0
+                valid-fragment-1
+                valid-fragment-2
+                semantic-bootstrap-version
+                semantic-control-type
+                semantic-fragment-flags
+                valid-control-empty
+                valid-control-maximum
+                structured-out-of-order
+                structured-duplicate
+                structured-conflict
+                structured-quota-expiry)
             add_test(
                 NAME "PBProtocolBootstrapControlCorpus.${pbBootstrapControlCorpusName}"
                 COMMAND PBProtocolBootstrapControlFuzz
@@ -351,7 +405,7 @@ if(BUILD_TESTING)
             set_tests_properties(
                 "PBProtocolBootstrapControlCorpus.${pbBootstrapControlCorpusName}"
                 PROPERTIES
-                    LABELS "fuzz;pbprotocol;bootstrap;control;corpus"
+                    LABELS "fuzz;pbprotocol;bootstrap;control;fragment;receiver;corpus"
                     TIMEOUT 10)
         endforeach()
         unset(pbBootstrapControlCorpusName)
