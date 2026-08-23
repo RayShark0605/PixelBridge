@@ -23,9 +23,9 @@ proof that the architecture-required v1 schema is complete.
 The current `SessionDescriptor` does not bind `SessionVisualProfileId`,
 `FeatureFlags`, `FileNameUtf8`, `SourceSegmentTargetBytes`, or
 `CompressionProfile`. The current `SegmentDescriptor` also omits its final
-flags and record-level CRC placement. Some integrity fields may ultimately be
-provided by the fixed Control Plane record envelope, but that envelope has not
-yet been implemented here.
+flags. Descriptor payload integrity is now provided when those opaque bytes are
+carried by the fixed PB-Control-1 record envelope, but that does not fill in the
+missing descriptor fields or promote these payloads to a formal v1 schema.
 
 `SessionVisualProfileId` is a blocking field for formal wire freeze: the
 receiver cannot validate `OuterBlockBytes` against the fixed Session visual
@@ -42,6 +42,30 @@ one of the following explicitly:
    if any current bytes have already become externally consumed.
 
 Silent extension of the existing `1.0` payload bytes is not allowed.
+
+## PB-Bootstrap-1 / PB-Control-1 byte envelope status
+
+The logical byte records are implemented in `PBProtocol` independently from
+any Data Visual Profile or raster backend:
+
+- PB-Bootstrap-1 is exactly 44 bytes (`PBRG`, compact v1/version fields,
+  layout/profile/session/frame metadata, zero-only v1 flags, CRC-32C);
+- PB-Control-1 uses a 26-byte `PBCR` prefix, opaque payload, and 4-byte CRC-32C;
+- `RecordBytes` includes the complete Control record and is capped at 65,536,
+  leaving at most 65,506 payload bytes;
+- Control types are `1=SessionDescriptor`, `2=SegmentDescriptor`, and
+  `3=FinalManifest`; other v1 values fail closed.
+
+The Control parser is a zero-copy envelope parser. Its returned payload view
+borrows the input, and successful envelope parsing is not descriptor admission:
+the existing descriptor parser, receiver policy, SessionTag cross-check, and
+registry/binding logic still run afterward. Golden bytes, exact boundary tests,
+independent corpus files, and a dedicated ASan/libFuzzer-compatible target cover
+the two record parsers.
+
+Control fragmentation/reassembly, fragment conflict state, Control/Bootstrap
+FEC, visual mapping, repetition cadence, and profile-registry acceptance remain
+separate work.
 
 ## Structural validation versus receiver policy
 
@@ -191,7 +215,9 @@ then perform the same-volume atomic rename.
 
 ## Remaining Phase-0 Gate scope
 
-This status decision closes the ambiguity around the current descriptor bytes;
-it does not declare the overall Phase-0 architecture Gate complete. Formal
-profile binding, Control Plane records, complete file recovery, full Golden
-Vectors, and later CPU/GPU backend consistency gates remain separate work.
+This status decision closes the ambiguity around the current descriptor bytes
+and records the implemented Bootstrap/Control byte envelopes; it does not
+declare the overall Phase-0 architecture Gate complete. Formal profile binding,
+bounded Control fragmentation/reassembly, complete file recovery, the remaining
+Golden Vectors, and later CPU/GPU backend consistency gates remain separate
+work.

@@ -1,6 +1,9 @@
 add_executable(PBProtocolDescriptorResourceFuzz
     descriptor_resource_fuzz.cpp)
 
+add_executable(PBProtocolBootstrapControlFuzz
+    bootstrap_control_fuzz.cpp)
+
 add_executable(PBCompressionZstdBoundaryFuzz
     compression_zstd_boundary_fuzz.cpp)
 
@@ -11,6 +14,11 @@ add_executable(PBOuterFecDirectRepeatFuzz
     direct_repeat_fuzz.cpp)
 
 target_link_libraries(PBProtocolDescriptorResourceFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)
+
+target_link_libraries(PBProtocolBootstrapControlFuzz
     PRIVATE
         PB::CompilerSettings
         PB::PBProtocol)
@@ -32,6 +40,9 @@ target_link_libraries(PBOuterFecDirectRepeatFuzz
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_definitions(PBProtocolDescriptorResourceFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBProtocolBootstrapControlFuzz
         PRIVATE
             PB_USE_LIBFUZZER=1)
     target_compile_definitions(PBCompressionZstdBoundaryFuzz
@@ -60,6 +71,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             -fno-omit-frame-pointer
             -fsanitize=fuzzer,address,undefined)
     target_link_options(PBProtocolDescriptorResourceFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBProtocolBootstrapControlFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBProtocolBootstrapControlFuzz
         PRIVATE
             -fsanitize=fuzzer,address,undefined)
     target_compile_options(PBCompressionZstdBoundaryFuzz
@@ -117,6 +135,14 @@ elseif(MSVC)
         PRIVATE
             /DEBUG
             /INCREMENTAL:NO)
+    target_compile_options(PBProtocolBootstrapControlFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBProtocolBootstrapControlFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
     target_compile_options(PBCompressionZstdBoundaryFuzz
         PRIVATE
             /Zi
@@ -156,6 +182,11 @@ elseif(MSVC)
             "${pbMsvcAsanRuntime}"
             "$<TARGET_FILE_DIR:PBProtocolDescriptorResourceFuzz>"
         VERBATIM)
+    add_custom_command(TARGET PBProtocolBootstrapControlFuzz POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${pbMsvcAsanRuntime}"
+            "$<TARGET_FILE_DIR:PBProtocolBootstrapControlFuzz>"
+        VERBATIM)
     add_custom_command(TARGET PBCompressionZstdBoundaryFuzz POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${pbMsvcAsanRuntime}"
@@ -190,6 +221,14 @@ if(BUILD_TESTING)
             LABELS "fuzz;pbprotocol;libfuzzer"
             TIMEOUT 60)
         add_test(
+            NAME PBProtocolBootstrapControlFuzzSmoke
+            COMMAND PBProtocolBootstrapControlFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/bootstrap-control"
+                -runs=2000)
+        set_tests_properties(PBProtocolBootstrapControlFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol;bootstrap;control;libfuzzer"
+            TIMEOUT 60)
+        add_test(
             NAME PBCompressionZstdBoundaryFuzzSmoke
             COMMAND PBCompressionZstdBoundaryFuzz
                 "${CMAKE_CURRENT_SOURCE_DIR}/corpus/compression-zstd"
@@ -220,6 +259,14 @@ if(BUILD_TESTING)
                 13464654573299691533)
         set_tests_properties(PBProtocolDescriptorResourceFuzzSmoke PROPERTIES
             LABELS "fuzz;pbprotocol"
+            TIMEOUT 60)
+        add_test(
+            NAME PBProtocolBootstrapControlFuzzSmoke
+            COMMAND PBProtocolBootstrapControlFuzz
+                2000
+                5783258900934164481)
+        set_tests_properties(PBProtocolBootstrapControlFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol;bootstrap;control"
             TIMEOUT 60)
         add_test(
             NAME PBCompressionZstdBoundaryFuzzSmoke
@@ -288,6 +335,27 @@ if(BUILD_TESTING)
         endforeach()
         unset(pbDescriptorCorpusName)
         unset(pbDescriptorCorpusDirectory)
+
+        set(pbBootstrapControlCorpusDirectory
+            "${CMAKE_CURRENT_SOURCE_DIR}/corpus/bootstrap-control")
+        foreach(pbBootstrapControlCorpusName IN ITEMS
+                valid-bootstrap
+                valid-control-session
+                bad-bootstrap-crc
+                bad-control-crc)
+            add_test(
+                NAME "PBProtocolBootstrapControlCorpus.${pbBootstrapControlCorpusName}"
+                COMMAND PBProtocolBootstrapControlFuzz
+                    --input
+                    "${pbBootstrapControlCorpusDirectory}/${pbBootstrapControlCorpusName}.bin")
+            set_tests_properties(
+                "PBProtocolBootstrapControlCorpus.${pbBootstrapControlCorpusName}"
+                PROPERTIES
+                    LABELS "fuzz;pbprotocol;bootstrap;control;corpus"
+                    TIMEOUT 10)
+        endforeach()
+        unset(pbBootstrapControlCorpusName)
+        unset(pbBootstrapControlCorpusDirectory)
 
         set(pbCompressionCorpusDirectory
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/compression-zstd")

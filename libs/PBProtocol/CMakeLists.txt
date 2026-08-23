@@ -6,6 +6,7 @@ add_library(PB::PBProtocol ALIAS PBProtocol)
 target_sources(PBProtocol
     PRIVATE
         src/blake3_digest.cpp
+        src/bootstrap_control_codec.cpp
         src/byte_io.cpp
         src/crc32c.cpp
         src/descriptor_binding.cpp
@@ -20,6 +21,7 @@ target_sources(PBProtocol
         BASE_DIRS include
         FILES
             include/pbprotocol/blake3_digest.h
+            include/pbprotocol/bootstrap_control_codec.h
             include/pbprotocol/byte_io.h
             include/pbprotocol/checked_integer.h
             include/pbprotocol/crc32c.h

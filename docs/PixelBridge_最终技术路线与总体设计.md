@@ -1225,21 +1225,25 @@ Bootstrap FEC 可在 POC 阶段从成熟 RS/BCH 方案中选定，**冻结后写
 
 ## 8.2 BootstrapRecord
 
-逻辑字段至少：
+`PB-Bootstrap-1` 的 canonical record 固定为 **44 bytes**。所有多字节整数均为 Little Endian，字段间无 ABI padding：
 
-```text
-Magic = "PBRG"
-BootstrapVersion
-ProtocolMajor
-ProtocolMinor
-VisualLayoutVersion
-VisualProfileId
-SessionTag
-FrameSequence
-ControlEpoch
-Flags
-BootstrapCrc32c
-```
+| Offset | Bytes | 字段 | v1 语义 |
+|---:|---:|---|---|
+| 0 | 4 | `Magic` | ASCII `PBRG` |
+| 4 | 1 | `BootstrapVersion` | `1` |
+| 5 | 1 | `ProtocolMajor` | `1` |
+| 6 | 1 | `ProtocolMinor` | `0` |
+| 7 | 1 | `VisualLayoutVersion` | 后续由 layout/profile registry 判定是否支持 |
+| 8 | 8 | `VisualProfileId` | `uint64` |
+| 16 | 8 | `SessionTag` | `uint64` |
+| 24 | 8 | `FrameSequence` | `uint64` |
+| 32 | 4 | `ControlEpoch` | `uint32` |
+| 36 | 4 | `Flags` | v1 全部 reserved，必须为 0 |
+| 40 | 4 | `BootstrapCrc32c` | CRC-32C over bytes `[0, 40)` |
+
+`BootstrapVersion` 不是 Protocol Major/Minor 的别名；任一不受支持的版本均 fail closed。当前 record 没有 length-delimited optional extension，因此 `ProtocolMinor > 0` 不能仅靠 Major 相同而跳过。`VisualLayoutVersion` / `VisualProfileId` 在这个字节层只是 dispatch identifier；通过 record parser 不代表 Decoder 已支持对应 raster/profile。
+
+PB-Bootstrap-1 Golden Vector 固定使用 `VisualLayoutVersion=1`、`VisualProfileId=0x0102030405060708`、`SessionTag=0x81DF204BD997BAD0`、`FrameSequence=0x1112131415161718`、`ControlEpoch=0x21222324`，其 CRC-32C 为 `0xD488E1EA`，wire trailer 为 `EA E1 88 D4`。
 
 ---
 
@@ -1267,16 +1271,22 @@ BlockType = Control
 
 PixelBridge v1 的 Control Plane 必须与 Data Profile 解耦。`PB-Control-1` 固定：
 
-```text
-ControlRecordMagic
-ControlVersion
-ControlRecordType
-ControlSequence
-RecordBytes
-SessionTag
-Payload
-ControlCrc32c
-```
+| Offset | Bytes | 字段 | v1 语义 |
+|---:|---:|---|---|
+| 0 | 4 | `ControlRecordMagic` | ASCII `PBCR` |
+| 4 | 1 | `ControlVersion` | `1` |
+| 5 | 1 | `ControlRecordType` | `1=SessionDescriptor`、`2=SegmentDescriptor`、`3=FinalManifest` |
+| 6 | 8 | `ControlSequence` | `uint64` |
+| 14 | 8 | `SessionTag` | `uint64` |
+| 22 | 4 | `RecordBytes` | 整条 record 总字节数，包含 prefix、payload 与 CRC |
+| 26 | N | `Payload` | 有界 opaque bytes；由对应 record-type parser 继续验证 |
+| `RecordBytes-4` | 4 | `ControlCrc32c` | CRC-32C over bytes `[0, RecordBytes-4)` |
+
+canonical prefix 为 26 bytes，CRC 为 4 bytes，因此空 payload 的结构最小 record 为 30 bytes。`MaxControlRecordBytes=65536` 是**整条 record**的上限，故最大 payload 为 65506 bytes。`RecordBytes` 必须与当前输入完全相等；不接受尾随拼接、隐式截断或仅解析一个声明前缀。
+
+PB-Control-1 的 envelope parser 只证明 framing、Magic、版本、类型、长度和 CRC 正确。它不把 opaque payload 宣布为已通过 Descriptor/resource/Session binding 验证；Control header 的 `SessionTag` 仍必须与对应 Descriptor 派生或内含的 SessionTag 交叉检查。
+
+PB-Control-1 Golden Vector 使用 `ControlRecordType=1`、`ControlSequence=0x0102030405060708`、`SessionTag=0x81DF204BD997BAD0`，并嵌入当前 37-byte Phase-0 SessionDescriptor regression payload。总长为 67 bytes，CRC-32C 为 `0xA13883C8`，wire trailer 为 `C8 83 38 A1`。该向量冻结 Control envelope，不会把仍缺少正式 profile binding 的 Descriptor payload 提升为 canonical v1 schema。
 
 并冻结：
 
@@ -1287,7 +1297,7 @@ ControlCrc32c
 - bit ordering；
 - Golden Vector。
 
-未知 `ControlRecordType` 必须按版本规则拒绝或显式跳过，不能让 Data Profile 的实验参数影响控制面的可读性。
+PB-Control-1 没有 unknown-type optional marker，因此 type `0` 和除 `1..3` 外的未知 `ControlRecordType` 必须拒绝，不能让 Data Profile 的实验参数影响控制面的可读性。
 
 ---
 
