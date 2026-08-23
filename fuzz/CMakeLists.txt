@@ -397,6 +397,7 @@ if(BUILD_TESTING)
                 structured-duplicate
                 structured-conflict
                 structured-descriptor-conflict
+                structured-extreme-metadata
                 structured-quota-expiry)
             add_test(
                 NAME "PBProtocolBootstrapControlCorpus.${pbBootstrapControlCorpusName}"

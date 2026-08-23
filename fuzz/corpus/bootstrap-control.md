@@ -21,11 +21,15 @@ are fuzz-harness operation sequences rather than wire records.
 - `valid-control-empty.bin` and `valid-control-maximum.bin`: exact 30-byte and
   65,536-byte PB-Control-1 envelope boundaries;
 - `structured-out-of-order.bin`, `structured-duplicate.bin`,
-  `structured-conflict.bin`, `structured-descriptor-conflict.bin`, and
-  `structured-quota-expiry.bin`: tiny fuzz-only operation sequences. They are
+  `structured-conflict.bin`, `structured-descriptor-conflict.bin`,
+  `structured-extreme-metadata.bin`, and `structured-quota-expiry.bin`: tiny
+  fuzz-only operation sequences. They are
   harness controls, not protocol wire records. The descriptor-conflict mode
   admits one valid SessionDescriptor and requires a second CRC-valid record
-  with the same descriptor key to latch terminal `DescriptorConflict`.
+  with the same descriptor key to latch terminal `DescriptorConflict`. The
+  extreme-metadata mode repairs CRC while exercising the `uint16` fragment-count
+  ceiling, exact 65,536-byte record limit, `UINT32_MAX`, and sparse maximum
+  index through the bounded receiver.
 
 The Control envelope is canonical v1. Its embedded descriptor remains the
 explicitly provisional Phase-0 payload and is not promoted to a formal v1

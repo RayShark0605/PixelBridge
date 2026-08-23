@@ -80,10 +80,12 @@ fragment Golden Vector has payload sizes `24/24/19` and CRC-32C values
 Independent Golden/corpus bytes, exact boundary/state tests, CRC-repairing
 structured mutation modes, deterministic semantic self-tests, and the raw
 libFuzzer-compatible entry point cover Bootstrap, complete Control, fragments,
-and authoritative admission. This closes the logical PB-Bootstrap-1 /
-PB-Control-1 byte-protocol step. Control/Bootstrap FEC, visual mapping, physical
-Control Block capacity, repetition cadence, and formal profile-registry
-acceptance remain separate work.
+and authoritative admission. The structured fragment gate explicitly reaches
+`FragmentCount=65535`, `TotalRecordBytes=65536`, `UINT32_MAX`, and a sparse
+maximum index without allocating a dense slot table. This closes the logical
+PB-Bootstrap-1 / PB-Control-1 byte-protocol step. Control/Bootstrap FEC, visual
+mapping, physical Control Block capacity, repetition cadence, and formal
+profile-registry acceptance remain separate work.
 
 ## Structural validation versus receiver policy
 

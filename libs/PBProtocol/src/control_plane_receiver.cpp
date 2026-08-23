@@ -219,6 +219,7 @@ constexpr std::size_t kFragmentIndexOffset = 8;
 constexpr std::size_t kFragmentCountOffset = 10;
 constexpr std::size_t kFragmentTotalRecordBytesOffset = 12;
 constexpr std::size_t kFragmentBytesOffset = 16;
+constexpr std::size_t kFragmentFlagsOffset = 18;
 
 template <typename ValueType>
 [[nodiscard]] ProtocolResult<ValueType> FailureFrom(
@@ -622,14 +623,25 @@ ControlPlaneReceiver::ReceiveControlFragment(
                 0);
         }
 
-        if (record.fragmentCount != fragment.fragmentCount ||
-            record.totalRecordBytes != fragment.totalRecordBytes ||
-            record.flags != fragment.flags)
+        std::size_t metadataConflictOffset = 0;
+        if (record.fragmentCount != fragment.fragmentCount)
+        {
+            metadataConflictOffset = kFragmentCountOffset;
+        }
+        else if (record.totalRecordBytes != fragment.totalRecordBytes)
+        {
+            metadataConflictOffset = kFragmentTotalRecordBytesOffset;
+        }
+        else if (record.flags != fragment.flags)
+        {
+            metadataConflictOffset = kFragmentFlagsOffset;
+        }
+        if (metadataConflictOffset != 0)
         {
             MarkConflict(record);
             return ProtocolResult<ControlFragmentReceiveResult>::Failure(
                 ProtocolErrorCode::ControlFragmentConflict,
-                kFragmentCountOffset);
+                metadataConflictOffset);
         }
         if (!record.fragmentsByIndex)
         {

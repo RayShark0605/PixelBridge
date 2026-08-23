@@ -1052,8 +1052,11 @@ TEST_CASE("ControlPlaneReceiver quarantines fragment and semantic conflicts",
 
         const auto result = receiver.ReceiveControlFragment(changedBytes, 2);
         REQUIRE_FALSE(result);
-        REQUIRE(result.Error().code ==
-            pbprotocol::ProtocolErrorCode::ControlFragmentConflict);
+        REQUIRE(
+            result.Error() ==
+            pbprotocol::ProtocolError{
+                pbprotocol::ProtocolErrorCode::ControlFragmentConflict,
+                12});
         REQUIRE(receiver.ActiveControlReassemblyCount() == 1);
         REQUIRE(receiver.ControlReassemblyBytesInUse() >
             baselineReassemblyBytes);
@@ -1243,10 +1246,10 @@ TEST_CASE("ControlPlaneReceiver enforces observation and resource quotas",
         constexpr std::uint16_t maximumFragmentCount =
             std::numeric_limits<std::uint16_t>::max();
         auto maximumCountPolicy = resourcePolicy;
-        maximumCountPolicy.maxControlRecordBytes = maximumFragmentCount;
+        maximumCountPolicy.maxControlRecordBytes =
+            pbprotocol::kMaximumControlRecordBytes;
         maximumCountPolicy.maxControlFragmentsPerRecord =
             maximumFragmentCount;
-        maximumCountPolicy.maxControlReassemblyBytes = maximumFragmentCount;
         auto receiver = MakeReceiver(maximumCountPolicy);
         const std::size_t baselineReassemblyBytes =
             receiver.ControlReassemblyBytesInUse();
@@ -1256,7 +1259,8 @@ TEST_CASE("ControlPlaneReceiver enforces observation and resource quotas",
             3,
             static_cast<std::uint16_t>(maximumFragmentCount - 1U),
             maximumFragmentCount,
-            maximumFragmentCount,
+            static_cast<std::uint32_t>(
+                pbprotocol::kMaximumControlRecordBytes),
             0,
             payload};
         std::array<std::byte, pbprotocol::kMinimumControlFragmentBytes>
