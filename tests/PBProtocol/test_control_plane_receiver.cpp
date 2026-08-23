@@ -235,6 +235,10 @@ private:
         fragments.front(),
         observationOrdinal);
     observationOrdinal++;
+    if (fragments.size() > 1U)
+    {
+        REQUIRE(result);
+    }
     for (std::size_t fragmentIndex = 1;
          fragmentIndex < fragments.size();
          fragmentIndex++)
@@ -243,6 +247,10 @@ private:
             fragments[fragmentIndex],
             observationOrdinal);
         observationOrdinal++;
+        if (fragmentIndex + 1U < fragments.size())
+        {
+            REQUIRE(result);
+        }
     }
     return result;
 }
@@ -642,6 +650,168 @@ TEST_CASE("ControlPlaneReceiver reassembles out of order and submits each ID onc
         pbprotocol::DescriptorBindDisposition::Repeated);
 }
 
+TEST_CASE("ControlPlaneReceiver latches typed conflicts across RecordIds",
+          "[pbprotocol][control][receiver][fragment][descriptor][conflict]")
+{
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(117, 1);
+    const pbprotocol::SessionTag sessionTag =
+        pbprotocol::DeriveSessionTag(sessionDescriptor.sessionId);
+    const std::vector<std::byte> sessionRecord = MakeSessionControlRecord(
+        sessionDescriptor,
+        resourcePolicy,
+        70);
+
+    SECTION("SessionDescriptor content conflict is terminal")
+    {
+        auto receiver = MakeReceiver(resourcePolicy);
+        std::uint64_t observationOrdinal = 1;
+        const auto firstResult = ReceiveAllFragments(
+            receiver,
+            sessionRecord,
+            0x7001ULL,
+            observationOrdinal);
+        REQUIRE(firstResult);
+        REQUIRE(firstResult.Value().disposition ==
+            pbprotocol::ControlFragmentReceiveDisposition::DescriptorInserted);
+
+        pbprotocol::SessionDescriptor changedDescriptor = sessionDescriptor;
+        changedDescriptor.originalFileSize++;
+        const std::vector<std::byte> changedRecord = MakeSessionControlRecord(
+            changedDescriptor,
+            resourcePolicy,
+            71);
+        const auto conflictResult = ReceiveAllFragments(
+            receiver,
+            changedRecord,
+            0x7002ULL,
+            observationOrdinal);
+        REQUIRE_FALSE(conflictResult);
+        REQUIRE(conflictResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::DescriptorConflict);
+        REQUIRE(receiver.ActiveSessionCount() == 1);
+
+        const auto blockedResult = receiver.ReceiveControlRecord(sessionRecord);
+        REQUIRE_FALSE(blockedResult);
+        REQUIRE(blockedResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::DescriptorConflict);
+    }
+
+    SECTION("SegmentDescriptor content conflict is terminal")
+    {
+        auto receiver = MakeReceiver(resourcePolicy);
+        RequireInserted(
+            receiver.ReceiveControlRecord(sessionRecord),
+            pbprotocol::ControlRecordType::SessionDescriptor,
+            sessionTag);
+
+        const pbprotocol::SegmentDescriptor segmentDescriptor =
+            pbprotocol::test::MakeDirectRepeatSegment(
+                sessionDescriptor,
+                0,
+                0,
+                117);
+        const std::vector<std::byte> segmentRecord = MakeSegmentControlRecord(
+            segmentDescriptor,
+            sessionDescriptor,
+            resourcePolicy,
+            72);
+        std::uint64_t observationOrdinal = 1;
+        const auto firstResult = ReceiveAllFragments(
+            receiver,
+            segmentRecord,
+            0x7101ULL,
+            observationOrdinal);
+        REQUIRE(firstResult);
+        REQUIRE(firstResult.Value().disposition ==
+            pbprotocol::ControlFragmentReceiveDisposition::DescriptorInserted);
+
+        pbprotocol::SegmentDescriptor changedDescriptor = segmentDescriptor;
+        changedDescriptor.rawDigest.bytes[0] ^= Byte(0x01);
+        changedDescriptor.encodedDigest.bytes[0] ^= Byte(0x01);
+        const std::vector<std::byte> changedRecord = MakeSegmentControlRecord(
+            changedDescriptor,
+            sessionDescriptor,
+            resourcePolicy,
+            73);
+        const auto conflictResult = ReceiveAllFragments(
+            receiver,
+            changedRecord,
+            0x7102ULL,
+            observationOrdinal);
+        REQUIRE_FALSE(conflictResult);
+        REQUIRE(conflictResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::DescriptorConflict);
+        const auto segmentCountResult = receiver.BoundSegmentCount(sessionTag);
+        REQUIRE(segmentCountResult);
+        REQUIRE(segmentCountResult.Value() == 1);
+
+        const pbprotocol::FinalManifest finalManifest =
+            pbprotocol::test::MakeFinalManifest(sessionDescriptor);
+        const std::vector<std::byte> manifestRecord = MakeManifestControlRecord(
+            finalManifest,
+            sessionDescriptor,
+            resourcePolicy,
+            74);
+        const auto blockedResult = receiver.ReceiveControlRecord(manifestRecord);
+        REQUIRE_FALSE(blockedResult);
+        REQUIRE(blockedResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::DescriptorConflict);
+    }
+
+    SECTION("FinalManifest content conflict is terminal")
+    {
+        auto receiver = MakeReceiver(resourcePolicy);
+        RequireInserted(
+            receiver.ReceiveControlRecord(sessionRecord),
+            pbprotocol::ControlRecordType::SessionDescriptor,
+            sessionTag);
+
+        const pbprotocol::FinalManifest finalManifest =
+            pbprotocol::test::MakeFinalManifest(sessionDescriptor);
+        const std::vector<std::byte> manifestRecord = MakeManifestControlRecord(
+            finalManifest,
+            sessionDescriptor,
+            resourcePolicy,
+            75);
+        std::uint64_t observationOrdinal = 1;
+        const auto firstResult = ReceiveAllFragments(
+            receiver,
+            manifestRecord,
+            0x7201ULL,
+            observationOrdinal);
+        REQUIRE(firstResult);
+        REQUIRE(firstResult.Value().disposition ==
+            pbprotocol::ControlFragmentReceiveDisposition::DescriptorInserted);
+
+        pbprotocol::FinalManifest changedManifest = finalManifest;
+        changedManifest.wholeFileDigest.bytes[0] ^= Byte(0x01);
+        const std::vector<std::byte> changedRecord = MakeManifestControlRecord(
+            changedManifest,
+            sessionDescriptor,
+            resourcePolicy,
+            76);
+        const auto conflictResult = ReceiveAllFragments(
+            receiver,
+            changedRecord,
+            0x7202ULL,
+            observationOrdinal);
+        REQUIRE_FALSE(conflictResult);
+        REQUIRE(conflictResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::DescriptorConflict);
+        const auto manifestResult = receiver.HasFinalManifest(sessionTag);
+        REQUIRE(manifestResult);
+        REQUIRE(manifestResult.Value());
+
+        const auto blockedResult = receiver.ReceiveControlRecord(manifestRecord);
+        REQUIRE_FALSE(blockedResult);
+        REQUIRE(blockedResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::DescriptorConflict);
+    }
+}
+
 TEST_CASE("ControlPlaneReceiver retains complete unknown-Session records for retry",
           "[pbprotocol][control][receiver][fragment][pending]")
 {
@@ -928,6 +1098,36 @@ TEST_CASE("ControlPlaneReceiver quarantines fragment and semantic conflicts",
         REQUIRE_FALSE(deficitResult);
         REQUIRE(deficitResult.Error().code ==
             pbprotocol::ProtocolErrorCode::ControlFragmentConflict);
+
+        const std::array<std::byte, 20> feasibleFirstPayload{Byte(0x31)};
+        const std::array<std::byte, 10> feasibleSecondPayload{Byte(0x32)};
+        const std::vector<std::byte> feasibleFirst = serializeFragment(
+            pbprotocol::ControlFragmentView{
+                9,
+                0,
+                3,
+                30,
+                0,
+                feasibleFirstPayload});
+        const std::vector<std::byte> impossibleSecond = serializeFragment(
+            pbprotocol::ControlFragmentView{
+                9,
+                1,
+                3,
+                30,
+                0,
+                feasibleSecondPayload});
+        auto earlyConflictReceiver = MakeReceiver(resourcePolicy);
+        REQUIRE(earlyConflictReceiver.ReceiveControlFragment(
+            feasibleFirst,
+            1));
+        const auto earlyConflictResult =
+            earlyConflictReceiver.ReceiveControlFragment(
+                impossibleSecond,
+                2);
+        REQUIRE_FALSE(earlyConflictResult);
+        REQUIRE(earlyConflictResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::ControlFragmentConflict);
     }
 
     SECTION("complete wrong-tag record becomes a terminal tombstone")
@@ -1038,7 +1238,7 @@ TEST_CASE("ControlPlaneReceiver enforces observation and resource quotas",
             baselineReassemblyBytes);
     }
 
-    SECTION("maximum wire fragment count is accepted with sufficient quota")
+    SECTION("sparse maximum wire index does not allocate a dense slot vector")
     {
         constexpr std::uint16_t maximumFragmentCount =
             std::numeric_limits<std::uint16_t>::max();
@@ -1046,8 +1246,7 @@ TEST_CASE("ControlPlaneReceiver enforces observation and resource quotas",
         maximumCountPolicy.maxControlRecordBytes = maximumFragmentCount;
         maximumCountPolicy.maxControlFragmentsPerRecord =
             maximumFragmentCount;
-        maximumCountPolicy.maxControlReassemblyBytes = 16ULL * 1024ULL *
-            1024ULL;
+        maximumCountPolicy.maxControlReassemblyBytes = maximumFragmentCount;
         auto receiver = MakeReceiver(maximumCountPolicy);
         const std::size_t baselineReassemblyBytes =
             receiver.ControlReassemblyBytesInUse();
@@ -1055,7 +1254,7 @@ TEST_CASE("ControlPlaneReceiver enforces observation and resource quotas",
         const std::array<std::byte, 1> payload{Byte(0x5A)};
         const pbprotocol::ControlFragmentView fragment{
             3,
-            0,
+            static_cast<std::uint16_t>(maximumFragmentCount - 1U),
             maximumFragmentCount,
             maximumFragmentCount,
             0,
@@ -1199,6 +1398,34 @@ TEST_CASE("ControlPlaneReceiver enforces observation and resource quotas",
         failingResource->SetFailAllocation(false);
         REQUIRE(failingReceiver.ControlReassemblyBytesInUse() ==
             failingBaselineBytes);
+
+        auto expiryPolicy = resourcePolicy;
+        expiryPolicy.maxConcurrentControlReassemblies = 2;
+        expiryPolicy.maxControlReassemblyInactivityObservations = 1;
+        auto expiryResource = std::make_shared<TrackingMemoryResource>();
+        auto expiryReceiverResult =
+            pbprotocol::ControlPlaneReceiver::CreateWithMemoryResource(
+                expiryPolicy,
+                expiryResource);
+        REQUIRE(expiryReceiverResult);
+        auto expiryReceiver = std::move(expiryReceiverResult).Value();
+        const std::size_t expiryBaselineBytes =
+            expiryReceiver.ControlReassemblyBytesInUse();
+        REQUIRE(expiryReceiver.ReceiveControlFragment(firstIdFragment, 1));
+        REQUIRE(expiryReceiver.ReceiveControlFragment(secondIdFragment, 2));
+        REQUIRE(expiryReceiver.ActiveControlReassemblyCount() == 2);
+
+        // Erasing the first entry shifts a live sparse-map record. Expiry and
+        // reset must still be deallocation-only when upstream rejects every
+        // new allocation.
+        expiryResource->SetFailAllocation(true);
+        REQUIRE(expiryReceiver.AdvanceObservationOrdinal(3));
+        REQUIRE(expiryReceiver.ActiveControlReassemblyCount() == 1);
+        expiryReceiver.ResetControlReassembly();
+        REQUIRE(expiryReceiver.ActiveControlReassemblyCount() == 0);
+        expiryResource->SetFailAllocation(false);
+        REQUIRE(expiryReceiver.ControlReassemblyBytesInUse() ==
+            expiryBaselineBytes);
     }
 }
 

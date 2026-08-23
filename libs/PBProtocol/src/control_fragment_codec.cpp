@@ -77,6 +77,15 @@ template <typename ValueType>
     }
 
     const std::size_t totalRecordBytes = fragment.totalRecordBytes;
+    const std::size_t minimumOtherFragmentBytes =
+        static_cast<std::size_t>(fragment.fragmentCount) - 1U;
+    if (fragment.payload.size() >
+        totalRecordBytes - minimumOtherFragmentBytes)
+    {
+        return ProtocolStatus::Failure(
+            ProtocolErrorCode::InvalidControlFragment,
+            kFragmentBytesOffset);
+    }
     if ((fragment.fragmentCount == 1 &&
          fragment.payload.size() != totalRecordBytes) ||
         (fragment.fragmentCount > 1 &&
