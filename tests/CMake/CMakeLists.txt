@@ -13,6 +13,11 @@ if(NOT DEFINED zstd_DIR OR zstd_DIR STREQUAL "")
         "zstd_DIR is required by the PBCompression consumer fixtures")
 endif()
 
+if(NOT DEFINED wirehair_DIR OR wirehair_DIR STREQUAL "")
+    message(FATAL_ERROR
+        "wirehair_DIR is required by the PBOuterFec consumer fixtures")
+endif()
+
 set(pbStaticIsolationConfigureCommand
     "${CMAKE_COMMAND}"
     --fresh
@@ -21,7 +26,8 @@ set(pbStaticIsolationConfigureCommand
     -G "${CMAKE_GENERATOR}"
     "-DPB_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
     "-Dblake3_DIR=${blake3_DIR}"
-    "-Dzstd_DIR=${zstd_DIR}")
+    "-Dzstd_DIR=${zstd_DIR}"
+    "-Dwirehair_DIR=${wirehair_DIR}")
 
 if(CMAKE_GENERATOR_PLATFORM)
     list(APPEND pbStaticIsolationConfigureCommand
@@ -61,7 +67,9 @@ set_tests_properties(PBStaticLibraryIsolationRun PROPERTIES
 add_test(NAME PBManifestDependencyBoundary
     COMMAND "${CMAKE_COMMAND}"
         "-DPB_MANIFEST_PATH=${PROJECT_SOURCE_DIR}/vcpkg.json"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyManifest.cmake")
+        "-DPB_VCPKG_CONFIGURATION_PATH=${PROJECT_SOURCE_DIR}/vcpkg-configuration.json"
+        "-DPB_WIREHAIR_PORT_PATH=${PROJECT_SOURCE_DIR}/third_party/vcpkg-ports/wirehair"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyManifest.cmake")
 
 add_test(NAME PBBuildOptionValidation
     COMMAND "${CMAKE_COMMAND}"
@@ -108,7 +116,8 @@ set(pbSubprojectConfigureCommand
     -G "${CMAKE_GENERATOR}"
     "-DPB_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
     "-Dblake3_DIR=${blake3_DIR}"
-    "-Dzstd_DIR=${zstd_DIR}")
+    "-Dzstd_DIR=${zstd_DIR}"
+    "-Dwirehair_DIR=${wirehair_DIR}")
 
 if(CMAKE_GENERATOR_PLATFORM)
     list(APPEND pbSubprojectConfigureCommand

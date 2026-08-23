@@ -134,6 +134,14 @@ function(PbValidateCorePublicHeaders librariesDirectory)
             message(FATAL_ERROR
                 "Core public header ${publicHeader} includes Qt: ${qtIncludeLines}")
         endif()
+
+        file(STRINGS "${publicHeader}" wirehairIncludeLines
+            REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"]wirehair/")
+        if(wirehairIncludeLines)
+            message(FATAL_ERROR
+                "Core public header ${publicHeader} exposes Wirehair: "
+                "${wirehairIncludeLines}")
+        endif()
     endforeach()
 endfunction()
 
@@ -148,7 +156,8 @@ function(PbValidateCoreTargetBoundaries librariesDirectory)
         PbValidateTargetBoundary("${coreTarget}")
     endforeach()
 
-    foreach(staticBaselineTarget IN ITEMS PBCore PBProtocol PBCompression)
+    foreach(staticBaselineTarget IN ITEMS
+            PBCore PBProtocol PBCompression PBOuterFec)
         if(TARGET "${staticBaselineTarget}")
             get_target_property(targetType "${staticBaselineTarget}" TYPE)
             if(NOT targetType STREQUAL "STATIC_LIBRARY")
