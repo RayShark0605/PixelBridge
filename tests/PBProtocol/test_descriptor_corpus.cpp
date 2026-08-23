@@ -19,15 +19,21 @@ namespace {
 
 [[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeCorpusResourcePolicy() noexcept
 {
-    return pbprotocol::ReceiverResourcePolicy{
-        1024ULL * 1024ULL,
-        64,
-        64ULL * 1024ULL,
-        64ULL * 1024ULL,
-        4096,
-        1024ULL * 1024ULL,
-        2,
-        2ULL * 1024ULL * 1024ULL};
+    pbprotocol::ReceiverResourcePolicy resourcePolicy{};
+    resourcePolicy.maxAcceptedFileBytes = 1024ULL * 1024ULL;
+    resourcePolicy.maxSegmentCount = 64;
+    resourcePolicy.maxRawSegmentBytes = 64ULL * 1024ULL;
+    resourcePolicy.maxEncodedSegmentBytes = 64ULL * 1024ULL;
+    resourcePolicy.maxOuterBlockBytes = 4096;
+    resourcePolicy.maxDescriptorStateBytes = 1024ULL * 1024ULL;
+    resourcePolicy.maxConcurrentSessions = 2;
+    resourcePolicy.maxTotalDescriptorStateBytes = 2ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxDirectRepeatBlockCount = 64;
+    resourcePolicy.maxActiveOuterFecDecoders = 2;
+    resourcePolicy.maxOuterFecDecoderBytes = 16ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxTotalOuterFecDecoderBytes =
+        32ULL * 1024ULL * 1024ULL;
+    return resourcePolicy;
 }
 
 [[nodiscard]] pbprotocol::SessionDescriptor MakeFixedSessionDescriptor() noexcept

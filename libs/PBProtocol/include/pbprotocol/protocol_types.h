@@ -12,6 +12,12 @@ namespace pbprotocol {
 inline constexpr std::size_t kSessionIdBytes = 16;
 inline constexpr std::size_t kDigestBytes = 32;
 inline constexpr std::size_t kWirehairV2SerializedProfileBytes = 32;
+// TransportBlock::PayloadBytes is a provisional little-endian uint16 field.
+// OuterBlockBytes describes that same fixed payload region, so values above
+// this limit cannot be represented without changing the wire format.
+inline constexpr std::uint32_t kMaximumTransportPayloadBytes = 65535U;
+inline constexpr std::uint64_t kMaximumRepresentableDirectRepeatBlockCount =
+    static_cast<std::uint64_t>(UINT32_MAX) + 1ULL;
 
 struct SessionId
 {
@@ -119,6 +125,12 @@ struct FinalManifest
 
 struct ReceiverResourcePolicy
 {
+    // A user-declared constructor deliberately keeps this safety policy from
+    // being a positional aggregate. Adding a required quota must make stale
+    // initializers fail at compile time instead of silently zero-initializing
+    // the new field and failing later at runtime.
+    ReceiverResourcePolicy() noexcept = default;
+
     std::uint64_t maxAcceptedFileBytes = 0;
     std::uint64_t maxSegmentCount = 0;
     std::uint64_t maxRawSegmentBytes = 0;
@@ -130,6 +142,13 @@ struct ReceiverResourcePolicy
     std::uint64_t maxDescriptorStateBytes = 0;
     std::uint64_t maxConcurrentSessions = 0;
     std::uint64_t maxTotalDescriptorStateBytes = 0;
+    // Decoder admission reserves a conservative charge before constructing
+    // either wrapper state or the third-party codec. These are receiver-local
+    // limits and never enter a serialized descriptor.
+    std::uint64_t maxDirectRepeatBlockCount = 0;
+    std::uint64_t maxActiveOuterFecDecoders = 0;
+    std::uint64_t maxOuterFecDecoderBytes = 0;
+    std::uint64_t maxTotalOuterFecDecoderBytes = 0;
 
     bool operator==(const ReceiverResourcePolicy&) const = default;
 };

@@ -26,15 +26,29 @@ enum class OuterFecErrorCode : std::uint8_t
     ExtraInsufficient,
     CodecError,
     OutOfMemory,
-    UnsupportedPlatform
+    UnsupportedPlatform,
+    // Keep new local API errors append-only so existing diagnostic values do
+    // not change for consumers that record the underlying byte.
+    InvalidResourcePolicy,
+    OuterFecDecoderQuotaExceeded,
+    OuterBlockConflict,
+    CsprngFailure
+};
+
+enum class DecodeDisposition : std::uint8_t
+{
+    NeedMore,
+    Ready
 };
 
 struct OuterFecError
 {
     OuterFecErrorCode code = OuterFecErrorCode::None;
     // BufferTooSmall carries the required byte count. Dimension and binding
-    // errors carry the offending value. CodecError carries the raw Wirehair
-    // result when it is unknown or invalid in the current operation.
+    // errors carry the offending value. Decoder quota failures carry the
+    // requested admission charge or count. OuterBlockConflict carries the
+    // conflicting OuterBlockId. CodecError carries the raw Wirehair result
+    // when it is unknown or invalid in the current operation.
     std::uint64_t detail = 0;
 
     bool operator==(const OuterFecError&) const = default;

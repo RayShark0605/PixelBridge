@@ -68,6 +68,10 @@ baseline, not a certified performance profile. Its current budgets are:
 | dynamic descriptor state per Session | 64 MiB |
 | concurrent Sessions | 4 |
 | aggregate reserved descriptor state | 256 MiB |
+| DirectRepeat blocks per Segment | 64 |
+| active Outer FEC decoders | 4 |
+| admission charge per Outer FEC decoder | 512 MiB |
+| aggregate Outer FEC decoder charge | 1 GiB |
 
 The descriptor state uses a policy-bounded memory resource for both Segment
 maps. A per-Session budget refusal returns terminal
@@ -76,13 +80,63 @@ maps. A per-Session budget refusal returns terminal
 new admission. Session-registry admission failures occur before a Session is
 published and may be retried after capacity is released.
 
+Outer FEC decoder admission is owned by one receiver-wide
+`OuterFecDecoderResourceManager`; `WirehairV2DecoderResourceManager` remains a
+source-compatible alias. DirectRepeat and Wirehair V2 consume the same active,
+per-decoder, and aggregate caps, so neither mode can bypass receiver admission.
+The DirectRepeat charge includes the exact encoded buffer, received bitmap, and
+a fixed wrapper allowance. The Wirehair charge covers the complete
+accepted-payload window, wrapper and pinned-backend ID tables, solver/work
+allowance, per-row state, and fixed state. Admission occurs before any large
+wrapper allocation or third-party codec creation. A quota refusal returns
+`OuterFecDecoderQuotaExceeded`; a reservation is released by RAII after every
+failed create, move/destruction, and concurrent shutdown path. These charges are
+deliberately conservative and are not claimed as allocator-exact RSS telemetry.
+The DirectRepeat block-count ceiling is an independent work/liveness budget:
+it prevents a valid `OuterBlockBytes=1` descriptor from turning one 32 MiB
+Segment into 33,554,432 decode operations while staying inside byte quotas.
+
+One receiver owns exactly one manager and shares it with every decoder.
+Concurrent admission and counter queries are supported while that manager
+object remains stable. Receiver shutdown must stop new admission before moving
+or destroying the manager; already-created decoders retain the shared state and
+may release their reservations concurrently during worker teardown.
+
+DirectRepeat uses `DirectBlockCount = ceil(EncodedSize / OuterBlockBytes)` and
+the `OuterBlockId` as its ordinal. A short final block carries its true
+`PayloadBytes`; the rest of the fixed payload region must be canonical zero
+padding. Equal duplicates are idempotent, while a structurally valid duplicate
+with different real payload is terminal `OuterBlockConflict`. Recovery becomes
+available only after every ordinal is present and the exact reassembled bytes
+match the descriptor's BLAKE3 `EncodedDigest`. For an empty file the count is
+zero and no Segment descriptor or Data Block exists; the existing descriptor
+validator continues to reject zero-length Segment descriptors.
+
+The Phase-0 sender efficiency gate defaults to DirectRepeat for `K=0..2` and
+Wirehair V2 for `K=3..64000`; a profile may supply a different frozen,
+benchmark-backed threshold through `OuterFecModeSelectionPolicy`. That sender
+threshold must be coordinated with the profile's receiver work quota. The mode
+is chosen before the descriptor is frozen and is never changed as a
+codec-creation fallback. `K>64000` requires Segment splitting or a different
+valid block size.
+
+The provisional Transport `PayloadBytes` field is `uint16`, so structural
+validation, sender codec creation, and receiver policy all enforce
+`OuterBlockBytes <= 65535`. DirectRepeat decoder creation additionally receives
+the current Visual Profile's expected block size and compares it to the
+descriptor before reservation or allocation. This explicit API check is the
+Phase-0 bridge until `SessionVisualProfileId` is serialized in the formal v1
+descriptor.
+
 Every receiver-policy field must be non-zero, finite, and representable in the
-implementation type used for its single allocation or container count. The
-maximum value of each field's integer type is an invalid unbounded sentinel,
-including the file, Segment, encoded/raw byte, and outer-block limits. The
-per-Session, concurrent-Session, and aggregate descriptor limits remain
-independent caps; admission applies the aggregate cap before publishing a new
-Session.
+implementation type used for its single allocation or container count.
+Unbounded `uint64` sentinels are invalid. The two explicitly bounded protocol
+ceilings are `OuterBlockBytes=65535` and
+`DirectBlockCount=UINT32_MAX+1`; either exact ceiling remains structurally
+representable, subject to the receiver's normally much smaller local quotas.
+The per-Session, concurrent-Session, aggregate descriptor, and three Outer FEC
+decoder limits remain independent caps; admission applies each aggregate cap
+before publishing the corresponding state.
 
 The policy also rejects a Session whose declared map cannot possibly cover its
 file under `maxRawSegmentBytes`, including:

@@ -9,7 +9,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 | --- | --- |
 | `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | 应用（当前为控制台空壳，Qt 6 UI 在后续里程碑接入） |
 | `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec` | 核心静态库（禁止依赖 Qt） |
-| `tools`、`fuzz`、`benchmarks` | 独立可选子图；fuzz 与 descriptor-state benchmark 已有真实 target |
+| `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
 | `docs` | 设计文档 |
 
@@ -57,7 +57,25 @@ frame（包括 final block/checksum），且输出严格等于 Descriptor `RawSi
 前置条件保证任何 zstd context 或输出 allocation 创建前，Descriptor 的 raw 和
 encoded 配额已经验证。
 
-## Outer FEC / Wirehair V2
+## Outer FEC / DirectRepeat / Wirehair V2
+
+`ChooseOuterFecMode()` 在 Wirehair 硬维度之外应用显式效率 gate：Phase-0
+保守默认值令压缩后的 `K = ceil(EncodedSize / OuterBlockBytes)` 为 `0..2` 时选择
+`DirectRepeat`，`3..64000` 选择 `WirehairV2`。Certified Profile 可以用 benchmark
+结果显式传入另一个已冻结的 `OuterFecModeSelectionPolicy` 阈值，但必须在 Descriptor 冻结前
+决定，禁止 Wirehair 创建失败后 silent fallback。大于 `64000` 仍要求上层拆分
+Segment 或调整 block size。0-byte 的 block count 为 0；空文件路径不创建
+`SegmentDescriptor`，也不发送 Data Block。
+
+DirectRepeat 的 `OuterBlockId` 是从 0 开始的 ordinal。每个 block 携带真实
+`PayloadBytes`，固定 `OuterBlockBytes` payload 区的 short tail 必须使用 canonical
+zero padding。Decoder 支持乱序和相同 block 的幂等重复；同一 ordinal 的不同有效
+payload 返回终止性的 `OuterBlockConflict`。仅当全部 ordinal 收齐且重组结果通过
+BLAKE3 `EncodedDigest` 后，`Recover()` 才会返回 exact Encoded Segment bytes。
+当前 provisional Transport 的 `PayloadBytes` 为 `uint16`，所以所有入口都强制
+`1 <= OuterBlockBytes <= 65535`，custom receiver policy 也不能放宽这一 wire 上限。
+`DirectRepeatDecoder::Create()` 还必须接收当前固定 Visual Profile 派生的 expected
+`OuterBlockBytes` 并在任何 reservation/allocation 前与 Descriptor 精确比对。
 
 `PBOuterFec` 只使用 Wirehair V2 canonical serialized-profile API。初次创建默认
 显式选择 `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`（不使用 `CURRENT`），保存上游
@@ -65,15 +83,33 @@ encoded 配额已经验证。
 `0..K-1` 为 systematic，`K..` 为 repair。
 
 `WirehairV2Encoder::Recreate()` 先验证 `EncodedSize`、`OuterBlockBytes`、
-`2 <= K <= 64000` 与 BLAKE3 `EncodedDigest`，再确认 exact bytes 对应的 canonical
-selection 与 saved descriptor 逐字节一致，最后使用 saved descriptor 与 exact
-Encoded Segment bytes 调用 `wirehair_v2_encoder_create_profile()`。不会用新 profile、
-seed 或 attempt 替换保存状态。
+`2 <= K <= 64000` 与 BLAKE3 `EncodedDigest`，随后直接使用 saved descriptor 与
+exact Encoded Segment bytes 调用 `wirehair_v2_encoder_create_profile()`；Carousel
+路径不会调用 profile-ID selector，也不会用新 profile、seed 或 attempt 替换保存状态。
+saved descriptor 是否为该 Segment 首次绑定的 exact 32 bytes，必须由上层 descriptor
+conflict state 保证，不能靠 profile ID 或重新选择来“认证”。
 
 Decoder 将 `NeedMore` 作为正常增量状态；`ExtraInsufficient`、OOM、unsupported、
 bad seed、invalid input 与未知 codec 结果均显式 fail closed。accepted block-ID
-冲突检测有固定上限，不假设一个 decoder 能无限接收新的 repair IDs；
+冲突检测使用 BLAKE3-128 fingerprint、独立的 per-decoder OS-CSPRNG hash salt 和
+固定 64-probe 上限；该 wrapper table 不复制 Wirehair 的私有 bucket placement，
+两者是独立防线。实现不假设一个 decoder 能无限接收新的 repair IDs；
 `ExtraInsufficient` 后必须销毁该实例并由上层用完整新 repair window 重建。
+
+`DirectRepeatDecoder::Create()` 与 `WirehairV2Decoder::Create()` 必须接收同一个
+receiver-wide `OuterFecDecoderResourceManager`；旧名称
+`WirehairV2DecoderResourceManager` 是源码兼容别名。manager 在任何 DirectRepeat
+encoded buffer/bitmap、Wirehair wrapper 大分配或 codec 创建前，原子执行
+active-decoder、per-decoder admission charge 与 aggregate charge 三重配额，并以
+RAII 在创建失败、move、析构和并发 shutdown 路径精确回收。默认
+`ReceiverResourcePolicy` 为最多 64 个 DirectRepeat ordinal、4 个 active Outer FEC
+decoder、每个 512 MiB charge、aggregate 1 GiB；这些是本地保守 admission 值，
+不进入 wire，也不是精确 RSS 计量。policy 是非 aggregate 类型，调用方应从
+`GetDefaultReceiverResourcePolicy()` 开始按字段收紧，避免新增 quota 被旧 positional
+initializer 静默置零。
+同一 receiver 必须只建立并共享一个 manager；`Create()`/计数查询可并发调用，但
+manager 的 move/析构必须在停止新 admission 后由 owner 排序，已存在 decoder 的并发
+析构仍由共享 reservation state 安全回收。
 
 Profile ID 只选择方程兼容性，不认证发送者。canonical descriptor、CRC、
 `EncodedDigest` 以及任何 in-band whole-file digest 也不能单独提供发送者认证；
@@ -128,13 +164,13 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | --- | --- | --- |
 | `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
-| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBCompressionZstdBoundaryFuzz` |
-| `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark` |
+| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
+| `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
 
-fuzz 与 benchmark 共用 `PBProtocol`，但 fuzz 构建会对 `PBProtocol` 和
-`PBCompression` 静态库本身启用 AddressSanitizer，而不是只插桩 driver，
+fuzz 与 benchmark 共用核心库，但 fuzz 构建会对 `PBProtocol`、
+`PBCompression` 和 `PBOuterFec` 静态库本身启用 AddressSanitizer，而不是只插桩 driver，
 因此两者必须使用不同 build directory。Clang target 使用 libFuzzer +
 ASan/UBSan；MSVC target 使用确定性 mutation runner + ASan。fuzz 配置与运行示例：
 
@@ -156,6 +192,10 @@ ctest --test-dir build-fuzz-msvc --build-config RelWithDebInfo `
   2000 13464654573299691533
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
   2000 13856851484949778996
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBOuterFecWirehairV2Fuzz.exe `
+  1000 6289371488644456784
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBOuterFecDirectRepeatFuzz.exe `
+  2000 4923072552113298010
 
 # Replay one pinned PBCompression corpus input.
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
@@ -173,6 +213,9 @@ cmake -S . -B build-bench -G "Visual Studio 17 2022" -A x64 `
   -DPB_BUILD_TOOLS=ON `
   -DPB_BUILD_FUZZERS=OFF `
   -DPB_BUILD_BENCHMARKS=ON
+cmake --build build-bench --config Release --parallel
+.\build-bench\benchmarks\Release\PBOuterFecWirehairV2Benchmark.exe 5
+.\build-bench\benchmarks\Release\PBOuterFecDirectRepeatBenchmark.exe 100
 ```
 
 若在同一个 build directory 中同时启用两个选项，CMake 会以

@@ -1,3 +1,4 @@
+#include "pbouterfec/direct_repeat.h"
 #include "pbouterfec/wirehair_v2.h"
 
 #include <algorithm>
@@ -41,6 +42,33 @@ int main()
             message.begin() + static_cast<std::ptrdiff_t>(firstBlock.size())))
     {
         return 4;
+    }
+
+    const std::array<std::byte, 3> directMessage{
+        static_cast<std::byte>(0x31),
+        static_cast<std::byte>(0x32),
+        static_cast<std::byte>(0x33)};
+    auto directEncoderResult = pbouterfec::DirectRepeatEncoder::Create(
+        directMessage, 4);
+    if (!directEncoderResult)
+    {
+        return 5;
+    }
+    pbouterfec::DirectRepeatEncoder directEncoder =
+        std::move(directEncoderResult).Value();
+    if (directEncoder.GetBlockCount() != 1)
+    {
+        return 6;
+    }
+
+    std::array<std::byte, 4> directBlock{};
+    const auto directEncodeResult = directEncoder.EncodeBlock(0, directBlock);
+    if (!directEncodeResult || directEncodeResult.Value() != 3 ||
+        !std::equal(
+            directMessage.begin(), directMessage.end(), directBlock.begin()) ||
+        directBlock.back() != std::byte{0})
+    {
+        return 7;
     }
     return 0;
 }
