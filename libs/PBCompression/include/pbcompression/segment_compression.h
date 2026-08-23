@@ -11,10 +11,10 @@
 
 namespace pbcompression {
 
-// Smallest output capacity needed to start a zstd frame (magic plus header
-// minimum). maxOutputBytes must stay at least this large so the first header
-// can always be emitted.
-inline constexpr std::uint64_t kMinFrameBytes = 64;
+// ZSTD_compressStream2 can make progress with a one-byte destination. Keeping
+// this minimum at one allows CompressSegment() to prove that a tiny zstd frame
+// cannot fit and safely select Raw when the raw payload itself fits.
+inline constexpr std::uint64_t kMinFrameBytes = 1;
 
 // Starting output capacity when the expected raw size is unknown.
 inline constexpr std::uint64_t kInitialStreamBytes = 65536;
@@ -56,7 +56,7 @@ class SegmentCompressor
 public:
     SegmentCompressor(const SegmentCompressor&) = delete;
     SegmentCompressor& operator=(const SegmentCompressor&) = delete;
-    SegmentCompressor(SegmentCompressor&&) noexcept;
+    SegmentCompressor(SegmentCompressor&& other) noexcept;
     SegmentCompressor& operator=(SegmentCompressor&&) = delete;
     ~SegmentCompressor();
 

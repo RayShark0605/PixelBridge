@@ -10,12 +10,79 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <new>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace pbcompression {
+namespace {
+
+static_assert(
+    kZstdFrameHeaderMaximumBytes == ZSTD_FRAMEHEADERSIZE_MAX,
+    "PBCompression's bounded header staging must track zstd's maximum frame header size");
+
+[[nodiscard]] bool FitsByteVector(const std::uint64_t byteCount) noexcept
+{
+    const auto sizeResult = pbprotocol::CheckedUint64ToSize(byteCount);
+    if (!sizeResult)
+    {
+        return false;
+    }
+
+    const std::vector<std::byte> emptyBytes;
+    return sizeResult.Value() <= emptyBytes.max_size();
+}
+
+[[nodiscard]] std::optional<std::uint64_t> NarrowSizeToUint64(
+    const std::size_t byteCount) noexcept
+{
+    const auto sizeResult =
+        pbprotocol::CheckedNarrowUnsigned<std::uint64_t>(byteCount);
+    if (!sizeResult)
+    {
+        return std::nullopt;
+    }
+    return sizeResult.Value();
+}
+
+[[nodiscard]] CompressionStatus MakeFailure(
+    std::optional<CompressionError>& terminalError,
+    const CompressionErrorCode code,
+    const std::uint64_t detail = 0) noexcept
+{
+    terminalError = CompressionError{code, detail};
+    return CompressionStatus::Failure(code, detail);
+}
+
+[[nodiscard]] CompressionError MapZstdDecompressionResult(
+    const std::size_t functionResult) noexcept
+{
+    const ZSTD_ErrorCode errorCode = ZSTD_getErrorCode(functionResult);
+    if (errorCode == ZSTD_error_frameParameter_windowTooLarge)
+    {
+        return CompressionError{
+            CompressionErrorCode::WindowLimitExceeded,
+            static_cast<std::uint64_t>(errorCode)};
+    }
+    return detail::MapZstdFunctionResult(functionResult);
+}
+
+} // namespace
+
+DecompressionLimits MakeDecompressionLimits(
+    const pbprotocol::ReceiverResourcePolicy& resourcePolicy,
+    const std::uint32_t maxWindowLog) noexcept
+{
+    DecompressionLimits limits;
+    limits.maxOutputBytes = resourcePolicy.maxRawSegmentBytes;
+    limits.maxWindowLog = maxWindowLog;
+    limits.maxInputBytes = resourcePolicy.maxEncodedSegmentBytes;
+    return limits;
+}
 
 CompressionStatus ValidateDecompressionLimits(
     const DecompressionLimits& limits) noexcept
@@ -33,12 +100,17 @@ CompressionStatus ValidateDecompressionLimits(
             CompressionErrorCode::InvalidMaxWindowLog,
             static_cast<std::uint64_t>(limits.maxWindowLog));
     }
-    if (limits.maxOutputBytes
-        == std::numeric_limits<std::uint64_t>::max())
+    if (!FitsByteVector(limits.maxOutputBytes))
     {
         return CompressionStatus::Failure(
             CompressionErrorCode::InvalidMaxOutputBytes,
             limits.maxOutputBytes);
+    }
+    if (!FitsByteVector(limits.maxInputBytes))
+    {
+        return CompressionStatus::Failure(
+            CompressionErrorCode::InvalidMaxInputBytes,
+            limits.maxInputBytes);
     }
     return CompressionStatus::Success();
 }
@@ -47,26 +119,32 @@ SegmentDecompressor::SegmentDecompressor() noexcept = default;
 
 SegmentDecompressor::SegmentDecompressor(SegmentDecompressor&& other) noexcept
     : limits_(other.limits_)
+    , expectedEncodedSize_(other.expectedEncodedSize_)
     , expectedRawSize_(other.expectedRawSize_)
+    , receivedEncodedBytes_(other.receivedEncodedBytes_)
     , decompressContext_(other.decompressContext_)
-    , inputBuffer_(std::move(other.inputBuffer_))
-    , inputPosition_(other.inputPosition_)
+    , frameHeaderBuffer_(other.frameHeaderBuffer_)
+    , frameHeaderBufferedBytes_(other.frameHeaderBufferedBytes_)
     , outputBuffer_(std::move(other.outputBuffer_))
     , producedBytes_(other.producedBytes_)
     , frameComplete_(other.frameComplete_)
     , frameFinished_(other.frameFinished_)
-    , frameContentSizeChecked_(other.frameContentSizeChecked_)
-    , frameHeaderBytes_(other.frameHeaderBytes_)
+    , frameHeaderParsed_(other.frameHeaderParsed_)
+    , frameContentSizeKnown_(other.frameContentSizeKnown_)
     , moved_(false)
     , terminalError_(other.terminalError_)
 {
     other.decompressContext_ = nullptr;
-    other.inputBuffer_.clear();
-    other.inputPosition_ = 0;
+    other.expectedEncodedSize_ = 0;
+    other.expectedRawSize_ = 0;
+    other.receivedEncodedBytes_ = 0;
+    other.frameHeaderBufferedBytes_ = 0;
     other.outputBuffer_.clear();
     other.producedBytes_ = 0;
     other.frameComplete_ = false;
-    other.frameHeaderBytes_ = 0;
+    other.frameFinished_ = false;
+    other.frameHeaderParsed_ = false;
+    other.frameContentSizeKnown_ = false;
     other.moved_ = true;
     other.terminalError_ = CompressionError{
         CompressionErrorCode::InvalidState, 0};
@@ -83,6 +161,7 @@ SegmentDecompressor::~SegmentDecompressor()
 
 CompressionResult<SegmentDecompressor> SegmentDecompressor::Create(
     const DecompressionLimits& limits,
+    const std::uint64_t expectedEncodedSize,
     const std::uint64_t expectedRawSize)
 {
     const CompressionStatus limitsStatus =
@@ -93,67 +172,93 @@ CompressionResult<SegmentDecompressor> SegmentDecompressor::Create(
             limitsStatus.Error().code, limitsStatus.Error().detail);
     }
 
-    // Policy runs before allocation (33.1): the requested output must fit
-    // the configured budget before any buffer exists.
+    if (expectedEncodedSize == 0
+        || !FitsByteVector(expectedEncodedSize))
+    {
+        return CompressionResult<SegmentDecompressor>::Failure(
+            CompressionErrorCode::InvalidExpectedEncodedSize,
+            expectedEncodedSize);
+    }
+    if (expectedEncodedSize > limits.maxInputBytes)
+    {
+        return CompressionResult<SegmentDecompressor>::Failure(
+            CompressionErrorCode::InputLimitExceeded,
+            expectedEncodedSize);
+    }
     if (expectedRawSize > limits.maxOutputBytes)
     {
         return CompressionResult<SegmentDecompressor>::Failure(
             CompressionErrorCode::OutputLimitExceeded, expectedRawSize);
     }
 
-    ZSTD_DStream* decompressStream = ZSTD_createDStream();
+    std::uint64_t outputBytes = expectedRawSize;
+    if (expectedRawSize < limits.maxOutputBytes)
+    {
+        const auto probeSizeResult = pbprotocol::CheckedAddUint64(
+            expectedRawSize, 1);
+        if (!probeSizeResult
+            || probeSizeResult.Value() > limits.maxOutputBytes)
+        {
+            return CompressionResult<SegmentDecompressor>::Failure(
+                CompressionErrorCode::InvalidExpectedRawSize,
+                expectedRawSize);
+        }
+        outputBytes = probeSizeResult.Value();
+    }
+
+    const auto outputSizeResult =
+        pbprotocol::CheckedUint64ToSize(outputBytes);
+    if (!outputSizeResult || !FitsByteVector(outputBytes))
+    {
+        return CompressionResult<SegmentDecompressor>::Failure(
+            CompressionErrorCode::InvalidExpectedRawSize, outputBytes);
+    }
+
+    SegmentDecompressor decompressor;
+    try
+    {
+        decompressor.outputBuffer_.resize(outputSizeResult.Value());
+    }
+    catch (const std::bad_alloc&)
+    {
+        return CompressionResult<SegmentDecompressor>::Failure(
+            CompressionErrorCode::AllocationFailure);
+    }
+    catch (const std::length_error&)
+    {
+        return CompressionResult<SegmentDecompressor>::Failure(
+            CompressionErrorCode::InvalidExpectedRawSize, outputBytes);
+    }
+
+    using DecompressStreamPointer =
+        std::unique_ptr<ZSTD_DStream, decltype(&ZSTD_freeDStream)>;
+    DecompressStreamPointer decompressStream(
+        ZSTD_createDStream(), &ZSTD_freeDStream);
     if (decompressStream == nullptr)
     {
         return CompressionResult<SegmentDecompressor>::Failure(
             CompressionErrorCode::AllocationFailure);
     }
 
-    auto releaseAndFail = [decompressStream](const std::size_t functionResult)
-    {
-        const CompressionError mappedError =
-            detail::MapZstdFunctionResult(functionResult);
-        ZSTD_freeDStream(decompressStream);
-        return CompressionResult<SegmentDecompressor>::Failure(
-            mappedError.code, mappedError.detail);
-    };
-
-    // The DStream layout keeps the DCtx as its first member; zstd itself
-    // relies on that cast internally, so the public layout contract holds.
+    // ZSTD_DStream is zstd's streaming alias for ZSTD_DCtx; keep zstd types
+    // out of the public header while configuring the documented DCtx limit.
     const std::size_t windowLimitResult = ZSTD_DCtx_setParameter(
-        static_cast<ZSTD_DCtx*>(decompressStream),
+        static_cast<ZSTD_DCtx*>(decompressStream.get()),
         ZSTD_d_windowLogMax,
         static_cast<int>(limits.maxWindowLog));
     if (ZSTD_isError(windowLimitResult))
     {
-        return releaseAndFail(windowLimitResult);
-    }
-
-    // One probe byte beyond the expected size (when the budget allows) so
-    // an overrunning frame writes into the probe instead of escaping the
-    // bound; expectedRawSize <= maxOutputBytes < UINT64_MAX, so the +1
-    // cannot overflow.
-    const std::uint64_t outputBytes =
-        expectedRawSize + 1 <= limits.maxOutputBytes
-            ? expectedRawSize + 1
-            : expectedRawSize;
-
-    SegmentDecompressor decompressor;
-    try
-    {
-        decompressor.outputBuffer_.resize(
-            static_cast<std::size_t>(outputBytes));
-    }
-    catch (const std::bad_alloc&)
-    {
-        ZSTD_freeDStream(decompressStream);
+        const CompressionError mappedError =
+            detail::MapZstdFunctionResult(windowLimitResult);
         return CompressionResult<SegmentDecompressor>::Failure(
-            CompressionErrorCode::AllocationFailure);
+            mappedError.code, mappedError.detail);
     }
 
     decompressor.limits_ = limits;
+    decompressor.expectedEncodedSize_ = expectedEncodedSize;
     decompressor.expectedRawSize_ = expectedRawSize;
     decompressor.decompressContext_ =
-        static_cast<void*>(decompressStream);
+        static_cast<void*>(decompressStream.release());
     return CompressionResult<SegmentDecompressor>::Success(
         std::move(decompressor));
 }
@@ -173,61 +278,246 @@ CompressionStatus SegmentDecompressor::CheckWritableState() const noexcept
     return CompressionStatus::Success();
 }
 
-CompressionStatus SegmentDecompressor::CheckFrameContentSizePrefix()
+CompressionStatus SegmentDecompressor::DecodeInput(
+    const std::span<const std::byte> input)
 {
-    if (frameContentSizeChecked_ || inputBuffer_.empty())
+    if (input.empty())
     {
         return CompressionStatus::Success();
     }
-    if (inputBuffer_.size() < ZSTD_FRAMEHEADERSIZE_MAX)
+    const std::optional<std::uint64_t> inputBytesResult =
+        NarrowSizeToUint64(input.size());
+    if (!inputBytesResult.has_value())
     {
-        // A header parse below the maximum header size is not
-        // authoritative; keep accumulating until the full header is in.
-        return CompressionStatus::Success();
+        return MakeFailure(
+            terminalError_, CompressionErrorCode::InputLimitExceeded);
     }
-    frameContentSizeChecked_ = true;
+    if (frameComplete_)
+    {
+        return MakeFailure(
+            terminalError_,
+            CompressionErrorCode::TrailingInput,
+            inputBytesResult.value());
+    }
 
-    // The buffer holds at least ZSTD_FRAMEHEADERSIZE_MAX bytes, so a
-    // parse success is authoritative for the exact header and content
-    // sizes; a parse failure is corruption, not "read more input".
-    ZSTD_FrameHeader frameHeader{};
-    const std::size_t headerParseResult = ZSTD_getFrameHeader(
-        &frameHeader, inputBuffer_.data(), inputBuffer_.size());
-    if (ZSTD_isError(headerParseResult))
+    ZSTD_DStream* const decompressStream =
+        static_cast<ZSTD_DStream*>(decompressContext_);
+    std::size_t inputPosition = 0;
+    while (inputPosition < input.size() && !frameComplete_)
     {
-        const CompressionError mappedError =
-            detail::MapZstdFunctionResult(headerParseResult);
-        terminalError_ = mappedError;
-        return CompressionStatus::Failure(
-            mappedError.code, mappedError.detail);
-    }
-    frameHeaderBytes_ = frameHeader.headerSize;
+        const auto producedSizeResult =
+            pbprotocol::CheckedUint64ToSize(producedBytes_);
+        if (!producedSizeResult
+            || producedSizeResult.Value() > outputBuffer_.size())
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::OutputLimitExceeded,
+                producedBytes_);
+        }
 
-    if (frameHeader.frameContentSize == ZSTD_CONTENTSIZE_ERROR)
-    {
-        // Defensive: a valid header parse should not yield this
-        // sentinel, but keep the old fail-closed branch anyway.
-        const CompressionError corruptedError{
-            CompressionErrorCode::CorruptedFrame,
-            static_cast<std::uint64_t>(ZSTD_error_prefix_unknown)};
-        terminalError_ = corruptedError;
-        return CompressionStatus::Failure(
-            corruptedError.code, corruptedError.detail);
+        const std::size_t producedSize = producedSizeResult.Value();
+        const std::size_t freeBytes = outputBuffer_.size() - producedSize;
+        ZSTD_inBuffer inputChunk{};
+        inputChunk.src = input.data() + inputPosition;
+        inputChunk.size = input.size() - inputPosition;
+        inputChunk.pos = 0;
+        ZSTD_outBuffer outputChunk{};
+        outputChunk.dst = outputBuffer_.empty()
+            ? nullptr
+            : static_cast<void*>(outputBuffer_.data() + producedSize);
+        outputChunk.size = freeBytes;
+        outputChunk.pos = 0;
+
+        const std::size_t decodeResult = ZSTD_decompressStream(
+            decompressStream, &outputChunk, &inputChunk);
+        if (ZSTD_isError(decodeResult))
+        {
+            const CompressionError mappedError =
+                MapZstdDecompressionResult(decodeResult);
+            return MakeFailure(
+                terminalError_, mappedError.code, mappedError.detail);
+        }
+
+        const std::optional<std::uint64_t> outputBytesResult =
+            NarrowSizeToUint64(outputChunk.pos);
+        if (!outputBytesResult.has_value())
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::OutputLimitExceeded,
+                producedBytes_);
+        }
+        const auto producedBytesResult = pbprotocol::CheckedAddUint64(
+            producedBytes_,
+            outputBytesResult.value());
+        if (!producedBytesResult)
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::OutputLimitExceeded,
+                producedBytes_);
+        }
+        producedBytes_ = producedBytesResult.Value();
+        const auto inputPositionResult = pbprotocol::CheckedAddSize(
+            inputPosition, inputChunk.pos);
+        if (!inputPositionResult
+            || inputPositionResult.Value() > input.size())
+        {
+            return MakeFailure(
+                terminalError_, CompressionErrorCode::ZstdError);
+        }
+        inputPosition = inputPositionResult.Value();
+
+        if (producedBytes_ > expectedRawSize_)
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::OutputLimitExceeded,
+                producedBytes_);
+        }
+        if (decodeResult == 0)
+        {
+            frameComplete_ = true;
+            break;
+        }
+        if (inputChunk.pos == 0 && outputChunk.pos == 0)
+        {
+            const CompressionErrorCode stalledCode = freeBytes == 0
+                ? CompressionErrorCode::OutputLimitExceeded
+                : CompressionErrorCode::IncompleteFrame;
+            return MakeFailure(terminalError_, stalledCode, 0);
+        }
     }
-    if (frameHeader.frameContentSize == ZSTD_CONTENTSIZE_UNKNOWN)
+
+    if (frameComplete_ && inputPosition != input.size())
     {
-        // No FCS field in this frame header; the strict produced-size
-        // check at Finish() still applies.
-        return CompressionStatus::Success();
+        const std::optional<std::uint64_t> trailingBytesResult =
+            NarrowSizeToUint64(input.size() - inputPosition);
+        return MakeFailure(
+            terminalError_,
+            CompressionErrorCode::TrailingInput,
+            trailingBytesResult.value_or(
+                std::numeric_limits<std::uint64_t>::max()));
     }
-    if (frameHeader.frameContentSize > limits_.maxOutputBytes)
+    return CompressionStatus::Success();
+}
+
+CompressionStatus SegmentDecompressor::ParseAndDecodeFrameHeader(
+    std::span<const std::byte>& remainingInput)
+{
+    while (!frameHeaderParsed_ && !remainingInput.empty())
     {
-        const CompressionError limitError{
-            CompressionErrorCode::OutputLimitExceeded,
-            frameHeader.frameContentSize};
-        terminalError_ = limitError;
-        return CompressionStatus::Failure(
-            limitError.code, limitError.detail);
+        const std::size_t availableHeaderBytes =
+            frameHeaderBuffer_.size() - frameHeaderBufferedBytes_;
+        const std::size_t copyBytes = std::min(
+            availableHeaderBytes, remainingInput.size());
+        std::copy_n(
+            remainingInput.begin(),
+            copyBytes,
+            frameHeaderBuffer_.begin()
+                + static_cast<std::ptrdiff_t>(frameHeaderBufferedBytes_));
+        const auto bufferedBytesResult = pbprotocol::CheckedAddSize(
+            frameHeaderBufferedBytes_, copyBytes);
+        if (!bufferedBytesResult
+            || bufferedBytesResult.Value() > frameHeaderBuffer_.size())
+        {
+            return MakeFailure(
+                terminalError_, CompressionErrorCode::CorruptedFrame);
+        }
+        frameHeaderBufferedBytes_ = bufferedBytesResult.Value();
+        remainingInput = remainingInput.subspan(copyBytes);
+
+        ZSTD_FrameHeader frameHeader{};
+        const std::size_t headerParseResult = ZSTD_getFrameHeader(
+            &frameHeader,
+            frameHeaderBuffer_.data(),
+            frameHeaderBufferedBytes_);
+        if (ZSTD_isError(headerParseResult))
+        {
+            const CompressionError mappedError =
+                detail::MapZstdFunctionResult(headerParseResult);
+            return MakeFailure(
+                terminalError_, mappedError.code, mappedError.detail);
+        }
+        if (headerParseResult != 0)
+        {
+            if (frameHeaderBufferedBytes_ == frameHeaderBuffer_.size())
+            {
+                return MakeFailure(
+                    terminalError_,
+                    CompressionErrorCode::CorruptedFrame,
+                    static_cast<std::uint64_t>(headerParseResult));
+            }
+            continue;
+        }
+
+        if (frameHeader.frameType != ZSTD_frame)
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::CorruptedFrame,
+                static_cast<std::uint64_t>(frameHeader.frameType));
+        }
+        if (frameHeader.headerSize == 0
+            || frameHeader.headerSize > frameHeaderBufferedBytes_)
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::CorruptedFrame,
+                static_cast<std::uint64_t>(frameHeader.headerSize));
+        }
+        if (frameHeader.frameContentSize == ZSTD_CONTENTSIZE_ERROR)
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::CorruptedFrame,
+                static_cast<std::uint64_t>(ZSTD_error_prefix_unknown));
+        }
+        if (frameHeader.frameContentSize != ZSTD_CONTENTSIZE_UNKNOWN
+            && frameHeader.frameContentSize != expectedRawSize_)
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::RawSizeMismatch,
+                frameHeader.frameContentSize);
+        }
+        frameContentSizeKnown_ =
+            frameHeader.frameContentSize != ZSTD_CONTENTSIZE_UNKNOWN;
+
+        const std::uint64_t maximumWindowBytes =
+            std::uint64_t{1} << limits_.maxWindowLog;
+        if (frameHeader.windowSize > maximumWindowBytes)
+        {
+            return MakeFailure(
+                terminalError_,
+                CompressionErrorCode::WindowLimitExceeded,
+                frameHeader.windowSize);
+        }
+
+        frameHeaderParsed_ = true;
+        const std::span<const std::byte> exactHeader(
+            frameHeaderBuffer_.data(), frameHeader.headerSize);
+        const CompressionStatus headerStatus = DecodeInput(exactHeader);
+        if (!headerStatus)
+        {
+            return headerStatus;
+        }
+
+        const std::size_t stagedPayloadBytes =
+            frameHeaderBufferedBytes_ - frameHeader.headerSize;
+        if (stagedPayloadBytes != 0)
+        {
+            const std::span<const std::byte> stagedPayload(
+                frameHeaderBuffer_.data() + frameHeader.headerSize,
+                stagedPayloadBytes);
+            const CompressionStatus payloadStatus =
+                DecodeInput(stagedPayload);
+            if (!payloadStatus)
+            {
+                return payloadStatus;
+            }
+        }
     }
     return CompressionStatus::Success();
 }
@@ -244,160 +534,62 @@ CompressionStatus SegmentDecompressor::Update(
     {
         return CompressionStatus::Success();
     }
+    const std::optional<std::uint64_t> inputBytesResult =
+        NarrowSizeToUint64(input.size());
+    if (!inputBytesResult.has_value())
+    {
+        return MakeFailure(
+            terminalError_, CompressionErrorCode::InputLimitExceeded);
+    }
     if (frameComplete_)
     {
-        // Input after a complete frame can only be trailing bytes; feeding
-        // it to the decoder would start a second frame header.
-        const CompressionError trailingError{
+        return MakeFailure(
+            terminalError_,
             CompressionErrorCode::TrailingInput,
-            static_cast<std::uint64_t>(input.size())};
-        terminalError_ = trailingError;
-        return CompressionStatus::Failure(
-            trailingError.code, trailingError.detail);
+            inputBytesResult.value());
     }
 
-    const std::size_t appendPosition = inputBuffer_.size();
-    const auto appendSizeResult = pbprotocol::CheckedAddSize(
-        appendPosition, static_cast<std::size_t>(input.size()));
-    if (!appendSizeResult)
+    const auto receivedBytesResult = pbprotocol::CheckedAddUint64(
+        receivedEncodedBytes_,
+        inputBytesResult.value());
+    if (!receivedBytesResult)
     {
-        const CompressionError limitError{
-            CompressionErrorCode::OutputLimitExceeded, 0};
-        terminalError_ = limitError;
-        return CompressionStatus::Failure(
-            limitError.code, limitError.detail);
+        return MakeFailure(
+            terminalError_,
+            CompressionErrorCode::InputLimitExceeded,
+            receivedEncodedBytes_);
     }
-
-    try
+    if (receivedBytesResult.Value() > limits_.maxInputBytes)
     {
-        inputBuffer_.resize(appendSizeResult.Value());
+        return MakeFailure(
+            terminalError_,
+            CompressionErrorCode::InputLimitExceeded,
+            receivedBytesResult.Value());
     }
-    catch (const std::bad_alloc&)
+    if (receivedBytesResult.Value() > expectedEncodedSize_)
     {
-        const CompressionError allocationError{
-            CompressionErrorCode::AllocationFailure, 0};
-        terminalError_ = allocationError;
-        return CompressionStatus::Failure(
-            allocationError.code, allocationError.detail);
+        return MakeFailure(
+            terminalError_,
+            CompressionErrorCode::EncodedSizeMismatch,
+            receivedBytesResult.Value());
     }
+    receivedEncodedBytes_ = receivedBytesResult.Value();
 
-    std::copy(
-        input.begin(), input.end(),
-        inputBuffer_.data() + appendPosition);
-
-    const CompressionStatus prefixStatus = CheckFrameContentSizePrefix();
-    if (!prefixStatus)
+    std::span<const std::byte> remainingInput = input;
+    if (!frameHeaderParsed_)
     {
-        return prefixStatus;
-    }
-
-    ZSTD_DStream* decompressStream =
-        static_cast<ZSTD_DStream*>(decompressContext_);
-
-    while (inputPosition_ < inputBuffer_.size() && !frameComplete_)
-    {
-        const std::size_t remainingBytes =
-            inputBuffer_.size() - inputPosition_;
-        std::size_t feedBytes = remainingBytes;
-        if (frameHeaderBytes_ != 0
-            && inputPosition_ < frameHeaderBytes_)
+        const CompressionStatus headerStatus =
+            ParseAndDecodeFrameHeader(remainingInput);
+        if (!headerStatus)
         {
-            // Offer only the frame header first: a whole frame in one
-            // call would let the streaming decoder take a single-pass
-            // shortcut that skips the window-limit check, so the header
-            // must be consumed in its own call to force that check.
-            feedBytes = std::min(
-                remainingBytes, frameHeaderBytes_ - inputPosition_);
-        }
-        const std::size_t freeBytes =
-            outputBuffer_.size() - producedBytes_;
-        ZSTD_inBuffer inputChunk{};
-        inputChunk.src = inputBuffer_.data() + inputPosition_;
-        inputChunk.size = feedBytes;
-        inputChunk.pos = 0;
-        ZSTD_outBuffer outputChunk{};
-        outputChunk.dst = outputBuffer_.data() + producedBytes_;
-        outputChunk.size = freeBytes;
-        outputChunk.pos = 0;
-
-        const std::size_t decodeResult = ZSTD_decompressStream(
-            decompressStream, &outputChunk, &inputChunk);
-        if (ZSTD_isError(decodeResult))
-        {
-            const CompressionError mappedError =
-                detail::MapZstdFunctionResult(decodeResult);
-            terminalError_ = mappedError;
-            return CompressionStatus::Failure(
-                mappedError.code, mappedError.detail);
-        }
-
-        const auto producedBytesResult = pbprotocol::CheckedAddUint64(
-            producedBytes_,
-            static_cast<std::uint64_t>(outputChunk.pos));
-        if (!producedBytesResult)
-        {
-            const CompressionError limitError{
-                CompressionErrorCode::OutputLimitExceeded,
-                producedBytes_};
-            terminalError_ = limitError;
-            return CompressionStatus::Failure(
-                limitError.code, limitError.detail);
-        }
-        producedBytes_ = producedBytesResult.Value();
-        inputPosition_ += inputChunk.pos;
-
-        // Order matters: an overrun of the declared expected size is a
-        // limit violation even if the frame happens to complete in the
-        // same call.
-        if (producedBytes_ > expectedRawSize_)
-        {
-            const CompressionError limitError{
-                CompressionErrorCode::OutputLimitExceeded,
-                producedBytes_};
-            terminalError_ = limitError;
-            return CompressionStatus::Failure(
-                limitError.code, limitError.detail);
-        }
-        if (decodeResult == 0)
-        {
-            // 0 means the frame is fully decoded (checksum included) and
-            // the output has been fully flushed.
-            frameComplete_ = true;
-            break;
-        }
-        if (inputChunk.pos == 0 && outputChunk.pos == 0)
-        {
-            // Defensive: with remaining input zstd must make progress or
-            // report an error, so zero progress here means the bounded
-            // output is the blocker, or the frame is incomplete with a
-            // full buffer that can never fill further.
-            const CompressionErrorCode stalledCode =
-                freeBytes == 0
-                    ? CompressionErrorCode::OutputLimitExceeded
-                    : CompressionErrorCode::IncompleteFrame;
-            const CompressionError stalledError{stalledCode, 0};
-            terminalError_ = stalledError;
-            return CompressionStatus::Failure(
-                stalledError.code, stalledError.detail);
+            return headerStatus;
         }
     }
-
-    if (frameComplete_ && inputPosition_ != inputBuffer_.size())
+    if (!frameHeaderParsed_)
     {
-        // The single-pass decoder shortcut consumes exactly the frame
-        // bytes; anything left over is trailing input.
-        const CompressionError trailingError{
-            CompressionErrorCode::TrailingInput,
-            static_cast<std::uint64_t>(
-                inputBuffer_.size() - inputPosition_)};
-        terminalError_ = trailingError;
-        return CompressionStatus::Failure(
-            trailingError.code, trailingError.detail);
+        return CompressionStatus::Success();
     }
-
-    // Exhausted input with an incomplete frame is a legal streaming state;
-    // Finish() decides whether it is a truncation.
-    return CompressionStatus::Success();
+    return DecodeInput(remainingInput);
 }
 
 CompressionResult<std::vector<std::byte>> SegmentDecompressor::Finish()
@@ -408,27 +600,50 @@ CompressionResult<std::vector<std::byte>> SegmentDecompressor::Finish()
         return CompressionResult<std::vector<std::byte>>::Failure(
             stateStatus.Error().code, stateStatus.Error().detail);
     }
-
-    const CompressionStatus prefixStatus = CheckFrameContentSizePrefix();
-    if (!prefixStatus)
+    if (receivedEncodedBytes_ != expectedEncodedSize_)
     {
+        const CompressionStatus mismatchStatus = MakeFailure(
+            terminalError_,
+            CompressionErrorCode::EncodedSizeMismatch,
+            receivedEncodedBytes_);
         return CompressionResult<std::vector<std::byte>>::Failure(
-            prefixStatus.Error().code, prefixStatus.Error().detail);
+            mismatchStatus.Error().code, mismatchStatus.Error().detail);
+    }
+    if (!frameHeaderParsed_)
+    {
+        const CompressionStatus incompleteStatus = MakeFailure(
+            terminalError_, CompressionErrorCode::IncompleteFrame, 0);
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            incompleteStatus.Error().code, incompleteStatus.Error().detail);
     }
 
-    ZSTD_DStream* decompressStream =
+    ZSTD_DStream* const decompressStream =
         static_cast<ZSTD_DStream*>(decompressContext_);
-
     while (!frameComplete_)
     {
-        const std::size_t freeBytes =
-            outputBuffer_.size() - producedBytes_;
+        const auto producedSizeResult =
+            pbprotocol::CheckedUint64ToSize(producedBytes_);
+        if (!producedSizeResult
+            || producedSizeResult.Value() > outputBuffer_.size())
+        {
+            const CompressionStatus limitStatus = MakeFailure(
+                terminalError_,
+                CompressionErrorCode::OutputLimitExceeded,
+                producedBytes_);
+            return CompressionResult<std::vector<std::byte>>::Failure(
+                limitStatus.Error().code, limitStatus.Error().detail);
+        }
+
+        const std::size_t producedSize = producedSizeResult.Value();
+        const std::size_t freeBytes = outputBuffer_.size() - producedSize;
         ZSTD_inBuffer emptyInput{};
         emptyInput.src = nullptr;
         emptyInput.size = 0;
         emptyInput.pos = 0;
         ZSTD_outBuffer outputChunk{};
-        outputChunk.dst = outputBuffer_.data() + producedBytes_;
+        outputChunk.dst = outputBuffer_.empty()
+            ? nullptr
+            : static_cast<void*>(outputBuffer_.data() + producedSize);
         outputChunk.size = freeBytes;
         outputChunk.pos = 0;
 
@@ -437,80 +652,111 @@ CompressionResult<std::vector<std::byte>> SegmentDecompressor::Finish()
         if (ZSTD_isError(decodeResult))
         {
             const CompressionError mappedError =
-                detail::MapZstdFunctionResult(decodeResult);
-            terminalError_ = mappedError;
+                MapZstdDecompressionResult(decodeResult);
+            const CompressionStatus decodeStatus = MakeFailure(
+                terminalError_, mappedError.code, mappedError.detail);
             return CompressionResult<std::vector<std::byte>>::Failure(
-                mappedError.code, mappedError.detail);
+                decodeStatus.Error().code, decodeStatus.Error().detail);
         }
 
+        const std::optional<std::uint64_t> outputBytesResult =
+            NarrowSizeToUint64(outputChunk.pos);
+        if (!outputBytesResult.has_value())
+        {
+            const CompressionStatus limitStatus = MakeFailure(
+                terminalError_,
+                CompressionErrorCode::OutputLimitExceeded,
+                producedBytes_);
+            return CompressionResult<std::vector<std::byte>>::Failure(
+                limitStatus.Error().code, limitStatus.Error().detail);
+        }
         const auto producedBytesResult = pbprotocol::CheckedAddUint64(
             producedBytes_,
-            static_cast<std::uint64_t>(outputChunk.pos));
+            outputBytesResult.value());
         if (!producedBytesResult)
         {
-            const CompressionError limitError{
+            const CompressionStatus limitStatus = MakeFailure(
+                terminalError_,
                 CompressionErrorCode::OutputLimitExceeded,
-                producedBytes_};
-            terminalError_ = limitError;
+                producedBytes_);
             return CompressionResult<std::vector<std::byte>>::Failure(
-                limitError.code, limitError.detail);
+                limitStatus.Error().code, limitStatus.Error().detail);
         }
         producedBytes_ = producedBytesResult.Value();
-
         if (producedBytes_ > expectedRawSize_)
         {
-            const CompressionError limitError{
+            const CompressionStatus limitStatus = MakeFailure(
+                terminalError_,
                 CompressionErrorCode::OutputLimitExceeded,
-                producedBytes_};
-            terminalError_ = limitError;
+                producedBytes_);
             return CompressionResult<std::vector<std::byte>>::Failure(
-                limitError.code, limitError.detail);
+                limitStatus.Error().code, limitStatus.Error().detail);
         }
-
         if (decodeResult == 0)
         {
             frameComplete_ = true;
             break;
         }
-
         if (outputChunk.pos == 0)
         {
-            // Empty input with an incomplete frame: the decoder is waiting
-            // for bytes that never arrive (or the bounded output cannot
-            // absorb the rest of the frame).
+            const bool knownSizeIsFullyProduced =
+                frameContentSizeKnown_
+                && producedBytes_ == expectedRawSize_;
             const CompressionErrorCode stalledCode =
-                freeBytes == 0
+                freeBytes == 0 && !knownSizeIsFullyProduced
                     ? CompressionErrorCode::OutputLimitExceeded
                     : CompressionErrorCode::IncompleteFrame;
-            const CompressionError stalledError{stalledCode, 0};
-            terminalError_ = stalledError;
+            const CompressionStatus stalledStatus = MakeFailure(
+                terminalError_, stalledCode, 0);
             return CompressionResult<std::vector<std::byte>>::Failure(
-                stalledError.code, stalledError.detail);
+                stalledStatus.Error().code, stalledStatus.Error().detail);
         }
-    }
-
-    if (inputPosition_ != inputBuffer_.size())
-    {
-        const CompressionError trailingError{
-            CompressionErrorCode::TrailingInput,
-            static_cast<std::uint64_t>(
-                inputBuffer_.size() - inputPosition_)};
-        terminalError_ = trailingError;
-        return CompressionResult<std::vector<std::byte>>::Failure(
-            trailingError.code, trailingError.detail);
     }
 
     if (producedBytes_ != expectedRawSize_)
     {
-        const CompressionError sizeError{
-            CompressionErrorCode::RawSizeMismatch, producedBytes_};
-        terminalError_ = sizeError;
+        const CompressionStatus mismatchStatus = MakeFailure(
+            terminalError_,
+            CompressionErrorCode::RawSizeMismatch,
+            producedBytes_);
         return CompressionResult<std::vector<std::byte>>::Failure(
-            sizeError.code, sizeError.detail);
+            mismatchStatus.Error().code, mismatchStatus.Error().detail);
     }
 
+    const auto finalSizeResult =
+        pbprotocol::CheckedUint64ToSize(producedBytes_);
+    if (!finalSizeResult
+        || finalSizeResult.Value() > outputBuffer_.size())
+    {
+        const CompressionStatus limitStatus = MakeFailure(
+            terminalError_,
+            CompressionErrorCode::OutputLimitExceeded,
+            producedBytes_);
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            limitStatus.Error().code, limitStatus.Error().detail);
+    }
+    try
+    {
+        outputBuffer_.resize(finalSizeResult.Value());
+    }
+    catch (const std::bad_alloc&)
+    {
+        const CompressionStatus allocationStatus = MakeFailure(
+            terminalError_, CompressionErrorCode::AllocationFailure, 0);
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            allocationStatus.Error().code,
+            allocationStatus.Error().detail);
+    }
+    catch (const std::length_error&)
+    {
+        const CompressionStatus sizeStatus = MakeFailure(
+            terminalError_,
+            CompressionErrorCode::InvalidExpectedRawSize,
+            producedBytes_);
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            sizeStatus.Error().code, sizeStatus.Error().detail);
+    }
     frameFinished_ = true;
-    outputBuffer_.resize(static_cast<std::size_t>(producedBytes_));
     return CompressionResult<std::vector<std::byte>>::Success(
         std::move(outputBuffer_));
 }
@@ -518,6 +764,7 @@ CompressionResult<std::vector<std::byte>> SegmentDecompressor::Finish()
 CompressionResult<std::vector<std::byte>> DecompressSegment(
     const pbprotocol::CompressionCodec codec,
     const std::span<const std::byte> encodedBytes,
+    const std::uint64_t expectedEncodedSize,
     const std::uint64_t expectedRawSize,
     const DecompressionLimits& limits)
 {
@@ -529,25 +776,56 @@ CompressionResult<std::vector<std::byte>> DecompressSegment(
             limitsStatus.Error().code, limitsStatus.Error().detail);
     }
 
+    if (!FitsByteVector(expectedEncodedSize))
+    {
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            CompressionErrorCode::InvalidExpectedEncodedSize,
+            expectedEncodedSize);
+    }
+    if (expectedEncodedSize > limits.maxInputBytes)
+    {
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            CompressionErrorCode::InputLimitExceeded,
+            expectedEncodedSize);
+    }
     if (expectedRawSize > limits.maxOutputBytes)
     {
         return CompressionResult<std::vector<std::byte>>::Failure(
             CompressionErrorCode::OutputLimitExceeded, expectedRawSize);
     }
 
+    const auto actualSizeResult =
+        pbprotocol::CheckedNarrowUnsigned<std::uint64_t>(encodedBytes.size());
+    if (!actualSizeResult)
+    {
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            CompressionErrorCode::InputLimitExceeded,
+            expectedEncodedSize);
+    }
+    if (actualSizeResult.Value() > limits.maxInputBytes)
+    {
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            CompressionErrorCode::InputLimitExceeded,
+            actualSizeResult.Value());
+    }
+    if (actualSizeResult.Value() != expectedEncodedSize)
+    {
+        return CompressionResult<std::vector<std::byte>>::Failure(
+            CompressionErrorCode::EncodedSizeMismatch,
+            actualSizeResult.Value());
+    }
+
     switch (codec)
     {
         case pbprotocol::CompressionCodec::Raw:
         {
-            if (static_cast<std::uint64_t>(encodedBytes.size())
-                != expectedRawSize)
+            if (expectedEncodedSize != expectedRawSize)
             {
-                // On this platform size_t and uint64 have equal width, so
-                // the comparison is exact.
                 return CompressionResult<std::vector<std::byte>>::Failure(
                     CompressionErrorCode::RawSizeMismatch,
-                    static_cast<std::uint64_t>(encodedBytes.size()));
+                    expectedEncodedSize);
             }
+
             std::vector<std::byte> rawBytes;
             try
             {
@@ -558,13 +836,19 @@ CompressionResult<std::vector<std::byte>> DecompressSegment(
                 return CompressionResult<std::vector<std::byte>>::Failure(
                     CompressionErrorCode::AllocationFailure);
             }
+            catch (const std::length_error&)
+            {
+                return CompressionResult<std::vector<std::byte>>::Failure(
+                    CompressionErrorCode::InvalidExpectedRawSize,
+                    expectedRawSize);
+            }
             return CompressionResult<std::vector<std::byte>>::Success(
                 std::move(rawBytes));
         }
         case pbprotocol::CompressionCodec::Zstandard:
         {
             auto decompressorResult = SegmentDecompressor::Create(
-                limits, expectedRawSize);
+                limits, expectedEncodedSize, expectedRawSize);
             if (!decompressorResult)
             {
                 return CompressionResult<std::vector<std::byte>>::Failure(
@@ -582,16 +866,26 @@ CompressionResult<std::vector<std::byte>> DecompressSegment(
                     updateStatus.Error().code,
                     updateStatus.Error().detail);
             }
-
             return decompressor.Finish();
         }
         default:
-            // An unknown codec value is a descriptor conflict: fail closed
-            // with the raw value visible for diagnosis.
             return CompressionResult<std::vector<std::byte>>::Failure(
-                CompressionErrorCode::ZstdError,
+                CompressionErrorCode::UnsupportedCompressionCodec,
                 static_cast<std::uint64_t>(codec));
     }
+}
+
+CompressionResult<std::vector<std::byte>> DecompressSegment(
+    const pbprotocol::SegmentDescriptor& descriptor,
+    const std::span<const std::byte> encodedBytes,
+    const DecompressionLimits& limits)
+{
+    return DecompressSegment(
+        descriptor.compressionCodec,
+        encodedBytes,
+        descriptor.encodedSize,
+        descriptor.rawSize,
+        limits);
 }
 
 } // namespace pbcompression

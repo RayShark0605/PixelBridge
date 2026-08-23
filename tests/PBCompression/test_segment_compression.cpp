@@ -145,7 +145,7 @@ using pbcompression::SegmentDecompressor;
     const std::uint64_t rawBytes,
     const std::uint64_t framingMarginBytes)
 {
-    if (compressedBytes >= std::numeric_limits<std::uint64_t>::max()
+    if (compressedBytes > std::numeric_limits<std::uint64_t>::max()
         - framingMarginBytes)
     {
         return pbprotocol::CompressionCodec::Raw;
@@ -168,6 +168,7 @@ void VerifyRoundTrip(
     const auto decodedResult = pbcompression::DecompressSegment(
         codec,
         std::span<const std::byte>(encoded),
+        encoded.size(),
         input.size(),
         limits);
     REQUIRE(decodedResult.HasValue());
@@ -218,7 +219,72 @@ void CompressInChunks(
     frameOut = frameResult.Value();
 }
 
+void CompressWithoutPledgedSize(
+    const std::vector<std::byte>& input,
+    const CompressionSettings& settings,
+    std::vector<std::byte>& frameOut)
+{
+    auto compressorResult = SegmentCompressor::Create(settings, 0);
+    REQUIRE(compressorResult.HasValue());
+    SegmentCompressor compressor = std::move(compressorResult).Value();
+    REQUIRE(compressor.Update(
+        std::span<const std::byte>(input)).HasValue());
+
+    const auto frameResult = compressor.Finish();
+    REQUIRE(frameResult.HasValue());
+    frameOut = frameResult.Value();
+}
+
+void VerifyChunkedDecompression(
+    const std::vector<std::byte>& input,
+    const std::vector<std::byte>& frame,
+    const std::vector<std::size_t>& chunkSizes)
+{
+    const DecompressionLimits limits;
+    auto decompressorResult = SegmentDecompressor::Create(
+        limits, frame.size(), input.size());
+    REQUIRE(decompressorResult.HasValue());
+    SegmentDecompressor decompressor =
+        std::move(decompressorResult).Value();
+
+    std::size_t position = 0;
+    for (const std::size_t chunkSize : chunkSizes)
+    {
+        REQUIRE(chunkSize <= frame.size() - position);
+        const std::span<const std::byte> chunk(
+            frame.data() + position, chunkSize);
+        REQUIRE(decompressor.Update(chunk).HasValue());
+        position += chunkSize;
+    }
+    REQUIRE(position == frame.size());
+
+    const auto decodedResult = decompressor.Finish();
+    REQUIRE(decodedResult.HasValue());
+    REQUIRE(decodedResult.Value() == input);
+}
+
 } // namespace
+
+TEST_CASE("CompressionErrorCodesAppendWithoutRenumbering",
+          "[pbcompression][api][compatibility]")
+{
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::AllocationFailure) == 12U);
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::InvalidMaxInputBytes) == 13U);
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::InvalidExpectedEncodedSize) == 14U);
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::InputLimitExceeded) == 15U);
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::EncodedSizeMismatch) == 16U);
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::WindowLimitExceeded) == 17U);
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::CompressedFrameLimitExceeded) == 18U);
+    STATIC_REQUIRE(static_cast<std::uint8_t>(
+        CompressionErrorCode::UnsupportedCompressionCodec) == 19U);
+}
 
 TEST_CASE("ZeroByteSegmentStaysRawAndRoundTrips",
           "[pbcompression][segment][edge]")
@@ -235,6 +301,7 @@ TEST_CASE("ZeroByteSegmentStaysRawAndRoundTrips",
     const auto decodedResult = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Raw,
         std::span<const std::byte>{},
+        0,
         0,
         limits);
     REQUIRE(decodedResult.HasValue());
@@ -343,6 +410,105 @@ TEST_CASE("ContainerLikeSegmentMatchesIndependentRuleRecomputation",
         input, encodedResult.Value().codec, encodedResult.Value().bytes);
 }
 
+TEST_CASE("RepresentativeSegmentSizesRoundTripWithinDefaultPolicy",
+          "[pbcompression][segment][sizes]")
+{
+    const CompressionSettings settings;
+    const std::vector<std::size_t> sizes{
+        1024,
+        1024 * 1024,
+        static_cast<std::size_t>(
+            pbcompression::kDefaultDecompressionMaxOutputBytes)};
+    for (const std::size_t rawBytes : sizes)
+    {
+        INFO("raw bytes: " + std::to_string(rawBytes));
+        const std::vector<std::byte> input =
+            MakePatternBytes(rawBytes, 0x41U);
+        const auto encodedResult = pbcompression::CompressSegment(
+            std::span<const std::byte>(input), settings);
+        REQUIRE(encodedResult.HasValue());
+        VerifyRoundTrip(
+            input,
+            encodedResult.Value().codec,
+            encodedResult.Value().bytes);
+    }
+
+    const std::vector<std::byte> highEntropyInput =
+        MakeRandomBytes(1024 * 1024, 0x13B0D5A7C9E2468FULL);
+    const auto highEntropyResult = pbcompression::CompressSegment(
+        std::span<const std::byte>(highEntropyInput), settings);
+    REQUIRE(highEntropyResult.HasValue());
+    REQUIRE(highEntropyResult.Value().codec
+        == pbprotocol::CompressionCodec::Raw);
+    VerifyRoundTrip(
+        highEntropyInput,
+        highEntropyResult.Value().codec,
+        highEntropyResult.Value().bytes);
+}
+
+TEST_CASE("FinalEncodedBudgetAllowsSafeRawFallbackOnlyWhenRawFits",
+          "[pbcompression][segment][fallback][limits]")
+{
+    constexpr std::size_t rawBytes = 1024;
+    const std::vector<std::byte> input =
+        MakeRandomBytes(rawBytes, 0x1122334455667788ULL);
+
+    CompressionSettings rawFitsSettings;
+    rawFitsSettings.maxOutputBytes = rawBytes;
+    const auto rawFitsResult = pbcompression::CompressSegment(
+        std::span<const std::byte>(input), rawFitsSettings);
+    REQUIRE(rawFitsResult.HasValue());
+    REQUIRE(rawFitsResult.Value().codec
+        == pbprotocol::CompressionCodec::Raw);
+    REQUIRE(rawFitsResult.Value().bytes == input);
+
+    CompressionSettings neitherFitsSettings = rawFitsSettings;
+    neitherFitsSettings.maxOutputBytes = rawBytes - 1;
+    const auto neitherFitsResult = pbcompression::CompressSegment(
+        std::span<const std::byte>(input), neitherFitsSettings);
+    REQUIRE_FALSE(neitherFitsResult.HasValue());
+    REQUIRE(neitherFitsResult.Error().code
+        == CompressionErrorCode::OutputLimitExceeded);
+
+    const std::vector<std::byte> compressibleInput =
+        MakePatternBytes(64 * 1024, 0x41U);
+    const CompressionSettings defaultSettings;
+    std::vector<std::byte> compressedFrame;
+    CompressFrame(compressibleInput, defaultSettings, compressedFrame);
+
+    CompressionSettings forcedRawSettings;
+    forcedRawSettings.maxOutputBytes = compressedFrame.size();
+    forcedRawSettings.framingMarginBytes = compressibleInput.size();
+    const auto forcedRawResult = pbcompression::CompressSegment(
+        std::span<const std::byte>(compressibleInput), forcedRawSettings);
+    REQUIRE_FALSE(forcedRawResult.HasValue());
+    REQUIRE(forcedRawResult.Error().code
+        == CompressionErrorCode::OutputLimitExceeded);
+}
+
+TEST_CASE("FramingMarginBoundariesAndOverflowSelectCodecExactly",
+          "[pbcompression][segment][fallback][overflow]")
+{
+    constexpr std::uint64_t compressedBytes = 47;
+    constexpr std::uint64_t rawBytes = 256;
+    constexpr std::uint64_t equalMargin = rawBytes - compressedBytes;
+
+    REQUIRE(pbcompression::ChooseSegmentCodec(
+        compressedBytes, rawBytes, equalMargin - 1)
+        == pbprotocol::CompressionCodec::Zstandard);
+    REQUIRE(pbcompression::ChooseSegmentCodec(
+        compressedBytes, rawBytes, equalMargin)
+        == pbprotocol::CompressionCodec::Raw);
+    REQUIRE(pbcompression::ChooseSegmentCodec(
+        compressedBytes, rawBytes, equalMargin + 1)
+        == pbprotocol::CompressionCodec::Raw);
+    REQUIRE(pbcompression::ChooseSegmentCodec(
+        std::numeric_limits<std::uint64_t>::max() - 1,
+        rawBytes,
+        2)
+        == pbprotocol::CompressionCodec::Raw);
+}
+
 TEST_CASE("ChunkedStreamingProducesIdenticalFrames",
           "[pbcompression][streaming][equivalence]")
 {
@@ -369,6 +535,57 @@ TEST_CASE("ChunkedStreamingProducesIdenticalFrames",
         blockInput, pbprotocol::CompressionCodec::Zstandard, blockChunked);
 }
 
+TEST_CASE("DecompressionAcceptsOneByteHeaderBlockAndChecksumPartitions",
+          "[pbcompression][streaming][partition]")
+{
+    const std::vector<std::byte> input =
+        MakeContainerLikeBytes(64 * 1024);
+    const CompressionSettings settings;
+    std::vector<std::byte> frame;
+    CompressFrame(input, settings, frame);
+
+    std::vector<std::size_t> oneByteChunks(frame.size(), 1);
+    VerifyChunkedDecompression(input, frame, oneByteChunks);
+
+    REQUIRE(frame.size() > pbcompression::kZstdFrameHeaderMaximumBytes + 4);
+    const std::size_t middleBytes = frame.size()
+        - pbcompression::kZstdFrameHeaderMaximumBytes - 4;
+    VerifyChunkedDecompression(
+        input,
+        frame,
+        {pbcompression::kZstdFrameHeaderMaximumBytes, middleBytes, 4});
+}
+
+TEST_CASE("FinishRejectsEveryTruncationOffsetOfKnownFrame",
+          "[pbcompression][streaming][truncation]")
+{
+    const std::vector<std::byte> input = MakePatternBytes(256, 0x41U);
+    const CompressionSettings settings;
+    std::vector<std::byte> frame;
+    CompressFrame(input, settings, frame);
+    REQUIRE(frame.size() == 47);
+
+    const DecompressionLimits limits;
+    for (std::size_t truncatedSize = 1;
+         truncatedSize < frame.size();
+         truncatedSize++)
+    {
+        INFO("truncation offset: " + std::to_string(truncatedSize));
+        auto decompressorResult = SegmentDecompressor::Create(
+            limits, truncatedSize, input.size());
+        REQUIRE(decompressorResult.HasValue());
+        SegmentDecompressor decompressor =
+            std::move(decompressorResult).Value();
+        REQUIRE(decompressor.Update(std::span<const std::byte>(
+            frame.data(), truncatedSize)).HasValue());
+
+        const auto finishResult = decompressor.Finish();
+        REQUIRE_FALSE(finishResult.HasValue());
+        REQUIRE(finishResult.Error().code
+            == CompressionErrorCode::IncompleteFrame);
+    }
+}
+
 TEST_CASE("TruncatedFramesFailWithIncompleteFrame",
           "[pbcompression][segment][malformed]")
 {
@@ -390,12 +607,27 @@ TEST_CASE("TruncatedFramesFailWithIncompleteFrame",
         const auto decodedResult = pbcompression::DecompressSegment(
             pbprotocol::CompressionCodec::Zstandard,
             truncated,
+            truncatedSize,
             expectedSize,
             limits);
         REQUIRE_FALSE(decodedResult.HasValue());
         REQUIRE(decodedResult.Error().code
             == CompressionErrorCode::IncompleteFrame);
     }
+
+    DecompressionLimits exactOutputLimits;
+    exactOutputLimits.maxOutputBytes = rawBytes;
+    const std::span<const std::byte> missingChecksum(
+        frame.data(), frame.size() - 1);
+    const auto exactOutputResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        missingChecksum,
+        missingChecksum.size(),
+        expectedSize,
+        exactOutputLimits);
+    REQUIRE_FALSE(exactOutputResult.HasValue());
+    REQUIRE(exactOutputResult.Error().code
+        == CompressionErrorCode::IncompleteFrame);
 }
 
 TEST_CASE("WindowLogBoundsFailClosedOnBothSides",
@@ -415,11 +647,11 @@ TEST_CASE("WindowLogBoundsFailClosedOnBothSides",
 
     DecompressionLimits decoderLimits;
     decoderLimits.maxWindowLog = 0;
-    REQUIRE_FALSE(SegmentDecompressor::Create(decoderLimits, 0).HasValue());
-    REQUIRE(SegmentDecompressor::Create(decoderLimits, 0).Error().code
+    REQUIRE_FALSE(SegmentDecompressor::Create(decoderLimits, 1, 0).HasValue());
+    REQUIRE(SegmentDecompressor::Create(decoderLimits, 1, 0).Error().code
         == CompressionErrorCode::InvalidMaxWindowLog);
     decoderLimits.maxWindowLog = 32;
-    REQUIRE(SegmentDecompressor::Create(decoderLimits, 0).Error().code
+    REQUIRE(SegmentDecompressor::Create(decoderLimits, 1, 0).Error().code
         == CompressionErrorCode::InvalidMaxWindowLog);
 
     // A frame compressed with a wide window must be rejected by a decoder
@@ -435,11 +667,12 @@ TEST_CASE("WindowLogBoundsFailClosedOnBothSides",
     const auto decodedResult = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Zstandard,
         std::span<const std::byte>(frame),
+        frame.size(),
         input.size(),
         narrowLimits);
     REQUIRE_FALSE(decodedResult.HasValue());
     REQUIRE(decodedResult.Error().code
-        == CompressionErrorCode::OutputLimitExceeded);
+        == CompressionErrorCode::WindowLimitExceeded);
 }
 
 TEST_CASE("WrongExpectedRawSizeFailsWithExactErrors",
@@ -456,6 +689,7 @@ TEST_CASE("WrongExpectedRawSizeFailsWithExactErrors",
     const auto tooLarge = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Zstandard,
         std::span<const std::byte>(frame),
+        frame.size(),
         rawBytes + 1,
         limits);
     REQUIRE_FALSE(tooLarge.HasValue());
@@ -465,20 +699,246 @@ TEST_CASE("WrongExpectedRawSizeFailsWithExactErrors",
     const auto tooSmall = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Zstandard,
         std::span<const std::byte>(frame),
+        frame.size(),
         rawBytes - 1,
         limits);
     REQUIRE_FALSE(tooSmall.HasValue());
     REQUIRE(tooSmall.Error().code
-        == CompressionErrorCode::OutputLimitExceeded);
+        == CompressionErrorCode::RawSizeMismatch);
 
     const auto rawMismatch = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Raw,
         std::span<const std::byte>(frame),
+        frame.size(),
         frame.size() + 1,
         limits);
     REQUIRE_FALSE(rawMismatch.HasValue());
     REQUIRE(rawMismatch.Error().code
         == CompressionErrorCode::RawSizeMismatch);
+}
+
+TEST_CASE("EncodedAndRawTrustBoundariesAreCheckedBeforeDecoding",
+          "[pbcompression][segment][limits][encoded-size]")
+{
+    const std::vector<std::byte> input = MakePatternBytes(1024, 0x41U);
+    const CompressionSettings settings;
+    std::vector<std::byte> frame;
+    CompressFrame(input, settings, frame);
+
+    DecompressionLimits exactLimits;
+    exactLimits.maxInputBytes = frame.size();
+    exactLimits.maxOutputBytes = input.size();
+    const auto exactResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(frame),
+        frame.size(),
+        input.size(),
+        exactLimits);
+    REQUIRE(exactResult.HasValue());
+    REQUIRE(exactResult.Value() == input);
+
+    DecompressionLimits roomierLimits = exactLimits;
+    roomierLimits.maxInputBytes = frame.size() + 1;
+    roomierLimits.maxOutputBytes = input.size() + 1;
+    const auto roomierResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(frame),
+        frame.size(),
+        input.size(),
+        roomierLimits);
+    REQUIRE(roomierResult.HasValue());
+    REQUIRE(roomierResult.Value() == input);
+
+    DecompressionLimits inputTooSmallLimits = exactLimits;
+    inputTooSmallLimits.maxInputBytes = frame.size() - 1;
+    const auto inputLimitResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(frame),
+        frame.size(),
+        input.size(),
+        inputTooSmallLimits);
+    REQUIRE_FALSE(inputLimitResult.HasValue());
+    REQUIRE(inputLimitResult.Error().code
+        == CompressionErrorCode::InputLimitExceeded);
+
+    const auto encodedMismatchResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(frame),
+        frame.size() - 1,
+        input.size(),
+        exactLimits);
+    REQUIRE_FALSE(encodedMismatchResult.HasValue());
+    REQUIRE(encodedMismatchResult.Error().code
+        == CompressionErrorCode::EncodedSizeMismatch);
+
+    const auto rawLimitResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(frame),
+        frame.size(),
+        input.size(),
+        DecompressionLimits{input.size() - 1, 23, frame.size()});
+    REQUIRE_FALSE(rawLimitResult.HasValue());
+    REQUIRE(rawLimitResult.Error().code
+        == CompressionErrorCode::OutputLimitExceeded);
+
+    REQUIRE(SegmentDecompressor::Create(exactLimits, 0, 0).Error().code
+        == CompressionErrorCode::InvalidExpectedEncodedSize);
+
+    auto shortStreamResult = SegmentDecompressor::Create(
+        exactLimits, frame.size(), input.size());
+    REQUIRE(shortStreamResult.HasValue());
+    SegmentDecompressor shortStream =
+        std::move(shortStreamResult).Value();
+    REQUIRE(shortStream.Update(std::span<const std::byte>(
+        frame.data(), frame.size() - 1)).HasValue());
+    const auto shortFinish = shortStream.Finish();
+    REQUIRE_FALSE(shortFinish.HasValue());
+    REQUIRE(shortFinish.Error().code
+        == CompressionErrorCode::EncodedSizeMismatch);
+
+    auto overlongStreamResult = SegmentDecompressor::Create(
+        exactLimits, frame.size() - 1, input.size());
+    REQUIRE(overlongStreamResult.HasValue());
+    SegmentDecompressor overlongStream =
+        std::move(overlongStreamResult).Value();
+    const CompressionStatus overlongStatus = overlongStream.Update(
+        std::span<const std::byte>(frame));
+    REQUIRE_FALSE(overlongStatus.HasValue());
+    REQUIRE(overlongStatus.Error().code
+        == CompressionErrorCode::EncodedSizeMismatch);
+}
+
+TEST_CASE("ExtremeContainerPoliciesFailWithoutThrowingOrAllocating",
+          "[pbcompression][segment][limits][allocation]")
+{
+    const std::vector<std::byte> emptyBytes;
+    const std::uint64_t vectorMaximum =
+        static_cast<std::uint64_t>(emptyBytes.max_size());
+    REQUIRE(vectorMaximum < std::numeric_limits<std::uint64_t>::max());
+    const std::uint64_t beyondVectorMaximum = vectorMaximum + 1;
+
+    DecompressionLimits outputTooLarge;
+    outputTooLarge.maxOutputBytes = beyondVectorMaximum;
+    REQUIRE_NOTHROW(pbcompression::ValidateDecompressionLimits(
+        outputTooLarge));
+    REQUIRE(pbcompression::ValidateDecompressionLimits(outputTooLarge)
+        .Error().code == CompressionErrorCode::InvalidMaxOutputBytes);
+
+    DecompressionLimits inputTooLarge;
+    inputTooLarge.maxInputBytes = beyondVectorMaximum;
+    REQUIRE_NOTHROW(pbcompression::ValidateDecompressionLimits(
+        inputTooLarge));
+    REQUIRE(pbcompression::ValidateDecompressionLimits(inputTooLarge)
+        .Error().code == CompressionErrorCode::InvalidMaxInputBytes);
+
+    CompressionSettings outputPolicyTooLarge;
+    outputPolicyTooLarge.maxOutputBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1;
+    REQUIRE_NOTHROW(SegmentCompressor::Create(outputPolicyTooLarge, 0));
+    REQUIRE(SegmentCompressor::Create(outputPolicyTooLarge, 0)
+        .Error().code == CompressionErrorCode::InvalidMaxOutputBytes);
+
+    DecompressionLimits inputPolicyTooLarge;
+    inputPolicyTooLarge.maxInputBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1;
+    REQUIRE_NOTHROW(SegmentDecompressor::Create(
+        inputPolicyTooLarge, 1, 0));
+    REQUIRE(SegmentDecompressor::Create(
+        inputPolicyTooLarge, 1, 0).Error().code
+        == CompressionErrorCode::InvalidMaxInputBytes);
+}
+
+TEST_CASE("UnknownContentSizeAndZeroOutputFramesRemainStrictlyBounded",
+          "[pbcompression][streaming][fcs][zero]")
+{
+    const CompressionSettings settings;
+
+    const std::vector<std::byte> input = MakePatternBytes(4096, 0x41U);
+    std::vector<std::byte> unknownSizeFrame;
+    CompressWithoutPledgedSize(input, settings, unknownSizeFrame);
+    const DecompressionLimits limits;
+    const auto unknownSizeResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(unknownSizeFrame),
+        unknownSizeFrame.size(),
+        input.size(),
+        limits);
+    REQUIRE(unknownSizeResult.HasValue());
+    REQUIRE(unknownSizeResult.Value() == input);
+
+    DecompressionLimits probeLimits;
+    probeLimits.maxOutputBytes = input.size();
+    const auto probeResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(unknownSizeFrame),
+        unknownSizeFrame.size(),
+        input.size() - 1,
+        probeLimits);
+    REQUIRE_FALSE(probeResult.HasValue());
+    REQUIRE(probeResult.Error().code
+        == CompressionErrorCode::OutputLimitExceeded);
+
+    const std::vector<std::byte> emptyInput;
+    std::vector<std::byte> emptyFrame;
+    CompressWithoutPledgedSize(emptyInput, settings, emptyFrame);
+    REQUIRE_FALSE(emptyFrame.empty());
+    DecompressionLimits emptyLimits;
+    emptyLimits.maxOutputBytes = 0;
+    emptyLimits.maxInputBytes = emptyFrame.size();
+    const auto emptyResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(emptyFrame),
+        emptyFrame.size(),
+        0,
+        emptyLimits);
+    REQUIRE(emptyResult.HasValue());
+    REQUIRE(emptyResult.Value().empty());
+}
+
+TEST_CASE("UnsupportedAndNonStandardFramesFailClosed",
+          "[pbcompression][segment][malformed][codec]")
+{
+    const DecompressionLimits limits;
+    const auto unsupportedResult = pbcompression::DecompressSegment(
+        static_cast<pbprotocol::CompressionCodec>(0xFFU),
+        std::span<const std::byte>{},
+        0,
+        0,
+        limits);
+    REQUIRE_FALSE(unsupportedResult.HasValue());
+    REQUIRE(unsupportedResult.Error().code
+        == CompressionErrorCode::UnsupportedCompressionCodec);
+
+    const std::vector<std::byte> skippableFrame{
+        static_cast<std::byte>(0x50U),
+        static_cast<std::byte>(0x2AU),
+        static_cast<std::byte>(0x4DU),
+        static_cast<std::byte>(0x18U),
+        std::byte{0},
+        std::byte{0},
+        std::byte{0},
+        std::byte{0}};
+    const auto skippableResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(skippableFrame),
+        skippableFrame.size(),
+        0,
+        limits);
+    REQUIRE_FALSE(skippableResult.HasValue());
+    REQUIRE(skippableResult.Error().code
+        == CompressionErrorCode::CorruptedFrame);
+
+    const std::vector<std::byte> invalidMagic{
+        std::byte{0}, std::byte{1}, std::byte{2}, std::byte{3}};
+    const auto invalidMagicResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(invalidMagic),
+        invalidMagic.size(),
+        0,
+        limits);
+    REQUIRE_FALSE(invalidMagicResult.HasValue());
+    REQUIRE(invalidMagicResult.Error().code
+        == CompressionErrorCode::CorruptedFrame);
 }
 
 TEST_CASE("InvalidEncoderSettingsFailClosed",
@@ -511,6 +971,13 @@ TEST_CASE("InvalidEncoderSettingsFailClosed",
         std::numeric_limits<std::uint64_t>::max();
     REQUIRE(SegmentCompressor::Create(outputMax, 0).Error().code
         == CompressionErrorCode::InvalidMaxOutputBytes);
+    outputMax.maxOutputBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1;
+    REQUIRE(SegmentCompressor::Create(outputMax, 0).Error().code
+        == CompressionErrorCode::InvalidMaxOutputBytes);
+    REQUIRE(pbcompression::CompressSegment(
+        std::span<const std::byte>{}, outputZero).Error().code
+        == CompressionErrorCode::InvalidMaxOutputBytes);
 
     // A frame larger than the output budget fails with OutputLimitExceeded.
     const std::vector<std::byte> input = MakeContainerLikeBytes(512 * 1024);
@@ -536,7 +1003,7 @@ TEST_CASE("DecompressionBombFailsBeforeAllocation",
     DecompressionLimits bombLimits;
     bombLimits.maxOutputBytes = 64 * 1024;
     const auto createResult = SegmentDecompressor::Create(
-        bombLimits, rawBytes);
+        bombLimits, frame.size(), rawBytes);
     REQUIRE_FALSE(createResult.HasValue());
     REQUIRE(createResult.Error().code
         == CompressionErrorCode::OutputLimitExceeded);
@@ -544,6 +1011,7 @@ TEST_CASE("DecompressionBombFailsBeforeAllocation",
     const auto decodedResult = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Zstandard,
         std::span<const std::byte>(frame),
+        frame.size(),
         rawBytes,
         bombLimits);
     REQUIRE_FALSE(decodedResult.HasValue());
@@ -567,10 +1035,26 @@ TEST_CASE("CorruptedAndTrailingFramesFailWithExactErrors",
     const auto corruptedResult = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Zstandard,
         std::span<const std::byte>(corruptedFrame),
+        corruptedFrame.size(),
         input.size(),
         limits);
     REQUIRE_FALSE(corruptedResult.HasValue());
     REQUIRE(corruptedResult.Error().code
+        == CompressionErrorCode::CorruptedFrame);
+
+    std::vector<std::byte> checksumFrame;
+    CompressFrame(input, settings, checksumFrame);
+    const std::uint8_t checksumValue =
+        static_cast<std::uint8_t>(checksumFrame.back()) ^ 0x01U;
+    checksumFrame.back() = static_cast<std::byte>(checksumValue);
+    const auto checksumResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(checksumFrame),
+        checksumFrame.size(),
+        input.size(),
+        limits);
+    REQUIRE_FALSE(checksumResult.HasValue());
+    REQUIRE(checksumResult.Error().code
         == CompressionErrorCode::CorruptedFrame);
 
     std::vector<std::byte> trailingFrame;
@@ -582,11 +1066,44 @@ TEST_CASE("CorruptedAndTrailingFramesFailWithExactErrors",
     const auto trailingResult = pbcompression::DecompressSegment(
         pbprotocol::CompressionCodec::Zstandard,
         std::span<const std::byte>(trailingFrame),
+        trailingFrame.size(),
         input.size(),
         limits);
     REQUIRE_FALSE(trailingResult.HasValue());
     REQUIRE(trailingResult.Error().code
         == CompressionErrorCode::TrailingInput);
+
+    std::vector<std::byte> singleFrame;
+    CompressFrame(input, settings, singleFrame);
+    std::vector<std::byte> doubleFrame = singleFrame;
+    doubleFrame.insert(
+        doubleFrame.end(), singleFrame.begin(), singleFrame.end());
+    const auto doubleFrameResult = pbcompression::DecompressSegment(
+        pbprotocol::CompressionCodec::Zstandard,
+        std::span<const std::byte>(doubleFrame),
+        doubleFrame.size(),
+        input.size(),
+        limits);
+    REQUIRE_FALSE(doubleFrameResult.HasValue());
+    REQUIRE(doubleFrameResult.Error().code
+        == CompressionErrorCode::TrailingInput);
+
+    auto stagedTrailingResult = SegmentDecompressor::Create(
+        limits, singleFrame.size() + 1, input.size());
+    REQUIRE(stagedTrailingResult.HasValue());
+    SegmentDecompressor stagedTrailing =
+        std::move(stagedTrailingResult).Value();
+    REQUIRE(stagedTrailing.Update(
+        std::span<const std::byte>(singleFrame)).HasValue());
+    const std::vector<std::byte> trailingByte{std::byte{0x5A}};
+    const CompressionStatus stagedTrailingStatus = stagedTrailing.Update(
+        std::span<const std::byte>(trailingByte));
+    REQUIRE_FALSE(stagedTrailingStatus.HasValue());
+    REQUIRE(stagedTrailingStatus.Error().code
+        == CompressionErrorCode::TrailingInput);
+    REQUIRE(stagedTrailing.Update(
+        std::span<const std::byte>(trailingByte)).Error()
+        == stagedTrailingStatus.Error());
 }
 
 TEST_CASE("TerminalStatesLatchAndRepeatErrors",
@@ -615,7 +1132,7 @@ TEST_CASE("TerminalStatesLatchAndRepeatErrors",
     std::vector<std::byte> frame;
     CompressFrame(input, settings, frame);
     auto decompressorResult = SegmentDecompressor::Create(
-        limits, input.size());
+        limits, frame.size(), input.size());
     REQUIRE(decompressorResult.HasValue());
     SegmentDecompressor decompressor =
         std::move(decompressorResult).Value();
@@ -643,7 +1160,7 @@ TEST_CASE("TerminalStatesLatchAndRepeatErrors",
         std::span<const std::byte>(randomInput));
     REQUIRE_FALSE(firstUpdate.HasValue());
     REQUIRE(firstUpdate.Error().code
-        == CompressionErrorCode::OutputLimitExceeded);
+        == CompressionErrorCode::CompressedFrameLimitExceeded);
     const CompressionStatus secondUpdate = smallCompressor.Update(
         std::span<const std::byte>(randomInput));
     REQUIRE(secondUpdate.Error() == firstUpdate.Error());
@@ -728,8 +1245,52 @@ TEST_CASE("EncodedSegmentBindsToValidDescriptors",
     segmentDescriptor.encodedDigest.bytes = pbprotocol::ComputeBlake3Digest(
         std::span<const std::byte>(frame));
     segmentDescriptor.wirehairV2SerializedProfile = std::nullopt;
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
     REQUIRE(pbprotocol::ValidateSegmentDescriptor(
-        segmentDescriptor, sessionDescriptor).HasValue());
+        segmentDescriptor, sessionDescriptor, resourcePolicy).HasValue());
+
+    const DecompressionLimits descriptorLimits =
+        pbcompression::MakeDecompressionLimits(resourcePolicy);
+    const auto descriptorDecodedResult = pbcompression::DecompressSegment(
+        segmentDescriptor,
+        std::span<const std::byte>(frame),
+        descriptorLimits);
+    REQUIRE(descriptorDecodedResult.HasValue());
+    REQUIRE(descriptorDecodedResult.Value() == input);
+
+    pbprotocol::SegmentDescriptor wrongEncodedSizeDescriptor =
+        segmentDescriptor;
+    wrongEncodedSizeDescriptor.encodedSize++;
+    const auto wrongEncodedSizeResult = pbcompression::DecompressSegment(
+        wrongEncodedSizeDescriptor,
+        std::span<const std::byte>(frame),
+        descriptorLimits);
+    REQUIRE_FALSE(wrongEncodedSizeResult.HasValue());
+    REQUIRE(wrongEncodedSizeResult.Error().code
+        == CompressionErrorCode::EncodedSizeMismatch);
+
+    pbprotocol::SegmentDescriptor wrongRawSizeDescriptor =
+        segmentDescriptor;
+    wrongRawSizeDescriptor.rawSize++;
+    const auto wrongRawSizeResult = pbcompression::DecompressSegment(
+        wrongRawSizeDescriptor,
+        std::span<const std::byte>(frame),
+        descriptorLimits);
+    REQUIRE_FALSE(wrongRawSizeResult.HasValue());
+    REQUIRE(wrongRawSizeResult.Error().code
+        == CompressionErrorCode::RawSizeMismatch);
+
+    pbprotocol::SegmentDescriptor wrongCodecDescriptor = segmentDescriptor;
+    wrongCodecDescriptor.compressionCodec =
+        pbprotocol::CompressionCodec::Raw;
+    const auto wrongCodecResult = pbcompression::DecompressSegment(
+        wrongCodecDescriptor,
+        std::span<const std::byte>(frame),
+        descriptorLimits);
+    REQUIRE_FALSE(wrongCodecResult.HasValue());
+    REQUIRE(wrongCodecResult.Error().code
+        == CompressionErrorCode::RawSizeMismatch);
 
     // Raw segments must close the encodedSize/encodedDigest rule loop.
     const std::vector<std::byte> rawInput{static_cast<std::byte>(0x77)};
@@ -750,5 +1311,19 @@ TEST_CASE("EncodedSegmentBindsToValidDescriptors",
     rawSegmentDescriptor.encodedDigest.bytes = rawDigestBytes;
     rawSegmentDescriptor.wirehairV2SerializedProfile = std::nullopt;
     REQUIRE(pbprotocol::ValidateSegmentDescriptor(
-        rawSegmentDescriptor, sessionDescriptor).HasValue());
+        rawSegmentDescriptor, sessionDescriptor, resourcePolicy).HasValue());
+    const auto rawDescriptorResult = pbcompression::DecompressSegment(
+        rawSegmentDescriptor,
+        std::span<const std::byte>(rawInput),
+        descriptorLimits);
+    REQUIRE(rawDescriptorResult.HasValue());
+    REQUIRE(rawDescriptorResult.Value() == rawInput);
+
+    const DecompressionLimits copiedLimits =
+        pbcompression::MakeDecompressionLimits(resourcePolicy, 22);
+    REQUIRE(copiedLimits.maxOutputBytes
+        == resourcePolicy.maxRawSegmentBytes);
+    REQUIRE(copiedLimits.maxInputBytes
+        == resourcePolicy.maxEncodedSegmentBytes);
+    REQUIRE(copiedLimits.maxWindowLog == 22);
 }

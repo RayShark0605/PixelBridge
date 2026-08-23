@@ -8,7 +8,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 | 路径 | 用途 |
 | --- | --- |
 | `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | 应用（当前为控制台空壳，Qt 6 UI 在后续里程碑接入） |
-| `libs/PBCore`、`libs/PBProtocol` | 核心库（禁止依赖 Qt） |
+| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression` | 核心静态库（禁止依赖 Qt） |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；fuzz 与 descriptor-state benchmark 已有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
 | `docs` | 设计文档 |
@@ -20,6 +20,8 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 ## Target 与依赖边界
 
 - `PBCore`、`PBProtocol` 是显式静态库，不受父工程 `BUILD_SHARED_LIBS` 影响。
+- `PBCompression` 是显式静态库；外部消费者只链接 `PB::PBCompression`
+  即可获得 PBProtocol 与 zstd 的完整静态链接闭包。
 - `PBProtocol` 不依赖 `PBCore`；消费者只获得所链接 target 的公共头和链接闭包。
 - `PB::CompilerSettings` 仅供 PixelBridge 自有 target 私有使用，`/WX` 等策略不传播给外部消费者。
 - Qt 只允许由应用以 `PRIVATE` 方式链接；`libs/` 下的核心库和公共头禁止依赖 Qt。
@@ -28,6 +30,29 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 - CUDA 选项只与真实 CUDA target 同时引入，默认关闭；显式启用后缺失依赖必须配置失败，不允许静默 fallback。
 
 CMake 在配置期审计核心 target 的 Qt 依赖、公共 `src/` 路径和公共编译选项泄漏。未来模块必须继续满足这些门禁。
+
+## Source Segment 压缩
+
+`PBCompression` 将每个 Source Segment 独立编码为一个标准 zstd frame，
+frame 带 32-bit checksum。压缩等级、encoder window 和线程策略只属于本地
+Encoder tuning，不写入 PixelBridge wire descriptor，也不构成协议版本。若
+`compressed bytes + framing margin >= raw bytes`，则该 Segment 使用 RAW；若
+zstd frame 明确触及本地 encoded-segment budget，只有当 raw payload 本身仍在
+该 budget 内时才允许 RAW fallback。其他 zstd、状态或 allocation 错误不会被
+静默降级。
+
+Decoder 同时执行三类本地边界：`EncodedSize/maxInputBytes`、
+`RawSize/maxOutputBytes` 和 zstd frame window。streaming decoder 只暂存最多
+18 bytes 的 frame header，已消费的 compressed input 不会累计保存；
+`Finish()` 要求输入字节数严格等于 Descriptor `EncodedSize`、恰好完成一个
+frame（包括 final block/checksum），且输出严格等于 Descriptor `RawSize`。
+
+以 `SegmentDescriptor` 调用 canonical `DecompressSegment()` 前，调用方必须先用
+同一份 `ReceiverResourcePolicy` 执行
+`ValidateSegmentDescriptor(descriptor, sessionDescriptor, resourcePolicy)`；随后用
+`MakeDecompressionLimits(resourcePolicy, maxWindowLog)` 构造本地解压边界。该
+前置条件保证任何 zstd context 或输出 allocation 创建前，Descriptor 的 raw 和
+encoded 配额已经验证。
 
 ## 构建（MSVC x64）
 
@@ -78,23 +103,38 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | --- | --- | --- |
 | `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
-| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz` |
+| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBCompressionZstdBoundaryFuzz` |
 | `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark` |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
 
-fuzz 与 benchmark 共用 `PBProtocol`，但 fuzz 构建会对该静态库启用
-AddressSanitizer，因此两者必须使用不同 build directory。fuzz 配置示例：
+fuzz 与 benchmark 共用 `PBProtocol`，但 fuzz 构建会对 `PBProtocol` 和
+`PBCompression` 静态库本身启用 AddressSanitizer，而不是只插桩 driver，
+因此两者必须使用不同 build directory。Clang target 使用 libFuzzer +
+ASan/UBSan；MSVC target 使用确定性 mutation runner + ASan。fuzz 配置与运行示例：
 
 ```powershell
 cmake -S . -B build-fuzz-msvc -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake `
-  -DBUILD_TESTING=OFF `
+  -DBUILD_TESTING=ON `
   -DPB_BUILD_TESTS=OFF `
   -DPB_BUILD_APPS=OFF `
-  -DPB_BUILD_TOOLS=ON `
+  -DPB_BUILD_TOOLS=OFF `
   -DPB_BUILD_FUZZERS=ON `
   -DPB_BUILD_BENCHMARKS=OFF
+cmake --build build-fuzz-msvc --config RelWithDebInfo --parallel
+ctest --test-dir build-fuzz-msvc --build-config RelWithDebInfo `
+  --output-on-failure -L fuzz
+
+# MSVC deterministic mutation runners can also be invoked directly.
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolDescriptorResourceFuzz.exe `
+  2000 13464654573299691533
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
+  2000 13856851484949778996
+
+# Replay one pinned PBCompression corpus input.
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
+  --input .\fuzz\corpus\compression-zstd\wide-window.bin
 ```
 
 benchmark 配置示例：
@@ -134,4 +174,7 @@ cmake -S . -B build-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_
 
 ## 第三方依赖
 
-依赖由 vcpkg manifest `vcpkg.json` 管理。BLAKE3 是 `PBProtocol` 的生产依赖，版本下限为 1.8.5；Catch2 仅存在于非默认 `tests` feature，版本下限为 3.15.0。端口注册表基线由 manifest 的 `builtin-baseline` 固定，安装产物位于各构建目录的 `vcpkg_installed/`，不入库。
+依赖由 vcpkg manifest `vcpkg.json` 管理。BLAKE3 1.8.5 是 `PBProtocol` 的
+生产依赖；zstd 1.5.7 是 `PBCompression` 的生产依赖。Catch2 仅存在于
+非默认 `tests` feature，版本下限为 3.15.0。端口注册表基线由 manifest 的
+`builtin-baseline` 固定，安装产物位于各构建目录的 `vcpkg_installed/`，不入库。

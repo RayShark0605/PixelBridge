@@ -3,5 +3,4 @@ PbAddUnitTest(PBCompressionTests
 
 target_link_libraries(PBCompressionTests
     PRIVATE
-        PB::PBCompression
-        PB::PBProtocol)
+        PB::PBCompression)

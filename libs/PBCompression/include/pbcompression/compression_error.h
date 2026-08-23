@@ -23,7 +23,14 @@ enum class CompressionErrorCode : std::uint8_t
     TrailingInput,
     CorruptedFrame,
     ZstdError,
-    AllocationFailure
+    AllocationFailure,
+    InvalidMaxInputBytes,
+    InvalidExpectedEncodedSize,
+    InputLimitExceeded,
+    EncodedSizeMismatch,
+    WindowLimitExceeded,
+    CompressedFrameLimitExceeded,
+    UnsupportedCompressionCodec
 };
 
 struct CompressionError
@@ -31,7 +38,8 @@ struct CompressionError
     CompressionErrorCode code = CompressionErrorCode::None;
     // detail carries the raw ZSTD_ErrorCode for ZstdError, the offending
     // configuration value for validation errors, and the measured byte
-    // count for size related failures.
+    // count for size related failures. UnsupportedCompressionCodec carries
+    // the raw codec value.
     std::uint64_t detail = 0;
 
     bool operator==(const CompressionError&) const = default;
