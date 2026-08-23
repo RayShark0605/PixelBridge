@@ -18,7 +18,7 @@ set(PB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${PB_SOURCE_DIR}" PixelBridge)
 
-foreach(staticTarget IN ITEMS PBCore PBProtocol)
+foreach(staticTarget IN ITEMS PBCore PBProtocol PBCompression)
     get_target_property(targetType "${staticTarget}" TYPE)
     if(NOT targetType STREQUAL "STATIC_LIBRARY")
         message(FATAL_ERROR
