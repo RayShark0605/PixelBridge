@@ -45,7 +45,6 @@ constexpr std::array<std::byte, 4> kWirehairMagic{
     static_cast<std::byte>('2')};
 constexpr std::uint16_t kWirehairEncodingVersion = 1;
 constexpr std::uint16_t kWirehairEncodedBytes = 32;
-constexpr std::uint32_t kWirehairMaximumBlockBytes = 0x7FFFFFFFU;
 
 [[nodiscard]] ProtocolStatus ValidateDigestAlgorithm(
     const DigestAlgorithm digestAlgorithm,
@@ -373,9 +372,6 @@ ProtocolStatus ValidateReceiverResourcePolicy(
 {
     constexpr std::uint64_t maximumUint64 =
         std::numeric_limits<std::uint64_t>::max();
-    constexpr std::uint32_t maximumUint32 =
-        std::numeric_limits<std::uint32_t>::max();
-
     if (resourcePolicy.maxAcceptedFileBytes == 0 ||
         resourcePolicy.maxSegmentCount == 0 ||
         resourcePolicy.maxRawSegmentBytes == 0 ||
@@ -384,16 +380,28 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxDescriptorStateBytes == 0 ||
         resourcePolicy.maxConcurrentSessions == 0 ||
         resourcePolicy.maxTotalDescriptorStateBytes == 0 ||
+        resourcePolicy.maxDirectRepeatBlockCount == 0 ||
+        resourcePolicy.maxActiveOuterFecDecoders == 0 ||
+        resourcePolicy.maxOuterFecDecoderBytes == 0 ||
+        resourcePolicy.maxTotalOuterFecDecoderBytes == 0 ||
         resourcePolicy.maxAcceptedFileBytes == maximumUint64 ||
         resourcePolicy.maxSegmentCount == maximumUint64 ||
         resourcePolicy.maxRawSegmentBytes == maximumUint64 ||
         resourcePolicy.maxEncodedSegmentBytes == maximumUint64 ||
-        resourcePolicy.maxOuterBlockBytes == maximumUint32 ||
+        resourcePolicy.maxOuterBlockBytes >
+            kMaximumTransportPayloadBytes ||
         resourcePolicy.maxDescriptorStateBytes == maximumUint64 ||
         resourcePolicy.maxConcurrentSessions == maximumUint64 ||
         resourcePolicy.maxTotalDescriptorStateBytes == maximumUint64 ||
+        resourcePolicy.maxDirectRepeatBlockCount >
+            kMaximumRepresentableDirectRepeatBlockCount ||
+        resourcePolicy.maxActiveOuterFecDecoders == maximumUint64 ||
+        resourcePolicy.maxOuterFecDecoderBytes == maximumUint64 ||
+        resourcePolicy.maxTotalOuterFecDecoderBytes == maximumUint64 ||
         resourcePolicy.maxDescriptorStateBytes >
-            resourcePolicy.maxTotalDescriptorStateBytes)
+            resourcePolicy.maxTotalDescriptorStateBytes ||
+        resourcePolicy.maxOuterFecDecoderBytes >
+            resourcePolicy.maxTotalOuterFecDecoderBytes)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,
@@ -410,11 +418,20 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxDescriptorStateBytes);
     const auto concurrentSessionCountResult = CheckedUint64ToSize(
         resourcePolicy.maxConcurrentSessions);
+    const auto activeOuterFecDecoderCountResult = CheckedUint64ToSize(
+        resourcePolicy.maxActiveOuterFecDecoders);
+    const auto directRepeatBlockCountResult = CheckedUint64ToSize(
+        resourcePolicy.maxDirectRepeatBlockCount);
+    const auto outerFecDecoderBudgetSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxOuterFecDecoderBytes);
     if (!segmentCountSizeResult ||
         !rawSegmentSizeResult ||
         !encodedSegmentSizeResult ||
         !descriptorBudgetSizeResult ||
-        !concurrentSessionCountResult)
+        !concurrentSessionCountResult ||
+        !directRepeatBlockCountResult ||
+        !activeOuterFecDecoderCountResult ||
+        !outerFecDecoderBudgetSizeResult)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,
@@ -542,7 +559,7 @@ ProtocolStatus ValidateWirehairV2SerializedProfile(
     }
     if (blockBytesResult.Value() != expectedBlockBytes ||
         blockBytesResult.Value() == 0 ||
-        blockBytesResult.Value() > kWirehairMaximumBlockBytes)
+        blockBytesResult.Value() > kMaximumTransportPayloadBytes)
     {
         return WirehairProfileFailureAt(fieldOffset, 24);
     }
@@ -563,18 +580,21 @@ ProtocolResult<std::uint64_t> GetDirectRepeatBlockCount(
     const std::uint32_t outerBlockBytes,
     const std::size_t fieldOffset) noexcept
 {
-    if (encodedSize == 0 || outerBlockBytes == 0)
+    if (outerBlockBytes == 0 ||
+        outerBlockBytes > kMaximumTransportPayloadBytes)
     {
         return ProtocolResult<std::uint64_t>::Failure(
             ProtocolErrorCode::InvalidDescriptor,
             fieldOffset);
     }
+    if (encodedSize == 0)
+    {
+        return ProtocolResult<std::uint64_t>::Success(0);
+    }
 
     const std::uint64_t blockCount =
         1ULL + ((encodedSize - 1ULL) / outerBlockBytes);
-    constexpr std::uint64_t maximumRepresentableBlockCount =
-        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1ULL;
-    if (blockCount > maximumRepresentableBlockCount)
+    if (blockCount > kMaximumRepresentableDirectRepeatBlockCount)
     {
         return ProtocolResult<std::uint64_t>::Failure(
             ProtocolErrorCode::LengthOverflow,
@@ -637,7 +657,8 @@ namespace {
             ProtocolErrorCode::ResourceLimitExceeded,
             kSegmentEncodedSizeOffset);
     }
-    if (descriptor.outerBlockBytes == 0)
+    if (descriptor.outerBlockBytes == 0 ||
+        descriptor.outerBlockBytes > kMaximumTransportPayloadBytes)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidDescriptor,
@@ -725,6 +746,14 @@ namespace {
     if (!directBlockCountResult)
     {
         return CopyStatusFailure(directBlockCountResult.Error());
+    }
+    if (resourcePolicy != nullptr &&
+        directBlockCountResult.Value() >
+            resourcePolicy->maxDirectRepeatBlockCount)
+    {
+        return ProtocolStatus::Failure(
+            ProtocolErrorCode::ResourceLimitExceeded,
+            kSegmentOuterBlockBytesOffset);
     }
 
     return ProtocolStatus::Success();

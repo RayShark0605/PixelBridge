@@ -21,15 +21,23 @@ ReceiverResourcePolicy GetDefaultReceiverResourcePolicy() noexcept
     constexpr std::uint64_t mebibyte = 1024ULL * kibibyte;
     constexpr std::uint64_t gibibyte = 1024ULL * mebibyte;
 
-    return ReceiverResourcePolicy{
-        500ULL * gibibyte,
-        65536ULL,
-        16ULL * mebibyte,
-        32ULL * mebibyte,
-        65535U,
-        64ULL * mebibyte,
-        4ULL,
-        256ULL * mebibyte};
+    ReceiverResourcePolicy resourcePolicy{};
+    resourcePolicy.maxAcceptedFileBytes = 500ULL * gibibyte;
+    resourcePolicy.maxSegmentCount = 65536ULL;
+    resourcePolicy.maxRawSegmentBytes = 16ULL * mebibyte;
+    resourcePolicy.maxEncodedSegmentBytes = 32ULL * mebibyte;
+    resourcePolicy.maxOuterBlockBytes = kMaximumTransportPayloadBytes;
+    resourcePolicy.maxDescriptorStateBytes = 64ULL * mebibyte;
+    resourcePolicy.maxConcurrentSessions = 4ULL;
+    resourcePolicy.maxTotalDescriptorStateBytes = 256ULL * mebibyte;
+    // DirectRepeat is a Tiny/Small path. The sender's default efficiency gate
+    // is narrower, while this receiver-local ceiling leaves room for stricter
+    // profile-specific tuning without admitting millions of one-byte blocks.
+    resourcePolicy.maxDirectRepeatBlockCount = 64ULL;
+    resourcePolicy.maxActiveOuterFecDecoders = 4ULL;
+    resourcePolicy.maxOuterFecDecoderBytes = 512ULL * mebibyte;
+    resourcePolicy.maxTotalOuterFecDecoderBytes = 1024ULL * mebibyte;
+    return resourcePolicy;
 }
 
 SessionTag DeriveSessionTag(const SessionId& sessionId) noexcept

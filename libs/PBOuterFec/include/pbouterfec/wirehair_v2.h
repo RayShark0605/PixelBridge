@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pbouterfec/outer_fec_decoder_resource.h"
 #include "pbouterfec/outer_fec_result.h"
 #include "pbprotocol/protocol_types.h"
 
@@ -20,15 +21,13 @@ inline constexpr std::uint64_t kWirehairV2MixedMix2ProfileId =
 inline constexpr std::uint32_t kWirehairV2MinimumBlockCount = 2;
 inline constexpr std::uint32_t kWirehairV2MaximumBlockCount = 64000;
 
-enum class DecodeDisposition : std::uint8_t
-{
-    NeedMore,
-    Ready
-};
-
 namespace detail {
 struct WirehairV2DecoderImplementation;
 }
+
+// Source-compatible name retained for the first Wirehair wrapper callers.
+// Both names refer to the same receiver-wide, cross-mode admission manager.
+using WirehairV2DecoderResourceManager = OuterFecDecoderResourceManager;
 
 // Owns one canonical serialized-profile Wirehair V2 encoder. The serialized
 // profile identifies equation compatibility; it is not sender authentication.
@@ -81,9 +80,9 @@ private:
     std::optional<OuterFecError> terminalError_;
 };
 
-// Owns one bounded Wirehair V2 decoder. The caller must complete protocol and
-// ReceiverResourcePolicy admission before Create(). This wrapper revalidates
-// canonical profile binding but does not replace those receiver-wide gates.
+// Owns one bounded Wirehair V2 decoder. Create() revalidates canonical profile
+// binding and performs receiver-wide admission through the required shared
+// resource manager before allocating wrapper state or a third-party codec.
 // Recovered bytes are unauthenticated until higher layers verify all required
 // Segment/decompression/final-file digests. A single instance must not be
 // called concurrently.
@@ -97,7 +96,8 @@ public:
     ~WirehairV2Decoder();
 
     [[nodiscard]] static OuterFecResult<WirehairV2Decoder> Create(
-        const pbprotocol::SegmentDescriptor& segmentDescriptor);
+        const pbprotocol::SegmentDescriptor& segmentDescriptor,
+        const OuterFecDecoderResourceManager& resourceManager);
 
     [[nodiscard]] OuterFecResult<DecodeDisposition> DecodeBlock(
         std::uint32_t outerBlockId,

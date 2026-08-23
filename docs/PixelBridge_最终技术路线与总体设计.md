@@ -1457,6 +1457,15 @@ PayloadCrc32c      4 byte
 - 无 VarInt 恶意超长问题；
 - 所有长度在读 payload 前先 bounds check。
 
+在当前 Phase-0 provisional layout 中，`PayloadBytes` 已选为 `uint16`，因此所有
+sender/receiver/本地 policy 入口必须共同约束：
+
+```text
+1 <= OuterBlockBytes <= 65535
+```
+
+放宽这个上限属于 wire layout 变更，不能只提高本地资源 policy。
+
 每个 Transport Block 最终进入固定大小的 Inner-FEC information block。`PayloadBytes` 小于 `OuterBlockBytes` 时：
 
 ```text
@@ -1609,12 +1618,29 @@ K = ceil(EncodedSize / FountainBlockBytes)
 EncodedSize == 0
     → no data segment payload
 
-Wirehair dimensions valid + efficiency gate passed
+K <= frozen DirectRepeat efficiency threshold
+    → OuterFecMode = DirectRepeat
+
+2 <= K <= 64000
     → OuterFecMode = WirehairV2
 
-otherwise
-    → OuterFecMode = DirectRepeat
+K > 64000
+    → split Segment / choose another valid block size
 ```
+
+Phase-0 CPU reference 的保守 efficiency gate 冻结为：
+
+```text
+K = 0..2      → DirectRepeat
+K = 3..64000  → WirehairV2
+K > 64000     → split Segment / choose another valid block size
+```
+
+Certified Profile 可根据 `PBOuterFecDirectRepeatBenchmark` 的实测结果显式选择另一个
+冻结阈值，但必须在 `SegmentDescriptor` 冻结前完成，并与该 Profile 的接收端工作量
+配额协调；禁止在 Wirehair codec 创建失败后 silent fallback。接收端另外使用
+`maxDirectRepeatBlockCount` 作为本地工作量配额，默认 64，避免极小 block size 仅凭
+内存预算进入数千万 ordinal 的活跃状态。
 
 `DirectRepeat` 将小 Encoded Segment 切成少量有 ordinal 的 Transport Block，由内层 LDPC + CRC32C 保护，并在不同 Visual Frame / Carousel pass 中重复。
 

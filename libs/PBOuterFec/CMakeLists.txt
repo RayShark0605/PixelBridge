@@ -5,6 +5,9 @@ add_library(PB::PBOuterFec ALIAS PBOuterFec)
 
 target_sources(PBOuterFec
     PRIVATE
+        src/direct_repeat.cpp
+        src/outer_fec_decoder_resource.cpp
+        src/outer_fec_decoder_resource_internal.h
         src/wirehair_v2.cpp
         src/wirehair_v2_backend.cpp
         src/wirehair_v2_backend.h
@@ -12,6 +15,8 @@ target_sources(PBOuterFec
         FILE_SET HEADERS
         BASE_DIRS include
         FILES
+            include/pbouterfec/direct_repeat.h
+            include/pbouterfec/outer_fec_decoder_resource.h
             include/pbouterfec/outer_fec_result.h
             include/pbouterfec/wirehair_v2.h)
 

@@ -39,15 +39,25 @@ namespace pbprotocol::test {
 
 [[nodiscard]] inline ReceiverResourcePolicy MakeResourcePolicy() noexcept
 {
-    return ReceiverResourcePolicy{
-        std::numeric_limits<std::uint64_t>::max() - 1ULL,
-        1024,
-        std::numeric_limits<std::uint64_t>::max() - 1ULL,
-        std::numeric_limits<std::uint64_t>::max() - 1ULL,
-        std::numeric_limits<std::uint32_t>::max() - 1U,
-        64ULL * 1024ULL * 1024ULL,
-        4,
-        256ULL * 1024ULL * 1024ULL};
+    ReceiverResourcePolicy resourcePolicy{};
+    resourcePolicy.maxAcceptedFileBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxSegmentCount = 1024;
+    resourcePolicy.maxRawSegmentBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxEncodedSegmentBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxOuterBlockBytes = kMaximumTransportPayloadBytes;
+    resourcePolicy.maxDescriptorStateBytes = 64ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxConcurrentSessions = 4;
+    resourcePolicy.maxTotalDescriptorStateBytes =
+        256ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxDirectRepeatBlockCount = 1024;
+    resourcePolicy.maxActiveOuterFecDecoders = 4;
+    resourcePolicy.maxOuterFecDecoderBytes = 256ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxTotalOuterFecDecoderBytes =
+        512ULL * 1024ULL * 1024ULL;
+    return resourcePolicy;
 }
 
 [[nodiscard]] inline SessionDescriptor MakeSessionDescriptor(

@@ -4,9 +4,14 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
+#include <utility>
+
+static_assert(!std::is_aggregate_v<pbprotocol::ReceiverResourcePolicy>);
 
 TEST_CASE("SessionDescriptor enforces empty-file and resource semantics",
           "[pbprotocol][descriptor][session][validation]")
@@ -84,6 +89,23 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
     REQUIRE(
         defaultPolicy.maxTotalDescriptorStateBytes <
         std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(
+        defaultPolicy.maxActiveOuterFecDecoders <
+        std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(
+        defaultPolicy.maxOuterFecDecoderBytes <
+        std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(
+        defaultPolicy.maxTotalOuterFecDecoderBytes <
+        std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(defaultPolicy.maxOuterBlockBytes ==
+        pbprotocol::kMaximumTransportPayloadBytes);
+    REQUIRE(defaultPolicy.maxDirectRepeatBlockCount == 64);
+    REQUIRE(defaultPolicy.maxActiveOuterFecDecoders == 4);
+    REQUIRE(defaultPolicy.maxOuterFecDecoderBytes ==
+        512ULL * 1024ULL * 1024ULL);
+    REQUIRE(defaultPolicy.maxTotalOuterFecDecoderBytes ==
+        1024ULL * 1024ULL * 1024ULL);
 
     pbprotocol::ReceiverResourcePolicy impossiblePolicy =
         pbprotocol::test::MakeResourcePolicy();
@@ -102,15 +124,31 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
         pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
     REQUIRE(impossibleStatus.Error().offset == 28);
 
-    pbprotocol::ReceiverResourcePolicy unboundedPolicy{
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint32_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint64_t>::max()};
+    pbprotocol::ReceiverResourcePolicy unboundedPolicy{};
+    unboundedPolicy.maxAcceptedFileBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxSegmentCount =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxRawSegmentBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxEncodedSegmentBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxOuterBlockBytes =
+        std::numeric_limits<std::uint32_t>::max();
+    unboundedPolicy.maxDescriptorStateBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxConcurrentSessions =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxTotalDescriptorStateBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxDirectRepeatBlockCount =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxActiveOuterFecDecoders =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxOuterFecDecoderBytes =
+        std::numeric_limits<std::uint64_t>::max();
+    unboundedPolicy.maxTotalOuterFecDecoderBytes =
+        std::numeric_limits<std::uint64_t>::max();
     const pbprotocol::ProtocolStatus unboundedStatus =
         pbprotocol::ValidateReceiverResourcePolicy(unboundedPolicy);
     REQUIRE_FALSE(unboundedStatus);
@@ -138,6 +176,32 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
         contradictoryBudgets.maxDescriptorStateBytes - 1ULL;
     REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
         contradictoryBudgets));
+
+    auto zeroOuterFecDecoderLimit = defaultPolicy;
+    zeroOuterFecDecoderLimit.maxActiveOuterFecDecoders = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroOuterFecDecoderLimit));
+
+    auto zeroDirectRepeatBlockLimit = defaultPolicy;
+    zeroDirectRepeatBlockLimit.maxDirectRepeatBlockCount = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroDirectRepeatBlockLimit));
+
+    auto zeroOuterFecDecoderBudget = defaultPolicy;
+    zeroOuterFecDecoderBudget.maxOuterFecDecoderBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroOuterFecDecoderBudget));
+
+    auto zeroAggregateOuterFecBudget = defaultPolicy;
+    zeroAggregateOuterFecBudget.maxTotalOuterFecDecoderBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        zeroAggregateOuterFecBudget));
+
+    auto contradictoryOuterFecBudgets = defaultPolicy;
+    contradictoryOuterFecBudgets.maxTotalOuterFecDecoderBytes =
+        contradictoryOuterFecBudgets.maxOuterFecDecoderBytes - 1ULL;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(
+        contradictoryOuterFecBudgets));
 }
 
 TEST_CASE("Receiver resource policy rejects every unbounded sentinel independently",
@@ -183,6 +247,14 @@ TEST_CASE("Receiver resource policy rejects every unbounded sentinel independent
         REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
     }
 
+    SECTION("direct repeat block count")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxDirectRepeatBlockCount =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
     SECTION("descriptor state bytes")
     {
         auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
@@ -206,6 +278,30 @@ TEST_CASE("Receiver resource policy rejects every unbounded sentinel independent
             std::numeric_limits<std::uint64_t>::max();
         REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
     }
+
+    SECTION("active outer FEC decoders")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxActiveOuterFecDecoders =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("outer FEC decoder bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxOuterFecDecoderBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("total outer FEC decoder bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxTotalOuterFecDecoderBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
 }
 
 TEST_CASE("Finite values immediately below protocol policy sentinels are accepted",
@@ -221,9 +317,92 @@ TEST_CASE("Finite values immediately below protocol policy sentinels are accepte
     resourcePolicy.maxEncodedSegmentBytes =
         std::numeric_limits<std::uint64_t>::max() - 1ULL;
     resourcePolicy.maxOuterBlockBytes =
-        std::numeric_limits<std::uint32_t>::max() - 1U;
+        pbprotocol::kMaximumTransportPayloadBytes;
+    resourcePolicy.maxDirectRepeatBlockCount =
+        pbprotocol::kMaximumRepresentableDirectRepeatBlockCount;
+    resourcePolicy.maxActiveOuterFecDecoders =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxOuterFecDecoderBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
+    resourcePolicy.maxTotalOuterFecDecoderBytes =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
 
     REQUIRE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+}
+
+TEST_CASE("Transport payload width bounds every OuterBlockBytes entry point",
+          "[pbprotocol][descriptor][transport][boundary]")
+{
+    pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    resourcePolicy.maxOuterBlockBytes =
+        pbprotocol::kMaximumTransportPayloadBytes;
+    REQUIRE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+
+    auto oversizedPolicy = resourcePolicy;
+    oversizedPolicy.maxOuterBlockBytes =
+        pbprotocol::kMaximumTransportPayloadBytes + 1U;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(oversizedPolicy));
+
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(1, 1);
+    const pbprotocol::SegmentDescriptor maximumDescriptor =
+        pbprotocol::test::MakeDirectRepeatSegment(
+            sessionDescriptor,
+            0,
+            0,
+            1,
+            pbprotocol::kMaximumTransportPayloadBytes);
+    REQUIRE(pbprotocol::ValidateSegmentDescriptor(
+        maximumDescriptor, sessionDescriptor, resourcePolicy));
+
+    auto oversizedDescriptor = maximumDescriptor;
+    oversizedDescriptor.outerBlockBytes =
+        pbprotocol::kMaximumTransportPayloadBytes + 1U;
+    const auto descriptorStatus = pbprotocol::ValidateSegmentDescriptor(
+        oversizedDescriptor, sessionDescriptor);
+    REQUIRE_FALSE(descriptorStatus);
+    REQUIRE(descriptorStatus.Error().code ==
+        pbprotocol::ProtocolErrorCode::InvalidDescriptor);
+
+    std::array<
+        std::byte,
+        pbprotocol::kDirectRepeatSegmentDescriptorPayloadBytes> output{};
+    output.fill(static_cast<std::byte>(0xA5));
+    const auto originalOutput = output;
+    REQUIRE_FALSE(pbprotocol::SerializeSegmentDescriptor(
+        oversizedDescriptor, sessionDescriptor, output));
+    REQUIRE(output == originalOutput);
+
+    REQUIRE(pbprotocol::GetDirectRepeatBlockCount(
+        1, pbprotocol::kMaximumTransportPayloadBytes));
+    REQUIRE_FALSE(pbprotocol::GetDirectRepeatBlockCount(
+        1, pbprotocol::kMaximumTransportPayloadBytes + 1U));
+}
+
+TEST_CASE("DirectRepeat block-count policy is inclusive and checked in descriptor admission",
+          "[pbprotocol][descriptor][direct-repeat][policy][boundary]")
+{
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(65, 1);
+    const pbprotocol::SegmentDescriptor descriptor =
+        pbprotocol::test::MakeDirectRepeatSegment(
+            sessionDescriptor, 0, 0, 65, 16);
+
+    pbprotocol::ReceiverResourcePolicy exactPolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    exactPolicy.maxDirectRepeatBlockCount = 5;
+    REQUIRE(pbprotocol::ValidateSegmentDescriptor(
+        descriptor, sessionDescriptor, exactPolicy));
+
+    auto tooSmallPolicy = exactPolicy;
+    tooSmallPolicy.maxDirectRepeatBlockCount = 4;
+    const auto status = pbprotocol::ValidateSegmentDescriptor(
+        descriptor, sessionDescriptor, tooSmallPolicy);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.Error().code ==
+        pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+    REQUIRE(status.Error().offset == 42);
 }
 
 TEST_CASE("Every receiver resource limit is inclusive and checked before use",
@@ -577,15 +756,66 @@ TEST_CASE("Wirehair canonical profile validation covers identity and K bounds",
 TEST_CASE("DirectRepeat block count avoids ceil-division overflow",
           "[pbprotocol][direct-repeat][overflow]")
 {
-    const auto maximumCountResult = pbprotocol::GetDirectRepeatBlockCount(
-        static_cast<std::uint64_t>(
-            std::numeric_limits<std::uint32_t>::max()) + 1ULL,
-        1);
-    REQUIRE(maximumCountResult);
+    constexpr std::uint32_t outerBlockBytes = 16;
+    const auto emptyResult = pbprotocol::GetDirectRepeatBlockCount(0, 16);
+    REQUIRE(emptyResult);
+    REQUIRE(emptyResult.Value() == 0);
+
+    const auto zeroBlockResult = pbprotocol::GetDirectRepeatBlockCount(0, 0);
+    REQUIRE_FALSE(zeroBlockResult);
     REQUIRE(
-        maximumCountResult.Value() ==
+        zeroBlockResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::InvalidDescriptor);
+
+    const std::array<std::pair<std::uint64_t, std::uint64_t>, 7>
+        countBoundaries{{
+            {1, 1},
+            {outerBlockBytes - 1, 1},
+            {outerBlockBytes, 1},
+            {outerBlockBytes + 1, 2},
+            {3ULL * outerBlockBytes - 1ULL, 3},
+            {3ULL * outerBlockBytes, 3},
+            {3ULL * outerBlockBytes + 1ULL, 4}}};
+    for (const auto& [encodedSize, expectedBlockCount] : countBoundaries)
+    {
+        const auto countResult = pbprotocol::GetDirectRepeatBlockCount(
+            encodedSize, outerBlockBytes);
+        REQUIRE(countResult);
+        REQUIRE(countResult.Value() == expectedBlockCount);
+    }
+
+    constexpr std::uint64_t ordinalSpace =
         static_cast<std::uint64_t>(
-            std::numeric_limits<std::uint32_t>::max()) + 1ULL);
+            std::numeric_limits<std::uint32_t>::max()) + 1ULL;
+    const auto maximumCountResult = pbprotocol::GetDirectRepeatBlockCount(
+        ordinalSpace, 1);
+    REQUIRE(maximumCountResult);
+    REQUIRE(maximumCountResult.Value() == ordinalSpace);
+
+    const auto ordinalOverflowResult =
+        pbprotocol::GetDirectRepeatBlockCount(ordinalSpace + 1ULL, 1);
+    REQUIRE_FALSE(ordinalOverflowResult);
+    REQUIRE(
+        ordinalOverflowResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::LengthOverflow);
+
+    constexpr std::uint64_t maximumRepresentableEncodedSize =
+        ordinalSpace * pbprotocol::kMaximumTransportPayloadBytes;
+    const auto maximumEncodedSizeResult =
+        pbprotocol::GetDirectRepeatBlockCount(
+            maximumRepresentableEncodedSize,
+            pbprotocol::kMaximumTransportPayloadBytes);
+    REQUIRE(maximumEncodedSizeResult);
+    REQUIRE(maximumEncodedSizeResult.Value() == ordinalSpace);
+
+    const auto maximumEncodedSizeOverflowResult =
+        pbprotocol::GetDirectRepeatBlockCount(
+            maximumRepresentableEncodedSize + 1ULL,
+            pbprotocol::kMaximumTransportPayloadBytes);
+    REQUIRE_FALSE(maximumEncodedSizeOverflowResult);
+    REQUIRE(
+        maximumEncodedSizeOverflowResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::LengthOverflow);
 
     const auto overflowResult = pbprotocol::GetDirectRepeatBlockCount(
         std::numeric_limits<std::uint64_t>::max(),

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "pbouterfec/outer_fec_result.h"
+
 #include <cstdint>
+#include <optional>
 
 namespace pbouterfec::detail {
 
@@ -55,6 +58,16 @@ struct WirehairV2Backend
 
 [[nodiscard]] const WirehairV2Backend& GetWirehairV2Backend() noexcept;
 
+// The wrapper's accepted-ID table is independent from Wirehair's private
+// table. A per-decoder CSPRNG salt prevents a sender from precomputing the
+// wrapper's bounded linear-probe clusters. This is DoS hardening only.
+[[nodiscard]] std::uint64_t HashWirehairV2AcceptedBlockId(
+    std::uint32_t outerBlockId,
+    std::uint64_t hashSalt) noexcept;
+
+[[nodiscard]] OuterFecResult<std::uint64_t>
+GenerateWirehairV2AcceptedBlockHashSalt() noexcept;
+
 // Private deterministic fault-injection seam. It is deliberately absent from
 // installed/public headers. Overrides are thread-local and nest safely, so
 // tests do not alter another thread's codec backend.
@@ -71,6 +84,23 @@ public:
 
 private:
     const WirehairV2Backend* previousBackend_ = nullptr;
+};
+
+// Private deterministic seam for collision tests. Production decoders always
+// obtain a fresh salt from the OS CSPRNG.
+class ScopedWirehairV2AcceptedBlockHashSaltOverride
+{
+public:
+    explicit ScopedWirehairV2AcceptedBlockHashSaltOverride(
+        std::uint64_t hashSalt) noexcept;
+    ScopedWirehairV2AcceptedBlockHashSaltOverride(
+        const ScopedWirehairV2AcceptedBlockHashSaltOverride&) = delete;
+    ScopedWirehairV2AcceptedBlockHashSaltOverride& operator=(
+        const ScopedWirehairV2AcceptedBlockHashSaltOverride&) = delete;
+    ~ScopedWirehairV2AcceptedBlockHashSaltOverride();
+
+private:
+    std::optional<std::uint64_t> previousHashSalt_;
 };
 
 } // namespace pbouterfec::detail

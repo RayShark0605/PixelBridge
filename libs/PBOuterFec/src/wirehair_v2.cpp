@@ -1,9 +1,12 @@
 #include "pbouterfec/wirehair_v2.h"
 
+#include "outer_fec_decoder_resource_internal.h"
 #include "pbprotocol/blake3_digest.h"
+#include "pbprotocol/checked_integer.h"
 #include "pbprotocol/descriptor_codec.h"
 #include "wirehair_v2_backend.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -13,8 +16,8 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace pbouterfec {
 namespace {
@@ -22,8 +25,19 @@ namespace {
 using detail::WirehairV2Backend;
 using detail::WirehairV2ProfileFields;
 
-inline constexpr std::uint32_t kWirehairV2MaximumBlockBytes = 0x7FFFFFFFU;
 inline constexpr std::uint64_t kWirehairV2RetainedExtraIds = 1024;
+inline constexpr std::uint64_t kWirehairV2InitialExtraRows = 32;
+inline constexpr std::size_t kAcceptedBlockFingerprintBytes = 16;
+inline constexpr std::size_t kMaximumAcceptedBlockProbeCount = 64;
+inline constexpr std::uint64_t kDecoderFixedAdmissionBytes = 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDecoderEncodedWorkMultiplier = 4;
+inline constexpr std::uint64_t kDecoderRowAdmissionBytes = 256;
+inline constexpr std::uint64_t kRetainedPayloadPeakMultiplier = 2;
+// The pinned 067ca7c Wirehair ReceivedPacketRecord has an upstream
+// static_assert(sizeof(...) == 24). Re-audit this charge with any dependency
+// revision; undercounting the private accepted-ID table defeats admission.
+inline constexpr std::uint64_t kWirehairSlotPeakAdmissionBytes = 24;
+inline constexpr std::uint64_t kWrapperSlotPeakAdmissionBytes = 48;
 
 static_assert(
     kWirehairV2CertifiedProfileId ==
@@ -129,7 +143,8 @@ template <typename ValueType>
         return OuterFecResult<std::uint32_t>::Failure(
             OuterFecErrorCode::InvalidDimensions, messageBytes);
     }
-    if (blockBytes == 0 || blockBytes > kWirehairV2MaximumBlockBytes)
+    if (blockBytes == 0 ||
+        blockBytes > pbprotocol::kMaximumTransportPayloadBytes)
     {
         return OuterFecResult<std::uint32_t>::Failure(
             OuterFecErrorCode::InvalidDimensions, blockBytes);
@@ -328,54 +343,383 @@ private:
     }
 }
 
-[[nodiscard]] OuterFecStatus ValidateCanonicalSelectionForRecreation(
-    const std::span<const std::byte> exactEncodedSegment,
-    const ValidatedDescriptorProfile& validated,
-    const pbprotocol::WirehairV2SerializedProfile& savedProfile)
+struct DecoderResourceEstimate
 {
-    pbprotocol::WirehairV2SerializedProfile selectedProfile{};
-    std::uint32_t selectedProfileBytes = 0;
-    void* selectedCodecHandle = nullptr;
-    const int selectionResult = validated.backend->encoderCreateProfileId(
-        validated.profileFields.profileId,
-        exactEncodedSegment.data(),
-        validated.profileFields.messageBytes,
-        validated.profileFields.blockBytes,
-        selectedProfile.bytes.data(),
-        static_cast<std::uint32_t>(selectedProfile.bytes.size()),
-        &selectedProfileBytes,
-        &selectedCodecHandle);
-    CodecGuard selectedCodecGuard(*validated.backend, selectedCodecHandle);
-    if (selectionResult != detail::kWirehairV2Success)
+    std::uint64_t maximumAcceptedBlockIds = 0;
+    std::uint64_t initialAcceptedBlockIds = 0;
+    std::uint64_t maximumTableCapacity = 0;
+    std::uint64_t reservationBytes = 0;
+};
+
+[[nodiscard]] OuterFecResult<std::uint64_t> GetTableCapacity(
+    const std::uint64_t entryCount)
+{
+    const auto doubledResult = pbprotocol::CheckedMultiplyUint64(
+        entryCount, 2ULL);
+    if (!doubledResult)
     {
-        const OuterFecError error = MapWirehairFailure(
-            selectionResult,
-            CreateFailureDetail(
-                selectionResult,
-                validated.profileFields.profileId,
-                validated.profileFields.blockBytes,
-                selectedProfileBytes));
-        return OuterFecStatus::Failure(error.code, error.detail);
+        return OuterFecResult<std::uint64_t>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            std::numeric_limits<std::uint64_t>::max());
     }
-    if (selectedCodecHandle == nullptr)
+
+    const std::uint64_t requiredCapacity = doubledResult.Value();
+    std::uint64_t capacity = 1;
+    while (capacity < requiredCapacity)
     {
-        return OuterFecStatus::Failure(OuterFecErrorCode::CodecError);
+        const auto nextCapacityResult = pbprotocol::CheckedMultiplyUint64(
+            capacity, 2ULL);
+        if (!nextCapacityResult)
+        {
+            return OuterFecResult<std::uint64_t>::Failure(
+                OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+                std::numeric_limits<std::uint64_t>::max());
+        }
+        capacity = nextCapacityResult.Value();
     }
-    if (selectedProfileBytes != selectedProfile.bytes.size())
+    return OuterFecResult<std::uint64_t>::Success(capacity);
+}
+
+[[nodiscard]] bool AddReservationTerm(
+    const std::uint64_t term,
+    std::uint64_t& reservationBytes) noexcept
+{
+    const auto sumResult = pbprotocol::CheckedAddUint64(
+        reservationBytes, term);
+    if (!sumResult)
     {
-        return OuterFecStatus::Failure(
-            OuterFecErrorCode::InvalidSize,
-            selectedProfileBytes);
+        return false;
     }
-    if (selectedProfile != savedProfile)
+    reservationBytes = sumResult.Value();
+    return true;
+}
+
+[[nodiscard]] OuterFecResult<DecoderResourceEstimate>
+CalculateDecoderResourceEstimate(
+    const WirehairV2ProfileFields& profileFields,
+    const std::uint32_t blockCount)
+{
+    const auto maximumAcceptedResult = pbprotocol::CheckedAddUint64(
+        static_cast<std::uint64_t>(blockCount),
+        kWirehairV2RetainedExtraIds);
+    const auto initialAcceptedResult = pbprotocol::CheckedAddUint64(
+        static_cast<std::uint64_t>(blockCount),
+        kWirehairV2InitialExtraRows);
+    if (!maximumAcceptedResult || !initialAcceptedResult)
     {
-        // The actual recreation below never substitutes this freshly selected
-        // record. A mismatch proves the caller did not supply the exact record
-        // originally emitted by Create() for these exact bytes.
-        return OuterFecStatus::Failure(
-            OuterFecErrorCode::InvalidDescriptor);
+        return OuterFecResult<DecoderResourceEstimate>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            std::numeric_limits<std::uint64_t>::max());
     }
-    return OuterFecStatus::Success();
+
+    const std::uint64_t maximumAcceptedBlockIds =
+        maximumAcceptedResult.Value();
+    const auto maximumCapacityResult = GetTableCapacity(
+        maximumAcceptedBlockIds);
+    if (!maximumCapacityResult)
+    {
+        return FailureFrom<DecoderResourceEstimate>(
+            maximumCapacityResult.Error());
+    }
+
+    const auto retainedPayloadBytesResult = pbprotocol::CheckedMultiplyUint64(
+        maximumAcceptedBlockIds,
+        static_cast<std::uint64_t>(profileFields.blockBytes));
+    if (!retainedPayloadBytesResult)
+    {
+        return OuterFecResult<DecoderResourceEstimate>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            std::numeric_limits<std::uint64_t>::max());
+    }
+    const auto retainedPayloadPeakResult = pbprotocol::CheckedMultiplyUint64(
+        retainedPayloadBytesResult.Value(),
+        kRetainedPayloadPeakMultiplier);
+    const auto encodedWorkResult = pbprotocol::CheckedMultiplyUint64(
+        profileFields.messageBytes,
+        kDecoderEncodedWorkMultiplier);
+    const auto rowStateResult = pbprotocol::CheckedMultiplyUint64(
+        maximumAcceptedBlockIds,
+        kDecoderRowAdmissionBytes);
+    const auto tableBytesPerSlotResult = pbprotocol::CheckedAddUint64(
+        kWirehairSlotPeakAdmissionBytes,
+        kWrapperSlotPeakAdmissionBytes);
+    if (!retainedPayloadPeakResult || !encodedWorkResult || !rowStateResult ||
+        !tableBytesPerSlotResult)
+    {
+        return OuterFecResult<DecoderResourceEstimate>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            std::numeric_limits<std::uint64_t>::max());
+    }
+    const auto tableStateResult = pbprotocol::CheckedMultiplyUint64(
+        maximumCapacityResult.Value(),
+        tableBytesPerSlotResult.Value());
+    if (!tableStateResult)
+    {
+        return OuterFecResult<DecoderResourceEstimate>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            std::numeric_limits<std::uint64_t>::max());
+    }
+
+    // This is a conservative admission charge rather than allocator telemetry:
+    // it covers peak vector growth for the full accepted-payload window, peak
+    // growth of both bounded ID tables, a four-message solver/workspace
+    // allowance, per-row state, and fixed state.
+    std::uint64_t reservationBytes = 0;
+    if (!AddReservationTerm(
+            retainedPayloadPeakResult.Value(), reservationBytes) ||
+        !AddReservationTerm(encodedWorkResult.Value(), reservationBytes) ||
+        !AddReservationTerm(rowStateResult.Value(), reservationBytes) ||
+        !AddReservationTerm(tableStateResult.Value(), reservationBytes) ||
+        !AddReservationTerm(kDecoderFixedAdmissionBytes, reservationBytes))
+    {
+        return OuterFecResult<DecoderResourceEstimate>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            std::numeric_limits<std::uint64_t>::max());
+    }
+
+    return OuterFecResult<DecoderResourceEstimate>::Success(
+        DecoderResourceEstimate{
+            maximumAcceptedBlockIds,
+            initialAcceptedResult.Value(),
+            maximumCapacityResult.Value(),
+            reservationBytes});
+}
+
+using AcceptedBlockFingerprint =
+    std::array<std::byte, kAcceptedBlockFingerprintBytes>;
+
+enum class AcceptedBlockInsertDisposition : std::uint8_t
+{
+    Inserted,
+    Duplicate,
+    Conflict,
+    NotFound,
+    Full,
+    ProbeLimitExceeded
+};
+
+struct AcceptedBlockSlot
+{
+    std::uint32_t outerBlockId = 0;
+    AcceptedBlockFingerprint fingerprint{};
+    bool occupied = false;
+};
+
+static_assert(sizeof(AcceptedBlockSlot) <= 32);
+
+enum class AcceptedBlockProbeDisposition : std::uint8_t
+{
+    Found,
+    Empty,
+    ProbeLimitExceeded
+};
+
+struct AcceptedBlockProbeResult
+{
+    AcceptedBlockProbeDisposition disposition =
+        AcceptedBlockProbeDisposition::ProbeLimitExceeded;
+    std::size_t slotIndex = 0;
+};
+
+class AcceptedBlockFingerprintTable
+{
+public:
+    void Initialize(
+        const std::uint64_t initialEntryCount,
+        const std::uint64_t maximumEntryCount,
+        const std::uint64_t maximumCapacity,
+        const std::uint64_t hashSalt)
+    {
+        const auto initialCapacityResult = GetTableCapacity(
+            initialEntryCount);
+        if (!initialCapacityResult ||
+            initialCapacityResult.Value() > maximumCapacity)
+        {
+            throw std::length_error(
+                "accepted block table capacity is invalid");
+        }
+
+        const auto initialCapacitySizeResult =
+            pbprotocol::CheckedUint64ToSize(initialCapacityResult.Value());
+        const auto maximumEntrySizeResult =
+            pbprotocol::CheckedUint64ToSize(maximumEntryCount);
+        const auto maximumCapacitySizeResult =
+            pbprotocol::CheckedUint64ToSize(maximumCapacity);
+        if (!initialCapacitySizeResult || !maximumEntrySizeResult ||
+            !maximumCapacitySizeResult)
+        {
+            throw std::length_error(
+                "accepted block table does not fit size_t");
+        }
+
+        std::vector<AcceptedBlockSlot> initialSlots(
+            initialCapacitySizeResult.Value());
+        slots_.swap(initialSlots);
+        maximumEntryCount_ = maximumEntrySizeResult.Value();
+        maximumCapacity_ = maximumCapacitySizeResult.Value();
+        entryCount_ = 0;
+        hashSalt_ = hashSalt;
+    }
+
+    [[nodiscard]] AcceptedBlockInsertDisposition CheckAndInsert(
+        const std::uint32_t outerBlockId,
+        const AcceptedBlockFingerprint& fingerprint,
+        const bool insertIfAbsent)
+    {
+        AcceptedBlockProbeResult probeResult = Probe(
+            slots_, outerBlockId, hashSalt_);
+        if (probeResult.disposition == AcceptedBlockProbeDisposition::Found)
+        {
+            return slots_[probeResult.slotIndex].fingerprint == fingerprint
+                ? AcceptedBlockInsertDisposition::Duplicate
+                : AcceptedBlockInsertDisposition::Conflict;
+        }
+        if (probeResult.disposition ==
+            AcceptedBlockProbeDisposition::ProbeLimitExceeded)
+        {
+            return AcceptedBlockInsertDisposition::ProbeLimitExceeded;
+        }
+        if (!insertIfAbsent)
+        {
+            return AcceptedBlockInsertDisposition::NotFound;
+        }
+        if (entryCount_ >= maximumEntryCount_)
+        {
+            return AcceptedBlockInsertDisposition::Full;
+        }
+
+        if (entryCount_ >= slots_.size() / 2U)
+        {
+            const AcceptedBlockInsertDisposition growResult = Grow();
+            if (growResult != AcceptedBlockInsertDisposition::Inserted)
+            {
+                return growResult;
+            }
+            probeResult = Probe(slots_, outerBlockId, hashSalt_);
+            if (probeResult.disposition ==
+                AcceptedBlockProbeDisposition::ProbeLimitExceeded)
+            {
+                return AcceptedBlockInsertDisposition::ProbeLimitExceeded;
+            }
+            if (probeResult.disposition !=
+                AcceptedBlockProbeDisposition::Empty)
+            {
+                return AcceptedBlockInsertDisposition::Conflict;
+            }
+        }
+
+        AcceptedBlockSlot& slot = slots_[probeResult.slotIndex];
+        slot.outerBlockId = outerBlockId;
+        slot.fingerprint = fingerprint;
+        slot.occupied = true;
+        entryCount_++;
+        return AcceptedBlockInsertDisposition::Inserted;
+    }
+
+    [[nodiscard]] std::size_t Size() const noexcept
+    {
+        return entryCount_;
+    }
+
+    [[nodiscard]] std::size_t MaximumEntryCount() const noexcept
+    {
+        return maximumEntryCount_;
+    }
+
+private:
+    [[nodiscard]] static AcceptedBlockProbeResult Probe(
+        const std::vector<AcceptedBlockSlot>& slots,
+        const std::uint32_t outerBlockId,
+        const std::uint64_t hashSalt) noexcept
+    {
+        if (slots.empty())
+        {
+            return {};
+        }
+
+        const std::size_t mask = slots.size() - 1U;
+        std::size_t slotIndex =
+            static_cast<std::size_t>(
+                detail::HashWirehairV2AcceptedBlockId(
+                    outerBlockId, hashSalt)) & mask;
+        const std::size_t probeCount = std::min(
+            slots.size(), kMaximumAcceptedBlockProbeCount);
+        for (std::size_t probeIndex = 0;
+            probeIndex < probeCount;
+            probeIndex++)
+        {
+            const AcceptedBlockSlot& slot = slots[slotIndex];
+            if (!slot.occupied)
+            {
+                return AcceptedBlockProbeResult{
+                    AcceptedBlockProbeDisposition::Empty,
+                    slotIndex};
+            }
+            if (slot.outerBlockId == outerBlockId)
+            {
+                return AcceptedBlockProbeResult{
+                    AcceptedBlockProbeDisposition::Found,
+                    slotIndex};
+            }
+            slotIndex = (slotIndex + 1U) & mask;
+        }
+        return {};
+    }
+
+    [[nodiscard]] static bool InsertExisting(
+        std::vector<AcceptedBlockSlot>& slots,
+        const AcceptedBlockSlot& existingSlot,
+        const std::uint64_t hashSalt) noexcept
+    {
+        const AcceptedBlockProbeResult probeResult = Probe(
+            slots, existingSlot.outerBlockId, hashSalt);
+        if (probeResult.disposition != AcceptedBlockProbeDisposition::Empty)
+        {
+            return false;
+        }
+        slots[probeResult.slotIndex] = existingSlot;
+        return true;
+    }
+
+    [[nodiscard]] AcceptedBlockInsertDisposition Grow()
+    {
+        if (slots_.size() >= maximumCapacity_ ||
+            slots_.size() > std::numeric_limits<std::size_t>::max() / 2U)
+        {
+            return AcceptedBlockInsertDisposition::Full;
+        }
+
+        const std::size_t newCapacity = std::min(
+            slots_.size() * 2U, maximumCapacity_);
+        std::vector<AcceptedBlockSlot> newSlots(newCapacity);
+        for (const AcceptedBlockSlot& slot : slots_)
+        {
+            if (slot.occupied &&
+                !InsertExisting(newSlots, slot, hashSalt_))
+            {
+                return AcceptedBlockInsertDisposition::ProbeLimitExceeded;
+            }
+        }
+        slots_.swap(newSlots);
+        return AcceptedBlockInsertDisposition::Inserted;
+    }
+
+    std::vector<AcceptedBlockSlot> slots_;
+    std::size_t entryCount_ = 0;
+    std::size_t maximumEntryCount_ = 0;
+    std::size_t maximumCapacity_ = 0;
+    std::uint64_t hashSalt_ = 0;
+};
+
+[[nodiscard]] AcceptedBlockFingerprint ComputeAcceptedBlockFingerprint(
+    const std::span<const std::byte> payload) noexcept
+{
+    const std::array<std::byte, pbprotocol::kDigestBytes> digest =
+        pbprotocol::ComputeBlake3Digest(payload);
+    AcceptedBlockFingerprint fingerprint{};
+    std::copy_n(
+        digest.begin(), fingerprint.size(), fingerprint.begin());
+    return fingerprint;
 }
 
 } // namespace
@@ -387,14 +731,12 @@ struct WirehairV2DecoderImplementation
     void* codecHandle = nullptr;
     const WirehairV2Backend* backend = nullptr;
     std::uint64_t encodedSize = 0;
-    std::uint64_t maximumAcceptedBlockIds = 0;
     std::uint32_t outerBlockBytes = 0;
     std::uint32_t blockCount = 0;
     bool ready = false;
     std::optional<OuterFecError> terminalError;
-    std::unordered_map<
-        std::uint32_t,
-        std::array<std::byte, pbprotocol::kDigestBytes>> acceptedBlockDigests;
+    OuterFecDecoderReservation resourceReservation;
+    AcceptedBlockFingerprintTable acceptedBlocks;
 };
 
 } // namespace detail
@@ -625,16 +967,6 @@ OuterFecResult<WirehairV2Encoder> WirehairV2Encoder::Recreate(
 
     const auto& serializedProfile =
         segmentDescriptor.wirehairV2SerializedProfile.value();
-    const OuterFecStatus canonicalSelectionStatus =
-        ValidateCanonicalSelectionForRecreation(
-            exactEncodedSegment, validated, serializedProfile);
-    if (!canonicalSelectionStatus)
-    {
-        return OuterFecResult<WirehairV2Encoder>::Failure(
-            canonicalSelectionStatus.Error().code,
-            canonicalSelectionStatus.Error().detail);
-    }
-
     void* codecHandle = nullptr;
     const int createResult = validated.backend->encoderCreateProfile(
         exactEncodedSegment.data(),
@@ -785,8 +1117,32 @@ void WirehairV2Decoder::Release() noexcept
 }
 
 OuterFecResult<WirehairV2Decoder> WirehairV2Decoder::Create(
-    const pbprotocol::SegmentDescriptor& segmentDescriptor)
+    const pbprotocol::SegmentDescriptor& segmentDescriptor,
+    const OuterFecDecoderResourceManager& resourceManager)
 {
+    if (resourceManager.state_ == nullptr)
+    {
+        return OuterFecResult<WirehairV2Decoder>::Failure(
+            OuterFecErrorCode::InvalidState);
+    }
+
+    const pbprotocol::ReceiverResourcePolicy& resourcePolicy =
+        resourceManager.state_->resourcePolicy;
+    if (segmentDescriptor.encodedSize >
+        resourcePolicy.maxEncodedSegmentBytes)
+    {
+        return OuterFecResult<WirehairV2Decoder>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            segmentDescriptor.encodedSize);
+    }
+    if (segmentDescriptor.outerBlockBytes >
+        resourcePolicy.maxOuterBlockBytes)
+    {
+        return OuterFecResult<WirehairV2Decoder>::Failure(
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
+            segmentDescriptor.outerBlockBytes);
+    }
+
     const auto validatedResult = ValidateDescriptorProfile(segmentDescriptor);
     if (!validatedResult)
     {
@@ -794,17 +1150,41 @@ OuterFecResult<WirehairV2Decoder> WirehairV2Decoder::Create(
     }
     const ValidatedDescriptorProfile& validated = validatedResult.Value();
 
+    const auto estimateResult = CalculateDecoderResourceEstimate(
+        validated.profileFields, validated.blockCount);
+    if (!estimateResult)
+    {
+        return FailureFrom<WirehairV2Decoder>(estimateResult.Error());
+    }
+    const DecoderResourceEstimate& estimate = estimateResult.Value();
+
+    const auto hashSaltResult =
+        detail::GenerateWirehairV2AcceptedBlockHashSalt();
+    if (!hashSaltResult)
+    {
+        return FailureFrom<WirehairV2Decoder>(hashSaltResult.Error());
+    }
+
+    auto reservationResult = detail::AcquireOuterFecDecoderReservation(
+        resourceManager.state_, estimate.reservationBytes);
+    if (!reservationResult)
+    {
+        return FailureFrom<WirehairV2Decoder>(reservationResult.Error());
+    }
+    detail::OuterFecDecoderReservation reservation =
+        std::move(reservationResult).Value();
+
     std::unique_ptr<detail::WirehairV2DecoderImplementation> implementation;
     try
     {
         implementation =
             std::make_unique<detail::WirehairV2DecoderImplementation>();
-        implementation->maximumAcceptedBlockIds =
-            static_cast<std::uint64_t>(validated.blockCount)
-            + kWirehairV2RetainedExtraIds;
-        implementation->acceptedBlockDigests.reserve(
-            static_cast<std::size_t>(
-                implementation->maximumAcceptedBlockIds));
+        implementation->acceptedBlocks.Initialize(
+            estimate.initialAcceptedBlockIds,
+            estimate.maximumAcceptedBlockIds,
+            estimate.maximumTableCapacity,
+            hashSaltResult.Value());
+        implementation->resourceReservation = std::move(reservation);
     }
     catch (const std::bad_alloc&)
     {
@@ -881,54 +1261,16 @@ OuterFecResult<DecodeDisposition> WirehairV2Decoder::DecodeBlock(
         return FailureFrom<DecodeDisposition>(error);
     }
 
-    const auto payloadDigest = pbprotocol::ComputeBlake3Digest(payload);
-    const auto existingBlock =
-        implementation_->acceptedBlockDigests.find(outerBlockId);
-    if (existingBlock != implementation_->acceptedBlockDigests.end())
-    {
-        if (existingBlock->second != payloadDigest)
-        {
-            const OuterFecError error{
-                OuterFecErrorCode::InvalidInput,
-                outerBlockId};
-            implementation_->terminalError = error;
-            return FailureFrom<DecodeDisposition>(error);
-        }
-
-        return OuterFecResult<DecodeDisposition>::Success(
-            implementation_->ready
-                ? DecodeDisposition::Ready
-                : DecodeDisposition::NeedMore);
-    }
-
-    if (implementation_->ready)
-    {
-        return OuterFecResult<DecodeDisposition>::Failure(
-            OuterFecErrorCode::InvalidState);
-    }
-    if (implementation_->acceptedBlockDigests.size()
-        >= implementation_->maximumAcceptedBlockIds)
-    {
-        const OuterFecError error{
-            OuterFecErrorCode::ExtraInsufficient,
-            implementation_->maximumAcceptedBlockIds};
-        implementation_->terminalError = error;
-        return FailureFrom<DecodeDisposition>(error);
-    }
-
+    const AcceptedBlockFingerprint fingerprint =
+        ComputeAcceptedBlockFingerprint(payload);
+    AcceptedBlockInsertDisposition insertDisposition =
+        AcceptedBlockInsertDisposition::ProbeLimitExceeded;
     try
     {
-        const auto insertResult =
-            implementation_->acceptedBlockDigests.try_emplace(
-                outerBlockId, payloadDigest);
-        if (!insertResult.second)
-        {
-            const OuterFecError error{
-                OuterFecErrorCode::CodecError,
-                outerBlockId};
-            implementation_->terminalError = error;
-            return FailureFrom<DecodeDisposition>(error);
-        }
+        insertDisposition = implementation_->acceptedBlocks.CheckAndInsert(
+            outerBlockId,
+            fingerprint,
+            !implementation_->ready);
     }
     catch (const std::bad_alloc&)
     {
@@ -940,9 +1282,55 @@ OuterFecResult<DecodeDisposition> WirehairV2Decoder::DecodeBlock(
     {
         const OuterFecError error{
             OuterFecErrorCode::OutOfMemory,
-            implementation_->acceptedBlockDigests.size()};
+            implementation_->acceptedBlocks.Size()};
         implementation_->terminalError = error;
         return FailureFrom<DecodeDisposition>(error);
+    }
+
+    switch (insertDisposition)
+    {
+    case AcceptedBlockInsertDisposition::Duplicate:
+        return OuterFecResult<DecodeDisposition>::Success(
+            implementation_->ready
+                ? DecodeDisposition::Ready
+                : DecodeDisposition::NeedMore);
+    case AcceptedBlockInsertDisposition::Conflict:
+    {
+        const OuterFecError error{
+            OuterFecErrorCode::OuterBlockConflict,
+            outerBlockId};
+        implementation_->terminalError = error;
+        return FailureFrom<DecodeDisposition>(error);
+    }
+    case AcceptedBlockInsertDisposition::NotFound:
+        return OuterFecResult<DecodeDisposition>::Failure(
+            OuterFecErrorCode::InvalidState);
+    case AcceptedBlockInsertDisposition::Full:
+    {
+        const OuterFecError error{
+            OuterFecErrorCode::ExtraInsufficient,
+            implementation_->acceptedBlocks.MaximumEntryCount()};
+        implementation_->terminalError = error;
+        return FailureFrom<DecodeDisposition>(error);
+    }
+    case AcceptedBlockInsertDisposition::ProbeLimitExceeded:
+    {
+        const OuterFecError error{
+            OuterFecErrorCode::ExtraInsufficient,
+            kMaximumAcceptedBlockProbeCount};
+        implementation_->terminalError = error;
+        return FailureFrom<DecodeDisposition>(error);
+    }
+    case AcceptedBlockInsertDisposition::Inserted:
+        break;
+    default:
+    {
+        const OuterFecError error{
+            OuterFecErrorCode::CodecError,
+            outerBlockId};
+        implementation_->terminalError = error;
+        return FailureFrom<DecodeDisposition>(error);
+    }
     }
 
     const int decodeResult = implementation_->backend->decode(
@@ -962,7 +1350,6 @@ OuterFecResult<DecodeDisposition> WirehairV2Decoder::DecodeBlock(
             DecodeDisposition::Ready);
     }
 
-    implementation_->acceptedBlockDigests.erase(outerBlockId);
     const std::uint64_t resultDetail =
         decodeResult == detail::kWirehairV2BufferTooSmall
         ? requiredBytes

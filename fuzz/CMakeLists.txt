@@ -4,6 +4,12 @@ add_executable(PBProtocolDescriptorResourceFuzz
 add_executable(PBCompressionZstdBoundaryFuzz
     compression_zstd_boundary_fuzz.cpp)
 
+add_executable(PBOuterFecWirehairV2Fuzz
+    wirehair_v2_wrapper_fuzz.cpp)
+
+add_executable(PBOuterFecDirectRepeatFuzz
+    direct_repeat_fuzz.cpp)
+
 target_link_libraries(PBProtocolDescriptorResourceFuzz
     PRIVATE
         PB::CompilerSettings
@@ -14,6 +20,16 @@ target_link_libraries(PBCompressionZstdBoundaryFuzz
         PB::CompilerSettings
         PB::PBCompression)
 
+target_link_libraries(PBOuterFecWirehairV2Fuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBOuterFec)
+
+target_link_libraries(PBOuterFecDirectRepeatFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBOuterFec)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_definitions(PBProtocolDescriptorResourceFuzz
         PRIVATE
@@ -21,11 +37,21 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_definitions(PBCompressionZstdBoundaryFuzz
         PRIVATE
             PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBOuterFecWirehairV2Fuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBOuterFecDirectRepeatFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
     target_compile_options(PBProtocol
         PRIVATE
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
     target_compile_options(PBCompression
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
+    target_compile_options(PBOuterFec
         PRIVATE
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
@@ -43,14 +69,45 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_link_options(PBCompressionZstdBoundaryFuzz
         PRIVATE
             -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBOuterFecWirehairV2Fuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBOuterFecWirehairV2Fuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBOuterFecDirectRepeatFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBOuterFecDirectRepeatFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
 elseif(MSVC)
     # The MSVC fallback is a deterministic mutation runner. AddressSanitizer is
-    # applied to PBProtocol and PBCompression as well as both drivers so library
-    # accesses are instrumented rather than only the outer executables.
+    # applied to each exercised PixelBridge library as well as all drivers so
+    # library accesses are instrumented rather than only the outer executables.
     # C5072: ASan requires debug info for useful reports; /WX would otherwise
     # turn the warning into a hard error on non-RelWithDebInfo configurations.
     target_compile_options(PBProtocol PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBCompression PRIVATE /Zi /fsanitize=address)
+    target_compile_options(PBOuterFec PRIVATE /Zi /fsanitize=address)
+    # The pinned vcpkg Wirehair archive is not ASan-instrumented and records
+    # MSVC STL container annotations as disabled. Match that ABI in the two
+    # PixelBridge targets that directly exchange STL-backed wrapper state;
+    # ordinary ASan memory instrumentation remains enabled.
+    target_compile_definitions(PBOuterFec
+        PRIVATE
+            _DISABLE_STRING_ANNOTATION
+            _DISABLE_VECTOR_ANNOTATION)
+    target_compile_definitions(PBOuterFecWirehairV2Fuzz
+        PRIVATE
+            _DISABLE_STRING_ANNOTATION
+            _DISABLE_VECTOR_ANNOTATION)
+    target_compile_definitions(PBOuterFecDirectRepeatFuzz
+        PRIVATE
+            _DISABLE_STRING_ANNOTATION
+            _DISABLE_VECTOR_ANNOTATION)
     target_compile_options(PBProtocolDescriptorResourceFuzz
         PRIVATE
             /Zi
@@ -65,6 +122,22 @@ elseif(MSVC)
             /Zi
             /fsanitize=address)
     target_link_options(PBCompressionZstdBoundaryFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
+    target_compile_options(PBOuterFecWirehairV2Fuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBOuterFecWirehairV2Fuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
+    target_compile_options(PBOuterFecDirectRepeatFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBOuterFecDirectRepeatFuzz
         PRIVATE
             /DEBUG
             /INCREMENTAL:NO)
@@ -87,6 +160,16 @@ elseif(MSVC)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${pbMsvcAsanRuntime}"
             "$<TARGET_FILE_DIR:PBCompressionZstdBoundaryFuzz>"
+        VERBATIM)
+    add_custom_command(TARGET PBOuterFecWirehairV2Fuzz POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${pbMsvcAsanRuntime}"
+            "$<TARGET_FILE_DIR:PBOuterFecWirehairV2Fuzz>"
+        VERBATIM)
+    add_custom_command(TARGET PBOuterFecDirectRepeatFuzz POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${pbMsvcAsanRuntime}"
+            "$<TARGET_FILE_DIR:PBOuterFecDirectRepeatFuzz>"
         VERBATIM)
     unset(pbMsvcAsanRuntime)
     unset(pbMsvcCompilerDirectory)
@@ -114,6 +197,21 @@ if(BUILD_TESTING)
         set_tests_properties(PBCompressionZstdBoundaryFuzzSmoke PROPERTIES
             LABELS "fuzz;pbcompression;libfuzzer"
             TIMEOUT 60)
+        add_test(
+            NAME PBOuterFecWirehairV2FuzzSmoke
+            COMMAND PBOuterFecWirehairV2Fuzz
+                -runs=1000)
+        set_tests_properties(PBOuterFecWirehairV2FuzzSmoke PROPERTIES
+            LABELS "fuzz;pbouterfec;libfuzzer"
+            TIMEOUT 60)
+        add_test(
+            NAME PBOuterFecDirectRepeatFuzzSmoke
+            COMMAND PBOuterFecDirectRepeatFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/direct-repeat"
+                -runs=2000)
+        set_tests_properties(PBOuterFecDirectRepeatFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbouterfec;direct-repeat;libfuzzer"
+            TIMEOUT 60)
     else()
         add_test(
             NAME PBProtocolDescriptorResourceFuzzSmoke
@@ -131,6 +229,44 @@ if(BUILD_TESTING)
         set_tests_properties(PBCompressionZstdBoundaryFuzzSmoke PROPERTIES
             LABELS "fuzz;pbcompression"
             TIMEOUT 60)
+        add_test(
+            NAME PBOuterFecWirehairV2FuzzSmoke
+            COMMAND PBOuterFecWirehairV2Fuzz
+                1000
+                6289371488644456784)
+        set_tests_properties(PBOuterFecWirehairV2FuzzSmoke PROPERTIES
+            LABELS "fuzz;pbouterfec"
+            TIMEOUT 60)
+        add_test(
+            NAME PBOuterFecDirectRepeatFuzzSmoke
+            COMMAND PBOuterFecDirectRepeatFuzz
+                2000
+                4923072552113298010)
+        set_tests_properties(PBOuterFecDirectRepeatFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbouterfec;direct-repeat"
+            TIMEOUT 60)
+
+        set(pbDirectRepeatCorpusDirectory
+            "${CMAKE_CURRENT_SOURCE_DIR}/corpus/direct-repeat")
+        foreach(pbDirectRepeatCorpusName IN ITEMS
+                zero-one-byte
+                short-tail
+                malformed-shape
+                noncanonical-padding
+                duplicate-conflict)
+            add_test(
+                NAME "PBOuterFecDirectRepeatCorpus.${pbDirectRepeatCorpusName}"
+                COMMAND PBOuterFecDirectRepeatFuzz
+                    --input
+                    "${pbDirectRepeatCorpusDirectory}/${pbDirectRepeatCorpusName}.bin")
+            set_tests_properties(
+                "PBOuterFecDirectRepeatCorpus.${pbDirectRepeatCorpusName}"
+                PROPERTIES
+                    LABELS "fuzz;pbouterfec;direct-repeat;corpus"
+                    TIMEOUT 10)
+        endforeach()
+        unset(pbDirectRepeatCorpusName)
+        unset(pbDirectRepeatCorpusDirectory)
 
         set(pbDescriptorCorpusDirectory
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/descriptor-resource")

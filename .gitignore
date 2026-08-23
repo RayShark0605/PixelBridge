@@ -6,3 +6,6 @@ build-*/
 *.obj
 CMakeUserPresets.json
 target-dependency-graph.dot.*
+
+# Source-tree vcpkg manifest state
+/vcpkg_installed/

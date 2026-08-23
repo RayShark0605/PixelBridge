@@ -26,3 +26,22 @@ PixelBridge uses only the canonical serialized-profile V2 boundary. A profile
 ID identifies a frozen equation family and is not an integrity, trust, or
 sender-authentication primitive. The third-party revision is an implementation
 baseline and does not change PixelBridge's wire-protocol version.
+
+Receiver admission and adversarial-ID protection also depend on implementation
+properties of this exact pinned revision: the V2 decoder retains at most
+`K + 1024` accepted IDs, initially reserves `K + 32` receive rows, and its
+received-ID table has an upstream `sizeof(ReceivedPacketRecord) == 24`
+assertion and uses a per-decoder salt with the pinned 64-bit mixer. The salt
+varies bucket placement so a remote sender cannot precompute the backend's
+linear-probe clusters. PBOuterFec's admission estimate charges all 24 bytes for
+every slot in that private table.
+
+PBOuterFec does not copy or claim to mirror this private bucket placement. It
+maintains a separate bounded payload-fingerprint table with its own per-decoder
+OS-CSPRNG salt and a 64-probe local limit. The wrapper table protects duplicate
+and conflict accounting; the backend's independently salted table and accepted
+ID ceiling remain separate defenses. Neither hash is wire behavior or sender
+authentication. Any Wirehair revision change therefore requires re-auditing
+the accepted-ID ceiling, table allocation/reservation formula, and backend hash
+hardening, then rerunning the quota, collision, fuzz, benchmark, and Golden
+Vector gates.
