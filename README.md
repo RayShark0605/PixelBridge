@@ -8,7 +8,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 | 路径 | 用途 |
 | --- | --- |
 | `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | 应用（当前为控制台空壳，Qt 6 UI 在后续里程碑接入） |
-| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression` | 核心静态库（禁止依赖 Qt） |
+| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec` | 核心静态库（禁止依赖 Qt） |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；fuzz 与 descriptor-state benchmark 已有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
 | `docs` | 设计文档 |
@@ -22,6 +22,9 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 - `PBCore`、`PBProtocol` 是显式静态库，不受父工程 `BUILD_SHARED_LIBS` 影响。
 - `PBCompression` 是显式静态库；外部消费者只链接 `PB::PBCompression`
   即可获得 PBProtocol 与 zstd 的完整静态链接闭包。
+- `PBOuterFec` 是显式静态库；外部消费者只链接 `PB::PBOuterFec` 即可获得
+  PBProtocol 与固定 Wirehair 静态库的完整链接闭包。公共头不暴露 Wirehair
+  原生头或 host-native profile struct。
 - `PBProtocol` 不依赖 `PBCore`；消费者只获得所链接 target 的公共头和链接闭包。
 - `PB::CompilerSettings` 仅供 PixelBridge 自有 target 私有使用，`/WX` 等策略不传播给外部消费者。
 - Qt 只允许由应用以 `PRIVATE` 方式链接；`libs/` 下的核心库和公共头禁止依赖 Qt。
@@ -53,6 +56,28 @@ frame（包括 final block/checksum），且输出严格等于 Descriptor `RawSi
 `MakeDecompressionLimits(resourcePolicy, maxWindowLog)` 构造本地解压边界。该
 前置条件保证任何 zstd context 或输出 allocation 创建前，Descriptor 的 raw 和
 encoded 配额已经验证。
+
+## Outer FEC / Wirehair V2
+
+`PBOuterFec` 只使用 Wirehair V2 canonical serialized-profile API。初次创建默认
+显式选择 `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`（不使用 `CURRENT`），保存上游
+原样返回的 32-byte descriptor；`OuterBlockId` 原值就是 Wirehair `blockId`，其中
+`0..K-1` 为 systematic，`K..` 为 repair。
+
+`WirehairV2Encoder::Recreate()` 先验证 `EncodedSize`、`OuterBlockBytes`、
+`2 <= K <= 64000` 与 BLAKE3 `EncodedDigest`，再确认 exact bytes 对应的 canonical
+selection 与 saved descriptor 逐字节一致，最后使用 saved descriptor 与 exact
+Encoded Segment bytes 调用 `wirehair_v2_encoder_create_profile()`。不会用新 profile、
+seed 或 attempt 替换保存状态。
+
+Decoder 将 `NeedMore` 作为正常增量状态；`ExtraInsufficient`、OOM、unsupported、
+bad seed、invalid input 与未知 codec 结果均显式 fail closed。accepted block-ID
+冲突检测有固定上限，不假设一个 decoder 能无限接收新的 repair IDs；
+`ExtraInsufficient` 后必须销毁该实例并由上层用完整新 repair window 重建。
+
+Profile ID 只选择方程兼容性，不认证发送者。canonical descriptor、CRC、
+`EncodedDigest` 以及任何 in-band whole-file digest 也不能单独提供发送者认证；
+recovered bytes 仍必须经过设计书要求的 Segment、解压与 whole-file 验证流程。
 
 ## 构建（MSVC x64）
 
@@ -175,6 +200,10 @@ cmake -S . -B build-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_
 ## 第三方依赖
 
 依赖由 vcpkg manifest `vcpkg.json` 管理。BLAKE3 1.8.5 是 `PBProtocol` 的
-生产依赖；zstd 1.5.7 是 `PBCompression` 的生产依赖。Catch2 仅存在于
+生产依赖；zstd 1.5.7 是 `PBCompression` 的生产依赖；Wirehair 2.0.0 是
+`PBOuterFec` 的生产依赖，并通过仓库 overlay 固定到 commit
+`067ca7cdb66aed424ec23f97557429bf791c6f0c`。Catch2 仅存在于
 非默认 `tests` feature，版本下限为 3.15.0。端口注册表基线由 manifest 的
 `builtin-baseline` 固定，安装产物位于各构建目录的 `vcpkg_installed/`，不入库。
+Wirehair 的源码 SHA-512、license、关闭的实验/工具选项和 canonical 文档记录见
+[`third_party/WIREHAIR_BASELINE.md`](third_party/WIREHAIR_BASELINE.md)。

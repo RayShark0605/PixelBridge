@@ -25,10 +25,10 @@ if(PB_BUILD_TESTS)
     message(FATAL_ERROR "PixelBridge tests must default to OFF as a subproject")
 endif()
 
-if(TARGET PBCoreTests OR TARGET PBProtocolTests)
+if(TARGET PBCoreTests OR TARGET PBProtocolTests OR TARGET PBOuterFecTests)
     message(FATAL_ERROR "PixelBridge unexpectedly created test targets")
 endif()
 
 add_executable(PBSubprojectConsumer consumer.cpp)
-target_link_libraries(PBSubprojectConsumer PRIVATE PB::PBProtocol)
+target_link_libraries(PBSubprojectConsumer PRIVATE PB::PBOuterFec)
 add_test(NAME PBSubprojectConsumerRun COMMAND PBSubprojectConsumer)
