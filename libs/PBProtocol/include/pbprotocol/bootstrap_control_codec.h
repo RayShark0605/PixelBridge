@@ -86,6 +86,9 @@ struct ControlRecordView
     const ControlRecordView& record,
     std::span<std::byte> output) noexcept;
 
+// This validates only the PB-Control-1 envelope. Production receiver ingress
+// must use ControlPlaneReceiver so descriptor policy, typed dispatch,
+// SessionTag cross-check, and immutable binding cannot be skipped.
 [[nodiscard]] ProtocolResult<ControlRecordView> ParseControlRecord(
     std::span<const std::byte> input) noexcept;
 

@@ -1,5 +1,6 @@
 #include "pbprotocol/descriptor_codec.h"
 
+#include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/byte_io.h"
 #include "pbprotocol/checked_integer.h"
 
@@ -384,6 +385,11 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxActiveOuterFecDecoders == 0 ||
         resourcePolicy.maxOuterFecDecoderBytes == 0 ||
         resourcePolicy.maxTotalOuterFecDecoderBytes == 0 ||
+        resourcePolicy.maxControlRecordBytes == 0 ||
+        resourcePolicy.maxConcurrentControlReassemblies == 0 ||
+        resourcePolicy.maxControlReassemblyBytes == 0 ||
+        resourcePolicy.maxControlFragmentsPerRecord == 0 ||
+        resourcePolicy.maxControlReassemblyInactivityObservations == 0 ||
         resourcePolicy.maxAcceptedFileBytes == maximumUint64 ||
         resourcePolicy.maxSegmentCount == maximumUint64 ||
         resourcePolicy.maxRawSegmentBytes == maximumUint64 ||
@@ -398,10 +404,21 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxActiveOuterFecDecoders == maximumUint64 ||
         resourcePolicy.maxOuterFecDecoderBytes == maximumUint64 ||
         resourcePolicy.maxTotalOuterFecDecoderBytes == maximumUint64 ||
+        resourcePolicy.maxControlRecordBytes < kMinimumControlRecordBytes ||
+        resourcePolicy.maxControlRecordBytes > kMaximumControlRecordBytes ||
+        resourcePolicy.maxConcurrentControlReassemblies == maximumUint64 ||
+        resourcePolicy.maxControlReassemblyBytes == maximumUint64 ||
+        resourcePolicy.maxControlFragmentsPerRecord > UINT16_MAX ||
+        resourcePolicy.maxControlReassemblyInactivityObservations ==
+            maximumUint64 ||
         resourcePolicy.maxDescriptorStateBytes >
             resourcePolicy.maxTotalDescriptorStateBytes ||
         resourcePolicy.maxOuterFecDecoderBytes >
-            resourcePolicy.maxTotalOuterFecDecoderBytes)
+            resourcePolicy.maxTotalOuterFecDecoderBytes ||
+        resourcePolicy.maxControlRecordBytes >
+            resourcePolicy.maxControlReassemblyBytes ||
+        resourcePolicy.maxControlFragmentsPerRecord >
+            resourcePolicy.maxControlRecordBytes)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,
@@ -424,6 +441,16 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxDirectRepeatBlockCount);
     const auto outerFecDecoderBudgetSizeResult = CheckedUint64ToSize(
         resourcePolicy.maxOuterFecDecoderBytes);
+    const auto controlRecordSizeResult = CheckedNarrowUnsigned<std::size_t>(
+        resourcePolicy.maxControlRecordBytes);
+    const auto concurrentControlCountResult = CheckedUint64ToSize(
+        resourcePolicy.maxConcurrentControlReassemblies);
+    const auto controlReassemblyBudgetSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxControlReassemblyBytes);
+    const auto controlFragmentCountResult = CheckedUint64ToSize(
+        resourcePolicy.maxControlFragmentsPerRecord);
+    const auto controlInactivityObservationResult = CheckedUint64ToSize(
+        resourcePolicy.maxControlReassemblyInactivityObservations);
     if (!segmentCountSizeResult ||
         !rawSegmentSizeResult ||
         !encodedSegmentSizeResult ||
@@ -431,7 +458,12 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         !concurrentSessionCountResult ||
         !directRepeatBlockCountResult ||
         !activeOuterFecDecoderCountResult ||
-        !outerFecDecoderBudgetSizeResult)
+        !outerFecDecoderBudgetSizeResult ||
+        !controlRecordSizeResult ||
+        !concurrentControlCountResult ||
+        !controlReassemblyBudgetSizeResult ||
+        !controlFragmentCountResult ||
+        !controlInactivityObservationResult)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,

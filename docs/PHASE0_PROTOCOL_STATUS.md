@@ -43,7 +43,7 @@ one of the following explicitly:
 
 Silent extension of the existing `1.0` payload bytes is not allowed.
 
-## PB-Bootstrap-1 / PB-Control-1 byte envelope status
+## PB-Bootstrap-1 / PB-Control-1 byte protocol status: GO
 
 The logical byte records are implemented in `PBProtocol` independently from
 any Data Visual Profile or raster backend:
@@ -54,18 +54,36 @@ any Data Visual Profile or raster backend:
 - `RecordBytes` includes the complete Control record and is capped at 65,536,
   leaving at most 65,506 payload bytes;
 - Control types are `1=SessionDescriptor`, `2=SegmentDescriptor`, and
-  `3=FinalManifest`; other v1 values fail closed.
+  `3=FinalManifest`; other v1 values fail closed;
+- PB-Control-Fragment-1 is the frozen `20-byte prefix + non-empty payload +
+  4-byte CRC-32C` logical fragmentation envelope. It carries a bounded
+  `ControlRecordId`, index/count, complete-record length, exact fragment length,
+  and zero-only v1 flags.
 
-The Control parser is a zero-copy envelope parser. Its returned payload view
-borrows the input, and successful envelope parsing is not descriptor admission:
-the existing descriptor parser, receiver policy, SessionTag cross-check, and
-registry/binding logic still run afterward. Golden bytes, exact boundary tests,
-independent corpus files, and a dedicated ASan/libFuzzer-compatible target cover
-the two record parsers.
+`ParseControlRecord()` remains a zero-copy envelope parser. Its returned payload
+view borrows the input, and successful envelope parsing alone is not descriptor
+admission. Production ingress uses `ControlPlaneReceiver`, which owns the
+Session registry and bounded reassembly state and enforces one typed path:
+envelope parse, record-type dispatch, receiver policy, descriptor parse,
+envelope/payload SessionTag cross-check, then immutable binding. It never guesses
+a payload type or silently falls back to another parser.
 
-Control fragmentation/reassembly, fragment conflict state, Control/Bootstrap
-FEC, visual mapping, repetition cadence, and profile-registry acceptance remain
-separate work.
+Fragment reassembly supports out-of-order delivery, exact-repeat idempotence,
+terminal metadata/payload conflict tombstones, exact-length reconstruction,
+pending retry after `UnknownSession` or temporary capacity failure, once-only
+successful submission per RecordId, explicit ControlEpoch reset, and a caller-
+supplied monotonic observation window. All fragment containers, payloads, and
+temporary complete-record storage share one bounded PMR budget. The fixed three-
+fragment Golden Vector has payload sizes `24/24/19` and CRC-32C values
+`0x9DCD5402`, `0xF3FF94D8`, and `0x40106F66`.
+
+Independent Golden/corpus bytes, exact boundary/state tests, CRC-repairing
+structured mutation modes, deterministic semantic self-tests, and the raw
+libFuzzer-compatible entry point cover Bootstrap, complete Control, fragments,
+and authoritative admission. This closes the logical PB-Bootstrap-1 /
+PB-Control-1 byte-protocol step. Control/Bootstrap FEC, visual mapping, physical
+Control Block capacity, repetition cadence, and formal profile-registry
+acceptance remain separate work.
 
 ## Structural validation versus receiver policy
 
@@ -96,6 +114,11 @@ baseline, not a certified performance profile. Its current budgets are:
 | active Outer FEC decoders | 4 |
 | admission charge per Outer FEC decoder | 512 MiB |
 | aggregate Outer FEC decoder charge | 1 GiB |
+| complete Control record bytes | 65,536 |
+| concurrent Control reassembly IDs | 8 |
+| aggregate Control reassembly PMR storage | 1 MiB |
+| fragments per Control record | 4,096 |
+| Control reassembly inactivity observations | 16,384 |
 
 The descriptor state uses a policy-bounded memory resource for both Segment
 maps. A per-Session budget refusal returns terminal
@@ -103,6 +126,13 @@ maps. A per-Session budget refusal returns terminal
 `ResourceExhausted`; the owner must destroy that Session before attempting a
 new admission. Session-registry admission failures occur before a Session is
 published and may be retried after capacity is released.
+
+Control reassembly policy refusal returns `ControlReassemblyQuotaExceeded`;
+upstream allocation failure returns `ResourceExhausted`. Policy values do not
+enter wire bytes. The exact inactivity boundary remains live and an entry is
+evicted only after the caller's monotonic observation difference exceeds the
+configured window. `ResetControlReassembly()` is required on ControlEpoch
+change and clears active, pending, completed, and conflict IDs.
 
 Outer FEC decoder admission is owned by one receiver-wide
 `OuterFecDecoderResourceManager`; `WirehairV2DecoderResourceManager` remains a
@@ -216,8 +246,9 @@ then perform the same-volume atomic rename.
 ## Remaining Phase-0 Gate scope
 
 This status decision closes the ambiguity around the current descriptor bytes
-and records the implemented Bootstrap/Control byte envelopes; it does not
-declare the overall Phase-0 architecture Gate complete. Formal profile binding,
-bounded Control fragmentation/reassembly, complete file recovery, the remaining
-Golden Vectors, and later CPU/GPU backend consistency gates remain separate
-work.
+and marks the logical Bootstrap/Control byte protocol, bounded Control
+fragmentation, and authoritative admission boundary GO. It does not declare the
+overall Phase-0 architecture Gate complete. Formal profile binding,
+Control/Bootstrap visual FEC and raster mapping, physical repetition cadence,
+complete file recovery, the remaining Golden Vectors, and later CPU/GPU backend
+consistency gates remain separate work.

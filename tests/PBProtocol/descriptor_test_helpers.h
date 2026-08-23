@@ -57,6 +57,11 @@ namespace pbprotocol::test {
     resourcePolicy.maxOuterFecDecoderBytes = 256ULL * 1024ULL * 1024ULL;
     resourcePolicy.maxTotalOuterFecDecoderBytes =
         512ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxControlRecordBytes = 64U * 1024U;
+    resourcePolicy.maxConcurrentControlReassemblies = 8;
+    resourcePolicy.maxControlReassemblyBytes = 1024ULL * 1024ULL;
+    resourcePolicy.maxControlFragmentsPerRecord = 4096;
+    resourcePolicy.maxControlReassemblyInactivityObservations = 16384;
     return resourcePolicy;
 }
 

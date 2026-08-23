@@ -50,7 +50,11 @@ enum class ProtocolErrorCode : std::uint8_t
     UnsupportedBootstrapVersion,
     UnsupportedControlVersion,
     CrcMismatch,
-    NonZeroReservedBits
+    NonZeroReservedBits,
+    InvalidControlFragment,
+    ControlFragmentConflict,
+    ControlReassemblyQuotaExceeded,
+    InvalidObservationOrdinal
 };
 
 struct ProtocolError

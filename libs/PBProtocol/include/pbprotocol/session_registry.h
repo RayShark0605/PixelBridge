@@ -10,6 +10,8 @@
 
 namespace pbprotocol {
 
+class ControlPlaneReceiver;
+
 namespace test {
 
 class SessionRegistryTestAccess;
@@ -54,6 +56,7 @@ private:
     using SessionTagDeriver = SessionTag (*)(const SessionId&) noexcept;
 
     friend class test::SessionRegistryTestAccess;
+    friend class ControlPlaneReceiver;
 
     struct SessionEntry
     {
@@ -78,6 +81,8 @@ private:
 
     [[nodiscard]] ProtocolResult<DescriptorBindingState*> FindBindingState(
         SessionTag sessionTag) noexcept;
+    [[nodiscard]] ProtocolResult<const DescriptorBindingState*> FindBindingState(
+        SessionTag sessionTag) const noexcept;
     [[nodiscard]] ProtocolStatus RemoveUniqueSessionForCollision(
         SessionTag sessionTag,
         TagBinding& tagBinding) noexcept;

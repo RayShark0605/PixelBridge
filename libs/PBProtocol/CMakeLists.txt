@@ -8,6 +8,8 @@ target_sources(PBProtocol
         src/blake3_digest.cpp
         src/bootstrap_control_codec.cpp
         src/byte_io.cpp
+        src/control_fragment_codec.cpp
+        src/control_plane_receiver.cpp
         src/crc32c.cpp
         src/descriptor_binding.cpp
         src/descriptor_codec.cpp
@@ -24,6 +26,8 @@ target_sources(PBProtocol
             include/pbprotocol/bootstrap_control_codec.h
             include/pbprotocol/byte_io.h
             include/pbprotocol/checked_integer.h
+            include/pbprotocol/control_fragment_codec.h
+            include/pbprotocol/control_plane_receiver.h
             include/pbprotocol/crc32c.h
             include/pbprotocol/descriptor_binding.h
             include/pbprotocol/descriptor_codec.h

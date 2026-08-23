@@ -1,6 +1,7 @@
 #include "descriptor_test_helpers.h"
 
 #include "pbprotocol/bootstrap_control_codec.h"
+#include "pbprotocol/control_fragment_codec.h"
 #include "pbprotocol/descriptor_codec.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ranges>
+#include <span>
 #include <string_view>
 
 #if !defined(PB_BOOTSTRAP_CONTROL_CORPUS_DIRECTORY)
@@ -125,4 +127,115 @@ TEST_CASE("Independent corrupted Bootstrap and Control corpus seeds fail CRC",
         pbprotocol::ProtocolError{
             pbprotocol::ProtocolErrorCode::CrcMismatch,
             63});
+}
+
+TEST_CASE("Independent PB-Control-Fragment-1 corpus seeds have exact semantics",
+          "[pbprotocol][control][fragment][corpus][conformance]")
+{
+    const auto fragmentZero = ReadCorpusFile<48>("valid-fragment-0.bin");
+    const auto fragmentOne = ReadCorpusFile<48>("valid-fragment-1.bin");
+    const auto fragmentTwo = ReadCorpusFile<43>("valid-fragment-2.bin");
+    const std::array<std::span<const std::byte>, 3> fragments{
+        fragmentZero,
+        fragmentOne,
+        fragmentTwo};
+    const std::array<std::size_t, 3> payloadBytes{24, 24, 19};
+
+    for (std::uint16_t fragmentIndex = 0;
+         fragmentIndex < fragments.size();
+         fragmentIndex++)
+    {
+        const auto parsedResult = pbprotocol::ParseControlFragment(
+            fragments[fragmentIndex]);
+        REQUIRE(parsedResult);
+        REQUIRE(parsedResult.Value().controlRecordId ==
+            0x0102030405060708ULL);
+        REQUIRE(parsedResult.Value().fragmentIndex == fragmentIndex);
+        REQUIRE(parsedResult.Value().fragmentCount == 3);
+        REQUIRE(parsedResult.Value().totalRecordBytes == 67);
+        REQUIRE(parsedResult.Value().flags == 0);
+        REQUIRE(parsedResult.Value().payload.size() ==
+            payloadBytes[fragmentIndex]);
+
+        std::array<std::byte, 48> serialized{};
+        const auto exactOutput = std::span<std::byte>(serialized).first(
+            fragments[fragmentIndex].size());
+        REQUIRE(pbprotocol::SerializeControlFragment(
+            parsedResult.Value(),
+            exactOutput));
+        REQUIRE(std::ranges::equal(exactOutput, fragments[fragmentIndex]));
+    }
+}
+
+TEST_CASE("CRC-valid semantic corpus seeds reach post-checksum validation",
+          "[pbprotocol][bootstrap][control][fragment][corpus][semantic]")
+{
+    const auto bootstrapBytes =
+        ReadCorpusFile<pbprotocol::kBootstrapRecordBytes>(
+            "semantic-bootstrap-version.bin");
+    const auto bootstrapResult = pbprotocol::ParseBootstrapRecord(
+        bootstrapBytes);
+    REQUIRE_FALSE(bootstrapResult);
+    REQUIRE(
+        bootstrapResult.Error() ==
+        pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::UnsupportedBootstrapVersion,
+            4});
+
+    const auto controlBytes = ReadCorpusFile<67>(
+        "semantic-control-type.bin");
+    const auto controlResult = pbprotocol::ParseControlRecord(controlBytes);
+    REQUIRE_FALSE(controlResult);
+    REQUIRE(
+        controlResult.Error() ==
+        pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::InvalidEnumValue,
+            5});
+
+    const auto fragmentBytes = ReadCorpusFile<48>(
+        "semantic-fragment-flags.bin");
+    const auto fragmentResult = pbprotocol::ParseControlFragment(fragmentBytes);
+    REQUIRE_FALSE(fragmentResult);
+    REQUIRE(
+        fragmentResult.Error() ==
+        pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::NonZeroReservedBits,
+            18});
+}
+
+TEST_CASE("Independent PB-Control-1 boundary corpus seeds round trip exactly",
+          "[pbprotocol][control][corpus][conformance][boundary]")
+{
+    SECTION("empty payload")
+    {
+        const auto bytes = ReadCorpusFile<
+            pbprotocol::kMinimumControlRecordBytes>(
+                "valid-control-empty.bin");
+        const auto parsedResult = pbprotocol::ParseControlRecord(bytes);
+        REQUIRE(parsedResult);
+        REQUIRE(parsedResult.Value().payload.empty());
+        std::array<std::byte, pbprotocol::kMinimumControlRecordBytes>
+            serialized{};
+        REQUIRE(pbprotocol::SerializeControlRecord(
+            parsedResult.Value(),
+            serialized));
+        REQUIRE(serialized == bytes);
+    }
+
+    SECTION("maximum record")
+    {
+        const auto bytes = ReadCorpusFile<
+            pbprotocol::kMaximumControlRecordBytes>(
+                "valid-control-maximum.bin");
+        const auto parsedResult = pbprotocol::ParseControlRecord(bytes);
+        REQUIRE(parsedResult);
+        REQUIRE(parsedResult.Value().payload.size() ==
+            pbprotocol::kMaximumControlPayloadBytes);
+        std::array<std::byte, pbprotocol::kMaximumControlRecordBytes>
+            serialized{};
+        REQUIRE(pbprotocol::SerializeControlRecord(
+            parsedResult.Value(),
+            serialized));
+        REQUIRE(serialized == bytes);
+    }
 }

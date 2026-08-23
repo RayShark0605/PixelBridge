@@ -149,6 +149,13 @@ struct ReceiverResourcePolicy
     std::uint64_t maxActiveOuterFecDecoders = 0;
     std::uint64_t maxOuterFecDecoderBytes = 0;
     std::uint64_t maxTotalOuterFecDecoderBytes = 0;
+    // Control reassembly is receiver-local state. These limits apply before
+    // any record-sized allocation and never enter PB-Control-1 bytes.
+    std::uint32_t maxControlRecordBytes = 0;
+    std::uint64_t maxConcurrentControlReassemblies = 0;
+    std::uint64_t maxControlReassemblyBytes = 0;
+    std::uint64_t maxControlFragmentsPerRecord = 0;
+    std::uint64_t maxControlReassemblyInactivityObservations = 0;
 
     bool operator==(const ReceiverResourcePolicy&) const = default;
 };

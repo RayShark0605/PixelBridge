@@ -1,6 +1,8 @@
 PbAddUnitTest(PBProtocolTests
     test_bootstrap_control_codec.cpp
     test_bootstrap_control_corpus.cpp
+    test_control_fragment_codec.cpp
+    test_control_plane_receiver.cpp
     test_byte_io.cpp
     test_byte_io_uint8.cpp
     test_descriptor_binding.cpp

@@ -20,8 +20,13 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 `PBProtocol` 已实现与 Data Profile 解耦的逻辑字节 envelope：固定 44-byte
 `PB-Bootstrap-1`，以及 `26-byte prefix + payload + 4-byte CRC` 的
 `PB-Control-1`。Control 的 `RecordBytes` 包含整条 record，最大 65,536 bytes；
-parser 零拷贝返回借用 payload，并要求调用方继续执行 Descriptor、资源策略和
-SessionTag binding 验证。当前不包含视觉 raster/FEC 或 Control 分片重组。
+低层 parser 零拷贝返回借用 payload，但生产接收入口统一使用
+`ControlPlaneReceiver`，在状态变更前完成 record-type dispatch、Descriptor、资源策略、
+SessionTag cross-check 和 immutable binding。`PB-Control-Fragment-1` 已冻结为
+`20-byte prefix + non-empty payload + 4-byte CRC`，并提供有界 PMR 重组、乱序、幂等重复、
+冲突 tombstone、observation-window 过期和 ControlEpoch reset。该逻辑字节协议步骤为
+**GO**；整体 Phase-0 仍为 **NO-GO**，当前不包含视觉 raster/FEC、物理 Control Block
+容量/映射、重复 cadence、正式 profile binding 或完整文件恢复。
 
 ## Target 与依赖边界
 
@@ -170,7 +175,7 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | --- | --- | --- |
 | `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
-| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
+| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBProtocolBootstrapControlStructuredSelfTest`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
 | `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
@@ -198,6 +203,8 @@ ctest --test-dir build-fuzz-msvc --build-config RelWithDebInfo `
   2000 13464654573299691533
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe `
   2000 5783258900934164481
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlStructuredSelfTest.exe `
+  --self-test
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
   2000 13856851484949778996
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBOuterFecWirehairV2Fuzz.exe `

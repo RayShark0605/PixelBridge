@@ -325,6 +325,38 @@ ProtocolResult<DescriptorBindingState*> SessionRegistry::FindBindingState(
         sessionEntry->second.bindingState.get());
 }
 
+ProtocolResult<const DescriptorBindingState*> SessionRegistry::FindBindingState(
+    const SessionTag sessionTag) const noexcept
+{
+    const auto tagBinding = bindingsByTag_.find(sessionTag.value);
+    if (tagBinding == bindingsByTag_.end())
+    {
+        return ProtocolResult<const DescriptorBindingState*>::Failure(
+            ProtocolErrorCode::UnknownSession,
+            kSegmentSessionTagOffset);
+    }
+    if (tagBinding->second.ambiguous)
+    {
+        return ProtocolResult<const DescriptorBindingState*>::Failure(
+            ProtocolErrorCode::SessionTagCollision,
+            kSegmentSessionTagOffset);
+    }
+
+    const auto sessionEntry = sessionsById_.find(
+        tagBinding->second.sessionId.bytes);
+    if (sessionEntry == sessionsById_.end() ||
+        !sessionEntry->second.bindingState ||
+        sessionEntry->second.sessionTag != sessionTag)
+    {
+        return ProtocolResult<const DescriptorBindingState*>::Failure(
+            ProtocolErrorCode::InternalDescriptorStateError,
+            kSegmentSessionTagOffset);
+    }
+
+    return ProtocolResult<const DescriptorBindingState*>::Success(
+        sessionEntry->second.bindingState.get());
+}
+
 ProtocolStatus SessionRegistry::RemoveUniqueSessionForCollision(
     const SessionTag sessionTag,
     TagBinding& tagBinding) noexcept
