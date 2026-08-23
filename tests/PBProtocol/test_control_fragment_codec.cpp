@@ -336,6 +336,21 @@ TEST_CASE("PB-Control-Fragment-1 rejects malformed shape and every truncation",
         REQUIRE_FALSE(largeResult);
         REQUIRE(largeResult.Error().code ==
             pbprotocol::ProtocolErrorCode::LengthLimitExceeded);
+
+        auto maximumDeclaredSize = kFragmentZeroGolden;
+        StoreUint32(
+            maximumDeclaredSize,
+            kTotalRecordBytesOffset,
+            UINT32_MAX);
+        RefreshFragmentCrc(maximumDeclaredSize);
+        const auto maximumDeclaredResult =
+            pbprotocol::ParseControlFragment(maximumDeclaredSize);
+        REQUIRE_FALSE(maximumDeclaredResult);
+        REQUIRE(
+            maximumDeclaredResult.Error() ==
+            pbprotocol::ProtocolError{
+                pbprotocol::ProtocolErrorCode::LengthLimitExceeded,
+                kTotalRecordBytesOffset});
     }
 }
 

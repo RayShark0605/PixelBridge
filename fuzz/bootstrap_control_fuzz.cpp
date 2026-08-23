@@ -99,6 +99,22 @@ void StoreUint16(
     }
 }
 
+void StoreUint64(
+    const std::span<std::byte> output,
+    const std::size_t offset,
+    const std::uint64_t value) noexcept
+{
+    if (offset > output.size() || sizeof(value) > output.size() - offset)
+    {
+        std::abort();
+    }
+    for (std::size_t byteIndex = 0; byteIndex < sizeof(value); byteIndex++)
+    {
+        output[offset + byteIndex] = static_cast<std::byte>(
+            (value >> static_cast<unsigned int>(byteIndex * 8U)) & 0xFFU);
+    }
+}
+
 void StoreUint32(
     const std::span<std::byte> output,
     const std::size_t offset,
@@ -235,6 +251,78 @@ MakeStructuredBootstrap(const std::span<const std::byte> input) noexcept
     }
     RefreshCrc(bytes, pbprotocol::kControlFragmentCrcBytes);
     return bytes;
+}
+
+[[nodiscard]] std::array<std::byte, pbprotocol::kMinimumControlFragmentBytes>
+MakeMetadataFragment(
+    const std::uint64_t controlRecordId,
+    const std::uint16_t fragmentIndex,
+    const std::uint16_t fragmentCount,
+    const std::uint32_t totalRecordBytes,
+    const std::byte payloadByte) noexcept
+{
+    std::array<std::byte, pbprotocol::kMinimumControlFragmentBytes> bytes{};
+    StoreUint64(bytes, 0, controlRecordId);
+    StoreUint16(bytes, 8, fragmentIndex);
+    StoreUint16(bytes, 10, fragmentCount);
+    StoreUint32(bytes, 12, totalRecordBytes);
+    StoreUint16(bytes, 16, 1);
+    StoreUint16(bytes, 18, 0);
+    bytes[pbprotocol::kControlFragmentPrefixBytes] = payloadByte;
+    RefreshCrc(bytes, pbprotocol::kControlFragmentCrcBytes);
+    return bytes;
+}
+
+[[nodiscard]] std::array<std::byte, pbprotocol::kMinimumControlFragmentBytes>
+MakeStructuredExtremeFragment(const std::span<const std::byte> input) noexcept
+{
+    constexpr std::array<std::uint16_t, 8> fragmentCounts{
+        0,
+        1,
+        2,
+        30,
+        4096,
+        static_cast<std::uint16_t>(UINT16_MAX - 1U),
+        UINT16_MAX,
+        UINT16_MAX};
+    constexpr std::array<std::uint32_t, 8> totalRecordByteCounts{
+        0,
+        29,
+        30,
+        31,
+        65535,
+        65536,
+        65537,
+        UINT32_MAX};
+
+    const std::uint16_t fragmentCount = fragmentCounts[
+        GetByte(input, 1) % fragmentCounts.size()];
+    const std::uint32_t totalRecordBytes = totalRecordByteCounts[
+        GetByte(input, 2) % totalRecordByteCounts.size()];
+    std::uint16_t fragmentIndex = 0;
+    switch (GetByte(input, 3) % 4U)
+    {
+    case 1:
+        fragmentIndex = fragmentCount == 0
+            ? 0
+            : static_cast<std::uint16_t>(fragmentCount - 1U);
+        break;
+    case 2:
+        fragmentIndex = fragmentCount;
+        break;
+    case 3:
+        fragmentIndex = UINT16_MAX;
+        break;
+    default:
+        break;
+    }
+
+    return MakeMetadataFragment(
+        0xE000000000000000ULL | GetByte(input, 4),
+        fragmentIndex,
+        fragmentCount,
+        totalRecordBytes,
+        static_cast<std::byte>(GetByte(input, 5)));
 }
 
 [[nodiscard]] std::vector<std::vector<std::byte>> MakeRecordFragments(
@@ -393,6 +481,124 @@ void ExerciseCanonicalParsers(const std::span<const std::byte> input)
         auto receiver = std::move(receiverResult).Value();
         (void)receiver.ReceiveControlFragment(input, 0);
     }
+}
+
+[[nodiscard]] bool ExerciseStructuredExtremeMetadata(
+    const std::span<const std::byte> input)
+{
+    pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    resourcePolicy.maxControlFragmentsPerRecord = UINT16_MAX;
+    auto receiverResult = pbprotocol::ControlPlaneReceiver::Create(
+        resourcePolicy);
+    if (!receiverResult)
+    {
+        return false;
+    }
+    auto receiver = std::move(receiverResult).Value();
+    const std::size_t baselineReassemblyBytes =
+        receiver.ControlReassemblyBytesInUse();
+
+    const auto maximumCountFragment = MakeMetadataFragment(
+        0xE001ULL,
+        static_cast<std::uint16_t>(UINT16_MAX - 1U),
+        UINT16_MAX,
+        static_cast<std::uint32_t>(pbprotocol::kMaximumControlRecordBytes),
+        std::byte{0xA5});
+    const auto maximumCountParseResult = pbprotocol::ParseControlFragment(
+        maximumCountFragment);
+    if (!maximumCountParseResult ||
+        maximumCountParseResult.Value().fragmentCount != UINT16_MAX ||
+        maximumCountParseResult.Value().totalRecordBytes !=
+            pbprotocol::kMaximumControlRecordBytes)
+    {
+        return false;
+    }
+    const auto maximumCountReceiveResult = receiver.ReceiveControlFragment(
+        maximumCountFragment,
+        1);
+    if (!maximumCountReceiveResult ||
+        maximumCountReceiveResult.Value().disposition !=
+            pbprotocol::ControlFragmentReceiveDisposition::Stored ||
+        receiver.ActiveControlReassemblyCount() != 1 ||
+        receiver.ControlReassemblyBytesInUse() <= baselineReassemblyBytes ||
+        receiver.ControlReassemblyBytesInUse() >
+            resourcePolicy.maxControlReassemblyBytes)
+    {
+        return false;
+    }
+
+    const auto maximumTotalFragment = MakeMetadataFragment(
+        0xE002ULL,
+        1,
+        2,
+        static_cast<std::uint32_t>(pbprotocol::kMaximumControlRecordBytes),
+        std::byte{0x5A});
+    const auto maximumTotalReceiveResult = receiver.ReceiveControlFragment(
+        maximumTotalFragment,
+        2);
+    if (!maximumTotalReceiveResult ||
+        maximumTotalReceiveResult.Value().disposition !=
+            pbprotocol::ControlFragmentReceiveDisposition::Stored ||
+        receiver.ActiveControlReassemblyCount() != 2 ||
+        receiver.ControlReassemblyBytesInUse() >
+            resourcePolicy.maxControlReassemblyBytes)
+    {
+        return false;
+    }
+
+    const auto oversizedTotalFragment = MakeMetadataFragment(
+        0xE003ULL,
+        0,
+        1,
+        UINT32_MAX,
+        std::byte{0x3C});
+    const auto oversizedTotalParseResult = pbprotocol::ParseControlFragment(
+        oversizedTotalFragment);
+    const auto oversizedTotalReceiveResult = receiver.ReceiveControlFragment(
+        oversizedTotalFragment,
+        3);
+    if (oversizedTotalParseResult || oversizedTotalReceiveResult ||
+        oversizedTotalParseResult.Error().code !=
+            pbprotocol::ProtocolErrorCode::LengthLimitExceeded ||
+        oversizedTotalReceiveResult.Error().code !=
+            pbprotocol::ProtocolErrorCode::LengthLimitExceeded ||
+        receiver.ActiveControlReassemblyCount() != 2)
+    {
+        return false;
+    }
+
+    const auto impossibleCountFragment = MakeMetadataFragment(
+        0xE004ULL,
+        0,
+        UINT16_MAX,
+        static_cast<std::uint32_t>(pbprotocol::kMinimumControlRecordBytes),
+        std::byte{0xC3});
+    const auto impossibleCountParseResult = pbprotocol::ParseControlFragment(
+        impossibleCountFragment);
+    const auto impossibleCountReceiveResult = receiver.ReceiveControlFragment(
+        impossibleCountFragment,
+        4);
+    if (impossibleCountParseResult || impossibleCountReceiveResult ||
+        impossibleCountParseResult.Error().code !=
+            pbprotocol::ProtocolErrorCode::InvalidControlFragment ||
+        impossibleCountReceiveResult.Error().code !=
+            pbprotocol::ProtocolErrorCode::InvalidControlFragment ||
+        receiver.ActiveControlReassemblyCount() != 2)
+    {
+        return false;
+    }
+
+    receiver.ResetControlReassembly();
+    if (receiver.ActiveControlReassemblyCount() != 0 ||
+        receiver.ControlReassemblyBytesInUse() != baselineReassemblyBytes)
+    {
+        return false;
+    }
+
+    const auto structuredExtremeFragment = MakeStructuredExtremeFragment(input);
+    ExerciseCanonicalParsers(structuredExtremeFragment);
+    return true;
 }
 
 void ExerciseStructuredReassembly(const std::span<const std::byte> input)
@@ -556,7 +762,7 @@ void ExerciseInput(const std::span<const std::byte> input)
         return;
     }
 
-    switch (GetByte(input, 0) % 6U)
+    switch (GetByte(input, 0) % 7U)
     {
     case 0:
     {
@@ -584,8 +790,14 @@ void ExerciseInput(const std::span<const std::byte> input)
     case 4:
         ExerciseStructuredResourceSequence();
         break;
-    default:
+    case 5:
         if (!ExerciseStructuredDescriptorConflict())
+        {
+            std::abort();
+        }
+        break;
+    default:
+        if (!ExerciseStructuredExtremeMetadata(input))
         {
             std::abort();
         }
@@ -968,6 +1180,13 @@ int RunStructuredSelfTest()
     if (!RequireSelfTest(
             ExerciseStructuredDescriptorConflict(),
             "descriptor-conflict-terminal"))
+    {
+        return 1;
+    }
+
+    if (!RequireSelfTest(
+            ExerciseStructuredExtremeMetadata({}),
+            "extreme-fragment-count-and-total-record-bytes"))
     {
         return 1;
     }

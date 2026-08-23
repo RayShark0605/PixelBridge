@@ -8,9 +8,13 @@ by structured modes that repair exact length and CRC-32C after mutating covered
 semantic fields, plus bounded out-of-order/duplicate/conflict/quota/expiry
 sequences through `ControlPlaneReceiver`. A separate structured mode admits one
 valid SessionDescriptor and verifies that a second CRC-valid record with the
-same key latches terminal `DescriptorConflict`. The input boundary is one byte
-beyond the maximum fragment envelope; accepted complete Control records remain
-capped at 65,536 bytes and accepted fragment payloads at 65,535 bytes.
+same key latches terminal `DescriptorConflict`. Another CRC-repairing mode drives
+`FragmentCount` through `0/1/2/4096/65534/65535` and `TotalRecordBytes` through
+`0/29/30/31/65535/65536/65537/UINT32_MAX`; it also sends sparse maximum-index
+fragments through a receiver policy that permits the full wire count. The input
+boundary is one byte beyond the maximum fragment envelope; accepted complete
+Control records remain capped at 65,536 bytes and accepted fragment payloads at
+65,535 bytes.
 
 `PBProtocolDescriptorResourceFuzz` exercises all three descriptor parsers,
 Session admission/routing, Segment Map insertion, overlap/conflict paths, and
@@ -48,7 +52,8 @@ valid version/type/flags failures, min/max/truncation/trailing boundaries, typed
 admission, SessionTag rejection, no-fallback dispatch, out-of-order completion,
 once-only submission, conflict, quota, expiry, and reset branches are genuinely
 reachable. It also asserts that a typed descriptor conflict is terminal rather
-than latest-wins.
+than latest-wins, and that extreme fragment count/record-size metadata is
+rejected or stored without dense index allocation as appropriate.
 
 ## Independent corpus replay and conformance
 
