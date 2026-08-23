@@ -66,5 +66,9 @@ target_link_libraries(PBCoreOnlyConsumer PRIVATE PB::PBCore)
 add_executable(PBProtocolOnlyConsumer protocol_consumer.cpp)
 target_link_libraries(PBProtocolOnlyConsumer PRIVATE PB::PBProtocol)
 
+add_executable(PBCompressionOnlyConsumer compression_consumer.cpp)
+target_link_libraries(PBCompressionOnlyConsumer PRIVATE PB::PBCompression)
+
 add_test(NAME PBCoreOnlyConsumerRun COMMAND PBCoreOnlyConsumer)
 add_test(NAME PBProtocolOnlyConsumerRun COMMAND PBProtocolOnlyConsumer)
+add_test(NAME PBCompressionOnlyConsumerRun COMMAND PBCompressionOnlyConsumer)

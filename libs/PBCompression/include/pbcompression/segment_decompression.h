@@ -3,6 +3,7 @@
 #include "pbcompression/compression_error.h"
 #include "pbprotocol/protocol_types.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -13,31 +14,43 @@ namespace pbcompression {
 
 inline constexpr std::uint64_t kDefaultDecompressionMaxOutputBytes =
     16 * 1024 * 1024;
+inline constexpr std::uint64_t kDefaultDecompressionMaxInputBytes =
+    32 * 1024 * 1024;
+inline constexpr std::size_t kZstdFrameHeaderMaximumBytes = 18;
 
-// Receiver-side limits. The encoder windowLog used for a frame must be at or
-// below maxWindowLog, otherwise decompression fails through the fixed zstd
-// error mapping. maxOutputBytes of 0 is a valid strict policy (no output
-// allowed); the UINT64_MAX sentinel is rejected because it would defeat the
-// checked bound.
+// Receiver-side limits. The window advertised by a frame must not exceed
+// 2^maxWindowLog bytes; decoder policy never depends on encoder tuning.
+// maxOutputBytes of 0 is a valid strict policy (no output allowed). Input and
+// output limits must both be representable by the backing byte container.
 struct DecompressionLimits
 {
     std::uint64_t maxOutputBytes = kDefaultDecompressionMaxOutputBytes;
     std::uint32_t maxWindowLog = 23;
+    std::uint64_t maxInputBytes = kDefaultDecompressionMaxInputBytes;
 };
+
+// Builds the compression-specific portion of the local receiver policy.
+// Callers must still validate the ReceiverResourcePolicy itself before using
+// it to accept an untrusted descriptor.
+[[nodiscard]] DecompressionLimits MakeDecompressionLimits(
+    const pbprotocol::ReceiverResourcePolicy& resourcePolicy,
+    std::uint32_t maxWindowLog = 23) noexcept;
 
 [[nodiscard]] CompressionStatus ValidateDecompressionLimits(
     const DecompressionLimits& limits) noexcept;
 
-// Streams one zstd frame from accumulated input into exactly
-// expectedRawSize output bytes. Invariants:
-//   1. Policy checks run before any allocation (33.1): expectedRawSize is
-//      checked against maxOutputBytes before the output buffer exists.
+// Streams exactly expectedEncodedSize bytes containing one zstd frame into
+// exactly expectedRawSize output bytes. Invariants:
+//   1. Policy checks run before any allocation (33.1): both descriptor sizes
+//      are checked against the local input/output limits first.
 //   2. The output buffer holds expectedRawSize plus one probe byte (when the
 //      budget allows) so a frame that overruns the expected size fails with
 //      OutputLimitExceeded instead of writing past the bound.
-//   3. The input must be exactly one complete frame: truncated input fails
+//   3. Only the bounded frame header is staged; consumed encoded bytes are
+//      never retained. The received byte count must equal expectedEncodedSize.
+//   4. The input must be exactly one complete frame: truncated input fails
 //      with IncompleteFrame and trailing bytes with TrailingInput.
-//   4. The produced byte count must equal expectedRawSize exactly
+//   5. The produced byte count must equal expectedRawSize exactly
 //      (RawSizeMismatch otherwise).
 // Single owner, no internal synchronization. Terminal after the first error
 // or after Finish() succeeds.
@@ -46,12 +59,13 @@ class SegmentDecompressor
 public:
     SegmentDecompressor(const SegmentDecompressor&) = delete;
     SegmentDecompressor& operator=(const SegmentDecompressor&) = delete;
-    SegmentDecompressor(SegmentDecompressor&&) noexcept;
+    SegmentDecompressor(SegmentDecompressor&& other) noexcept;
     SegmentDecompressor& operator=(SegmentDecompressor&&) = delete;
     ~SegmentDecompressor();
 
     [[nodiscard]] static CompressionResult<SegmentDecompressor> Create(
         const DecompressionLimits& limits,
+        std::uint64_t expectedEncodedSize,
         const std::uint64_t expectedRawSize);
 
     CompressionStatus Update(const std::span<const std::byte> input);
@@ -61,42 +75,47 @@ private:
     SegmentDecompressor() noexcept;
 
     [[nodiscard]] CompressionStatus CheckWritableState() const noexcept;
-    [[nodiscard]] CompressionStatus CheckFrameContentSizePrefix();
+    [[nodiscard]] CompressionStatus DecodeInput(
+        std::span<const std::byte> input);
+    [[nodiscard]] CompressionStatus ParseAndDecodeFrameHeader(
+        std::span<const std::byte>& remainingInput);
 
     DecompressionLimits limits_{};
+    std::uint64_t expectedEncodedSize_ = 0;
     std::uint64_t expectedRawSize_ = 0;
-    // Opaque ZSTD_DStream handle; the DStream layout keeps the DCtx as its
-    // first member, which is the layout contract zstd itself relies on when
-    // it treats a DStream as a DCtx internally.
+    std::uint64_t receivedEncodedBytes_ = 0;
+    // Opaque ZSTD_DStream handle. This public header intentionally does not
+    // expose zstd.h.
     void* decompressContext_ = nullptr;
-    // Accumulates all input. [0, inputPosition_) is consumed but kept so
-    // Finish() can detect trailing bytes; consumed bytes are never fed to
-    // the decoder again.
-    std::vector<std::byte> inputBuffer_{};
-    std::size_t inputPosition_ = 0;
+    std::array<std::byte, kZstdFrameHeaderMaximumBytes> frameHeaderBuffer_{};
+    std::size_t frameHeaderBufferedBytes_ = 0;
     // Produced bytes live in [0, producedBytes_).
     std::vector<std::byte> outputBuffer_{};
     std::uint64_t producedBytes_ = 0;
     bool frameComplete_ = false;
     bool frameFinished_ = false;
-    bool frameContentSizeChecked_ = false;
-    // Exact frame header size once the buffer holds at least
-    // ZSTD_FRAMEHEADERSIZE_MAX; 0 means not yet known. The header is fed
-    // to the decoder in its own call so the streaming window-limit check
-    // runs (the single-pass shortcut taken when a whole frame arrives at
-    // once bypasses it).
-    std::size_t frameHeaderBytes_ = 0;
+    bool frameHeaderParsed_ = false;
+    bool frameContentSizeKnown_ = false;
     bool moved_ = false;
     std::optional<CompressionError> terminalError_;
 };
 
-// Decodes one encoded segment. Raw requires encodedBytes to be exactly
-// expectedRawSize and copies it; Zstandard uses the streaming path above;
-// any other codec value is a protocol conflict and fails closed.
+// Decodes one encoded segment. expectedEncodedSize and expectedRawSize must
+// come from a descriptor already validated against ReceiverResourcePolicy.
+// Raw requires both sizes to match and copies the bytes; Zstandard uses the
+// streaming path above; any other codec value fails closed.
 [[nodiscard]] CompressionResult<std::vector<std::byte>> DecompressSegment(
     const pbprotocol::CompressionCodec codec,
     const std::span<const std::byte> encodedBytes,
+    std::uint64_t expectedEncodedSize,
     const std::uint64_t expectedRawSize,
+    const DecompressionLimits& limits);
+
+// Canonical descriptor-bound overload. The descriptor must first pass
+// pbprotocol::ValidateSegmentDescriptor(..., ReceiverResourcePolicy).
+[[nodiscard]] CompressionResult<std::vector<std::byte>> DecompressSegment(
+    const pbprotocol::SegmentDescriptor& descriptor,
+    std::span<const std::byte> encodedBytes,
     const DecompressionLimits& limits);
 
 } // namespace pbcompression
