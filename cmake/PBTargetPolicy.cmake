@@ -148,7 +148,7 @@ function(PbValidateCoreTargetBoundaries librariesDirectory)
         PbValidateTargetBoundary("${coreTarget}")
     endforeach()
 
-    foreach(staticBaselineTarget IN ITEMS PBCore PBProtocol)
+    foreach(staticBaselineTarget IN ITEMS PBCore PBProtocol PBCompression)
         if(TARGET "${staticBaselineTarget}")
             get_target_property(targetType "${staticBaselineTarget}" TYPE)
             if(NOT targetType STREQUAL "STATIC_LIBRARY")

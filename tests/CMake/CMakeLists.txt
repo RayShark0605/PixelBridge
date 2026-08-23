@@ -8,6 +8,11 @@ if(NOT DEFINED blake3_DIR OR blake3_DIR STREQUAL "")
         "blake3_DIR is required by the PBProtocol consumer fixtures")
 endif()
 
+if(NOT DEFINED zstd_DIR OR zstd_DIR STREQUAL "")
+    message(FATAL_ERROR
+        "zstd_DIR is required by the PBCompression consumer fixtures")
+endif()
+
 set(pbStaticIsolationConfigureCommand
     "${CMAKE_COMMAND}"
     --fresh
@@ -15,7 +20,8 @@ set(pbStaticIsolationConfigureCommand
     -B "${pbStaticIsolationBinaryDirectory}"
     -G "${CMAKE_GENERATOR}"
     "-DPB_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
-    "-Dblake3_DIR=${blake3_DIR}")
+    "-Dblake3_DIR=${blake3_DIR}"
+    "-Dzstd_DIR=${zstd_DIR}")
 
 if(CMAKE_GENERATOR_PLATFORM)
     list(APPEND pbStaticIsolationConfigureCommand
@@ -101,7 +107,8 @@ set(pbSubprojectConfigureCommand
     -B "${pbSubprojectBinaryDirectory}"
     -G "${CMAKE_GENERATOR}"
     "-DPB_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
-    "-Dblake3_DIR=${blake3_DIR}")
+    "-Dblake3_DIR=${blake3_DIR}"
+    "-Dzstd_DIR=${zstd_DIR}")
 
 if(CMAKE_GENERATOR_PLATFORM)
     list(APPEND pbSubprojectConfigureCommand

@@ -6,6 +6,7 @@ file(READ "${PB_MANIFEST_PATH}" manifestJson)
 
 string(JSON baseDependencyCount LENGTH "${manifestJson}" dependencies)
 set(blake3DependencyCount 0)
+set(zstdDependencyCount 0)
 if(baseDependencyCount GREATER 0)
     math(EXPR lastBaseDependencyIndex "${baseDependencyCount} - 1")
     foreach(dependencyIndex RANGE 0 ${lastBaseDependencyIndex})
@@ -27,12 +28,21 @@ if(baseDependencyCount GREATER 0)
             math(EXPR blake3DependencyCount
                 "${blake3DependencyCount} + 1")
         endif()
+        if(dependencyName STREQUAL "zstd")
+            math(EXPR zstdDependencyCount
+                "${zstdDependencyCount} + 1")
+        endif()
     endforeach()
 endif()
 
 if(NOT blake3DependencyCount EQUAL 1)
     message(FATAL_ERROR
         "The base manifest must contain exactly one BLAKE3 dependency")
+endif()
+
+if(NOT zstdDependencyCount EQUAL 1)
+    message(FATAL_ERROR
+        "The base manifest must contain exactly one ZSTD dependency")
 endif()
 
 string(JSON testDependencyCount LENGTH
