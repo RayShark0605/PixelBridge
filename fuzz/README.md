@@ -1,4 +1,10 @@
-# PBProtocol descriptor/resource fuzzing
+# PixelBridge parser fuzzing
+
+`PBProtocolBootstrapControlFuzz` sends every bounded input to both the fixed
+44-byte PB-Bootstrap-1 parser and the variable PB-Control-1 parser. A successful
+parse must reserialize byte-for-byte to the same canonical input or the driver
+aborts. The parser input boundary is `MaxControlRecordBytes + 1`; accepted
+Control records remain capped at 65,536 bytes.
 
 `PBProtocolDescriptorResourceFuzz` exercises all three descriptor parsers,
 Session admission/routing, Segment Map insertion, overlap/conflict paths, and
@@ -20,6 +26,8 @@ cmake -S . -B build-fuzz-msvc -G "Visual Studio 17 2022" -A x64 `
   -DPB_BUILD_BENCHMARKS=OFF
 cmake --build build-fuzz-msvc --config RelWithDebInfo --target PBProtocolDescriptorResourceFuzz --parallel
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolDescriptorResourceFuzz.exe 100000 13464654573299691533
+cmake --build build-fuzz-msvc --config RelWithDebInfo --target PBProtocolBootstrapControlFuzz --parallel
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe 100000 5783258900934164481
 ```
 
 The two arguments are deterministic iteration count and PRNG seed. The final
@@ -39,12 +47,22 @@ than files emitted at runtime by the serializer under test:
 - `valid-final-manifest.bin`: matching fixed Session and zero digest;
 - `overflow-direct-segment.bin`: `RawOffset=UINT64_MAX`, `RawSize=1`.
 
+`fuzz/corpus/bootstrap-control` likewise contains independent canonical
+Bootstrap/Control bytes plus CRC-corrupted variants. The 67-byte Control seed
+contains the current provisional SessionDescriptor regression payload; it
+freezes the envelope only, not the incomplete descriptor schema.
+
 Replay each seed through the bounded MSVC runner for a crash/sanitizer check:
 
 ```powershell
 $runner = '.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolDescriptorResourceFuzz.exe'
 Get-ChildItem .\fuzz\corpus\descriptor-resource\*.bin | ForEach-Object {
   & $runner --input $_.FullName
+  if ($LASTEXITCODE -ne 0) { throw "corpus replay failed: $($_.Name)" }
+}
+$bootstrapControlRunner = '.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe'
+Get-ChildItem .\fuzz\corpus\bootstrap-control\*.bin | ForEach-Object {
+  & $bootstrapControlRunner --input $_.FullName
   if ($LASTEXITCODE -ne 0) { throw "corpus replay failed: $($_.Name)" }
 }
 ```
@@ -67,6 +85,12 @@ When CMake identifies Clang, the same target uses `LLVMFuzzerTestOneInput` with
   -max_total_time=300 `
   -rss_limit_mb=1024 `
   -artifact_prefix=.\build-fuzz-clang\fuzz-artifacts\
+
+.\build-fuzz-clang\fuzz\PBProtocolBootstrapControlFuzz.exe `
+  .\fuzz\corpus\bootstrap-control `
+  -max_total_time=300 `
+  -rss_limit_mb=1024 `
+  -artifact_prefix=.\build-fuzz-clang\bootstrap-control-artifacts\
 ```
 
 Compiler/sanitizer availability is part of the evidence. A deterministic MSVC

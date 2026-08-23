@@ -1,4 +1,5 @@
 #include "pbprotocol/blake3_digest.h"
+#include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/protocol_version.h"
 
 #include <array>
@@ -26,6 +27,46 @@ int main()
     if (hasher.Finalize() != pbprotocol::ComputeBlake3Digest(input))
     {
         return 2;
+    }
+
+    const pbprotocol::BootstrapRecord bootstrapRecord{
+        pbprotocol::kBootstrapVersion,
+        protocolVersion,
+        1,
+        1,
+        pbprotocol::SessionTag{2},
+        3,
+        4,
+        0};
+    std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bootstrapBytes{};
+    if (!pbprotocol::SerializeBootstrapRecord(
+            bootstrapRecord,
+            bootstrapBytes))
+    {
+        return 3;
+    }
+    const auto parsedBootstrap = pbprotocol::ParseBootstrapRecord(
+        bootstrapBytes);
+    if (!parsedBootstrap || parsedBootstrap.Value() != bootstrapRecord)
+    {
+        return 4;
+    }
+
+    const pbprotocol::ControlRecordView controlRecord{
+        pbprotocol::kControlVersion,
+        pbprotocol::ControlRecordType::SessionDescriptor,
+        5,
+        bootstrapRecord.sessionTag,
+        {}};
+    std::array<std::byte, pbprotocol::kMinimumControlRecordBytes> controlBytes{};
+    if (!pbprotocol::SerializeControlRecord(controlRecord, controlBytes))
+    {
+        return 5;
+    }
+    const auto parsedControl = pbprotocol::ParseControlRecord(controlBytes);
+    if (!parsedControl || !parsedControl.Value().payload.empty())
+    {
+        return 6;
     }
 
     return 0;

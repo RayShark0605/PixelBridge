@@ -1,4 +1,6 @@
 PbAddUnitTest(PBProtocolTests
+    test_bootstrap_control_codec.cpp
+    test_bootstrap_control_corpus.cpp
     test_byte_io.cpp
     test_byte_io_uint8.cpp
     test_descriptor_binding.cpp
@@ -30,6 +32,14 @@ target_compile_definitions(PBProtocolTests
     PRIVATE
         "PB_DESCRIPTOR_CORPUS_DIRECTORY=\"${pbDescriptorCorpusDirectory}\"")
 unset(pbDescriptorCorpusDirectory)
+
+file(TO_CMAKE_PATH
+    "${PROJECT_SOURCE_DIR}/fuzz/corpus/bootstrap-control"
+    pbBootstrapControlCorpusDirectory)
+target_compile_definitions(PBProtocolTests
+    PRIVATE
+        "PB_BOOTSTRAP_CONTROL_CORPUS_DIRECTORY=\"${pbBootstrapControlCorpusDirectory}\"")
+unset(pbBootstrapControlCorpusDirectory)
 
 add_executable(PBProtocolNoAllocationDigestProbe
     no_allocation_digest_probe.cpp)

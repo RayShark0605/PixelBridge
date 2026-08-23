@@ -45,7 +45,12 @@ enum class ProtocolErrorCode : std::uint8_t
     InternalDescriptorStateError,
     InternalInvariantViolation,
     SessionTagCollision,
-    CsprngFailure
+    CsprngFailure,
+    InvalidMagic,
+    UnsupportedBootstrapVersion,
+    UnsupportedControlVersion,
+    CrcMismatch,
+    NonZeroReservedBits
 };
 
 struct ProtocolError

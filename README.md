@@ -17,6 +17,12 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 当前 37/110/142/65-byte Session/Segment/Final payload 是 **Phase-0 provisional implementation slice**，不是完整正式 v1 wire 承诺。它仍缺少总体设计要求的 `SessionVisualProfileId` 等固定 Session 绑定，因而不得在后续 Data Plane/backend 接入时被误称为已冻结的正式 canonical v1 schema。当前状态、资源预算与升级前置条件见 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)。
 
+`PBProtocol` 已实现与 Data Profile 解耦的逻辑字节 envelope：固定 44-byte
+`PB-Bootstrap-1`，以及 `26-byte prefix + payload + 4-byte CRC` 的
+`PB-Control-1`。Control 的 `RecordBytes` 包含整条 record，最大 65,536 bytes；
+parser 零拷贝返回借用 payload，并要求调用方继续执行 Descriptor、资源策略和
+SessionTag binding 验证。当前不包含视觉 raster/FEC 或 Control 分片重组。
+
 ## Target 与依赖边界
 
 - `PBCore`、`PBProtocol` 是显式静态库，不受父工程 `BUILD_SHARED_LIBS` 影响。
@@ -164,7 +170,7 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | --- | --- | --- |
 | `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
-| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
+| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
 | `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
@@ -190,6 +196,8 @@ ctest --test-dir build-fuzz-msvc --build-config RelWithDebInfo `
 # MSVC deterministic mutation runners can also be invoked directly.
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolDescriptorResourceFuzz.exe `
   2000 13464654573299691533
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe `
+  2000 5783258900934164481
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
   2000 13856851484949778996
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBOuterFecWirehairV2Fuzz.exe `
@@ -200,6 +208,10 @@ ctest --test-dir build-fuzz-msvc --build-config RelWithDebInfo `
 # Replay one pinned PBCompression corpus input.
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
   --input .\fuzz\corpus\compression-zstd\wide-window.bin
+
+# Replay the canonical PB-Bootstrap-1 corpus input.
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe `
+  --input .\fuzz\corpus\bootstrap-control\valid-bootstrap.bin
 ```
 
 benchmark 配置示例：
