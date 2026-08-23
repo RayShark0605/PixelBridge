@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <map>
 #include <memory>
 #include <memory_resource>
 #include <new>
@@ -119,15 +120,8 @@ struct ControlReassemblyRecord
           totalRecordBytes(fragment.totalRecordBytes),
           flags(fragment.flags),
           lastObservationOrdinal(observationOrdinal),
-          fragments(std::in_place, memoryResource)
+          fragmentsByIndex(std::in_place, memoryResource)
     {
-        fragments->reserve(fragment.fragmentCount);
-        for (std::uint16_t fragmentIndex = 0;
-             fragmentIndex < fragment.fragmentCount;
-             fragmentIndex++)
-        {
-            fragments->emplace_back(memoryResource);
-        }
     }
 
     ControlReassemblyRecord(const ControlReassemblyRecord&) = delete;
@@ -143,7 +137,8 @@ struct ControlReassemblyRecord
     std::size_t receivedFragmentCount = 0;
     std::size_t receivedBytes = 0;
     ControlReassemblyState state = ControlReassemblyState::Collecting;
-    std::optional<std::pmr::vector<ControlFragmentSlot>> fragments;
+    std::optional<std::pmr::map<std::uint16_t, ControlFragmentSlot>>
+        fragmentsByIndex;
 };
 
 struct ControlReassemblyEntry
@@ -253,7 +248,7 @@ template <typename ValueType>
 void ClearFragmentPayloads(
     detail::ControlReassemblyRecord& record) noexcept
 {
-    record.fragments.reset();
+    record.fragmentsByIndex.reset();
     record.receivedFragmentCount = 0;
     record.receivedBytes = 0;
 }
@@ -335,7 +330,7 @@ void EvictExpiredRecords(
 
     try
     {
-        if (!record.fragments)
+        if (!record.fragmentsByIndex)
         {
             MarkConflict(record);
             return ProtocolResult<ControlFragmentReceiveResult>::Failure(
@@ -343,12 +338,24 @@ void EvictExpiredRecords(
                 kFragmentIndexOffset);
         }
 
+        if (record.fragmentsByIndex->size() !=
+            static_cast<std::size_t>(record.fragmentCount))
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::InternalInvariantViolation,
+                kFragmentCountOffset);
+        }
+
         std::pmr::vector<std::byte> recordBytes(
             implementation.reassemblyStorage.memoryResource.get());
         recordBytes.reserve(record.totalRecordBytes);
-        for (const detail::ControlFragmentSlot& fragment : *record.fragments)
+        std::size_t expectedFragmentIndex = 0;
+        for (const auto& [fragmentIndex, fragment] : *record.fragmentsByIndex)
         {
-            if (fragment.bytes.empty())
+            if (static_cast<std::size_t>(fragmentIndex) !=
+                    expectedFragmentIndex ||
+                fragment.bytes.empty())
             {
                 MarkConflict(record);
                 return ProtocolResult<ControlFragmentReceiveResult>::Failure(
@@ -359,6 +366,15 @@ void EvictExpiredRecords(
                 recordBytes.end(),
                 fragment.bytes.begin(),
                 fragment.bytes.end());
+            expectedFragmentIndex++;
+        }
+        if (expectedFragmentIndex !=
+            static_cast<std::size_t>(record.fragmentCount))
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::InternalInvariantViolation,
+                kFragmentIndexOffset);
         }
         if (recordBytes.size() != record.totalRecordBytes)
         {
@@ -615,8 +631,7 @@ ControlPlaneReceiver::ReceiveControlFragment(
                 ProtocolErrorCode::ControlFragmentConflict,
                 kFragmentCountOffset);
         }
-        if (!record.fragments ||
-            fragment.fragmentIndex >= record.fragments->size())
+        if (!record.fragmentsByIndex)
         {
             MarkConflict(record);
             return ProtocolResult<ControlFragmentReceiveResult>::Failure(
@@ -624,10 +639,12 @@ ControlPlaneReceiver::ReceiveControlFragment(
                 kFragmentIndexOffset);
         }
 
-        detail::ControlFragmentSlot& fragmentSlot =
-            (*record.fragments)[fragment.fragmentIndex];
-        if (!fragmentSlot.bytes.empty())
+        auto fragmentIterator = record.fragmentsByIndex->find(
+            fragment.fragmentIndex);
+        if (fragmentIterator != record.fragmentsByIndex->end())
         {
+            const detail::ControlFragmentSlot& fragmentSlot =
+                fragmentIterator->second;
             if (fragmentSlot.bytes.size() != fragment.payload.size() ||
                 !std::equal(
                     fragmentSlot.bytes.begin(),
@@ -669,11 +686,48 @@ ControlPlaneReceiver::ReceiveControlFragment(
                 kFragmentTotalRecordBytesOffset);
         }
 
+        const auto receivedFragmentCountResult = CheckedAddSize(
+            record.receivedFragmentCount,
+            1U,
+            kFragmentCountOffset);
+        if (!receivedFragmentCountResult ||
+            receivedFragmentCountResult.Value() > record.fragmentCount)
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::ControlFragmentConflict,
+                kFragmentCountOffset);
+        }
+        const std::size_t remainingFragmentCount =
+            static_cast<std::size_t>(record.fragmentCount) -
+            receivedFragmentCountResult.Value();
+        if (receivedBytesResult.Value() >
+            static_cast<std::size_t>(record.totalRecordBytes) -
+                remainingFragmentCount)
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::ControlFragmentConflict,
+                kFragmentTotalRecordBytesOffset);
+        }
+
         try
         {
+            detail::ControlFragmentSlot fragmentSlot(
+                implementation_->reassemblyStorage.memoryResource.get());
             fragmentSlot.bytes.assign(
                 fragment.payload.begin(),
                 fragment.payload.end());
+            const auto fragmentInsertion = record.fragmentsByIndex->emplace(
+                fragment.fragmentIndex,
+                std::move(fragmentSlot));
+            if (!fragmentInsertion.second)
+            {
+                MarkConflict(record);
+                return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                    ProtocolErrorCode::InternalInvariantViolation,
+                    kFragmentIndexOffset);
+            }
         }
         catch (...)
         {
@@ -686,7 +740,7 @@ ControlPlaneReceiver::ReceiveControlFragment(
             throw;
         }
         record.receivedBytes = receivedBytesResult.Value();
-        record.receivedFragmentCount++;
+        record.receivedFragmentCount = receivedFragmentCountResult.Value();
 
         if (record.receivedFragmentCount < record.fragmentCount)
         {

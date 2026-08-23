@@ -6,9 +6,11 @@ PB-Control-Fragment-1 parser. A successful parse must reserialize byte-for-byte
 to the same canonical input or the driver aborts. Raw mutation is supplemented
 by structured modes that repair exact length and CRC-32C after mutating covered
 semantic fields, plus bounded out-of-order/duplicate/conflict/quota/expiry
-sequences through `ControlPlaneReceiver`. The input boundary is one byte beyond
-the maximum fragment envelope; accepted complete Control records remain capped
-at 65,536 bytes and accepted fragment payloads at 65,535 bytes.
+sequences through `ControlPlaneReceiver`. A separate structured mode admits one
+valid SessionDescriptor and verifies that a second CRC-valid record with the
+same key latches terminal `DescriptorConflict`. The input boundary is one byte
+beyond the maximum fragment envelope; accepted complete Control records remain
+capped at 65,536 bytes and accepted fragment payloads at 65,535 bytes.
 
 `PBProtocolDescriptorResourceFuzz` exercises all three descriptor parsers,
 Session admission/routing, Segment Map insertion, overlap/conflict paths, and
@@ -45,7 +47,8 @@ The self-test must print `STRUCTURED_SELF_TEST_COMPLETED`; it asserts that CRC-
 valid version/type/flags failures, min/max/truncation/trailing boundaries, typed
 admission, SessionTag rejection, no-fallback dispatch, out-of-order completion,
 once-only submission, conflict, quota, expiry, and reset branches are genuinely
-reachable.
+reachable. It also asserts that a typed descriptor conflict is terminal rather
+than latest-wins.
 
 ## Independent corpus replay and conformance
 

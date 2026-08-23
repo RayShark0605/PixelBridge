@@ -292,6 +292,22 @@ TEST_CASE("PB-Control-Fragment-1 rejects malformed shape and every truncation",
             pbprotocol::ProtocolErrorCode::InvalidControlFragment);
     }
 
+    SECTION("one fragment cannot consume bytes required by the remaining count")
+    {
+        auto impossibleDistribution = kFragmentZeroGolden;
+        StoreUint16(impossibleDistribution, kFragmentCountOffset, 45);
+        RefreshFragmentCrc(impossibleDistribution);
+
+        const auto result = pbprotocol::ParseControlFragment(
+            impossibleDistribution);
+        REQUIRE_FALSE(result);
+        REQUIRE(
+            result.Error() ==
+            pbprotocol::ProtocolError{
+                pbprotocol::ProtocolErrorCode::InvalidControlFragment,
+                kFragmentBytesOffset});
+    }
+
     SECTION("declared fragment length must equal the exact input")
     {
         auto bytes = kFragmentZeroGolden;

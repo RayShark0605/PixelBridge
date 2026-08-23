@@ -2,6 +2,7 @@
 #include "pbprotocol/control_fragment_codec.h"
 #include "pbprotocol/control_plane_receiver.h"
 #include "pbprotocol/crc32c.h"
+#include "pbprotocol/descriptor_codec.h"
 
 #include <algorithm>
 #include <array>
@@ -236,12 +237,13 @@ MakeStructuredBootstrap(const std::span<const std::byte> input) noexcept
     return bytes;
 }
 
-[[nodiscard]] std::vector<std::vector<std::byte>> MakeSeedFragments(
-    const std::uint64_t recordId)
+[[nodiscard]] std::vector<std::vector<std::byte>> MakeRecordFragments(
+    const std::span<const std::byte> recordBytes,
+    const std::uint64_t recordId,
+    const std::uint16_t fragmentPayloadBytes = 24)
 {
-    constexpr std::uint16_t fragmentPayloadBytes = 24;
     const auto countResult = pbprotocol::GetControlFragmentCount(
-        kControlSeed,
+        recordBytes,
         fragmentPayloadBytes);
     if (!countResult)
     {
@@ -256,7 +258,7 @@ MakeStructuredBootstrap(const std::span<const std::byte> input) noexcept
     {
         const auto fragmentResult = pbprotocol::GetControlFragment(
             recordId,
-            kControlSeed,
+            recordBytes,
             fragmentIndex,
             fragmentPayloadBytes);
         if (!fragmentResult)
@@ -277,6 +279,60 @@ MakeStructuredBootstrap(const std::span<const std::byte> input) noexcept
         fragments.push_back(std::move(bytes));
     }
     return fragments;
+}
+
+[[nodiscard]] std::vector<std::vector<std::byte>> MakeSeedFragments(
+    const std::uint64_t recordId)
+{
+    return MakeRecordFragments(kControlSeed, recordId);
+}
+
+[[nodiscard]] std::vector<std::byte> MakeConflictingSessionControlRecord()
+{
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    const auto controlRecordResult = pbprotocol::ParseControlRecord(
+        kControlSeed);
+    if (!controlRecordResult)
+    {
+        std::abort();
+    }
+    const auto descriptorResult = pbprotocol::ParseSessionDescriptor(
+        controlRecordResult.Value().payload,
+        resourcePolicy);
+    if (!descriptorResult)
+    {
+        std::abort();
+    }
+
+    pbprotocol::SessionDescriptor changedDescriptor = descriptorResult.Value();
+    changedDescriptor.originalFileSize++;
+    std::array<std::byte, pbprotocol::kSessionDescriptorPayloadBytes> payload{};
+    if (!pbprotocol::SerializeSessionDescriptor(
+            changedDescriptor,
+            resourcePolicy,
+            payload))
+    {
+        std::abort();
+    }
+
+    const pbprotocol::ControlRecordView changedRecord{
+        pbprotocol::kControlVersion,
+        pbprotocol::ControlRecordType::SessionDescriptor,
+        controlRecordResult.Value().controlSequence + 1U,
+        controlRecordResult.Value().sessionTag,
+        payload};
+    const auto sizeResult = pbprotocol::GetSerializedSize(changedRecord);
+    if (!sizeResult)
+    {
+        std::abort();
+    }
+    std::vector<std::byte> recordBytes(sizeResult.Value());
+    if (!pbprotocol::SerializeControlRecord(changedRecord, recordBytes))
+    {
+        std::abort();
+    }
+    return recordBytes;
 }
 
 void ExerciseCanonicalParsers(const std::span<const std::byte> input)
@@ -421,6 +477,72 @@ void ExerciseStructuredResourceSequence()
     receiver.ResetControlReassembly();
 }
 
+[[nodiscard]] bool ExerciseStructuredDescriptorConflict()
+{
+    auto receiverResult = pbprotocol::ControlPlaneReceiver::Create(
+        pbprotocol::GetDefaultReceiverResourcePolicy());
+    if (!receiverResult)
+    {
+        return false;
+    }
+    auto receiver = std::move(receiverResult).Value();
+    const auto firstFragments = MakeRecordFragments(kControlSeed, 0xD001ULL);
+    const std::vector<std::byte> changedRecord =
+        MakeConflictingSessionControlRecord();
+    const auto changedFragments = MakeRecordFragments(
+        changedRecord,
+        0xD002ULL);
+
+    std::uint64_t observationOrdinal = 1;
+    bool firstInserted = false;
+    for (std::size_t fragmentIndex = 0;
+         fragmentIndex < firstFragments.size();
+         fragmentIndex++)
+    {
+        const auto result = receiver.ReceiveControlFragment(
+            firstFragments[fragmentIndex],
+            observationOrdinal);
+        observationOrdinal++;
+        if (!result)
+        {
+            return false;
+        }
+        if (fragmentIndex + 1U == firstFragments.size())
+        {
+            firstInserted = result.Value().disposition ==
+                pbprotocol::ControlFragmentReceiveDisposition::
+                    DescriptorInserted;
+        }
+    }
+
+    bool descriptorConflict = false;
+    for (std::size_t fragmentIndex = 0;
+         fragmentIndex < changedFragments.size();
+         fragmentIndex++)
+    {
+        const auto result = receiver.ReceiveControlFragment(
+            changedFragments[fragmentIndex],
+            observationOrdinal);
+        observationOrdinal++;
+        if (fragmentIndex + 1U == changedFragments.size())
+        {
+            descriptorConflict = !result &&
+                result.Error().code ==
+                    pbprotocol::ProtocolErrorCode::DescriptorConflict;
+        }
+        else if (!result)
+        {
+            return false;
+        }
+    }
+
+    const auto blockedResult = receiver.ReceiveControlRecord(kControlSeed);
+    return firstInserted && descriptorConflict && !blockedResult &&
+        blockedResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::DescriptorConflict &&
+        receiver.ActiveSessionCount() == 1;
+}
+
 void ExerciseInput(const std::span<const std::byte> input)
 {
     if (input.size() > kMaximumAcceptedFuzzInputBytes)
@@ -434,7 +556,7 @@ void ExerciseInput(const std::span<const std::byte> input)
         return;
     }
 
-    switch (GetByte(input, 0) % 5U)
+    switch (GetByte(input, 0) % 6U)
     {
     case 0:
     {
@@ -459,8 +581,14 @@ void ExerciseInput(const std::span<const std::byte> input)
     case 3:
         ExerciseStructuredReassembly(input);
         break;
-    default:
+    case 4:
         ExerciseStructuredResourceSequence();
+        break;
+    default:
+        if (!ExerciseStructuredDescriptorConflict())
+        {
+            std::abort();
+        }
         break;
     }
 }
@@ -833,6 +961,13 @@ int RunStructuredSelfTest()
                     pbprotocol::ProtocolErrorCode::TrailingBytes &&
                 mismatchReceiver.ActiveSessionCount() == 0,
             "type-payload-no-fallback"))
+    {
+        return 1;
+    }
+
+    if (!RequireSelfTest(
+            ExerciseStructuredDescriptorConflict(),
+            "descriptor-conflict-terminal"))
     {
         return 1;
     }
