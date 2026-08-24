@@ -137,8 +137,9 @@ struct ReceiverResourcePolicy
     std::uint64_t maxEncodedSegmentBytes = 0;
     std::uint32_t maxOuterBlockBytes = 0;
     // Both descriptor-state limits cover dynamic storage owned by Segment Map
-    // containers. The fixed state object is bounded separately by
-    // maxConcurrentSessions.
+    // containers. Fixed Session objects and permanently quarantined ambiguous
+    // SessionTag tombstones share maxConcurrentSessions, so collision history
+    // cannot grow an unbounded routing map within one capture epoch.
     std::uint64_t maxDescriptorStateBytes = 0;
     std::uint64_t maxConcurrentSessions = 0;
     std::uint64_t maxTotalDescriptorStateBytes = 0;

@@ -1,5 +1,7 @@
 #include "pbprotocol/orphan_transport_block_cache.h"
 
+#include "pmr_byte_buffer.h"
+
 #include "pbprotocol/checked_integer.h"
 #include "pbprotocol/descriptor_codec.h"
 
@@ -105,7 +107,7 @@ struct OrphanTransportBlockEntryState
 {
     explicit OrphanTransportBlockEntryState(
         std::pmr::memory_resource* memoryResource)
-        : payloadBytes(memoryResource)
+        : paddedPayload(memoryResource)
     {
     }
 
@@ -119,7 +121,8 @@ struct OrphanTransportBlockEntryState
         OrphanTransportBlockEntryState&&) noexcept = default;
 
     std::uint32_t outerBlockId = 0;
-    std::pmr::vector<std::byte> payloadBytes;
+    std::uint16_t declaredPayloadBytes = 0;
+    PmrByteBuffer paddedPayload;
 };
 
 struct OrphanTransportBlockKeyState
@@ -166,6 +169,7 @@ struct OrphanTransportBlockCacheImplementation
     // Cumulative event counters (telemetry).
     std::uint64_t admittedBlockCount = 0;
     std::uint64_t droppedBlockCount = 0;
+    std::uint64_t resourceExhaustedCount = 0;
     // Current-state counters.
     std::uint64_t conflictedKeyCount = 0;
     std::size_t cachedBlocks = 0;
@@ -306,7 +310,8 @@ ProtocolStatus OrphanTransportBlockCache::Admit(
     const SessionTag sessionTag,
     const std::uint64_t segmentOrdinal,
     const std::uint32_t outerBlockId,
-    const std::span<const std::byte> payloadBytes,
+    const std::uint16_t declaredPayloadBytes,
+    const std::span<const std::byte> paddedPayload,
     const std::optional<std::uint64_t> observationOrdinal)
 {
     if (!implementation_)
@@ -318,34 +323,87 @@ ProtocolStatus OrphanTransportBlockCache::Admit(
 
     const ReceiverResourcePolicy& resourcePolicy =
         implementation_->resourcePolicy;
-    if (payloadBytes.empty())
+    if (paddedPayload.empty() || declaredPayloadBytes == 0 ||
+        declaredPayloadBytes > paddedPayload.size())
     {
         return ProtocolStatus::Failure(ProtocolErrorCode::InvalidRecordSize, 0);
     }
-    if (payloadBytes.size() > resourcePolicy.maxOuterBlockBytes)
+    if (paddedPayload.size() > resourcePolicy.maxOuterBlockBytes)
     {
+        SaturatingIncrementUnsigned(implementation_->droppedBlockCount);
         return ProtocolStatus::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
             0);
     }
 
-    // Quota pre-checks run before any allocation. Overflow drops only the
-    // incoming block; cached blocks are never evicted (Carousel replay is the
-    // recovery path for dropped data).
+    const std::size_t declaredPayloadSize = declaredPayloadBytes;
+    for (std::size_t paddingIndex = declaredPayloadSize;
+         paddingIndex < paddedPayload.size();
+         paddingIndex++)
+    {
+        if (paddedPayload[paddingIndex] != std::byte{0})
+        {
+            return ProtocolStatus::Failure(
+                ProtocolErrorCode::NonCanonicalPadding,
+                paddingIndex);
+        }
+    }
+
+    const detail::OrphanTransportBlockKey key{sessionTag.value, segmentOrdinal};
+    if (implementation_->keys)
+    {
+        auto& keys = *implementation_->keys;
+        const auto iterator = keys.find(key);
+        if (iterator != keys.end())
+        {
+            detail::OrphanTransportBlockKeyState& keyState = iterator->second;
+            if (keyState.conflicted)
+            {
+                return ProtocolStatus::Failure(
+                    ProtocolErrorCode::OrphanPayloadConflict,
+                    0);
+            }
+
+            for (const auto& entry : keyState.entries)
+            {
+                if (entry.outerBlockId != outerBlockId)
+                {
+                    continue;
+                }
+                if (entry.declaredPayloadBytes == declaredPayloadBytes &&
+                    entry.paddedPayload.Size() == paddedPayload.size() &&
+                    std::equal(
+                        paddedPayload.begin(),
+                        paddedPayload.end(),
+                        entry.paddedPayload.Bytes().begin()))
+                {
+                    return ProtocolStatus::Success();
+                }
+
+                keyState.conflicted = true;
+                implementation_->conflictedKeyCount++;
+                return ProtocolStatus::Failure(
+                    ProtocolErrorCode::OrphanPayloadConflict,
+                    0);
+            }
+        }
+    }
+
+    // Only a new unique block consumes quota. Cached blocks are never evicted;
+    // Carousel replay is the recovery path for a quota-dropped block.
     if (implementation_->cachedBlocks >=
             resourcePolicy.maxOrphanTransportBlocks ||
         !CheckedAddWithinLimit(
             implementation_->cachedBytes,
-            payloadBytes.size(),
+            paddedPayload.size(),
             implementation_->orphanByteLimit))
     {
-        implementation_->droppedBlockCount++;
+        SaturatingIncrementUnsigned(implementation_->droppedBlockCount);
         return ProtocolStatus::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
             0);
     }
 
-    const detail::OrphanTransportBlockKey key{sessionTag.value, segmentOrdinal};
     bool keyCreated = false;
     try
     {
@@ -365,39 +423,11 @@ ProtocolStatus OrphanTransportBlockCache::Admit(
         }
 
         detail::OrphanTransportBlockKeyState& keyState = iterator->second;
-        if (keyState.conflicted)
-        {
-            return ProtocolStatus::Failure(
-                ProtocolErrorCode::OrphanPayloadConflict,
-                0);
-        }
-
-        for (const auto& entry : keyState.entries)
-        {
-            if (entry.outerBlockId != outerBlockId)
-            {
-                continue;
-            }
-            if (entry.payloadBytes.size() == payloadBytes.size() &&
-                std::equal(
-                    payloadBytes.begin(),
-                    payloadBytes.end(),
-                    entry.payloadBytes.begin()))
-            {
-                // Idempotent repeat of an already cached block.
-                return ProtocolStatus::Success();
-            }
-            keyState.conflicted = true;
-            implementation_->conflictedKeyCount++;
-            return ProtocolStatus::Failure(
-                ProtocolErrorCode::OrphanPayloadConflict,
-                0);
-        }
-
         detail::OrphanTransportBlockEntryState entryState(
             implementation_->memoryResource.get());
         entryState.outerBlockId = outerBlockId;
-        entryState.payloadBytes.assign(payloadBytes.begin(), payloadBytes.end());
+        entryState.declaredPayloadBytes = declaredPayloadBytes;
+        entryState.paddedPayload.Assign(paddedPayload);
         keyState.entries.push_back(std::move(entryState));
         if (keyCreated && observationOrdinal)
         {
@@ -407,6 +437,7 @@ ProtocolStatus OrphanTransportBlockCache::Admit(
     catch (const detail::OrphanTransportBlockBudgetExceeded&)
     {
         RollbackEmptyKey(*implementation_, key);
+        SaturatingIncrementUnsigned(implementation_->droppedBlockCount);
         return ProtocolStatus::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
             0);
@@ -414,19 +445,21 @@ ProtocolStatus OrphanTransportBlockCache::Admit(
     catch (const std::bad_alloc&)
     {
         RollbackEmptyKey(*implementation_, key);
+        SaturatingIncrementUnsigned(implementation_->resourceExhaustedCount);
         return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
     }
     catch (const std::length_error&)
     {
         RollbackEmptyKey(*implementation_, key);
+        SaturatingIncrementUnsigned(implementation_->resourceExhaustedCount);
         return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
     }
 
     // Bookkeeping updates only after the allocation succeeded, so a failed
     // Admit never moves the counters.
     implementation_->cachedBlocks++;
-    implementation_->cachedBytes += payloadBytes.size();
-    implementation_->admittedBlockCount++;
+    implementation_->cachedBytes += paddedPayload.size();
+    SaturatingIncrementUnsigned(implementation_->admittedBlockCount);
     return ProtocolStatus::Success();
 }
 
@@ -483,21 +516,27 @@ ProtocolResult<OrphanTransportBlockDrain> OrphanTransportBlockCache::Drain(
                 {
                     OrphanTransportBlockEntry copiedEntry;
                     copiedEntry.outerBlockId = entry.outerBlockId;
-                    copiedEntry.payloadBytes.assign(
-                        entry.payloadBytes.begin(),
-                        entry.payloadBytes.end());
-                    drainedBytes += entry.payloadBytes.size();
+                    copiedEntry.declaredPayloadBytes =
+                        entry.declaredPayloadBytes;
+                    copiedEntry.paddedPayload.assign(
+                        entry.paddedPayload.Bytes().begin(),
+                        entry.paddedPayload.Bytes().end());
+                    drainedBytes += entry.paddedPayload.Size();
                     drain.entries.push_back(std::move(copiedEntry));
                 }
             }
             catch (const std::bad_alloc&)
             {
+                SaturatingIncrementUnsigned(
+                    implementation_->resourceExhaustedCount);
                 return ProtocolResult<OrphanTransportBlockDrain>::Failure(
                     ProtocolErrorCode::ResourceExhausted,
                     0);
             }
             catch (const std::length_error&)
             {
+                SaturatingIncrementUnsigned(
+                    implementation_->resourceExhaustedCount);
                 return ProtocolResult<OrphanTransportBlockDrain>::Failure(
                     ProtocolErrorCode::ResourceExhausted,
                     0);
@@ -537,7 +576,7 @@ void OrphanTransportBlockCache::ClearSession(
         for (const auto& entry : iterator->second.entries)
         {
             clearedBlockCount++;
-            clearedBytes += entry.payloadBytes.size();
+            clearedBytes += entry.paddedPayload.Size();
         }
         if (iterator->second.conflicted)
         {
@@ -550,6 +589,19 @@ void OrphanTransportBlockCache::ClearSession(
     ReleaseKeyCapacityIfEmpty(*implementation_);
 }
 
+void OrphanTransportBlockCache::ClearAll() noexcept
+{
+    if (!implementation_)
+    {
+        return;
+    }
+
+    implementation_->keys.reset();
+    implementation_->conflictedKeyCount = 0;
+    implementation_->cachedBlocks = 0;
+    implementation_->cachedBytes = 0;
+}
+
 std::uint64_t OrphanTransportBlockCache::GetAdmittedBlockCount() const noexcept
 {
     return implementation_ ? implementation_->admittedBlockCount : 0;
@@ -560,9 +612,28 @@ std::uint64_t OrphanTransportBlockCache::GetDroppedBlockCount() const noexcept
     return implementation_ ? implementation_->droppedBlockCount : 0;
 }
 
+std::uint64_t OrphanTransportBlockCache::GetResourceExhaustedCount() const noexcept
+{
+    return implementation_ ? implementation_->resourceExhaustedCount : 0;
+}
+
 std::uint64_t OrphanTransportBlockCache::GetConflictedKeyCount() const noexcept
 {
     return implementation_ ? implementation_->conflictedKeyCount : 0;
+}
+
+bool OrphanTransportBlockCache::HasCachedKey(
+    const SessionTag sessionTag,
+    const std::uint64_t segmentOrdinal) const noexcept
+{
+    if (!implementation_ || !implementation_->keys)
+    {
+        return false;
+    }
+    const detail::OrphanTransportBlockKey key{
+        sessionTag.value,
+        segmentOrdinal};
+    return implementation_->keys->contains(key);
 }
 
 std::size_t OrphanTransportBlockCache::GetCachedBlockCount() const noexcept

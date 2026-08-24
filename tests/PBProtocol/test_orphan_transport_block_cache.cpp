@@ -10,6 +10,7 @@
 #include <memory>
 #include <memory_resource>
 #include <new>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -42,6 +43,25 @@ using pbprotocol::SessionTag;
     resourcePolicy.maxOrphanTransportBytes = orphanBytes;
     resourcePolicy.maxOrphanTransportBlocks = orphanBlocks;
     return resourcePolicy;
+}
+
+[[nodiscard]] pbprotocol::ProtocolStatus AdmitFullPayload(
+    OrphanTransportBlockCache& cache,
+    const SessionTag sessionTag,
+    const std::uint64_t segmentOrdinal,
+    const std::uint32_t outerBlockId,
+    const std::span<const std::byte> paddedPayload,
+    const std::optional<std::uint64_t> observationOrdinal = std::nullopt)
+{
+    const auto declaredPayloadBytes = static_cast<std::uint16_t>(
+        paddedPayload.size());
+    return cache.Admit(
+        sessionTag,
+        segmentOrdinal,
+        outerBlockId,
+        declaredPayloadBytes,
+        paddedPayload,
+        observationOrdinal);
 }
 
 class FailOnAllocationMemoryResource final : public std::pmr::memory_resource
@@ -110,6 +130,7 @@ TEST_CASE("Fresh orphan cache reports zero telemetry and empty drains",
 
     REQUIRE(cache.GetAdmittedBlockCount() == 0);
     REQUIRE(cache.GetDroppedBlockCount() == 0);
+    REQUIRE(cache.GetResourceExhaustedCount() == 0);
     REQUIRE(cache.GetConflictedKeyCount() == 0);
     REQUIRE(cache.GetCachedBlockCount() == 0);
     REQUIRE(cache.GetCachedBytes() == 0);
@@ -134,9 +155,9 @@ TEST_CASE("Orphan blocks admit and drain in arrival order",
     const std::vector<std::byte> payloadB = MakePayload(8, 0x42);
     const std::vector<std::byte> payloadC = MakePayload(16, 0x43);
 
-    REQUIRE(cache.Admit(sessionTag, 3, 5, payloadA));
-    REQUIRE(cache.Admit(sessionTag, 3, 1, payloadB));
-    REQUIRE(cache.Admit(sessionTag, 3, 3, payloadC));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 3, 5, payloadA));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 3, 1, payloadB));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 3, 3, payloadC));
     REQUIRE(cache.GetAdmittedBlockCount() == 3);
     REQUIRE(cache.GetCachedBlockCount() == 3);
     REQUIRE(cache.GetCachedBytes() ==
@@ -148,11 +169,14 @@ TEST_CASE("Orphan blocks admit and drain in arrival order",
         drainResult.Value().entries;
     REQUIRE(entries.size() == 3);
     REQUIRE(entries[0].outerBlockId == 5);
-    REQUIRE(entries[0].payloadBytes == payloadA);
+    REQUIRE(entries[0].declaredPayloadBytes == payloadA.size());
+    REQUIRE(entries[0].paddedPayload == payloadA);
     REQUIRE(entries[1].outerBlockId == 1);
-    REQUIRE(entries[1].payloadBytes == payloadB);
+    REQUIRE(entries[1].declaredPayloadBytes == payloadB.size());
+    REQUIRE(entries[1].paddedPayload == payloadB);
     REQUIRE(entries[2].outerBlockId == 3);
-    REQUIRE(entries[2].payloadBytes == payloadC);
+    REQUIRE(entries[2].declaredPayloadBytes == payloadC.size());
+    REQUIRE(entries[2].paddedPayload == payloadC);
 
     // The key is cleared after drain: a second drain is an empty success.
     const auto secondDrain = cache.Drain(sessionTag, 3);
@@ -174,12 +198,12 @@ TEST_CASE("Orphan byte quota admits inclusively and drops only the incoming bloc
     const std::vector<std::byte> payload = MakePayload(40, 0x50);
     for (std::uint32_t blockId = 0; blockId < 3; blockId++)
     {
-        REQUIRE(cache.Admit(sessionTag, 1, blockId, payload));
+        REQUIRE(AdmitFullPayload(cache, sessionTag, 1, blockId, payload));
     }
     REQUIRE(cache.GetCachedBytes() == 120);
 
     const pbprotocol::ProtocolStatus droppedStatus =
-        cache.Admit(sessionTag, 1, 99, payload);
+        AdmitFullPayload(cache, sessionTag, 1, 99, payload);
     REQUIRE_FALSE(droppedStatus);
     REQUIRE(droppedStatus.Error().code
         == ProtocolErrorCode::ResourceLimitExceeded);
@@ -203,12 +227,12 @@ TEST_CASE("Orphan byte quota drops before exceeding the budget",
 
     const SessionTag sessionTag{9};
     const std::vector<std::byte> payload = MakePayload(40, 0x51);
-    REQUIRE(cache.Admit(sessionTag, 2, 0, payload));
-    REQUIRE(cache.Admit(sessionTag, 2, 1, payload));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 2, 0, payload));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 2, 1, payload));
     REQUIRE(cache.GetCachedBytes() == 80);
 
     const pbprotocol::ProtocolStatus droppedStatus =
-        cache.Admit(sessionTag, 2, 2, payload);
+        AdmitFullPayload(cache, sessionTag, 2, 2, payload);
     REQUIRE_FALSE(droppedStatus);
     REQUIRE(droppedStatus.Error().code
         == ProtocolErrorCode::ResourceLimitExceeded);
@@ -226,11 +250,11 @@ TEST_CASE("Orphan block count quota drops with byte budget remaining",
 
     const SessionTag sessionTag{11};
     const std::vector<std::byte> payload = MakePayload(8, 0x52);
-    REQUIRE(cache.Admit(sessionTag, 4, 0, payload));
-    REQUIRE(cache.Admit(sessionTag, 4, 1, payload));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 4, 0, payload));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 4, 1, payload));
 
     const pbprotocol::ProtocolStatus droppedStatus =
-        cache.Admit(sessionTag, 4, 2, payload);
+        AdmitFullPayload(cache, sessionTag, 4, 2, payload);
     REQUIRE_FALSE(droppedStatus);
     REQUIRE(droppedStatus.Error().code
         == ProtocolErrorCode::ResourceLimitExceeded);
@@ -250,19 +274,25 @@ TEST_CASE("Orphan payloads outside the transport width fail closed",
     const SessionTag sessionTag{13};
     const std::span<const std::byte> emptyPayload{};
     const pbprotocol::ProtocolStatus emptyStatus =
-        cache.Admit(sessionTag, 5, 0, emptyPayload);
+        AdmitFullPayload(cache, sessionTag, 5, 0, emptyPayload);
     REQUIRE_FALSE(emptyStatus);
     REQUIRE(emptyStatus.Error().code == ProtocolErrorCode::InvalidRecordSize);
 
     const std::vector<std::byte> oversizedPayload = MakePayload(9, 0x53);
-    const pbprotocol::ProtocolStatus oversizedStatus = cache.Admit(
+    const pbprotocol::ProtocolStatus oversizedStatus = AdmitFullPayload(cache,
         sessionTag, 5, 1, std::span<const std::byte>(oversizedPayload));
     REQUIRE_FALSE(oversizedStatus);
     REQUIRE(oversizedStatus.Error().code
         == ProtocolErrorCode::ResourceLimitExceeded);
+    REQUIRE(cache.GetDroppedBlockCount() == 1);
 
     const std::vector<std::byte> exactPayload = MakePayload(8, 0x54);
-    REQUIRE(cache.Admit(sessionTag, 5, 2, std::span<const std::byte>(exactPayload)));
+    REQUIRE(AdmitFullPayload(
+        cache,
+        sessionTag,
+        5,
+        2,
+        std::span<const std::byte>(exactPayload)));
     REQUIRE(cache.GetCachedBlockCount() == 1);
 }
 
@@ -276,14 +306,155 @@ TEST_CASE("Repeated identical orphan block is an idempotent no-op",
 
     const SessionTag sessionTag{15};
     const std::vector<std::byte> payload = MakePayload(24, 0x55);
-    REQUIRE(cache.Admit(sessionTag, 6, 3, payload));
-    REQUIRE(cache.Admit(sessionTag, 6, 3, payload));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 6, 3, payload));
+    REQUIRE(AdmitFullPayload(cache, sessionTag, 6, 3, payload));
 
     REQUIRE(cache.GetAdmittedBlockCount() == 1);
     REQUIRE(cache.GetCachedBlockCount() == 1);
     const auto drainResult = cache.Drain(sessionTag, 6);
     REQUIRE(drainResult.HasValue());
     REQUIRE(drainResult.Value().entries.size() == 1);
+}
+
+TEST_CASE("Full orphan quotas cannot hide duplicate or conflict semantics",
+          "[pbprotocol][orphan][quota][conflict]")
+{
+    const auto exerciseFullCache = [](
+        const ReceiverResourcePolicy& resourcePolicy)
+    {
+        auto identicalCacheResult = OrphanTransportBlockCache::Create(
+            resourcePolicy);
+        REQUIRE(identicalCacheResult.HasValue());
+        OrphanTransportBlockCache& identicalCache =
+            identicalCacheResult.Value();
+
+        const SessionTag sessionTag{16};
+        const std::vector<std::byte> originalPayload =
+            MakePayload(16, 0x60);
+        REQUIRE(AdmitFullPayload(
+            identicalCache,
+            sessionTag,
+            6,
+            3,
+            originalPayload));
+        REQUIRE(AdmitFullPayload(
+            identicalCache,
+            sessionTag,
+            6,
+            3,
+            originalPayload));
+        REQUIRE(identicalCache.GetAdmittedBlockCount() == 1);
+        REQUIRE(identicalCache.GetDroppedBlockCount() == 0);
+        REQUIRE(identicalCache.GetConflictedKeyCount() == 0);
+        REQUIRE(identicalCache.GetCachedBlockCount() == 1);
+
+        auto conflictCacheResult = OrphanTransportBlockCache::Create(
+            resourcePolicy);
+        REQUIRE(conflictCacheResult.HasValue());
+        OrphanTransportBlockCache& conflictCache = conflictCacheResult.Value();
+        const std::vector<std::byte> conflictingPayload =
+            MakePayload(16, 0x61);
+        REQUIRE(AdmitFullPayload(
+            conflictCache,
+            sessionTag,
+            6,
+            3,
+            originalPayload));
+        const pbprotocol::ProtocolStatus conflictStatus = AdmitFullPayload(
+            conflictCache,
+            sessionTag,
+            6,
+            3,
+            conflictingPayload);
+        REQUIRE_FALSE(conflictStatus);
+        REQUIRE(conflictStatus.Error().code ==
+            ProtocolErrorCode::OrphanPayloadConflict);
+        REQUIRE(conflictCache.GetDroppedBlockCount() == 0);
+        REQUIRE(conflictCache.GetConflictedKeyCount() == 1);
+        const auto drainResult = conflictCache.Drain(sessionTag, 6);
+        REQUIRE_FALSE(drainResult);
+        REQUIRE(drainResult.Error().code ==
+            ProtocolErrorCode::OrphanPayloadConflict);
+    };
+
+    SECTION("block-count quota is full")
+    {
+        exerciseFullCache(MakeOrphanPolicy(4096, 1));
+    }
+
+    SECTION("byte quota is full")
+    {
+        exerciseFullCache(MakeOrphanPolicy(16, 8));
+    }
+}
+
+TEST_CASE("Orphan blocks preserve declared payload length and canonical padding",
+          "[pbprotocol][orphan][payload-length]")
+{
+    auto cacheResult = OrphanTransportBlockCache::Create(
+        MakeOrphanPolicy(4096, 8));
+    REQUIRE(cacheResult.HasValue());
+    OrphanTransportBlockCache& cache = cacheResult.Value();
+
+    const SessionTag sessionTag{17};
+    std::vector<std::byte> paddedPayload = MakePayload(4, 0x62);
+    paddedPayload.resize(8, std::byte{0});
+    REQUIRE(cache.Admit(sessionTag, 7, 1, 4, paddedPayload));
+    REQUIRE(cache.Admit(sessionTag, 7, 1, 4, paddedPayload));
+
+    const auto drainResult = cache.Drain(sessionTag, 7);
+    REQUIRE(drainResult.HasValue());
+    REQUIRE(drainResult.Value().entries.size() == 1);
+    REQUIRE(drainResult.Value().entries[0].declaredPayloadBytes == 4);
+    REQUIRE(drainResult.Value().entries[0].paddedPayload == paddedPayload);
+
+    auto conflictCacheResult = OrphanTransportBlockCache::Create(
+        MakeOrphanPolicy(4096, 8));
+    REQUIRE(conflictCacheResult.HasValue());
+    OrphanTransportBlockCache& conflictCache = conflictCacheResult.Value();
+    REQUIRE(conflictCache.Admit(sessionTag, 8, 1, 4, paddedPayload));
+    const pbprotocol::ProtocolStatus lengthConflict = conflictCache.Admit(
+        sessionTag,
+        8,
+        1,
+        5,
+        paddedPayload);
+    REQUIRE_FALSE(lengthConflict);
+    REQUIRE(lengthConflict.Error().code ==
+        ProtocolErrorCode::OrphanPayloadConflict);
+
+    std::vector<std::byte> nonCanonicalPayload = paddedPayload;
+    nonCanonicalPayload[4] = std::byte{1};
+    const pbprotocol::ProtocolStatus paddingStatus = cache.Admit(
+        sessionTag,
+        9,
+        1,
+        4,
+        nonCanonicalPayload);
+    REQUIRE_FALSE(paddingStatus);
+    REQUIRE(paddingStatus.Error().code ==
+        ProtocolErrorCode::NonCanonicalPadding);
+    REQUIRE(paddingStatus.Error().offset == 4);
+
+    const pbprotocol::ProtocolStatus zeroLengthStatus = cache.Admit(
+        sessionTag,
+        10,
+        1,
+        0,
+        paddedPayload);
+    REQUIRE_FALSE(zeroLengthStatus);
+    REQUIRE(zeroLengthStatus.Error().code ==
+        ProtocolErrorCode::InvalidRecordSize);
+
+    const pbprotocol::ProtocolStatus oversizedLengthStatus = cache.Admit(
+        sessionTag,
+        10,
+        1,
+        9,
+        paddedPayload);
+    REQUIRE_FALSE(oversizedLengthStatus);
+    REQUIRE(oversizedLengthStatus.Error().code ==
+        ProtocolErrorCode::InvalidRecordSize);
 }
 
 TEST_CASE("Conflicting orphan payloads latch the key terminally",
@@ -299,9 +470,9 @@ TEST_CASE("Conflicting orphan payloads latch the key terminally",
     const std::vector<std::byte> payloadX = MakePayload(16, 0x56);
     const std::vector<std::byte> payloadY = MakePayload(16, 0x57);
 
-    REQUIRE(cache.Admit(sessionA, 7, 1, payloadX));
+    REQUIRE(AdmitFullPayload(cache, sessionA, 7, 1, payloadX));
     const pbprotocol::ProtocolStatus conflictStatus =
-        cache.Admit(sessionA, 7, 1, payloadY);
+        AdmitFullPayload(cache, sessionA, 7, 1, payloadY);
     REQUIRE_FALSE(conflictStatus);
     REQUIRE(conflictStatus.Error().code
         == ProtocolErrorCode::OrphanPayloadConflict);
@@ -310,7 +481,7 @@ TEST_CASE("Conflicting orphan payloads latch the key terminally",
     // The latch rejects further Admits and Drains for the key.
     const std::vector<std::byte> payloadZ = MakePayload(8, 0x58);
     const pbprotocol::ProtocolStatus latchedAdmit =
-        cache.Admit(sessionA, 7, 2, payloadZ);
+        AdmitFullPayload(cache, sessionA, 7, 2, payloadZ);
     REQUIRE_FALSE(latchedAdmit);
     REQUIRE(latchedAdmit.Error().code
         == ProtocolErrorCode::OrphanPayloadConflict);
@@ -320,7 +491,7 @@ TEST_CASE("Conflicting orphan payloads latch the key terminally",
         == ProtocolErrorCode::OrphanPayloadConflict);
 
     // Other keys are unaffected.
-    REQUIRE(cache.Admit(sessionB, 8, 1, payloadX));
+    REQUIRE(AdmitFullPayload(cache, sessionB, 8, 1, payloadX));
     REQUIRE(cache.GetAdmittedBlockCount() == 2);
 
     // ClearSession releases the latch and the key's memory.
@@ -343,22 +514,22 @@ TEST_CASE("Orphan wait observations measure first-seen to drain",
     const std::vector<std::byte> payload = MakePayload(12, 0x59);
 
     // Both ordinals present: waitObservations is the difference.
-    REQUIRE(cache.Admit(SessionTag{21}, 1, 0, payload, 5));
+    REQUIRE(AdmitFullPayload(cache, SessionTag{21}, 1, 0, payload, 5));
     const auto timedDrain = cache.Drain(SessionTag{21}, 1, 9);
     REQUIRE(timedDrain.HasValue());
     REQUIRE(timedDrain.Value().waitObservations.has_value());
     REQUIRE(*timedDrain.Value().waitObservations == 4);
 
     // A key created without an ordinal never backfills first-seen.
-    REQUIRE(cache.Admit(SessionTag{22}, 1, 0, payload));
-    REQUIRE(cache.Admit(SessionTag{22}, 1, 1, payload, 5));
+    REQUIRE(AdmitFullPayload(cache, SessionTag{22}, 1, 0, payload));
+    REQUIRE(AdmitFullPayload(cache, SessionTag{22}, 1, 1, payload, 5));
     const auto unbackfilledDrain = cache.Drain(SessionTag{22}, 1, 9);
     REQUIRE(unbackfilledDrain.HasValue());
     REQUIRE_FALSE(
         unbackfilledDrain.Value().waitObservations.has_value());
 
     // A drain ordinal earlier than first-seen fails without wrapping.
-    REQUIRE(cache.Admit(SessionTag{23}, 1, 0, payload, 10));
+    REQUIRE(AdmitFullPayload(cache, SessionTag{23}, 1, 0, payload, 10));
     const auto wrappedDrain = cache.Drain(SessionTag{23}, 1, 7);
     REQUIRE_FALSE(wrappedDrain);
     REQUIRE(wrappedDrain.Error().code
@@ -383,9 +554,9 @@ TEST_CASE("Orphan ClearSession releases only the named session",
     const std::vector<std::byte> payloadA2 = MakePayload(14, 0x5B);
     const std::vector<std::byte> payloadB1 = MakePayload(6, 0x5C);
 
-    REQUIRE(cache.Admit(sessionA, 1, 0, payloadA1));
-    REQUIRE(cache.Admit(sessionA, 1, 1, payloadA2));
-    REQUIRE(cache.Admit(sessionB, 1, 0, payloadB1));
+    REQUIRE(AdmitFullPayload(cache, sessionA, 1, 0, payloadA1));
+    REQUIRE(AdmitFullPayload(cache, sessionA, 1, 1, payloadA2));
+    REQUIRE(AdmitFullPayload(cache, sessionB, 1, 0, payloadB1));
     REQUIRE(cache.GetCachedBlockCount() == 3);
 
     cache.ClearSession(sessionA);
@@ -398,6 +569,39 @@ TEST_CASE("Orphan ClearSession releases only the named session",
     const auto drainB = cache.Drain(sessionB, 1);
     REQUIRE(drainB.HasValue());
     REQUIRE(drainB.Value().entries.size() == 1);
+}
+
+TEST_CASE("Orphan ClearAll releases occupancy but preserves event telemetry",
+          "[pbprotocol][orphan][cleanup]")
+{
+    auto cacheResult = OrphanTransportBlockCache::Create(
+        MakeOrphanPolicy(4096, 8));
+    REQUIRE(cacheResult.HasValue());
+    OrphanTransportBlockCache& cache = cacheResult.Value();
+
+    const std::vector<std::byte> payload = MakePayload(16, 0x5D);
+    std::vector<std::byte> conflict = payload;
+    conflict[0] ^= std::byte{1};
+    REQUIRE(AdmitFullPayload(cache, SessionTag{27}, 1, 0, payload));
+    REQUIRE(AdmitFullPayload(cache, SessionTag{28}, 1, 0, payload));
+    REQUIRE_FALSE(AdmitFullPayload(
+        cache,
+        SessionTag{27},
+        1,
+        0,
+        conflict));
+    REQUIRE(cache.GetCachedBlockCount() == 2);
+    REQUIRE(cache.GetConflictedKeyCount() == 1);
+
+    cache.ClearAll();
+    REQUIRE(cache.GetCachedBlockCount() == 0);
+    REQUIRE(cache.GetCachedBytes() == 0);
+    REQUIRE(cache.GetConflictedKeyCount() == 0);
+    REQUIRE(cache.GetAdmittedBlockCount() == 2);
+    REQUIRE(cache.GetDroppedBlockCount() == 0);
+    REQUIRE(cache.GetResourceExhaustedCount() == 0);
+    REQUIRE(cache.Drain(SessionTag{27}, 1));
+    REQUIRE(AdmitFullPayload(cache, SessionTag{27}, 1, 0, payload));
 }
 
 TEST_CASE("Orphan cache creation validates policy and upstream resource",
@@ -432,17 +636,18 @@ TEST_CASE("Orphan cache allocation failure fails closed without leaking",
 
     const std::vector<std::byte> payload = MakePayload(16, 0x5D);
     const pbprotocol::ProtocolStatus failedAdmit =
-        cache.Admit(SessionTag{29}, 2, 1, payload);
+        AdmitFullPayload(cache, SessionTag{29}, 2, 1, payload);
     REQUIRE_FALSE(failedAdmit);
     REQUIRE(failedAdmit.Error().code == ProtocolErrorCode::ResourceExhausted);
     REQUIRE(cache.GetCachedBlockCount() == 0);
     REQUIRE(cache.GetCachedBytes() == 0);
     REQUIRE(cache.GetAdmittedBlockCount() == 0);
+    REQUIRE(cache.GetResourceExhaustedCount() == 1);
     REQUIRE(faultMemoryResource->OutstandingAllocations() == 0);
 
     // The failed attempt left no empty key behind, so the next Admit records
     // first-seen normally and succeeds.
-    REQUIRE(cache.Admit(SessionTag{29}, 2, 1, payload, 3));
+    REQUIRE(AdmitFullPayload(cache, SessionTag{29}, 2, 1, payload, 3));
     REQUIRE(cache.GetCachedBlockCount() == 1);
     const auto drainResult = cache.Drain(SessionTag{29}, 2, 4);
     REQUIRE(drainResult.HasValue());

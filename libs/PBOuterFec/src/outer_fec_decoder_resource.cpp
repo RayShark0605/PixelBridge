@@ -4,6 +4,7 @@
 #include "pbprotocol/descriptor_codec.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -74,7 +75,16 @@ void CountOuterFecDecoderQuotaExceeded(
 {
     if (state != nullptr)
     {
-        state->quotaExceededCount.fetch_add(1ULL, std::memory_order_relaxed);
+        std::uint64_t currentCount = state->quotaExceededCount.load(
+            std::memory_order_relaxed);
+        while (currentCount != std::numeric_limits<std::uint64_t>::max() &&
+               !state->quotaExceededCount.compare_exchange_weak(
+                   currentCount,
+                   currentCount + 1ULL,
+                   std::memory_order_relaxed,
+                   std::memory_order_relaxed))
+        {
+        }
     }
 }
 

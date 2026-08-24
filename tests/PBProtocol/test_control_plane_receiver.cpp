@@ -301,26 +301,62 @@ TEST_CASE("ControlPlaneReceiver is the authoritative typed admission boundary",
     SECTION("all three types dispatch once and expose verified state")
     {
         auto receiver = MakeReceiver(resourcePolicy);
+        const auto sessionAdmission = receiver.ReceiveControlRecord(
+            sessionRecord);
         RequireInserted(
-            receiver.ReceiveControlRecord(sessionRecord),
+            sessionAdmission,
             pbprotocol::ControlRecordType::SessionDescriptor,
             sessionTag);
+        REQUIRE_FALSE(
+            sessionAdmission.Value().boundSegmentDescriptor.has_value());
         REQUIRE(receiver.ActiveSessionCount() == 1);
         REQUIRE(receiver.ReservedDescriptorStateBytes() ==
             resourcePolicy.maxDescriptorStateBytes);
+        const auto unknownSegment = receiver.GetBoundSegmentDescriptor(
+            sessionTag,
+            0);
+        REQUIRE_FALSE(unknownSegment);
+        REQUIRE(unknownSegment.Error().code ==
+            pbprotocol::ProtocolErrorCode::UnknownSegment);
 
+        const auto segmentAdmission = receiver.ReceiveControlRecord(
+            segmentRecord);
         RequireInserted(
-            receiver.ReceiveControlRecord(segmentRecord),
+            segmentAdmission,
             pbprotocol::ControlRecordType::SegmentDescriptor,
             sessionTag);
+        REQUIRE(segmentAdmission.Value().boundSegmentDescriptor.has_value());
+        REQUIRE(segmentAdmission.Value().boundSegmentDescriptor->
+            GetDescriptor() == segmentDescriptor);
+        const auto boundDescriptorResult =
+            receiver.GetBoundSegmentDescriptor(sessionTag, 0);
+        REQUIRE(boundDescriptorResult);
+        REQUIRE(boundDescriptorResult.Value() ==
+            *segmentAdmission.Value().boundSegmentDescriptor);
+        const auto incompleteResult = receiver.IsSegmentCompleted(
+            sessionTag,
+            0);
+        REQUIRE(incompleteResult);
+        REQUIRE_FALSE(incompleteResult.Value());
+        REQUIRE(receiver.MarkSegmentCompleted(sessionTag, 0));
+        const auto completedResult = receiver.IsSegmentCompleted(
+            sessionTag,
+            0);
+        REQUIRE(completedResult);
+        REQUIRE(completedResult.Value());
+        REQUIRE(receiver.MarkSegmentCompleted(sessionTag, 0));
         const auto segmentCountResult = receiver.BoundSegmentCount(sessionTag);
         REQUIRE(segmentCountResult);
         REQUIRE(segmentCountResult.Value() == 1);
 
+        const auto manifestAdmission = receiver.ReceiveControlRecord(
+            manifestRecord);
         RequireInserted(
-            receiver.ReceiveControlRecord(manifestRecord),
+            manifestAdmission,
             pbprotocol::ControlRecordType::FinalManifest,
             sessionTag);
+        REQUIRE_FALSE(
+            manifestAdmission.Value().boundSegmentDescriptor.has_value());
         const auto manifestResult = receiver.HasFinalManifest(sessionTag);
         REQUIRE(manifestResult);
         REQUIRE(manifestResult.Value());
@@ -744,6 +780,7 @@ TEST_CASE("ControlPlaneReceiver latches typed conflicts across RecordIds",
         REQUIRE_FALSE(conflictResult);
         REQUIRE(conflictResult.Error().code ==
             pbprotocol::ProtocolErrorCode::DescriptorConflict);
+        REQUIRE(receiver.GetLastTerminalSessionTag() == sessionTag);
         const auto segmentCountResult = receiver.BoundSegmentCount(sessionTag);
         REQUIRE(segmentCountResult);
         REQUIRE(segmentCountResult.Value() == 1);
@@ -759,6 +796,13 @@ TEST_CASE("ControlPlaneReceiver latches typed conflicts across RecordIds",
         REQUIRE_FALSE(blockedResult);
         REQUIRE(blockedResult.Error().code ==
             pbprotocol::ProtocolErrorCode::DescriptorConflict);
+        REQUIRE(receiver.GetLastTerminalSessionTag() == sessionTag);
+
+        const std::array<std::byte, 1> malformedRecord{Byte(0x00)};
+        const auto malformedResult = receiver.ReceiveControlRecord(
+            malformedRecord);
+        REQUIRE_FALSE(malformedResult);
+        REQUIRE_FALSE(receiver.GetLastTerminalSessionTag().has_value());
     }
 
     SECTION("FinalManifest content conflict is terminal")
@@ -1331,6 +1375,29 @@ TEST_CASE("ControlPlaneReceiver enforces observation and resource quotas",
         REQUIRE(tinyReceiver.ActiveControlReassemblyCount() == 0);
         REQUIRE(tinyReceiver.ControlReassemblyBytesInUse() ==
             tinyBaselineBytes);
+
+        auto immediateFailureResource =
+            std::make_shared<TrackingMemoryResource>(true);
+        auto immediateFailureReceiverResult =
+            pbprotocol::ControlPlaneReceiver::CreateWithMemoryResource(
+                resourcePolicy,
+                immediateFailureResource);
+        REQUIRE(immediateFailureReceiverResult);
+        auto immediateFailureReceiver =
+            std::move(immediateFailureReceiverResult).Value();
+        const std::size_t immediateFailureBaselineBytes =
+            immediateFailureReceiver.ControlReassemblyBytesInUse();
+        const auto immediateFailureResult =
+            immediateFailureReceiver.ReceiveControlFragment(
+                firstIdFragment,
+                1);
+        REQUIRE_FALSE(immediateFailureResult);
+        REQUIRE(immediateFailureResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::ResourceExhausted);
+        REQUIRE(immediateFailureReceiver.ActiveControlReassemblyCount() == 0);
+        REQUIRE(immediateFailureReceiver.ControlReassemblyBytesInUse() ==
+            immediateFailureBaselineBytes);
+        immediateFailureResource->SetFailAllocation(false);
 
         auto failingResource = std::make_shared<TrackingMemoryResource>();
         auto failingReceiverResult =

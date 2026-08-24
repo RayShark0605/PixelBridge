@@ -18,7 +18,8 @@ set(PB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${PB_SOURCE_DIR}" PixelBridge)
 
-foreach(staticTarget IN ITEMS PBCore PBProtocol PBCompression PBOuterFec)
+foreach(staticTarget IN ITEMS
+        PBCore PBProtocol PBCompression PBOuterFec PBReceiver)
     get_target_property(targetType "${staticTarget}" TYPE)
     if(NOT targetType STREQUAL "STATIC_LIBRARY")
         message(FATAL_ERROR
@@ -72,7 +73,11 @@ target_link_libraries(PBCompressionOnlyConsumer PRIVATE PB::PBCompression)
 add_executable(PBOuterFecOnlyConsumer outer_fec_consumer.cpp)
 target_link_libraries(PBOuterFecOnlyConsumer PRIVATE PB::PBOuterFec)
 
+add_executable(PBReceiverOnlyConsumer receiver_consumer.cpp)
+target_link_libraries(PBReceiverOnlyConsumer PRIVATE PB::PBReceiver)
+
 add_test(NAME PBCoreOnlyConsumerRun COMMAND PBCoreOnlyConsumer)
 add_test(NAME PBProtocolOnlyConsumerRun COMMAND PBProtocolOnlyConsumer)
 add_test(NAME PBCompressionOnlyConsumerRun COMMAND PBCompressionOnlyConsumer)
 add_test(NAME PBOuterFecOnlyConsumerRun COMMAND PBOuterFecOnlyConsumer)
+add_test(NAME PBReceiverOnlyConsumerRun COMMAND PBReceiverOnlyConsumer)

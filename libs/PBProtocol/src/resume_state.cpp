@@ -88,6 +88,20 @@ ProtocolResult<std::vector<std::byte>> ParseResumeRecord(
             policyStatus.Error().code,
             policyStatus.Error().offset);
     }
+    const auto inputSizeResult = CheckedNarrowUnsigned<std::uint64_t>(
+        input.size());
+    if (!inputSizeResult)
+    {
+        return ResumeParseResult::Failure(
+            inputSizeResult.Error().code,
+            inputSizeResult.Error().offset);
+    }
+    if (inputSizeResult.Value() > resourcePolicy.maxResumeBytes)
+    {
+        return ResumeParseResult::Failure(
+            ProtocolErrorCode::ResourceLimitExceeded,
+            0);
+    }
 
     ByteReader reader(input);
     const auto magicResult = reader.ReadFixedBytes<4>();
@@ -102,6 +116,7 @@ ProtocolResult<std::vector<std::byte>> ParseResumeRecord(
         return ResumeParseResult::Failure(ProtocolErrorCode::InvalidMagic, 0);
     }
 
+    const std::size_t versionOffset = reader.Position();
     const auto versionResult = reader.ReadUint8();
     if (!versionResult)
     {
@@ -113,9 +128,10 @@ ProtocolResult<std::vector<std::byte>> ParseResumeRecord(
     {
         return ResumeParseResult::Failure(
             ProtocolErrorCode::InvalidEnumValue,
-            reader.Position());
+            versionOffset);
     }
 
+    const std::size_t reservedOffset = reader.Position();
     const auto reservedResult = reader.ReadUint8();
     if (!reservedResult)
     {
@@ -127,7 +143,7 @@ ProtocolResult<std::vector<std::byte>> ParseResumeRecord(
     {
         return ResumeParseResult::Failure(
             ProtocolErrorCode::NonZeroReservedByte,
-            reader.Position());
+            reservedOffset);
     }
 
     const auto payloadLengthResult = reader.ReadUint64();
@@ -179,8 +195,15 @@ ProtocolResult<std::vector<std::byte>> ParseResumeRecord(
             totalRecordSize);
     }
 
-    const std::size_t payloadLength =
-        static_cast<std::size_t>(payloadLengthResult.Value());
+    const auto payloadSizeResult = CheckedUint64ToSize(
+        payloadLengthResult.Value());
+    if (!payloadSizeResult)
+    {
+        return ResumeParseResult::Failure(
+            payloadSizeResult.Error().code,
+            payloadSizeResult.Error().offset);
+    }
+    const std::size_t payloadLength = payloadSizeResult.Value();
     const auto payloadSpanResult = reader.ReadBytes(payloadLength);
     if (!payloadSpanResult)
     {

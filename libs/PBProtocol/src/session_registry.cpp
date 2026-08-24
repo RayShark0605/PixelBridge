@@ -126,8 +126,19 @@ SessionRegistry::BindSessionDescriptor(const SessionDescriptor& descriptor)
             ProtocolErrorCode::InternalDescriptorStateError,
             kSessionIdOffset);
     }
-    if (static_cast<std::uint64_t>(sessionsById_.size()) >=
-        resourcePolicy_.maxConcurrentSessions)
+    const auto activeSessionCountResult =
+        CheckedNarrowUnsigned<std::uint64_t>(
+            sessionsById_.size(),
+            kSessionIdOffset);
+    const auto tagBindingCountResult =
+        CheckedNarrowUnsigned<std::uint64_t>(
+            bindingsByTag_.size(),
+            kSessionIdOffset);
+    if (!activeSessionCountResult || !tagBindingCountResult ||
+        activeSessionCountResult.Value() >=
+            resourcePolicy_.maxConcurrentSessions ||
+        tagBindingCountResult.Value() >=
+            resourcePolicy_.maxConcurrentSessions)
     {
         return ProtocolResult<DescriptorBindDisposition>::Failure(
             ProtocolErrorCode::ResourceLimitExceeded,
@@ -381,7 +392,13 @@ bool SessionRegistry::HasConsistentRegistryState() const noexcept
 {
     const auto activeSessionCountResult =
         CheckedNarrowUnsigned<std::uint64_t>(sessionsById_.size());
-    if (!activeSessionCountResult)
+    const auto tagBindingCountResult =
+        CheckedNarrowUnsigned<std::uint64_t>(bindingsByTag_.size());
+    if (!activeSessionCountResult || !tagBindingCountResult ||
+        activeSessionCountResult.Value() >
+            resourcePolicy_.maxConcurrentSessions ||
+        tagBindingCountResult.Value() >
+            resourcePolicy_.maxConcurrentSessions)
     {
         return false;
     }

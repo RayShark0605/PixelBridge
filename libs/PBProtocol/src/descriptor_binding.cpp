@@ -81,6 +81,12 @@ private:
 
 struct DescriptorBindingStorage
 {
+    struct BoundSegmentState
+    {
+        SegmentDescriptor descriptor;
+        bool completed = false;
+    };
+
     DescriptorBindingStorage(
         const std::size_t limitBytes,
         std::shared_ptr<std::pmr::memory_resource> upstreamMemoryResource)
@@ -97,7 +103,7 @@ struct DescriptorBindingStorage
 
     std::shared_ptr<DescriptorMemoryBudgetState> memoryBudgetState;
     std::shared_ptr<std::pmr::memory_resource> descriptorMemoryResource;
-    std::pmr::map<std::uint64_t, SegmentDescriptor> segmentsByOrdinal;
+    std::pmr::map<std::uint64_t, BoundSegmentState> segmentsByOrdinal;
     std::pmr::map<std::uint64_t, std::uint64_t> ordinalsByRawOffset;
 };
 
@@ -118,6 +124,17 @@ template <typename ValueType>
 }
 
 } // namespace
+
+BoundSegmentDescriptor::BoundSegmentDescriptor(
+    SegmentDescriptor descriptor) noexcept
+    : descriptor_(std::move(descriptor))
+{
+}
+
+const SegmentDescriptor& BoundSegmentDescriptor::GetDescriptor() const noexcept
+{
+    return descriptor_;
+}
 
 ProtocolResult<DescriptorBindingState> DescriptorBindingState::Create(
     SessionDescriptor sessionDescriptor,
@@ -292,7 +309,7 @@ DescriptorBindingState::BindSegmentDescriptor(
         descriptor.segmentOrdinal);
     if (existingOrdinal != descriptorStorage_->segmentsByOrdinal.end())
     {
-        if (existingOrdinal->second == descriptor)
+        if (existingOrdinal->second.descriptor == descriptor)
         {
             return ProtocolResult<DescriptorBindDisposition>::Success(
                 DescriptorBindDisposition::Repeated);
@@ -347,8 +364,8 @@ DescriptorBindingState::BindSegmentDescriptor(
         }
 
         const auto previousEndResult = CheckedAddUint64(
-            previousSegment->second.rawOffset,
-            previousSegment->second.rawSize,
+            previousSegment->second.descriptor.rawOffset,
+            previousSegment->second.descriptor.rawSize,
             kSegmentRawOffsetOffset);
         if (!previousEndResult)
         {
@@ -372,7 +389,9 @@ DescriptorBindingState::BindSegmentDescriptor(
         const auto ordinalInsertion =
             descriptorStorage_->segmentsByOrdinal.emplace(
                 descriptor.segmentOrdinal,
-                descriptor);
+                detail::DescriptorBindingStorage::BoundSegmentState{
+                    descriptor,
+                    false});
         if (!ordinalInsertion.second)
         {
             const ProtocolStatus invariantStatus = LatchTerminalError(
@@ -492,10 +511,10 @@ ProtocolStatus DescriptorBindingState::ValidateCompleteSegmentMap()
     }
 
     std::uint64_t expectedOrdinal = 0;
-    for (const auto& [segmentOrdinal, descriptor] :
+    for (const auto& [segmentOrdinal, segmentState] :
          descriptorStorage_->segmentsByOrdinal)
     {
-        static_cast<void>(descriptor);
+        static_cast<void>(segmentState);
         if (segmentOrdinal != expectedOrdinal)
         {
             return LatchTerminalError(
@@ -533,7 +552,7 @@ ProtocolStatus DescriptorBindingState::ValidateCompleteSegmentMap()
 
         const auto rawEndResult = CheckedAddUint64(
             rawOffset,
-            segment->second.rawSize,
+            segment->second.descriptor.rawSize,
             kSegmentRawOffsetOffset);
         if (!rawEndResult)
         {
@@ -557,6 +576,89 @@ ProtocolStatus DescriptorBindingState::ValidateCompleteSegmentMap()
 const SessionDescriptor& DescriptorBindingState::GetSessionDescriptor() const noexcept
 {
     return sessionDescriptor_;
+}
+
+ProtocolResult<BoundSegmentDescriptor>
+DescriptorBindingState::GetBoundSegmentDescriptor(
+    const std::uint64_t segmentOrdinal) const
+{
+    const ProtocolStatus terminalStatus = CheckTerminalState();
+    if (!terminalStatus)
+    {
+        return FailureFrom<BoundSegmentDescriptor>(terminalStatus.Error());
+    }
+    if (segmentOrdinal >= sessionDescriptor_.segmentCount)
+    {
+        return ProtocolResult<BoundSegmentDescriptor>::Failure(
+            ProtocolErrorCode::SegmentOrdinalOutOfRange,
+            kSegmentOrdinalOffset);
+    }
+
+    const auto iterator = descriptorStorage_->segmentsByOrdinal.find(
+        segmentOrdinal);
+    if (iterator == descriptorStorage_->segmentsByOrdinal.end())
+    {
+        return ProtocolResult<BoundSegmentDescriptor>::Failure(
+            ProtocolErrorCode::UnknownSegment,
+            kSegmentOrdinalOffset);
+    }
+
+    return ProtocolResult<BoundSegmentDescriptor>::Success(
+        BoundSegmentDescriptor(iterator->second.descriptor));
+}
+
+ProtocolResult<bool> DescriptorBindingState::IsSegmentCompleted(
+    const std::uint64_t segmentOrdinal) const
+{
+    const ProtocolStatus terminalStatus = CheckTerminalState();
+    if (!terminalStatus)
+    {
+        return FailureFrom<bool>(terminalStatus.Error());
+    }
+    if (segmentOrdinal >= sessionDescriptor_.segmentCount)
+    {
+        return ProtocolResult<bool>::Failure(
+            ProtocolErrorCode::SegmentOrdinalOutOfRange,
+            kSegmentOrdinalOffset);
+    }
+
+    const auto iterator = descriptorStorage_->segmentsByOrdinal.find(
+        segmentOrdinal);
+    if (iterator == descriptorStorage_->segmentsByOrdinal.end())
+    {
+        return ProtocolResult<bool>::Failure(
+            ProtocolErrorCode::UnknownSegment,
+            kSegmentOrdinalOffset);
+    }
+    return ProtocolResult<bool>::Success(iterator->second.completed);
+}
+
+ProtocolStatus DescriptorBindingState::MarkSegmentCompleted(
+    const std::uint64_t segmentOrdinal)
+{
+    const ProtocolStatus terminalStatus = CheckTerminalState();
+    if (!terminalStatus)
+    {
+        return terminalStatus;
+    }
+    if (segmentOrdinal >= sessionDescriptor_.segmentCount)
+    {
+        return ProtocolStatus::Failure(
+            ProtocolErrorCode::SegmentOrdinalOutOfRange,
+            kSegmentOrdinalOffset);
+    }
+
+    const auto iterator = descriptorStorage_->segmentsByOrdinal.find(
+        segmentOrdinal);
+    if (iterator == descriptorStorage_->segmentsByOrdinal.end())
+    {
+        return ProtocolStatus::Failure(
+            ProtocolErrorCode::UnknownSegment,
+            kSegmentOrdinalOffset);
+    }
+
+    iterator->second.completed = true;
+    return ProtocolStatus::Success();
 }
 
 std::size_t DescriptorBindingState::BoundSegmentCount() const noexcept

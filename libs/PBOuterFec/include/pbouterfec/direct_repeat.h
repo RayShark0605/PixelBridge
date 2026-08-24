@@ -2,6 +2,7 @@
 
 #include "pbouterfec/outer_fec_decoder_resource.h"
 #include "pbouterfec/outer_fec_result.h"
+#include "pbprotocol/descriptor_binding.h"
 #include "pbprotocol/protocol_types.h"
 
 #include <cstddef>
@@ -16,6 +17,11 @@ namespace pbouterfec
 namespace detail
 {
 struct DirectRepeatDecoderImplementation;
+}
+
+namespace test
+{
+class DecoderTestAccess;
 }
 
 // Phase-0's conservative default keeps K=2 on the DirectRepeat path without
@@ -94,7 +100,7 @@ public:
     ~DirectRepeatDecoder();
 
     [[nodiscard]] static OuterFecResult<DirectRepeatDecoder> Create(
-        const pbprotocol::SegmentDescriptor& segmentDescriptor,
+        const pbprotocol::BoundSegmentDescriptor& boundSegmentDescriptor,
         std::uint32_t expectedOuterBlockBytes,
         const OuterFecDecoderResourceManager& resourceManager);
 
@@ -107,7 +113,15 @@ public:
         std::span<std::byte> output);
 
 private:
+    friend class test::DecoderTestAccess;
+
     DirectRepeatDecoder() noexcept = default;
+
+    [[nodiscard]] static OuterFecResult<DirectRepeatDecoder>
+    CreateFromDescriptor(
+        const pbprotocol::SegmentDescriptor& segmentDescriptor,
+        std::uint32_t expectedOuterBlockBytes,
+        const OuterFecDecoderResourceManager& resourceManager);
 
     std::unique_ptr<detail::DirectRepeatDecoderImplementation> implementation_;
 };

@@ -21,6 +21,16 @@ Session admission/routing, Segment Map insertion, overlap/conflict paths, and
 receiver resource limits. Each input creates only a fixed number of bounded
 states and at most 16 generated bind operations.
 
+`PBProtocolOrphanResourceFuzz` exercises resume envelopes, output-reservation
+boundaries, and the orphan cache as a state machine rather than merely checking
+for crashes. A bounded reference model verifies every Admit/Drain/Clear result,
+occupancy, idempotent duplicate, terminal conflict, and quota counter after each
+operation. Its startup self-test fixes the full-cache duplicate/conflict and
+same-padded-bytes/different-declared-length counterexamples. A valid resume
+record is mutated only in its stored CRC, and the driver requires the result to
+reach `CrcMismatch` while magic/version/length remain valid. Factory failure or
+any semantic divergence aborts the process.
+
 The fuzzer and the benchmark targets are mutually exclusive in one build tree:
 the fuzz build instruments `PBProtocol` with AddressSanitizer, which breaks a
 non-instrumented benchmark link. CMake rejects configuring both at once; use
@@ -39,6 +49,8 @@ cmake --build build-fuzz-msvc --config RelWithDebInfo --target PBProtocolDescrip
 cmake --build build-fuzz-msvc --config RelWithDebInfo --target PBProtocolBootstrapControlFuzz PBProtocolBootstrapControlStructuredSelfTest --parallel
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe 100000 5783258900934164481
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlStructuredSelfTest.exe --self-test
+cmake --build build-fuzz-msvc --config RelWithDebInfo --target PBProtocolOrphanResourceFuzz --parallel
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolOrphanResourceFuzz.exe 100000 7263948150273648113
 ```
 
 The two arguments are deterministic iteration count and PRNG seed. The final
@@ -73,6 +85,12 @@ regression payload; it freezes the envelope only, not the incomplete descriptor
 schema. The three Fragment Golden files use payload sizes `24/24/19` and CRCs
 `0x9DCD5402`, `0xF3FF94D8`, and `0x40106F66`.
 
+`fuzz/corpus/orphan-resource` contains deterministic semantic sequences for
+valid admission/drain, count-full and byte-full identical/conflicting
+duplicates, equal padded bytes with different declared lengths, non-canonical
+padding, an oversized orphan region, valid/corrupt resume records, and an exact
+1,024-byte resume-policy boundary record.
+
 Replay each seed through the bounded MSVC runner for a crash/sanitizer check:
 
 ```powershell
@@ -86,16 +104,22 @@ Get-ChildItem .\fuzz\corpus\bootstrap-control\*.bin | ForEach-Object {
   & $bootstrapControlRunner --input $_.FullName
   if ($LASTEXITCODE -ne 0) { throw "corpus replay failed: $($_.Name)" }
 }
+$orphanRunner = '.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolOrphanResourceFuzz.exe'
+Get-ChildItem .\fuzz\corpus\orphan-resource\*.bin | ForEach-Object {
+  & $orphanRunner --input $_.FullName
+  if ($LASTEXITCODE -ne 0) { throw "orphan semantic replay failed: $($_.Name)" }
+}
 ```
 
-Each successful replay reports `CORPUS_REPLAY_NO_CRASH`. Replay alone deliberately
-does not claim that a valid seed was accepted or that a malformed seed produced
-the expected error. `PBProtocolTests` independently asserts exact parsed fields,
-post-CRC semantic errors, byte-for-byte reserialization, and boundary results;
-the structured self-test asserts the state-machine outcomes. The dedicated
-structured self-test executable is built from the same driver source and is
-registered on every compiler backend. CTest also registers one no-crash replay
-per corpus file on non-Clang fuzz builds.
+The descriptor and Bootstrap/Control drivers report
+`CORPUS_REPLAY_NO_CRASH`; replay alone does not claim a specific semantic
+outcome for those drivers. The orphan driver reports
+`CORPUS_REPLAY_VALIDATED` only after its reference-model and boundary assertions
+pass. `PBProtocolTests` independently asserts exact parsed fields, post-CRC
+semantic errors, byte-for-byte reserialization, and boundary results. The
+dedicated Bootstrap/Control structured self-test executable is built from the
+same driver source and is registered on every compiler backend. CTest also
+registers every pinned corpus file on non-Clang fuzz builds.
 
 ## Clang/libFuzzer + ASan/UBSan
 
@@ -114,6 +138,12 @@ When CMake identifies Clang, the same target uses `LLVMFuzzerTestOneInput` with
   -max_total_time=300 `
   -rss_limit_mb=1024 `
   -artifact_prefix=.\build-fuzz-clang\bootstrap-control-artifacts\
+
+.\build-fuzz-clang\fuzz\PBProtocolOrphanResourceFuzz.exe `
+  .\fuzz\corpus\orphan-resource `
+  -max_total_time=300 `
+  -rss_limit_mb=1024 `
+  -artifact_prefix=.\build-fuzz-clang\orphan-resource-artifacts\
 ```
 
 Compiler/sanitizer availability is part of the evidence. A deterministic MSVC

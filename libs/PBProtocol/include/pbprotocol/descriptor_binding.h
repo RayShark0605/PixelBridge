@@ -10,16 +10,49 @@
 
 namespace pbprotocol {
 
+class ControlPlaneReceiver;
+
 namespace detail {
 
 struct DescriptorBindingStorage;
 
 } // namespace detail
 
+namespace test {
+
+class DescriptorBindingStateTestAccess;
+
+} // namespace test
+
 enum class DescriptorBindDisposition : std::uint8_t
 {
     Inserted,
     Repeated
+};
+
+// Immutable proof that a SegmentDescriptor was admitted into the unique
+// SessionTag binding owned by ControlPlaneReceiver. The descriptor is held by
+// value so session removal cannot leave a dangling reference. This is a local
+// capability and is never serialized.
+class BoundSegmentDescriptor
+{
+public:
+    BoundSegmentDescriptor(const BoundSegmentDescriptor&) = default;
+    BoundSegmentDescriptor& operator=(const BoundSegmentDescriptor&) = default;
+    BoundSegmentDescriptor(BoundSegmentDescriptor&&) noexcept = default;
+    BoundSegmentDescriptor& operator=(BoundSegmentDescriptor&&) noexcept =
+        default;
+
+    [[nodiscard]] const SegmentDescriptor& GetDescriptor() const noexcept;
+
+    bool operator==(const BoundSegmentDescriptor&) const = default;
+
+private:
+    friend class DescriptorBindingState;
+
+    explicit BoundSegmentDescriptor(SegmentDescriptor descriptor) noexcept;
+
+    SegmentDescriptor descriptor_;
 };
 
 // DescriptorBindingState has one owning thread. Callers must synchronize any
@@ -64,6 +97,9 @@ public:
     [[nodiscard]] ProtocolErrorCode TerminalError() const noexcept;
 
 private:
+    friend class ControlPlaneReceiver;
+    friend class test::DescriptorBindingStateTestAccess;
+
     DescriptorBindingState(
         SessionDescriptor sessionDescriptor,
         ReceiverResourcePolicy resourcePolicy,
@@ -71,6 +107,12 @@ private:
         std::unique_ptr<detail::DescriptorBindingStorage> descriptorStorage) noexcept;
 
     [[nodiscard]] ProtocolStatus CheckTerminalState() const noexcept;
+    [[nodiscard]] ProtocolResult<BoundSegmentDescriptor>
+    GetBoundSegmentDescriptor(std::uint64_t segmentOrdinal) const;
+    [[nodiscard]] ProtocolResult<bool> IsSegmentCompleted(
+        std::uint64_t segmentOrdinal) const;
+    [[nodiscard]] ProtocolStatus MarkSegmentCompleted(
+        std::uint64_t segmentOrdinal);
     [[nodiscard]] ProtocolStatus LatchTerminalError(
         ProtocolErrorCode errorCode,
         std::size_t errorOffset) noexcept;

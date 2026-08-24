@@ -110,7 +110,7 @@ baseline, not a certified performance profile. Its current budgets are:
 | encoded bytes per Segment | 32 MiB |
 | outer block bytes | 65,535 |
 | dynamic descriptor state per Session | 64 MiB |
-| concurrent Sessions | 4 |
+| active Sessions plus ambiguous SessionTag tombstones | 4 |
 | aggregate reserved descriptor state | 256 MiB |
 | DirectRepeat blocks per Segment | 64 |
 | active Outer FEC decoders | 4 |
@@ -121,12 +121,19 @@ baseline, not a certified performance profile. Its current budgets are:
 | aggregate Control reassembly PMR storage | 1 MiB |
 | fragments per Control record | 4,096 |
 | Control reassembly inactivity observations | 16,384 |
+| orphan Transport payload bytes | 4 MiB |
+| orphan Transport blocks | 64 |
+| zstd decoder window bytes | 8 MiB |
+| resume-state record bytes | 256 MiB |
+| output preallocation without confirmation | 4 GiB |
 
 The descriptor state uses a policy-bounded memory resource for both Segment
-maps. A per-Session budget refusal returns terminal
-`ResourceLimitExceeded`. An upstream allocator failure returns terminal
-`ResourceExhausted`; the owner must destroy that Session before attempting a
-new admission. Session-registry admission failures occur before a Session is
+indexes. Each completion bit is stored in its already-admitted ordinal-map
+node, so marking a recovered Segment complete performs no late allocation. A
+per-Session budget refusal returns terminal `ResourceLimitExceeded`. An
+upstream allocator failure returns terminal `ResourceExhausted`; the owner must
+destroy that Session before attempting a new admission. Session-registry
+admission failures occur before a Session is
 published and may be retried after capacity is released.
 
 Control reassembly policy refusal returns `ControlReassemblyQuotaExceeded`;
@@ -158,6 +165,46 @@ object remains stable. Receiver shutdown must stop new admission before moving
 or destroying the manager; already-created decoders retain the shared state and
 may release their reservations concurrently during worker teardown.
 
+The Qt-free `pbreceiver::ReceiverIngress` is the authoritative logical Data
+admission owner for the current implementation slice. It permanently owns one
+validated policy, one profile-derived `expectedOuterBlockBytes`, one Control
+receiver, one orphan cache, one Outer FEC manager, and one bounded active-decoder
+table. `ReceivedTransportBlock` is an in-memory value after upstream
+frame/Inner-FEC/Transport-CRC validation; it deliberately does not freeze the
+still-provisional Transport wire header.
+
+An unknown `(SessionTag, SegmentOrdinal)` block is structurally checked and can
+only enter the orphan cache or return an explicit rejection. Cache identity is
+`OuterBlockId + declared PayloadBytes + the complete fixed padded region`.
+Canonical padding is checked before storage. Existing duplicate/conflict
+recognition runs before new-block quota checks, so a full cache cannot hide a
+valid conflict. Equal duplicates are idempotent and do not change occupancy or
+event counters; different valid claims latch terminal
+`OrphanPayloadConflict`. The cache stores declared length so DirectRepeat short
+tails and Wirehair systematic short tails can be replayed without sender-side
+metadata. It never creates a decoder, segment-sized buffer, decompressor, output
+reservation, or file.
+
+Once Control admission returns a by-value `BoundSegmentDescriptor` capability,
+`ReceiverIngress` lazily creates at most one decoder for the Segment using its
+single manager. If a bound Segment has orphans, decoder reservation/create must
+succeed before Drain. A quota failure therefore preserves the bounded orphan
+set for a later Carousel retry. Replay validates descriptor/profile length and
+padding and never switches FEC mode after a failure. Session removal and
+capture-epoch reset release active decoders first, clear orphan state, and then
+remove/rebuild Control state. Cross-thread callers must externally serialize
+the façade; decoder reservation destruction remains RAII-safe through shared
+manager state.
+
+`ReceiverResourceTelemetrySnapshot` preserves each explicit error status and
+reports cumulative saturating counters for total resource-policy rejections,
+Control, Outer FEC quota, orphan admit/drop/allocation/conflict, resume quota,
+zstd input/output/window/allocation, and output-reservation
+denied/confirmation/automatic decisions, plus current occupancy. A receive
+operation is counted once by the façade; component counters remain available
+for diagnostics. Capture-epoch reset clears occupancy but does not make
+cumulative counters decrease.
+
 DirectRepeat uses `DirectBlockCount = ceil(EncodedSize / OuterBlockBytes)` and
 the `OuterBlockId` as its ordinal. A short final block carries its true
 `PayloadBytes`; the rest of the fixed payload region must be canonical zero
@@ -175,6 +222,12 @@ threshold must be coordinated with the profile's receiver work quota. The mode
 is chosen before the descriptor is frozen and is never changed as a
 codec-creation fallback. `K>64000` requires Segment splitting or a different
 valid block size.
+
+Wirehair backend readiness and recovery success are not sufficient integrity
+claims. `WirehairV2Decoder::Recover` verifies the exact recovered bytes against
+the bound BLAKE3 `EncodedDigest` and latches a mismatch terminally. The Receiver
+façade also verifies the encoded digest before decompression and the `RawDigest`
+before returning raw bytes.
 
 The provisional Transport `PayloadBytes` field is `uint16`, so structural
 validation, sender codec creation, and receiver policy all enforce
@@ -207,10 +260,13 @@ ceil(OriginalFileSize / maxRawSegmentBytes) > SegmentCount
 an exact repeated `SessionDescriptor`, but when a second different SessionId
 derives the same active tag it removes the previous candidate, marks the tag
 ambiguous, and rejects both candidates from the hot path for the lifetime of
-that registry. Tests inject a deterministic colliding tag derivation; they do
-not attempt a birthday search against BLAKE3. The injection entry is a private,
-friend-only test seam; production registry creation always uses
-`DeriveSessionTag()`.
+that registry. Active bindings and ambiguous tombstones consume the same
+`maxConcurrentSessions` routing-entry quota; once tombstones fill it, new
+distinct Sessions fail with `ResourceLimitExceeded` rather than growing an
+unbounded collision-history map. Tests inject a deterministic colliding tag
+derivation; they do not attempt a birthday search against BLAKE3. The injection
+entry is a private, friend-only test seam; production registry creation always
+uses `DeriveSessionTag()`.
 
 The tag is routing metadata, not sender authentication.
 
@@ -249,8 +305,10 @@ then perform the same-volume atomic rename.
 
 This status decision closes the ambiguity around the current descriptor bytes
 and marks the logical Bootstrap/Control byte protocol, bounded Control
-fragmentation, and authoritative admission boundary GO. It does not declare the
-overall Phase-0 architecture Gate complete. Formal profile binding,
-Control/Bootstrap visual FEC and raster mapping, physical repetition cadence,
-complete file recovery, the remaining Golden Vectors, and later CPU/GPU backend
-consistency gates remain separate work.
+fragmentation, and resource-safe logical Receiver ingress GO. It does not
+declare the overall Phase-0 architecture Gate complete. The formal Transport
+wire parser, formal profile binding, Control/Bootstrap visual FEC and raster
+mapping, physical repetition cadence, PBStorage free-space/reservation and
+`.part` publication, the complete Decoder application/capture chain, complete
+file recovery, remaining Golden Vectors, and later CPU/GPU backend consistency
+gates remain separate work.

@@ -2,6 +2,7 @@
 
 #include "pbouterfec/outer_fec_decoder_resource.h"
 #include "pbouterfec/outer_fec_result.h"
+#include "pbprotocol/descriptor_binding.h"
 #include "pbprotocol/protocol_types.h"
 
 #include <cstddef>
@@ -23,6 +24,10 @@ inline constexpr std::uint32_t kWirehairV2MaximumBlockCount = 64000;
 
 namespace detail {
 struct WirehairV2DecoderImplementation;
+}
+
+namespace test {
+class DecoderTestAccess;
 }
 
 // Source-compatible name retained for the first Wirehair wrapper callers.
@@ -83,9 +88,9 @@ private:
 // Owns one bounded Wirehair V2 decoder. Create() revalidates canonical profile
 // binding and performs receiver-wide admission through the required shared
 // resource manager before allocating wrapper state or a third-party codec.
-// Recovered bytes are unauthenticated until higher layers verify all required
-// Segment/decompression/final-file digests. A single instance must not be
-// called concurrently.
+// Recover() verifies encoded integrity, but an in-band digest does not
+// authenticate the sender or replace higher-layer raw/final-file verification.
+// A single instance must not be called concurrently.
 class WirehairV2Decoder
 {
 public:
@@ -96,19 +101,30 @@ public:
     ~WirehairV2Decoder();
 
     [[nodiscard]] static OuterFecResult<WirehairV2Decoder> Create(
-        const pbprotocol::SegmentDescriptor& segmentDescriptor,
+        const pbprotocol::BoundSegmentDescriptor& boundSegmentDescriptor,
+        std::uint32_t expectedOuterBlockBytes,
         const OuterFecDecoderResourceManager& resourceManager);
 
     [[nodiscard]] OuterFecResult<DecodeDisposition> DecodeBlock(
         std::uint32_t outerBlockId,
         std::span<const std::byte> payload);
 
+    // Recovery is not successful until the exact recovered bytes match the
+    // EncodedDigest carried by the bound descriptor. A mismatch latches the
+    // decoder terminally; third-party codec success alone is insufficient.
     [[nodiscard]] OuterFecResult<std::uint64_t> Recover(
         std::span<std::byte> output);
 
 private:
+    friend class test::DecoderTestAccess;
+
     WirehairV2Decoder() noexcept = default;
     void Release() noexcept;
+
+    [[nodiscard]] static OuterFecResult<WirehairV2Decoder>
+    CreateFromDescriptor(
+        const pbprotocol::SegmentDescriptor& segmentDescriptor,
+        const OuterFecDecoderResourceManager& resourceManager);
 
     std::unique_ptr<detail::WirehairV2DecoderImplementation> implementation_;
 };

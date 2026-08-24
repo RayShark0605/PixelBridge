@@ -21,3 +21,11 @@ target_link_libraries(PBOuterFecDirectRepeatBenchmark
     PRIVATE
         PB::CompilerSettings
         PB::PBOuterFec)
+
+target_include_directories(PBOuterFecWirehairV2Benchmark
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")
+
+target_include_directories(PBOuterFecDirectRepeatBenchmark
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")

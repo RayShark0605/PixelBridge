@@ -22,6 +22,8 @@ class SessionRegistryTestAccess;
 // no SegmentDescriptor may reach a DescriptorBindingState until its SessionTag
 // has a unique active SessionId binding. Ambiguous tags remain quarantined for
 // the lifetime of the registry rather than being guessed or latest-wins.
+// Active bindings and ambiguous tombstones share the finite
+// maxConcurrentSessions routing-entry budget.
 class SessionRegistry
 {
 public:

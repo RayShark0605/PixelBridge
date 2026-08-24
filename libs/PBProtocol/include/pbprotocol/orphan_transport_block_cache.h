@@ -19,13 +19,15 @@ struct OrphanTransportBlockCacheImplementation;
 
 } // namespace detail
 
-// One cached transport block. payloadBytes is the fixed OuterBlockBytes
-// region exactly as validated upstream (real payload plus canonical zero
-// padding); it is never reinterpreted before its SegmentDescriptor binds.
+// One cached logical transport block. declaredPayloadBytes is the provisional
+// Transport PayloadBytes field. paddedPayload is the fixed payload region
+// (real payload plus canonical zero padding). Both values must survive orphan
+// caching so descriptor-bound replay can validate the exact transport claim.
 struct OrphanTransportBlockEntry
 {
     std::uint32_t outerBlockId = 0;
-    std::vector<std::byte> payloadBytes{};
+    std::uint16_t declaredPayloadBytes = 0;
+    std::vector<std::byte> paddedPayload{};
 
     bool operator==(const OrphanTransportBlockEntry&) const = default;
 };
@@ -59,8 +61,9 @@ struct OrphanTransportBlockDrain
 //     always fail with OrphanPayloadConflict until ClearSession. Latest-wins
 //     is forbidden by protocol invariant.
 // Single owner thread; move-only. Telemetry counters are per-component state,
-// not global counters: admitted/dropped/conflicted counts are cumulative
-// events, cached block/byte counts are current occupancy.
+// not global counters: admitted/dropped/resource-exhausted counts are
+// cumulative events, while conflicted keys and cached block/byte counts are
+// current occupancy.
 class OrphanTransportBlockCache
 {
 public:
@@ -83,19 +86,22 @@ public:
     OrphanTransportBlockCache(OrphanTransportBlockCache&&) noexcept;
     OrphanTransportBlockCache& operator=(OrphanTransportBlockCache&&) noexcept;
 
-    // Admits one orphan block. Empty payloads fail with InvalidRecordSize and
-    // payloads above maxOuterBlockBytes fail with ResourceLimitExceeded. When
-    // the byte or block quota is exceeded only this incoming block is dropped
-    // (ResourceLimitExceeded, dropped counter incremented). A repeated
-    // (key, outerBlockId) with identical payload is an idempotent no-op; with
-    // different payload it latches a terminal conflict. observationOrdinal is
-    // the caller's monotonic sequence number recorded as first-seen when the
-    // key does not exist yet.
+    // Admits one orphan block. declaredPayloadBytes must be non-zero, no larger
+    // than paddedPayload, and every byte after it must be canonical zero
+    // padding. Empty/structurally invalid payloads fail closed. Regions above
+    // maxOuterBlockBytes or byte/block quota are dropped with
+    // ResourceLimitExceeded. A repeated (key, outerBlockId) is idempotent only
+    // when both the declared length and padded region are identical; otherwise
+    // it latches a terminal conflict. Existing duplicate/conflict recognition
+    // runs before quota checks so a full cache cannot hide a protocol conflict.
+    // observationOrdinal is the caller's monotonic sequence number recorded as
+    // first-seen when the key does not exist yet.
     [[nodiscard]] ProtocolStatus Admit(
         SessionTag sessionTag,
         std::uint64_t segmentOrdinal,
         std::uint32_t outerBlockId,
-        std::span<const std::byte> payloadBytes,
+        std::uint16_t declaredPayloadBytes,
+        std::span<const std::byte> paddedPayload,
         std::optional<std::uint64_t> observationOrdinal = std::nullopt);
 
     // Returns all cached entries of one key in arrival order and clears the
@@ -116,9 +122,18 @@ public:
     // current occupancy counters are adjusted.
     void ClearSession(SessionTag sessionTag) noexcept;
 
+    // Releases every cached/conflicted key while preserving cumulative event
+    // counters. Receiver-wide collision/shutdown cleanup uses this when the
+    // offending SessionTag cannot be recovered from a fragmented record.
+    void ClearAll() noexcept;
+
     [[nodiscard]] std::uint64_t GetAdmittedBlockCount() const noexcept;
     [[nodiscard]] std::uint64_t GetDroppedBlockCount() const noexcept;
+    [[nodiscard]] std::uint64_t GetResourceExhaustedCount() const noexcept;
     [[nodiscard]] std::uint64_t GetConflictedKeyCount() const noexcept;
+    [[nodiscard]] bool HasCachedKey(
+        SessionTag sessionTag,
+        std::uint64_t segmentOrdinal) const noexcept;
     // Current occupancy. Values never exceed the validated policy limits, so
     // they are always representable as size_t on this platform.
     [[nodiscard]] std::size_t GetCachedBlockCount() const noexcept;

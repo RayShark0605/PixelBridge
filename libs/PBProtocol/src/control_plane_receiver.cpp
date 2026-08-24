@@ -1,11 +1,14 @@
 #include "pbprotocol/control_plane_receiver.h"
 
+#include "pmr_byte_buffer.h"
+
 #include "pbprotocol/checked_integer.h"
 #include "pbprotocol/descriptor_codec.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <map>
 #include <memory>
@@ -15,7 +18,6 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
-#include <vector>
 
 namespace pbprotocol {
 
@@ -107,7 +109,7 @@ struct ControlFragmentSlot
     ControlFragmentSlot(ControlFragmentSlot&&) noexcept = default;
     ControlFragmentSlot& operator=(ControlFragmentSlot&&) noexcept = default;
 
-    std::pmr::vector<std::byte> bytes;
+    PmrByteBuffer bytes;
 };
 
 struct ControlReassemblyRecord
@@ -180,7 +182,7 @@ struct ControlReassemblyStorage
 
     std::shared_ptr<ControlReassemblyMemoryBudgetState> memoryBudgetState;
     std::shared_ptr<std::pmr::memory_resource> memoryResource;
-    std::optional<std::pmr::vector<ControlReassemblyEntry>> records;
+    std::optional<std::pmr::deque<ControlReassemblyEntry>> records;
 };
 
 struct ControlPlaneReceiverImplementation
@@ -204,6 +206,7 @@ struct ControlPlaneReceiverImplementation
     std::uint64_t currentObservationOrdinal = 0;
     bool hasObservationOrdinal = false;
     bool lastAdmissionFailureRetryable = false;
+    std::optional<SessionTag> lastTerminalSessionTag;
     // Cumulative resource-policy rejection telemetry (see the public getter).
     std::uint64_t rejectedByResourcePolicyCount = 0;
 };
@@ -440,11 +443,13 @@ ProtocolResult<ControlRecordAdmission> ControlPlaneReceiver::ReceiveControlRecor
             0);
     }
 
+    implementation_->lastTerminalSessionTag.reset();
     auto admissionResult = ParseValidateAndBind(recordBytes);
     if (!admissionResult &&
         IsResourcePolicyRejection(admissionResult.Error().code))
     {
-        implementation_->rejectedByResourcePolicyCount++;
+        SaturatingIncrementUnsigned(
+            implementation_->rejectedByResourcePolicyCount);
     }
     return std::move(admissionResult);
 }
@@ -454,6 +459,10 @@ ControlPlaneReceiver::ReceiveControlFragment(
     const std::span<const std::byte> fragmentBytes,
     const std::uint64_t observationOrdinal)
 {
+    if (implementation_)
+    {
+        implementation_->lastTerminalSessionTag.reset();
+    }
     auto receiveResult = ReceiveControlFragmentCore(
         fragmentBytes,
         observationOrdinal);
@@ -462,7 +471,8 @@ ControlPlaneReceiver::ReceiveControlFragment(
     {
         // Counted here (not inside AttemptAdmission) so the fragment path and
         // the record path each count exactly once per receive operation.
-        implementation_->rejectedByResourcePolicyCount++;
+        SaturatingIncrementUnsigned(
+            implementation_->rejectedByResourcePolicyCount);
     }
     return std::move(receiveResult);
 }
@@ -597,10 +607,10 @@ ControlPlaneReceiver::ReceiveControlFragmentCore(
         {
             const detail::ControlFragmentSlot& fragmentSlot =
                 fragmentIterator->second;
-            if (fragmentSlot.bytes.size() != fragment.payload.size() ||
+            if (fragmentSlot.bytes.Size() != fragment.payload.size() ||
                 !std::equal(
-                    fragmentSlot.bytes.begin(),
-                    fragmentSlot.bytes.end(),
+                    fragmentSlot.bytes.Bytes().begin(),
+                    fragmentSlot.bytes.Bytes().end(),
                     fragment.payload.begin()))
             {
                 MarkConflict(record);
@@ -667,9 +677,7 @@ ControlPlaneReceiver::ReceiveControlFragmentCore(
         {
             detail::ControlFragmentSlot fragmentSlot(
                 implementation_->reassemblyStorage.memoryResource.get());
-            fragmentSlot.bytes.assign(
-                fragment.payload.begin(),
-                fragment.payload.end());
+            fragmentSlot.bytes.Assign(fragment.payload);
             const auto fragmentInsertion = record.fragmentsByIndex->emplace(
                 fragment.fragmentIndex,
                 std::move(fragmentSlot));
@@ -760,25 +768,40 @@ ControlPlaneReceiver::AttemptAdmission(
                 kFragmentCountOffset);
         }
 
-        std::pmr::vector<std::byte> recordBytes(
+        detail::PmrByteBuffer recordBytes(
             implementation.reassemblyStorage.memoryResource.get());
-        recordBytes.reserve(record.totalRecordBytes);
+        recordBytes.ResizeZeroed(record.totalRecordBytes);
+        std::span<std::byte> mutableRecordBytes = recordBytes.MutableBytes();
+        std::size_t writeOffset = 0;
         std::size_t expectedFragmentIndex = 0;
         for (const auto& [fragmentIndex, fragment] : *record.fragmentsByIndex)
         {
             if (static_cast<std::size_t>(fragmentIndex) !=
                     expectedFragmentIndex ||
-                fragment.bytes.empty())
+                fragment.bytes.Size() == 0)
             {
                 MarkConflict(record);
                 return ProtocolResult<ControlFragmentReceiveResult>::Failure(
                     ProtocolErrorCode::InternalInvariantViolation,
                     kFragmentIndexOffset);
             }
-            recordBytes.insert(
-                recordBytes.end(),
-                fragment.bytes.begin(),
-                fragment.bytes.end());
+            const auto nextWriteOffsetResult = CheckedAddSize(
+                writeOffset,
+                fragment.bytes.Size(),
+                kFragmentTotalRecordBytesOffset);
+            if (!nextWriteOffsetResult ||
+                nextWriteOffsetResult.Value() > mutableRecordBytes.size())
+            {
+                MarkConflict(record);
+                return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                    ProtocolErrorCode::InternalInvariantViolation,
+                    kFragmentTotalRecordBytesOffset);
+            }
+            std::copy(
+                fragment.bytes.Bytes().begin(),
+                fragment.bytes.Bytes().end(),
+                mutableRecordBytes.begin() + writeOffset);
+            writeOffset = nextWriteOffsetResult.Value();
             expectedFragmentIndex++;
         }
         if (expectedFragmentIndex !=
@@ -789,7 +812,7 @@ ControlPlaneReceiver::AttemptAdmission(
                 ProtocolErrorCode::InternalInvariantViolation,
                 kFragmentIndexOffset);
         }
-        if (recordBytes.size() != record.totalRecordBytes)
+        if (writeOffset != recordBytes.Size())
         {
             MarkConflict(record);
             return ProtocolResult<ControlFragmentReceiveResult>::Failure(
@@ -797,7 +820,8 @@ ControlPlaneReceiver::AttemptAdmission(
                 kFragmentTotalRecordBytesOffset);
         }
 
-        auto admissionResult = receiver.ParseValidateAndBind(recordBytes);
+        auto admissionResult = receiver.ParseValidateAndBind(
+            recordBytes.Bytes());
         if (!admissionResult)
         {
             if (!implementation.lastAdmissionFailureRetryable)
@@ -901,11 +925,39 @@ std::uint64_t ControlPlaneReceiver::GetRejectedByResourcePolicyCount() const noe
         : 0;
 }
 
+std::optional<SessionTag>
+ControlPlaneReceiver::GetLastTerminalSessionTag() const noexcept
+{
+    return implementation_
+        ? implementation_->lastTerminalSessionTag
+        : std::nullopt;
+}
+
 bool ControlPlaneReceiver::IsTagAmbiguous(
     const SessionTag sessionTag) const noexcept
 {
     return implementation_ &&
         implementation_->registry.IsTagAmbiguous(sessionTag);
+}
+
+ProtocolResult<SessionDescriptor> ControlPlaneReceiver::GetSessionDescriptor(
+    const SessionTag sessionTag) const
+{
+    if (!implementation_)
+    {
+        return ProtocolResult<SessionDescriptor>::Failure(
+            ProtocolErrorCode::InternalInvariantViolation,
+            0);
+    }
+    const auto bindingStateResult =
+        static_cast<const SessionRegistry&>(implementation_->registry).
+            FindBindingState(sessionTag);
+    if (!bindingStateResult)
+    {
+        return FailureFrom<SessionDescriptor>(bindingStateResult.Error());
+    }
+    return ProtocolResult<SessionDescriptor>::Success(
+        bindingStateResult.Value()->GetSessionDescriptor());
 }
 
 ProtocolResult<std::size_t> ControlPlaneReceiver::BoundSegmentCount(
@@ -926,6 +978,70 @@ ProtocolResult<std::size_t> ControlPlaneReceiver::BoundSegmentCount(
     }
     return ProtocolResult<std::size_t>::Success(
         bindingStateResult.Value()->BoundSegmentCount());
+}
+
+ProtocolResult<BoundSegmentDescriptor>
+ControlPlaneReceiver::GetBoundSegmentDescriptor(
+    const SessionTag sessionTag,
+    const std::uint64_t segmentOrdinal) const
+{
+    if (!implementation_)
+    {
+        return ProtocolResult<BoundSegmentDescriptor>::Failure(
+            ProtocolErrorCode::InternalInvariantViolation,
+            0);
+    }
+    const auto bindingStateResult =
+        static_cast<const SessionRegistry&>(implementation_->registry).
+            FindBindingState(sessionTag);
+    if (!bindingStateResult)
+    {
+        return FailureFrom<BoundSegmentDescriptor>(
+            bindingStateResult.Error());
+    }
+    return bindingStateResult.Value()->GetBoundSegmentDescriptor(
+        segmentOrdinal);
+}
+
+ProtocolResult<bool> ControlPlaneReceiver::IsSegmentCompleted(
+    const SessionTag sessionTag,
+    const std::uint64_t segmentOrdinal) const
+{
+    if (!implementation_)
+    {
+        return ProtocolResult<bool>::Failure(
+            ProtocolErrorCode::InternalInvariantViolation,
+            0);
+    }
+    const auto bindingStateResult =
+        static_cast<const SessionRegistry&>(implementation_->registry).
+            FindBindingState(sessionTag);
+    if (!bindingStateResult)
+    {
+        return FailureFrom<bool>(bindingStateResult.Error());
+    }
+    return bindingStateResult.Value()->IsSegmentCompleted(segmentOrdinal);
+}
+
+ProtocolStatus ControlPlaneReceiver::MarkSegmentCompleted(
+    const SessionTag sessionTag,
+    const std::uint64_t segmentOrdinal)
+{
+    if (!implementation_)
+    {
+        return ProtocolStatus::Failure(
+            ProtocolErrorCode::InternalInvariantViolation,
+            0);
+    }
+    const auto bindingStateResult = implementation_->registry.FindBindingState(
+        sessionTag);
+    if (!bindingStateResult)
+    {
+        return ProtocolStatus::Failure(
+            bindingStateResult.Error().code,
+            bindingStateResult.Error().offset);
+    }
+    return bindingStateResult.Value()->MarkSegmentCompleted(segmentOrdinal);
 }
 
 ProtocolResult<bool> ControlPlaneReceiver::HasFinalManifest(
@@ -1016,6 +1132,14 @@ ControlPlaneReceiver::ParseValidateAndBind(
             descriptorResult.Value());
         if (!bindResult)
         {
+            const auto bindingStateResult = implementation_->registry.
+                FindBindingState(controlRecord.sessionTag);
+            if (bindingStateResult &&
+                bindingStateResult.Value()->HasTerminalError())
+            {
+                implementation_->lastTerminalSessionTag =
+                    controlRecord.sessionTag;
+            }
             implementation_->lastAdmissionFailureRetryable =
                 bindResult.Error().code == ProtocolErrorCode::ResourceExhausted ||
                 (bindResult.Error().code ==
@@ -1067,15 +1191,29 @@ ControlPlaneReceiver::ParseValidateAndBind(
             descriptorResult.Value());
         if (!bindResult)
         {
+            if (bindingStateResult.Value()->HasTerminalError())
+            {
+                implementation_->lastTerminalSessionTag =
+                    controlRecord.sessionTag;
+            }
             return FailureFromPayload<ControlRecordAdmission>(
                 bindResult.Error());
+        }
+        const auto boundDescriptorResult =
+            bindingStateResult.Value()->GetBoundSegmentDescriptor(
+                descriptorResult.Value().segmentOrdinal);
+        if (!boundDescriptorResult)
+        {
+            return FailureFromPayload<ControlRecordAdmission>(
+                boundDescriptorResult.Error());
         }
         return ProtocolResult<ControlRecordAdmission>::Success(
             ControlRecordAdmission{
                 controlRecord.recordType,
                 controlRecord.controlSequence,
                 controlRecord.sessionTag,
-                bindResult.Value()});
+                bindResult.Value(),
+                std::move(boundDescriptorResult).Value()});
     }
     case ControlRecordType::FinalManifest:
     {
@@ -1113,6 +1251,11 @@ ControlPlaneReceiver::ParseValidateAndBind(
             manifestResult.Value());
         if (!bindResult)
         {
+            if (bindingStateResult.Value()->HasTerminalError())
+            {
+                implementation_->lastTerminalSessionTag =
+                    controlRecord.sessionTag;
+            }
             return FailureFromPayload<ControlRecordAdmission>(
                 bindResult.Error());
         }

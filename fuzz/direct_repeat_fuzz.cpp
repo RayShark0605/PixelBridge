@@ -1,5 +1,7 @@
 #include "pbouterfec/direct_repeat.h"
 
+#include "decoder_test_access.h"
+
 #include "pbprotocol/blake3_digest.h"
 
 #include <algorithm>
@@ -302,7 +304,7 @@ void ExerciseCanonicalRoundTrip(
     const std::span<const std::byte> message,
     const pbouterfec::OuterFecDecoderResourceManager& resourceManager)
 {
-    auto decoderResult = pbouterfec::DirectRepeatDecoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor, descriptor.outerBlockBytes, resourceManager);
     if (!decoderResult)
     {
@@ -389,7 +391,7 @@ void ExerciseMutatedSequence(
     const std::span<const std::byte> message,
     const pbouterfec::OuterFecDecoderResourceManager& resourceManager)
 {
-    auto decoderResult = pbouterfec::DirectRepeatDecoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor, descriptor.outerBlockBytes, resourceManager);
     if (!decoderResult)
     {
@@ -645,7 +647,7 @@ void ExerciseInput(const std::span<const std::byte> input)
             outerBlockBytes == kMaximumOuterBlockBytes
                 ? outerBlockBytes - 1U
                 : outerBlockBytes + 1U;
-        const auto mismatchResult = pbouterfec::DirectRepeatDecoder::Create(
+        const auto mismatchResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
             descriptor, mismatchedBlockBytes, resourceManager);
         if (mismatchResult || mismatchResult.Error().code !=
             pbouterfec::OuterFecErrorCode::OuterBlockBytesMismatch ||

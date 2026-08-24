@@ -8,7 +8,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 | 路径 | 用途 |
 | --- | --- |
 | `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | 应用（当前为控制台空壳，Qt 6 UI 在后续里程碑接入） |
-| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec` | 核心静态库（禁止依赖 Qt） |
+| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver` | 核心静态库（禁止依赖 Qt） |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
 | `docs` | 设计文档 |
@@ -28,6 +28,16 @@ SessionTag cross-check 和 immutable binding。`PB-Control-Fragment-1` 已冻结
 **GO**；整体 Phase-0 仍为 **NO-GO**，当前不包含视觉 raster/FEC、物理 Control Block
 容量/映射、重复 cadence、正式 profile binding 或完整文件恢复。
 
+`pbreceiver::ReceiverIngress` 是当前唯一的逻辑接收 façade。它按值持有一份已验证的
+`ReceiverResourcePolicy` 和当前 profile 的固定 `OuterBlockBytes`，并独占一个
+`ControlPlaneReceiver`、一个 bounded orphan cache、一个 receiver-wide Outer FEC
+manager 和 active decoder 表。未知 Segment 的逻辑 Data Block 只能进入 orphan cache
+或以明确 quota 状态被拒绝；在 Segment capability 绑定前不会创建 DirectRepeat/Wirehair
+decoder、segment-sized buffer、zstd context 或 output reservation。这里的
+`ReceivedTransportBlock` 表示上游已完成 Inner-FEC/Transport-CRC 检查的内存内值，**不是**
+正式 Transport wire schema。正式 Transport parser、PBStorage/free-space 检查、`.part`
+创建/发布和 Decoder capture/application 链路仍未实现。
+
 ## Target 与依赖边界
 
 - `PBCore`、`PBProtocol` 是显式静态库，不受父工程 `BUILD_SHARED_LIBS` 影响。
@@ -36,6 +46,10 @@ SessionTag cross-check 和 immutable binding。`PB-Control-Fragment-1` 已冻结
 - `PBOuterFec` 是显式静态库；外部消费者只链接 `PB::PBOuterFec` 即可获得
   PBProtocol 与固定 Wirehair 静态库的完整链接闭包。公共头不暴露 Wirehair
   原生头或 host-native profile struct。
+- `PBReceiver` 是显式静态库；外部消费者只链接 `PB::PBReceiver` 即可获得
+  PBProtocol、PBCompression 与 PBOuterFec 的完整静态链接闭包。生产 decoder factory
+  只接受由 Control admission 签发的 `BoundSegmentDescriptor`；普通
+  `SegmentDescriptor` 的创建 seam 仅位于未安装的 test/benchmark 私有头中。
 - `PBProtocol` 不依赖 `PBCore`；消费者只获得所链接 target 的公共头和链接闭包。
 - `PB::CompilerSettings` 仅供 PixelBridge 自有 target 私有使用，`/WX` 等策略不传播给外部消费者。
 - Qt 只允许由应用以 `PRIVATE` 方式链接；`libs/` 下的核心库和公共头禁止依赖 Qt。
@@ -64,7 +78,7 @@ frame（包括 final block/checksum），且输出严格等于 Descriptor `RawSi
 以 `SegmentDescriptor` 调用 canonical `DecompressSegment()` 前，调用方必须先用
 同一份 `ReceiverResourcePolicy` 执行
 `ValidateSegmentDescriptor(descriptor, sessionDescriptor, resourcePolicy)`；随后用
-`MakeDecompressionLimits(resourcePolicy, maxWindowLog)` 构造本地解压边界。该
+`MakeDecompressionLimits(resourcePolicy)` 构造本地解压边界。该
 前置条件保证任何 zstd context 或输出 allocation 创建前，Descriptor 的 raw 和
 encoded 配额已经验证。
 
@@ -85,8 +99,10 @@ payload 返回终止性的 `OuterBlockConflict`。仅当全部 ordinal 收齐且
 BLAKE3 `EncodedDigest` 后，`Recover()` 才会返回 exact Encoded Segment bytes。
 当前 provisional Transport 的 `PayloadBytes` 为 `uint16`，所以所有入口都强制
 `1 <= OuterBlockBytes <= 65535`，custom receiver policy 也不能放宽这一 wire 上限。
-`DirectRepeatDecoder::Create()` 还必须接收当前固定 Visual Profile 派生的 expected
-`OuterBlockBytes` 并在任何 reservation/allocation 前与 Descriptor 精确比对。
+`DirectRepeatDecoder::Create()` 还必须接收 Control admission 签发的
+`BoundSegmentDescriptor` 和当前固定 Visual Profile 派生的 expected
+`OuterBlockBytes`，并在任何 reservation/allocation 前与 Descriptor 精确比对；
+`WirehairV2Decoder::Create()` 同样要求该 capability 和 expected block size。
 
 `PBOuterFec` 只使用 Wirehair V2 canonical serialized-profile API。初次创建默认
 显式选择 `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`（不使用 `CURRENT`），保存上游
@@ -106,6 +122,10 @@ bad seed、invalid input 与未知 codec 结果均显式 fail closed。accepted 
 固定 64-probe 上限；该 wrapper table 不复制 Wirehair 的私有 bucket placement，
 两者是独立防线。实现不假设一个 decoder 能无限接收新的 repair IDs；
 `ExtraInsufficient` 后必须销毁该实例并由上层用完整新 repair window 重建。
+Wirehair backend 的 `recover` 成功不是发布条件：wrapper 还会对 exact recovered
+bytes 验证 descriptor 的 BLAKE3 `EncodedDigest`，不匹配时终止 decoder。
+`ReceiverIngress::DecompressSegment()` 在解压前再次验证 encoded digest，并在返回
+raw bytes 前验证 `RawDigest`。
 
 `DirectRepeatDecoder::Create()` 与 `WirehairV2Decoder::Create()` 必须接收同一个
 receiver-wide `OuterFecDecoderResourceManager`；旧名称
@@ -175,7 +195,7 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | --- | --- | --- |
 | `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
-| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBProtocolBootstrapControlStructuredSelfTest`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
+| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBProtocolBootstrapControlStructuredSelfTest`、`PBProtocolOrphanResourceFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
 | `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
@@ -205,6 +225,8 @@ ctest --test-dir build-fuzz-msvc --build-config RelWithDebInfo `
   2000 5783258900934164481
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlStructuredSelfTest.exe `
   --self-test
+.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolOrphanResourceFuzz.exe `
+  2000 7263948150273648113
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
   2000 13856851484949778996
 .\build-fuzz-msvc\fuzz\RelWithDebInfo\PBOuterFecWirehairV2Fuzz.exe `
