@@ -4,6 +4,9 @@ add_executable(PBProtocolDescriptorResourceFuzz
 add_executable(PBProtocolBootstrapControlFuzz
     bootstrap_control_fuzz.cpp)
 
+add_executable(PBProtocolOrphanResourceFuzz
+    orphan_resource_fuzz.cpp)
+
 # Build the same structured driver without libFuzzer's replacement main so
 # post-checksum semantic reachability remains a deterministic CTest on every
 # compiler backend, including Clang/libFuzzer builds.
@@ -25,6 +28,11 @@ target_link_libraries(PBProtocolDescriptorResourceFuzz
         PB::PBProtocol)
 
 target_link_libraries(PBProtocolBootstrapControlFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)
+
+target_link_libraries(PBProtocolOrphanResourceFuzz
     PRIVATE
         PB::CompilerSettings
         PB::PBProtocol)
@@ -54,6 +62,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         PRIVATE
             PB_USE_LIBFUZZER=1)
     target_compile_definitions(PBProtocolBootstrapControlFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBProtocolOrphanResourceFuzz
         PRIVATE
             PB_USE_LIBFUZZER=1)
     target_compile_definitions(PBCompressionZstdBoundaryFuzz
@@ -89,6 +100,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             -fno-omit-frame-pointer
             -fsanitize=fuzzer,address,undefined)
     target_link_options(PBProtocolBootstrapControlFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBProtocolOrphanResourceFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBProtocolOrphanResourceFuzz
         PRIVATE
             -fsanitize=fuzzer,address,undefined)
     target_compile_options(PBProtocolBootstrapControlStructuredSelfTest
@@ -161,6 +179,14 @@ elseif(MSVC)
         PRIVATE
             /DEBUG
             /INCREMENTAL:NO)
+    target_compile_options(PBProtocolOrphanResourceFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBProtocolOrphanResourceFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
     target_compile_options(PBProtocolBootstrapControlStructuredSelfTest
         PRIVATE
             /Zi
@@ -212,6 +238,11 @@ elseif(MSVC)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${pbMsvcAsanRuntime}"
             "$<TARGET_FILE_DIR:PBProtocolBootstrapControlFuzz>"
+        VERBATIM)
+    add_custom_command(TARGET PBProtocolOrphanResourceFuzz POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${pbMsvcAsanRuntime}"
+            "$<TARGET_FILE_DIR:PBProtocolOrphanResourceFuzz>"
         VERBATIM)
     add_custom_command(
         TARGET PBProtocolBootstrapControlStructuredSelfTest
@@ -271,6 +302,14 @@ if(BUILD_TESTING)
             LABELS "fuzz;pbprotocol;bootstrap;control;libfuzzer"
             TIMEOUT 60)
         add_test(
+            NAME PBProtocolOrphanResourceFuzzSmoke
+            COMMAND PBProtocolOrphanResourceFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/orphan-resource"
+                -runs=2000)
+        set_tests_properties(PBProtocolOrphanResourceFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol;libfuzzer"
+            TIMEOUT 60)
+        add_test(
             NAME PBCompressionZstdBoundaryFuzzSmoke
             COMMAND PBCompressionZstdBoundaryFuzz
                 "${CMAKE_CURRENT_SOURCE_DIR}/corpus/compression-zstd"
@@ -309,6 +348,14 @@ if(BUILD_TESTING)
                 5783258900934164481)
         set_tests_properties(PBProtocolBootstrapControlFuzzSmoke PROPERTIES
             LABELS "fuzz;pbprotocol;bootstrap;control"
+            TIMEOUT 60)
+        add_test(
+            NAME PBProtocolOrphanResourceFuzzSmoke
+            COMMAND PBProtocolOrphanResourceFuzz
+                2000
+                7263948150273648113)
+        set_tests_properties(PBProtocolOrphanResourceFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol"
             TIMEOUT 60)
         add_test(
             NAME PBCompressionZstdBoundaryFuzzSmoke
@@ -377,6 +424,26 @@ if(BUILD_TESTING)
         endforeach()
         unset(pbDescriptorCorpusName)
         unset(pbDescriptorCorpusDirectory)
+
+        set(pbOrphanResourceCorpusDirectory
+            "${CMAKE_CURRENT_SOURCE_DIR}/corpus/orphan-resource")
+        foreach(pbOrphanResourceCorpusName IN ITEMS
+                valid-admit-sequence
+                resume-record-valid
+                resume-record-corrupt)
+            add_test(
+                NAME "PBProtocolOrphanResourceCorpus.${pbOrphanResourceCorpusName}"
+                COMMAND PBProtocolOrphanResourceFuzz
+                    --input
+                    "${pbOrphanResourceCorpusDirectory}/${pbOrphanResourceCorpusName}.bin")
+            set_tests_properties(
+                "PBProtocolOrphanResourceCorpus.${pbOrphanResourceCorpusName}"
+                PROPERTIES
+                    LABELS "fuzz;pbprotocol;corpus"
+                    TIMEOUT 10)
+        endforeach()
+        unset(pbOrphanResourceCorpusName)
+        unset(pbOrphanResourceCorpusDirectory)
 
         set(pbBootstrapControlCorpusDirectory
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/bootstrap-control")

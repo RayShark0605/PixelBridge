@@ -2,6 +2,7 @@ find_package(wirehair 2.0 CONFIG REQUIRED)
 
 PbAddUnitTest(PBOuterFecTests
     test_direct_repeat.cpp
+    test_orphan_admission_flow.cpp
     test_wirehair_v2.cpp
     test_wirehair_v2_errors.cpp)
 

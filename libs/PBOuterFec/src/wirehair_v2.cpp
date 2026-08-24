@@ -1131,6 +1131,7 @@ OuterFecResult<WirehairV2Decoder> WirehairV2Decoder::Create(
     if (segmentDescriptor.encodedSize >
         resourcePolicy.maxEncodedSegmentBytes)
     {
+        detail::CountOuterFecDecoderQuotaExceeded(resourceManager.state_);
         return OuterFecResult<WirehairV2Decoder>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             segmentDescriptor.encodedSize);
@@ -1138,6 +1139,7 @@ OuterFecResult<WirehairV2Decoder> WirehairV2Decoder::Create(
     if (segmentDescriptor.outerBlockBytes >
         resourcePolicy.maxOuterBlockBytes)
     {
+        detail::CountOuterFecDecoderQuotaExceeded(resourceManager.state_);
         return OuterFecResult<WirehairV2Decoder>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             segmentDescriptor.outerBlockBytes);
@@ -1154,6 +1156,14 @@ OuterFecResult<WirehairV2Decoder> WirehairV2Decoder::Create(
         validated.profileFields, validated.blockCount);
     if (!estimateResult)
     {
+        // The estimator only fails with the quota code today; guard
+        // explicitly so a future non-quota failure is not miscounted.
+        if (estimateResult.Error().code ==
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded)
+        {
+            detail::CountOuterFecDecoderQuotaExceeded(
+                resourceManager.state_);
+        }
         return FailureFrom<WirehairV2Decoder>(estimateResult.Error());
     }
     const DecoderResourceEstimate& estimate = estimateResult.Value();

@@ -936,6 +936,8 @@ TEST_CASE("ControlPlaneReceiver retries only transient admission capacity failur
     {
         auto strictPolicy = serializationPolicy;
         strictPolicy.maxAcceptedFileBytes = 100;
+        // Cross-field invariant: prompt threshold must stay <= file cap.
+        strictPolicy.maxOutputPreallocationBytesWithoutPrompt = 50;
         const pbprotocol::SessionDescriptor oversizedSession =
             pbprotocol::test::MakeSessionDescriptor(117, 1);
         const std::vector<std::byte> record = MakeSessionControlRecord(
@@ -1472,4 +1474,98 @@ TEST_CASE("ControlPlaneReceiver move and reset preserve PMR lifetime ordering",
         REQUIRE(trackingResource->BytesInUse() == baselineReassemblyBytes);
     }
     REQUIRE(trackingResource->BytesInUse() == 0);
+}
+
+TEST_CASE("ControlPlaneReceiver counts resource-policy rejections on both paths",
+          "[pbprotocol][control][receiver][telemetry]")
+{
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(117, 1);
+    const pbprotocol::ReceiverResourcePolicy basePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+
+    SECTION("complete record above maxControlRecordBytes counts once")
+    {
+        const std::vector<std::byte> record = MakeSessionControlRecord(
+            sessionDescriptor,
+            basePolicy);
+        pbprotocol::ReceiverResourcePolicy tinyPolicy = basePolicy;
+        tinyPolicy.maxControlRecordBytes =
+            static_cast<std::uint32_t>(record.size() - 1);
+        // Cross-field invariant: fragment count must stay <= record bytes.
+        tinyPolicy.maxControlFragmentsPerRecord =
+            tinyPolicy.maxControlRecordBytes;
+        auto receiver = MakeReceiver(tinyPolicy);
+        REQUIRE(receiver.GetRejectedByResourcePolicyCount() == 0);
+
+        const auto oversizedResult = receiver.ReceiveControlRecord(record);
+        REQUIRE_FALSE(oversizedResult);
+        REQUIRE(oversizedResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+        REQUIRE(receiver.GetRejectedByResourcePolicyCount() == 1);
+
+        // Protocol-level parse failures are not resource-policy rejections.
+        const auto truncatedResult = receiver.ReceiveControlRecord(
+            std::span<const std::byte>(record).first(record.size() - 1));
+        REQUIRE_FALSE(truncatedResult);
+        REQUIRE(truncatedResult.Error().code !=
+            pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+        REQUIRE(receiver.GetRejectedByResourcePolicyCount() == 1);
+    }
+
+    SECTION("fragment quota rejection counts exactly once per operation")
+    {
+        const std::vector<std::byte> record = MakeSessionControlRecord(
+            sessionDescriptor,
+            basePolicy);
+        pbprotocol::ReceiverResourcePolicy tinyPolicy = basePolicy;
+        tinyPolicy.maxControlRecordBytes =
+            static_cast<std::uint32_t>(record.size() - 1);
+        // Cross-field invariant: fragment count must stay <= record bytes.
+        tinyPolicy.maxControlFragmentsPerRecord =
+            tinyPolicy.maxControlRecordBytes;
+        auto receiver = MakeReceiver(tinyPolicy);
+
+        const std::vector<std::byte> fragment = MakeFragmentBytes(
+            record,
+            42,
+            0);
+        const auto quotaResult = receiver.ReceiveControlFragment(fragment, 1);
+        REQUIRE_FALSE(quotaResult);
+        REQUIRE(quotaResult.Error().code ==
+            pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+        REQUIRE(receiver.GetRejectedByResourcePolicyCount() == 1);
+
+        // A second rejected fragment is a separate receive operation.
+        const auto repeatedQuotaResult = receiver.ReceiveControlFragment(
+            fragment,
+            2);
+        REQUIRE_FALSE(repeatedQuotaResult);
+        REQUIRE(receiver.GetRejectedByResourcePolicyCount() == 2);
+    }
+
+    SECTION("successful record and fragment admissions keep the counter at zero")
+    {
+        auto receiver = MakeReceiver(basePolicy);
+        const std::vector<std::byte> record = MakeSessionControlRecord(
+            sessionDescriptor,
+            basePolicy);
+        REQUIRE(receiver.ReceiveControlRecord(record));
+        REQUIRE(receiver.GetRejectedByResourcePolicyCount() == 0);
+
+        // An identical second session record through the fragment path is a
+        // repeated admission, not a conflict or a quota rejection.
+        const std::vector<std::byte> secondRecord = MakeSessionControlRecord(
+            sessionDescriptor,
+            basePolicy,
+            2);
+        std::uint64_t observationOrdinal = 1;
+        const auto finalResult = ReceiveAllFragments(
+            receiver,
+            secondRecord,
+            99,
+            observationOrdinal);
+        REQUIRE(finalResult);
+        REQUIRE(receiver.GetRejectedByResourcePolicyCount() == 0);
+    }
 }

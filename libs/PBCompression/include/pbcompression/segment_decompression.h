@@ -29,12 +29,14 @@ struct DecompressionLimits
     std::uint64_t maxInputBytes = kDefaultDecompressionMaxInputBytes;
 };
 
-// Builds the compression-specific portion of the local receiver policy.
-// Callers must still validate the ReceiverResourcePolicy itself before using
-// it to accept an untrusted descriptor.
+// Builds the compression-specific portion of the local receiver policy. The
+// window log is derived from maxZstdWindowBytes as floor(log2), so a frame may
+// only use a window no larger than the policy allows; logs outside the codec's
+// supported range fail closed in ValidateDecompressionLimits. Callers must
+// still validate the ReceiverResourcePolicy itself before using it to accept
+// an untrusted descriptor.
 [[nodiscard]] DecompressionLimits MakeDecompressionLimits(
-    const pbprotocol::ReceiverResourcePolicy& resourcePolicy,
-    std::uint32_t maxWindowLog = 23) noexcept;
+    const pbprotocol::ReceiverResourcePolicy& resourcePolicy) noexcept;
 
 [[nodiscard]] CompressionStatus ValidateDecompressionLimits(
     const DecompressionLimits& limits) noexcept;

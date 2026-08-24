@@ -42,6 +42,13 @@ ReceiverResourcePolicy GetDefaultReceiverResourcePolicy() noexcept
     resourcePolicy.maxControlReassemblyBytes = 1ULL * mebibyte;
     resourcePolicy.maxControlFragmentsPerRecord = 4096ULL;
     resourcePolicy.maxControlReassemblyInactivityObservations = 16384ULL;
+    resourcePolicy.maxOrphanTransportBytes = 4ULL * mebibyte;
+    resourcePolicy.maxOrphanTransportBlocks = 64ULL;
+    // 8 MiB == 2^23, bit-identical to the historical fixed window log of 23
+    // used by MakeDecompressionLimits.
+    resourcePolicy.maxZstdWindowBytes = 8ULL * mebibyte;
+    resourcePolicy.maxResumeBytes = 256ULL * mebibyte;
+    resourcePolicy.maxOutputPreallocationBytesWithoutPrompt = 4ULL * gibibyte;
     return resourcePolicy;
 }
 
