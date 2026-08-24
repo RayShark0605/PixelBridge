@@ -876,6 +876,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
             pbouterfec::OuterFecErrorCode::OuterBlockBytesMismatch);
         REQUIRE(profileManager.GetActiveDecoderCount() == 0);
         REQUIRE(profileManager.GetReservedDecoderBytes() == 0);
+        REQUIRE(profileManager.GetQuotaExceededCount() == 0);
     }
 
     {
@@ -894,6 +895,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         REQUIRE(directCountResult.Error().detail == 5);
         REQUIRE(directCountManager.GetActiveDecoderCount() == 0);
         REQUIRE(directCountManager.GetReservedDecoderBytes() == 0);
+        REQUIRE(directCountManager.GetQuotaExceededCount() == 1);
 
         directCountPolicy.maxDirectRepeatBlockCount = 5;
         auto exactCountManager = MakeResourceManager(directCountPolicy);
@@ -904,6 +906,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
                 exactCountManager);
         REQUIRE(exactCountResult);
         REQUIRE(exactCountManager.GetActiveDecoderCount() == 1);
+        REQUIRE(exactCountManager.GetQuotaExceededCount() == 0);
     }
 
     {
@@ -921,6 +924,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         REQUIRE(defaultCountResult.Error().detail == 65);
         REQUIRE(defaultCountManager.GetActiveDecoderCount() == 0);
         REQUIRE(defaultCountManager.GetReservedDecoderBytes() == 0);
+        REQUIRE(defaultCountManager.GetQuotaExceededCount() == 1);
     }
 
     pbprotocol::ReceiverResourcePolicy encodedPolicy =
@@ -933,6 +937,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
     REQUIRE(encodedLimitResult.Error().code ==
         pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
     REQUIRE(encodedManager.GetActiveDecoderCount() == 0);
+    REQUIRE(encodedManager.GetQuotaExceededCount() == 1);
 
     pbprotocol::ReceiverResourcePolicy blockPolicy =
         pbprotocol::GetDefaultReceiverResourcePolicy();
@@ -944,6 +949,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
     REQUIRE(blockLimitResult.Error().code ==
         pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
     REQUIRE(blockManager.GetActiveDecoderCount() == 0);
+    REQUIRE(blockManager.GetQuotaExceededCount() == 1);
 
     std::uint64_t reservationBytes = 0;
     {
@@ -992,6 +998,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
     REQUIRE(perDecoderResult.Error().code ==
         pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
     REQUIRE(perDecoderManager.GetActiveDecoderCount() == 0);
+    REQUIRE(perDecoderManager.GetQuotaExceededCount() == 1);
 
     pbprotocol::ReceiverResourcePolicy countPolicy =
         pbprotocol::GetDefaultReceiverResourcePolicy();
@@ -1006,6 +1013,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         REQUIRE(secondResult.Error().code ==
             pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
         REQUIRE(countManager.GetActiveDecoderCount() == 1);
+        REQUIRE(countManager.GetQuotaExceededCount() == 1);
     }
     REQUIRE(countManager.GetActiveDecoderCount() == 0);
 
@@ -1031,6 +1039,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
     }
     REQUIRE(aggregateManager.GetActiveDecoderCount() == 0);
     REQUIRE(aggregateManager.GetReservedDecoderBytes() == 0);
+    REQUIRE(aggregateManager.GetQuotaExceededCount() == 1);
 }
 
 TEST_CASE("DirectRepeat allocation failure rolls back shared reservation",
@@ -1066,6 +1075,7 @@ TEST_CASE("DirectRepeat allocation failure rolls back shared reservation",
         pbouterfec::OuterFecErrorCode::OutOfMemory);
     REQUIRE(resourceManager.GetActiveDecoderCount() == 0);
     REQUIRE(resourceManager.GetReservedDecoderBytes() == 0);
+    REQUIRE(resourceManager.GetQuotaExceededCount() == 0);
 }
 
 TEST_CASE("DirectRepeat resource manager serializes concurrent admission and release",

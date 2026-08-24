@@ -390,6 +390,11 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxControlReassemblyBytes == 0 ||
         resourcePolicy.maxControlFragmentsPerRecord == 0 ||
         resourcePolicy.maxControlReassemblyInactivityObservations == 0 ||
+        resourcePolicy.maxOrphanTransportBytes == 0 ||
+        resourcePolicy.maxOrphanTransportBlocks == 0 ||
+        resourcePolicy.maxZstdWindowBytes == 0 ||
+        resourcePolicy.maxResumeBytes == 0 ||
+        resourcePolicy.maxOutputPreallocationBytesWithoutPrompt == 0 ||
         resourcePolicy.maxAcceptedFileBytes == maximumUint64 ||
         resourcePolicy.maxSegmentCount == maximumUint64 ||
         resourcePolicy.maxRawSegmentBytes == maximumUint64 ||
@@ -411,6 +416,12 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxControlFragmentsPerRecord > UINT16_MAX ||
         resourcePolicy.maxControlReassemblyInactivityObservations ==
             maximumUint64 ||
+        resourcePolicy.maxOrphanTransportBytes == maximumUint64 ||
+        resourcePolicy.maxOrphanTransportBlocks == maximumUint64 ||
+        resourcePolicy.maxZstdWindowBytes == maximumUint64 ||
+        resourcePolicy.maxResumeBytes == maximumUint64 ||
+        resourcePolicy.maxOutputPreallocationBytesWithoutPrompt ==
+            maximumUint64 ||
         resourcePolicy.maxDescriptorStateBytes >
             resourcePolicy.maxTotalDescriptorStateBytes ||
         resourcePolicy.maxOuterFecDecoderBytes >
@@ -418,7 +429,9 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxControlRecordBytes >
             resourcePolicy.maxControlReassemblyBytes ||
         resourcePolicy.maxControlFragmentsPerRecord >
-            resourcePolicy.maxControlRecordBytes)
+            resourcePolicy.maxControlRecordBytes ||
+        resourcePolicy.maxOutputPreallocationBytesWithoutPrompt >
+            resourcePolicy.maxAcceptedFileBytes)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,
@@ -451,6 +464,16 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         resourcePolicy.maxControlFragmentsPerRecord);
     const auto controlInactivityObservationResult = CheckedUint64ToSize(
         resourcePolicy.maxControlReassemblyInactivityObservations);
+    const auto orphanTransportBudgetSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxOrphanTransportBytes);
+    const auto orphanTransportBlockCountResult = CheckedUint64ToSize(
+        resourcePolicy.maxOrphanTransportBlocks);
+    const auto zstdWindowBudgetSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxZstdWindowBytes);
+    const auto resumeStateBudgetSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxResumeBytes);
+    const auto outputPreallocationPromptSizeResult = CheckedUint64ToSize(
+        resourcePolicy.maxOutputPreallocationBytesWithoutPrompt);
     if (!segmentCountSizeResult ||
         !rawSegmentSizeResult ||
         !encodedSegmentSizeResult ||
@@ -463,7 +486,12 @@ ProtocolStatus ValidateReceiverResourcePolicy(
         !concurrentControlCountResult ||
         !controlReassemblyBudgetSizeResult ||
         !controlFragmentCountResult ||
-        !controlInactivityObservationResult)
+        !controlInactivityObservationResult ||
+        !orphanTransportBudgetSizeResult ||
+        !orphanTransportBlockCountResult ||
+        !zstdWindowBudgetSizeResult ||
+        !resumeStateBudgetSizeResult ||
+        !outputPreallocationPromptSizeResult)
     {
         return ProtocolStatus::Failure(
             ProtocolErrorCode::InvalidResourcePolicy,

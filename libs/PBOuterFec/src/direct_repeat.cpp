@@ -502,6 +502,7 @@ OuterFecResult<DirectRepeatDecoder> DirectRepeatDecoder::Create(
     if (segmentDescriptor.encodedSize >
         resourcePolicy.maxEncodedSegmentBytes)
     {
+        detail::CountOuterFecDecoderQuotaExceeded(resourceManager.state_);
         return OuterFecResult<DirectRepeatDecoder>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             segmentDescriptor.encodedSize);
@@ -509,6 +510,7 @@ OuterFecResult<DirectRepeatDecoder> DirectRepeatDecoder::Create(
     if (segmentDescriptor.outerBlockBytes >
         resourcePolicy.maxOuterBlockBytes)
     {
+        detail::CountOuterFecDecoderQuotaExceeded(resourceManager.state_);
         return OuterFecResult<DirectRepeatDecoder>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             segmentDescriptor.outerBlockBytes);
@@ -522,6 +524,7 @@ OuterFecResult<DirectRepeatDecoder> DirectRepeatDecoder::Create(
     const std::uint64_t blockCount = descriptorResult.Value().blockCount;
     if (blockCount > resourcePolicy.maxDirectRepeatBlockCount)
     {
+        detail::CountOuterFecDecoderQuotaExceeded(resourceManager.state_);
         return OuterFecResult<DirectRepeatDecoder>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             blockCount);
@@ -531,6 +534,14 @@ OuterFecResult<DirectRepeatDecoder> DirectRepeatDecoder::Create(
         segmentDescriptor.encodedSize, blockCount);
     if (!estimateResult)
     {
+        // The estimator only fails with the quota code today; guard
+        // explicitly so a future non-quota failure is not miscounted.
+        if (estimateResult.Error().code ==
+            OuterFecErrorCode::OuterFecDecoderQuotaExceeded)
+        {
+            detail::CountOuterFecDecoderQuotaExceeded(
+                resourceManager.state_);
+        }
         return FailureFrom<DirectRepeatDecoder>(estimateResult.Error());
     }
     const DirectRepeatResourceEstimate& estimate = estimateResult.Value();

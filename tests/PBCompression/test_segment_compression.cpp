@@ -10,6 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1319,11 +1320,54 @@ TEST_CASE("EncodedSegmentBindsToValidDescriptors",
     REQUIRE(rawDescriptorResult.HasValue());
     REQUIRE(rawDescriptorResult.Value() == rawInput);
 
+    pbprotocol::ReceiverResourcePolicy windowedPolicy = resourcePolicy;
+    windowedPolicy.maxZstdWindowBytes = 4 * 1024 * 1024;
     const DecompressionLimits copiedLimits =
-        pbcompression::MakeDecompressionLimits(resourcePolicy, 22);
+        pbcompression::MakeDecompressionLimits(windowedPolicy);
     REQUIRE(copiedLimits.maxOutputBytes
         == resourcePolicy.maxRawSegmentBytes);
     REQUIRE(copiedLimits.maxInputBytes
         == resourcePolicy.maxEncodedSegmentBytes);
     REQUIRE(copiedLimits.maxWindowLog == 22);
+}
+
+TEST_CASE("DecompressionWindowLogDerivesFromPolicyBytes",
+          "[pbcompression][segment][limits]")
+{
+    const pbprotocol::ReceiverResourcePolicy basePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+
+    // Default policy: 8 MiB == 2^23, bit-identical to the historical log.
+    REQUIRE(pbcompression::MakeDecompressionLimits(basePolicy).maxWindowLog
+        == 23);
+
+    const std::uint64_t mebibyte = 1024 * 1024;
+    struct WindowCase
+    {
+        std::uint64_t windowBytes;
+        std::uint32_t expectedLog;
+    };
+    const std::array<WindowCase, 5> cases{
+        WindowCase{8 * mebibyte, 23},     // exact power of two
+        WindowCase{5 * mebibyte, 22},     // non-power: floor(log2)
+        WindowCase{4 * mebibyte + 1, 22}, // just above a power boundary
+        WindowCase{4 * mebibyte - 1, 21}, // just below the next power
+        WindowCase{512, 9}                // below zstd minimum: rejected later
+    };
+    for (const auto& windowCase : cases)
+    {
+        pbprotocol::ReceiverResourcePolicy casePolicy = basePolicy;
+        casePolicy.maxZstdWindowBytes = windowCase.windowBytes;
+        const DecompressionLimits limits =
+            pbcompression::MakeDecompressionLimits(casePolicy);
+        REQUIRE(limits.maxWindowLog == windowCase.expectedLog);
+    }
+
+    // A policy window below ZSTD_WINDOWLOG_MIN must fail closed in validation.
+    pbprotocol::ReceiverResourcePolicy tinyPolicy = basePolicy;
+    tinyPolicy.maxZstdWindowBytes = 512;
+    const DecompressionLimits tinyLimits =
+        pbcompression::MakeDecompressionLimits(tinyPolicy);
+    REQUIRE_FALSE(
+        pbcompression::ValidateDecompressionLimits(tinyLimits).HasValue());
 }

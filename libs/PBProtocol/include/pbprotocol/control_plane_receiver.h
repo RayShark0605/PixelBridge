@@ -44,6 +44,7 @@ struct ControlFragmentReceiveResult
 namespace detail {
 
 struct ControlPlaneReceiverImplementation;
+struct ControlReassemblyRecord;
 
 } // namespace detail
 
@@ -88,6 +89,12 @@ public:
     // library implementation. A newly created or reset receiver has no engaged
     // reassembly container and therefore reports zero.
     [[nodiscard]] std::size_t ControlReassemblyBytesInUse() const noexcept;
+    // Cumulative count of receive operations rejected by resource-policy
+    // gates (ResourceLimitExceeded / ResourceExhausted /
+    // ControlReassemblyQuotaExceeded) on both the complete-record and
+    // fragment paths. Survives ResetControlReassembly(); telemetry only,
+    // never serialized into wire bytes.
+    [[nodiscard]] std::uint64_t GetRejectedByResourcePolicyCount() const noexcept;
     [[nodiscard]] bool IsTagAmbiguous(SessionTag sessionTag) const noexcept;
     [[nodiscard]] ProtocolResult<std::size_t> BoundSegmentCount(
         SessionTag sessionTag) const noexcept;
@@ -105,6 +112,21 @@ private:
 
     [[nodiscard]] ProtocolResult<ControlRecordAdmission> ParseValidateAndBind(
         std::span<const std::byte> recordBytes);
+
+    // Body of the public fragment entry point, split out so that wrapper can
+    // count resource-policy rejections exactly once per receive operation.
+    [[nodiscard]] ProtocolResult<ControlFragmentReceiveResult>
+    ReceiveControlFragmentCore(
+        std::span<const std::byte> fragmentBytes,
+        std::uint64_t observationOrdinal);
+
+    // Reassembles a complete record and admits it through the non-counting
+    // ParseValidateAndBind path; telemetry is applied by the public wrapper.
+    [[nodiscard]] static ProtocolResult<ControlFragmentReceiveResult>
+    AttemptAdmission(
+        ControlPlaneReceiver& receiver,
+        detail::ControlPlaneReceiverImplementation& implementation,
+        detail::ControlReassemblyRecord& record);
 
     std::unique_ptr<detail::ControlPlaneReceiverImplementation> implementation_;
 };

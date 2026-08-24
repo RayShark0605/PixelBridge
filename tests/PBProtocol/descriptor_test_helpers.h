@@ -62,6 +62,13 @@ namespace pbprotocol::test {
     resourcePolicy.maxControlReassemblyBytes = 1024ULL * 1024ULL;
     resourcePolicy.maxControlFragmentsPerRecord = 4096;
     resourcePolicy.maxControlReassemblyInactivityObservations = 16384;
+    resourcePolicy.maxOrphanTransportBytes = 4ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxOrphanTransportBlocks = 64;
+    resourcePolicy.maxZstdWindowBytes = 8ULL * 1024ULL * 1024ULL;
+    resourcePolicy.maxResumeBytes = 256ULL * 1024ULL * 1024ULL;
+    // Must stay <= maxAcceptedFileBytes (cross-field policy invariant).
+    resourcePolicy.maxOutputPreallocationBytesWithoutPrompt =
+        std::numeric_limits<std::uint64_t>::max() - 1ULL;
     return resourcePolicy;
 }
 

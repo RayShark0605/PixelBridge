@@ -69,6 +69,15 @@ void OuterFecDecoderReservation::Release() noexcept
     reservationBytes_ = 0;
 }
 
+void CountOuterFecDecoderQuotaExceeded(
+    const std::shared_ptr<OuterFecDecoderResourceState>& state) noexcept
+{
+    if (state != nullptr)
+    {
+        state->quotaExceededCount.fetch_add(1ULL, std::memory_order_relaxed);
+    }
+}
+
 OuterFecResult<OuterFecDecoderReservation>
 AcquireOuterFecDecoderReservation(
     const std::shared_ptr<OuterFecDecoderResourceState>& state,
@@ -82,6 +91,7 @@ AcquireOuterFecDecoderReservation(
 
     if (reservationBytes > state->resourcePolicy.maxOuterFecDecoderBytes)
     {
+        CountOuterFecDecoderQuotaExceeded(state);
         return OuterFecResult<OuterFecDecoderReservation>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             reservationBytes);
@@ -91,6 +101,7 @@ AcquireOuterFecDecoderReservation(
     if (state->activeDecoderCount >=
         state->resourcePolicy.maxActiveOuterFecDecoders)
     {
+        CountOuterFecDecoderQuotaExceeded(state);
         return OuterFecResult<OuterFecDecoderReservation>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             state->activeDecoderCount + 1ULL);
@@ -101,6 +112,7 @@ AcquireOuterFecDecoderReservation(
             state->resourcePolicy.maxTotalOuterFecDecoderBytes -
                 state->reservedDecoderBytes)
     {
+        CountOuterFecDecoderQuotaExceeded(state);
         return OuterFecResult<OuterFecDecoderReservation>::Failure(
             OuterFecErrorCode::OuterFecDecoderQuotaExceeded,
             reservationBytes);
@@ -173,6 +185,16 @@ std::uint64_t OuterFecDecoderResourceManager::GetReservedDecoderBytes() const
     }
     const std::scoped_lock lock(state_->mutex);
     return state_->reservedDecoderBytes;
+}
+
+std::uint64_t OuterFecDecoderResourceManager::GetQuotaExceededCount() const noexcept
+{
+    if (state_ == nullptr)
+    {
+        return 0;
+    }
+    // Relaxed load without the mutex: this is telemetry, not admission state.
+    return state_->quotaExceededCount.load(std::memory_order_relaxed);
 }
 
 } // namespace pbouterfec

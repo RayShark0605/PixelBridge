@@ -17,6 +17,9 @@ PbAddUnitTest(PBProtocolTests
     test_checked_integer.cpp
     test_crc32c.cpp
     test_descriptor_corpus.cpp
+    test_orphan_transport_block_cache.cpp
+    test_output_reservation.cpp
+    test_resume_state.cpp
     test_session_random.cpp)
 
 target_link_libraries(PBProtocolTests

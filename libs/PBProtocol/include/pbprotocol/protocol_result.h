@@ -54,7 +54,12 @@ enum class ProtocolErrorCode : std::uint8_t
     InvalidControlFragment,
     ControlFragmentConflict,
     ControlReassemblyQuotaExceeded,
-    InvalidObservationOrdinal
+    InvalidObservationOrdinal,
+    // Local diagnostics for receiver resource-policy gates. These values are
+    // never serialized into wire bytes; keep the enum append-only so recorded
+    // diagnostic values remain stable.
+    OutputReservationDenied,
+    OrphanPayloadConflict
 };
 
 struct ProtocolError

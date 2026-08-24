@@ -13,8 +13,11 @@ target_sources(PBProtocol
         src/crc32c.cpp
         src/descriptor_binding.cpp
         src/descriptor_codec.cpp
+        src/orphan_transport_block_cache.cpp
+        src/output_reservation.cpp
         src/protocol_types.cpp
         src/protocol_version.cpp
+        src/resume_state.cpp
         src/session_random.cpp
         src/session_random_internal.h
         src/session_registry.cpp
@@ -32,9 +35,12 @@ target_sources(PBProtocol
             include/pbprotocol/descriptor_binding.h
             include/pbprotocol/descriptor_codec.h
             include/pbprotocol/feature_flags.h
+            include/pbprotocol/orphan_transport_block_cache.h
+            include/pbprotocol/output_reservation.h
             include/pbprotocol/protocol_result.h
             include/pbprotocol/protocol_types.h
             include/pbprotocol/protocol_version.h
+            include/pbprotocol/resume_state.h
             include/pbprotocol/session_random.h
             include/pbprotocol/session_registry.h)
 

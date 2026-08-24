@@ -156,6 +156,23 @@ struct ReceiverResourcePolicy
     std::uint64_t maxControlReassemblyBytes = 0;
     std::uint64_t maxControlFragmentsPerRecord = 0;
     std::uint64_t maxControlReassemblyInactivityObservations = 0;
+    // Data Blocks that arrive before their SegmentDescriptor is bound may only
+    // enter this bounded orphan cache or be dropped. They must never trigger
+    // Wirehair/codec creation, large buffers, or file preallocation on the
+    // receiver.
+    std::uint64_t maxOrphanTransportBytes = 0;
+    std::uint64_t maxOrphanTransportBlocks = 0;
+    // zstd window ceiling in bytes. The derived floor(log2) value is checked
+    // against the codec's supported range by PBCompression and fails closed
+    // there; PBProtocol itself has no zstd dependency.
+    std::uint64_t maxZstdWindowBytes = 0;
+    // Receiver-local resume.state record budget. Resume state is untrusted
+    // persistent input and must be length/checksum/bounds validated before use.
+    std::uint64_t maxResumeBytes = 0;
+    // Output preallocation above this threshold requires explicit user
+    // confirmation before creating or extending a .part file. Must not exceed
+    // maxAcceptedFileBytes.
+    std::uint64_t maxOutputPreallocationBytesWithoutPrompt = 0;
 
     bool operator==(const ReceiverResourcePolicy&) const = default;
 };

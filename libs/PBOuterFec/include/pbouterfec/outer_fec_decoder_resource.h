@@ -44,6 +44,14 @@ public:
     [[nodiscard]] std::uint64_t GetActiveDecoderCount() const;
     [[nodiscard]] std::uint64_t GetReservedDecoderBytes() const;
 
+    // Cumulative count of admission attempts rejected by any decoder quota:
+    // the per-mode dimension checks (encoded size, block width, DirectRepeat
+    // block count), estimate overflow, and the shared active-decoder /
+    // per-decoder-bytes / aggregate-bytes reservation caps. Every rejection is
+    // counted exactly once. Telemetry only: a relaxed atomic load that never
+    // blocks admission.
+    [[nodiscard]] std::uint64_t GetQuotaExceededCount() const noexcept;
+
 private:
     friend class DirectRepeatDecoder;
     friend class WirehairV2Decoder;

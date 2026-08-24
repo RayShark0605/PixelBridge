@@ -27,6 +27,9 @@ constexpr std::uint64_t kDefaultSeed = 0xBADC0FFEE0DDF00DULL;
     pbprotocol::ReceiverResourcePolicy resourcePolicy =
         pbprotocol::GetDefaultReceiverResourcePolicy();
     resourcePolicy.maxAcceptedFileBytes = 1024ULL * 1024ULL;
+    // Cross-field policy rule: the prompt threshold must stay within the
+    // accepted-file cap, so shrink it together with the fuzz file budget.
+    resourcePolicy.maxOutputPreallocationBytesWithoutPrompt = 512ULL * 1024ULL;
     resourcePolicy.maxSegmentCount = 64;
     resourcePolicy.maxRawSegmentBytes = 64ULL * 1024ULL;
     resourcePolicy.maxEncodedSegmentBytes = 64ULL * 1024ULL;

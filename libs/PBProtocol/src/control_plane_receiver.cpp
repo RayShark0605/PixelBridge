@@ -204,6 +204,8 @@ struct ControlPlaneReceiverImplementation
     std::uint64_t currentObservationOrdinal = 0;
     bool hasObservationOrdinal = false;
     bool lastAdmissionFailureRetryable = false;
+    // Cumulative resource-policy rejection telemetry (see the public getter).
+    std::uint64_t rejectedByResourcePolicyCount = 0;
 };
 
 } // namespace detail
@@ -322,101 +324,14 @@ void EvictExpiredRecords(
     ReleaseRecordCapacityIfEmpty(implementation.reassemblyStorage);
 }
 
-[[nodiscard]] ProtocolResult<ControlFragmentReceiveResult> AttemptAdmission(
-    ControlPlaneReceiver& receiver,
-    detail::ControlPlaneReceiverImplementation& implementation,
-    detail::ControlReassemblyRecord& record)
+// Resource-policy rejections are the observable quota-failure events of this
+// component; protocol-level conflicts and malformed input are not counted.
+[[nodiscard]] bool IsResourcePolicyRejection(
+    const ProtocolErrorCode code) noexcept
 {
-    record.state = detail::ControlReassemblyState::PendingAdmission;
-
-    try
-    {
-        if (!record.fragmentsByIndex)
-        {
-            MarkConflict(record);
-            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-                ProtocolErrorCode::InternalInvariantViolation,
-                kFragmentIndexOffset);
-        }
-
-        if (record.fragmentsByIndex->size() !=
-            static_cast<std::size_t>(record.fragmentCount))
-        {
-            MarkConflict(record);
-            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-                ProtocolErrorCode::InternalInvariantViolation,
-                kFragmentCountOffset);
-        }
-
-        std::pmr::vector<std::byte> recordBytes(
-            implementation.reassemblyStorage.memoryResource.get());
-        recordBytes.reserve(record.totalRecordBytes);
-        std::size_t expectedFragmentIndex = 0;
-        for (const auto& [fragmentIndex, fragment] : *record.fragmentsByIndex)
-        {
-            if (static_cast<std::size_t>(fragmentIndex) !=
-                    expectedFragmentIndex ||
-                fragment.bytes.empty())
-            {
-                MarkConflict(record);
-                return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-                    ProtocolErrorCode::InternalInvariantViolation,
-                    kFragmentIndexOffset);
-            }
-            recordBytes.insert(
-                recordBytes.end(),
-                fragment.bytes.begin(),
-                fragment.bytes.end());
-            expectedFragmentIndex++;
-        }
-        if (expectedFragmentIndex !=
-            static_cast<std::size_t>(record.fragmentCount))
-        {
-            MarkConflict(record);
-            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-                ProtocolErrorCode::InternalInvariantViolation,
-                kFragmentIndexOffset);
-        }
-        if (recordBytes.size() != record.totalRecordBytes)
-        {
-            MarkConflict(record);
-            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-                ProtocolErrorCode::ControlFragmentConflict,
-                kFragmentTotalRecordBytesOffset);
-        }
-
-        auto admissionResult = receiver.ReceiveControlRecord(recordBytes);
-        if (!admissionResult)
-        {
-            if (!implementation.lastAdmissionFailureRetryable)
-            {
-                MarkConflict(record);
-            }
-            return FailureFrom<ControlFragmentReceiveResult>(
-                admissionResult.Error());
-        }
-
-        record.state = detail::ControlReassemblyState::Admitted;
-        return MakeAdmissionResult(std::move(admissionResult).Value());
-    }
-    catch (const detail::ControlReassemblyBudgetExceeded&)
-    {
-        return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-            ProtocolErrorCode::ControlReassemblyQuotaExceeded,
-            kFragmentTotalRecordBytesOffset);
-    }
-    catch (const std::bad_alloc&)
-    {
-        return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-            ProtocolErrorCode::ResourceExhausted,
-            kFragmentTotalRecordBytesOffset);
-    }
-    catch (const std::length_error&)
-    {
-        return ProtocolResult<ControlFragmentReceiveResult>::Failure(
-            ProtocolErrorCode::ResourceExhausted,
-            kFragmentTotalRecordBytesOffset);
-    }
+    return code == ProtocolErrorCode::ResourceLimitExceeded ||
+        code == ProtocolErrorCode::ResourceExhausted ||
+        code == ProtocolErrorCode::ControlReassemblyQuotaExceeded;
 }
 
 } // namespace
@@ -524,11 +439,36 @@ ProtocolResult<ControlRecordAdmission> ControlPlaneReceiver::ReceiveControlRecor
             ProtocolErrorCode::InternalInvariantViolation,
             0);
     }
-    return ParseValidateAndBind(recordBytes);
+
+    auto admissionResult = ParseValidateAndBind(recordBytes);
+    if (!admissionResult &&
+        IsResourcePolicyRejection(admissionResult.Error().code))
+    {
+        implementation_->rejectedByResourcePolicyCount++;
+    }
+    return std::move(admissionResult);
 }
 
 ProtocolResult<ControlFragmentReceiveResult>
 ControlPlaneReceiver::ReceiveControlFragment(
+    const std::span<const std::byte> fragmentBytes,
+    const std::uint64_t observationOrdinal)
+{
+    auto receiveResult = ReceiveControlFragmentCore(
+        fragmentBytes,
+        observationOrdinal);
+    if (!receiveResult &&
+        IsResourcePolicyRejection(receiveResult.Error().code))
+    {
+        // Counted here (not inside AttemptAdmission) so the fragment path and
+        // the record path each count exactly once per receive operation.
+        implementation_->rejectedByResourcePolicyCount++;
+    }
+    return std::move(receiveResult);
+}
+
+ProtocolResult<ControlFragmentReceiveResult>
+ControlPlaneReceiver::ReceiveControlFragmentCore(
     const std::span<const std::byte> fragmentBytes,
     const std::uint64_t observationOrdinal)
 {
@@ -793,6 +733,104 @@ ControlPlaneReceiver::ReceiveControlFragment(
     }
 }
 
+ProtocolResult<ControlFragmentReceiveResult>
+ControlPlaneReceiver::AttemptAdmission(
+    ControlPlaneReceiver& receiver,
+    detail::ControlPlaneReceiverImplementation& implementation,
+    detail::ControlReassemblyRecord& record)
+{
+    record.state = detail::ControlReassemblyState::PendingAdmission;
+
+    try
+    {
+        if (!record.fragmentsByIndex)
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::InternalInvariantViolation,
+                kFragmentIndexOffset);
+        }
+
+        if (record.fragmentsByIndex->size() !=
+            static_cast<std::size_t>(record.fragmentCount))
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::InternalInvariantViolation,
+                kFragmentCountOffset);
+        }
+
+        std::pmr::vector<std::byte> recordBytes(
+            implementation.reassemblyStorage.memoryResource.get());
+        recordBytes.reserve(record.totalRecordBytes);
+        std::size_t expectedFragmentIndex = 0;
+        for (const auto& [fragmentIndex, fragment] : *record.fragmentsByIndex)
+        {
+            if (static_cast<std::size_t>(fragmentIndex) !=
+                    expectedFragmentIndex ||
+                fragment.bytes.empty())
+            {
+                MarkConflict(record);
+                return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                    ProtocolErrorCode::InternalInvariantViolation,
+                    kFragmentIndexOffset);
+            }
+            recordBytes.insert(
+                recordBytes.end(),
+                fragment.bytes.begin(),
+                fragment.bytes.end());
+            expectedFragmentIndex++;
+        }
+        if (expectedFragmentIndex !=
+            static_cast<std::size_t>(record.fragmentCount))
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::InternalInvariantViolation,
+                kFragmentIndexOffset);
+        }
+        if (recordBytes.size() != record.totalRecordBytes)
+        {
+            MarkConflict(record);
+            return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+                ProtocolErrorCode::ControlFragmentConflict,
+                kFragmentTotalRecordBytesOffset);
+        }
+
+        auto admissionResult = receiver.ParseValidateAndBind(recordBytes);
+        if (!admissionResult)
+        {
+            if (!implementation.lastAdmissionFailureRetryable)
+            {
+                MarkConflict(record);
+            }
+            return FailureFrom<ControlFragmentReceiveResult>(
+                admissionResult.Error());
+        }
+
+        record.state = detail::ControlReassemblyState::Admitted;
+        return MakeAdmissionResult(std::move(admissionResult).Value());
+    }
+    catch (const detail::ControlReassemblyBudgetExceeded&)
+    {
+        return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+            ProtocolErrorCode::ControlReassemblyQuotaExceeded,
+            kFragmentTotalRecordBytesOffset);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+            ProtocolErrorCode::ResourceExhausted,
+            kFragmentTotalRecordBytesOffset);
+    }
+    catch (const std::length_error&)
+    {
+        return ProtocolResult<ControlFragmentReceiveResult>::Failure(
+            ProtocolErrorCode::ResourceExhausted,
+            kFragmentTotalRecordBytesOffset);
+    }
+}
+
 ProtocolStatus ControlPlaneReceiver::AdvanceObservationOrdinal(
     const std::uint64_t observationOrdinal) noexcept
 {
@@ -853,6 +891,13 @@ std::size_t ControlPlaneReceiver::ControlReassemblyBytesInUse() const noexcept
 {
     return implementation_
         ? implementation_->reassemblyStorage.memoryBudgetState->bytesInUse
+        : 0;
+}
+
+std::uint64_t ControlPlaneReceiver::GetRejectedByResourcePolicyCount() const noexcept
+{
+    return implementation_
+        ? implementation_->rejectedByResourcePolicyCount
         : 0;
 }
 

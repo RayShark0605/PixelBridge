@@ -50,6 +50,8 @@ TEST_CASE("SessionDescriptor enforces empty-file and resource semantics",
         pbprotocol::ProtocolErrorCode::UnsupportedProtocolMinor);
 
     resourcePolicy.maxAcceptedFileBytes = 116;
+    // Cross-field invariant: prompt threshold must stay <= file cap.
+    resourcePolicy.maxOutputPreallocationBytesWithoutPrompt = 100;
     const auto fileLimitStatus = pbprotocol::ValidateSessionDescriptor(
         pbprotocol::test::MakeSessionDescriptor(117, 1),
         resourcePolicy);
@@ -113,6 +115,15 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
         1024ULL * 1024ULL);
     REQUIRE(defaultPolicy.maxControlFragmentsPerRecord == 4096);
     REQUIRE(defaultPolicy.maxControlReassemblyInactivityObservations == 16384);
+    REQUIRE(defaultPolicy.maxOrphanTransportBytes ==
+        4ULL * 1024ULL * 1024ULL);
+    REQUIRE(defaultPolicy.maxOrphanTransportBlocks == 64);
+    // Bit-identical to the historical fixed zstd window log of 23.
+    REQUIRE(defaultPolicy.maxZstdWindowBytes ==
+        8ULL * 1024ULL * 1024ULL);
+    REQUIRE(defaultPolicy.maxResumeBytes == 256ULL * 1024ULL * 1024ULL);
+    REQUIRE(defaultPolicy.maxOutputPreallocationBytesWithoutPrompt ==
+        4ULL * 1024ULL * 1024ULL * 1024ULL);
 
     pbprotocol::ReceiverResourcePolicy impossiblePolicy =
         pbprotocol::test::MakeResourcePolicy();
@@ -403,6 +414,84 @@ TEST_CASE("Receiver resource policy rejects every unbounded sentinel independent
             std::numeric_limits<std::uint64_t>::max();
         REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
     }
+
+    SECTION("orphan transport bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxOrphanTransportBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("orphan transport blocks")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxOrphanTransportBlocks =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("zstd window bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxZstdWindowBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("resume bytes")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxResumeBytes =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+
+    SECTION("output preallocation prompt threshold")
+    {
+        auto resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+        resourcePolicy.maxOutputPreallocationBytesWithoutPrompt =
+            std::numeric_limits<std::uint64_t>::max();
+        REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy));
+    }
+}
+
+TEST_CASE("New receiver policy fields fail closed on zero and cross-field violations",
+          "[pbprotocol][descriptor][policy]")
+{
+    const pbprotocol::ReceiverResourcePolicy defaultPolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+
+    auto zeroOrphanBytes = defaultPolicy;
+    zeroOrphanBytes.maxOrphanTransportBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(zeroOrphanBytes));
+
+    auto zeroOrphanBlocks = defaultPolicy;
+    zeroOrphanBlocks.maxOrphanTransportBlocks = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(zeroOrphanBlocks));
+
+    auto zeroZstdWindow = defaultPolicy;
+    zeroZstdWindow.maxZstdWindowBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(zeroZstdWindow));
+
+    auto zeroResumeBudget = defaultPolicy;
+    zeroResumeBudget.maxResumeBytes = 0;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(zeroResumeBudget));
+
+    auto zeroPreallocationPrompt = defaultPolicy;
+    zeroPreallocationPrompt.maxOutputPreallocationBytesWithoutPrompt = 0;
+    REQUIRE_FALSE(
+        pbprotocol::ValidateReceiverResourcePolicy(zeroPreallocationPrompt));
+
+    // Cross-field: the prompt threshold may never exceed the accepted file cap.
+    auto contradictoryPrompt = defaultPolicy;
+    contradictoryPrompt.maxAcceptedFileBytes = 1ULL << 30;
+    contradictoryPrompt.maxOutputPreallocationBytesWithoutPrompt =
+        1ULL << 29;
+    REQUIRE(pbprotocol::ValidateReceiverResourcePolicy(contradictoryPrompt));
+    contradictoryPrompt.maxOutputPreallocationBytesWithoutPrompt =
+        (1ULL << 30) + 1ULL;
+    REQUIRE_FALSE(pbprotocol::ValidateReceiverResourcePolicy(contradictoryPrompt));
 }
 
 TEST_CASE("Finite values immediately below protocol policy sentinels are accepted",
@@ -514,6 +603,8 @@ TEST_CASE("Every receiver resource limit is inclusive and checked before use",
     pbprotocol::ReceiverResourcePolicy resourcePolicy =
         pbprotocol::test::MakeResourcePolicy();
     resourcePolicy.maxAcceptedFileBytes = 200;
+    // Cross-field invariant: prompt threshold must stay <= file cap.
+    resourcePolicy.maxOutputPreallocationBytesWithoutPrompt = 100;
     resourcePolicy.maxSegmentCount = 2;
     resourcePolicy.maxRawSegmentBytes = 100;
     resourcePolicy.maxEncodedSegmentBytes = 101;

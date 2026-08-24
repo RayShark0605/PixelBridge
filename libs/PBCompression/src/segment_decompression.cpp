@@ -74,9 +74,19 @@ static_assert(
 } // namespace
 
 DecompressionLimits MakeDecompressionLimits(
-    const pbprotocol::ReceiverResourcePolicy& resourcePolicy,
-    const std::uint32_t maxWindowLog) noexcept
+    const pbprotocol::ReceiverResourcePolicy& resourcePolicy) noexcept
 {
+    // floor(log2(maxZstdWindowBytes)) via a shift loop: at most 63 iterations,
+    // no overflow. A policy window below the codec minimum yields a log that
+    // ValidateDecompressionLimits rejects (fail closed), never a silent clamp.
+    std::uint32_t maxWindowLog = 0;
+    for (std::uint64_t windowBytes = resourcePolicy.maxZstdWindowBytes;
+         windowBytes > 1ULL;
+         windowBytes >>= 1U)
+    {
+        maxWindowLog++;
+    }
+
     DecompressionLimits limits;
     limits.maxOutputBytes = resourcePolicy.maxRawSegmentBytes;
     limits.maxWindowLog = maxWindowLog;
