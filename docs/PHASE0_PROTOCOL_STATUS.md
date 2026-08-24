@@ -301,6 +301,88 @@ decision requires a later recovery finalizer to sequentially read the actual
 `output.part`, compute the digest, compare it with the bound manifest, and only
 then perform the same-volume atomic rename.
 
+## PBInnerFec reference slice (DVB-S2 Short QC-LDPC, N=16200)
+
+`libs/PBInnerFec` (namespace `pbinnerfec`) implements the Phase-0
+correctness reference for the design document section 14 inner FEC: a
+deterministic encoder, a reference soft decoder (layered offset min-sum,
+saturating int32 messages, one fixed per-instance workspace), the
+structured syndrome check with early termination, and the frozen profile
+identity.
+
+Frozen profiles (protocol identity is
+`InnerFecProfileId + exact N/K + InnerFecMatrixId/MatrixDigest +
+canonical systematic bit order`; rate labels are never parsed back):
+
+| Profile | K | N-K | Q | lines | profileId |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Robust | 10800 | 5400 | 15 | 30 | `0x36BC661265E826C3` |
+| Balanced | 11880 | 4320 | 12 | 33 | `0xF01CACD38B344350` |
+| Fast | 13320 | 2880 | 8 | 37 | `0x24B794EB5A445D58` |
+
+The profile/matrix IDs are the first 8 bytes (little-endian) of
+BLAKE3-256 over `PixelBridge/InnerFecProfile/DVB-S2-Short-N16200-K<exact K>`
+and `PixelBridge/InnerFecMatrix/DVB-S2-Short-N16200-K<exact K>`; every other
+K (including the experimental K=14400), profileId, or matrixId is rejected
+fail-closed. Puncturing/shortening is `None` (exact K only).
+
+Conventions frozen by the public headers and pinned by tests:
+
+- canonical systematic bit order: codeword = [K information bits][N-K
+  parity bits] in natural DVB-S2 Short index order, packed LSB-first
+  (bit i = byte[i/8] bit i%8); information bit i sits in matrix line
+  i/360, within-line index i%360; parity bit j connects check rows j and
+  j+1 (sub-diagonal staircase, the ETSI/AFF3CT reference structure; row
+  contributions followed by the prefix-XOR chain P[j] = A[j] XOR P[j-1]).
+- LLR: int16, positive means bit 0 is more likely; hard decision
+  `llr[i] < 0 ? 1 : 0` (zero decides 0).
+- decode options (maxIterations, syndromeCheckInterval, offset,
+  scaleNum/scaleDen) are receiver-local capability, never wire fields
+  (design 14.2); the transport CRC32C of the recovered information bytes
+  remains the caller's final gate after early termination (design 14.3)
+  and is pinned by the CRC integration test.
+
+Matrix provenance: the embedded tables are the DVB-S2 Short FECFRAME
+matrices of ETSI EN 302 307-1 Table 5b, extracted from AFF3CT
+(aff3ct/aff3ct develop, commit `e8a65c5047262d97a15563b9edc961f69b2792cc`,
+file `include/Tools/Code/LDPC/Standard/DVBS2/DVBS2_constants_16200.hpp`,
+raw file SHA256
+`AF378CA17CA2F400B5ECECEC81BEC69BAE1BCD83788E0856D9C8BC106406F2C3`, BSD
+license), cross-checked value-for-value against an independent open-source
+transcription of Table 5b (freecores/dvb_s2_ldpc_decoder,
+`mti/dvbs2_hdef.txt` labels 2_3s / 11_15s / 37_45s) at extraction time and
+against a fresh fetch of the pinned upstream file (150/141/158 values per
+profile, zero delta). No AFF3CT code is linked and no third-party private
+structure is serialized.
+
+Golden vectors (pinned hex in the test suite): the three canonical
+matrix-serialization digests
+`c6d8eabe...e34dd3` / `2a491986...5342da3` / `720993e2...e77e76c`
+(full values in `test_inner_fec_profile.cpp`), the zero codeword, the
+all-ones codeword/parity digests (with the residue-class parity structure
+pin), the deterministic pattern codeword, nine seeded random codeword
+digests, and the unit-information parity digests. Verification evidence
+per profile: 200+ random codewords pass an independent explicit
+parity-check matrix H-c = 0; 1000 seeded vectors pass both the structured
+and the brute-force syndrome path; the decoder pins clean-channel one-pass
+recovery, single-bit correction in one pass at the error magnitude,
+deterministic small-flip correction (1/3/5/10/20/50 flips), over-capacity
+failure with the output untouched, the all-inverted and low-confidence
+(|LLR| = 1/5) boundaries, and the "a different valid codeword decodes as
+itself" gate that keeps the CRC decision with the caller.
+
+Verification boundary (declared): this machine has no AFF3CT runtime
+oracle, so no cross-implementation decode benchmark runs here; the matrix
+identity is instead pinned by the three-source value-for-value check above
+and the golden digests. The reference decoder is a scalar CPU
+implementation (design 14.2 lists AVX2/AVX-512 as later work), and the
+slice intentionally excludes the DVB-S2 BCH outer code, the DVB-S2 bit
+interleaver (`InterleaveProfileId`), and the wire serialization of
+`InnerFecProfileId` inside the formal v1 SessionDescriptor (separate
+task). A future environment with AFF3CT installed should add an oracle
+regression comparing this encoder against the AFF3CT DVB-S2 encoder on
+identical information bits.
+
 ## Remaining Phase-0 Gate scope
 
 This status decision closes the ambiguity around the current descriptor bytes
