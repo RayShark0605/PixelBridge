@@ -157,7 +157,7 @@ function(PbValidateCoreTargetBoundaries librariesDirectory)
     endforeach()
 
     foreach(staticBaselineTarget IN ITEMS
-            PBCore PBProtocol PBCompression PBOuterFec PBReceiver)
+            PBCore PBProtocol PBCompression PBInnerFec PBOuterFec PBReceiver)
         if(TARGET "${staticBaselineTarget}")
             get_target_property(targetType "${staticBaselineTarget}" TYPE)
             if(NOT targetType STREQUAL "STATIC_LIBRARY")
