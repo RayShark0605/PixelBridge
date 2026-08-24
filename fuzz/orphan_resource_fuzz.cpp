@@ -23,7 +23,7 @@ constexpr std::size_t kMaximumGeneratedInputBytes = 256;
 constexpr std::uint64_t kDefaultIterations = 100000;
 constexpr std::uint64_t kDefaultSeed = 0xF00DBA5EBADCAFE1ULL;
 // [op][sessionTag][segmentOrdinal][outerBlockId][payloadLength]
-// [observationLow][hasObservationFlag][reserved]
+// [observationLow][hasObservationFlag][reservationSizeIndex]
 constexpr std::size_t kOperationRecordBytes = 8;
 
 [[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeFuzzResourcePolicy() noexcept
@@ -137,9 +137,11 @@ void ExerciseOrphanOperations(
             cache.ClearSession(sessionTag);
             break;
         default:
-            // Stateless gate: the returned status is the observable event.
+            // Stateless gate: the returned status is the observable event. The
+            // record's final byte selects one of eight boundary sizes so every
+            // entry of reservationBoundarySizes stays reachable by mutation.
             static_cast<void>(pbprotocol::EvaluateOutputReservation(
-                reservationBoundarySizes[operationCode % 8ULL], resourcePolicy));
+                reservationBoundarySizes[readByte(7) % 8ULL], resourcePolicy));
             break;
         }
     }
