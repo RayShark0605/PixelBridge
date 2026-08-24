@@ -17,6 +17,11 @@ namespace detail
 struct OuterFecDecoderResourceState;
 }
 
+namespace test
+{
+class DecoderTestAccess;
+}
+
 // Owns the receiver-wide Outer FEC decoder admission state. Wirehair and
 // DirectRepeat decoders must share one manager so neither mode can bypass the
 // active-decoder or aggregate-memory caps. Reservations keep the underlying
@@ -55,6 +60,7 @@ public:
 private:
     friend class DirectRepeatDecoder;
     friend class WirehairV2Decoder;
+    friend class test::DecoderTestAccess;
 
     OuterFecDecoderResourceManager() noexcept = default;
 

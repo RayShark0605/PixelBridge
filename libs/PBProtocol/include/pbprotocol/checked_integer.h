@@ -64,6 +64,30 @@ template <std::unsigned_integral ValueType>
         static_cast<ValueType>(left * right));
 }
 
+// Telemetry counters must never appear to decrease after long-running hostile
+// input. These helpers deliberately saturate rather than report an arithmetic
+// error because telemetry is observational and must not alter admission flow.
+template <std::unsigned_integral ValueType>
+void SaturatingIncrementUnsigned(ValueType& value) noexcept
+{
+    if (value != std::numeric_limits<ValueType>::max())
+    {
+        value++;
+    }
+}
+
+template <std::unsigned_integral ValueType>
+[[nodiscard]] ValueType SaturatingAddUnsigned(
+    const ValueType left,
+    const ValueType right) noexcept
+{
+    if (right > std::numeric_limits<ValueType>::max() - left)
+    {
+        return std::numeric_limits<ValueType>::max();
+    }
+    return static_cast<ValueType>(left + right);
+}
+
 // Checked addition with an inclusive upper bound: the sum must both fit in
 // ValueType and not exceed limit. Overflow is reported before the limit check
 // so a wrapping sum can never be misclassified as LengthLimitExceeded.

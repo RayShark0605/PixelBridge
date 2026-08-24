@@ -730,6 +730,7 @@ struct WirehairV2DecoderImplementation
 {
     void* codecHandle = nullptr;
     const WirehairV2Backend* backend = nullptr;
+    pbprotocol::EncodedDigest expectedDigest{};
     std::uint64_t encodedSize = 0;
     std::uint32_t outerBlockBytes = 0;
     std::uint32_t blockCount = 0;
@@ -1117,6 +1118,24 @@ void WirehairV2Decoder::Release() noexcept
 }
 
 OuterFecResult<WirehairV2Decoder> WirehairV2Decoder::Create(
+    const pbprotocol::BoundSegmentDescriptor& boundSegmentDescriptor,
+    const std::uint32_t expectedOuterBlockBytes,
+    const OuterFecDecoderResourceManager& resourceManager)
+{
+    if (boundSegmentDescriptor.GetDescriptor().outerBlockBytes !=
+        expectedOuterBlockBytes)
+    {
+        return OuterFecResult<WirehairV2Decoder>::Failure(
+            OuterFecErrorCode::OuterBlockBytesMismatch,
+            boundSegmentDescriptor.GetDescriptor().outerBlockBytes);
+    }
+    return CreateFromDescriptor(
+        boundSegmentDescriptor.GetDescriptor(),
+        resourceManager);
+}
+
+OuterFecResult<WirehairV2Decoder>
+WirehairV2Decoder::CreateFromDescriptor(
     const pbprotocol::SegmentDescriptor& segmentDescriptor,
     const OuterFecDecoderResourceManager& resourceManager)
 {
@@ -1229,6 +1248,7 @@ OuterFecResult<WirehairV2Decoder> WirehairV2Decoder::Create(
 
     implementation->codecHandle = codecGuard.Release();
     implementation->backend = validated.backend;
+    implementation->expectedDigest = segmentDescriptor.encodedDigest;
     implementation->encodedSize = segmentDescriptor.encodedSize;
     implementation->outerBlockBytes = segmentDescriptor.outerBlockBytes;
     implementation->blockCount = validated.blockCount;
@@ -1416,6 +1436,29 @@ OuterFecResult<std::uint64_t> WirehairV2Decoder::Recover(
         const OuterFecError error{
             OuterFecErrorCode::CodecError,
             recoveredBytes};
+        implementation_->terminalError = error;
+        return FailureFrom<std::uint64_t>(error);
+    }
+
+    const auto recoveredSizeResult = pbprotocol::CheckedUint64ToSize(
+        recoveredBytes);
+    if (!recoveredSizeResult)
+    {
+        const OuterFecError error{
+            OuterFecErrorCode::EncodedSizeMismatch,
+            recoveredBytes};
+        implementation_->terminalError = error;
+        return FailureFrom<std::uint64_t>(error);
+    }
+    const std::span<const std::byte> recoveredPayload = output.first(
+        recoveredSizeResult.Value());
+    const pbprotocol::EncodedDigest actualDigest{
+        pbprotocol::ComputeBlake3Digest(recoveredPayload)};
+    if (actualDigest != implementation_->expectedDigest)
+    {
+        const OuterFecError error{
+            OuterFecErrorCode::EncodedDigestMismatch,
+            0};
         implementation_->terminalError = error;
         return FailureFrom<std::uint64_t>(error);
     }

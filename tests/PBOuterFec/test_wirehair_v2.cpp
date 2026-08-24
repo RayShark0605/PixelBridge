@@ -1,5 +1,7 @@
 #include "pbouterfec/wirehair_v2.h"
 
+#include "decoder_test_access.h"
+
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/descriptor_codec.h"
 
@@ -203,7 +205,7 @@ TEST_CASE("Wirehair V2 Carousel preserves a valid nonzero seed attempt")
     }
 
     auto resourceManager = MakeDecoderResourceManager();
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         descriptor, resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -237,7 +239,7 @@ TEST_CASE("Wirehair V2 systematic blocks recover the exact segment")
 
     const pbprotocol::SegmentDescriptor descriptor = MakeDescriptor(
         message, kBlockBytes, encoder.GetSerializedProfile());
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         descriptor, resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -262,6 +264,51 @@ TEST_CASE("Wirehair V2 systematic blocks recover the exact segment")
     }
 
     RequireRecoveryEquals(decoder, message);
+}
+
+TEST_CASE("Wirehair V2 recovery verifies the bound encoded digest")
+{
+    auto resourceManager = MakeDecoderResourceManager();
+    const std::vector<std::byte> message = MakeMessage(kMessageBytes);
+    auto encoderResult = pbouterfec::WirehairV2Encoder::Create(
+        message,
+        kBlockBytes);
+    REQUIRE(encoderResult);
+    pbouterfec::WirehairV2Encoder encoder =
+        std::move(encoderResult).Value();
+
+    pbprotocol::SegmentDescriptor descriptor = MakeDescriptor(
+        message,
+        kBlockBytes,
+        encoder.GetSerializedProfile());
+    descriptor.encodedDigest.bytes[0] ^= Byte(0x80);
+    auto decoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
+            descriptor,
+            resourceManager);
+    REQUIRE(decoderResult);
+    pbouterfec::WirehairV2Decoder decoder =
+        std::move(decoderResult).Value();
+
+    for (std::uint32_t blockId = 0;
+         blockId < encoder.GetBlockCount();
+         blockId++)
+    {
+        const auto decodeResult = decoder.DecodeBlock(
+            blockId,
+            MakeEncodedBlock(encoder, blockId));
+        REQUIRE(decodeResult);
+    }
+
+    std::vector<std::byte> recovered(message.size());
+    const auto recoverResult = decoder.Recover(recovered);
+    REQUIRE_FALSE(recoverResult);
+    REQUIRE(recoverResult.Error().code ==
+        pbouterfec::OuterFecErrorCode::EncodedDigestMismatch);
+    const auto repeatedRecoverResult = decoder.Recover(recovered);
+    REQUIRE_FALSE(repeatedRecoverResult);
+    REQUIRE(repeatedRecoverResult.Error().code ==
+        pbouterfec::OuterFecErrorCode::InvalidState);
 }
 
 TEST_CASE("Wirehair V2 concurrent decoder admission never exceeds the shared quota")
@@ -302,7 +349,7 @@ TEST_CASE("Wirehair V2 concurrent decoder admission never exceeds the shared quo
                 std::this_thread::yield();
             }
 
-            auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+            auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
                 descriptor, resourceManager);
             const bool succeeded = decoderResult.HasValue();
             if (succeeded)
@@ -359,7 +406,7 @@ TEST_CASE("Wirehair V2 repair-only decoding has a finite repair window")
         std::move(encoderResult).Value();
     const pbprotocol::SegmentDescriptor descriptor = MakeDescriptor(
         message, kBlockBytes, encoder.GetSerializedProfile());
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         descriptor, resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -396,7 +443,7 @@ TEST_CASE("Wirehair V2 accepts a fixed out-of-order systematic and repair mix")
         std::move(encoderResult).Value();
     const pbprotocol::SegmentDescriptor descriptor = MakeDescriptor(
         message, kBlockBytes, encoder.GetSerializedProfile());
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         descriptor, resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -434,7 +481,7 @@ TEST_CASE("Wirehair V2 duplicate IDs are idempotent and conflicts are terminal")
         std::move(encoderResult).Value();
     const pbprotocol::SegmentDescriptor descriptor = MakeDescriptor(
         message, kBlockBytes, encoder.GetSerializedProfile());
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         descriptor, resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -628,7 +675,7 @@ TEST_CASE("Wirehair V2 rejects malformed and mismatched descriptors")
         descriptor.wirehairV2SerializedProfile->bytes[mutation.byteOffset] =
             mutation.value;
         const auto decoderResult =
-            pbouterfec::WirehairV2Decoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
                 descriptor, resourceManager);
         REQUIRE_FALSE(decoderResult);
         REQUIRE(decoderResult.Error().code == mutation.expectedError);
@@ -637,7 +684,7 @@ TEST_CASE("Wirehair V2 rejects malformed and mismatched descriptors")
     pbprotocol::SegmentDescriptor messageMismatch = validDescriptor;
     messageMismatch.encodedSize++;
     const auto messageMismatchResult =
-        pbouterfec::WirehairV2Decoder::Create(
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             messageMismatch, resourceManager);
     REQUIRE_FALSE(messageMismatchResult);
     REQUIRE(messageMismatchResult.Error().code
@@ -646,7 +693,7 @@ TEST_CASE("Wirehair V2 rejects malformed and mismatched descriptors")
     pbprotocol::SegmentDescriptor blockMismatch = validDescriptor;
     blockMismatch.outerBlockBytes++;
     const auto blockMismatchResult =
-        pbouterfec::WirehairV2Decoder::Create(
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             blockMismatch, resourceManager);
     REQUIRE_FALSE(blockMismatchResult);
     REQUIRE(blockMismatchResult.Error().code
@@ -654,12 +701,12 @@ TEST_CASE("Wirehair V2 rejects malformed and mismatched descriptors")
 
     pbprotocol::SegmentDescriptor missingProfile = validDescriptor;
     missingProfile.wirehairV2SerializedProfile.reset();
-    REQUIRE_FALSE(pbouterfec::WirehairV2Decoder::Create(
+    REQUIRE_FALSE(pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         missingProfile, resourceManager));
 
     pbprotocol::SegmentDescriptor wrongMode = validDescriptor;
     wrongMode.outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
-    REQUIRE_FALSE(pbouterfec::WirehairV2Decoder::Create(
+    REQUIRE_FALSE(pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         wrongMode, resourceManager));
 }
 
@@ -691,7 +738,7 @@ TEST_CASE("Wirehair mixed profiles reject odd blocks and remain outside admissio
         kBlockBytes,
         mixedEncoder.GetSerializedProfile());
     const auto mixedDecoderResult =
-        pbouterfec::WirehairV2Decoder::Create(
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             mixedDescriptor, resourceManager);
     REQUIRE_FALSE(mixedDecoderResult);
     REQUIRE(mixedDecoderResult.Error().code
@@ -728,7 +775,7 @@ TEST_CASE("Wirehair V2 BufferTooSmall paths are transactional and retriable")
 
     const pbprotocol::SegmentDescriptor descriptor = MakeDescriptor(
         message, kBlockBytes, encoder.GetSerializedProfile());
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         descriptor, resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =

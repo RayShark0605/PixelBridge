@@ -8,4 +8,5 @@ target_link_libraries(PixelBridgeDecoder
     PRIVATE
         PB::CompilerSettings
         PB::PBCore
-        PB::PBProtocol)
+        PB::PBProtocol
+        PB::PBReceiver)

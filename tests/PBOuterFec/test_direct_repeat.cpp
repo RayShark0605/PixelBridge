@@ -1,6 +1,8 @@
 #include "pbouterfec/direct_repeat.h"
 #include "pbouterfec/wirehair_v2.h"
 
+#include "decoder_test_access.h"
+
 #include "pbcompression/segment_compression.h"
 #include "pbcompression/segment_decompression.h"
 #include "pbprotocol/blake3_digest.h"
@@ -137,7 +139,7 @@ struct DirectBlock
     const pbprotocol::SegmentDescriptor& descriptor,
     const pbouterfec::OuterFecDecoderResourceManager& resourceManager)
 {
-    auto decoderResult = pbouterfec::DirectRepeatDecoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor, descriptor.outerBlockBytes, resourceManager);
     REQUIRE(decoderResult);
     return std::move(decoderResult).Value();
@@ -298,7 +300,7 @@ TEST_CASE("DirectRepeat zero-byte path emits no blocks or segment descriptor",
     const pbprotocol::SegmentDescriptor zeroDescriptor =
         MakeDirectDescriptor(emptySegment, 4096);
     auto resourceManager = MakeResourceManager();
-    const auto decoderResult = pbouterfec::DirectRepeatDecoder::Create(
+    const auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         zeroDescriptor, zeroDescriptor.outerBlockBytes, resourceManager);
     REQUIRE_FALSE(decoderResult);
     REQUIRE(decoderResult.Error().code ==
@@ -869,7 +871,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
     {
         auto profileManager = MakeResourceManager();
         const auto profileMismatchResult =
-            pbouterfec::DirectRepeatDecoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
                 descriptor, 15, profileManager);
         REQUIRE_FALSE(profileMismatchResult);
         REQUIRE(profileMismatchResult.Error().code ==
@@ -885,7 +887,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         directCountPolicy.maxDirectRepeatBlockCount = 4;
         auto directCountManager = MakeResourceManager(directCountPolicy);
         const auto directCountResult =
-            pbouterfec::DirectRepeatDecoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
                 descriptor,
                 descriptor.outerBlockBytes,
                 directCountManager);
@@ -900,7 +902,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         directCountPolicy.maxDirectRepeatBlockCount = 5;
         auto exactCountManager = MakeResourceManager(directCountPolicy);
         const auto exactCountResult =
-            pbouterfec::DirectRepeatDecoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
                 descriptor,
                 descriptor.outerBlockBytes,
                 exactCountManager);
@@ -914,7 +916,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
             MakeDirectDescriptor(message, 1);
         auto defaultCountManager = MakeResourceManager();
         const auto defaultCountResult =
-            pbouterfec::DirectRepeatDecoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
                 oneByteBlockDescriptor,
                 oneByteBlockDescriptor.outerBlockBytes,
                 defaultCountManager);
@@ -931,7 +933,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         pbprotocol::GetDefaultReceiverResourcePolicy();
     encodedPolicy.maxEncodedSegmentBytes = message.size() - 1;
     auto encodedManager = MakeResourceManager(encodedPolicy);
-    const auto encodedLimitResult = pbouterfec::DirectRepeatDecoder::Create(
+    const auto encodedLimitResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor, descriptor.outerBlockBytes, encodedManager);
     REQUIRE_FALSE(encodedLimitResult);
     REQUIRE(encodedLimitResult.Error().code ==
@@ -943,7 +945,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         pbprotocol::GetDefaultReceiverResourcePolicy();
     blockPolicy.maxOuterBlockBytes = 15;
     auto blockManager = MakeResourceManager(blockPolicy);
-    const auto blockLimitResult = pbouterfec::DirectRepeatDecoder::Create(
+    const auto blockLimitResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor, descriptor.outerBlockBytes, blockManager);
     REQUIRE_FALSE(blockLimitResult);
     REQUIRE(blockLimitResult.Error().code ==
@@ -992,7 +994,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         pbprotocol::GetDefaultReceiverResourcePolicy();
     perDecoderPolicy.maxOuterFecDecoderBytes = reservationBytes - 1;
     auto perDecoderManager = MakeResourceManager(perDecoderPolicy);
-    const auto perDecoderResult = pbouterfec::DirectRepeatDecoder::Create(
+    const auto perDecoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor, descriptor.outerBlockBytes, perDecoderManager);
     REQUIRE_FALSE(perDecoderResult);
     REQUIRE(perDecoderResult.Error().code ==
@@ -1007,7 +1009,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
     {
         pbouterfec::DirectRepeatDecoder decoder = MakeDirectDecoder(
             descriptor, countManager);
-        const auto secondResult = pbouterfec::DirectRepeatDecoder::Create(
+        const auto secondResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
             descriptor, descriptor.outerBlockBytes, countManager);
         REQUIRE_FALSE(secondResult);
         REQUIRE(secondResult.Error().code ==
@@ -1031,7 +1033,7 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
         REQUIRE(aggregateManager.GetActiveDecoderCount() == 2);
         REQUIRE(aggregateManager.GetReservedDecoderBytes() ==
             reservationBytes * 2);
-        const auto thirdResult = pbouterfec::DirectRepeatDecoder::Create(
+        const auto thirdResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
             descriptor, descriptor.outerBlockBytes, aggregateManager);
         REQUIRE_FALSE(thirdResult);
         REQUIRE(thirdResult.Error().code ==
@@ -1068,7 +1070,7 @@ TEST_CASE("DirectRepeat allocation failure rolls back shared reservation",
     descriptor.encodedSize = impossibleEncodedSize;
     descriptor.outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
     descriptor.outerBlockBytes = outerBlockBytes;
-    const auto decoderResult = pbouterfec::DirectRepeatDecoder::Create(
+    const auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor, descriptor.outerBlockBytes, resourceManager);
     REQUIRE_FALSE(decoderResult);
     REQUIRE(decoderResult.Error().code ==
@@ -1114,7 +1116,7 @@ TEST_CASE("DirectRepeat resource manager serializes concurrent admission and rel
                     {
                         startBarrier.arrive_and_wait();
                         auto decoderResult =
-                            pbouterfec::DirectRepeatDecoder::Create(
+                            pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
                                 descriptor,
                                 descriptor.outerBlockBytes,
                                 resourceManager);
@@ -1261,7 +1263,7 @@ TEST_CASE("DirectRepeat reservation safely outlives resource manager",
     std::optional<pbouterfec::DirectRepeatDecoder> decoder;
     {
         auto resourceManager = MakeResourceManager();
-        auto decoderResult = pbouterfec::DirectRepeatDecoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
             descriptor, descriptor.outerBlockBytes, resourceManager);
         REQUIRE(decoderResult);
         decoder.emplace(std::move(decoderResult).Value());
@@ -1315,7 +1317,7 @@ TEST_CASE("DirectRepeat and Wirehair share one receiver-wide quota",
         }
         {
             auto wirehairDecoderResult =
-                pbouterfec::WirehairV2Decoder::Create(
+                pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
                     wirehairDescriptor, probeManager);
             REQUIRE(wirehairDecoderResult);
             pbouterfec::WirehairV2Decoder wirehairDecoder =
@@ -1337,20 +1339,20 @@ TEST_CASE("DirectRepeat and Wirehair share one receiver-wide quota",
         pbouterfec::DirectRepeatDecoder directDecoder = MakeDirectDecoder(
             directDescriptor, activeManager);
         const auto blockedWirehairResult =
-            pbouterfec::WirehairV2Decoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
                 wirehairDescriptor, activeManager);
         REQUIRE_FALSE(blockedWirehairResult);
         REQUIRE(blockedWirehairResult.Error().code ==
             pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
     }
     {
-        auto wirehairDecoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto wirehairDecoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             wirehairDescriptor, activeManager);
         REQUIRE(wirehairDecoderResult);
         pbouterfec::WirehairV2Decoder wirehairDecoder =
             std::move(wirehairDecoderResult).Value();
         const auto blockedDirectResult =
-            pbouterfec::DirectRepeatDecoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
                 directDescriptor,
                 directDescriptor.outerBlockBytes,
                 activeManager);
@@ -1372,7 +1374,7 @@ TEST_CASE("DirectRepeat and Wirehair share one receiver-wide quota",
     {
         pbouterfec::DirectRepeatDecoder directDecoder = MakeDirectDecoder(
             directDescriptor, aggregateManager);
-        auto wirehairDecoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto wirehairDecoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             wirehairDescriptor, aggregateManager);
         REQUIRE(wirehairDecoderResult);
         pbouterfec::WirehairV2Decoder wirehairDecoder =
@@ -1382,7 +1384,7 @@ TEST_CASE("DirectRepeat and Wirehair share one receiver-wide quota",
             combinedReservationBytes);
 
         const auto blockedDirectResult =
-            pbouterfec::DirectRepeatDecoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
                 directDescriptor,
                 directDescriptor.outerBlockBytes,
                 aggregateManager);
@@ -1390,7 +1392,7 @@ TEST_CASE("DirectRepeat and Wirehair share one receiver-wide quota",
         REQUIRE(blockedDirectResult.Error().code ==
             pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
         const auto blockedWirehairResult =
-            pbouterfec::WirehairV2Decoder::Create(
+            pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
                 wirehairDescriptor, aggregateManager);
         REQUIRE_FALSE(blockedWirehairResult);
         REQUIRE(blockedWirehairResult.Error().code ==
@@ -1483,4 +1485,39 @@ TEST_CASE("Highly compressed segment completes through DirectRepeat",
     REQUIRE(decompressionResult.Value() == rawSegment);
     REQUIRE(pbprotocol::ComputeBlake3Digest(
         decompressionResult.Value()) == segmentDescriptor.rawDigest.bytes);
+}
+
+TEST_CASE("Outer FEC quota telemetry saturates instead of wrapping",
+          "[pbouterfec][resource][telemetry]")
+{
+    const std::vector<std::byte> message = MakeMessage(2);
+    const pbprotocol::SegmentDescriptor descriptor =
+        MakeDirectDescriptor(message, 2);
+    pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    resourcePolicy.maxEncodedSegmentBytes = 1;
+    auto resourceManager = MakeResourceManager(resourcePolicy);
+    constexpr std::uint64_t maximumCount =
+        std::numeric_limits<std::uint64_t>::max();
+    pbouterfec::test::DecoderTestAccess::SetQuotaExceededCount(
+        resourceManager,
+        maximumCount - 1ULL);
+
+    const auto firstResult =
+        pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
+            descriptor,
+            descriptor.outerBlockBytes,
+            resourceManager);
+    REQUIRE_FALSE(firstResult);
+    REQUIRE(firstResult.Error().code ==
+        pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
+    REQUIRE(resourceManager.GetQuotaExceededCount() == maximumCount);
+
+    const auto secondResult =
+        pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
+            descriptor,
+            descriptor.outerBlockBytes,
+            resourceManager);
+    REQUIRE_FALSE(secondResult);
+    REQUIRE(resourceManager.GetQuotaExceededCount() == maximumCount);
 }

@@ -1,5 +1,7 @@
 #include "pbouterfec/wirehair_v2.h"
 
+#include "decoder_test_access.h"
+
 #include "pbprotocol/blake3_digest.h"
 
 #include <algorithm>
@@ -115,7 +117,7 @@ int main(const int argumentCount, char* arguments[])
     {
         auto encoderResult = pbouterfec::WirehairV2Encoder::Recreate(
             message, descriptor);
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             descriptor, resourceManager);
         if (!encoderResult || !decoderResult)
         {

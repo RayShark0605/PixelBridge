@@ -15,6 +15,7 @@ target_sources(PBProtocol
         src/descriptor_codec.cpp
         src/orphan_transport_block_cache.cpp
         src/output_reservation.cpp
+        src/pmr_byte_buffer.h
         src/protocol_types.cpp
         src/protocol_version.cpp
         src/resume_state.cpp

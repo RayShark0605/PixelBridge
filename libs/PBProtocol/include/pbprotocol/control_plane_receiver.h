@@ -20,6 +20,7 @@ struct ControlRecordAdmission
     SessionTag sessionTag{};
     DescriptorBindDisposition bindDisposition =
         DescriptorBindDisposition::Inserted;
+    std::optional<BoundSegmentDescriptor> boundSegmentDescriptor;
 
     bool operator==(const ControlRecordAdmission&) const = default;
 };
@@ -95,9 +96,27 @@ public:
     // fragment paths. Survives ResetControlReassembly(); telemetry only,
     // never serialized into wire bytes.
     [[nodiscard]] std::uint64_t GetRejectedByResourcePolicyCount() const noexcept;
+    // Set only when the immediately preceding receive operation failed after
+    // latching a known Session binding terminally. ReceiverIngress uses this
+    // bounded, non-wire diagnostic to release that Session's Data-plane
+    // resources. It is reset at the start of every receive operation.
+    [[nodiscard]] std::optional<SessionTag>
+    GetLastTerminalSessionTag() const noexcept;
     [[nodiscard]] bool IsTagAmbiguous(SessionTag sessionTag) const noexcept;
+    [[nodiscard]] ProtocolResult<SessionDescriptor> GetSessionDescriptor(
+        SessionTag sessionTag) const;
     [[nodiscard]] ProtocolResult<std::size_t> BoundSegmentCount(
         SessionTag sessionTag) const noexcept;
+    [[nodiscard]] ProtocolResult<BoundSegmentDescriptor>
+    GetBoundSegmentDescriptor(
+        SessionTag sessionTag,
+        std::uint64_t segmentOrdinal) const;
+    [[nodiscard]] ProtocolResult<bool> IsSegmentCompleted(
+        SessionTag sessionTag,
+        std::uint64_t segmentOrdinal) const;
+    [[nodiscard]] ProtocolStatus MarkSegmentCompleted(
+        SessionTag sessionTag,
+        std::uint64_t segmentOrdinal);
     [[nodiscard]] ProtocolResult<bool> HasFinalManifest(
         SessionTag sessionTag) const noexcept;
     [[nodiscard]] ProtocolStatus ValidateCompleteSegmentMap(

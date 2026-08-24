@@ -29,9 +29,10 @@ constexpr std::size_t kResumeRecordEnvelopeBytes = 18;
 // Parses and validates one resume record against the receiver resource policy.
 // Resume state is untrusted persistent input: full policy validation runs
 // first (InvalidResourcePolicy), then magic/version/reserved/length/CRC checks
-// fail closed with their specific codes, and the total record length must fit
-// maxResumeBytes (ResourceLimitExceeded). The returned vector owns a copy of
-// the payload; allocation failure fails closed with ResourceExhausted.
+// fail closed with their specific codes. Both the supplied input length and
+// the declared total record length must fit maxResumeBytes
+// (ResourceLimitExceeded). The returned vector owns a copy of the payload;
+// allocation failure fails closed with ResourceExhausted.
 [[nodiscard]] ProtocolResult<std::vector<std::byte>> ParseResumeRecord(
     std::span<const std::byte> input,
     const ReceiverResourcePolicy& resourcePolicy);

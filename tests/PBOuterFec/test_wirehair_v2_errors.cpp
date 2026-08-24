@@ -1,5 +1,7 @@
 #include "pbouterfec/wirehair_v2.h"
 
+#include "decoder_test_access.h"
+
 #include "pbprotocol/blake3_digest.h"
 #include "wirehair_v2_backend.h"
 
@@ -342,6 +344,10 @@ void FakeFree(void*)
     descriptor.encodedSize = 117;
     descriptor.outerBlockBytes = 16;
     descriptor.outerFecMode = pbprotocol::OuterFecMode::WirehairV2;
+    std::array<std::byte, 117> recoveredMessage{};
+    recoveredMessage.fill(Byte(0x6D));
+    descriptor.encodedDigest = pbprotocol::EncodedDigest{
+        pbprotocol::ComputeBlake3Digest(recoveredMessage)};
     descriptor.wirehairV2SerializedProfile =
         pbprotocol::WirehairV2SerializedProfile{kCanonicalProfile};
     return descriptor;
@@ -421,7 +427,7 @@ TEST_CASE("Wirehair V2 stable create errors are mapped and failure handles are f
         pbouterfec::detail::ScopedWirehairV2BackendOverride overrideBackend(
             backend);
 
-        const auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        const auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), resourceManager);
         REQUIRE_FALSE(decoderResult);
         REQUIRE(decoderResult.Error().code == errorCase.expectedError);
@@ -479,7 +485,7 @@ TEST_CASE("Wirehair V2 successful backend calls must report exact byte counts")
     state.decodeResult = pbouterfec::detail::kWirehairV2Success;
     state.recoverBytesOut = 116;
     {
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), resourceManager);
         REQUIRE(decoderResult);
         pbouterfec::WirehairV2Decoder decoder =
@@ -522,7 +528,7 @@ TEST_CASE("Wirehair V2 decoder rejects invalid and exceeded resource policies be
         pbprotocol::GetDefaultReceiverResourcePolicy();
     encodedPolicy.maxEncodedSegmentBytes = 116;
     auto encodedManager = MakeDecoderResourceManager(encodedPolicy);
-    const auto encodedLimitResult = pbouterfec::WirehairV2Decoder::Create(
+    const auto encodedLimitResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         MakeFakeDescriptor(), encodedManager);
     REQUIRE_FALSE(encodedLimitResult);
     REQUIRE(encodedLimitResult.Error().code ==
@@ -534,7 +540,7 @@ TEST_CASE("Wirehair V2 decoder rejects invalid and exceeded resource policies be
         pbprotocol::GetDefaultReceiverResourcePolicy();
     blockPolicy.maxOuterBlockBytes = 15;
     auto blockManager = MakeDecoderResourceManager(blockPolicy);
-    const auto blockLimitResult = pbouterfec::WirehairV2Decoder::Create(
+    const auto blockLimitResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         MakeFakeDescriptor(), blockManager);
     REQUIRE_FALSE(blockLimitResult);
     REQUIRE(blockLimitResult.Error().code ==
@@ -553,7 +559,7 @@ TEST_CASE("Wirehair V2 decoder reservations are inclusive and released exactly o
     auto probeManager = MakeDecoderResourceManager();
     std::uint64_t reservationBytes = 0;
     {
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), probeManager);
         REQUIRE(decoderResult);
         reservationBytes = probeManager.GetReservedDecoderBytes();
@@ -572,7 +578,7 @@ TEST_CASE("Wirehair V2 decoder reservations are inclusive and released exactly o
     belowPolicy.maxOuterFecDecoderBytes = reservationBytes - 1ULL;
     auto belowManager = MakeDecoderResourceManager(belowPolicy);
     const std::uint32_t backendCreatesBeforeRefusal = state.decoderCreateCount;
-    const auto belowResult = pbouterfec::WirehairV2Decoder::Create(
+    const auto belowResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         MakeFakeDescriptor(), belowManager);
     REQUIRE_FALSE(belowResult);
     REQUIRE(belowResult.Error().code ==
@@ -588,7 +594,7 @@ TEST_CASE("Wirehair V2 decoder reservations are inclusive and released exactly o
     exactPolicy.maxTotalOuterFecDecoderBytes = reservationBytes;
     auto exactManager = MakeDecoderResourceManager(exactPolicy);
     {
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), exactManager);
         REQUIRE(decoderResult);
         pbouterfec::WirehairV2Decoder decoder =
@@ -597,7 +603,7 @@ TEST_CASE("Wirehair V2 decoder reservations are inclusive and released exactly o
         REQUIRE(exactManager.GetReservedDecoderBytes() == reservationBytes);
 
         const std::uint32_t backendCreatesAtLimit = state.decoderCreateCount;
-        const auto countLimitResult = pbouterfec::WirehairV2Decoder::Create(
+        const auto countLimitResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), exactManager);
         REQUIRE_FALSE(countLimitResult);
         REQUIRE(countLimitResult.Error().code ==
@@ -623,7 +629,7 @@ TEST_CASE("Wirehair V2 aggregate reservation and failed backend creation roll ba
     auto probeManager = MakeDecoderResourceManager();
     std::uint64_t reservationBytes = 0;
     {
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), probeManager);
         REQUIRE(decoderResult);
         reservationBytes = probeManager.GetReservedDecoderBytes();
@@ -636,9 +642,9 @@ TEST_CASE("Wirehair V2 aggregate reservation and failed backend creation roll ba
     aggregatePolicy.maxTotalOuterFecDecoderBytes = reservationBytes * 2ULL;
     auto aggregateManager = MakeDecoderResourceManager(aggregatePolicy);
     {
-        auto firstResult = pbouterfec::WirehairV2Decoder::Create(
+        auto firstResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), aggregateManager);
-        auto secondResult = pbouterfec::WirehairV2Decoder::Create(
+        auto secondResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), aggregateManager);
         REQUIRE(firstResult);
         REQUIRE(secondResult);
@@ -647,7 +653,7 @@ TEST_CASE("Wirehair V2 aggregate reservation and failed backend creation roll ba
             reservationBytes * 2ULL);
 
         const std::uint32_t backendCreatesAtLimit = state.decoderCreateCount;
-        const auto aggregateLimitResult = pbouterfec::WirehairV2Decoder::Create(
+        const auto aggregateLimitResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), aggregateManager);
         REQUIRE_FALSE(aggregateLimitResult);
         REQUIRE(aggregateLimitResult.Error().code ==
@@ -661,7 +667,7 @@ TEST_CASE("Wirehair V2 aggregate reservation and failed backend creation roll ba
     state.decoderCreateResult = pbouterfec::detail::kWirehairV2OutOfMemory;
     state.returnHandleOnFailure = true;
     const std::uint32_t freesBeforeFailure = state.freeCount;
-    const auto failedResult = pbouterfec::WirehairV2Decoder::Create(
+    const auto failedResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         MakeFakeDescriptor(), failureManager);
     REQUIRE_FALSE(failedResult);
     REQUIRE(failedResult.Error().code ==
@@ -673,7 +679,7 @@ TEST_CASE("Wirehair V2 aggregate reservation and failed backend creation roll ba
     state.decoderCreateResult = pbouterfec::detail::kWirehairV2Success;
     state.returnHandleOnFailure = false;
     {
-        const auto retryResult = pbouterfec::WirehairV2Decoder::Create(
+        const auto retryResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), failureManager);
         REQUIRE(retryResult);
         REQUIRE(failureManager.GetActiveDecoderCount() == 1);
@@ -692,7 +698,7 @@ TEST_CASE("Wirehair V2 decoder reservation safely outlives its manager")
     std::optional<pbouterfec::WirehairV2Decoder> decoder;
     {
         auto resourceManager = MakeDecoderResourceManager();
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), resourceManager);
         REQUIRE(decoderResult);
         decoder.emplace(std::move(decoderResult).Value());
@@ -717,7 +723,7 @@ TEST_CASE("Wirehair V2 NeedMore is normal and ExtraInsufficient is terminal")
     pbouterfec::detail::ScopedWirehairV2BackendOverride overrideBackend(backend);
 
     {
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), resourceManager);
         REQUIRE(decoderResult);
         pbouterfec::WirehairV2Decoder decoder =
@@ -760,7 +766,7 @@ TEST_CASE("Wirehair V2 wrapper enforces a finite accepted-ID window")
     const WirehairV2Backend backend = MakeFakeBackend();
     pbouterfec::detail::ScopedWirehairV2BackendOverride overrideBackend(backend);
 
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         MakeFakeDescriptor(), resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -808,7 +814,7 @@ TEST_CASE("Wirehair V2 independently salted accepted-ID table bounds local probi
     pbouterfec::detail::ScopedWirehairV2AcceptedBlockHashSaltOverride
         overrideHashSalt(hashSalt);
 
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         MakeFakeDescriptor(), resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -858,7 +864,7 @@ TEST_CASE("Wirehair V2 fake recover BufferTooSmall is retriable")
     const WirehairV2Backend backend = MakeFakeBackend();
     pbouterfec::detail::ScopedWirehairV2BackendOverride overrideBackend(backend);
 
-    auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
         MakeFakeDescriptor(), resourceManager);
     REQUIRE(decoderResult);
     pbouterfec::WirehairV2Decoder decoder =
@@ -992,7 +998,7 @@ TEST_CASE("Wirehair V2 failed creation and moves release each fake handle once")
     REQUIRE(state.encodeCount == 1);
 
     {
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), resourceManager);
         REQUIRE(decoderResult);
         pbouterfec::WirehairV2Decoder decoder =
@@ -1042,7 +1048,7 @@ TEST_CASE("Wirehair V2 fake invalid and unknown decode results fail closed")
         pbouterfec::detail::ScopedWirehairV2BackendOverride overrideBackend(
             backend);
 
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             MakeFakeDescriptor(), resourceManager);
         REQUIRE(decoderResult);
         pbouterfec::WirehairV2Decoder decoder =

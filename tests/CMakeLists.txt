@@ -39,6 +39,7 @@ add_subdirectory(PBCore)
 add_subdirectory(PBProtocol)
 add_subdirectory(PBCompression)
 add_subdirectory(PBOuterFec)
+add_subdirectory(PBReceiver)
 add_subdirectory(CMake)
 
 if(TARGET PixelBridgeEncoder)

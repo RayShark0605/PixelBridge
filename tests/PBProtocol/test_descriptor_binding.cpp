@@ -13,6 +13,28 @@
 #include <new>
 #include <utility>
 
+namespace pbprotocol::test {
+
+class DescriptorBindingStateTestAccess
+{
+public:
+    [[nodiscard]] static ProtocolResult<bool> IsSegmentCompleted(
+        const DescriptorBindingState& state,
+        const std::uint64_t segmentOrdinal)
+    {
+        return state.IsSegmentCompleted(segmentOrdinal);
+    }
+
+    [[nodiscard]] static ProtocolStatus MarkSegmentCompleted(
+        DescriptorBindingState& state,
+        const std::uint64_t segmentOrdinal)
+    {
+        return state.MarkSegmentCompleted(segmentOrdinal);
+    }
+};
+
+} // namespace pbprotocol::test
+
 namespace {
 
 template <typename StateType>
@@ -314,6 +336,48 @@ TEST_CASE("Descriptor state budget rejects before growth and allocation failure 
             retryResult.Error().code ==
             pbprotocol::ProtocolErrorCode::ResourceExhausted);
     }
+}
+
+TEST_CASE("Completing a bound segment performs no late descriptor allocation",
+          "[pbprotocol][binding][resource][allocation]")
+{
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(1, 1);
+    pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    auto failingMemoryResource =
+        std::make_shared<FailOnAllocationMemoryResource>();
+    auto stateResult =
+        pbprotocol::DescriptorBindingState::CreateWithMemoryResource(
+            sessionDescriptor,
+            resourcePolicy,
+            failingMemoryResource);
+    REQUIRE(stateResult);
+    auto state = std::move(stateResult).Value();
+    REQUIRE(state.BindSegmentDescriptor(
+        pbprotocol::test::MakeDirectRepeatSegment(
+            sessionDescriptor, 0, 0, 1, 1)));
+
+    const std::uint64_t descriptorBytesBeforeCompletion =
+        state.DescriptorStateBytesInUse();
+    const std::size_t allocationsBeforeCompletion =
+        failingMemoryResource->OutstandingAllocations();
+    failingMemoryResource->FailAfterSuccessfulAllocations(0);
+
+    REQUIRE(pbprotocol::test::DescriptorBindingStateTestAccess::
+        MarkSegmentCompleted(state, 0));
+    const auto completedResult =
+        pbprotocol::test::DescriptorBindingStateTestAccess::
+            IsSegmentCompleted(state, 0);
+    REQUIRE(completedResult);
+    REQUIRE(completedResult.Value());
+    REQUIRE(state.DescriptorStateBytesInUse() ==
+        descriptorBytesBeforeCompletion);
+    REQUIRE(failingMemoryResource->OutstandingAllocations() ==
+        allocationsBeforeCompletion);
+    REQUIRE(pbprotocol::test::DescriptorBindingStateTestAccess::
+        MarkSegmentCompleted(state, 0));
+    REQUIRE_FALSE(state.HasTerminalError());
 }
 
 TEST_CASE("Moved descriptor state keeps its PMR storage alive in both destruction orders",

@@ -473,6 +473,18 @@ DirectRepeatDecoder& DirectRepeatDecoder::operator=(
 DirectRepeatDecoder::~DirectRepeatDecoder() = default;
 
 OuterFecResult<DirectRepeatDecoder> DirectRepeatDecoder::Create(
+    const pbprotocol::BoundSegmentDescriptor& boundSegmentDescriptor,
+    const std::uint32_t expectedOuterBlockBytes,
+    const OuterFecDecoderResourceManager& resourceManager)
+{
+    return CreateFromDescriptor(
+        boundSegmentDescriptor.GetDescriptor(),
+        expectedOuterBlockBytes,
+        resourceManager);
+}
+
+OuterFecResult<DirectRepeatDecoder>
+DirectRepeatDecoder::CreateFromDescriptor(
     const pbprotocol::SegmentDescriptor& segmentDescriptor,
     const std::uint32_t expectedOuterBlockBytes,
     const OuterFecDecoderResourceManager& resourceManager)

@@ -15,6 +15,8 @@ using pbprotocol::CheckedMultiplyUnsigned;
 using pbprotocol::CheckedNarrowUnsigned;
 using pbprotocol::ProtocolErrorCode;
 using pbprotocol::ProtocolResult;
+using pbprotocol::SaturatingAddUnsigned;
+using pbprotocol::SaturatingIncrementUnsigned;
 
 constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
 
@@ -180,4 +182,20 @@ TEST_CASE("CheckedAddWithinLimit works for narrower unsigned types",
         0xFFFFFFFFu, 1u, 0xFFFFFFFFu);
     REQUIRE_FALSE(overflowWins);
     REQUIRE(overflowWins.Error().code == ProtocolErrorCode::LengthOverflow);
+}
+
+TEST_CASE("Telemetry arithmetic saturates instead of wrapping",
+          "[pbprotocol][checked-integer][telemetry]")
+{
+    std::uint64_t counter = kMax - 1ULL;
+    SaturatingIncrementUnsigned(counter);
+    REQUIRE(counter == kMax);
+    SaturatingIncrementUnsigned(counter);
+    REQUIRE(counter == kMax);
+
+    REQUIRE(SaturatingAddUnsigned<std::uint64_t>(kMax - 4ULL, 4ULL) ==
+        kMax);
+    REQUIRE(SaturatingAddUnsigned<std::uint64_t>(kMax - 4ULL, 5ULL) ==
+        kMax);
+    REQUIRE(SaturatingAddUnsigned<std::uint32_t>(10U, 20U) == 30U);
 }

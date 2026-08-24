@@ -1,5 +1,7 @@
 #include "pbouterfec/wirehair_v2.h"
 
+#include "decoder_test_access.h"
+
 #include "pbprotocol/blake3_digest.h"
 
 #include <algorithm>
@@ -19,6 +21,12 @@ namespace {
 
 constexpr std::size_t kMaximumMessageBytes = 129;
 constexpr std::size_t kMaximumOperations = 32;
+
+[[noreturn]] void FailInvariant(const std::size_t sourceLine)
+{
+    std::cerr << "FUZZ_INVARIANT_FAILURE line=" << sourceLine << '\n';
+    std::abort();
+}
 
 [[nodiscard]] std::uint8_t GetByte(
     const std::span<const std::byte> input,
@@ -129,7 +137,7 @@ void ExerciseInput(const std::span<const std::byte> input)
             MakeResourcePolicy());
     if (!managerResult)
     {
-        std::abort();
+        FailInvariant(__LINE__);
     }
     pbouterfec::WirehairV2DecoderResourceManager resourceManager =
         std::move(managerResult).Value();
@@ -146,18 +154,18 @@ void ExerciseInput(const std::span<const std::byte> input)
         recreationBytes, descriptor);
     if (useChangedRecreationBytes && recreateResult)
     {
-        std::abort();
+        FailInvariant(__LINE__);
     }
 
     {
-        auto decoderResult = pbouterfec::WirehairV2Decoder::Create(
+        auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
             descriptor, resourceManager);
         if (!decoderResult)
         {
             if (resourceManager.GetActiveDecoderCount() != 0 ||
                 resourceManager.GetReservedDecoderBytes() != 0)
             {
-                std::abort();
+                FailInvariant(__LINE__);
             }
             return;
         }
@@ -166,7 +174,7 @@ void ExerciseInput(const std::span<const std::byte> input)
         if (resourceManager.GetActiveDecoderCount() != 1 ||
             resourceManager.GetReservedDecoderBytes() == 0)
         {
-            std::abort();
+            FailInvariant(__LINE__);
         }
 
         bool allAcceptedPayloadsAreEncoded =
@@ -244,7 +252,7 @@ void ExerciseInput(const std::span<const std::byte> input)
                 if (!duplicateResult ||
                     duplicateResult.Value() != decodeResult.Value())
                 {
-                    std::abort();
+                    FailInvariant(__LINE__);
                 }
             }
             if ((operationFlags & 4U) != 0 && !payload.empty())
@@ -256,7 +264,7 @@ void ExerciseInput(const std::span<const std::byte> input)
                 if (conflictResult || conflictResult.Error().code !=
                     pbouterfec::OuterFecErrorCode::OuterBlockConflict)
                 {
-                    std::abort();
+                    FailInvariant(__LINE__);
                 }
                 break;
             }
@@ -265,11 +273,27 @@ void ExerciseInput(const std::span<const std::byte> input)
             {
                 std::vector<std::byte> recovered(message.size());
                 const auto recoverResult = decoder.Recover(recovered);
-                if (!recoverResult ||
-                    recoverResult.Value() != message.size() ||
-                    (allAcceptedPayloadsAreEncoded && recovered != message))
+                if (!recoverResult)
                 {
-                    std::abort();
+                    if (allAcceptedPayloadsAreEncoded ||
+                        recoverResult.Error().code !=
+                            pbouterfec::OuterFecErrorCode::EncodedDigestMismatch)
+                    {
+                        FailInvariant(__LINE__);
+                    }
+                    const auto repeatedRecoverResult = decoder.Recover(
+                        recovered);
+                    if (repeatedRecoverResult ||
+                        repeatedRecoverResult.Error().code !=
+                            pbouterfec::OuterFecErrorCode::InvalidState)
+                    {
+                        FailInvariant(__LINE__);
+                    }
+                }
+                else if (recoverResult.Value() != message.size() ||
+                    recovered != message)
+                {
+                    FailInvariant(__LINE__);
                 }
                 break;
             }
@@ -279,7 +303,7 @@ void ExerciseInput(const std::span<const std::byte> input)
     if (resourceManager.GetActiveDecoderCount() != 0 ||
         resourceManager.GetReservedDecoderBytes() != 0)
     {
-        std::abort();
+        FailInvariant(__LINE__);
     }
 }
 

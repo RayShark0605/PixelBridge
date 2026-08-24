@@ -59,7 +59,8 @@ enum class ProtocolErrorCode : std::uint8_t
     // never serialized into wire bytes; keep the enum append-only so recorded
     // diagnostic values remain stable.
     OutputReservationDenied,
-    OrphanPayloadConflict
+    OrphanPayloadConflict,
+    UnknownSegment
 };
 
 struct ProtocolError

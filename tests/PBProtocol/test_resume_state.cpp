@@ -155,6 +155,7 @@ TEST_CASE("Resume record header violations fail with exact codes",
         std::span<const std::byte>(badVersionRecord), resourcePolicy);
     REQUIRE_FALSE(versionResult.HasValue());
     REQUIRE(versionResult.Error().code == ProtocolErrorCode::InvalidEnumValue);
+    REQUIRE(versionResult.Error().offset == 4);
 
     std::vector<std::byte> badReservedRecord = SerializeRecord(payload);
     badReservedRecord[5] = std::byte{1};
@@ -163,6 +164,7 @@ TEST_CASE("Resume record header violations fail with exact codes",
     REQUIRE_FALSE(reservedResult.HasValue());
     REQUIRE(reservedResult.Error().code
         == ProtocolErrorCode::NonZeroReservedByte);
+    REQUIRE(reservedResult.Error().offset == 5);
 }
 
 TEST_CASE("Resume record length fields fail closed on overflow and mismatch",
@@ -260,6 +262,15 @@ TEST_CASE("Resume record budget admits exactly up to maxResumeBytes",
     REQUIRE_FALSE(overBudgetResult.HasValue());
     REQUIRE(overBudgetResult.Error().code
         == ProtocolErrorCode::ResourceLimitExceeded);
+
+    std::vector<std::byte> actualLengthOverBudget = emptyRecord;
+    actualLengthOverBudget.push_back(std::byte{0});
+    const auto actualLengthResult = ParseResumeRecord(
+        actualLengthOverBudget,
+        MakeResumePolicy(kResumeRecordEnvelopeBytes));
+    REQUIRE_FALSE(actualLengthResult);
+    REQUIRE(actualLengthResult.Error().code ==
+        ProtocolErrorCode::ResourceLimitExceeded);
 }
 
 TEST_CASE("Resume state budget gate validates the whole record size",

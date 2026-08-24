@@ -1,5 +1,7 @@
 #include "pbouterfec/direct_repeat.h"
 
+#include "decoder_test_access.h"
+
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/descriptor_binding.h"
 #include "pbprotocol/orphan_transport_block_cache.h"
@@ -144,11 +146,26 @@ TEST_CASE("Orphan data blocks never create decoders before descriptor binding",
     // The descriptor is not bound yet: every block must land in the bounded
     // orphan cache (or be dropped), never in a decoder.
     REQUIRE(orphanCache.Admit(
-        sessionTag, 0, 0, blocks[0].paddedPayload, 5));
+        sessionTag,
+        0,
+        0,
+        static_cast<std::uint16_t>(blocks[0].payloadBytes),
+        blocks[0].paddedPayload,
+        5));
     REQUIRE(orphanCache.Admit(
-        sessionTag, 0, 1, blocks[1].paddedPayload, 6));
+        sessionTag,
+        0,
+        1,
+        static_cast<std::uint16_t>(blocks[1].payloadBytes),
+        blocks[1].paddedPayload,
+        6));
     REQUIRE(orphanCache.Admit(
-        sessionTag, 0, 2, blocks[2].paddedPayload, 7));
+        sessionTag,
+        0,
+        2,
+        static_cast<std::uint16_t>(blocks[2].payloadBytes),
+        blocks[2].paddedPayload,
+        7));
 
     // Core invariant: unknown-descriptor data created no decoder and reserved
     // no decoder bytes.
@@ -183,7 +200,9 @@ TEST_CASE("Orphan data blocks never create decoders before descriptor binding",
     {
         REQUIRE(drain.entries[blockIndex].outerBlockId ==
             static_cast<std::uint32_t>(blockIndex));
-        REQUIRE(drain.entries[blockIndex].payloadBytes ==
+        REQUIRE(drain.entries[blockIndex].declaredPayloadBytes ==
+            blocks[blockIndex].payloadBytes);
+        REQUIRE(drain.entries[blockIndex].paddedPayload ==
             blocks[blockIndex].paddedPayload);
     }
     REQUIRE(drain.waitObservations.has_value());
@@ -192,7 +211,7 @@ TEST_CASE("Orphan data blocks never create decoders before descriptor binding",
     REQUIRE(orphanCache.GetCachedBytes() == 0U);
 
     // Only now is a decoder created, and it consumes the drained bytes.
-    auto decoderResult = pbouterfec::DirectRepeatDecoder::Create(
+    auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
         descriptor,
         outerBlockBytes,
         resourceManager);
@@ -206,8 +225,8 @@ TEST_CASE("Orphan data blocks never create decoders before descriptor binding",
     {
         const auto decodeResult = decoder.DecodeBlock(
             drain.entries[blockIndex].outerBlockId,
-            blocks[blockIndex].payloadBytes,
-            drain.entries[blockIndex].payloadBytes);
+            drain.entries[blockIndex].declaredPayloadBytes,
+            drain.entries[blockIndex].paddedPayload);
         REQUIRE(decodeResult);
         const pbouterfec::DecodeDisposition expectedDisposition =
             blockIndex + 1U < drain.entries.size()
@@ -250,12 +269,27 @@ TEST_CASE("Orphan quota overflow drops the incoming block without eviction",
     const pbprotocol::SessionTag sessionTag =
         pbprotocol::DeriveSessionTag(session.sessionId);
     REQUIRE(orphanCache.Admit(
-        sessionTag, 0, 0, blocks[0].paddedPayload, 1));
+        sessionTag,
+        0,
+        0,
+        static_cast<std::uint16_t>(blocks[0].payloadBytes),
+        blocks[0].paddedPayload,
+        1));
     REQUIRE(orphanCache.Admit(
-        sessionTag, 0, 1, blocks[1].paddedPayload, 2));
+        sessionTag,
+        0,
+        1,
+        static_cast<std::uint16_t>(blocks[1].payloadBytes),
+        blocks[1].paddedPayload,
+        2));
 
     const auto overflowResult = orphanCache.Admit(
-        sessionTag, 0, 2, blocks[2].paddedPayload, 3);
+        sessionTag,
+        0,
+        2,
+        static_cast<std::uint16_t>(blocks[2].payloadBytes),
+        blocks[2].paddedPayload,
+        3);
     REQUIRE_FALSE(overflowResult);
     REQUIRE(overflowResult.Error().code ==
         pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);

@@ -72,6 +72,18 @@ constexpr std::uint64_t kForcedCollisionTagValue = 0x8877665544332211ULL;
     return pbprotocol::SessionTag{kForcedCollisionTagValue};
 }
 
+[[nodiscard]] pbprotocol::SessionTag DeriveSelectiveCollisionTag(
+    const pbprotocol::SessionId& sessionId) noexcept
+{
+    const std::uint8_t lastByte = std::to_integer<std::uint8_t>(
+        sessionId.bytes.back());
+    if (lastByte == 0xA1U || lastByte == 0xB2U)
+    {
+        return pbprotocol::SessionTag{kForcedCollisionTagValue};
+    }
+    return pbprotocol::SessionTag{lastByte};
+}
+
 [[nodiscard]] pbprotocol::SessionDescriptor MakeDistinctSessionDescriptor(
     const std::uint8_t lastSessionIdByte)
 {
@@ -147,6 +159,48 @@ TEST_CASE("Session registry rejects injected tag collisions without guessing",
     REQUIRE(
         originalRetry.Error().code ==
         pbprotocol::ProtocolErrorCode::SessionTagCollision);
+}
+
+TEST_CASE("Ambiguous SessionTag tombstones consume the bounded routing quota",
+          "[pbprotocol][session-registry][collision][resource]")
+{
+    pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::test::MakeResourcePolicy();
+    resourcePolicy.maxConcurrentSessions = 1;
+    resourcePolicy.maxTotalDescriptorStateBytes =
+        resourcePolicy.maxDescriptorStateBytes;
+
+    auto registryResult = pbprotocol::test::SessionRegistryTestAccess::
+        CreateWithSessionTagDeriver(
+            resourcePolicy,
+            &DeriveSelectiveCollisionTag);
+    REQUIRE(registryResult);
+    auto registry = std::move(registryResult).Value();
+
+    const pbprotocol::SessionDescriptor firstSession =
+        MakeDistinctSessionDescriptor(0xA1);
+    const pbprotocol::SessionDescriptor collidingSession =
+        MakeDistinctSessionDescriptor(0xB2);
+    const pbprotocol::SessionDescriptor distinctSession =
+        MakeDistinctSessionDescriptor(0xC3);
+    REQUIRE(registry.BindSessionDescriptor(firstSession));
+
+    const auto collisionResult = registry.BindSessionDescriptor(
+        collidingSession);
+    REQUIRE_FALSE(collisionResult);
+    REQUIRE(collisionResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::SessionTagCollision);
+    REQUIRE(registry.ActiveSessionCount() == 0);
+    REQUIRE(registry.IsTagAmbiguous(
+        pbprotocol::SessionTag{kForcedCollisionTagValue}));
+
+    const auto tombstoneQuotaResult = registry.BindSessionDescriptor(
+        distinctSession);
+    REQUIRE_FALSE(tombstoneQuotaResult);
+    REQUIRE(tombstoneQuotaResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+    REQUIRE(registry.ActiveSessionCount() == 0);
+    REQUIRE(registry.ReservedDescriptorStateBytes() == 0);
 }
 
 TEST_CASE("Session registry routes only established unique sessions",

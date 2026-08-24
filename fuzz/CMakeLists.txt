@@ -57,6 +57,14 @@ target_link_libraries(PBOuterFecDirectRepeatFuzz
         PB::CompilerSettings
         PB::PBOuterFec)
 
+target_include_directories(PBOuterFecWirehairV2Fuzz
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")
+
+target_include_directories(PBOuterFecDirectRepeatFuzz
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_definitions(PBProtocolDescriptorResourceFuzz
         PRIVATE
@@ -146,22 +154,31 @@ elseif(MSVC)
     target_compile_options(PBProtocol PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBCompression PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBOuterFec PRIVATE /Zi /fsanitize=address)
-    # The pinned vcpkg Wirehair archive is not ASan-instrumented and records
-    # MSVC STL container annotations as disabled. Match that ABI in the two
-    # PixelBridge targets that directly exchange STL-backed wrapper state;
-    # ordinary ASan memory instrumentation remains enabled.
-    target_compile_definitions(PBOuterFec
-        PRIVATE
-            _DISABLE_STRING_ANNOTATION
-            _DISABLE_VECTOR_ANNOTATION)
-    target_compile_definitions(PBOuterFecWirehairV2Fuzz
-        PRIVATE
-            _DISABLE_STRING_ANNOTATION
-            _DISABLE_VECTOR_ANNOTATION)
-    target_compile_definitions(PBOuterFecDirectRepeatFuzz
-        PRIVATE
-            _DISABLE_STRING_ANNOTATION
-            _DISABLE_VECTOR_ANNOTATION)
+    # The pinned vcpkg Wirehair archive records MSVC STL container annotations
+    # as disabled. A single executable must use one annotation setting across
+    # every linked C++ object (LNK2038). BoundSegmentDescriptor now makes the
+    # Outer-FEC fuzzers pull PBProtocol objects into the final link, so keep the
+    # entire fuzz-only C++ graph consistent. Ordinary ASan memory
+    # instrumentation remains enabled; only STL container annotations are
+    # disabled in this dedicated build tree.
+    foreach(pbMsvcAsanTarget IN ITEMS
+            PBProtocol
+            PBCompression
+            PBOuterFec
+            PBReceiver
+            PBProtocolDescriptorResourceFuzz
+            PBProtocolBootstrapControlFuzz
+            PBProtocolOrphanResourceFuzz
+            PBProtocolBootstrapControlStructuredSelfTest
+            PBCompressionZstdBoundaryFuzz
+            PBOuterFecWirehairV2Fuzz
+            PBOuterFecDirectRepeatFuzz)
+        target_compile_definitions(${pbMsvcAsanTarget}
+            PRIVATE
+                _DISABLE_STRING_ANNOTATION
+                _DISABLE_VECTOR_ANNOTATION)
+    endforeach()
+    unset(pbMsvcAsanTarget)
     target_compile_options(PBProtocolDescriptorResourceFuzz
         PRIVATE
             /Zi
@@ -429,8 +446,14 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/orphan-resource")
         foreach(pbOrphanResourceCorpusName IN ITEMS
                 valid-admit-sequence
+                full-count-duplicate-conflict
+                full-byte-duplicate-conflict
+                declared-length-conflict
+                noncanonical-padding
+                oversized-orphan
                 resume-record-valid
-                resume-record-corrupt)
+                resume-record-corrupt
+                resume-record-exact-limit)
             add_test(
                 NAME "PBProtocolOrphanResourceCorpus.${pbOrphanResourceCorpusName}"
                 COMMAND PBProtocolOrphanResourceFuzz
