@@ -461,8 +461,9 @@ TEST_CASE(
 {
     // Positive extreme: every hard decision is 0; the all-zero vector is
     // a valid codeword, so one pass must succeed. Negative extreme: every
-    // hard decision is 1; the all-ones vector is not a codeword (every
-    // profile has odd-degree rows), so decoding must fail closed with the
+    // hard decision is 1; the all-ones vector is not a codeword (an
+    // odd-degree row exists for every profile, pinned by the matrix
+    // structural test), so decoding must fail closed with the
     // output untouched. Both cases saturate the int16 LLR input domain.
     const InnerFecProfileId kProfileIds[] = {
         kInnerFecProfileIdRobust, kInnerFecProfileIdBalanced,
