@@ -282,10 +282,10 @@ TEST_CASE(
     // the documented derivation silently.
     const struct
     {
-        const char* profileString;
-        const char* matrixString;
-        InnerFecProfileId profileId;
-        InnerFecMatrixId matrixId;
+        const char* profileString = nullptr;
+        const char* matrixString = nullptr;
+        InnerFecProfileId profileId = 0;
+        InnerFecMatrixId matrixId = 0;
     }
     kDerivations[] = {
         {"PixelBridge/InnerFecProfile/DVB-S2-Short-N16200-K10800",
