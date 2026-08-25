@@ -526,18 +526,33 @@ TEST_CASE("Malformed PNG streams fail closed",
     }
 
     // IEND removed entirely: the strict reference stream must end
-    // exactly at IEND; an incomplete stream is rejected.
+    // exactly at IEND; an incomplete stream is rejected. Every pixel is
+    // decodable before the stream-end check fails, so this case pins the
+    // contract that even a post-decode failure leaves outBgra untouched.
     {
         std::vector<std::byte> png = validPng;
         png.resize(png.size() - 12);
-        checkMalformed(png, ModulationErrorCode::PngDecodeError);
+        std::fill(out.begin(), out.end(), std::byte{0x5A});
+        const auto status = DecodePngFrame(
+            std::span<const std::byte>(png), width, height,
+            std::span<std::byte>(out));
+        CHECK_FALSE(status);
+        CHECK(status.Error().code ==
+            ModulationErrorCode::PngDecodeError);
+        for (const auto value : out)
+        {
+            CHECK(value == std::byte{0x5A});
+        }
     }
 
-    // Garbage after IEND.
+    // Garbage after IEND: the pixels decode fully and png_read_end
+    // succeeds, so only the strict stream-end check fails; outBgra must
+    // still be untouched.
     {
         std::vector<std::byte> png = validPng;
         png.insert(png.end(), {std::byte{1}, std::byte{2},
             std::byte{3}});
+        std::fill(out.begin(), out.end(), std::byte{0x5A});
         const auto status = DecodePngFrame(
             std::span<const std::byte>(png), width, height,
             std::span<std::byte>(out));
@@ -545,6 +560,10 @@ TEST_CASE("Malformed PNG streams fail closed",
         CHECK(status.Error().code ==
             ModulationErrorCode::TrailingBytes);
         CHECK(status.Error().offset == png.size() - 3);
+        for (const auto value : out)
+        {
+            CHECK(value == std::byte{0x5A});
+        }
     }
 
     // IHDR chunk CRC corrupted.

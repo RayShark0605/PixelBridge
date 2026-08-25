@@ -251,9 +251,10 @@ canvas 的不可压缩内容实测最坏膨胀 0.0018，`totalRaw/32` 留有宽�
   `UnsupportedPngFormat`。
 - **interlaced（Adam7）输入被接受**：`png_read_row` 每 pass 只填充该 pass
   的行，必须按 pass×height 调用；所有行累积进**私有 RGBA staging 缓冲**，
-  全部行成功后**一次性** RGBA→BGRA 转写 outBgra。mid-stream 失败
-  （截断、chunk 损坏）→ `PngDecodeError`，且 **outBgra 零部分写入**
-  （有专门回归测试）。
+  全部行成功**且**流末端校验（IEND 存在、无 trailing
+  bytes）通过后才**一次性** RGBA→BGRA 转写 outBgra。mid-stream 失败
+  （截断、chunk 损坏、缺 IEND）→ `PngDecodeError`，IEND 后仍有剩余字节
+  → `TrailingBytes`，两种情况均 **outBgra 零部分写入**（有专门回归测试）。
 - `bad_alloc` → `MemoryAllocationFailure`；`png_read_end` 后（缺 IEND →
   libpng 报错 → `PngDecodeError`）若流仍有剩余字节 → `TrailingBytes`
   （offset = 已消费位置）。严格流：IEND 后任何字节都拒绝。
