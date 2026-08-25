@@ -454,3 +454,197 @@ TEST_CASE(
         InnerFecErrorCode::UnknownProfileId);
     CHECK(unknown.Error().detail == 0xABCDULL);
 }
+
+TEST_CASE(
+    "InnerFecDecoder int16 extreme LLR pins the hard-decision boundaries",
+    "[innerfec][decoder][extreme-llr]")
+{
+    // Positive extreme: every hard decision is 0; the all-zero vector is
+    // a valid codeword, so one pass must succeed. Negative extreme: every
+    // hard decision is 1; the all-ones vector is not a codeword (every
+    // profile has odd-degree rows), so decoding must fail closed with the
+    // output untouched. Both cases saturate the int16 LLR input domain.
+    const InnerFecProfileId kProfileIds[] = {
+        kInnerFecProfileIdRobust, kInnerFecProfileIdBalanced,
+        kInnerFecProfileIdFast,
+    };
+    for (const InnerFecProfileId profileId : kProfileIds)
+    {
+        const InnerFecProfile* profile = GetInnerFecProfile(profileId);
+        REQUIRE(profile != nullptr);
+        auto decoderResult = QcLdpcDecoder::Create(profileId);
+        REQUIRE(decoderResult);
+        QcLdpcDecoder decoder = std::move(decoderResult).Value();
+        InnerFecDecodeOptions options;
+
+        {
+            std::vector<std::int16_t> llr(profile->nBits, 32767);
+            std::vector<std::byte> output = MakeSentinelOutput();
+            const auto result = decoder.Decode(llr, options, output);
+            REQUIRE(result);
+            CHECK(result.Value().iterationsUsed == 1);
+            CHECK(result.Value().syndromePassedIteration == 1);
+            for (const std::byte value : output)
+            {
+                CHECK(value == std::byte{0});
+            }
+        }
+        {
+            std::vector<std::int16_t> llr(profile->nBits, -32768);
+            std::vector<std::byte> output = MakeSentinelOutput();
+            const auto result = decoder.Decode(llr, options, output);
+            CHECK_FALSE(result);
+            CHECK(result.Error().code ==
+                InnerFecErrorCode::SyndromeFailure);
+            CHECK(result.Error().detail == options.maxIterations);
+            CHECK(IsAllSentinel(output));
+        }
+    }
+}
+
+TEST_CASE(
+    "InnerFecDecoder a failed decode leaves the instance reusable",
+    "[innerfec][decoder][reuse]")
+{
+    // Real receivers decode many codewords with one instance. A failed
+    // decode (pinned over-capacity regime: same construction that
+    // test_inner_fec_errors_and_crc.cpp pins as a SyndromeFailure) must
+    // not leave workspace state that the next call does not fully
+    // re-initialize; the following clean channel must decode exactly.
+    const InnerFecProfileId kProfileIds[] = {
+        kInnerFecProfileIdRobust, kInnerFecProfileIdBalanced,
+        kInnerFecProfileIdFast,
+    };
+    for (const InnerFecProfileId profileId : kProfileIds)
+    {
+        const InnerFecProfile* profile = GetInnerFecProfile(profileId);
+        REQUIRE(profile != nullptr);
+        auto decoderResult = QcLdpcDecoder::Create(profileId);
+        REQUIRE(decoderResult);
+        QcLdpcDecoder decoder = std::move(decoderResult).Value();
+
+        SplitMix64 random(0x511u);
+        const std::vector<std::byte> info = MakeInfoBytes(
+            profile->GetInfoByteCount(), random);
+        const std::vector<std::byte> codeword =
+            EncodeCodewordOrDie(profileId, info);
+        const std::vector<std::int16_t> cleanLlr =
+            MakeCleanLlr(codeword, kErrorLlrMagnitude);
+        std::vector<std::int16_t> corruptedLlr = cleanLlr;
+        const std::vector<std::uint32_t> flippedBits =
+            MakeDistinctBitIndices(random, 800u, profile->nBits);
+        FlipLlr(corruptedLlr, flippedBits);
+
+        InnerFecDecodeOptions options;
+        std::vector<std::byte> failedOutput = MakeSentinelOutput();
+        const auto failedResult =
+            decoder.Decode(corruptedLlr, options, failedOutput);
+        CHECK_FALSE(failedResult);
+        CHECK(failedResult.Error().code ==
+            InnerFecErrorCode::SyndromeFailure);
+        CHECK(IsAllSentinel(failedOutput));
+
+        std::vector<std::byte> cleanOutput = MakeSentinelOutput();
+        const auto cleanResult =
+            decoder.Decode(cleanLlr, options, cleanOutput);
+        REQUIRE(cleanResult);
+        CHECK(cleanResult.Value().iterationsUsed == 1);
+        CHECK(cleanResult.Value().syndromePassedIteration == 1);
+        CHECK(cleanOutput == codeword);
+    }
+}
+
+TEST_CASE(
+    "InnerFecDecoder scaleNum=0 pins the hard-decision pass-through",
+    "[innerfec][decoder][scale-zero]")
+{
+    // scaleNum=0 forces every check->variable message to zero, so the
+    // decoder publishes the channel hard decision after the first pass.
+    // A clean channel's hard decision is exactly the codeword, which pins
+    // the scale arithmetic (num=0) against drift.
+    const InnerFecProfileId kProfileIds[] = {
+        kInnerFecProfileIdRobust, kInnerFecProfileIdBalanced,
+        kInnerFecProfileIdFast,
+    };
+    for (const InnerFecProfileId profileId : kProfileIds)
+    {
+        const InnerFecProfile* profile = GetInnerFecProfile(profileId);
+        REQUIRE(profile != nullptr);
+        auto decoderResult = QcLdpcDecoder::Create(profileId);
+        REQUIRE(decoderResult);
+        QcLdpcDecoder decoder = std::move(decoderResult).Value();
+
+        const std::vector<std::byte> info =
+            MakeRandomInfo(profileId, 0xB31u);
+        const std::vector<std::byte> codeword =
+            EncodeCodewordOrDie(profileId, info);
+        const std::vector<std::int16_t> llr =
+            MakeCleanLlr(codeword, kCleanLlrMagnitude);
+        std::vector<std::byte> output = MakeSentinelOutput();
+
+        InnerFecDecodeOptions options;
+        options.scaleNum = 0;
+        const auto result = decoder.Decode(llr, options, output);
+        REQUIRE(result);
+        CHECK(result.Value().iterationsUsed == 1);
+        CHECK(result.Value().syndromePassedIteration == 1);
+        CHECK(output == codeword);
+    }
+}
+
+TEST_CASE(
+    "InnerFecDecoder max offset with |LLR|=1 noise fails closed",
+    "[innerfec][decoder][max-offset]")
+{
+    // With |LLR| = 1 and offset = 32767 no min-sum message can ever
+    // exceed the offset, so the hard decisions never move and the
+    // decoder must exhaust maxIterations on a non-codeword. The
+    // alternating-bit pattern is pinned to be a non-codeword first, so
+    // this case pins the "magnitude > offset" comparison itself.
+    const InnerFecProfileId kProfileIds[] = {
+        kInnerFecProfileIdRobust, kInnerFecProfileIdBalanced,
+        kInnerFecProfileIdFast,
+    };
+    for (const InnerFecProfileId profileId : kProfileIds)
+    {
+        const InnerFecProfile* profile = GetInnerFecProfile(profileId);
+        REQUIRE(profile != nullptr);
+        auto decoderResult = QcLdpcDecoder::Create(profileId);
+        REQUIRE(decoderResult);
+        QcLdpcDecoder decoder = std::move(decoderResult).Value();
+
+        std::vector<std::byte> pattern(profile->GetCodewordByteCount());
+        for (std::uint32_t bitIndex = 0; bitIndex < profile->nBits;
+            bitIndex++)
+        {
+            if (bitIndex % 2u == 0u)
+            {
+                pattern[bitIndex / 8u] |=
+                    std::byte{std::uint8_t{1u << (bitIndex % 8u)}};
+            }
+        }
+        const auto patternSyndrome =
+            ComputeQcLdpcSyndrome(profileId, pattern);
+        REQUIRE(patternSyndrome);
+        REQUIRE_FALSE(patternSyndrome.Value());
+
+        std::vector<std::int16_t> llr;
+        llr.reserve(profile->nBits);
+        for (std::uint32_t bitIndex = 0; bitIndex < profile->nBits;
+            bitIndex++)
+        {
+            llr.push_back(
+                GetPackedBit(pattern, bitIndex) ? -1 : 1);
+        }
+        std::vector<std::byte> output = MakeSentinelOutput();
+
+        InnerFecDecodeOptions options;
+        options.offset = kQcLdpcMaxLlrOffset;
+        const auto result = decoder.Decode(llr, options, output);
+        CHECK_FALSE(result);
+        CHECK(result.Error().code ==
+            InnerFecErrorCode::SyndromeFailure);
+        CHECK(result.Error().detail == options.maxIterations);
+        CHECK(IsAllSentinel(output));
+    }
+}

@@ -1,6 +1,7 @@
 #include "inner_fec_test_helpers.h"
 
 #include "pbinnerfec/inner_fec_profile.h"
+#include "pbprotocol/blake3_digest.h"
 
 #include <array>
 #include <algorithm>
@@ -13,14 +14,23 @@ namespace {
 using namespace pbinnertectest;
 using namespace pbinnerfec;
 
-constexpr std::array<std::byte, 32> ParseHex32(const std::string& hex)
+// BLAKE3-256 over a NUL-terminated UTF-8 string (identity derivation).
+[[nodiscard]] std::array<std::byte, 32> Blake3OfUtf8(const char* text)
 {
-    std::array<std::byte, 32> value{};
-    for (std::size_t i = 0; i < 32; i++)
+    const std::size_t length = std::char_traits<char>::length(text);
+    return pbprotocol::ComputeBlake3Digest(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(text), length));
+}
+
+[[nodiscard]] std::uint64_t FirstEightBytesLittleEndian(
+    const std::array<std::byte, 32>& digest) noexcept
+{
+    std::uint64_t value = 0;
+    for (std::uint32_t byteIndex = 0; byteIndex < 8u; byteIndex++)
     {
-        const auto high = static_cast<std::uint8_t>(
-            std::stoi(hex.substr(i * 2, 2), nullptr, 16));
-        value[i] = static_cast<std::byte>(high);
+        value |= static_cast<std::uint64_t>(
+            std::to_integer<std::uint8_t>(digest[byteIndex]))
+            << (8u * byteIndex);
     }
     return value;
 }
@@ -259,5 +269,42 @@ TEST_CASE("InnerFecProfile canonical serialization is deterministic, sized, and 
         CHECK(unknownSerialization.empty());
         CHECK(ComputeInnerFecMatrixDigest(unknownK) ==
             std::array<std::byte, 32>{});
+    }
+}
+
+TEST_CASE(
+    "InnerFecProfile identity constants follow the documented BLAKE3 derivation",
+    "[innerfec][profile][derivation]")
+{
+    // The header documents both identity families as the first 8 bytes,
+    // read little-endian, of BLAKE3-256 over fixed UTF-8 strings. This
+    // pins the auditability rule so a future re-number cannot drift from
+    // the documented derivation silently.
+    const struct
+    {
+        const char* profileString;
+        const char* matrixString;
+        InnerFecProfileId profileId;
+        InnerFecMatrixId matrixId;
+    }
+    kDerivations[] = {
+        {"PixelBridge/InnerFecProfile/DVB-S2-Short-N16200-K10800",
+         "PixelBridge/InnerFecMatrix/DVB-S2-Short-N16200-K10800",
+         kInnerFecProfileIdRobust, kInnerFecMatrixIdRobust},
+        {"PixelBridge/InnerFecProfile/DVB-S2-Short-N16200-K11880",
+         "PixelBridge/InnerFecMatrix/DVB-S2-Short-N16200-K11880",
+         kInnerFecProfileIdBalanced, kInnerFecMatrixIdBalanced},
+        {"PixelBridge/InnerFecProfile/DVB-S2-Short-N16200-K13320",
+         "PixelBridge/InnerFecMatrix/DVB-S2-Short-N16200-K13320",
+         kInnerFecProfileIdFast, kInnerFecMatrixIdFast},
+    };
+    for (const auto& testCase : kDerivations)
+    {
+        CHECK(FirstEightBytesLittleEndian(
+            Blake3OfUtf8(testCase.profileString)) ==
+            testCase.profileId);
+        CHECK(FirstEightBytesLittleEndian(
+            Blake3OfUtf8(testCase.matrixString)) ==
+            testCase.matrixId);
     }
 }

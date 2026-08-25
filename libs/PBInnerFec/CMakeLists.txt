@@ -24,7 +24,6 @@ target_compile_features(PBInnerFec
         cxx_std_20)
 
 target_link_libraries(PBInnerFec
-    PUBLIC
-        PB::PBProtocol
     PRIVATE
+        PB::PBProtocol
         PB::CompilerSettings)
