@@ -324,7 +324,11 @@ The profile/matrix IDs are the first 8 bytes (little-endian) of
 BLAKE3-256 over `PixelBridge/InnerFecProfile/DVB-S2-Short-N16200-K<exact K>`
 and `PixelBridge/InnerFecMatrix/DVB-S2-Short-N16200-K<exact K>`; every other
 K (including the experimental K=14400), profileId, or matrixId is rejected
-fail-closed. Puncturing/shortening is `None` (exact K only).
+fail-closed. Puncturing/shortening is `None` (exact K only). All three
+public entry points (encoder, decoder creation, syndrome check) run the
+same live MatrixDigest gate on the embedded tables, and the encoder
+rejects overlapping information/codeword spans with `InvalidInput`
+(fail-closed contract enforcement, both pinned by tests).
 
 Conventions frozen by the public headers and pinned by tests:
 

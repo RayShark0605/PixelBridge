@@ -346,3 +346,51 @@ TEST_CASE(
             pbprotocol::ComputeCrc32c(info));
     }
 }
+
+TEST_CASE("InnerFecSyndrome rejects malformed inputs",
+    "[innerfec][errors][syndrome]")
+{
+    // The syndrome entry point validates the frozen identity and the exact
+    // codeword size before any bit access (same contract as the encoder and
+    // decoder entry points); pinned here so a future reordering of the
+    // checks cannot regress the fail-closed behavior.
+    for (const InnerFecProfileId profileId : kProfileIds)
+    {
+        const InnerFecProfile* profile = GetInnerFecProfile(profileId);
+        REQUIRE(profile != nullptr);
+        const std::uint32_t codewordBytes =
+            profile->GetCodewordByteCount();
+        std::vector<std::byte> codeword(codewordBytes);
+
+        const auto unknown =
+            ComputeQcLdpcSyndrome(0x1234ULL, codeword);
+        CHECK_FALSE(unknown);
+        CHECK(unknown.Error().code ==
+            InnerFecErrorCode::UnknownProfileId);
+        CHECK(unknown.Error().detail == 0x1234ULL);
+
+        const auto shortResult =
+            ComputeQcLdpcSyndrome(profileId,
+                std::span<const std::byte>(
+                    codeword.data(), codewordBytes - 1u));
+        CHECK_FALSE(shortResult);
+        CHECK(shortResult.Error().code ==
+            InnerFecErrorCode::InvalidInput);
+        CHECK(shortResult.Error().detail == codewordBytes);
+
+        const auto longResult =
+            ComputeQcLdpcSyndrome(profileId,
+                std::span<const std::byte>(
+                    codeword.data(), codewordBytes + 1u));
+        CHECK_FALSE(longResult);
+        CHECK(longResult.Error().code ==
+            InnerFecErrorCode::InvalidInput);
+
+        // A correctly sized all-zero codeword is accepted by the entry
+        // point (zero is a valid codeword for every profile).
+        const auto valid =
+            ComputeQcLdpcSyndrome(profileId, codeword);
+        CHECK(valid);
+        CHECK(valid.Value());
+    }
+}

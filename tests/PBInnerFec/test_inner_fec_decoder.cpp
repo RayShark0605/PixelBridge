@@ -649,3 +649,49 @@ TEST_CASE(
         CHECK(IsAllSentinel(output));
     }
 }
+
+TEST_CASE(
+    "InnerFecDecoder syndrome check interval pins first-check timing",
+    "[innerfec][decoder][interval]")
+{
+    // A clean channel always passes its first executed syndrome check, so
+    // the reported iteration count equals the first multiple of the
+    // interval: interval 3 with maxIterations 8 must stop at pass 3, and
+    // interval 2 at pass 2. This pins the "check after every
+    // syndromeCheckInterval-th full pass, first check after the first full
+    // pass" contract against off-by-one regressions.
+    const InnerFecProfileId kProfileIds[] = {
+        kInnerFecProfileIdRobust, kInnerFecProfileIdBalanced,
+        kInnerFecProfileIdFast,
+    };
+    for (const InnerFecProfileId profileId : kProfileIds)
+    {
+        const InnerFecProfile* profile =
+            GetInnerFecProfile(profileId);
+        REQUIRE(profile != nullptr);
+        auto decoderResult = QcLdpcDecoder::Create(profileId);
+        REQUIRE(decoderResult);
+        QcLdpcDecoder decoder = std::move(decoderResult).Value();
+
+        const std::vector<std::byte> info =
+            MakeRandomInfo(profileId, 0xC0D1E5u);
+        const std::vector<std::byte> codeword =
+            EncodeCodewordOrDie(profileId, info);
+        const std::vector<std::int16_t> llr =
+            MakeCleanLlr(codeword, kCleanLlrMagnitude);
+
+        for (const std::uint32_t interval : {2u, 3u})
+        {
+            std::vector<std::byte> output = MakeSentinelOutput();
+            InnerFecDecodeOptions options;
+            options.maxIterations = 8;
+            options.syndromeCheckInterval = interval;
+            const auto result =
+                decoder.Decode(llr, options, output);
+            REQUIRE(result);
+            CHECK(result.Value().iterationsUsed == interval);
+            CHECK(result.Value().syndromePassedIteration == interval);
+            CHECK(output == codeword);
+        }
+    }
+}

@@ -244,3 +244,52 @@ TEST_CASE("InnerFecEncoder rejects malformed inputs",
         CHECK(EncodeQcLdpcCodeword(testCase.profileId, info, codeword));
     }
 }
+
+TEST_CASE(
+    "InnerFecEncoder rejects overlapping information and codeword spans",
+    "[innerfec][encoder][errors][overlap]")
+{
+    // Contract: infoBits and codeword must not overlap (the information
+    // prefix is copied forward with memcpy semantics, so overlapping
+    // ranges would be undefined behavior). The rejection is overlap-based,
+    // pinned here for the shifted-window overlap and the exact same-base
+    // overlap, with a disjoint control case that must still succeed.
+    for (const EncoderGoldenCase& testCase : kEncoderGoldenCases)
+    {
+        const InnerFecProfile* profile =
+            GetInnerFecProfile(testCase.profileId);
+        REQUIRE(profile != nullptr);
+        const std::uint32_t infoBytes = profile->GetInfoByteCount();
+        const std::uint32_t codewordBytes =
+            profile->GetCodewordByteCount();
+
+        std::vector<std::byte> buffer(codewordBytes);
+        const std::span<std::byte> infoWindow(
+            buffer.data() + 100, infoBytes);
+        const std::span<std::byte> codewordWindow(
+            buffer.data(), codewordBytes);
+
+        const auto shifted =
+            EncodeQcLdpcCodeword(testCase.profileId, infoWindow,
+                codewordWindow);
+        CHECK_FALSE(shifted);
+        CHECK(shifted.Error().code ==
+            InnerFecErrorCode::InvalidInput);
+
+        const std::span<const std::byte> sameBase(
+            buffer.data(), infoBytes);
+        const auto sameBaseResult =
+            EncodeQcLdpcCodeword(testCase.profileId, sameBase,
+                codewordWindow);
+        CHECK_FALSE(sameBaseResult);
+        CHECK(sameBaseResult.Error().code ==
+            InnerFecErrorCode::InvalidInput);
+
+        std::vector<std::byte> info(infoBytes);
+        std::vector<std::byte> codeword(codewordBytes);
+        CHECK(EncodeQcLdpcCodeword(
+            testCase.profileId,
+            std::span<const std::byte>(info.data(), info.size()),
+            std::span<std::byte>(codeword.data(), codeword.size())));
+    }
+}
