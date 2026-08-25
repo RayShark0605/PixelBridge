@@ -20,6 +20,13 @@ function(PbAddUnitTest targetName)
                 /external:W0)
     endif()
     add_test(NAME ${targetName} COMMAND ${targetName})
+    # Registration for the centralized MSVC ASan runtime copy below: in a
+    # fuzz-enabled tree the core libraries are /fsanitize=address
+    # instrumented, so every unit-test executable that pulls them in must
+    # have the ASan runtime next to it at load time. GLOBAL (not DIRECTORY)
+    # so the tests/-scope copy target can collect targets registered from
+    # the per-suite subdirectory scopes.
+    set_property(GLOBAL APPEND PROPERTY PB_UNIT_TEST_TARGETS ${targetName})
 endfunction()
 
 function(PbAddExactProcessTest testName targetName expectedStdout)
@@ -39,9 +46,84 @@ add_subdirectory(PBCore)
 add_subdirectory(PBProtocol)
 add_subdirectory(PBCompression)
 add_subdirectory(PBInnerFec)
+add_subdirectory(PBModulation)
 add_subdirectory(PBOuterFec)
 add_subdirectory(PBReceiver)
 add_subdirectory(CMake)
+
+# Centralized MSVC ASan runtime copy for the unit-test executables. In the
+# fuzz-enabled tree, fuzz/CMakeLists.txt compiles the core libraries
+# (PBProtocol et al.) with /Zi /fsanitize=address; a full build then relinks
+# every test executable against those instrumented objects, and each one
+# imports the MSVC ASan runtime at load time (a missing DLL surfaces as a
+# 0xC0000135 startup failure in ctest). Copy the runtime next to each
+# registered test executable exactly when that instrumentation is active
+# (mirrors the POST_BUILD copies in fuzz/CMakeLists.txt). fuzz/ is
+# processed before tests/ (top-level order), so the option query below sees
+# the instrumentation state.
+if(MSVC AND TARGET PBProtocol)
+    get_target_property(pbProtocolCompileOptions PBProtocol COMPILE_OPTIONS)
+    if(pbProtocolCompileOptions MATCHES "/fsanitize=address")
+        get_filename_component(pbMsvcCompilerDirectory
+            "${CMAKE_CXX_COMPILER}"
+            DIRECTORY)
+        set(pbMsvcAsanRuntime
+            "${pbMsvcCompilerDirectory}/clang_rt.asan_dynamic-x86_64.dll")
+        if(NOT EXISTS "${pbMsvcAsanRuntime}")
+            message(FATAL_ERROR
+                "MSVC AddressSanitizer runtime was not found: "
+                "${pbMsvcAsanRuntime}")
+        endif()
+        get_property(pbUnitTestTargets GLOBAL PROPERTY PB_UNIT_TEST_TARGETS)
+        # PBProtocolNoAllocationDigestProbe is created with a plain
+        # add_executable and also links the instrumented PBProtocol.
+        list(APPEND pbUnitTestTargets PBProtocolNoAllocationDigestProbe)
+        # add_custom_command(TARGET ...) must live in the directory that
+        # created the target, so a single all-of-ALL copy target created in
+        # this directory places the runtime next to every test executable
+        # instead of one POST_BUILD copy per suite directory.
+        set(pbAsanCopyCommands)
+        foreach(pbAsanTestTarget IN LISTS pbUnitTestTargets)
+            if(TARGET ${pbAsanTestTarget})
+                # create_directory first: this ALL target may run before the
+                # test executable's output directory exists, and a copy into
+                # a missing path would create a stray file named after the
+                # configuration instead of a directory (MSB3191 for the
+                # real target).
+                list(APPEND pbAsanCopyCommands
+                    COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "$<TARGET_FILE_DIR:${pbAsanTestTarget}>"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${pbMsvcAsanRuntime}"
+                        "$<TARGET_FILE_DIR:${pbAsanTestTarget}>")
+            endif()
+        endforeach()
+        # The app executables link the same instrumented protocol libraries
+        # (PBProtocol, PBReceiver), so they import the same ASan runtime and
+        # need it next to their own executable as well.
+        foreach(pbAsanAppTarget IN ITEMS PixelBridgeEncoder PixelBridgeDecoder)
+            if(TARGET ${pbAsanAppTarget})
+                list(APPEND pbAsanCopyCommands
+                    COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "$<TARGET_FILE_DIR:${pbAsanAppTarget}>"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${pbMsvcAsanRuntime}"
+                        "$<TARGET_FILE_DIR:${pbAsanAppTarget}>")
+            endif()
+        endforeach()
+        unset(pbAsanAppTarget)
+        add_custom_target(PBTestAsanRuntimeCopy
+            ALL
+            ${pbAsanCopyCommands}
+            VERBATIM)
+        unset(pbAsanCopyCommands)
+        unset(pbAsanTestTarget)
+        unset(pbUnitTestTargets)
+        unset(pbMsvcAsanRuntime)
+        unset(pbMsvcCompilerDirectory)
+    endif()
+    unset(pbProtocolCompileOptions)
+endif()
 
 if(TARGET PixelBridgeEncoder)
     PbAddExactProcessTest(
