@@ -31,7 +31,8 @@ struct QcLdpcDecoderImpl;
 //
 // Bit packing is LSB first within each byte (see SystematicBitOrder).
 // infoBits and codeword must not overlap: the information prefix is
-// copied forward into the codeword buffer (memcpy semantics).
+// copied forward into the codeword buffer (memcpy semantics). Overlapping
+// spans are rejected with InvalidInput.
 // ---------------------------------------------------------------------------
 [[nodiscard]] InnerFecStatus EncodeQcLdpcCodeword(
     const InnerFecProfileId profileId,

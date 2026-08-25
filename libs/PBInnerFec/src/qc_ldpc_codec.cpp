@@ -239,6 +239,19 @@ InnerFecStatus EncodeQcLdpcCodeword(
             InnerFecErrorCode::InvalidInput,
             profile->GetCodewordByteCount());
     }
+    // Enforced contract: the information prefix is copied forward with
+    // memcpy semantics, so overlapping spans would be undefined behavior.
+    // Any intersection, including an exact same-base overlap, is rejected
+    // fail-closed.
+    const auto infoBegin = infoBits.data();
+    const auto infoEnd = infoBits.data() + infoBits.size();
+    const auto codewordBegin = codeword.data();
+    const auto codewordEnd = codeword.data() + codeword.size();
+    if (infoBegin < codewordEnd && codewordBegin < infoEnd)
+    {
+        return InnerFecStatus::Failure(
+            InnerFecErrorCode::InvalidInput, 0);
+    }
 
     std::memcpy(
         codeword.data(), infoBits.data(), infoBits.size());
@@ -312,6 +325,15 @@ InnerFecResult<bool> ComputeQcLdpcSyndrome(
     {
         return InnerFecResult<bool>::Failure(
             InnerFecErrorCode::InvalidProfile, profileId);
+    }
+    // Same live MatrixDigest gate as EncodeQcLdpcCodeword and
+    // QcLdpcDecoder::Create: all three public entry points fail closed on
+    // embedded-table drift, so the syndrome can never evaluate against a
+    // different H than the encoder/decoder use.
+    if (!ValidateInnerFecProfile(*profile))
+    {
+        return InnerFecResult<bool>::Failure(
+            InnerFecErrorCode::MatrixDigestMismatch, profileId);
     }
     if (codeword.size() != profile->GetCodewordByteCount())
     {
