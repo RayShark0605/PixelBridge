@@ -20,6 +20,7 @@ PbAddUnitTest(PBProtocolTests
     test_orphan_transport_block_cache.cpp
     test_output_reservation.cpp
     test_resume_state.cpp
+    test_transport_block_codec.cpp
     test_session_random.cpp)
 
 target_link_libraries(PBProtocolTests

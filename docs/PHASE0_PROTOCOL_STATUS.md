@@ -13,6 +13,7 @@ payloads below are not yet the complete formal v1 compatibility contract:
 | `SegmentDescriptor` / DirectRepeat | 110 bytes | Provisional |
 | `SegmentDescriptor` / Wirehair V2 | 142 bytes | Provisional PixelBridge wrapper; its embedded 32-byte Wirehair V2 profile remains canonical |
 | `FinalManifest` | 65 bytes | Provisional |
+| `TransportBlock` | 32-byte header + payload + 4-byte payload CRC | Provisional tooling/reference layout; exact total is `36 + PayloadBytes` |
 
 The exact-byte tests are implementation regression vectors. They prevent
 accidental changes inside this Phase-0 slice, but they must not be cited as
@@ -42,6 +43,33 @@ one of the following explicitly:
    if any current bytes have already become externally consumed.
 
 Silent extension of the existing `1.0` payload bytes is not allowed.
+
+## Provisional Transport/interleave tooling status
+
+`PBProtocol` now exposes a strict Phase-0 Transport codec for tools, Golden and
+fuzz verification. The fixed implementation slice is explicit little-endian:
+type/minor/flags, SessionTag, SegmentOrdinal, OuterBlockId, uint16 PayloadBytes,
+reserved, header CRC-32C over `[0,28)`, payload, and a separate payload CRC-32C.
+The parser validates header presence and semantic fields, then header CRC before
+trusting declared length, then exact checked total length and payload CRC.
+Inner-FEC extraction additionally requires all unused information bytes to be
+canonical zero padding. This codec is not wired into production
+`ReceiverIngress::ReceivedTransportBlock` admission and is not a formal v1
+freeze.
+
+The Qt-free `PBInterleave` reference fixes 112,336 four-bit tiles, 16 phases,
+forward mapping `(logical*65537 + phase*472) mod 112336` and inverse multiplier
+`108673`. It is a local bit-exact candidate only. There is no serialized
+`InterleaveProfileId` binding, so complete PB-ReferenceRaster-1 frames remain
+non-interleaved and `PBFrameInspector` reports `interleave=not-bound` rather
+than guessing from content.
+
+The implementation slice is covered by `PBProtocolDump`, `PBFrameInspector`,
+25 file-backed Golden vectors, five full-frame digest/oracle pins,
+`PBVectorGen`, focused Transport/Interleave/LDPC parser drivers and the
+`PBParserFuzzHarness` aggregate target. These artifacts prevent accidental
+Phase-0 drift; they do not fill the missing formal Session/Visual/Interleave
+profile fields described above.
 
 ## PB-Bootstrap-1 / PB-Control-1 byte protocol status: GO
 
@@ -414,17 +442,19 @@ and these behaviors are now pinned by committed regression tests in
 x 3 seeds x 3 profiles at magnitude 8192) decodes 36/39 (Robust), 30/39
 (Balanced), and 24/39 (Fast) codewords, with the correction capability
 ordered by rate and no successful decode emitting a wrong information
-block. A dedicated PBInnerFec fuzz/benchmark gate remains a separate
-follow-up task.
+block. A focused bounded LDPC codeword fuzz driver now covers syndrome and
+clean-channel decode/re-encode; performance/throughput benchmarking remains
+a separate gate.
 
 ## Remaining Phase-0 Gate scope
 
 This status decision closes the ambiguity around the current descriptor bytes
 and marks the logical Bootstrap/Control byte protocol, bounded Control
 fragmentation, and resource-safe logical Receiver ingress GO. It does not
-declare the overall Phase-0 architecture Gate complete. The formal Transport
-wire parser, formal profile binding, Control/Bootstrap visual FEC and raster
-mapping, physical repetition cadence, PBStorage free-space/reservation and
-`.part` publication, the complete Decoder application/capture chain, complete
-file recovery, remaining Golden Vectors, and later CPU/GPU backend consistency
-gates remain separate work.
+declare the overall Phase-0 architecture Gate complete. Formal v1 Transport
+and Session/Visual/Interleave profile binding, Control/Bootstrap visual FEC,
+physical repetition cadence, PBStorage free-space/reservation and `.part`
+publication, the complete Decoder application/capture chain, complete file
+recovery, certified-profile freeze, and later CPU/GPU backend consistency gates
+remain separate work. The current parser/Golden/Inspector chain is a reproducible
+tooling proof, not production receiver admission or complete file recovery.

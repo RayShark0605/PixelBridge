@@ -276,13 +276,19 @@ InternalInvariantViolation。
 
 ## 8. Golden Vector
 
-### 8.1 规范 payload（三个固定帧）
+### 8.1 规范 payload（五个固定帧）
 
 | 帧 | Bootstrap（44B） | Control（240B） | Data（56,168B） |
 | --- | --- | --- | --- |
 | G0 zero | 全 0 | 全 0 | 全 0（全 lane level L_0=8） |
 | G1 canonical | §8.2 黄金 PB-Bootstrap-1 record | 67B 黄金 PB-Control-1 SessionDescriptor record + 173B 零填充 | 2025B Robust QC-LDPC golden codeword + 54,143B 零填充 |
+| G1-Transport | 同 G1 | 同 G1 | 1 个 Robust codeword：1,350B provisional Transport information block → 2,025B codeword，之后零填充 |
+| G1-Transport-2CW | 同 G1 | 同 G1 | 2 个连续 Robust codeword（ordinal 0/1），之后零填充 |
 | G2 max | 全 0xFF | 全 0xFF | 全 0xFF（全符号 0xF → Gray 索引 8 → 全 tile level L_8=136） |
+
+G1-Transport 两个 fixture 明确为 **non-interleaved Phase-0 reference**。当前 wire
+schema 没有正式 `InterleaveProfileId` binding，因此完整 frame 不隐式应用
+interleave；独立 `PBInterleave` Golden/fuzz 验证 bit-exact 映射能力。
 
 ### 8.2 G1 黄金 record（字节复用 PBProtocol 既有黄金，不重复定义）
 
@@ -311,12 +317,15 @@ PNG 摘要（完整 PNG 流）是**次 pin**（绑定 libpng 1.6.58 + zlib 1.3.2
 | --- | --- | --- |
 | G0 | `29ed5c8725a5d939685249be82ef5e3717c5ceb3545001ab0bedddf7e2500b0b` | `20ea184adc00f164b1c8fe71b7c568f240b1e8428991e867e0e0b88829144002` |
 | G1 | `54c23b3e558bf4805afadb6193217d9ef111bcb5975ee1336a633ad569bf0d57` | `f65997df4b612412cb2ce50de3c0b9f9fd542bc84842b9f084b76c5f6e290a89` |
+| G1-Transport | `6005706aba9d6676c59501924f9bbeae592f12e29a36184d02f34e329a47ea45` | `e0bf733622977cd5f08e36bf2e60763945442499e0494a0b4fb2baad0580020c` |
+| G1-Transport-2CW | `fac16d8024a863a21b693270590c03bc7ecf1ee2d18721ad8054d3faec57bd11` | `30ba615d40692273a410c18d7b4a0b1891e66fe3fadf996c3351591ed2e57357` |
 | G2 | `ccd24926d8e578fc65dcc4aaeafbeed1da3ce19c43a4d5709471344ddc3ffdcc` | `919510014ecab9fc5b56246a8c71d47e01f8b9824c90debb4ade116d86d544cf` |
 | manifest（275B） | `a7e31cbd7cfa6865f8bc029a78d58d065990e732f6386613329f2dd07602003b` | — |
 
-pin 位置：`tests/PBModulation/test_reference_golden.cpp`（G0/G1/G2 +
-manifest）与 `tests/PBModulation/test_reference_visual_profile.cpp`
-（manifest）。
+pin 位置：既有 G0/G1/G2/manifest 继续由 `tests/PBModulation` 固定；统一五帧
+registry 位于 `libs/PBGoldenVector`，由 `PBGoldenVectorTests` 与
+`PBGoldenVectorCheck` 交叉验证。275B PBVM 同时作为正常 file-backed Golden
+提交在 `tests/golden/raster/reference-raster-manifest.bin`。
 
 ### 8.4 交叉验证（独立于 raster 层）
 
@@ -331,13 +340,22 @@ G1 解调结果必须通过以下独立协议/FEC 校验（`test_reference_golde
    一致，尾部 54,143B 全零；
 4. raw 与 PNG 双通道解码回同一 raster，且 demod 回同一 payload（bit-exact
    round-trip）。
+5. Golden harness 另以 test-only literal-geometry oracle 手工构造全部
+   8,294,400 BGRA bytes（不调用 `EncodeReferenceFrame`），与生产 PBRW 完整
+   比较；PNG 解码像素与同一 oracle 比较。raw/pixel drift 报首个 byte offset、
+   expected/actual；仅压缩 stream 漂移则报告两端 digest 和
+   `byte_offset=not-applicable`。
+6. `PBFrameInspector --recovery` 对 G1-Transport one/two-codeword fixture 验证
+   syndrome、perfect-LLR decode、re-encode、info-block 零填充、Transport CRC
+   及 Bootstrap SessionTag。
 
 ### 8.5 再生成方法
 
-摘要值由本参考实现**一次性生成**并经 §8.4 独立交叉验证后 pin（与 PBInnerFec
-Golden 同一约定）。合法修改 raster/容器后再生成：运行
-`PBModulationTests.exe -r compact`，在失败输出中读取实际摘要 → 人工复核
-变更合理性 → 重新执行 §8.4 交叉验证 → 更新 pin。摘要漂移本身即回归信号。
+摘要值经 §8.4 独立交叉验证后冻结。日常命令使用 `PBGoldenVectorCheck` 和
+`PBVectorGen dump-manifest`；`write-frame` 只有在当前输出已经匹配冻结 pin 时
+才写文件。工具没有 “接受当前输出” 或自动 re-pin 旁路。合法协议/profile 变更
+必须先更新独立 oracle、人工审查首个 byte diff，再以单独协议变更提交更新 pin；
+详见 `docs/GOLDEN_VECTOR_HARNESS.md`。
 
 ## 9. 依赖与版本基线（设计 §39.1 Phase-0 记录）
 
@@ -384,6 +402,8 @@ baseline 提交）的 manifest schema 只接受顺序约束字段（`version>` /
   `/Zi /fsanitize=address` 仪器化 + `_DISABLE_STRING/VECTOR_ANNOTATION`
   （与既有 fuzz 目标同一注解一致性约束），ASan runtime dll 经 POST_BUILD
   复制。
+- 该 driver 与新 Transport/Interleave/LDPC focused drivers 共同属于
+  `PBParserFuzzHarness`，对应 smoke/corpus 统一带 `parser-harness` label。
 
 ## 11. 限制与后续工作（显式声明）
 
@@ -405,17 +425,23 @@ baseline 提交）的 manifest schema 只接受顺序约束字段（`version>` /
 8. 参考路径**不做性能优化**，无吞吐指标承诺。
 9. 认证（§34.6 Freeze Gate）、GPU/SIMD 路径、视频/离线通道（§7）均不在
    本 profile 范围内。
+10. 完整 raster 没有 interleave profile signal；Inspector 明确输出
+    `interleave=not-bound`，不会按内容猜测。Phase-0 interleave reference 只在
+    独立 Golden/unit/fuzz 中使用。
 
 ## 12. 复现验证（本环境）
 
 ```
-# 构建树 build-modulation-check（Release/MSVC，W4/WX，tests+fuzzers 开）
-cmake --build build-modulation-check --config Release
-ctest --test-dir build-modulation-check -C Release --output-on-failure
-# PBModulation 单测（40 test case）
-build-modulation-check\tests\PBModulation\Release\PBModulationTests.exe -r compact
-# fuzz smoke + corpus
-ctest --test-dir build-modulation-check -C Release -R PBModulationReferenceRaster
+# Release harness
+cmake --build build-phase0-tooling-release --config Release --parallel
+ctest --test-dir build-phase0-tooling-release --build-config Release --output-on-failure
+build-phase0-tooling-release\tests\golden\Release\PBGoldenVectorCheck.exe tests\golden
+
+# 生成可由 Inspector 恢复的完整 fixture（写入 build/output 目录，不提交 frame）
+build-phase0-tooling-release\tools\Release\PBVectorGen.exe write-frame `
+  build-phase0-tooling-release\g1-transport.pbrw --vector g1-transport --format pbrw
+build-phase0-tooling-release\tools\Release\PBFrameInspector.exe --recovery `
+  build-phase0-tooling-release\g1-transport.pbrw
 ```
 
 全量测试中与本任务无关的既有失败（若有）单独报告，不代改。

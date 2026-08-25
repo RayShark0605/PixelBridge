@@ -1,0 +1,151 @@
+# Catch2 suites for the command-line tool cores (PBProtocolDump /
+# PBFrameInspector). The core targets are defined in tools/CMakeLists.txt,
+# which exists only when PB_BUILD_TOOLS=ON; tests/CMakeLists.txt therefore
+# adds this directory only when the core targets exist.
+#
+# All fixtures are synthesized in memory: record byte vectors come from the
+# deterministic PBGoldenVector byte source, frames from
+# pbmodulation::EncodeReferenceFrame plus the PBInnerFec / PBProtocol
+# encoders. The only on-disk tool fixture is the 28-byte hostile PBRW header
+# used by the process-level pre-allocation rejection test.
+
+PbAddUnitTest(PBProtocolDumpTests
+    test_protocol_dump_core.cpp)
+target_link_libraries(PBProtocolDumpTests
+    PRIVATE
+        PBProtocolDumpCore
+        PB::PBGoldenVector
+        PB::PBModulation
+        PB::PBProtocol)
+
+PbAddUnitTest(PBFrameInspectorTests
+    test_frame_inspector_core.cpp)
+target_link_libraries(PBFrameInspectorTests
+    PRIVATE
+        PBFrameInspectorCore
+        PB::PBGoldenVector
+        PB::PBInnerFec
+        PB::PBModulation
+        PB::PBProtocol)
+target_include_directories(PBFrameInspectorTests
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/tests/PBModulation")
+
+# CLI exit-code contracts for the two tool executables. The positive input
+# is the committed golden bootstrap record (exit 0); the parse-failure input
+# is the committed bootstrap-control corpus negative sample (exit 1); a
+# missing file is a usage/IO error (exit 2). The frame-inspector hostile
+# header is a committed 28-byte PBRW fixture declaring 16384x16384; the
+# 8.3 MB positive frame path is covered by the in-memory suite.
+if(TARGET PBProtocolDump)
+    add_test(
+        NAME PBProtocolDumpExit.Valid
+        COMMAND PBProtocolDump
+            "${PROJECT_SOURCE_DIR}/tests/golden/protocol/bootstrap-record.bin")
+    set_tests_properties(PBProtocolDumpExit.Valid PROPERTIES
+        LABELS "tools;exit-codes"
+        TIMEOUT 30)
+
+    add_test(
+        NAME PBProtocolDumpExit.ParseFailure
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBProtocolDump>
+            -DPB_EXPECTED_EXIT=1
+            -DPB_TEST_ARGS=${PROJECT_SOURCE_DIR}/fuzz/corpus/bootstrap-control/bad-bootstrap-crc.bin
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBProtocolDumpExit.ParseFailure PROPERTIES
+        LABELS "tools;exit-codes"
+        TIMEOUT 30)
+
+    add_test(
+        NAME PBProtocolDumpExit.UsageError
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBProtocolDump>
+            -DPB_EXPECTED_EXIT=2
+            -DPB_TEST_ARGS=${CMAKE_CURRENT_BINARY_DIR}/does-not-exist.bin
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBProtocolDumpExit.UsageError PROPERTIES
+        LABELS "tools;exit-codes"
+        TIMEOUT 30)
+endif()
+
+if(TARGET PBFrameInspector)
+    set(pbHostileHeaderFile
+        "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hostile-16384.pbrw")
+
+    add_test(
+        NAME PBFrameInspectorExit.HostileGeometry
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBFrameInspector>
+            -DPB_EXPECTED_EXIT=1
+            -DPB_TEST_ARGS=${pbHostileHeaderFile}
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBFrameInspectorExit.HostileGeometry PROPERTIES
+        LABELS "tools;exit-codes"
+        TIMEOUT 30)
+
+    add_test(
+        NAME PBFrameInspectorExit.UsageError
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBFrameInspector>
+            -DPB_EXPECTED_EXIT=2
+            -DPB_TEST_ARGS=${CMAKE_CURRENT_BINARY_DIR}/does-not-exist.pbrw
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBFrameInspectorExit.UsageError PROPERTIES
+        LABELS "tools;exit-codes"
+        TIMEOUT 30)
+    unset(pbHostileHeaderFile)
+endif()
+
+if(TARGET PBVectorGen AND TARGET PBFrameInspector)
+    add_test(
+        NAME PBVectorGenIntegration
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_VECTOR_GEN=$<TARGET_FILE:PBVectorGen>
+            -DPB_FRAME_INSPECTOR=$<TARGET_FILE:PBFrameInspector>
+            -DPB_SOURCE_ROOT=${PROJECT_SOURCE_DIR}
+            -DPB_WORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/vector-gen-integration
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunVectorGenIntegration.cmake")
+    set_tests_properties(PBVectorGenIntegration PROPERTIES
+        LABELS "tools;generator;integration"
+        TIMEOUT 180)
+
+    foreach(pbVectorGenInvalidCase IN ITEMS
+            UnknownCategory
+            DuplicateCategory
+            MultipleRoots
+            InvalidSeed
+            OverflowSeed
+            MissingValue
+            ExtraArgument)
+        if(pbVectorGenInvalidCase STREQUAL "UnknownCategory")
+            set(pbVectorGenInvalidArguments write-corpus ${CMAKE_CURRENT_BINARY_DIR}/invalid --category unknown)
+        elseif(pbVectorGenInvalidCase STREQUAL "DuplicateCategory")
+            set(pbVectorGenInvalidArguments write-corpus ${CMAKE_CURRENT_BINARY_DIR}/invalid --category transport --category ldpc)
+        elseif(pbVectorGenInvalidCase STREQUAL "MultipleRoots")
+            set(pbVectorGenInvalidArguments write-corpus ${CMAKE_CURRENT_BINARY_DIR}/invalid ${CMAKE_CURRENT_BINARY_DIR}/extra --category transport)
+        elseif(pbVectorGenInvalidCase STREQUAL "InvalidSeed")
+            set(pbVectorGenInvalidArguments write-corpus ${CMAKE_CURRENT_BINARY_DIR}/invalid --category transport --seed nope)
+        elseif(pbVectorGenInvalidCase STREQUAL "OverflowSeed")
+            set(pbVectorGenInvalidArguments write-corpus ${CMAKE_CURRENT_BINARY_DIR}/invalid --category transport --seed 18446744073709551616)
+        elseif(pbVectorGenInvalidCase STREQUAL "MissingValue")
+            set(pbVectorGenInvalidArguments write-corpus ${CMAKE_CURRENT_BINARY_DIR}/invalid --category)
+        else()
+            set(pbVectorGenInvalidArguments dump-manifest --skip-frames extra)
+        endif()
+        string(REPLACE ";" "|" pbVectorGenInvalidArgumentsEncoded "${pbVectorGenInvalidArguments}")
+        add_test(
+            NAME "PBVectorGenExit.${pbVectorGenInvalidCase}"
+            COMMAND "${CMAKE_COMMAND}"
+                -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBVectorGen>
+                -DPB_EXPECTED_EXIT=2
+                -DPB_TEST_ARGS_ENCODED=${pbVectorGenInvalidArgumentsEncoded}
+                -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+        set_tests_properties("PBVectorGenExit.${pbVectorGenInvalidCase}" PROPERTIES
+            LABELS "tools;generator;exit-codes"
+            TIMEOUT 30)
+    endforeach()
+    unset(pbVectorGenInvalidArgumentsEncoded)
+    unset(pbVectorGenInvalidArguments)
+    unset(pbVectorGenInvalidCase)
+endif()
