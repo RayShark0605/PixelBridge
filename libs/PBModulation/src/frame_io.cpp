@@ -622,8 +622,9 @@ ModulationStatus DecodePngFrame(
         // so it must be called once per (pass, row) and the buffer must
         // persist between passes. Rows are accumulated as 8-bit RGBA in
         // the private staging buffer and only copied (reordered) into
-        // outBgra after every row read has succeeded, so a mid-stream
-        // failure never leaves outBgra partially written.
+        // outBgra after every row read and the stream-end checks (IEND
+        // present, no trailing bytes) have succeeded, so any failure
+        // never leaves outBgra partially written.
         const std::uint64_t frameBytes =
             static_cast<std::uint64_t>(rowBytes) *
             static_cast<std::uint64_t>(height);
@@ -639,19 +640,6 @@ ModulationStatus DecodePngFrame(
                     context.pngPtr,
                     reinterpret_cast<png_bytep>(rgbaRow), nullptr);
             }
-        }
-        const std::size_t numPixels =
-            static_cast<std::size_t>(
-                static_cast<std::uint64_t>(width) *
-                static_cast<std::uint64_t>(height));
-        for (std::size_t pixelIndex = 0; pixelIndex < numPixels; pixelIndex++)
-        {
-            const std::size_t source = pixelIndex * 4;
-            // RGBA (as stored in PNG) -> BGRA (reference canvas format).
-            outBgra[source] = rgbaFrame[source + 2];
-            outBgra[source + 1] = rgbaFrame[source + 1];
-            outBgra[source + 2] = rgbaFrame[source];
-            outBgra[source + 3] = rgbaFrame[source + 3];
         }
         png_read_end(context.pngPtr, context.infoPtr);
     }
@@ -669,6 +657,24 @@ ModulationStatus DecodePngFrame(
         return ModulationStatus::Failure(
             ModulationErrorCode::TrailingBytes,
             readContext.position);
+    }
+    // Only once every row is decoded and the stream-end checks have
+    // passed is the staged RGBA frame copied (reordered) into the caller
+    // buffer, so a failure on any path leaves outBgra untouched (library
+    // convention: a failure never mutates any caller output buffer).
+    // Width/height were verified equal to the expected dimensions above.
+    const std::size_t numPixels =
+        static_cast<std::size_t>(
+            static_cast<std::uint64_t>(expectedWidth) *
+            static_cast<std::uint64_t>(expectedHeight));
+    for (std::size_t pixelIndex = 0; pixelIndex < numPixels; pixelIndex++)
+    {
+        const std::size_t source = pixelIndex * 4;
+        // RGBA (as stored in PNG) -> BGRA (reference canvas format).
+        outBgra[source] = rgbaFrame[source + 2];
+        outBgra[source + 1] = rgbaFrame[source + 1];
+        outBgra[source + 2] = rgbaFrame[source];
+        outBgra[source + 3] = rgbaFrame[source + 3];
     }
     return ModulationStatus::Success();
 }
