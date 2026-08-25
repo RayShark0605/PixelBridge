@@ -9,3 +9,8 @@ target-dependency-graph.dot.*
 
 # Source-tree vcpkg manifest state
 /vcpkg_installed/
+
+# Stray MSVC artifacts from out-of-tree compiles
+*.pdb
+*.idb
+*.ilk
