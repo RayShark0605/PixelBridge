@@ -22,6 +22,9 @@ add_executable(PBOuterFecWirehairV2Fuzz
 add_executable(PBOuterFecDirectRepeatFuzz
     direct_repeat_fuzz.cpp)
 
+add_executable(PBModulationReferenceRasterFuzz
+    reference_raster_fuzz.cpp)
+
 target_link_libraries(PBProtocolDescriptorResourceFuzz
     PRIVATE
         PB::CompilerSettings
@@ -57,6 +60,11 @@ target_link_libraries(PBOuterFecDirectRepeatFuzz
         PB::CompilerSettings
         PB::PBOuterFec)
 
+target_link_libraries(PBModulationReferenceRasterFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBModulation)
+
 target_include_directories(PBOuterFecWirehairV2Fuzz
     PRIVATE
         "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")
@@ -84,6 +92,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_definitions(PBOuterFecDirectRepeatFuzz
         PRIVATE
             PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBModulationReferenceRasterFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
     target_compile_options(PBProtocol
         PRIVATE
             -fno-omit-frame-pointer
@@ -93,6 +104,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
     target_compile_options(PBOuterFec
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
+    target_compile_options(PBModulation
         PRIVATE
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
@@ -145,6 +160,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_link_options(PBOuterFecDirectRepeatFuzz
         PRIVATE
             -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBModulationReferenceRasterFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBModulationReferenceRasterFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
 elseif(MSVC)
     # The MSVC fallback is a deterministic mutation runner. AddressSanitizer is
     # applied to each exercised PixelBridge library as well as all drivers so
@@ -154,6 +176,7 @@ elseif(MSVC)
     target_compile_options(PBProtocol PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBCompression PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBOuterFec PRIVATE /Zi /fsanitize=address)
+    target_compile_options(PBModulation PRIVATE /Zi /fsanitize=address)
     # The pinned vcpkg Wirehair archive records MSVC STL container annotations
     # as disabled. A single executable must use one annotation setting across
     # every linked C++ object (LNK2038). BoundSegmentDescriptor now makes the
@@ -165,7 +188,9 @@ elseif(MSVC)
             PBProtocol
             PBCompression
             PBOuterFec
+            PBModulation
             PBReceiver
+            PBModulationReferenceRasterFuzz
             PBProtocolDescriptorResourceFuzz
             PBProtocolBootstrapControlFuzz
             PBProtocolOrphanResourceFuzz
@@ -236,6 +261,14 @@ elseif(MSVC)
         PRIVATE
             /DEBUG
             /INCREMENTAL:NO)
+    target_compile_options(PBModulationReferenceRasterFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBModulationReferenceRasterFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
 
     get_filename_component(pbMsvcCompilerDirectory
         "${CMAKE_CXX_COMPILER}"
@@ -282,6 +315,11 @@ elseif(MSVC)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${pbMsvcAsanRuntime}"
             "$<TARGET_FILE_DIR:PBOuterFecDirectRepeatFuzz>"
+        VERBATIM)
+    add_custom_command(TARGET PBModulationReferenceRasterFuzz POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${pbMsvcAsanRuntime}"
+            "$<TARGET_FILE_DIR:PBModulationReferenceRasterFuzz>"
         VERBATIM)
     unset(pbMsvcAsanRuntime)
     unset(pbMsvcCompilerDirectory)
@@ -349,6 +387,14 @@ if(BUILD_TESTING)
         set_tests_properties(PBOuterFecDirectRepeatFuzzSmoke PROPERTIES
             LABELS "fuzz;pbouterfec;direct-repeat;libfuzzer"
             TIMEOUT 60)
+        add_test(
+            NAME PBModulationReferenceRasterFuzzSmoke
+            COMMAND PBModulationReferenceRasterFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/reference-raster"
+                -runs=2000)
+        set_tests_properties(PBModulationReferenceRasterFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbmodulation;reference-raster;libfuzzer"
+            TIMEOUT 60)
     else()
         add_test(
             NAME PBProtocolDescriptorResourceFuzzSmoke
@@ -398,6 +444,17 @@ if(BUILD_TESTING)
         set_tests_properties(PBOuterFecDirectRepeatFuzzSmoke PROPERTIES
             LABELS "fuzz;pbouterfec;direct-repeat"
             TIMEOUT 60)
+        # Full 8294400-byte frames are synthesized in memory by the seeded
+        # mutation loop; the corpus keeps small replay seeds only (repo-size
+        # decision, consistent with the other corpora).
+        add_test(
+            NAME PBModulationReferenceRasterFuzzSmoke
+            COMMAND PBModulationReferenceRasterFuzz
+                1000
+                4761939155204273851)
+        set_tests_properties(PBModulationReferenceRasterFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbmodulation;reference-raster"
+            TIMEOUT 600)
 
         set(pbDirectRepeatCorpusDirectory
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/direct-repeat")
@@ -502,6 +559,29 @@ if(BUILD_TESTING)
         endforeach()
         unset(pbBootstrapControlCorpusName)
         unset(pbBootstrapControlCorpusDirectory)
+
+        set(pbReferenceRasterCorpusDirectory
+            "${CMAKE_CURRENT_SOURCE_DIR}/corpus/reference-raster")
+        foreach(pbReferenceRasterCorpusName IN ITEMS
+                valid-manifest
+                corrupted-manifest
+                valid-raw-small
+                valid-png-small
+                truncated-png
+                invalid-raw-magic)
+            add_test(
+                NAME "PBModulationReferenceRasterCorpus.${pbReferenceRasterCorpusName}"
+                COMMAND PBModulationReferenceRasterFuzz
+                    --input
+                    "${pbReferenceRasterCorpusDirectory}/${pbReferenceRasterCorpusName}.bin")
+            set_tests_properties(
+                "PBModulationReferenceRasterCorpus.${pbReferenceRasterCorpusName}"
+                PROPERTIES
+                    LABELS "fuzz;pbmodulation;reference-raster;corpus"
+                    TIMEOUT 30)
+        endforeach()
+        unset(pbReferenceRasterCorpusName)
+        unset(pbReferenceRasterCorpusDirectory)
 
         set(pbCompressionCorpusDirectory
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/compression-zstd")

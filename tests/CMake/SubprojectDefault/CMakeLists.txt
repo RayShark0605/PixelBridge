@@ -17,6 +17,14 @@ set(PB_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(PB_BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 set(PB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 
+# The scratch consumer builds run without the vcpkg manifest toolchain, so
+# they must inherit the per-config imported-library mapping that vcpkg.cmake
+# applies for the main tree; otherwise CMake's default mapping links the
+# debug-CRT vcpkg libraries (wirehair, blake3) into RelWithDebInfo and
+# MinSizeRel consumers and the link fails with LNK2038.
+set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL "MinSizeRel;Release;None;")
+set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO "RelWithDebInfo;Release;None;")
+
 add_test(NAME PBParentSmoke COMMAND "${CMAKE_COMMAND}" -E true)
 
 add_subdirectory("${PB_SOURCE_DIR}" PixelBridge)

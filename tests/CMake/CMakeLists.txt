@@ -18,6 +18,28 @@ if(NOT DEFINED wirehair_DIR OR wirehair_DIR STREQUAL "")
         "wirehair_DIR is required by the PBOuterFec consumer fixtures")
 endif()
 
+if(NOT DEFINED PNG_DIR OR PNG_DIR STREQUAL "")
+    message(FATAL_ERROR
+        "PNG_DIR is required by the PBModulation consumer fixtures")
+endif()
+
+# The scratch fixtures configure the full project tree without the vcpkg
+# manifest toolchain, so every vcpkg package must be hinted through its
+# <pkg>_DIR cache variable. libpng's PNGConfig.cmake in turn runs
+# find_dependency(ZLIB). A plain ZLIB_DIR hint does not help there because
+# CMake's built-in FindZLIB module is loaded first and ignores it, so the
+# zlib package is located through the standard <pkg>_ROOT prefix hint
+# instead: with ZLIB_ROOT pointing at the vcpkg install root, config search
+# picks up share/zlib/ZLIBConfig.cmake (sibling of share/png).
+get_filename_component(pbVcpkgShareDirectory "${PNG_DIR}" DIRECTORY)
+get_filename_component(pbVcpkgInstallRoot "${pbVcpkgShareDirectory}" DIRECTORY)
+if(NOT IS_DIRECTORY "${pbVcpkgShareDirectory}/zlib")
+    message(FATAL_ERROR
+        "zlib CMake package not found next to PNG_DIR: "
+        "${pbVcpkgShareDirectory}/zlib")
+endif()
+unset(pbVcpkgShareDirectory)
+
 set(pbStaticIsolationConfigureCommand
     "${CMAKE_COMMAND}"
     --fresh
@@ -27,7 +49,9 @@ set(pbStaticIsolationConfigureCommand
     "-DPB_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
     "-Dblake3_DIR=${blake3_DIR}"
     "-Dzstd_DIR=${zstd_DIR}"
-    "-Dwirehair_DIR=${wirehair_DIR}")
+    "-Dwirehair_DIR=${wirehair_DIR}"
+    "-DPNG_DIR=${PNG_DIR}"
+    "-DZLIB_ROOT=${pbVcpkgInstallRoot}")
 
 if(CMAKE_GENERATOR_PLATFORM)
     list(APPEND pbStaticIsolationConfigureCommand
@@ -117,7 +141,9 @@ set(pbSubprojectConfigureCommand
     "-DPB_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
     "-Dblake3_DIR=${blake3_DIR}"
     "-Dzstd_DIR=${zstd_DIR}"
-    "-Dwirehair_DIR=${wirehair_DIR}")
+    "-Dwirehair_DIR=${wirehair_DIR}"
+    "-DPNG_DIR=${PNG_DIR}"
+    "-DZLIB_ROOT=${pbVcpkgInstallRoot}")
 
 if(CMAKE_GENERATOR_PLATFORM)
     list(APPEND pbSubprojectConfigureCommand
@@ -160,3 +186,4 @@ unset(pbStaticIsolationSourceDirectory)
 unset(pbSubprojectBinaryDirectory)
 unset(pbSubprojectConfigureCommand)
 unset(pbSubprojectSourceDirectory)
+unset(pbVcpkgInstallRoot)

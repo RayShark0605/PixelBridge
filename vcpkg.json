@@ -9,12 +9,16 @@
       "version>=": "1.8.5"
     },
     {
-      "name": "zstd",
-      "version>=": "1.5.7"
+      "name": "libpng",
+      "version>=": "1.6.58"
     },
     {
       "name": "wirehair",
       "version>=": "2.0.0"
+    },
+    {
+      "name": "zstd",
+      "version>=": "1.5.7"
     }
   ],
   "features": {
