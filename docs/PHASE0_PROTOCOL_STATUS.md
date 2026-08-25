@@ -383,6 +383,36 @@ task). A future environment with AFF3CT installed should add an oracle
 regression comparing this encoder against the AFF3CT DVB-S2 encoder on
 identical information bits.
 
+### Independent re-verification (2026-08-25 review)
+
+The review re-fetched the pinned upstream file at commit
+`e8a65c5047262d97a15563b9edc961f69b2792cc` (SHA256
+`AF378CA17CA2F400B5ECECEC81BEC69BAE1BCD83788E0856D9C8BC106406F2C3`,
+matching the provenance record) and re-verified it value-for-value
+against the embedded tables (150/141/158 values, zero delta on every
+value and on all structural parameters N/K/M/Q/N_LINES). A throwaway
+independent spec-based encoder (separate code path, upstream flat data
+layout) reproduced the library codewords byte-for-byte on 2003 vectors
+per profile (zero, all-ones, the 0xC0FFEE pattern, and 2000 seeded
+random vectors); an explicit-row H*c=0 oracle built from the upstream
+data accepted every library codeword and rejected 50 single-bit
+corruptions per profile. The documented profile/matrix ID derivation
+(first 8 bytes, little-endian, of BLAKE3-256 over the fixed UTF-8
+strings) was recomputed and matches all six frozen constants, and the
+derivation is now pinned by a committed test.
+
+Decoder adversarial sweep (same throwaway harness, no repo changes):
+int16 extreme LLR boundaries, the scaleNum=0 and max-offset
+hard-decision regimes, failed-then-clean instance reuse, and the
+interval=maxIterations semantics all behave per the pinned contracts,
+and these behaviors are now pinned by committed regression tests in
+`tests/PBInnerFec`. A 117-case deterministic flip sweep (13 flip counts
+x 3 seeds x 3 profiles at magnitude 8192) decodes 36/39 (Robust), 30/39
+(Balanced), and 24/39 (Fast) codewords, with the correction capability
+ordered by rate and no successful decode emitting a wrong information
+block. A dedicated PBInnerFec fuzz/benchmark gate remains a separate
+follow-up task.
+
 ## Remaining Phase-0 Gate scope
 
 This status decision closes the ambiguity around the current descriptor bytes

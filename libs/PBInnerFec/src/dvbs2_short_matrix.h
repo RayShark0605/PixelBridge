@@ -37,7 +37,6 @@ namespace pbinnerfec {
 
 inline constexpr std::uint32_t kDvbS2ShortMaxLineDegree = 16;
 inline constexpr std::uint32_t kDvbS2ShortMaxLines = 37;
-inline constexpr std::uint32_t kDvbS2ShortMaxShiftCount = 121;
 inline constexpr std::uint32_t kDvbS2ShortMaxParityBits = 5400;
 
 struct DvbS2ShortMatrix
