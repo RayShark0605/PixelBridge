@@ -22,6 +22,7 @@ target_sources(PBProtocol
         src/session_random.cpp
         src/session_random_internal.h
         src/session_registry.cpp
+        src/transport_block_codec.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
@@ -43,7 +44,8 @@ target_sources(PBProtocol
             include/pbprotocol/protocol_version.h
             include/pbprotocol/resume_state.h
             include/pbprotocol/session_random.h
-            include/pbprotocol/session_registry.h)
+            include/pbprotocol/session_registry.h
+            include/pbprotocol/transport_block_codec.h)
 
 target_include_directories(PBProtocol
     PUBLIC

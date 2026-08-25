@@ -148,3 +148,65 @@ When CMake identifies Clang, the same target uses `LLVMFuzzerTestOneInput` with
 
 Compiler/sanitizer availability is part of the evidence. A deterministic MSVC
 mutation run must not be reported as coverage-guided libFuzzer or UBSan.
+
+## Phase-0 focused parser harness
+
+`PBParserFuzzHarness` 是聚合 build target，依赖既有 Bootstrap/Control、
+Descriptor、Wirehair V2、ReferenceRaster drivers，以及以下三个 focused drivers：
+
+- `PBProtocolTransportFuzz`：严格 Transport parse、accepted bytes 精确重序列化、
+  info-block frame/extract round-trip、canonical padding 和失败无写入；输入上限
+  65,571 bytes。
+- `PBInterleaveReferenceFuzz`：56,168-byte region 的 apply/reverse、16-phase
+  bijection、round-trip、错误大小/overlap failure atomicity；输入上限 56,169 bytes。
+- `PBInnerFecCodewordFuzz`：三种 DVB-S2 Short profile syndrome；合法 2,025-byte
+  codeword 执行 perfect-LLR decode 与 re-encode；Robust information prefix 继续
+  尝试 canonical Transport extraction；输入上限 2,026 bytes。
+
+`PBProtocolTransportStructuredSelfTest --self-test` 在所有 compiler backend 上
+修复 header CRC 后分别触达 type/minor/flags/reserved/declared-length 语义分支，
+并验证损坏 declared length 未修 CRC 时先返回 header CRC mismatch。成功必须输出
+`TRANSPORT_STRUCTURED_SELF_TEST_COMPLETED`。
+
+新增 corpus 目录：
+
+- `fuzz/corpus/transport`：minimum/canonical/maximum、header/payload CRC、
+  truncated/trailing、CRC-repaired semantic、zero/dirty info padding；
+- `fuzz/corpus/interleave`：zero/logical/phase-7 physical 与 short/long size；
+- `fuzz/corpus/ldpc`：三个 profile codeword、systematic/K-1/N-1 single-bit、
+  parity segment flip 与 truncated codeword。
+
+`PBVectorGen write-corpus` 直接返回命名 artifact，不依赖拼接后的手写 size table；
+相同 seed 的目录必须逐文件 byte-identical。Transport semantic seeds 的 header CRC
+只覆盖 `[0,28)`，确保 mutation 真正越过 CRC gate。
+
+### MSVC deterministic runner + ASan
+
+```powershell
+cmake -S . -B build-phase0-tooling-asan -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows `
+  -DBUILD_TESTING=ON -DPB_BUILD_TESTS=ON -DPB_BUILD_TOOLS=ON `
+  -DPB_BUILD_APPS=OFF -DPB_BUILD_FUZZERS=ON -DPB_BUILD_BENCHMARKS=OFF
+
+cmake --build build-phase0-tooling-asan --config RelWithDebInfo `
+  --target PBParserFuzzHarness --parallel
+
+ctest --test-dir build-phase0-tooling-asan --build-config RelWithDebInfo `
+  -L parser-harness --output-on-failure
+```
+
+CTest 固定运行 Transport 100,000 次、Interleave 1,000 次、LDPC 1,000 次
+deterministic mutation，并用 `--input` 重放全部三个新 corpus。MSVC 模式仅声明
+deterministic mutation + ASan，不声明 coverage-guided libFuzzer 或 UBSan。
+
+### Clang/libFuzzer + ASan/UBSan
+
+Clang 配置对三个 focused driver 定义 `PB_USE_LIBFUZZER`，并把
+`PBProtocol/PBInterleave/PBInnerFec` 及 driver 一起以
+`-fsanitize=fuzzer,address,undefined`（structured self-test 不含 fuzzer main）
+instrument。CTest 对每个新 corpus 注册 `-runs=2000` smoke。若当前环境未提供
+可用 Clang/vcpkg toolchain，必须在验证报告中明确写为未运行，不能用 MSVC
+deterministic 结果代替。
+
+所有上述 parser smoke/corpus/self-test 统一带 `parser-harness` CTest label。

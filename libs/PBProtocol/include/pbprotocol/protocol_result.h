@@ -60,7 +60,12 @@ enum class ProtocolErrorCode : std::uint8_t
     // diagnostic values remain stable.
     OutputReservationDenied,
     OrphanPayloadConflict,
-    UnknownSegment
+    UnknownSegment,
+    // Input and output spans of a serialization/transfer API overlap; the
+    // operation is rejected before any write (mirrors the Inner-FEC encoder
+    // overlap rejection). Appended after UnknownSegment so previously
+    // recorded diagnostic values stay stable.
+    OverlappingSpans
 };
 
 struct ProtocolError

@@ -49,6 +49,12 @@ add_subdirectory(PBInnerFec)
 add_subdirectory(PBModulation)
 add_subdirectory(PBOuterFec)
 add_subdirectory(PBReceiver)
+add_subdirectory(PBInterleave)
+add_subdirectory(PBGoldenVector)
+add_subdirectory(golden)
+if(TARGET PBProtocolDumpCore AND TARGET PBFrameInspectorCore)
+    add_subdirectory(tools)
+endif()
 add_subdirectory(CMake)
 
 # Centralized MSVC ASan runtime copy for the unit-test executables. In the
@@ -78,6 +84,15 @@ if(MSVC AND TARGET PBProtocol)
         # PBProtocolNoAllocationDigestProbe is created with a plain
         # add_executable and also links the instrumented PBProtocol.
         list(APPEND pbUnitTestTargets PBProtocolNoAllocationDigestProbe)
+        # The golden harness and tool executables are plain executables
+        # that pull the instrumented protocol stack into their link; the
+        # if(TARGET) guard below skips any that are not built in this
+        # configuration (tools are optional).
+        list(APPEND pbUnitTestTargets
+            PBGoldenVectorCheck
+            PBProtocolDump
+            PBFrameInspector
+            PBVectorGen)
         # add_custom_command(TARGET ...) must live in the directory that
         # created the target, so a single all-of-ALL copy target created in
         # this directory places the runtime next to every test executable

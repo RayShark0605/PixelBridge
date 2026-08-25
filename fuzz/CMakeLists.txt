@@ -25,6 +25,18 @@ add_executable(PBOuterFecDirectRepeatFuzz
 add_executable(PBModulationReferenceRasterFuzz
     reference_raster_fuzz.cpp)
 
+add_executable(PBProtocolTransportFuzz
+    transport_fuzz.cpp)
+
+add_executable(PBProtocolTransportStructuredSelfTest
+    transport_fuzz.cpp)
+
+add_executable(PBInterleaveReferenceFuzz
+    interleave_reference_fuzz.cpp)
+
+add_executable(PBInnerFecCodewordFuzz
+    inner_fec_codeword_fuzz.cpp)
+
 target_link_libraries(PBProtocolDescriptorResourceFuzz
     PRIVATE
         PB::CompilerSettings
@@ -65,6 +77,38 @@ target_link_libraries(PBModulationReferenceRasterFuzz
         PB::CompilerSettings
         PB::PBModulation)
 
+target_link_libraries(PBProtocolTransportFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)
+
+target_link_libraries(PBProtocolTransportStructuredSelfTest
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)
+
+target_link_libraries(PBInterleaveReferenceFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBInterleave)
+
+target_link_libraries(PBInnerFecCodewordFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBInnerFec
+        PB::PBProtocol)
+
+add_custom_target(PBParserFuzzHarness
+    DEPENDS
+        PBProtocolBootstrapControlFuzz
+        PBProtocolDescriptorResourceFuzz
+        PBOuterFecWirehairV2Fuzz
+        PBModulationReferenceRasterFuzz
+        PBProtocolTransportFuzz
+        PBProtocolTransportStructuredSelfTest
+        PBInterleaveReferenceFuzz
+        PBInnerFecCodewordFuzz)
+
 target_include_directories(PBOuterFecWirehairV2Fuzz
     PRIVATE
         "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")
@@ -95,6 +139,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_definitions(PBModulationReferenceRasterFuzz
         PRIVATE
             PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBProtocolTransportFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBInterleaveReferenceFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBInnerFecCodewordFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
     target_compile_options(PBProtocol
         PRIVATE
             -fno-omit-frame-pointer
@@ -108,6 +161,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
     target_compile_options(PBModulation
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
+    target_compile_options(PBInterleave
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
+    target_compile_options(PBInnerFec
         PRIVATE
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
@@ -167,6 +228,34 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_link_options(PBModulationReferenceRasterFuzz
         PRIVATE
             -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBProtocolTransportFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBProtocolTransportFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBProtocolTransportStructuredSelfTest
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
+    target_link_options(PBProtocolTransportStructuredSelfTest
+        PRIVATE
+            -fsanitize=address,undefined)
+    target_compile_options(PBInterleaveReferenceFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBInterleaveReferenceFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBInnerFecCodewordFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBInnerFecCodewordFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
 elseif(MSVC)
     # The MSVC fallback is a deterministic mutation runner. AddressSanitizer is
     # applied to each exercised PixelBridge library as well as all drivers so
@@ -177,6 +266,8 @@ elseif(MSVC)
     target_compile_options(PBCompression PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBOuterFec PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBModulation PRIVATE /Zi /fsanitize=address)
+    target_compile_options(PBInterleave PRIVATE /Zi /fsanitize=address)
+    target_compile_options(PBInnerFec PRIVATE /Zi /fsanitize=address)
     # The pinned vcpkg Wirehair archive records MSVC STL container annotations
     # as disabled. A single executable must use one annotation setting across
     # every linked C++ object (LNK2038). BoundSegmentDescriptor now makes the
@@ -189,6 +280,8 @@ elseif(MSVC)
             PBCompression
             PBOuterFec
             PBModulation
+            PBInterleave
+            PBInnerFec
             PBReceiver
             PBModulationReferenceRasterFuzz
             PBProtocolDescriptorResourceFuzz
@@ -197,7 +290,11 @@ elseif(MSVC)
             PBProtocolBootstrapControlStructuredSelfTest
             PBCompressionZstdBoundaryFuzz
             PBOuterFecWirehairV2Fuzz
-            PBOuterFecDirectRepeatFuzz)
+            PBOuterFecDirectRepeatFuzz
+            PBProtocolTransportFuzz
+            PBProtocolTransportStructuredSelfTest
+            PBInterleaveReferenceFuzz
+            PBInnerFecCodewordFuzz)
         target_compile_definitions(${pbMsvcAsanTarget}
             PRIVATE
                 _DISABLE_STRING_ANNOTATION
@@ -269,6 +366,38 @@ elseif(MSVC)
         PRIVATE
             /DEBUG
             /INCREMENTAL:NO)
+    target_compile_options(PBProtocolTransportFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBProtocolTransportFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
+    target_compile_options(PBProtocolTransportStructuredSelfTest
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBProtocolTransportStructuredSelfTest
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
+    target_compile_options(PBInterleaveReferenceFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBInterleaveReferenceFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
+    target_compile_options(PBInnerFecCodewordFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBInnerFecCodewordFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
 
     get_filename_component(pbMsvcCompilerDirectory
         "${CMAKE_CXX_COMPILER}"
@@ -321,6 +450,18 @@ elseif(MSVC)
             "${pbMsvcAsanRuntime}"
             "$<TARGET_FILE_DIR:PBModulationReferenceRasterFuzz>"
         VERBATIM)
+    foreach(pbMsvcAsanExecutable IN ITEMS
+            PBProtocolTransportFuzz
+            PBProtocolTransportStructuredSelfTest
+            PBInterleaveReferenceFuzz
+            PBInnerFecCodewordFuzz)
+        add_custom_command(TARGET ${pbMsvcAsanExecutable} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${pbMsvcAsanRuntime}"
+                "$<TARGET_FILE_DIR:${pbMsvcAsanExecutable}>"
+            VERBATIM)
+    endforeach()
+    unset(pbMsvcAsanExecutable)
     unset(pbMsvcAsanRuntime)
     unset(pbMsvcCompilerDirectory)
 else()
@@ -337,6 +478,14 @@ if(BUILD_TESTING)
         PBProtocolBootstrapControlStructuredSelfTest
         PROPERTIES
             LABELS "fuzz;pbprotocol;bootstrap;control;fragment;receiver;structured"
+            TIMEOUT 30)
+    add_test(
+        NAME PBProtocolTransportStructuredSelfTest
+        COMMAND PBProtocolTransportStructuredSelfTest --self-test)
+    set_tests_properties(
+        PBProtocolTransportStructuredSelfTest
+        PROPERTIES
+            LABELS "fuzz;pbprotocol;transport;structured"
             TIMEOUT 30)
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -395,6 +544,30 @@ if(BUILD_TESTING)
         set_tests_properties(PBModulationReferenceRasterFuzzSmoke PROPERTIES
             LABELS "fuzz;pbmodulation;reference-raster;libfuzzer"
             TIMEOUT 60)
+        add_test(
+            NAME PBProtocolTransportFuzzSmoke
+            COMMAND PBProtocolTransportFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/transport"
+                -runs=2000)
+        set_tests_properties(PBProtocolTransportFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol;transport;libfuzzer"
+            TIMEOUT 60)
+        add_test(
+            NAME PBInterleaveReferenceFuzzSmoke
+            COMMAND PBInterleaveReferenceFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/interleave"
+                -runs=2000)
+        set_tests_properties(PBInterleaveReferenceFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbinterleave;libfuzzer"
+            TIMEOUT 60)
+        add_test(
+            NAME PBInnerFecCodewordFuzzSmoke
+            COMMAND PBInnerFecCodewordFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/ldpc"
+                -runs=2000)
+        set_tests_properties(PBInnerFecCodewordFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbinnerfec;ldpc;libfuzzer"
+            TIMEOUT 120)
     else()
         add_test(
             NAME PBProtocolDescriptorResourceFuzzSmoke
@@ -455,6 +628,58 @@ if(BUILD_TESTING)
         set_tests_properties(PBModulationReferenceRasterFuzzSmoke PROPERTIES
             LABELS "fuzz;pbmodulation;reference-raster"
             TIMEOUT 600)
+        add_test(
+            NAME PBProtocolTransportFuzzSmoke
+            COMMAND PBProtocolTransportFuzz
+                100000
+                14627333968688430831)
+        set_tests_properties(PBProtocolTransportFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol;transport;deterministic"
+            TIMEOUT 120)
+        add_test(
+            NAME PBInterleaveReferenceFuzzSmoke
+            COMMAND PBInterleaveReferenceFuzz
+                1000
+                1161981756646125696)
+        set_tests_properties(PBInterleaveReferenceFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbinterleave;deterministic"
+            TIMEOUT 120)
+        add_test(
+            NAME PBInnerFecCodewordFuzzSmoke
+            COMMAND PBInnerFecCodewordFuzz
+                1000
+                11068027678940948070)
+        set_tests_properties(PBInnerFecCodewordFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbinnerfec;ldpc;deterministic"
+            TIMEOUT 120)
+
+        foreach(pbCorpusCategory IN ITEMS transport interleave ldpc)
+            file(GLOB pbFocusedCorpusFiles CONFIGURE_DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/${pbCorpusCategory}/*.bin")
+            foreach(pbFocusedCorpusFile IN LISTS pbFocusedCorpusFiles)
+                get_filename_component(pbFocusedCorpusName "${pbFocusedCorpusFile}" NAME_WE)
+                if(pbCorpusCategory STREQUAL "transport")
+                    set(pbFocusedCorpusTarget PBProtocolTransportFuzz)
+                elseif(pbCorpusCategory STREQUAL "interleave")
+                    set(pbFocusedCorpusTarget PBInterleaveReferenceFuzz)
+                else()
+                    set(pbFocusedCorpusTarget PBInnerFecCodewordFuzz)
+                endif()
+                add_test(
+                    NAME "${pbFocusedCorpusTarget}Corpus.${pbFocusedCorpusName}"
+                    COMMAND ${pbFocusedCorpusTarget} --input "${pbFocusedCorpusFile}")
+                set_tests_properties(
+                    "${pbFocusedCorpusTarget}Corpus.${pbFocusedCorpusName}"
+                    PROPERTIES
+                        LABELS "fuzz;parser-harness;${pbCorpusCategory};corpus"
+                        TIMEOUT 30)
+            endforeach()
+        endforeach()
+        unset(pbFocusedCorpusTarget)
+        unset(pbFocusedCorpusName)
+        unset(pbFocusedCorpusFile)
+        unset(pbFocusedCorpusFiles)
+        unset(pbCorpusCategory)
 
         set(pbDirectRepeatCorpusDirectory
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/direct-repeat")
@@ -615,4 +840,13 @@ if(BUILD_TESTING)
         unset(pbCompressionCorpusName)
         unset(pbCompressionCorpusDirectory)
     endif()
+
+    get_property(pbRegisteredFuzzTests DIRECTORY PROPERTY TESTS)
+    foreach(pbRegisteredFuzzTest IN LISTS pbRegisteredFuzzTests)
+        if(pbRegisteredFuzzTest MATCHES "^(PBProtocolBootstrapControl|PBProtocolDescriptor|PBOuterFecWirehairV2|PBOuterFecDirectRepeat|PBModulationReferenceRaster|PBProtocolTransport|PBInterleaveReference|PBInnerFecCodeword)")
+            set_property(TEST "${pbRegisteredFuzzTest}" APPEND PROPERTY LABELS "parser-harness")
+        endif()
+    endforeach()
+    unset(pbRegisteredFuzzTest)
+    unset(pbRegisteredFuzzTests)
 endif()
