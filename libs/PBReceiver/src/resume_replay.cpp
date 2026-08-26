@@ -3,6 +3,7 @@
 #include "pbprotocol/checked_integer.h"
 #include "pbprotocol/descriptor_codec.h"
 
+#include <algorithm>
 #include <fstream>
 #include <new>
 #include <stdexcept>
@@ -25,11 +26,24 @@ ReceiverResult<ResumeReplayOutcome> ReplayActiveWirehairCache(
     pbouterfec::WirehairV2Decoder& decoder)
 {
     ResumeReplayOutcome outcome;
+    // An empty (moved-from) decoder exposes the zero-filled sentinel profile:
+    // it has no bound state, so no record can be valid against it and replay
+    // fails closed with the root-cause code before any metadata comparison.
+    const pbprotocol::WirehairV2SerializedProfile boundProfile =
+        decoder.GetBoundSerializedProfile();
+    if (std::all_of(
+            boundProfile.bytes.begin(),
+            boundProfile.bytes.end(),
+            [](const std::byte value) noexcept { return value == std::byte{0}; }))
+    {
+        return ReplayFailed(pbouterfec::OuterFecError{
+            pbouterfec::OuterFecErrorCode::InvalidState, 0});
+    }
     // Trust boundary: resume.state is untrusted persistent input, so the
     // persisted profile snapshot must match the decoder's descriptor-bound
     // profile before any block is re-injected (design doc section 31.2).
     // A mismatch fails closed without consuming the decoder.
-    if (cacheRecord.wirehairProfile != decoder.GetBoundSerializedProfile())
+    if (cacheRecord.wirehairProfile != boundProfile)
     {
         return ReplayFailed(pbouterfec::OuterFecError{
             pbouterfec::OuterFecErrorCode::UnsupportedProfile, 0});
@@ -59,12 +73,21 @@ ReceiverResult<ResumeReplayOutcome> ReplayDirectRepeatBlocks(
     pbouterfec::DirectRepeatDecoder& decoder)
 {
     ResumeReplayOutcome outcome;
+    // An empty (moved-from) decoder reports a zero bound block count: it has
+    // no bound state, so no record can be valid against it and replay fails
+    // closed with the root-cause code before any metadata comparison.
+    const std::uint64_t boundBlockCount = decoder.GetBoundBlockCount();
+    if (boundBlockCount == 0)
+    {
+        return ReplayFailed(pbouterfec::OuterFecError{
+            pbouterfec::OuterFecErrorCode::InvalidState, 0});
+    }
     // Trust boundary: the persisted block count must equal the
     // descriptor-derived bound count before any block is re-injected (design
     // doc section 31.3); per-entry revalidation alone cannot catch an
     // under-reported count.
     if (static_cast<std::uint64_t>(directRepeatRecord.directBlockCount) !=
-        decoder.GetBoundBlockCount())
+        boundBlockCount)
     {
         return ReplayFailed(pbouterfec::OuterFecError{
             pbouterfec::OuterFecErrorCode::InvalidInput,

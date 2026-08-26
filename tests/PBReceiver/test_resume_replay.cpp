@@ -847,9 +847,43 @@ TEST_CASE("Replay fails clean against an empty (moved-from) decoder",
     record.entries.push_back(std::move(entry));
     const auto replayResult = pbreceiver::ReplayActiveWirehairCache(record, decoder);
     REQUIRE_FALSE(replayResult);
+    // Empty-decoder root cause takes precedence over the profile
+    // mismatch: the zero-filled sentinel is never a valid bound state.
     CHECK(IsOuterFecErrorWith(
         replayResult.Error(),
-        pbouterfec::OuterFecErrorCode::UnsupportedProfile, 0U));
+        pbouterfec::OuterFecErrorCode::InvalidState, 0U));
+
+    // The entryless zeroed record must fail for the same root cause
+    // instead of passing the sentinel-vs-sentinel comparison as a
+    // vacuous success.
+    pbprotocol::ResumeActiveWirehairCacheRecord staleEmptyRecord{6U};
+    const auto staleEmptyResult = pbreceiver::ReplayActiveWirehairCache(
+        staleEmptyRecord, decoder);
+    REQUIRE_FALSE(staleEmptyResult);
+    CHECK(IsOuterFecErrorWith(
+        staleEmptyResult.Error(),
+        pbouterfec::OuterFecErrorCode::InvalidState, 0U));
+
+    // DirectRepeat side: the same root-cause gate on a moved-from
+    // decoder with an entryless zeroed record.
+    const std::vector<std::byte> directMessage = MakeMessage(37);
+    const pbprotocol::SegmentDescriptor directDescriptor = MakeDirectRepeatDescriptor(
+        directMessage, kOuterBlockBytes);
+    auto directDecoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
+            directDescriptor, kOuterBlockBytes, MakeDecoderManager());
+    REQUIRE(directDecoderResult);
+    pbouterfec::DirectRepeatDecoder directDecoder = std::move(directDecoderResult).Value();
+    pbouterfec::DirectRepeatDecoder directMovedAway = std::move(directDecoder);
+    (void)directMovedAway;
+
+    pbprotocol::ResumeActiveDirectRepeatRecord staleDirectEmptyRecord{7U};
+    const auto staleDirectEmptyResult = pbreceiver::ReplayDirectRepeatBlocks(
+        staleDirectEmptyRecord, directDecoder);
+    REQUIRE_FALSE(staleDirectEmptyResult);
+    CHECK(IsOuterFecErrorWith(
+        staleDirectEmptyResult.Error(),
+        pbouterfec::OuterFecErrorCode::InvalidState, 0U));
 }
 
 // The trust-boundary gate must apply to entryless records as well: a zeroed

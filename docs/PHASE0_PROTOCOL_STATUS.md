@@ -488,8 +488,11 @@ segment limit: a further distinct record fails with `ResourceLimitExceeded` at t
 while identical duplicates never consume quota (the builder mirrors this gate so it can
 never emit a document the loader would reject).
 
-`PBReceiver` adds the replay API and bounded file IO:
-`ReplayActiveWirehairCache` first cross-checks the persisted profile snapshot
+`PBReceiver` adds the replay API and bounded file IO. Both replay functions
+first reject a replay into an empty (moved-from) decoder with `InvalidState`
+before any metadata comparison: an empty decoder's zero-filled sentinel
+profile / zero bound block count is never treated as a match for stale state.
+`ReplayActiveWirehairCache` then cross-checks the persisted profile snapshot
 against the decoder's descriptor-bound profile (mismatch fails closed with
 `UnsupportedProfile` without consuming the decoder) and then re-injects cached
 entries into a freshly created `WirehairV2Decoder` in stored order;
