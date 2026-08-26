@@ -1612,4 +1612,54 @@ TEST_CASE("Single-record envelope pins capacity and truncation at every boundary
         CHECK(truncatedResult.Error().code == ProtocolErrorCode::TruncatedInput);
     }
 }
+
+// Large-N identical duplicate entry sets exercise the dedup helpers
+// auxiliary allocation paths (order index vector + drop mask). Dedup is
+// best-effort under allocation failure, but on the happy path a record
+// with many identical duplicate entries must load and collapse to one
+// entry per distinct id, keeping the first occurrence.
+TEST_CASE("Large identical duplicate entry sets dedupe to one entry per id",
+          "[pbprotocol][resume-state]")
+{
+    const ReceiverResourcePolicy resourcePolicy = MakeTestPolicy(1U << 20);
+    const std::uint32_t entryCount = 4096U;
+
+    {
+        std::vector<std::pair<std::uint32_t, std::vector<std::byte>>> wirehairEntries;
+        wirehairEntries.reserve(entryCount);
+        for (std::uint32_t entryIndex = 0; entryIndex < entryCount; entryIndex++)
+        {
+            wirehairEntries.emplace_back(5U, std::vector<std::byte>{Byte(0xA5)});
+        }
+        const std::vector<std::byte> wirehairDocument = WrapEnvelope(BuildWirehairBody(
+            3, MakeCanonicalProfile().bytes, wirehairEntries));
+        const auto wirehairResult = LoadResumeState(
+            std::span<const std::byte>(wirehairDocument), resourcePolicy);
+        REQUIRE(wirehairResult.HasValue());
+        CHECK_FALSE(wirehairResult.Value().hasTruncatedTail);
+        CHECK(wirehairResult.Value().activeWirehairCaches.size() == 1U);
+        CHECK(wirehairResult.Value().activeWirehairCaches.front().entries.size() == 1U);
+        CHECK(wirehairResult.Value().activeWirehairCaches.front().entries.front().outerBlockId == 5U);
+        CHECK(wirehairResult.Value().activeWirehairCaches.front().entries.front().payload.size() == 1U);
+    }
+
+    {
+        std::vector<std::tuple<std::uint32_t, std::uint32_t, std::vector<std::byte>>> directEntries;
+        directEntries.reserve(entryCount);
+        for (std::uint32_t entryIndex = 0; entryIndex < entryCount; entryIndex++)
+        {
+            directEntries.emplace_back(2U, 1U, std::vector<std::byte>{Byte(0xA5)});
+        }
+        const std::vector<std::byte> directDocument = WrapEnvelope(BuildDirectRepeatBody(
+            3, 4, directEntries));
+        const auto directResult = LoadResumeState(
+            std::span<const std::byte>(directDocument), resourcePolicy);
+        REQUIRE(directResult.HasValue());
+        CHECK_FALSE(directResult.Value().hasTruncatedTail);
+        CHECK(directResult.Value().activeDirectRepeatRecords.size() == 1U);
+        CHECK(directResult.Value().activeDirectRepeatRecords.front().entries.size() == 1U);
+        CHECK(directResult.Value().activeDirectRepeatRecords.front().entries.front().blockOrdinal == 2U);
+        CHECK(directResult.Value().activeDirectRepeatRecords.front().entries.front().realPayloadBytes == 1U);
+    }
+}
 } // namespace

@@ -549,15 +549,36 @@ void DeduplicateResumeWirehairEntries(std::vector<ResumeWirehairCacheEntry>& ent
         return;
     }
 
-    std::vector<std::pair<std::uint32_t, std::size_t>> entryOrder(entries.size());
+    // Best-effort dedup on already-loaded bounded state: every auxiliary
+    // allocation is guarded, and a failure leaves the record intact. The
+    // caller id scan already proved duplicates are byte-identical, and the
+    // codec accepts a re-injected identical block idempotently, so an
+    // undeduped record is still safe to load and replay.
+    std::vector<std::pair<std::uint32_t, std::size_t>> entryOrder;
+    try
+    {
+        entryOrder.reserve(entries.size());
+    }
+    catch (const std::bad_alloc&)
+    {
+        return;
+    }
     for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex++)
     {
-        entryOrder[entryIndex] = {entries[entryIndex].outerBlockId, entryIndex};
+        entryOrder.emplace_back(entries[entryIndex].outerBlockId, entryIndex);
     }
     std::sort(entryOrder.begin(), entryOrder.end());
 
     // Mark every non-first occurrence of a duplicated id.
-    std::vector<bool> dropped(entries.size(), false);
+    std::vector<bool> dropped;
+    try
+    {
+        dropped.assign(entries.size(), false);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return;
+    }
     std::size_t groupStart = 0;
     while (groupStart < entryOrder.size())
     {
@@ -602,14 +623,34 @@ void DeduplicateResumeDirectRepeatEntries(std::vector<ResumeDirectRepeatEntry>& 
         return;
     }
 
-    std::vector<std::pair<std::uint32_t, std::size_t>> entryOrder(entries.size());
+    // Best-effort dedup on already-loaded bounded state: every auxiliary
+    // allocation is guarded, and a failure leaves the record intact. The
+    // caller id scan already proved duplicates are byte-identical, so an
+    // undeduped record is still safe to load and replay.
+    std::vector<std::pair<std::uint32_t, std::size_t>> entryOrder;
+    try
+    {
+        entryOrder.reserve(entries.size());
+    }
+    catch (const std::bad_alloc&)
+    {
+        return;
+    }
     for (std::size_t entryIndex = 0; entryIndex < entries.size(); entryIndex++)
     {
-        entryOrder[entryIndex] = {entries[entryIndex].blockOrdinal, entryIndex};
+        entryOrder.emplace_back(entries[entryIndex].blockOrdinal, entryIndex);
     }
     std::sort(entryOrder.begin(), entryOrder.end());
 
-    std::vector<bool> dropped(entries.size(), false);
+    std::vector<bool> dropped;
+    try
+    {
+        dropped.assign(entries.size(), false);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return;
+    }
     std::size_t groupStart = 0;
     while (groupStart < entryOrder.size())
     {
