@@ -1521,3 +1521,30 @@ TEST_CASE("Outer FEC quota telemetry saturates instead of wrapping",
     REQUIRE_FALSE(secondResult);
     REQUIRE(resourceManager.GetQuotaExceededCount() == maximumCount);
 }
+
+TEST_CASE("DirectRepeat decoder exposes the bound block count for replay cross-checks",
+          "[direct-repeat][accessor][trust-boundary]")
+{
+    constexpr std::uint32_t outerBlockBytes = 16;
+    const std::vector<std::byte> message = MakeMessage(outerBlockBytes + 1U);
+
+    auto encoderResult = pbouterfec::DirectRepeatEncoder::Create(
+        message, outerBlockBytes);
+    REQUIRE(encoderResult);
+    pbouterfec::DirectRepeatEncoder encoder =
+        std::move(encoderResult).Value();
+    REQUIRE(encoder.GetBlockCount() == 2);
+
+    const pbprotocol::SegmentDescriptor descriptor = MakeDirectDescriptor(
+        message, outerBlockBytes);
+    auto resourceManager = MakeResourceManager();
+    pbouterfec::DirectRepeatDecoder decoder = MakeDirectDecoder(
+        descriptor, resourceManager);
+
+    REQUIRE(decoder.GetBoundBlockCount() == 2);
+
+    // An empty (moved-from) decoder reports 0.
+    pbouterfec::DirectRepeatDecoder movedAway = std::move(decoder);
+    (void)movedAway;
+    REQUIRE(decoder.GetBoundBlockCount() == 0);
+}

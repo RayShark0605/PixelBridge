@@ -1548,4 +1548,68 @@ TEST_CASE("Active-cache records share the segment quota gate", "[pbprotocol][res
     }
 }
 
+
+// Single-record envelope pins (ported from the superseded pre-record-type
+// suite): serialize capacity handling and the full truncation sweep at
+// every record boundary stay covered after that file was retired.
+TEST_CASE("Single-record envelope pins capacity and truncation at every boundary",
+          "[pbprotocol][resume-state]")
+{
+    const ReceiverResourcePolicy resourcePolicy = MakeTestPolicy(1024);
+
+    // An empty payload produces exactly one 18-byte envelope and round-trips.
+    const std::span<const std::byte> emptyPayload{};
+    std::vector<std::byte> emptyRecord(kResumeRecordEnvelopeBytes);
+    REQUIRE(static_cast<bool>(SerializeResumeRecord(
+        emptyPayload, std::span<std::byte>(emptyRecord))));
+    const auto emptyParseResult = ParseResumeRecord(
+        std::span<const std::byte>(emptyRecord), resourcePolicy);
+    REQUIRE(emptyParseResult.HasValue());
+    CHECK(emptyParseResult.Value().empty());
+
+    // A non-empty payload round-trips byte-exactly.
+    std::vector<std::byte> payload(32U);
+    for (std::size_t byteIndex = 0; byteIndex < payload.size(); byteIndex++)
+    {
+        payload[byteIndex] = Byte(static_cast<std::uint8_t>(0x61U + byteIndex % 26U));
+    }
+    std::vector<std::byte> record(kResumeRecordEnvelopeBytes + payload.size());
+    REQUIRE(static_cast<bool>(SerializeResumeRecord(
+        std::span<const std::byte>(payload), std::span<std::byte>(record))));
+    const auto parseResult = ParseResumeRecord(
+        std::span<const std::byte>(record), resourcePolicy);
+    REQUIRE(parseResult.HasValue());
+    CHECK(parseResult.Value() == payload);
+
+    // Extra trailing capacity is left untouched by the serializer.
+    std::vector<std::byte> shortPayload(4U, Byte(0x62));
+    std::vector<std::byte> oversizedOutput(kResumeRecordEnvelopeBytes + 16U, Byte(0xEE));
+    REQUIRE(static_cast<bool>(SerializeResumeRecord(
+        std::span<const std::byte>(shortPayload), std::span<std::byte>(oversizedOutput))));
+    const std::size_t writtenBytes = kResumeRecordEnvelopeBytes + shortPayload.size();
+    for (std::size_t byteIndex = writtenBytes; byteIndex < oversizedOutput.size(); byteIndex++)
+    {
+        CHECK(oversizedOutput[byteIndex] == Byte(0xEE));
+    }
+
+    // A too-small output buffer fails without touching the buffer.
+    std::vector<std::byte> smallOutput(writtenBytes - 1U, Byte(0x77));
+    const auto smallStatus = SerializeResumeRecord(
+        std::span<const std::byte>(shortPayload), std::span<std::byte>(smallOutput));
+    REQUIRE_FALSE(static_cast<bool>(smallStatus));
+    CHECK(smallStatus.Error().code == ProtocolErrorCode::OutputBufferTooSmall);
+    for (const std::byte bufferByte : smallOutput)
+    {
+        CHECK(bufferByte == Byte(0x77));
+    }
+
+    // Every proper prefix of a record is truncated input.
+    for (std::size_t prefixLength = 0; prefixLength < record.size(); prefixLength++)
+    {
+        const auto truncatedResult = ParseResumeRecord(
+            std::span<const std::byte>(record.data(), prefixLength), resourcePolicy);
+        REQUIRE_FALSE(truncatedResult.HasValue());
+        CHECK(truncatedResult.Error().code == ProtocolErrorCode::TruncatedInput);
+    }
+}
 } // namespace

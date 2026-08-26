@@ -115,6 +115,13 @@ public:
     [[nodiscard]] OuterFecResult<std::uint64_t> Recover(
         std::span<std::byte> output);
 
+    // The canonical serialized profile the decoder was bound to at Create
+    // time, for cross-checking replay sources that persist their own profile
+    // snapshot (resume.state cache records, design doc section 31.2). A
+    // validated bound profile is never zero-filled, so a zero-filled result
+    // identifies an empty (moved-from) decoder.
+    [[nodiscard]] pbprotocol::WirehairV2SerializedProfile GetBoundSerializedProfile() const noexcept;
+
 private:
     friend class test::DecoderTestAccess;
 

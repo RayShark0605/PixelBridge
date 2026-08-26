@@ -292,3 +292,58 @@ TEST_CASE("Resume state file IO failure paths fail clean without crashing",
     std::error_code cleanupErrorCode;
     (void)std::filesystem::remove_all(scratchRoot, cleanupErrorCode);
 }
+
+TEST_CASE("WriteResumeStateFile success implies fully flushed on-disk content",
+          "[resume-state-file][flush]")
+{
+    const std::filesystem::path scratchRoot = MakeScratchRoot("resume_state_file_flush");
+
+    // (a) A document larger than typical stream buffers must be verifiably on
+    // disk through plain IO before the API returns success.
+    {
+        std::vector<std::byte> document(1024U);
+        for (std::size_t byteIndex = 0; byteIndex < document.size(); byteIndex++)
+        {
+            document[byteIndex] = Byte(static_cast<std::uint8_t>(byteIndex * 31U + 7U));
+        }
+        const std::filesystem::path largePath = scratchRoot / "large.state";
+        REQUIRE(pbreceiver::WriteResumeStateFile(
+            largePath, std::span<const std::byte>(document)));
+
+        std::ifstream readBack(largePath, std::ios::binary);
+        REQUIRE(readBack.is_open());
+        std::vector<std::byte> observed(document.size());
+        readBack.read(
+            reinterpret_cast<char*>(observed.data()),
+            static_cast<std::streamsize>(document.size()));
+        REQUIRE(static_cast<std::uint64_t>(readBack.gcount()) == document.size());
+        CHECK(observed == document);
+    }
+
+    // (b) A small document (single flush at close) must also be complete on
+    // disk at the point the API reports success. ENOSPC-class close failures
+    // cannot be forced deterministically in CI; the explicit flush/close
+    // checks in the writer are the mitigation.
+    {
+        const std::array<std::byte, 16> smallDocument{
+            Byte(0x01), Byte(0x02), Byte(0x03), Byte(0x04),
+            Byte(0x05), Byte(0x06), Byte(0x07), Byte(0x08),
+            Byte(0x09), Byte(0x0A), Byte(0x0B), Byte(0x0C),
+            Byte(0x0D), Byte(0x0E), Byte(0x0F), Byte(0x10)};
+        const std::filesystem::path smallPath = scratchRoot / "small.state";
+        REQUIRE(pbreceiver::WriteResumeStateFile(
+            smallPath, std::span<const std::byte>(smallDocument)));
+
+        std::ifstream readBack(smallPath, std::ios::binary);
+        REQUIRE(readBack.is_open());
+        std::array<std::byte, 16> observed{};
+        readBack.read(
+            reinterpret_cast<char*>(observed.data()),
+            static_cast<std::streamsize>(observed.size()));
+        REQUIRE(readBack.gcount() == 16);
+        CHECK(observed == smallDocument);
+    }
+
+    std::error_code cleanupErrorCode;
+    (void)std::filesystem::remove_all(scratchRoot, cleanupErrorCode);
+}

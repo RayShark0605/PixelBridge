@@ -28,21 +28,27 @@ struct ResumeReplayOutcome
 // Design doc section 31.2 restart path: create the WirehairV2Decoder from the
 // bound SegmentDescriptor plus the session's expected OuterBlockBytes (the
 // receiver already knows both at restart), then feed this cache record into it.
-// Profile binding and encoded-digest verification are performed by decoder
-// Create/Recover, not here; replay re-injects exactly the stored payload spans
-// in stored order. A failing entry stops the replay and surfaces its exact
-// OuterFecError unchanged; the decoder's own terminal latch stays authoritative
-// for all subsequent operations. A single call is owned by one thread.
+// The persisted profile snapshot is untrusted input and is cross-checked
+// against the decoder's descriptor-bound profile before the first block: a
+// mismatch fails closed with UnsupportedProfile without consuming the decoder.
+// Encoded-digest verification is performed by decoder Recover, not here; replay
+// re-injects exactly the stored payload spans in stored order. A failing entry
+// stops the replay and surfaces its exact OuterFecError unchanged; the decoder's
+// own terminal latch stays authoritative for all subsequent operations. A
+// single call is owned by one thread.
 [[nodiscard]] ReceiverResult<ResumeReplayOutcome> ReplayActiveWirehairCache(
     const pbprotocol::ResumeActiveWirehairCacheRecord& cacheRecord,
     pbouterfec::WirehairV2Decoder& decoder);
 
-// Design doc section 31.3 restart path for the DirectRepeat mode: re-injects
-// each stored (blockOrdinal, realPayloadBytes, padded region) entry in stored
-// order. The decoder revalidates realPayloadBytes against its own
-// descriptor-derived expectation and canonical zero padding before accepting
-// an entry, so corrupt state content fails closed during replay instead of at
-// recovery time. Error propagation matches ReplayActiveWirehairCache.
+// Design doc section 31.3 restart path for the DirectRepeat mode: the
+// persisted block count is cross-checked against the decoder's
+// descriptor-derived bound count (mismatch fails closed with InvalidInput,
+// detail = persisted count), then each stored (blockOrdinal, realPayloadBytes,
+// padded region) entry is re-injected in stored order. The decoder revalidates
+// realPayloadBytes against its own descriptor-derived expectation and canonical
+// zero padding before accepting an entry, so corrupt state content fails closed
+// during replay instead of at recovery time. Error propagation matches
+// ReplayActiveWirehairCache.
 [[nodiscard]] ReceiverResult<ResumeReplayOutcome> ReplayDirectRepeatBlocks(
     const pbprotocol::ResumeActiveDirectRepeatRecord& directRepeatRecord,
     pbouterfec::DirectRepeatDecoder& decoder);
@@ -60,7 +66,9 @@ struct ResumeReplayOutcome
 
 // WriteResumeStateFile performs a plain binary write of document bytes that the
 // caller already validated through ResumeStateBuilder/LoadResumeState and
-// returns the byte count written. Open/write failure -> ResumeStateIoFailure.
+// returns the byte count written. Success is reported only after the data is
+// flushed and the stream is closed, so a torn write never masquerades as
+// persisted state. Open/flush/close failure -> ResumeStateIoFailure.
 [[nodiscard]] ReceiverResult<std::size_t> WriteResumeStateFile(
     const std::filesystem::path& filePath,
     std::span<const std::byte> documentBytes);

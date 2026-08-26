@@ -25,6 +25,16 @@ ReceiverResult<ResumeReplayOutcome> ReplayActiveWirehairCache(
     pbouterfec::WirehairV2Decoder& decoder)
 {
     ResumeReplayOutcome outcome;
+    // Trust boundary: resume.state is untrusted persistent input, so the
+    // persisted profile snapshot must match the decoder's descriptor-bound
+    // profile before any block is re-injected (design doc section 31.2).
+    // A mismatch fails closed without consuming the decoder.
+    if (cacheRecord.wirehairProfile != decoder.GetBoundSerializedProfile())
+    {
+        return ReplayFailed(pbouterfec::OuterFecError{
+            pbouterfec::OuterFecErrorCode::UnsupportedProfile, 0});
+    }
+
     for (const auto& entry : cacheRecord.entries)
     {
         const auto decodeResult = decoder.DecodeBlock(
@@ -49,6 +59,18 @@ ReceiverResult<ResumeReplayOutcome> ReplayDirectRepeatBlocks(
     pbouterfec::DirectRepeatDecoder& decoder)
 {
     ResumeReplayOutcome outcome;
+    // Trust boundary: the persisted block count must equal the
+    // descriptor-derived bound count before any block is re-injected (design
+    // doc section 31.3); per-entry revalidation alone cannot catch an
+    // under-reported count.
+    if (static_cast<std::uint64_t>(directRepeatRecord.directBlockCount) !=
+        decoder.GetBoundBlockCount())
+    {
+        return ReplayFailed(pbouterfec::OuterFecError{
+            pbouterfec::OuterFecErrorCode::InvalidInput,
+            static_cast<std::uint64_t>(directRepeatRecord.directBlockCount)});
+    }
+
     for (const auto& entry : directRepeatRecord.entries)
     {
         const auto decodeResult = decoder.DecodeBlock(
@@ -205,6 +227,17 @@ ReceiverResult<std::size_t> WriteResumeStateFile(
     fileStream.write(
         reinterpret_cast<const char*>(documentBytes.data()),
         static_cast<std::streamsize>(documentSizeResult.Value()));
+    // The buffered tail is committed only by flush/close; success is
+    // reported only after the data is flushed and the stream is closed, so a
+    // torn write never masquerades as persisted state.
+    fileStream.flush();
+    if (fileStream.fail())
+    {
+        return WriteResult::Failure(
+            pbprotocol::ProtocolError{
+                pbprotocol::ProtocolErrorCode::ResumeStateIoFailure, 0});
+    }
+    fileStream.close();
     if (fileStream.fail())
     {
         return WriteResult::Failure(
