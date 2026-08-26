@@ -299,6 +299,14 @@ CheckReport CheckVectorFile(
         report.sizeRecomputed = outcome.bytes.size();
         return report;
     }
+    // Both streams drifted from the pin at once: committed-file corruption AND
+    // implementation drift simultaneously (any single change surfaces first as
+    // VectorMismatch or FileDigestMismatch against the pristine other side), so
+    // this attribution is unreachable end to end in a healthy tree and its exact
+    // report-line format is pinned by the synthetic-report test in
+    // test_golden_vector_check.cpp. No unpinned stream may be labeled
+    // authoritative: all three digests plus the byte_offset=not-authoritative
+    // sentinel are reported instead.
     CheckReport report = MakeReport(std::string(descriptor.name),
         std::string(descriptor.category), CheckKind::FileAndVectorMismatch);
     report.fileDigest = digestReport.fileDigest;

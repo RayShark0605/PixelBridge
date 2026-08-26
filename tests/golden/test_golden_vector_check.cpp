@@ -389,6 +389,51 @@ TEST_CASE("Golden check core: remaining report line formats",
             "(1/8294400 compared bytes differ)");
     }
 
+    SECTION("FileAndVectorMismatch line pins all three digests and the "
+        "not-authoritative sentinel")
+    {
+        // Unreachable end to end in a healthy tree; pinned with a synthetic
+        // report mirroring CheckVectorFile field assignments.
+        pbgoldenchk::CheckReport report;
+        report.subject = "control-empty";
+        report.category = "protocol";
+        report.kind = pbgoldenchk::CheckKind::FileAndVectorMismatch;
+        std::array<std::byte, 32> fileDigest{};
+        std::array<std::byte, 32> recomputedDigest{};
+        for (std::size_t digestByteIndex = 0; digestByteIndex < 32U;
+            digestByteIndex++)
+        {
+            fileDigest[digestByteIndex] = std::byte{
+                static_cast<std::uint8_t>(digestByteIndex)};
+            recomputedDigest[digestByteIndex] = std::byte{
+                static_cast<std::uint8_t>(0x40U + digestByteIndex)};
+        }
+        const std::array<std::byte, 32> pinnedDigest = []() {
+            std::array<std::byte, 32> filled{};
+            std::fill(filled.begin(), filled.end(), std::byte{0xFF});
+            return filled;
+        }();
+        // Ground the hex helper independently before using it to build the
+        // expected line.
+        const std::array<std::byte, 32> zeroDigest{};
+        REQUIRE(pbgoldenchk::ToHexLower(zeroDigest) ==
+            std::string(64U, '0'));
+        report.fileDigest = fileDigest;
+        report.recomputedDigest = recomputedDigest;
+        report.pinnedDigest = pinnedDigest;
+        report.sizeFile = 30U;
+        report.sizeRecomputed = 29U;
+        const auto line = pbgoldenchk::FormatReportLine(report);
+        REQUIRE(line ==
+            "[GOLDEN] FAIL vector=control-empty category=protocol "
+            "kind=FileAndVectorMismatch size_file=30 size_recomputed=29 "
+            "file=blake3:" + pbgoldenchk::ToHexLower(fileDigest) +
+            " recomputed=blake3:" + pbgoldenchk::ToHexLower(recomputedDigest) +
+            " pinned=blake3:" + std::string(64U, 'f') +
+            " byte_offset=not-authoritative expected=pinned-digest "
+            "actual=file-and-recomputed");
+    }
+
     SECTION("manifest mismatch line")
     {
         pbgoldenchk::CheckReport report;
