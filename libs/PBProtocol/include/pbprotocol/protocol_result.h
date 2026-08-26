@@ -65,7 +65,17 @@ enum class ProtocolErrorCode : std::uint8_t
     // operation is rejected before any write (mirrors the Inner-FEC encoder
     // overlap rejection). Appended after UnknownSegment so previously
     // recorded diagnostic values stay stable.
-    OverlappingSpans
+    OverlappingSpans,
+    // resume.state document key conflict: the same record key (SessionId +
+    // SegmentOrdinal for completed records, SegmentOrdinal per active cache
+    // type) appears with different valid content, or one ordinal is claimed by
+    // both a completed and an active-cache record. Load rejects fail-closed;
+    // never latest-wins. Appended so recorded diagnostic values stay stable.
+    ResumeRecordConflict,
+    // resume.state file IO failure: stat/open/regular-file check failed for
+    // ReadResumeStateFile or open/write failed for WriteResumeStateFile. This
+    // is a receiver-local persistence diagnostic and never enters wire bytes.
+    ResumeStateIoFailure
 };
 
 struct ProtocolError

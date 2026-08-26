@@ -446,6 +446,69 @@ block. A focused bounded LDPC codeword fuzz driver now covers syndrome and
 clean-channel decode/re-encode; performance/throughput benchmarking remains
 a separate gate.
 
+## resume.state FastResume basic tier status (design doc section 31)
+
+The receiver-local `resume.state` document now implements the FastResume
+basic tier. The v1 envelope is unchanged and remains independently parsed by
+`ParseResumeRecord`: magic `PBRS`, version 1, reserved byte, little-endian
+payloadLength u64, and CRC-32C over `[magic .. last payload byte]`. New typed
+records are appended inside the envelope payload with a first-byte tag; unknown
+tags fail closed through `InvalidEnumValue`, so a newer writer cannot smuggle
+record types past an older parser.
+
+Three record types persist exactly the design-doc sections 31.1 to 31.3
+minimal fields and no third-party codec private structure:
+
+- Completed Segment metadata (73-byte body): SessionId, SegmentOrdinal,
+  rawOffset, rawSize, and the RawDigest integrity bytes;
+- Active Wirehair cache: SegmentOrdinal plus the canonical serialized 32-byte
+  Wirehair V2 profile snapshot and every validated outer-block payload exactly
+  as handed to `WirehairV2Decoder::DecodeBlock` (the final systematic block may
+  be shorter than OuterBlockBytes);
+- DirectRepeat received blocks: descriptor-derived directBlockCount plus each
+  validated entry's canonical zero-padded full block and the exact realPayload
+  length replay must re-pass.
+
+`LoadResumeState` applies the receiver resource policy first, then bounds the
+whole document by `maxResumeBytes` before any byte is interpreted. Records are
+parsed sequentially with single-record budget checks; typed bodies must be
+fully consumed. A trailing region that cannot hold one complete structurally
+valid record is dropped as a torn tail and reported via
+`LoadedResumeState::hasTruncatedTail`; any malformed record whose envelope is
+fully present fails the entire load fail-closed with no partial result. Key
+conflicts (same completed key or same active-cache ordinal, including across
+record types) and in-record payload conflicts reject the document with the new
+append-only diagnostic code `ResumeRecordConflict`; identical-content
+duplicates are deduplicated on load while the strict-writer
+`ResumeStateBuilder` rejects them. All size arithmetic uses checked helpers;
+no hash tables are introduced for uniqueness detection.
+Accepted per-segment records (one record per distinct segment ordinal across all
+categories) are additionally bounded by `maxSegmentCount`, implementing the design doc section 31.4 active incomplete
+segment limit: a further distinct record fails with `ResourceLimitExceeded` at that record start,
+while identical duplicates never consume quota (the builder mirrors this gate so it can
+never emit a document the loader would reject).
+
+`PBReceiver` adds the replay API and bounded file IO:
+`ReplayActiveWirehairCache` re-injects cached entries into a freshly created
+`WirehairV2Decoder` in stored order, and `ReplayDirectRepeatBlocks` re-passes
+each entry to a `DirectRepeatDecoder`, which revalidates lengths against its
+own descriptor-derived expectation before accepting. File IO is stat-first:
+the on-disk size is checked against `maxResumeBytes` before any read or
+allocation, then the document is read as one fixed-length binary image. This
+tier has no crash-safe flush ordering, no `.part` commit-order proof, and no
+live ingress write path; section 31.5 crash-safety semantics remain later work,
+so callers may recompute `.part` digests instead of blindly trusting completed
+records (the header comments state this explicitly).
+
+Coverage: exact-error-code unit matrices with independent byte-level Golden
+pins, torn-tail exhaustive per-byte sweeps, builder failure-immutability and
+budget-exhaustion tests, replay end-to-end against the real Wirehair V2 codec
+(bit-exact Recover plus BLAKE3 cross-checks), a crash-restart integration test
+that rebuilds a second receiver purely from saved control bytes plus
+`resume.state` and verifies whole-file digests, bounded file IO tests with the
+stat-first budget gate, and a structured dual-mode fuzz harness with a pinned
+13-seed corpus under `fuzz/corpus/resume-state/`.
+
 ## Remaining Phase-0 Gate scope
 
 This status decision closes the ambiguity around the current descriptor bytes
@@ -455,6 +518,5 @@ declare the overall Phase-0 architecture Gate complete. Formal v1 Transport
 and Session/Visual/Interleave profile binding, Control/Bootstrap visual FEC,
 physical repetition cadence, PBStorage free-space/reservation and `.part`
 publication, the complete Decoder application/capture chain, complete file
-recovery, certified-profile freeze, and later CPU/GPU backend consistency gates
-remain separate work. The current parser/Golden/Inspector chain is a reproducible
+recovery, certified-profile freeze, resume.state crash-safe flush ordering (section 31.5), the live ingress resume write path, and ResumeDegraded quota marking remain separate work. Later CPU/GPU backend consistency gates also stay open. The current parser/Golden/Inspector chain is a reproducible
 tooling proof, not production receiver admission or complete file recovery.

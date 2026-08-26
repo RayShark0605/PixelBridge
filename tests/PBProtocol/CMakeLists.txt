@@ -19,7 +19,8 @@ PbAddUnitTest(PBProtocolTests
     test_descriptor_corpus.cpp
     test_orphan_transport_block_cache.cpp
     test_output_reservation.cpp
-    test_resume_state.cpp
+    test_resume_state_records.cpp
+    test_resume_state_builder.cpp
     test_transport_block_codec.cpp
     test_session_random.cpp)
 
