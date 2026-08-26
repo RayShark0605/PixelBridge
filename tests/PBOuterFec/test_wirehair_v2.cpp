@@ -800,3 +800,46 @@ TEST_CASE("Wirehair V2 BufferTooSmall paths are transactional and retriable")
 
     RequireRecoveryEquals(decoder, message);
 }
+
+TEST_CASE("Wirehair V2 decoder exposes the bound serialized profile for replay cross-checks")
+{
+    auto resourceManager = MakeDecoderResourceManager();
+    const std::vector<std::byte> message = MakeMessage(kMessageBytes);
+    auto encoderResult = pbouterfec::WirehairV2Encoder::Create(
+        message,
+        kBlockBytes);
+    REQUIRE(encoderResult);
+    pbouterfec::WirehairV2Encoder encoder =
+        std::move(encoderResult).Value();
+
+    const pbprotocol::WirehairV2SerializedProfile boundProfile =
+        encoder.GetSerializedProfile();
+    const pbprotocol::SegmentDescriptor descriptor = MakeDescriptor(
+        message,
+        kBlockBytes,
+        boundProfile);
+    auto decoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
+            descriptor,
+            resourceManager);
+    REQUIRE(decoderResult);
+    pbouterfec::WirehairV2Decoder decoder =
+        std::move(decoderResult).Value();
+
+    REQUIRE(decoder.GetBoundSerializedProfile() == boundProfile);
+
+    // An empty (moved-from) decoder reports the zero-filled sentinel that
+    // no validated profile can equal.
+    pbouterfec::WirehairV2Decoder movedAway = std::move(decoder);
+    (void)movedAway;
+    const pbprotocol::WirehairV2SerializedProfile emptyProfile =
+        decoder.GetBoundSerializedProfile();
+    REQUIRE(std::all_of(
+        emptyProfile.bytes.begin(),
+        emptyProfile.bytes.end(),
+        [](const std::byte value)
+        {
+            return value == Byte(0);
+        }));
+    REQUIRE(emptyProfile != boundProfile);
+}

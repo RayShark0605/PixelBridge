@@ -489,12 +489,19 @@ while identical duplicates never consume quota (the builder mirrors this gate so
 never emit a document the loader would reject).
 
 `PBReceiver` adds the replay API and bounded file IO:
-`ReplayActiveWirehairCache` re-injects cached entries into a freshly created
-`WirehairV2Decoder` in stored order, and `ReplayDirectRepeatBlocks` re-passes
-each entry to a `DirectRepeatDecoder`, which revalidates lengths against its
-own descriptor-derived expectation before accepting. File IO is stat-first:
+`ReplayActiveWirehairCache` first cross-checks the persisted profile snapshot
+against the decoder's descriptor-bound profile (mismatch fails closed with
+`UnsupportedProfile` without consuming the decoder) and then re-injects cached
+entries into a freshly created `WirehairV2Decoder` in stored order;
+`ReplayDirectRepeatBlocks` first cross-checks the persisted block count against
+the descriptor-derived bound count (mismatch fails closed with `InvalidInput`,
+detail = persisted count) and then re-passes each entry to a
+`DirectRepeatDecoder`, which revalidates lengths against its own
+descriptor-derived expectation before accepting. File IO is stat-first:
 the on-disk size is checked against `maxResumeBytes` before any read or
-allocation, then the document is read as one fixed-length binary image. This
+allocation, then the document is read as one fixed-length binary image;
+`WriteResumeStateFile` reports success only after the data is flushed and the
+stream is closed, so a torn write never masquerades as persisted state. This
 tier has no crash-safe flush ordering, no `.part` commit-order proof, and no
 live ingress write path; section 31.5 crash-safety semantics remain later work,
 so callers may recompute `.part` digests instead of blindly trusting completed

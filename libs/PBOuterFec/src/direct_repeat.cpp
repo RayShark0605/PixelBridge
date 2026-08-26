@@ -598,6 +598,15 @@ DirectRepeatDecoder::CreateFromDescriptor(
     return OuterFecResult<DirectRepeatDecoder>::Success(std::move(decoder));
 }
 
+std::uint64_t DirectRepeatDecoder::GetBoundBlockCount() const noexcept
+{
+    if (implementation_ == nullptr)
+    {
+        return 0;
+    }
+    return implementation_->blockCount;
+}
+
 OuterFecResult<DecodeDisposition> DirectRepeatDecoder::DecodeBlock(
     const std::uint32_t outerBlockId,
     const std::uint32_t payloadBytes,

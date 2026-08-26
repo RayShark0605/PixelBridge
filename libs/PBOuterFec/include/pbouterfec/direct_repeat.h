@@ -112,6 +112,12 @@ public:
     [[nodiscard]] OuterFecResult<std::uint64_t> Recover(
         std::span<std::byte> output);
 
+    // The descriptor-derived block count the decoder was bound to at Create
+    // time, for cross-checking replay sources that persist their own block
+    // count (resume.state records, design doc section 31.3). Returns 0 for an
+    // empty (moved-from) decoder.
+    [[nodiscard]] std::uint64_t GetBoundBlockCount() const noexcept;
+
 private:
     friend class test::DecoderTestAccess;
 

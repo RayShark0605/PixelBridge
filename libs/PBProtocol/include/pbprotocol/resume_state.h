@@ -104,8 +104,9 @@ struct ResumeActiveDirectRepeatRecord
 // a byte-identical duplicate record is kept once, and any same-key
 // different-content conflict fails the whole load with ResumeRecordConflict.
 // hasTruncatedTail reports that the final region of the input could not hold
-// one complete structurally-valid envelope (fewer than 18 bytes remaining or a
-// declared length running past EOF) and was dropped as a torn tail write; the
+// one complete structurally-valid envelope (fewer than 18 bytes remaining, a
+// declared total record length that overflows, or a declared length running
+// past EOF) and was dropped as a torn tail write; the
 // validated prefix is still usable, but callers needing crash-safe guarantees
 // must reverify completed segments per design doc section 31.5. A record whose
 // envelope is fully present but malformed fails the entire load instead.
@@ -192,7 +193,9 @@ public:
     [[nodiscard]] ProtocolStatus AppendDirectRepeatReceivedBlocks(
         const ResumeActiveDirectRepeatRecord& record);
 
-    // The accumulated document bytes; valid until the next successful append.
+    // The accumulated document bytes. The returned span is invalidated by any
+    // subsequent append call: a failed append may resize (and reallocate) the
+    // document before rolling back.
     std::span<const std::byte> GetDocument() const noexcept;
     std::size_t GetByteCount() const noexcept;
 

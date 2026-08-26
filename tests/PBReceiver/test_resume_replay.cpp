@@ -554,9 +554,12 @@ TEST_CASE("Replay of an empty cache record succeeds and leaves the decoder usabl
     REQUIRE(wirehairDecoderResult);
     pbouterfec::WirehairV2Decoder wirehairDecoder = std::move(wirehairDecoderResult).Value();
 
-    const pbprotocol::ResumeActiveWirehairCacheRecord emptyWirehairRecord{5U};
-    // The aggregate leaves wirehairProfile zeroed; replay must not read it for
-    // an entryless record, so this also pins the no-touch contract.
+    pbprotocol::ResumeActiveWirehairCacheRecord emptyWirehairRecord{5U};
+    // The trust-boundary gate applies to entryless records as well: the
+    // persisted profile snapshot must match the bound profile even when
+    // there is no payload to re-inject (a zeroed profile is stale state,
+    // not a valid empty cache).
+    emptyWirehairRecord.wirehairProfile = wirehairEncoder.GetSerializedProfile();
     const auto emptyWirehairReplayResult =
         pbreceiver::ReplayActiveWirehairCache(emptyWirehairRecord, wirehairDecoder);
     REQUIRE(emptyWirehairReplayResult);
@@ -585,9 +588,12 @@ TEST_CASE("Replay of an empty cache record succeeds and leaves the decoder usabl
     REQUIRE(directDecoderResult);
     pbouterfec::DirectRepeatDecoder directDecoder = std::move(directDecoderResult).Value();
 
-    const pbprotocol::ResumeActiveDirectRepeatRecord emptyDirectRecord{6U};
-    // directBlockCount stays 0: replay of an entryless record must not consult
-    // it, and the fresh decoder (created from a real descriptor) stays usable.
+    pbprotocol::ResumeActiveDirectRepeatRecord emptyDirectRecord{6U};
+    // The persisted block count must equal the descriptor-derived bound
+    // count even for an entryless record; a zero count is stale state,
+    // not a valid empty cache.
+    emptyDirectRecord.directBlockCount =
+        static_cast<std::uint32_t>(directDecoder.GetBoundBlockCount());
     const auto emptyDirectReplayResult =
         pbreceiver::ReplayDirectRepeatBlocks(emptyDirectRecord, directDecoder);
     REQUIRE(emptyDirectReplayResult);
@@ -665,4 +671,235 @@ TEST_CASE("Replay entry size violations map to the decoder exact OuterFecError",
             replayResult.Error(),
             pbouterfec::OuterFecErrorCode::InvalidInput, 16U));
     }
+}
+
+// Trust-boundary pins: resume.state is untrusted persistent input, so replay must reject persisted metadata that does not match the decoder's bound state before any block is re-injected.
+TEST_CASE("ReplayActiveWirehairCache rejects a persisted profile that differs from the bound profile",
+          "[resume-replay][wirehair][trust-boundary]")
+{
+    constexpr std::uint32_t kOuterBlockBytes = 16U;
+    const std::vector<std::byte> messageA = MakeMessage(117);
+    const std::vector<std::byte> messageB = MakeMessage(201);
+
+    auto encoderAResult = pbouterfec::WirehairV2Encoder::Create(
+        std::span<const std::byte>(messageA), kOuterBlockBytes);
+    REQUIRE(encoderAResult);
+    pbouterfec::WirehairV2Encoder encoderA = std::move(encoderAResult).Value();
+    auto encoderBResult = pbouterfec::WirehairV2Encoder::Create(
+        std::span<const std::byte>(messageB), kOuterBlockBytes);
+    REQUIRE(encoderBResult);
+    pbouterfec::WirehairV2Encoder encoderB = std::move(encoderBResult).Value();
+    CHECK(encoderA.GetBlockCount() != encoderB.GetBlockCount());
+
+    const std::vector<std::byte> payload0 = EncodeWirehairBlock(encoderA, 0U);
+
+    const pbprotocol::SegmentDescriptor descriptorA = MakeWirehairDescriptor(
+        messageA, kOuterBlockBytes, encoderA.GetSerializedProfile());
+    const pbouterfec::OuterFecDecoderResourceManager decoderManager =
+        MakeDecoderManager();
+
+    auto decoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
+            descriptorA, decoderManager);
+    REQUIRE(decoderResult);
+    pbouterfec::WirehairV2Decoder decoder = std::move(decoderResult).Value();
+    CHECK(decoder.GetBoundSerializedProfile() == encoderA.GetSerializedProfile());
+
+    // A persisted snapshot from a different profile fails closed before any
+    // block is re-injected, without consuming the decoder.
+    pbprotocol::ResumeActiveWirehairCacheRecord mismatchRecord;
+    mismatchRecord.segmentOrdinal = 4U;
+    mismatchRecord.wirehairProfile = encoderB.GetSerializedProfile();
+    pbprotocol::ResumeWirehairCacheEntry mismatchEntry;
+    mismatchEntry.outerBlockId = 0U;
+    mismatchEntry.payload = payload0;
+    mismatchRecord.entries.push_back(std::move(mismatchEntry));
+
+    const auto mismatchResult = pbreceiver::ReplayActiveWirehairCache(
+        mismatchRecord, decoder);
+    REQUIRE_FALSE(mismatchResult);
+    CHECK(IsOuterFecErrorWith(
+        mismatchResult.Error(),
+        pbouterfec::OuterFecErrorCode::UnsupportedProfile, 0U));
+
+    // The decoder is untouched: a record with the bound profile still
+    // replays cleanly.
+    pbprotocol::ResumeActiveWirehairCacheRecord boundRecord;
+    boundRecord.segmentOrdinal = 4U;
+    boundRecord.wirehairProfile = encoderA.GetSerializedProfile();
+    pbprotocol::ResumeWirehairCacheEntry boundEntry;
+    boundEntry.outerBlockId = 0U;
+    boundEntry.payload = payload0;
+    boundRecord.entries.push_back(std::move(boundEntry));
+
+    const auto boundResult = pbreceiver::ReplayActiveWirehairCache(
+        boundRecord, decoder);
+    REQUIRE(boundResult);
+    CHECK(boundResult.Value().replayedEntryCount == 1U);
+    CHECK_FALSE(boundResult.Value().decoderReady);
+}
+
+TEST_CASE("ReplayDirectRepeatBlocks rejects a persisted block count that differs from the bound count",
+          "[resume-replay][direct-repeat][trust-boundary]")
+{
+    constexpr std::uint32_t kOuterBlockBytes = 16U;
+    const std::vector<std::byte> segment = MakeMessage(30);
+
+    auto encoderResult = pbouterfec::DirectRepeatEncoder::Create(
+        std::span<const std::byte>(segment), kOuterBlockBytes);
+    REQUIRE(encoderResult);
+    pbouterfec::DirectRepeatEncoder encoder = std::move(encoderResult).Value();
+    CHECK(encoder.GetBlockCount() == 2U); // 30 = 16 + 14
+
+    const pbprotocol::SegmentDescriptor descriptor = MakeDirectRepeatDescriptor(
+        segment, kOuterBlockBytes);
+    const pbouterfec::OuterFecDecoderResourceManager decoderManager =
+        MakeDecoderManager();
+
+    auto decoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
+            descriptor, kOuterBlockBytes, decoderManager);
+    REQUIRE(decoderResult);
+    pbouterfec::DirectRepeatDecoder decoder = std::move(decoderResult).Value();
+    CHECK(decoder.GetBoundBlockCount() == 2U);
+
+    const DirectEncodedBlock block0 = EncodeDirectBlock(encoder, 0U);
+    for (const std::uint32_t persistedCount : {3U, 1U})
+    {
+        pbprotocol::ResumeActiveDirectRepeatRecord record;
+        record.segmentOrdinal = 8U;
+        record.directBlockCount = persistedCount;
+        pbprotocol::ResumeDirectRepeatEntry entry;
+        entry.blockOrdinal = 0U;
+        entry.realPayloadBytes = block0.realPayloadBytes;
+        entry.paddedPayload = block0.paddedPayload;
+        record.entries.push_back(std::move(entry));
+
+        const auto replayResult = pbreceiver::ReplayDirectRepeatBlocks(
+            record, decoder);
+        REQUIRE_FALSE(replayResult);
+        CHECK(IsOuterFecErrorWith(
+            replayResult.Error(),
+            pbouterfec::OuterFecErrorCode::InvalidInput,
+            static_cast<std::uint64_t>(persistedCount)));
+    }
+
+    // The matching count replays both blocks and recovers bit-exactly.
+    pbprotocol::ResumeActiveDirectRepeatRecord boundRecord;
+    boundRecord.segmentOrdinal = 8U;
+    boundRecord.directBlockCount = 2U;
+    for (const std::uint32_t blockOrdinal : {0U, 1U})
+    {
+        const DirectEncodedBlock block = EncodeDirectBlock(encoder, blockOrdinal);
+        pbprotocol::ResumeDirectRepeatEntry entry;
+        entry.blockOrdinal = blockOrdinal;
+        entry.realPayloadBytes = block.realPayloadBytes;
+        entry.paddedPayload = block.paddedPayload;
+        boundRecord.entries.push_back(std::move(entry));
+    }
+    const auto boundResult = pbreceiver::ReplayDirectRepeatBlocks(
+        boundRecord, decoder);
+    REQUIRE(boundResult);
+    CHECK(boundResult.Value().replayedEntryCount == 2U);
+    CHECK(boundResult.Value().decoderReady);
+    RequireRecoverEquals(decoder, std::span<const std::byte>(segment));
+}
+
+TEST_CASE("Replay fails clean against an empty (moved-from) decoder",
+          "[resume-replay][trust-boundary][moved-from]")
+{
+    constexpr std::uint32_t kOuterBlockBytes = 16U;
+    const std::vector<std::byte> message = MakeMessage(48);
+
+    auto encoderResult = pbouterfec::WirehairV2Encoder::Create(
+        std::span<const std::byte>(message), kOuterBlockBytes);
+    REQUIRE(encoderResult);
+    pbouterfec::WirehairV2Encoder encoder = std::move(encoderResult).Value();
+    const std::vector<std::byte> payload0 = EncodeWirehairBlock(encoder, 0U);
+
+    const pbprotocol::SegmentDescriptor descriptor = MakeWirehairDescriptor(
+        message, kOuterBlockBytes, encoder.GetSerializedProfile());
+    const pbouterfec::OuterFecDecoderResourceManager decoderManager =
+        MakeDecoderManager();
+
+    auto decoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
+            descriptor, decoderManager);
+    REQUIRE(decoderResult);
+    pbouterfec::WirehairV2Decoder decoder = std::move(decoderResult).Value();
+    pbouterfec::WirehairV2Decoder movedAway = std::move(decoder);
+    (void)movedAway;
+
+    // The empty decoder reports the zero-filled sentinel profile that no
+    // validated bound profile can equal.
+    const pbprotocol::WirehairV2SerializedProfile emptyProfile =
+        decoder.GetBoundSerializedProfile();
+    CHECK(std::all_of(
+        emptyProfile.bytes.begin(), emptyProfile.bytes.end(),
+        [](const std::byte value) noexcept { return value == std::byte{0}; }));
+
+    pbprotocol::ResumeActiveWirehairCacheRecord record;
+    record.segmentOrdinal = 6U;
+    record.wirehairProfile = encoder.GetSerializedProfile();
+    pbprotocol::ResumeWirehairCacheEntry entry;
+    entry.outerBlockId = 0U;
+    entry.payload = payload0;
+    record.entries.push_back(std::move(entry));
+    const auto replayResult = pbreceiver::ReplayActiveWirehairCache(record, decoder);
+    REQUIRE_FALSE(replayResult);
+    CHECK(IsOuterFecErrorWith(
+        replayResult.Error(),
+        pbouterfec::OuterFecErrorCode::UnsupportedProfile, 0U));
+}
+
+// The trust-boundary gate must apply to entryless records as well: a zeroed
+// (stale) snapshot or block count is untrusted input and fails closed even
+// when there is no payload to re-inject.
+TEST_CASE("Entryless replay record with stale zeroed metadata fails closed",
+          "[resume-replay][trust-boundary][entryless]")
+{
+    constexpr std::uint32_t kOuterBlockBytes = 16U;
+    const std::vector<std::byte> wirehairMessage = MakeMessage(117);
+    auto wirehairEncoderResult = pbouterfec::WirehairV2Encoder::Create(
+        wirehairMessage, kOuterBlockBytes);
+    REQUIRE(wirehairEncoderResult);
+    pbouterfec::WirehairV2Encoder wirehairEncoder = std::move(wirehairEncoderResult).Value();
+    const pbprotocol::SegmentDescriptor wirehairDescriptor = MakeWirehairDescriptor(
+        wirehairMessage, kOuterBlockBytes, wirehairEncoder.GetSerializedProfile());
+
+    auto wirehairDecoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateWirehairV2Decoder(
+            wirehairDescriptor, MakeDecoderManager());
+    REQUIRE(wirehairDecoderResult);
+    pbouterfec::WirehairV2Decoder wirehairDecoder = std::move(wirehairDecoderResult).Value();
+
+    // Zeroed profile snapshot with zero entries: stale state, not a valid
+    // empty cache.
+    pbprotocol::ResumeActiveWirehairCacheRecord staleWirehairRecord{5U};
+    const auto staleWirehairResult = pbreceiver::ReplayActiveWirehairCache(
+        staleWirehairRecord, wirehairDecoder);
+    REQUIRE_FALSE(staleWirehairResult);
+    CHECK(IsOuterFecErrorWith(
+        staleWirehairResult.Error(),
+        pbouterfec::OuterFecErrorCode::UnsupportedProfile, 0U));
+
+    const std::vector<std::byte> directMessage = MakeMessage(37);
+    const pbprotocol::SegmentDescriptor directDescriptor = MakeDirectRepeatDescriptor(
+        directMessage, kOuterBlockBytes);
+
+    auto directDecoderResult =
+        pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
+            directDescriptor, kOuterBlockBytes, MakeDecoderManager());
+    REQUIRE(directDecoderResult);
+    pbouterfec::DirectRepeatDecoder directDecoder = std::move(directDecoderResult).Value();
+
+    // Zeroed persisted block count with zero entries: stale state, not a
+    // valid empty cache.
+    pbprotocol::ResumeActiveDirectRepeatRecord staleDirectRecord{6U};
+    const auto staleDirectResult = pbreceiver::ReplayDirectRepeatBlocks(
+        staleDirectRecord, directDecoder);
+    REQUIRE_FALSE(staleDirectResult);
+    CHECK(IsOuterFecErrorWith(
+        staleDirectResult.Error(),
+        pbouterfec::OuterFecErrorCode::InvalidInput, 0U));
 }

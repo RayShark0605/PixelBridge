@@ -730,6 +730,7 @@ struct WirehairV2DecoderImplementation
 {
     void* codecHandle = nullptr;
     const WirehairV2Backend* backend = nullptr;
+    pbprotocol::WirehairV2SerializedProfile serializedProfile{};
     pbprotocol::EncodedDigest expectedDigest{};
     std::uint64_t encodedSize = 0;
     std::uint32_t outerBlockBytes = 0;
@@ -1252,10 +1253,21 @@ WirehairV2Decoder::CreateFromDescriptor(
     implementation->encodedSize = segmentDescriptor.encodedSize;
     implementation->outerBlockBytes = segmentDescriptor.outerBlockBytes;
     implementation->blockCount = validated.blockCount;
+    implementation->serializedProfile = serializedProfile;
 
     WirehairV2Decoder decoder;
     decoder.implementation_ = std::move(implementation);
     return OuterFecResult<WirehairV2Decoder>::Success(std::move(decoder));
+}
+
+pbprotocol::WirehairV2SerializedProfile
+WirehairV2Decoder::GetBoundSerializedProfile() const noexcept
+{
+    if (implementation_ == nullptr)
+    {
+        return pbprotocol::WirehairV2SerializedProfile{};
+    }
+    return implementation_->serializedProfile;
 }
 
 OuterFecResult<DecodeDisposition> WirehairV2Decoder::DecodeBlock(
