@@ -508,7 +508,19 @@ stream is closed, so a torn write never masquerades as persisted state. This
 tier has no crash-safe flush ordering, no `.part` commit-order proof, and no
 live ingress write path; section 31.5 crash-safety semantics remain later work,
 so callers may recompute `.part` digests instead of blindly trusting completed
-records (the header comments state this explicitly).
+records (the header comments state this explicitly). Replay enforces the
+metadata trust boundary at replay time (profile, bound block count,
+per-entry codec validation); content trust is enforced at `Recover`. Entry
+ids are not range-checked at the replay layer: the Wirehair decoder
+deliberately accepts an elastic repair-equation window far beyond the
+profile's planned repair count, so a well-sized but wrong-content payload
+is accepted by the codec, and a replay that reaches Ready on such content
+fails closed at the `Recover` encoded-digest gate (probed:
+`EncodedDigestMismatch`). Probed crafted records (out-of-window ids,
+wrong-content payloads, entry counts beyond the finite admission window)
+all either fail the replay with the decoder's exact terminal
+`OuterFecError` or reach that digest gate; none publishes unverified
+content.
 
 Coverage: exact-error-code unit matrices with independent byte-level Golden
 pins, torn-tail exhaustive per-byte sweeps, builder failure-immutability and

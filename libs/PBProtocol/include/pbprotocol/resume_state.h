@@ -123,7 +123,9 @@ struct LoadedResumeState
 // Serializes one resume record into output. Requires at least
 // kResumeRecordEnvelopeBytes + payload.size() bytes of capacity; extra
 // trailing capacity is left untouched. The CRC covers the header and payload,
-// never itself. An empty payload produces a valid 18-byte record.
+// never itself. An empty payload produces a structurally complete 18-byte
+// envelope; a document record still needs its record-type tag byte, so
+// LoadResumeState rejects such a record with InvalidRecordSize.
 [[nodiscard]] ProtocolStatus SerializeResumeRecord(
     std::span<const std::byte> payload,
     std::span<std::byte> output);
