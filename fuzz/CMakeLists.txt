@@ -7,6 +7,15 @@ add_executable(PBProtocolBootstrapControlFuzz
 add_executable(PBProtocolOrphanResourceFuzz
     orphan_resource_fuzz.cpp)
 
+# Build the same structured driver without libFuzzer's replacement main so the
+# resume.state reference-model checks remain a deterministic CTest on every
+# compiler backend, including Clang/libFuzzer builds.
+add_executable(PBProtocolResumeStateFuzz
+    resume_state_fuzz.cpp)
+
+add_executable(PBProtocolResumeStateStructuredSelfTest
+    resume_state_fuzz.cpp)
+
 # Build the same structured driver without libFuzzer's replacement main so
 # post-checksum semantic reachability remains a deterministic CTest on every
 # compiler backend, including Clang/libFuzzer builds.
@@ -48,6 +57,16 @@ target_link_libraries(PBProtocolBootstrapControlFuzz
         PB::PBProtocol)
 
 target_link_libraries(PBProtocolOrphanResourceFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)
+
+target_link_libraries(PBProtocolResumeStateFuzz
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBProtocol)
+
+target_link_libraries(PBProtocolResumeStateStructuredSelfTest
     PRIVATE
         PB::CompilerSettings
         PB::PBProtocol)
@@ -107,7 +126,9 @@ add_custom_target(PBParserFuzzHarness
         PBProtocolTransportFuzz
         PBProtocolTransportStructuredSelfTest
         PBInterleaveReferenceFuzz
-        PBInnerFecCodewordFuzz)
+        PBInnerFecCodewordFuzz
+        PBProtocolResumeStateFuzz
+        PBProtocolResumeStateStructuredSelfTest)
 
 target_include_directories(PBOuterFecWirehairV2Fuzz
     PRIVATE
@@ -125,6 +146,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         PRIVATE
             PB_USE_LIBFUZZER=1)
     target_compile_definitions(PBProtocolOrphanResourceFuzz
+        PRIVATE
+            PB_USE_LIBFUZZER=1)
+    target_compile_definitions(PBProtocolResumeStateFuzz
         PRIVATE
             PB_USE_LIBFUZZER=1)
     target_compile_definitions(PBCompressionZstdBoundaryFuzz
@@ -256,6 +280,20 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_link_options(PBInnerFecCodewordFuzz
         PRIVATE
             -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBProtocolResumeStateFuzz
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=fuzzer,address,undefined)
+    target_link_options(PBProtocolResumeStateFuzz
+        PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    target_compile_options(PBProtocolResumeStateStructuredSelfTest
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
+    target_link_options(PBProtocolResumeStateStructuredSelfTest
+        PRIVATE
+            -fsanitize=address,undefined)
 elseif(MSVC)
     # The MSVC fallback is a deterministic mutation runner. AddressSanitizer is
     # applied to each exercised PixelBridge library as well as all drivers so
@@ -294,7 +332,9 @@ elseif(MSVC)
             PBProtocolTransportFuzz
             PBProtocolTransportStructuredSelfTest
             PBInterleaveReferenceFuzz
-            PBInnerFecCodewordFuzz)
+            PBInnerFecCodewordFuzz
+            PBProtocolResumeStateFuzz
+            PBProtocolResumeStateStructuredSelfTest)
         target_compile_definitions(${pbMsvcAsanTarget}
             PRIVATE
                 _DISABLE_STRING_ANNOTATION
@@ -398,6 +438,22 @@ elseif(MSVC)
         PRIVATE
             /DEBUG
             /INCREMENTAL:NO)
+    target_compile_options(PBProtocolResumeStateFuzz
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBProtocolResumeStateFuzz
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
+    target_compile_options(PBProtocolResumeStateStructuredSelfTest
+        PRIVATE
+            /Zi
+            /fsanitize=address)
+    target_link_options(PBProtocolResumeStateStructuredSelfTest
+        PRIVATE
+            /DEBUG
+            /INCREMENTAL:NO)
 
     get_filename_component(pbMsvcCompilerDirectory
         "${CMAKE_CXX_COMPILER}"
@@ -454,7 +510,9 @@ elseif(MSVC)
             PBProtocolTransportFuzz
             PBProtocolTransportStructuredSelfTest
             PBInterleaveReferenceFuzz
-            PBInnerFecCodewordFuzz)
+            PBInnerFecCodewordFuzz
+            PBProtocolResumeStateFuzz
+            PBProtocolResumeStateStructuredSelfTest)
         add_custom_command(TARGET ${pbMsvcAsanExecutable} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${pbMsvcAsanRuntime}"
@@ -486,6 +544,15 @@ if(BUILD_TESTING)
         PBProtocolTransportStructuredSelfTest
         PROPERTIES
             LABELS "fuzz;pbprotocol;transport;structured"
+            TIMEOUT 30)
+
+    add_test(
+        NAME PBProtocolResumeStateStructuredSelfTest
+        COMMAND PBProtocolResumeStateStructuredSelfTest --self-test)
+    set_tests_properties(
+        PBProtocolResumeStateStructuredSelfTest
+        PROPERTIES
+            LABELS "fuzz;pbprotocol;resume-state;structured"
             TIMEOUT 30)
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -568,6 +635,14 @@ if(BUILD_TESTING)
         set_tests_properties(PBInnerFecCodewordFuzzSmoke PROPERTIES
             LABELS "fuzz;pbinnerfec;ldpc;libfuzzer"
             TIMEOUT 120)
+        add_test(
+            NAME PBProtocolResumeStateFuzzSmoke
+            COMMAND PBProtocolResumeStateFuzz
+                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/resume-state"
+                -runs=2000)
+        set_tests_properties(PBProtocolResumeStateFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol;resume-state;libfuzzer"
+            TIMEOUT 60)
     else()
         add_test(
             NAME PBProtocolDescriptorResourceFuzzSmoke
@@ -652,6 +727,16 @@ if(BUILD_TESTING)
         set_tests_properties(PBInnerFecCodewordFuzzSmoke PROPERTIES
             LABELS "fuzz;pbinnerfec;ldpc;deterministic"
             TIMEOUT 120)
+        # Deterministic resume.state driver: structured reference-model checks
+        # plus a fixed-seed mutation sweep (report-grade runs use more).
+        add_test(
+            NAME PBProtocolResumeStateFuzzSmoke
+            COMMAND PBProtocolResumeStateFuzz
+                2000
+                14059238575124963127)
+        set_tests_properties(PBProtocolResumeStateFuzzSmoke PROPERTIES
+            LABELS "fuzz;pbprotocol;resume-state"
+            TIMEOUT 60)
 
         foreach(pbCorpusCategory IN ITEMS transport interleave ldpc)
             file(GLOB pbFocusedCorpusFiles CONFIGURE_DEPENDS
@@ -750,6 +835,36 @@ if(BUILD_TESTING)
         unset(pbOrphanResourceCorpusName)
         unset(pbOrphanResourceCorpusDirectory)
 
+        set(pbResumeStateCorpusDirectory
+            "${CMAKE_CURRENT_SOURCE_DIR}/corpus/resume-state")
+        foreach(pbResumeStateCorpusName IN ITEMS
+                valid-single-completed
+                valid-multi-record
+                malformed-bad-magic
+                malformed-version
+                malformed-reserved
+                malformed-crc-payload
+                malformed-body-trailing
+                malformed-unknown-tag
+                quota-document-over-budget
+                semantic-cross-type-conflict
+                semantic-wirehair-id-conflict
+                torn-mid-envelope
+                torn-short-header)
+            add_test(
+                NAME "PBProtocolResumeStateCorpus.${pbResumeStateCorpusName}"
+                COMMAND PBProtocolResumeStateFuzz
+                    --input
+                    "${pbResumeStateCorpusDirectory}/${pbResumeStateCorpusName}.bin")
+            set_tests_properties(
+                "PBProtocolResumeStateCorpus.${pbResumeStateCorpusName}"
+                PROPERTIES
+                    LABELS "fuzz;pbprotocol;resume-state;corpus"
+                    TIMEOUT 10)
+        endforeach()
+        unset(pbResumeStateCorpusName)
+        unset(pbResumeStateCorpusDirectory)
+
         set(pbBootstrapControlCorpusDirectory
             "${CMAKE_CURRENT_SOURCE_DIR}/corpus/bootstrap-control")
         foreach(pbBootstrapControlCorpusName IN ITEMS
@@ -843,7 +958,7 @@ if(BUILD_TESTING)
 
     get_property(pbRegisteredFuzzTests DIRECTORY PROPERTY TESTS)
     foreach(pbRegisteredFuzzTest IN LISTS pbRegisteredFuzzTests)
-        if(pbRegisteredFuzzTest MATCHES "^(PBProtocolBootstrapControl|PBProtocolDescriptor|PBOuterFecWirehairV2|PBOuterFecDirectRepeat|PBModulationReferenceRaster|PBProtocolTransport|PBInterleaveReference|PBInnerFecCodeword)")
+        if(pbRegisteredFuzzTest MATCHES "^(PBProtocolBootstrapControl|PBProtocolDescriptor|PBOuterFecWirehairV2|PBOuterFecDirectRepeat|PBModulationReferenceRaster|PBProtocolTransport|PBInterleaveReference|PBInnerFecCodeword|PBProtocolResumeState)")
             set_property(TEST "${pbRegisteredFuzzTest}" APPEND PROPERTY LABELS "parser-harness")
         endif()
     endforeach()
