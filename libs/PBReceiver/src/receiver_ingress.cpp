@@ -78,6 +78,7 @@ struct ActiveDecoderState
 
     pbprotocol::BoundSegmentDescriptor boundSegmentDescriptor;
     ReceiverDecoder decoderState;
+    bool encodedSegmentReady = false;
 };
 
 struct ReceiverIngressImplementation
@@ -544,11 +545,22 @@ DecodeBlock(
     }
 
     const std::size_t payloadBytes = transportBlock.declaredPayloadBytes;
-    return std::get<pbouterfec::WirehairV2Decoder>(
+    const auto decodeResult = std::get<pbouterfec::WirehairV2Decoder>(
         activeDecoder.decoderState).
         DecodeBlock(
             transportBlock.outerBlockId,
             transportBlock.paddedPayload.first(payloadBytes));
+    if (activeDecoder.encodedSegmentReady && !decodeResult &&
+        decodeResult.Error().code == pbouterfec::OuterFecErrorCode::InvalidState)
+    {
+        // A ready Wirehair decoder rejects an unseen equation without adding
+        // it to its fingerprint table. Keep the verified recovery available
+        // while storage is pending; Recover still checks the codec and digest.
+        // Known IDs continue through DecodeBlock's duplicate/conflict checks.
+        return pbouterfec::OuterFecResult<pbouterfec::DecodeDisposition>::Success(
+            pbouterfec::DecodeDisposition::Ready);
+    }
+    return decodeResult;
 }
 
 [[nodiscard]] pbouterfec::OuterFecResult<std::uint64_t> RecoverSegment(
@@ -623,6 +635,7 @@ DecodeBlock(
                 ReceiverDataDisposition::AcceptedNeedMore,
                 std::nullopt});
     }
+    activeDecoder.encodedSegmentReady = true;
 
     const auto recoveredSizeResult = pbprotocol::CheckedUint64ToSize(
         descriptor.encodedSize);
@@ -635,9 +648,6 @@ DecodeBlock(
                 ReceiverError{recoveredSizeResult.Error()}));
     }
 
-    const detail::ReceiverSegmentKey key{
-        descriptor.sessionTag.value,
-        descriptor.segmentOrdinal};
     std::vector<std::byte> recoveredBytes;
     try
     {
@@ -645,17 +655,15 @@ DecodeBlock(
     }
     catch (const std::bad_alloc&)
     {
-        // The decoder has already reached Ready. It cannot accept another
-        // block merely to retry output allocation, so release its reservation;
-        // a later Carousel pass can recreate it from bounded input.
-        implementation.activeDecoders.erase(key);
+        // Retain the bounded ready decoder and its accepted-ID fingerprints.
+        // A later observation can retry allocation without losing conflicts
+        // that still matter until verified storage has been committed.
         return FailureFrom<ReceiverDataAdmission>(pbprotocol::ProtocolError{
             pbprotocol::ProtocolErrorCode::ResourceExhausted,
             0});
     }
     catch (const std::length_error&)
     {
-        implementation.activeDecoders.erase(key);
         return FailureFrom<ReceiverDataAdmission>(pbprotocol::ProtocolError{
             pbprotocol::ProtocolErrorCode::ResourceExhausted,
             0});
@@ -679,20 +687,8 @@ DecodeBlock(
                 recoverResult.Value()});
     }
 
-    const pbprotocol::ProtocolStatus completionStatus =
-        implementation.controlReceiver.MarkSegmentCompleted(
-            descriptor.sessionTag,
-            descriptor.segmentOrdinal);
-    if (!completionStatus)
-    {
-        return ReceiverResult<ReceiverDataAdmission>::Failure(
-            LatchTerminalSessionError(
-                implementation,
-                descriptor.sessionTag,
-                ReceiverError{completionStatus.Error()}));
-    }
-
-    implementation.activeDecoders.erase(key);
+    // Storage commit, not outer recovery, releases this decoder's reservation
+    // and duplicate/conflict history. Verification or writes may still fail.
     return ReceiverResult<ReceiverDataAdmission>::Success(
         ReceiverDataAdmission{
             ReceiverDataDisposition::EncodedSegmentReady,
@@ -941,6 +937,45 @@ ReceiverIngress& ReceiverIngress::operator=(ReceiverIngress&&) noexcept =
     default;
 
 ReceiverIngress::~ReceiverIngress() = default;
+
+ReceiverVerifiedSegment::ReceiverVerifiedSegment(
+    pbprotocol::BoundSegmentDescriptor boundDescriptor,
+    std::vector<std::byte> verifiedRawBytes) noexcept
+    : boundSegmentDescriptor_(std::move(boundDescriptor)),
+      rawBytes_(std::move(verifiedRawBytes))
+{
+}
+
+ReceiverVerifiedSegment::ReceiverVerifiedSegment(
+    ReceiverVerifiedSegment&& other) noexcept
+    : boundSegmentDescriptor_(std::move(other.boundSegmentDescriptor_)),
+      rawBytes_(std::move(other.rawBytes_)),
+      valid_(std::exchange(other.valid_, false))
+{
+}
+
+ReceiverVerifiedSegment& ReceiverVerifiedSegment::operator=(
+    ReceiverVerifiedSegment&& other) noexcept
+{
+    if (this != &other)
+    {
+        boundSegmentDescriptor_ = std::move(other.boundSegmentDescriptor_);
+        rawBytes_ = std::move(other.rawBytes_);
+        valid_ = std::exchange(other.valid_, false);
+    }
+    return *this;
+}
+
+const pbprotocol::BoundSegmentDescriptor&
+ReceiverVerifiedSegment::GetBoundSegmentDescriptor() const noexcept
+{
+    return boundSegmentDescriptor_;
+}
+
+std::span<const std::byte> ReceiverVerifiedSegment::GetRawBytes() const noexcept
+{
+    return rawBytes_;
+}
 
 ReceiverResult<ReceiverIngress> ReceiverIngress::Create(
     pbprotocol::ReceiverResourcePolicy resourcePolicy,
@@ -1337,6 +1372,12 @@ ReceiverResult<std::vector<std::byte>> ReceiverIngress::DecompressSegment(
     }
     const pbprotocol::SegmentDescriptor& descriptor =
         boundSegmentDescriptor.GetDescriptor();
+    if (const auto terminalError = FindTerminalSessionError(
+            *implementation_,
+            descriptor.sessionTag))
+    {
+        return ReceiverResult<std::vector<std::byte>>::Failure(*terminalError);
+    }
     const auto currentBoundResult = implementation_->controlReceiver.
         GetBoundSegmentDescriptor(
             descriptor.sessionTag,
@@ -1423,6 +1464,201 @@ ReceiverResult<std::vector<std::byte>> ReceiverIngress::DecompressSegment(
     }
     return ReceiverResult<std::vector<std::byte>>::Success(
         std::move(decompressionResult).Value());
+}
+
+ReceiverResult<ReceiverVerifiedSegment>
+ReceiverIngress::VerifyRecoveredSegment(
+    ReceiverCompletedSegment&& completedSegment)
+{
+    auto rawBytesResult = DecompressSegment(
+        completedSegment.boundSegmentDescriptor,
+        completedSegment.encodedBytes);
+    if (!rawBytesResult)
+    {
+        return ReceiverResult<ReceiverVerifiedSegment>::Failure(
+            rawBytesResult.Error());
+    }
+
+    return ReceiverResult<ReceiverVerifiedSegment>::Success(
+        ReceiverVerifiedSegment(
+            std::move(completedSegment.boundSegmentDescriptor),
+            std::move(rawBytesResult).Value()));
+}
+
+ReceiverResult<ReceiverVerifiedSegment>
+ReceiverIngress::VerifyResumedStoredSegment(
+    const pbprotocol::ResumeCompletedSegmentRecord& completedRecord,
+    std::vector<std::byte>&& storedRawBytes)
+{
+    if (!implementation_)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::InternalInvariantViolation, 0});
+    }
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(completedRecord.sessionId);
+    if (const auto terminalError = FindTerminalSessionError(*implementation_, sessionTag))
+    {
+        return ReceiverResult<ReceiverVerifiedSegment>::Failure(*terminalError);
+    }
+    const auto sessionResult = implementation_->controlReceiver.GetSessionDescriptor(sessionTag);
+    if (!sessionResult)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(sessionResult.Error());
+    }
+    if (sessionResult.Value().sessionId != completedRecord.sessionId)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::SessionMismatch, 0});
+    }
+    const auto actualRawSize = pbprotocol::CheckedNarrowUnsigned<std::uint64_t>(storedRawBytes.size());
+    if (!actualRawSize)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(actualRawSize.Error());
+    }
+    if (completedRecord.rawSize > implementation_->resourcePolicy.maxRawSegmentBytes ||
+        actualRawSize.Value() > implementation_->resourcePolicy.maxRawSegmentBytes)
+    {
+        const pbprotocol::ProtocolError error{pbprotocol::ProtocolErrorCode::ResourceLimitExceeded, 0};
+        CountReturnedResourceFailure(*implementation_, ReceiverError{error});
+        return FailureFrom<ReceiverVerifiedSegment>(error);
+    }
+    if (completedRecord.segmentOrdinal >= sessionResult.Value().segmentCount)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::SegmentOrdinalOutOfRange, 0});
+    }
+    const auto boundResult = implementation_->controlReceiver.GetBoundSegmentDescriptor(
+        sessionTag, completedRecord.segmentOrdinal);
+    if (!boundResult)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(boundResult.Error());
+    }
+    const pbprotocol::SegmentDescriptor& descriptor = boundResult.Value().GetDescriptor();
+    if (completedRecord.rawOffset != descriptor.rawOffset ||
+        completedRecord.rawSize != descriptor.rawSize ||
+        completedRecord.rawDigest != descriptor.rawDigest)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::ResumeRecordConflict, 0});
+    }
+    if (actualRawSize.Value() != descriptor.rawSize)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::InvalidRecordSize, 0});
+    }
+    if (pbprotocol::RawDigest{pbprotocol::ComputeBlake3Digest(storedRawBytes)} != descriptor.rawDigest)
+    {
+        return FailureFrom<ReceiverVerifiedSegment>(pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::DigestMismatch, 0});
+    }
+    return ReceiverResult<ReceiverVerifiedSegment>::Success(
+        ReceiverVerifiedSegment(boundResult.Value(), std::move(storedRawBytes)));
+}
+
+ReceiverResult<ReceiverSegmentCommitDisposition>
+ReceiverIngress::CommitStoredSegment(
+    ReceiverVerifiedSegment&& verifiedSegment)
+{
+    if (!implementation_)
+    {
+        return FailureFrom<ReceiverSegmentCommitDisposition>(
+            pbprotocol::ProtocolError{
+                pbprotocol::ProtocolErrorCode::InternalInvariantViolation,
+                0});
+    }
+    if (!verifiedSegment.valid_)
+    {
+        return FailureFrom<ReceiverSegmentCommitDisposition>(
+            pbprotocol::ProtocolError{
+                pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete,
+                0});
+    }
+
+    const pbprotocol::BoundSegmentDescriptor& boundSegmentDescriptor =
+        verifiedSegment.GetBoundSegmentDescriptor();
+    const pbprotocol::SegmentDescriptor& descriptor =
+        boundSegmentDescriptor.GetDescriptor();
+    if (const auto terminalError = FindTerminalSessionError(
+            *implementation_,
+            descriptor.sessionTag))
+    {
+        return ReceiverResult<ReceiverSegmentCommitDisposition>::Failure(
+            *terminalError);
+    }
+    const auto currentBoundResult = implementation_->controlReceiver.
+        GetBoundSegmentDescriptor(
+            descriptor.sessionTag,
+            descriptor.segmentOrdinal);
+    if (!currentBoundResult ||
+        currentBoundResult.Value() != boundSegmentDescriptor)
+    {
+        const pbprotocol::ProtocolError error = !currentBoundResult
+            ? currentBoundResult.Error()
+            : pbprotocol::ProtocolError{
+                  pbprotocol::ProtocolErrorCode::DescriptorConflict,
+                  0};
+        return FailureFrom<ReceiverSegmentCommitDisposition>(error);
+    }
+
+    const auto completedResult = implementation_->controlReceiver.
+        IsSegmentCompleted(
+            descriptor.sessionTag,
+            descriptor.segmentOrdinal);
+    if (!completedResult)
+    {
+        return FailureFrom<ReceiverSegmentCommitDisposition>(
+            completedResult.Error());
+    }
+    if (completedResult.Value())
+    {
+        implementation_->activeDecoders.erase(detail::ReceiverSegmentKey{
+            descriptor.sessionTag.value,
+            descriptor.segmentOrdinal});
+        return ReceiverResult<ReceiverSegmentCommitDisposition>::Success(
+            ReceiverSegmentCommitDisposition::AlreadyCommitted);
+    }
+
+    const pbprotocol::ProtocolStatus completionStatus =
+        implementation_->controlReceiver.MarkSegmentCompleted(
+            descriptor.sessionTag,
+            descriptor.segmentOrdinal);
+    if (!completionStatus)
+    {
+        return FailureFrom<ReceiverSegmentCommitDisposition>(
+            completionStatus.Error());
+    }
+    implementation_->activeDecoders.erase(detail::ReceiverSegmentKey{
+        descriptor.sessionTag.value,
+        descriptor.segmentOrdinal});
+    return ReceiverResult<ReceiverSegmentCommitDisposition>::Success(
+        ReceiverSegmentCommitDisposition::Committed);
+}
+
+ReceiverResult<pbprotocol::FinalManifest>
+ReceiverIngress::PrepareFinalization(
+    const pbprotocol::SessionTag sessionTag)
+{
+    if (!implementation_)
+    {
+        return FailureFrom<pbprotocol::FinalManifest>(
+            pbprotocol::ProtocolError{
+                pbprotocol::ProtocolErrorCode::InternalInvariantViolation,
+                0});
+    }
+    if (const auto terminalError = FindTerminalSessionError(
+            *implementation_,
+            sessionTag))
+    {
+        return ReceiverResult<pbprotocol::FinalManifest>::Failure(*terminalError);
+    }
+    const auto result = implementation_->controlReceiver.PrepareFinalization(
+        sessionTag);
+    if (!result)
+    {
+        return FailureFrom<pbprotocol::FinalManifest>(result.Error());
+    }
+    return ReceiverResult<pbprotocol::FinalManifest>::Success(
+        std::move(result).Value());
 }
 
 ReceiverResult<bool> ReceiverIngress::RemoveSession(

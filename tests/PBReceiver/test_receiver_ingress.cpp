@@ -12,6 +12,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -155,6 +156,38 @@ struct EncodedTransportBlock
         pbprotocol::ControlRecordType::SegmentDescriptor,
         controlSequence,
         segmentDescriptor.sessionTag,
+        payload);
+}
+
+[[nodiscard]] pbprotocol::FinalManifest MakeFinalManifest(
+    const pbprotocol::SessionDescriptor& sessionDescriptor,
+    const std::span<const std::byte> wholeFileBytes)
+{
+    return pbprotocol::FinalManifest{
+        sessionDescriptor.sessionId,
+        sessionDescriptor.originalFileSize,
+        sessionDescriptor.segmentCount,
+        pbprotocol::WholeFileDigest{
+            pbprotocol::ComputeBlake3Digest(wholeFileBytes)},
+        pbprotocol::DigestAlgorithm::Blake3_256};
+}
+
+[[nodiscard]] std::vector<std::byte> MakeManifestControlRecord(
+    const pbprotocol::FinalManifest& finalManifest,
+    const pbprotocol::SessionDescriptor& sessionDescriptor,
+    const pbprotocol::ReceiverResourcePolicy& resourcePolicy,
+    const std::uint64_t controlSequence = 3)
+{
+    std::array<std::byte, pbprotocol::kFinalManifestPayloadBytes> payload{};
+    REQUIRE(pbprotocol::SerializeFinalManifest(
+        finalManifest,
+        sessionDescriptor,
+        resourcePolicy,
+        payload));
+    return WrapControlPayload(
+        pbprotocol::ControlRecordType::FinalManifest,
+        controlSequence,
+        pbprotocol::DeriveSessionTag(finalManifest.sessionId),
         payload);
 }
 
@@ -340,7 +373,7 @@ TEST_CASE("ReceiverIngress DirectRepeat orphan flow is authoritative end to end"
         pbprotocol::OutputReservationDecision::AutoAccept);
     REQUIRE_FALSE(sessionResult.Value().completedSegment.has_value());
 
-    const auto segmentResult = receiver.ReceiveControlRecord(
+    auto segmentResult = receiver.ReceiveControlRecord(
         MakeSegmentControlRecord(
             segmentDescriptor,
             sessionDescriptor,
@@ -354,10 +387,21 @@ TEST_CASE("ReceiverIngress DirectRepeat orphan flow is authoritative end to end"
     telemetry = receiver.GetTelemetry();
     REQUIRE(telemetry.orphanCachedBlockCount == 0);
     REQUIRE(telemetry.orphanCachedBytes == 0);
-    REQUIRE(telemetry.activeOuterFecDecoderCount == 0);
-    REQUIRE(telemetry.reservedOuterFecDecoderBytes == 0);
+    REQUIRE(telemetry.activeOuterFecDecoderCount == 1);
+    REQUIRE(telemetry.reservedOuterFecDecoderBytes > 0);
     REQUIRE(telemetry.orphanAdmittedBlockCount == 3);
     REQUIRE(telemetry.outputReservationAutoAcceptedCount == 1);
+
+    auto verifiedResult = receiver.VerifyRecoveredSegment(
+        std::move(*segmentResult.Value().completedSegment));
+    REQUIRE(verifiedResult);
+    REQUIRE(std::ranges::equal(verifiedResult.Value().GetRawBytes(), message));
+    const auto commitResult = receiver.CommitStoredSegment(
+        std::move(verifiedResult).Value());
+    REQUIRE(commitResult);
+    REQUIRE(commitResult.Value() ==
+        pbreceiver::ReceiverSegmentCommitDisposition::Committed);
+    REQUIRE(receiver.GetTelemetry().reservedOuterFecDecoderBytes == 0);
 
     const auto repeatedBlockResult = receiver.ReceiveDataBlock(
         MakeReceivedBlock(segmentDescriptor.sessionTag, 0, blocks[0]));
@@ -366,16 +410,586 @@ TEST_CASE("ReceiverIngress DirectRepeat orphan flow is authoritative end to end"
         pbreceiver::ReceiverDataDisposition::AlreadyCompleted);
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
 
-    const auto decompressionResult = receiver.DecompressSegment(
-        segmentResult.Value().completedSegment->boundSegmentDescriptor,
-        message);
-    REQUIRE(decompressionResult);
-    REQUIRE(decompressionResult.Value() == message);
-
     const auto removeResult = receiver.RemoveSession(sessionDescriptor.sessionId);
     REQUIRE(removeResult);
     REQUIRE(removeResult.Value());
     REQUIRE(receiver.GetTelemetry().activeSessionCount == 0);
+}
+
+TEST_CASE("ReceiverIngress commits completion only after verified storage",
+          "[pbreceiver][completion][finalization][regression]")
+{
+    constexpr std::uint32_t outerBlockBytes = 8;
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    const std::vector<std::byte> message = MakeBytes(20, 0x35);
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        MakeSessionDescriptor(MakeSessionId(0x14), message.size(), 1);
+    const pbprotocol::SegmentDescriptor segmentDescriptor =
+        MakeSegmentDescriptor(
+            sessionDescriptor,
+            0,
+            0,
+            message,
+            message,
+            pbprotocol::CompressionCodec::Raw,
+            pbprotocol::OuterFecMode::DirectRepeat,
+            outerBlockBytes);
+    const pbprotocol::FinalManifest finalManifest = MakeFinalManifest(
+        sessionDescriptor,
+        message);
+    const std::vector<EncodedTransportBlock> blocks =
+        EncodeDirectRepeatBlocks(message, outerBlockBytes);
+
+    pbreceiver::ReceiverIngress receiver = MakeReceiver(
+        resourcePolicy,
+        outerBlockBytes);
+    REQUIRE(receiver.ReceiveControlRecord(
+        MakeSessionControlRecord(sessionDescriptor, resourcePolicy)));
+    REQUIRE(receiver.ReceiveControlRecord(MakeSegmentControlRecord(
+        segmentDescriptor,
+        sessionDescriptor,
+        resourcePolicy)));
+    REQUIRE(receiver.ReceiveControlRecord(MakeManifestControlRecord(
+        finalManifest,
+        sessionDescriptor,
+        resourcePolicy)));
+
+    pbreceiver::ReceiverDataAdmission readyAdmission;
+    for (const EncodedTransportBlock& block : blocks)
+    {
+        auto dataResult = receiver.ReceiveDataBlock(
+            MakeReceivedBlock(segmentDescriptor.sessionTag, 0, block));
+        REQUIRE(dataResult);
+        readyAdmission = std::move(dataResult).Value();
+    }
+    REQUIRE(readyAdmission.disposition ==
+        pbreceiver::ReceiverDataDisposition::EncodedSegmentReady);
+    REQUIRE(readyAdmission.completedSegment);
+
+    const auto outerReadyFinalization = receiver.PrepareFinalization(
+        segmentDescriptor.sessionTag);
+    REQUIRE_FALSE(outerReadyFinalization);
+    RequireProtocolError(
+        outerReadyFinalization.Error(),
+        pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete);
+
+    {
+        auto verifiedResult = receiver.VerifyRecoveredSegment(
+            std::move(*readyAdmission.completedSegment));
+        REQUIRE(verifiedResult);
+        REQUIRE(std::ranges::equal(
+            verifiedResult.Value().GetRawBytes(),
+            message));
+
+        const auto storageFailureFinalization = receiver.PrepareFinalization(
+            segmentDescriptor.sessionTag);
+        REQUIRE_FALSE(storageFailureFinalization);
+        RequireProtocolError(
+            storageFailureFinalization.Error(),
+            pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete);
+        // The verified capability is deliberately discarded without commit,
+        // exactly as a failed .part write/flush path must behave.
+    }
+
+    for (const EncodedTransportBlock& block : blocks)
+    {
+        auto dataResult = receiver.ReceiveDataBlock(
+            MakeReceivedBlock(segmentDescriptor.sessionTag, 0, block));
+        REQUIRE(dataResult);
+        readyAdmission = std::move(dataResult).Value();
+    }
+    REQUIRE(readyAdmission.completedSegment);
+    auto verifiedResult = receiver.VerifyRecoveredSegment(
+        std::move(*readyAdmission.completedSegment));
+    REQUIRE(verifiedResult);
+    pbreceiver::ReceiverVerifiedSegment verifiedSegment =
+        std::move(verifiedResult).Value();
+
+    const auto movedFromCommitResult = receiver.CommitStoredSegment(
+        std::move(verifiedResult).Value());
+    REQUIRE_FALSE(movedFromCommitResult);
+    RequireProtocolError(
+        movedFromCommitResult.Error(),
+        pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete);
+    REQUIRE_FALSE(receiver.PrepareFinalization(segmentDescriptor.sessionTag));
+
+    const auto commitResult = receiver.CommitStoredSegment(
+        std::move(verifiedSegment));
+    REQUIRE(commitResult);
+    REQUIRE(commitResult.Value() ==
+        pbreceiver::ReceiverSegmentCommitDisposition::Committed);
+    const auto repeatedCommitResult = receiver.CommitStoredSegment(
+        std::move(verifiedSegment));
+    REQUIRE(repeatedCommitResult);
+    REQUIRE(repeatedCommitResult.Value() ==
+        pbreceiver::ReceiverSegmentCommitDisposition::AlreadyCommitted);
+
+    const auto finalizationResult = receiver.PrepareFinalization(
+        segmentDescriptor.sessionTag);
+    REQUIRE(finalizationResult);
+    REQUIRE(finalizationResult.Value() == finalManifest);
+}
+
+TEST_CASE("ReceiverIngress pending verified capabilities cannot bypass terminal errors",
+          "[pbreceiver][completion][conflict][regression]")
+{
+    constexpr std::uint32_t outerBlockBytes = 8;
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    const std::vector<std::byte> message = MakeBytes(20, 0xA5);
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        MakeSessionDescriptor(MakeSessionId(0x74), message.size(), 1);
+    const pbprotocol::SegmentDescriptor segmentDescriptor = MakeSegmentDescriptor(
+        sessionDescriptor, 0, 0, message, message,
+        pbprotocol::CompressionCodec::Raw,
+        pbprotocol::OuterFecMode::DirectRepeat, outerBlockBytes);
+    const pbprotocol::FinalManifest finalManifest = MakeFinalManifest(
+        sessionDescriptor, message);
+    pbreceiver::ReceiverIngress receiver = MakeReceiver(resourcePolicy, outerBlockBytes);
+    REQUIRE(receiver.ReceiveControlRecord(
+        MakeSessionControlRecord(sessionDescriptor, resourcePolicy)));
+    const auto segmentResult = receiver.ReceiveControlRecord(MakeSegmentControlRecord(
+        segmentDescriptor, sessionDescriptor, resourcePolicy));
+    REQUIRE(segmentResult);
+    REQUIRE(segmentResult.Value().controlAdmission.boundSegmentDescriptor);
+    REQUIRE(receiver.ReceiveControlRecord(MakeManifestControlRecord(
+        finalManifest, sessionDescriptor, resourcePolicy)));
+    std::vector<EncodedTransportBlock> blocks = EncodeDirectRepeatBlocks(message, outerBlockBytes);
+    pbreceiver::ReceiverDataAdmission readyAdmission;
+    for (const EncodedTransportBlock& block : blocks)
+    {
+        auto dataResult = receiver.ReceiveDataBlock(MakeReceivedBlock(segmentDescriptor.sessionTag, 0, block));
+        REQUIRE(dataResult);
+        readyAdmission = std::move(dataResult).Value();
+    }
+    REQUIRE(readyAdmission.completedSegment);
+    auto verifiedResult = receiver.VerifyRecoveredSegment(std::move(*readyAdmission.completedSegment));
+    REQUIRE(verifiedResult);
+
+    SECTION("Control descriptor conflict remains terminal")
+    {
+        pbprotocol::SegmentDescriptor conflictingDescriptor = segmentDescriptor;
+        conflictingDescriptor.rawDigest.bytes[0] ^= std::byte{1};
+        conflictingDescriptor.encodedDigest.bytes[0] ^= std::byte{1};
+        const auto conflictResult = receiver.ReceiveControlRecord(MakeSegmentControlRecord(
+            conflictingDescriptor, sessionDescriptor, resourcePolicy, 4));
+        REQUIRE_FALSE(conflictResult);
+        RequireProtocolError(conflictResult.Error(), pbprotocol::ProtocolErrorCode::DescriptorConflict);
+        const auto commitResult = receiver.CommitStoredSegment(std::move(verifiedResult).Value());
+        REQUIRE_FALSE(commitResult);
+        RequireProtocolError(commitResult.Error(), pbprotocol::ProtocolErrorCode::DescriptorConflict);
+        const auto finalizationResult = receiver.PrepareFinalization(segmentDescriptor.sessionTag);
+        REQUIRE_FALSE(finalizationResult);
+        RequireProtocolError(finalizationResult.Error(), pbprotocol::ProtocolErrorCode::DescriptorConflict);
+    }
+
+    SECTION("Data payload conflict remains terminal")
+    {
+        blocks[0].paddedPayload[0] ^= std::byte{1};
+        const auto conflictResult = receiver.ReceiveDataBlock(
+            MakeReceivedBlock(segmentDescriptor.sessionTag, 0, blocks[0]));
+        REQUIRE_FALSE(conflictResult);
+        const auto commitResult = receiver.CommitStoredSegment(std::move(verifiedResult).Value());
+        REQUIRE_FALSE(commitResult);
+        REQUIRE(std::holds_alternative<pbouterfec::OuterFecError>(commitResult.Error()));
+        REQUIRE(std::get<pbouterfec::OuterFecError>(commitResult.Error()).code ==
+            pbouterfec::OuterFecErrorCode::OuterBlockConflict);
+        const auto finalizationResult = receiver.PrepareFinalization(segmentDescriptor.sessionTag);
+        REQUIRE_FALSE(finalizationResult);
+        REQUIRE(std::holds_alternative<pbouterfec::OuterFecError>(finalizationResult.Error()));
+        REQUIRE(std::get<pbouterfec::OuterFecError>(finalizationResult.Error()).code ==
+            pbouterfec::OuterFecErrorCode::OuterBlockConflict);
+    }
+    REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
+    REQUIRE(receiver.GetTelemetry().reservedOuterFecDecoderBytes == 0);
+}
+
+TEST_CASE("ReceiverIngress retains ready Wirehair fingerprints until storage commit",
+          "[pbreceiver][completion][wirehair][conflict][regression]")
+{
+    constexpr std::uint32_t outerBlockBytes = 64;
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    const std::vector<std::byte> message = MakeBytes(2053, 0xD3);
+    const pbprotocol::SessionDescriptor sessionDescriptor = MakeSessionDescriptor(MakeSessionId(0x75), message.size(), 1);
+    pbprotocol::WirehairV2SerializedProfile serializedProfile{};
+    std::vector<EncodedTransportBlock> blocks = EncodeWirehairBlocks(message, outerBlockBytes, serializedProfile);
+    const pbprotocol::SegmentDescriptor segmentDescriptor = MakeSegmentDescriptor(
+        sessionDescriptor, 0, 0, message, message, pbprotocol::CompressionCodec::Raw,
+        pbprotocol::OuterFecMode::WirehairV2, outerBlockBytes, serializedProfile);
+    const pbprotocol::FinalManifest finalManifest = MakeFinalManifest(sessionDescriptor, message);
+    pbreceiver::ReceiverIngress receiver = MakeReceiver(resourcePolicy, outerBlockBytes);
+    REQUIRE(receiver.ReceiveControlRecord(MakeSessionControlRecord(sessionDescriptor, resourcePolicy)));
+    REQUIRE(receiver.ReceiveControlRecord(MakeSegmentControlRecord(segmentDescriptor, sessionDescriptor, resourcePolicy)));
+    REQUIRE(receiver.ReceiveControlRecord(MakeManifestControlRecord(finalManifest, sessionDescriptor, resourcePolicy)));
+
+    pbreceiver::ReceiverDataAdmission readyAdmission;
+    for (const EncodedTransportBlock& block : blocks)
+    {
+        auto dataResult = receiver.ReceiveDataBlock(MakeReceivedBlock(segmentDescriptor.sessionTag, 0, block));
+        REQUIRE(dataResult);
+        readyAdmission = std::move(dataResult).Value();
+    }
+    REQUIRE(readyAdmission.completedSegment);
+    auto verifiedResult = receiver.VerifyRecoveredSegment(std::move(*readyAdmission.completedSegment));
+    REQUIRE(verifiedResult);
+
+    SECTION("an accepted ID with conflicting bytes remains terminal after Ready")
+    {
+        blocks[0].paddedPayload[0] ^= std::byte{1};
+        const auto conflictResult = receiver.ReceiveDataBlock(MakeReceivedBlock(segmentDescriptor.sessionTag, 0, blocks[0]));
+        REQUIRE_FALSE(conflictResult);
+        RequireOuterFecError(conflictResult.Error(), pbouterfec::OuterFecErrorCode::OuterBlockConflict);
+        const auto commitResult = receiver.CommitStoredSegment(std::move(verifiedResult).Value());
+        REQUIRE_FALSE(commitResult);
+        RequireOuterFecError(commitResult.Error(), pbouterfec::OuterFecErrorCode::OuterBlockConflict);
+        const auto finalizationResult = receiver.PrepareFinalization(segmentDescriptor.sessionTag);
+        REQUIRE_FALSE(finalizationResult);
+        RequireOuterFecError(finalizationResult.Error(), pbouterfec::OuterFecErrorCode::OuterBlockConflict);
+    }
+
+    SECTION("new repair IDs do not poison a pending verified Segment")
+    {
+        const auto telemetryBefore = receiver.GetTelemetry();
+        REQUIRE(telemetryBefore.activeOuterFecDecoderCount == 1);
+        REQUIRE(telemetryBefore.reservedOuterFecDecoderBytes > 0);
+        auto encoderResult = pbouterfec::WirehairV2Encoder::Recreate(message, segmentDescriptor);
+        REQUIRE(encoderResult);
+        EncodedTransportBlock repairBlock;
+        repairBlock.outerBlockId = encoderResult.Value().GetBlockCount();
+        repairBlock.paddedPayload.resize(outerBlockBytes);
+        const auto encodeResult = encoderResult.Value().EncodeBlock(repairBlock.outerBlockId, repairBlock.paddedPayload);
+        REQUIRE(encodeResult);
+        repairBlock.declaredPayloadBytes = static_cast<std::uint16_t>(encodeResult.Value());
+        const auto repairResult = receiver.ReceiveDataBlock(MakeReceivedBlock(segmentDescriptor.sessionTag, 0, repairBlock));
+        REQUIRE(repairResult);
+        REQUIRE(repairResult.Value().disposition == pbreceiver::ReceiverDataDisposition::EncodedSegmentReady);
+        REQUIRE(repairResult.Value().completedSegment);
+        REQUIRE(repairResult.Value().completedSegment->encodedBytes == message);
+        REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
+        REQUIRE(receiver.GetTelemetry().reservedOuterFecDecoderBytes == telemetryBefore.reservedOuterFecDecoderBytes);
+        const auto duplicateResult = receiver.ReceiveDataBlock(MakeReceivedBlock(segmentDescriptor.sessionTag, 0, blocks[0]));
+        REQUIRE(duplicateResult);
+        REQUIRE(duplicateResult.Value().completedSegment);
+        REQUIRE(duplicateResult.Value().completedSegment->encodedBytes == message);
+        REQUIRE_FALSE(receiver.PrepareFinalization(segmentDescriptor.sessionTag));
+        const auto commitResult = receiver.CommitStoredSegment(std::move(verifiedResult).Value());
+        REQUIRE(commitResult);
+        REQUIRE(commitResult.Value() == pbreceiver::ReceiverSegmentCommitDisposition::Committed);
+        REQUIRE(receiver.PrepareFinalization(segmentDescriptor.sessionTag));
+    }
+    REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
+    REQUIRE(receiver.GetTelemetry().reservedOuterFecDecoderBytes == 0);
+}
+
+TEST_CASE("ReceiverIngress verification failure never commits recovered state",
+          "[pbreceiver][completion][digest][regression]")
+{
+    constexpr std::uint32_t outerBlockBytes = 64;
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    const std::vector<std::byte> message(4096, std::byte{0x5A});
+    pbcompression::CompressionSettings compressionSettings;
+    compressionSettings.maxWindowLog = 12;
+    const auto compressionResult = pbcompression::CompressSegment(
+        message,
+        compressionSettings);
+    REQUIRE(compressionResult);
+    REQUIRE(compressionResult.Value().codec ==
+        pbprotocol::CompressionCodec::Zstandard);
+    std::vector<std::byte> encodedBytes = compressionResult.Value().bytes;
+    bool corruptFrame = false;
+    SECTION("wrong RawDigest after successful decompression")
+    {
+        corruptFrame = false;
+    }
+    SECTION("malformed zstd with a matching encoded digest")
+    {
+        encodedBytes[0] ^= std::byte{0x80};
+        corruptFrame = true;
+    }
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        MakeSessionDescriptor(MakeSessionId(0x15), message.size(), 1);
+    pbprotocol::SegmentDescriptor segmentDescriptor = MakeSegmentDescriptor(
+        sessionDescriptor,
+        0,
+        0,
+        message,
+        encodedBytes,
+        pbprotocol::CompressionCodec::Zstandard,
+        pbprotocol::OuterFecMode::DirectRepeat,
+        outerBlockBytes);
+    if (!corruptFrame)
+    {
+        segmentDescriptor.rawDigest.bytes[0] ^= std::byte{0x40};
+    }
+    const pbprotocol::FinalManifest finalManifest = MakeFinalManifest(
+        sessionDescriptor,
+        message);
+    const std::vector<EncodedTransportBlock> blocks =
+        EncodeDirectRepeatBlocks(encodedBytes, outerBlockBytes);
+
+    pbreceiver::ReceiverIngress receiver = MakeReceiver(
+        resourcePolicy,
+        outerBlockBytes);
+    REQUIRE(receiver.ReceiveControlRecord(
+        MakeSessionControlRecord(sessionDescriptor, resourcePolicy)));
+    REQUIRE(receiver.ReceiveControlRecord(MakeSegmentControlRecord(
+        segmentDescriptor,
+        sessionDescriptor,
+        resourcePolicy)));
+    REQUIRE(receiver.ReceiveControlRecord(MakeManifestControlRecord(
+        finalManifest,
+        sessionDescriptor,
+        resourcePolicy)));
+
+    pbreceiver::ReceiverDataAdmission readyAdmission;
+    for (const EncodedTransportBlock& block : blocks)
+    {
+        auto dataResult = receiver.ReceiveDataBlock(
+            MakeReceivedBlock(segmentDescriptor.sessionTag, 0, block));
+        REQUIRE(dataResult);
+        readyAdmission = std::move(dataResult).Value();
+    }
+    REQUIRE(readyAdmission.completedSegment);
+    const auto verifyResult = receiver.VerifyRecoveredSegment(
+        std::move(*readyAdmission.completedSegment));
+    REQUIRE_FALSE(verifyResult);
+    if (corruptFrame)
+    {
+        REQUIRE(std::holds_alternative<pbcompression::CompressionError>(verifyResult.Error()));
+        REQUIRE(std::get<pbcompression::CompressionError>(verifyResult.Error()).code ==
+            pbcompression::CompressionErrorCode::CorruptedFrame);
+    }
+    else
+    {
+        RequireProtocolError(verifyResult.Error(), pbprotocol::ProtocolErrorCode::DigestMismatch);
+    }
+
+    const auto finalizationResult = receiver.PrepareFinalization(
+        segmentDescriptor.sessionTag);
+    REQUIRE_FALSE(finalizationResult);
+    RequireProtocolError(
+        finalizationResult.Error(),
+        pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete);
+
+    for (const EncodedTransportBlock& block : blocks)
+    {
+        const auto replayResult = receiver.ReceiveDataBlock(
+            MakeReceivedBlock(segmentDescriptor.sessionTag, 0, block));
+        REQUIRE(replayResult);
+        if (static_cast<std::size_t>(block.outerBlockId) + 1U == blocks.size())
+        {
+            REQUIRE(replayResult.Value().disposition ==
+                pbreceiver::ReceiverDataDisposition::EncodedSegmentReady);
+        }
+    }
+}
+
+TEST_CASE("ReceiverIngress finalizes a canonical empty Session without Segments",
+          "[pbreceiver][completion][finalization][empty]")
+{
+    constexpr std::uint32_t outerBlockBytes = 8;
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        MakeSessionDescriptor(MakeSessionId(0x16), 0, 0);
+    const pbprotocol::FinalManifest finalManifest{
+        sessionDescriptor.sessionId,
+        0,
+        0,
+        pbprotocol::GetEmptyBlake3WholeFileDigest(),
+        pbprotocol::DigestAlgorithm::Blake3_256};
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(
+        sessionDescriptor.sessionId);
+
+    pbreceiver::ReceiverIngress receiver = MakeReceiver(
+        resourcePolicy,
+        outerBlockBytes);
+    REQUIRE(receiver.ReceiveControlRecord(
+        MakeSessionControlRecord(sessionDescriptor, resourcePolicy)));
+    const auto missingManifestResult = receiver.PrepareFinalization(sessionTag);
+    REQUIRE_FALSE(missingManifestResult);
+    RequireProtocolError(
+        missingManifestResult.Error(),
+        pbprotocol::ProtocolErrorCode::MissingFinalManifest);
+
+    REQUIRE(receiver.ReceiveControlRecord(MakeManifestControlRecord(
+        finalManifest,
+        sessionDescriptor,
+        resourcePolicy)));
+    const auto finalizationResult = receiver.PrepareFinalization(sessionTag);
+    REQUIRE(finalizationResult);
+    REQUIRE(finalizationResult.Value() == finalManifest);
+}
+
+TEST_CASE("ReceiverIngress restores committed raw bytes independently of their compression codec",
+          "[pbreceiver][completion][resume-completed][regression]")
+{
+    constexpr std::uint32_t outerBlockBytes = 64;
+    const auto resourcePolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    const std::vector<std::byte> rawBytes(4096, std::byte{0x5A});
+    const auto compressed = pbcompression::CompressSegment(rawBytes, pbcompression::CompressionSettings{});
+    REQUIRE(compressed);
+    REQUIRE(compressed.Value().codec == pbprotocol::CompressionCodec::Zstandard);
+    for (const bool useCompression : {false, true})
+    {
+        const auto session = MakeSessionDescriptor(MakeSessionId(useCompression ? 0x79 : 0x78), rawBytes.size(), 1);
+        const auto descriptor = MakeSegmentDescriptor(session, 0, 0, rawBytes,
+            useCompression ? compressed.Value().bytes : rawBytes,
+            useCompression ? pbprotocol::CompressionCodec::Zstandard : pbprotocol::CompressionCodec::Raw,
+            pbprotocol::OuterFecMode::DirectRepeat, outerBlockBytes);
+        const auto sessionControl = MakeSessionControlRecord(session, resourcePolicy);
+        const auto segmentControl = MakeSegmentControlRecord(descriptor, session, resourcePolicy);
+        const auto finalManifest = MakeFinalManifest(session, rawBytes);
+        const auto finalControl = MakeManifestControlRecord(finalManifest, session, resourcePolicy);
+        const pbprotocol::ResumeCompletedSegmentRecord record{
+            session.sessionId, 0, 0, descriptor.rawSize, descriptor.rawDigest};
+        {
+            auto originalReceiver = MakeReceiver(resourcePolicy, outerBlockBytes);
+            REQUIRE(originalReceiver.ReceiveControlRecord(sessionControl));
+            const auto admission = originalReceiver.ReceiveControlRecord(segmentControl);
+            REQUIRE(admission);
+            REQUIRE(admission.Value().controlAdmission.boundSegmentDescriptor);
+            auto verified = originalReceiver.VerifyRecoveredSegment(pbreceiver::ReceiverCompletedSegment(
+                *admission.Value().controlAdmission.boundSegmentDescriptor,
+                useCompression ? compressed.Value().bytes : rawBytes));
+            REQUIRE(verified);
+            REQUIRE(originalReceiver.CommitStoredSegment(std::move(verified).Value()));
+        }
+        auto receiver = MakeReceiver(resourcePolicy, outerBlockBytes);
+        REQUIRE(receiver.ReceiveControlRecord(sessionControl));
+        const auto segmentAdmission = receiver.ReceiveControlRecord(segmentControl);
+        REQUIRE(segmentAdmission);
+        REQUIRE(segmentAdmission.Value().controlAdmission.boundSegmentDescriptor);
+        REQUIRE(receiver.ReceiveControlRecord(finalControl));
+        if (useCompression)
+        {
+            // Preserve the original failure primitive after fixing the resume
+            // caller: stored raw bytes cannot enter the encoded recovery API.
+            const auto oldPath = receiver.VerifyRecoveredSegment(pbreceiver::ReceiverCompletedSegment(
+                *segmentAdmission.Value().controlAdmission.boundSegmentDescriptor, rawBytes));
+            REQUIRE_FALSE(oldPath);
+            REQUIRE(std::holds_alternative<pbcompression::CompressionError>(oldPath.Error()));
+            const auto& shapeError = std::get<pbcompression::CompressionError>(oldPath.Error());
+            REQUIRE(shapeError.code == pbcompression::CompressionErrorCode::EncodedSizeMismatch);
+            REQUIRE(shapeError.detail == rawBytes.size());
+            REQUIRE_FALSE(receiver.PrepareFinalization(descriptor.sessionTag));
+        }
+        std::vector<std::byte> storedRawBytes = rawBytes;
+        auto verified = receiver.VerifyResumedStoredSegment(record, std::move(storedRawBytes));
+        REQUIRE(verified);
+        REQUIRE(std::ranges::equal(verified.Value().GetRawBytes(), rawBytes));
+        REQUIRE_FALSE(receiver.PrepareFinalization(descriptor.sessionTag));
+        REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
+        const auto commit = receiver.CommitStoredSegment(std::move(verified).Value());
+        REQUIRE(commit);
+        REQUIRE(commit.Value() == pbreceiver::ReceiverSegmentCommitDisposition::Committed);
+        const auto repeated = receiver.CommitStoredSegment(std::move(verified).Value());
+        REQUIRE(repeated);
+        REQUIRE(repeated.Value() == pbreceiver::ReceiverSegmentCommitDisposition::AlreadyCommitted);
+        auto resumedAgain = receiver.VerifyResumedStoredSegment(record, std::vector<std::byte>(rawBytes));
+        REQUIRE(resumedAgain);
+        const auto committedAgain = receiver.CommitStoredSegment(std::move(resumedAgain).Value());
+        REQUIRE(committedAgain);
+        REQUIRE(committedAgain.Value() == pbreceiver::ReceiverSegmentCommitDisposition::AlreadyCommitted);
+        const auto prepared = receiver.PrepareFinalization(descriptor.sessionTag);
+        REQUIRE(prepared);
+        REQUIRE(prepared.Value() == finalManifest);
+    }
+}
+
+TEST_CASE("ReceiverIngress rejects invalid completed resume bytes without committing or consuming them",
+          "[pbreceiver][completion][resume-completed][negative]")
+{
+    constexpr std::uint32_t outerBlockBytes = 64;
+    auto resourcePolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    resourcePolicy.maxRawSegmentBytes = 4096;
+    const std::vector<std::byte> rawBytes(4096, std::byte{0x5A});
+    const auto compressed = pbcompression::CompressSegment(rawBytes, pbcompression::CompressionSettings{});
+    REQUIRE(compressed);
+    REQUIRE(compressed.Value().codec == pbprotocol::CompressionCodec::Zstandard);
+    const auto session = MakeSessionDescriptor(MakeSessionId(0x7A), rawBytes.size(), 1);
+    const auto descriptor = MakeSegmentDescriptor(session, 0, 0, rawBytes, compressed.Value().bytes,
+        pbprotocol::CompressionCodec::Zstandard, pbprotocol::OuterFecMode::DirectRepeat, outerBlockBytes);
+    const auto segmentControl = MakeSegmentControlRecord(descriptor, session, resourcePolicy);
+    auto receiver = MakeReceiver(resourcePolicy, outerBlockBytes);
+    REQUIRE(receiver.ReceiveControlRecord(MakeSessionControlRecord(session, resourcePolicy)));
+    REQUIRE(receiver.ReceiveControlRecord(segmentControl));
+    REQUIRE(receiver.ReceiveControlRecord(MakeManifestControlRecord(MakeFinalManifest(session, rawBytes), session, resourcePolicy)));
+    pbprotocol::ResumeCompletedSegmentRecord record{session.sessionId, 0, 0, descriptor.rawSize, descriptor.rawDigest};
+    std::vector<std::byte> storedRawBytes = rawBytes;
+    auto expectedError = pbprotocol::ProtocolErrorCode::ResumeRecordConflict;
+    bool terminalConflict = false;
+    SECTION("unknown full SessionId")
+    {
+        record.sessionId.bytes[0] ^= std::byte{1};
+        expectedError = pbprotocol::ProtocolErrorCode::UnknownSession;
+    }
+    SECTION("ordinal outside Session")
+    {
+        record.segmentOrdinal = 1;
+        expectedError = pbprotocol::ProtocolErrorCode::SegmentOrdinalOutOfRange;
+    }
+    SECTION("hostile offset is not used for IO")
+    {
+        record.rawOffset = UINT64_MAX;
+    }
+    SECTION("metadata raw size mismatch")
+    {
+        record.rawSize--;
+    }
+    SECTION("metadata raw digest mismatch")
+    {
+        record.rawDigest.bytes[0] ^= std::byte{1};
+    }
+    SECTION("stored bytes have a wrong length")
+    {
+        storedRawBytes.pop_back();
+        expectedError = pbprotocol::ProtocolErrorCode::InvalidRecordSize;
+    }
+    SECTION("stored bytes fail the bound raw digest")
+    {
+        storedRawBytes[0] ^= std::byte{1};
+        expectedError = pbprotocol::ProtocolErrorCode::DigestMismatch;
+    }
+    SECTION("metadata exceeds policy before hashing")
+    {
+        record.rawSize = UINT64_MAX;
+        expectedError = pbprotocol::ProtocolErrorCode::ResourceLimitExceeded;
+    }
+    SECTION("actual bytes exceed policy before hashing")
+    {
+        storedRawBytes.push_back(std::byte{0});
+        expectedError = pbprotocol::ProtocolErrorCode::ResourceLimitExceeded;
+    }
+    SECTION("terminal descriptor conflict cannot be bypassed")
+    {
+        auto conflictingDescriptor = descriptor;
+        conflictingDescriptor.rawDigest.bytes[0] ^= std::byte{1};
+        REQUIRE_FALSE(receiver.ReceiveControlRecord(MakeSegmentControlRecord(
+            conflictingDescriptor, session, resourcePolicy, 9)));
+        expectedError = pbprotocol::ProtocolErrorCode::DescriptorConflict;
+        terminalConflict = true;
+    }
+    const auto beforeBytes = storedRawBytes;
+    const auto failed = receiver.VerifyResumedStoredSegment(record, std::move(storedRawBytes));
+    REQUIRE_FALSE(failed);
+    RequireProtocolError(failed.Error(), expectedError);
+    REQUIRE(storedRawBytes == beforeBytes);
+    REQUIRE_FALSE(receiver.PrepareFinalization(descriptor.sessionTag));
+    REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
+    REQUIRE(receiver.GetTelemetry().reservedOuterFecDecoderBytes == 0);
+    REQUIRE(receiver.GetTelemetry().totalResourcePolicyRejectedCount ==
+        (expectedError == pbprotocol::ProtocolErrorCode::ResourceLimitExceeded ? 1 : 0));
+    if (!terminalConflict)
+    {
+        const pbprotocol::ResumeCompletedSegmentRecord validRecord{session.sessionId, 0, 0, descriptor.rawSize, descriptor.rawDigest};
+        auto valid = receiver.VerifyResumedStoredSegment(validRecord, std::vector<std::byte>(rawBytes));
+        REQUIRE(valid);
+        REQUIRE(receiver.CommitStoredSegment(std::move(valid).Value()));
+        REQUIRE(receiver.PrepareFinalization(descriptor.sessionTag));
+    }
 }
 
 TEST_CASE("ReceiverIngress verifies encoded and raw digests before returning raw bytes",
@@ -513,7 +1127,7 @@ TEST_CASE("ReceiverIngress Wirehair orphan replay recovers without sender metada
     }
     REQUIRE(receiver.ReceiveControlRecord(
         MakeSessionControlRecord(sessionDescriptor, resourcePolicy)));
-    const auto segmentResult = receiver.ReceiveControlRecord(
+    auto segmentResult = receiver.ReceiveControlRecord(
         MakeSegmentControlRecord(
             segmentDescriptor,
             sessionDescriptor,
@@ -521,6 +1135,10 @@ TEST_CASE("ReceiverIngress Wirehair orphan replay recovers without sender metada
     REQUIRE(segmentResult);
     REQUIRE(segmentResult.Value().completedSegment.has_value());
     REQUIRE(segmentResult.Value().completedSegment->encodedBytes == message);
+    REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
+    auto verifiedResult = receiver.VerifyRecoveredSegment(std::move(*segmentResult.Value().completedSegment));
+    REQUIRE(verifiedResult);
+    REQUIRE(receiver.CommitStoredSegment(std::move(verifiedResult).Value()));
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
 }
 
@@ -613,11 +1231,20 @@ TEST_CASE("ReceiverIngress enforces one receiver-wide decoder quota without fall
     REQUIRE(telemetry.outerFecQuotaExceededCount == 1);
     REQUIRE(telemetry.totalResourcePolicyRejectedCount == 1);
 
-    const auto firstReady = receiver.ReceiveDataBlock(
+    auto firstReady = receiver.ReceiveDataBlock(
         MakeReceivedBlock(firstDescriptor.sessionTag, 0, firstBlocks[1]));
     REQUIRE(firstReady);
     REQUIRE(firstReady.Value().completedSegment.has_value());
     REQUIRE(firstReady.Value().completedSegment->encodedBytes == firstMessage);
+    const auto pendingQuotaResult = receiver.ReceiveControlRecord(secondDescriptorRecord);
+    REQUIRE_FALSE(pendingQuotaResult);
+    RequireOuterFecError(pendingQuotaResult.Error(), pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
+    REQUIRE(receiver.GetTelemetry().outerFecQuotaExceededCount == 2);
+    REQUIRE(receiver.GetTelemetry().orphanCachedBlockCount == 1);
+    auto firstVerified = receiver.VerifyRecoveredSegment(std::move(*firstReady.Value().completedSegment));
+    REQUIRE(firstVerified);
+    REQUIRE(receiver.CommitStoredSegment(std::move(firstVerified).Value()));
+    REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
 
     const auto retryDescriptorResult = receiver.ReceiveControlRecord(
         secondDescriptorRecord);
@@ -625,11 +1252,15 @@ TEST_CASE("ReceiverIngress enforces one receiver-wide decoder quota without fall
     REQUIRE_FALSE(retryDescriptorResult.Value().completedSegment);
     REQUIRE(receiver.GetTelemetry().orphanCachedBlockCount == 0);
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
-    const auto secondReady = receiver.ReceiveDataBlock(
+    auto secondReady = receiver.ReceiveDataBlock(
         MakeReceivedBlock(secondDescriptor.sessionTag, 1, secondBlocks[1]));
     REQUIRE(secondReady);
     REQUIRE(secondReady.Value().completedSegment.has_value());
     REQUIRE(secondReady.Value().completedSegment->encodedBytes == secondMessage);
+    REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
+    auto secondVerified = receiver.VerifyRecoveredSegment(std::move(*secondReady.Value().completedSegment));
+    REQUIRE(secondVerified);
+    REQUIRE(receiver.CommitStoredSegment(std::move(secondVerified).Value()));
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
 }
 

@@ -1076,6 +1076,24 @@ ProtocolStatus ControlPlaneReceiver::ValidateCompleteSegmentMap(
     return implementation_->registry.ValidateCompleteSegmentMap(sessionTag);
 }
 
+ProtocolResult<FinalManifest> ControlPlaneReceiver::PrepareFinalization(
+    const SessionTag sessionTag)
+{
+    if (!implementation_)
+    {
+        return ProtocolResult<FinalManifest>::Failure(
+            ProtocolErrorCode::InternalInvariantViolation,
+            0);
+    }
+    const auto bindingStateResult = implementation_->registry.FindBindingState(
+        sessionTag);
+    if (!bindingStateResult)
+    {
+        return FailureFrom<FinalManifest>(bindingStateResult.Error());
+    }
+    return bindingStateResult.Value()->PrepareFinalization();
+}
+
 ProtocolResult<bool> ControlPlaneReceiver::RemoveSession(
     const SessionId& sessionId) noexcept
 {

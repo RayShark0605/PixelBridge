@@ -27,6 +27,19 @@ public:
             resourceManager);
     }
 
+    [[nodiscard]] static OuterFecResult<DirectRepeatDecoder>
+    CreateDirectRepeatDecoderWithAllocationFailure(
+        const pbprotocol::SegmentDescriptor& segmentDescriptor,
+        const std::uint32_t expectedOuterBlockBytes,
+        const OuterFecDecoderResourceManager& resourceManager)
+    {
+        return DirectRepeatDecoder::CreateFromDescriptor(
+            segmentDescriptor,
+            expectedOuterBlockBytes,
+            resourceManager,
+            true);
+    }
+
     [[nodiscard]] static OuterFecResult<WirehairV2Decoder>
     CreateWirehairV2Decoder(
         const pbprotocol::SegmentDescriptor& segmentDescriptor,

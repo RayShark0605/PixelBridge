@@ -302,6 +302,7 @@ int RunMutationLoop(const std::uint64_t iterations, const std::uint64_t seed)
                 std::span<const std::byte>(gValidBaseFrame).first(size));
         }
     }
+    std::cout << "FUZZ_COMPLETED iterations=" << iterations << " seed=" << seed << "\n";
     return 0;
 }
 

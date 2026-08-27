@@ -489,6 +489,20 @@ DirectRepeatDecoder::CreateFromDescriptor(
     const std::uint32_t expectedOuterBlockBytes,
     const OuterFecDecoderResourceManager& resourceManager)
 {
+    return CreateFromDescriptor(
+        segmentDescriptor,
+        expectedOuterBlockBytes,
+        resourceManager,
+        false);
+}
+
+OuterFecResult<DirectRepeatDecoder>
+DirectRepeatDecoder::CreateFromDescriptor(
+    const pbprotocol::SegmentDescriptor& segmentDescriptor,
+    const std::uint32_t expectedOuterBlockBytes,
+    const OuterFecDecoderResourceManager& resourceManager,
+    const bool forceAllocationFailureAfterReservation)
+{
     if (resourceManager.state_ == nullptr)
     {
         return OuterFecResult<DirectRepeatDecoder>::Failure(
@@ -570,6 +584,10 @@ DirectRepeatDecoder::CreateFromDescriptor(
     std::unique_ptr<detail::DirectRepeatDecoderImplementation> implementation;
     try
     {
+        if (forceAllocationFailureAfterReservation)
+        {
+            throw std::bad_alloc{};
+        }
         implementation =
             std::make_unique<detail::DirectRepeatDecoderImplementation>();
         implementation->encodedBytes.resize(estimate.encodedSize);

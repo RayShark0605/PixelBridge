@@ -196,6 +196,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         PRIVATE
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
+    target_compile_options(PBReceiver
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fsanitize=address,undefined)
     target_compile_options(PBProtocolDescriptorResourceFuzz
         PRIVATE
             -fno-omit-frame-pointer
@@ -306,6 +310,7 @@ elseif(MSVC)
     target_compile_options(PBModulation PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBInterleave PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBInnerFec PRIVATE /Zi /fsanitize=address)
+    target_compile_options(PBReceiver PRIVATE /Zi /fsanitize=address)
     # The pinned vcpkg Wirehair archive records MSVC STL container annotations
     # as disabled. A single executable must use one annotation setting across
     # every linked C++ object (LNK2038). BoundSegmentDescriptor now makes the

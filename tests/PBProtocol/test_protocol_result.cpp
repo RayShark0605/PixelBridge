@@ -4,6 +4,12 @@
 
 #include <optional>
 
+TEST_CASE("Segment completion diagnostic is append only", "[pbprotocol][result][phase0]")
+{
+    REQUIRE(static_cast<std::uint8_t>(pbprotocol::ProtocolErrorCode::ResumeStateIoFailure) == 51);
+    REQUIRE(static_cast<std::uint8_t>(pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete) == 52);
+}
+
 TEST_CASE("Protocol status cannot represent a successful failure",
           "[pbprotocol][result][invariant]")
 {

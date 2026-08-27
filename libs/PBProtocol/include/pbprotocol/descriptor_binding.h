@@ -113,6 +113,7 @@ private:
         std::uint64_t segmentOrdinal) const;
     [[nodiscard]] ProtocolStatus MarkSegmentCompleted(
         std::uint64_t segmentOrdinal);
+    [[nodiscard]] ProtocolResult<FinalManifest> PrepareFinalization();
     [[nodiscard]] ProtocolStatus LatchTerminalError(
         ProtocolErrorCode errorCode,
         std::size_t errorOffset) noexcept;

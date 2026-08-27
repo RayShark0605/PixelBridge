@@ -661,6 +661,41 @@ ProtocolStatus DescriptorBindingState::MarkSegmentCompleted(
     return ProtocolStatus::Success();
 }
 
+ProtocolResult<FinalManifest> DescriptorBindingState::PrepareFinalization()
+{
+    const ProtocolStatus terminalStatus = CheckTerminalState();
+    if (!terminalStatus)
+    {
+        return FailureFrom<FinalManifest>(terminalStatus.Error());
+    }
+    if (!finalManifest_.has_value())
+    {
+        return ProtocolResult<FinalManifest>::Failure(
+            ProtocolErrorCode::MissingFinalManifest,
+            kFinalSessionIdOffset);
+    }
+
+    const ProtocolStatus segmentMapStatus = ValidateCompleteSegmentMap();
+    if (!segmentMapStatus)
+    {
+        return FailureFrom<FinalManifest>(segmentMapStatus.Error());
+    }
+
+    for (const auto& [segmentOrdinal, segmentState] :
+         descriptorStorage_->segmentsByOrdinal)
+    {
+        if (!segmentState.completed)
+        {
+            return ProtocolResult<FinalManifest>::Failure(
+                ProtocolErrorCode::SegmentRecoveryIncomplete,
+                kSegmentOrdinalOffset);
+        }
+        static_cast<void>(segmentOrdinal);
+    }
+
+    return ProtocolResult<FinalManifest>::Success(*finalManifest_);
+}
+
 std::size_t DescriptorBindingState::BoundSegmentCount() const noexcept
 {
     return descriptorStorage_->segmentsByOrdinal.size();

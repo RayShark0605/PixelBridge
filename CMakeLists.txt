@@ -46,6 +46,14 @@ option(PB_BUILD_APPS "Build the PixelBridge applications" ${pbBuildAppsDefault})
 option(PB_BUILD_TOOLS "Build PixelBridge command-line tools" OFF)
 option(PB_BUILD_FUZZERS "Build PixelBridge fuzz targets" OFF)
 option(PB_BUILD_BENCHMARKS "Build PixelBridge benchmark targets" OFF)
+option(PB_BUILD_PHASE0_GATE
+    "Build the opt-in Phase 0 CPU reference end-to-end gate"
+    OFF)
+
+if(PB_BUILD_PHASE0_GATE AND NOT (BUILD_TESTING AND PB_BUILD_TESTS))
+    message(FATAL_ERROR
+        "PB_BUILD_PHASE0_GATE requires BUILD_TESTING=ON and PB_BUILD_TESTS=ON")
+endif()
 
 # The fuzz build instruments the shared PBProtocol target; benchmark and fuzz
 # binaries therefore use separate build trees. Keep the policy in a standalone

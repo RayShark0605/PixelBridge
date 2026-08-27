@@ -1047,37 +1047,69 @@ TEST_CASE("DirectRepeat decoder reservations enforce all shared quotas",
 TEST_CASE("DirectRepeat allocation failure rolls back shared reservation",
           "[direct-repeat][decoder][resource][allocation]")
 {
-    constexpr std::uint64_t ordinalSpace =
-        static_cast<std::uint64_t>(
-            std::numeric_limits<std::uint32_t>::max()) + 1ULL;
-    constexpr std::uint32_t outerBlockBytes = 65535;
-    constexpr std::uint64_t impossibleEncodedSize =
-        ordinalSpace * outerBlockBytes;
-    constexpr std::uint64_t bitmapBytes = ordinalSpace / 8ULL;
-    constexpr std::uint64_t fixedAdmissionBytes = 4096;
-    constexpr std::uint64_t reservationBytes =
-        impossibleEncodedSize + bitmapBytes + fixedAdmissionBytes;
-
-    pbprotocol::ReceiverResourcePolicy resourcePolicy =
+    constexpr std::uint32_t outerBlockBytes = 8;
+    const std::vector<std::byte> message = MakeMessage(20);
+    const pbprotocol::SegmentDescriptor descriptor =
+        MakeDirectDescriptor(message, outerBlockBytes);
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
         pbprotocol::GetDefaultReceiverResourcePolicy();
-    resourcePolicy.maxEncodedSegmentBytes = impossibleEncodedSize;
-    resourcePolicy.maxDirectRepeatBlockCount = ordinalSpace;
-    resourcePolicy.maxOuterFecDecoderBytes = reservationBytes;
-    resourcePolicy.maxTotalOuterFecDecoderBytes = reservationBytes;
     auto resourceManager = MakeResourceManager(resourcePolicy);
 
-    pbprotocol::SegmentDescriptor descriptor{};
-    descriptor.encodedSize = impossibleEncodedSize;
-    descriptor.outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
-    descriptor.outerBlockBytes = outerBlockBytes;
-    const auto decoderResult = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
-        descriptor, descriptor.outerBlockBytes, resourceManager);
+    const auto decoderResult = pbouterfec::test::DecoderTestAccess::
+        CreateDirectRepeatDecoderWithAllocationFailure(
+            descriptor,
+            descriptor.outerBlockBytes,
+            resourceManager);
     REQUIRE_FALSE(decoderResult);
     REQUIRE(decoderResult.Error().code ==
         pbouterfec::OuterFecErrorCode::OutOfMemory);
     REQUIRE(resourceManager.GetActiveDecoderCount() == 0);
     REQUIRE(resourceManager.GetReservedDecoderBytes() == 0);
     REQUIRE(resourceManager.GetQuotaExceededCount() == 0);
+}
+
+TEST_CASE("DirectRepeat extreme estimates stay checked without real huge allocations",
+          "[direct-repeat][decoder][resource][boundary]")
+{
+    constexpr std::uint64_t ordinalSpace =
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1ULL;
+    constexpr std::uint32_t outerBlockBytes = 65535;
+    constexpr std::uint64_t encodedSize = ordinalSpace * outerBlockBytes;
+    constexpr std::uint64_t reservationBytes = encodedSize + ordinalSpace / 8ULL + 4096ULL;
+    pbprotocol::SegmentDescriptor descriptor{};
+    descriptor.encodedSize = encodedSize;
+    descriptor.outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
+    descriptor.outerBlockBytes = outerBlockBytes;
+    pbprotocol::ReceiverResourcePolicy resourcePolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    resourcePolicy.maxEncodedSegmentBytes = encodedSize;
+    resourcePolicy.maxDirectRepeatBlockCount = ordinalSpace;
+    resourcePolicy.maxOuterFecDecoderBytes = reservationBytes;
+    resourcePolicy.maxTotalOuterFecDecoderBytes = reservationBytes;
+
+    SECTION("one byte below the exact estimate is rejected before allocation")
+    {
+        resourcePolicy.maxOuterFecDecoderBytes = reservationBytes - 1ULL;
+        auto resourceManager = MakeResourceManager(resourcePolicy);
+        const auto result = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoder(
+            descriptor, outerBlockBytes, resourceManager);
+        REQUIRE_FALSE(result);
+        REQUIRE(result.Error().code == pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
+        REQUIRE(result.Error().detail == reservationBytes);
+        REQUIRE(resourceManager.GetActiveDecoderCount() == 0);
+        REQUIRE(resourceManager.GetReservedDecoderBytes() == 0);
+        REQUIRE(resourceManager.GetQuotaExceededCount() == 1);
+    }
+    SECTION("the exact estimate reaches the same production bad_alloc catch")
+    {
+        auto resourceManager = MakeResourceManager(resourcePolicy);
+        const auto result = pbouterfec::test::DecoderTestAccess::CreateDirectRepeatDecoderWithAllocationFailure(
+            descriptor, outerBlockBytes, resourceManager);
+        REQUIRE_FALSE(result);
+        REQUIRE(result.Error().code == pbouterfec::OuterFecErrorCode::OutOfMemory);
+        REQUIRE(resourceManager.GetActiveDecoderCount() == 0);
+        REQUIRE(resourceManager.GetReservedDecoderBytes() == 0);
+        REQUIRE(resourceManager.GetQuotaExceededCount() == 0);
+    }
 }
 
 TEST_CASE("DirectRepeat resource manager serializes concurrent admission and release",

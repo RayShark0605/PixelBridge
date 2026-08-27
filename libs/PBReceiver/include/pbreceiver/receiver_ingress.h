@@ -48,6 +48,40 @@ struct ReceiverCompletedSegment
     std::vector<std::byte> encodedBytes;
 };
 
+// Move-only proof of raw bytes against the current immutable binding. Fresh
+// recovery also verifies encoded bytes and bounded decompression; resumed
+// stored bytes are rehashed directly, never misinterpreted as encoded bytes.
+// Storage code can inspect but cannot mutate the bytes before exact commit.
+class ReceiverVerifiedSegment
+{
+public:
+    ReceiverVerifiedSegment(const ReceiverVerifiedSegment&) = delete;
+    ReceiverVerifiedSegment& operator=(const ReceiverVerifiedSegment&) = delete;
+    ReceiverVerifiedSegment(ReceiverVerifiedSegment&& other) noexcept;
+    ReceiverVerifiedSegment& operator=(ReceiverVerifiedSegment&& other) noexcept;
+
+    [[nodiscard]] const pbprotocol::BoundSegmentDescriptor&
+    GetBoundSegmentDescriptor() const noexcept;
+    [[nodiscard]] std::span<const std::byte> GetRawBytes() const noexcept;
+
+private:
+    friend class ReceiverIngress;
+
+    ReceiverVerifiedSegment(
+        pbprotocol::BoundSegmentDescriptor boundDescriptor,
+        std::vector<std::byte> verifiedRawBytes) noexcept;
+
+    pbprotocol::BoundSegmentDescriptor boundSegmentDescriptor_;
+    std::vector<std::byte> rawBytes_;
+    bool valid_ = true;
+};
+
+enum class ReceiverSegmentCommitDisposition : std::uint8_t
+{
+    Committed,
+    AlreadyCommitted
+};
+
 enum class ReceiverDataDisposition : std::uint8_t
 {
     CachedOrphan,
@@ -141,6 +175,21 @@ public:
     [[nodiscard]] ReceiverResult<std::vector<std::byte>> DecompressSegment(
         const pbprotocol::BoundSegmentDescriptor& boundSegmentDescriptor,
         std::span<const std::byte> encodedBytes);
+    [[nodiscard]] ReceiverResult<ReceiverVerifiedSegment>
+    VerifyRecoveredSegment(ReceiverCompletedSegment&& completedSegment);
+    // Callers validate metadata against the bound descriptor before reading
+    // its bounded .part range. This rechecks the metadata and raw digest, but
+    // does not mark completion or claim a new encoded/decompression check.
+    [[nodiscard]] ReceiverResult<ReceiverVerifiedSegment>
+    VerifyResumedStoredSegment(
+        const pbprotocol::ResumeCompletedSegmentRecord& completedRecord,
+        std::vector<std::byte>&& storedRawBytes);
+    // Call only after the exact raw bytes have been written at RawOffset and
+    // the caller's storage contract has completed its flush/close step.
+    [[nodiscard]] ReceiverResult<ReceiverSegmentCommitDisposition>
+    CommitStoredSegment(ReceiverVerifiedSegment&& verifiedSegment);
+    [[nodiscard]] ReceiverResult<pbprotocol::FinalManifest> PrepareFinalization(
+        pbprotocol::SessionTag sessionTag);
 
     [[nodiscard]] ReceiverResult<bool> RemoveSession(
         const pbprotocol::SessionId& sessionId);

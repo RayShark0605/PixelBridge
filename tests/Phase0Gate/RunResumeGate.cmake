@@ -1,0 +1,35 @@
+if(NOT DEFINED PB_RECEIVER_TEST OR NOT EXISTS "${PB_RECEIVER_TEST}")
+    message(FATAL_ERROR "PB_RECEIVER_TEST must name the built PBReceiverTests executable")
+endif()
+if(NOT DEFINED PB_EVIDENCE_PATH)
+    message(FATAL_ERROR "PB_EVIDENCE_PATH is required")
+endif()
+
+get_filename_component(pbEvidenceDirectory "${PB_EVIDENCE_PATH}" DIRECTORY)
+file(MAKE_DIRECTORY "${pbEvidenceDirectory}")
+execute_process(
+    COMMAND "${PB_RECEIVER_TEST}" "[resume-integration],[resume-replay],[resume-state-file],[resume-completed]" --rng-seed 20260827
+    RESULT_VARIABLE pbResumeResult
+    OUTPUT_VARIABLE pbResumeStdout
+    ERROR_VARIABLE pbResumeStderr)
+if(pbResumeResult STREQUAL "0")
+    set(pbStatus "pass")
+else()
+    set(pbStatus "fail")
+endif()
+string(REPLACE "\\" "\\\\" pbEscapedStdout "${pbResumeStdout}")
+string(REPLACE "\"" "\\\"" pbEscapedStdout "${pbEscapedStdout}")
+string(REPLACE "\r" "" pbEscapedStdout "${pbEscapedStdout}")
+string(REPLACE "\n" "\\n" pbEscapedStdout "${pbEscapedStdout}")
+string(REPLACE "\t" "\\t" pbEscapedStdout "${pbEscapedStdout}")
+string(REPLACE "\\" "\\\\" pbEscapedStderr "${pbResumeStderr}")
+string(REPLACE "\"" "\\\"" pbEscapedStderr "${pbEscapedStderr}")
+string(REPLACE "\r" "" pbEscapedStderr "${pbEscapedStderr}")
+string(REPLACE "\n" "\\n" pbEscapedStderr "${pbEscapedStderr}")
+string(REPLACE "\t" "\\t" pbEscapedStderr "${pbEscapedStderr}")
+file(WRITE "${PB_EVIDENCE_PATH}"
+    "{\"case\":\"resume-integration\",\"status\":\"${pbStatus}\",\"exit_code\":\"${pbResumeResult}\",\"stdout\":\"${pbEscapedStdout}\",\"stderr\":\"${pbEscapedStderr}\"}\n")
+message("${pbResumeStdout}")
+if(NOT pbResumeResult STREQUAL "0")
+    message(FATAL_ERROR "Phase 0 resume integration gate failed: ${pbResumeStderr}")
+endif()
