@@ -257,6 +257,7 @@ struct FrameOutcome
     std::optional<pbreceiver::ReceiverCompletedSegment> completedSegment;
     std::vector<OuterSendBlock> validatedBlocks;
     std::uint64_t alreadyCompletedCount = 0;
+    std::uint64_t repeatedReadyCount = 0;
 };
 
 [[nodiscard]] std::array<std::byte, pbprotocol::kDigestBytes> HashSpanStreaming(
@@ -823,10 +824,25 @@ private:
             }
             if (dataResult.Value().completedSegment)
             {
-                Require(!outcome.completedSegment,
-                    "one frame produced multiple recovered Segments");
-                outcome.completedSegment = std::move(
-                    *dataResult.Value().completedSegment);
+                auto& recovered = *dataResult.Value().completedSegment;
+                const auto retainedBytes = pbprotocol::CheckedAddUint64(recovered.encodedBytes.size(),
+                    outcome.completedSegment ? outcome.completedSegment->encodedBytes.size() : 0U);
+                RequireResult(retainedBytes, "recovered frame working byte count overflow");
+                TrackCallerWorkingBytes(metrics_, retainedBytes.Value());
+                if (outcome.completedSegment)
+                {
+                    // A duplicate after Ready can return the same verified
+                    // encoded recovery again before the caller stores it.
+                    // Deduplicate only exact bindings and bytes, never latest-wins.
+                    Require(outcome.completedSegment->boundSegmentDescriptor == recovered.boundSegmentDescriptor &&
+                        outcome.completedSegment->encodedBytes == recovered.encodedBytes,
+                        "one frame produced distinct recovered Segments");
+                    outcome.repeatedReadyCount++;
+                }
+                else
+                {
+                    outcome.completedSegment = std::move(recovered);
+                }
             }
         }
 
@@ -1915,6 +1931,74 @@ void RunStorageFailureChecks(const std::filesystem::path& scratchRoot, EvidenceW
     std::filesystem::remove_all(caseRoot);
 }
 
+void RunSameFrameReadyRepeatChecks(const std::filesystem::path& scratchRoot, EvidenceWriter& evidence)
+{
+    for (const std::uint64_t fileBytes : {1ULL, 2629ULL})
+    {
+        const auto expectedMode = fileBytes == 1 ? pbprotocol::OuterFecMode::DirectRepeat : pbprotocol::OuterFecMode::WirehairV2;
+        const FileCaseSpec caseSpec{"same-frame-ready-repeat-" + std::to_string(fileBytes), fileBytes,
+            SourcePattern::DeterministicRandom, 0xD001C47EULL + fileBytes, pbprotocol::CompressionCodec::Raw, expectedMode};
+        const auto caseRoot = scratchRoot / caseSpec.name;
+        CreateFreshCaseDirectory(caseRoot);
+        const auto sourcePath = caseRoot / "source.bin";
+        const auto partPath = caseRoot / "output.part";
+        const auto finalPath = caseRoot / "output.bin";
+        CreateSourceFile(sourcePath, caseSpec);
+        GateMetrics metrics;
+        const auto described = DescribeFile(sourcePath, caseSpec, metrics);
+        const auto& descriptor = described.segmentDescriptors.front();
+        Require(descriptor.compressionCodec == pbprotocol::CompressionCodec::Raw && descriptor.outerFecMode == expectedMode,
+            "same-frame repeat fixture codec/FEC mismatch");
+        const auto rawBytes = ReadFileRange(sourcePath, 0, static_cast<std::size_t>(fileBytes));
+        const auto policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+        auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, kOuterBlockBytes);
+        RequireResult(receiverResult, "same-frame repeat receiver creation failed");
+        auto receiver = std::move(receiverResult).Value();
+        RasterTransportPipeline pipeline(receiver, descriptor.sessionTag, metrics);
+        const auto sessionOutcome = pipeline.ProcessFrame(MakeSessionControlRecord(described.sessionDescriptor, policy, 1), {});
+        Require(sessionOutcome.controlAdmission && sessionOutcome.controlAdmission->outputReservationDecision ==
+            pbprotocol::OutputReservationDecision::AutoAccept, "same-frame repeat reservation failed");
+        PreparePartFile(partPath, fileBytes);
+        static_cast<void>(pipeline.ProcessFrame(MakeManifestControlRecord(described.finalManifest, described.sessionDescriptor, policy, 2), {}));
+        const auto segmentControl = MakeSegmentControlRecord(descriptor, described.sessionDescriptor, policy, 3);
+        std::vector<OuterSendBlock> blocks;
+        if (expectedMode == pbprotocol::OuterFecMode::DirectRepeat)
+        {
+            auto encoder = pbouterfec::DirectRepeatEncoder::Recreate(rawBytes, descriptor);
+            RequireResult(encoder, "same-frame repeat DirectRepeat encoder failed");
+            blocks.push_back(EncodeOuterBlock(encoder.Value(), 0));
+        }
+        else
+        {
+            auto encoder = pbouterfec::WirehairV2Encoder::Recreate(rawBytes, descriptor);
+            RequireResult(encoder, "same-frame repeat Wirehair encoder failed");
+            for (std::uint32_t blockId = 0; blockId < encoder.Value().GetBlockCount(); blockId++)
+            {
+                blocks.push_back(EncodeOuterBlock(encoder.Value(), blockId));
+            }
+        }
+        blocks.push_back(blocks.front());
+        auto outcome = pipeline.ProcessFrame(segmentControl, blocks);
+        Require(outcome.completedSegment && outcome.repeatedReadyCount == 1,
+            "same-frame duplicate Ready did not coalesce one exact recovery");
+        const auto incomplete = receiver.PrepareFinalization(descriptor.sessionTag);
+        Require(!incomplete && HasProtocolError(incomplete.Error(), pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete) &&
+            receiver.GetTelemetry().activeOuterFecDecoderCount == 1, "same-frame duplicate prematurely committed or released reservation");
+        const auto frameDigest = pipeline.GetFrameDigest();
+        StoreAndCommitSegment(receiver, std::move(*outcome.completedSegment), partPath, metrics);
+        const auto repeatedFrame = pipeline.ProcessFrame(segmentControl, blocks, true, false, true);
+        Require(repeatedFrame.alreadyCompletedCount == blocks.size() && !repeatedFrame.completedSegment &&
+            metrics.storedCommitCount == 1 && receiver.GetTelemetry().activeOuterFecDecoderCount == 0 &&
+            pipeline.GetFrameDigest() == frameDigest, "same-frame repeat was not idempotent after commit");
+        const auto manifest = receiver.PrepareFinalization(descriptor.sessionTag);
+        RequireResult(manifest, "same-frame repeat finalization failed");
+        VerifyAndPublish(sourcePath, partPath, finalPath, manifest.Value());
+        evidence.Write("{\"case\":\"" + caseSpec.name + "\",\"status\":\"pass\",\"repeated_ready_results\":1,"
+            "\"stored_commits\":1,\"postcommit_same_frame_idempotent\":true,\"final_sequential_digest\":true,\"final_byte_identical\":true}");
+        std::filesystem::remove_all(caseRoot);
+    }
+}
+
 void RunFastGate(
     const std::filesystem::path& scratchRoot,
     EvidenceWriter& evidence)
@@ -1969,6 +2053,7 @@ void RunFastGate(
     RunPendingPayloadConflictChecks(evidence);
     RunPublicationNegativeChecks(scratchRoot, evidence);
     RunStorageFailureChecks(scratchRoot, evidence);
+    RunSameFrameReadyRepeatChecks(scratchRoot, evidence);
 }
 
 void RunLargeGate(

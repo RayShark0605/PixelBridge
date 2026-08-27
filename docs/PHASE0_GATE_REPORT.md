@@ -96,6 +96,7 @@ metadata/raw；最终均要求实际 `.part` WholeFileDigest。capability 证明
 | H03 / High / fixed | `PBReceiver/src/receiver_ingress.cpp`，DecodeBlock/ProcessBoundDataBlock/Commit | 第一版两阶段实现过早丢掉 Ready decoder，pending capability 的同 accepted-ID 冲突失去历史；手工 constructed recovered data 测试未覆盖 | 保留指纹/reservation；两种 FEC 均以重算 CRC/LDPC/raster 的冲突验证 commit/final terminal 拒绝 |
 | H04 / High / fixed | Gate 旧 ProcessFrame | 接收使用发送方 Control 长度/block 数，Bootstrap 不拒绝未知 profile/layout；验收依赖 test side-channel | 独立 ReferenceFrameDecoder、固定 binding、像素自描述范围；独立 oracle、0/1/27、malformed/mutation |
 | H05 / High / fixed | Gate RunResumeGate / Receiver 新 API | completed `.part` raw 被作为 encoded 输入，RAW 掩盖问题；Zstd 复现 EncodedSizeMismatch | 先存红证据；新增 metadata/raw 验证；8MiB Zstd completed + 8MiB Wirehair partial + DirectRepeat tail，首段不重传 |
+| H06 / High / fixed | Gate RasterTransportPipeline::ReceiveFrame | 同帧 systematic recovery Ready 后再次出现相同 accepted block，Receiver 返回同一恢复结果，聚合层误报多个 Segment；既有跨帧重复未覆盖同帧 Ready 边界 | 仅对精确 binding 和 encoded bytes 相同的结果合并，冲突仍先由 Receiver 拒绝；1B DirectRepeat 与2629B Wirehair 均经真实 raster 验证 Ready 不提前提交、一次存储、提交后整帧重复幂等及最终文件一致 |
 | M01 / Medium / fixed | `fuzz/CMakeLists.txt` | ASan 链接不等于 Receiver 本体插桩 | 生成 vcxproj `/fsanitize=address` 检查及全套 ASan |
 | M02 / Medium / fixed | Gate RunPublicationNegativeChecks | 只测 publish predicate 不能证明实际发布调用不修改文件 | 用权威 manifest 调用 VerifyAndPublish；hash/长度/已有目标不变 |
 | M03 / Medium / fixed | Gate CreateFreshCaseDirectory | 启动删除已有 scratch 会毁掉失败证据/无关文件 | 拒绝已有目录/链接；ScratchSafety sentinel |
@@ -112,7 +113,7 @@ metadata/raw；最终均要求实际 `.part` WholeFileDigest。capability 证明
 | digest/压缩 | CompressSegment、bounded decode、VerifyRecovered/VerifyResumed；encoded/raw 分离 | RAW random、实际 Zstd、坏 encoded/raw/解压、input/output/window quota | in-band digest 不认证发送者 |
 | Outer FEC | canonical Recreate、DirectRepeat tail、Ready 指纹、extra/error/RAII | systematic/repair/repair-only、乱序/重复/丢包、profile/payload 冲突、ExtraInsufficient、OOM/quota | 无无限 repair/decoder 假设 |
 | Transport/LDPC/raster | PBVM/matrix/LSB 固定 binding；整帧预验证；CRC/zero padding | literal/pins、0/1/27、未知 profile/layout、重编码坏 CRC、零窗口后非零 | 不证明物理抗噪同步；无 interleave |
-| Receiver commit | terminal-before-verify、权威 binding、move/只读 capability、唯一完成点 | H01/H03、pending conflict、0-byte、失败不完成、重复幂等 | capability 非磁盘 receipt |
+| Receiver commit | terminal-before-verify、权威 binding、move/只读 capability、唯一完成点 | H01/H03/H06、pending conflict、0-byte、失败不完成、同帧/跨帧 Ready 重复幂等 | capability 非磁盘 receipt |
 | 文件发布 | 权威 manifest、顺序 hash、final 不存在、同目录 rename、byte compare | 缺段/未提交、错 whole digest/长度、已有 final；实际调用后文件不变 | 掉电/并发发布 race 属生产 storage |
 | quota/resume | admission-before-allocation、stat-first、metadata-before-read、全 SessionId | checksum/length/profile/count/padding/conflict/quota；RAW/Zstd completed + 两种 cache | 允许有效前缀＋hasTruncatedTail；不接纳未完成 record |
 | Golden/fuzz/证据 | pins 不变、结束 marker、fresh build/scratch、HEAD/二进制身份 | Golden/corpus/structured/parser、830000+128 mutation、VectorGen byte compare、双轮 JSONL | MSVC mutation 非 libFuzzer/UBSan；cppcheck 局限分类 |
@@ -136,6 +137,8 @@ File → 8MiB Segment → streaming RawDigest/WholeFileDigest
 12 个 fast 文件用例＋100MiB large，断言真实 codec/FEC。相同 block/frame 重复，Segment 与
 block 双层逆序，丢 systematic 0 后 DirectRepeat 下一轮或 Wirehair 新 repair 恢复。
 1MiB random 必须 RAW/Wirehair；1MiB compressible 为实际 Zstd（预检792B）/DirectRepeat。
+另有两个同帧 Ready 重复回归：将 byte-identical accepted block 放在最后一个必要 systematic
+block 后，不依赖帧间调用才能完成存储；精确合并后仍保留 reservation，直到 Verify/Store/Commit。
 
 两个 resume 用例均为16,779,844B：先存1个 completed 和1个 Wirehair/1个 DirectRepeat validated
 entry，销毁 Receiver/decoder，加载 PBRS/control，重读 `.part` completed raw；其余数据继续经
@@ -145,6 +148,13 @@ reference raster，最终顺序 hash/发布。混合用例首段 Zstd 8,388,608B
 红证据：`build-phase0-gate-evidence/precommit-p015-20260827-133943/resume-red.*`，
 工作树快照 `resume-red-tracked.patch`，失败现场 `resume-red-scratch` 保留。
 旧24文件任务快照及 `561d298-20260827-104127` 证据继续保留，仅作 baseline。
+
+H06 红证据：首次 clean commit `39f946de92bd369797cd736b27715fa1acf6f410` 的
+`build-phase0-gate-evidence/39f946de92bd369797cd736b27715fa1acf6f410-20260827-142303/late-review-ready-duplicate-probe/`。
+独立可构建探针对1B/2629B 均得到 `one frame produced multiple recovered Segments`；
+该 SHA 的必跑 Release/ASan/Golden/mutation 当时已通过，但晚期审查证明覆盖缺口，因此
+主动停止未完成的双轮重放并记录 FAIL，不能继承其 PASS。保留全部旧日志和探针；本修复
+采用非 amend 追加提交，新 clean SHA 必须重新完整执行 Final Gate。
 
 ## 6. Build/Test Evidence
 
@@ -168,6 +178,8 @@ cppcheck；均绑定同一 clean commit。静态诊断仍须人工分类，驱�
 旧 `45/156/30/98/3/86` 是 CTest/registry 数量基线，不能无解释缩减。新增测试进入已有
 PBReceiverTests 和 PBPhase0GateFast/Resume，未必增加 CTest 条目；resume JSONL 增加第二个
 文件，fast 增加独立 boundary 记录；新增字段说明验证来源。最终 inventory 差异必须解释。
+H06 在原 fast 入口内增加两个明确记录，不减少其他文件、反例或 mutation 预算，也不增加
+CTest registry 项；新增的 transient recovered buffer 计入 tracked working bytes（不是 RSS）。
 
 ## 7. 100 MiB Metrics
 
