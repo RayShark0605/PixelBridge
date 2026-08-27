@@ -26,8 +26,11 @@ set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO "RelWithDebInfo;Release;None;")
 
 add_subdirectory("${PB_SOURCE_DIR}" PixelBridge)
 
-foreach(staticTarget IN ITEMS
-        PBCore PBProtocol PBCompression PBModulation PBOuterFec PBReceiver)
+set(pbStaticTargets PBCore PBProtocol PBCompression PBModulation PBOuterFec PBReceiver PBPresentTiming)
+if(WIN32)
+    list(APPEND pbStaticTargets PBRenderD3D)
+endif()
+foreach(staticTarget IN LISTS pbStaticTargets)
     get_target_property(targetType "${staticTarget}" TYPE)
     if(NOT targetType STREQUAL "STATIC_LIBRARY")
         message(FATAL_ERROR
@@ -46,6 +49,7 @@ foreach(staticTarget IN ITEMS
         endif()
     endif()
 endforeach()
+unset(pbStaticTargets)
 
 get_target_property(protocolLinkLibraries PBProtocol LINK_LIBRARIES)
 get_target_property(protocolInterfaceLinkLibraries
@@ -105,6 +109,15 @@ target_link_libraries(PBOuterFecOnlyConsumer PRIVATE PB::PBOuterFec)
 
 add_executable(PBReceiverOnlyConsumer receiver_consumer.cpp)
 target_link_libraries(PBReceiverOnlyConsumer PRIVATE PB::PBReceiver)
+
+add_executable(PBPresentTimingOnlyConsumer present_timing_consumer.cpp)
+target_link_libraries(PBPresentTimingOnlyConsumer PRIVATE PB::PBPresentTiming)
+add_test(NAME PBPresentTimingOnlyConsumerRun COMMAND PBPresentTimingOnlyConsumer)
+if(WIN32)
+    add_executable(PBRenderD3DOnlyConsumer render_d3d_consumer.cpp)
+    target_link_libraries(PBRenderD3DOnlyConsumer PRIVATE PB::PBRenderD3D)
+    add_test(NAME PBRenderD3DOnlyConsumerRun COMMAND PBRenderD3DOnlyConsumer)
+endif()
 
 add_test(NAME PBCoreOnlyConsumerRun COMMAND PBCoreOnlyConsumer)
 add_test(NAME PBProtocolOnlyConsumerRun COMMAND PBProtocolOnlyConsumer)

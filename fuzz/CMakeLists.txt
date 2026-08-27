@@ -200,6 +200,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         PRIVATE
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
+    foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PixelBridgeEncoder)
+        if(TARGET ${pbPresentationTarget})
+            target_compile_options(${pbPresentationTarget} PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
+            if(pbPresentationTarget STREQUAL "PixelBridgeEncoder")
+                target_link_options(${pbPresentationTarget} PRIVATE -fsanitize=address,undefined)
+            endif()
+        endif()
+    endforeach()
+    unset(pbPresentationTarget)
     target_compile_options(PBProtocolDescriptorResourceFuzz
         PRIVATE
             -fno-omit-frame-pointer
@@ -311,6 +320,16 @@ elseif(MSVC)
     target_compile_options(PBInterleave PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBInnerFec PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBReceiver PRIVATE /Zi /fsanitize=address)
+    foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PixelBridgeEncoder)
+        if(TARGET ${pbPresentationTarget})
+            target_compile_options(${pbPresentationTarget} PRIVATE /Zi /fsanitize=address)
+            target_compile_definitions(${pbPresentationTarget} PRIVATE _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
+            if(pbPresentationTarget STREQUAL "PixelBridgeEncoder")
+                target_link_options(${pbPresentationTarget} PRIVATE /DEBUG /INCREMENTAL:NO)
+            endif()
+        endif()
+    endforeach()
+    unset(pbPresentationTarget)
     # The pinned vcpkg Wirehair archive records MSVC STL container annotations
     # as disabled. A single executable must use one annotation setting across
     # every linked C++ object (LNK2038). BoundSegmentDescriptor now makes the

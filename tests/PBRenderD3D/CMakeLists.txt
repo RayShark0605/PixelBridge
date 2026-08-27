@@ -1,0 +1,12 @@
+PbAddUnitTest(PBRenderD3DTests test_data_window.cpp)
+target_link_libraries(PBRenderD3DTests PRIVATE PB::PBRenderD3D)
+PbInstrumentPresentationTest(PBRenderD3DTests)
+target_include_directories(PBRenderD3DTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBRenderD3D/src")
+set_tests_properties(PBRenderD3DTests PROPERTIES LABELS "presentation;presentation-unit" TIMEOUT 60)
+
+add_executable(PBPresentationDpiProbe dpi_awareness_probe.cpp)
+target_link_libraries(PBPresentationDpiProbe PRIVATE PB::CompilerSettings PB::PBRenderD3D)
+PbInstrumentPresentationTest(PBPresentationDpiProbe)
+set_property(GLOBAL APPEND PROPERTY PB_UNIT_TEST_TARGETS PBPresentationDpiProbe)
+add_test(NAME PBPresentationRejectsNonPmv2Host COMMAND PBPresentationDpiProbe)
+set_tests_properties(PBPresentationRejectsNonPmv2Host PROPERTIES LABELS "presentation;presentation-unit" TIMEOUT 15)

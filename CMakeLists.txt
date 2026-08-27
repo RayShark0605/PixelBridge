@@ -49,6 +49,9 @@ option(PB_BUILD_BENCHMARKS "Build PixelBridge benchmark targets" OFF)
 option(PB_BUILD_PHASE0_GATE
     "Build the opt-in Phase 0 CPU reference end-to-end gate"
     OFF)
+option(PB_BUILD_PRESENTATION_GATE
+    "Build opt-in interactive D3D11/GPU/display-mode gates (changes and restores display modes)"
+    OFF)
 
 if(PB_BUILD_PHASE0_GATE AND NOT (BUILD_TESTING AND PB_BUILD_TESTS))
     message(FATAL_ERROR

@@ -29,6 +29,17 @@ function(PbAddUnitTest targetName)
     set_property(GLOBAL APPEND PROPERTY PB_UNIT_TEST_TARGETS ${targetName})
 endfunction()
 
+function(PbInstrumentPresentationTest targetName)
+    if(PB_BUILD_FUZZERS AND MSVC)
+        target_compile_options(${targetName} PRIVATE /Zi /fsanitize=address)
+        target_compile_definitions(${targetName} PRIVATE _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
+        target_link_options(${targetName} PRIVATE /DEBUG /INCREMENTAL:NO)
+    elseif(PB_BUILD_FUZZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${targetName} PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
+        target_link_options(${targetName} PRIVATE -fsanitize=address,undefined)
+    endif()
+endfunction()
+
 function(PbAddExactProcessTest testName targetName expectedStdout)
     if(NOT TARGET "${targetName}")
         message(FATAL_ERROR
@@ -49,6 +60,13 @@ add_subdirectory(PBInnerFec)
 add_subdirectory(PBModulation)
 add_subdirectory(PBOuterFec)
 add_subdirectory(PBReceiver)
+add_subdirectory(PBPresentTiming)
+if(TARGET PBRenderD3D)
+    add_subdirectory(PBRenderD3D)
+endif()
+if(PB_BUILD_PRESENTATION_GATE)
+    add_subdirectory(PresentationGate)
+endif()
 add_subdirectory(PBInterleave)
 add_subdirectory(PBGoldenVector)
 add_subdirectory(golden)
@@ -148,6 +166,33 @@ if(TARGET PixelBridgeEncoder)
         PixelBridgeEncoderSmoke
         PixelBridgeEncoder
         "PixelBridgeEncoder ${PROJECT_VERSION} (protocol 1.0)")
+    if(WIN32)
+        set(pbEncoderInvalidArguments
+            "--unknown"
+            "--frames|1"
+            "--data-window|--frames"
+            "--data-window|--frames|0"
+            "--data-window|--frames|-1"
+            "--data-window|--frames|1000001"
+            "--data-window|--frames|18446744073709551616"
+            "--data-window|--frames|1x"
+            "--data-window|--data-window"
+            "--data-window|--frames|1|--frames|2"
+            "--data-window|--telemetry")
+        set(pbEncoderArgumentIndex 0)
+        foreach(pbEncoderArguments IN LISTS pbEncoderInvalidArguments)
+            add_test(NAME "PixelBridgeEncoderRejectsArguments.${pbEncoderArgumentIndex}"
+                COMMAND "${CMAKE_COMMAND}"
+                    "-DPB_TEST_EXECUTABLE=$<TARGET_FILE:PixelBridgeEncoder>"
+                    "-DPB_EXPECTED_EXIT=2"
+                    "-DPB_TEST_ARGS_ENCODED=${pbEncoderArguments}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/AssertProcessExit.cmake")
+            math(EXPR pbEncoderArgumentIndex "${pbEncoderArgumentIndex} + 1")
+        endforeach()
+        unset(pbEncoderInvalidArguments)
+        unset(pbEncoderArgumentIndex)
+        unset(pbEncoderArguments)
+    endif()
 endif()
 
 if(TARGET PixelBridgeDecoder)
