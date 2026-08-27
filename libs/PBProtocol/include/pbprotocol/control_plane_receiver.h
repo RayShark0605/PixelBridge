@@ -121,6 +121,8 @@ public:
         SessionTag sessionTag) const noexcept;
     [[nodiscard]] ProtocolStatus ValidateCompleteSegmentMap(
         SessionTag sessionTag);
+    [[nodiscard]] ProtocolResult<FinalManifest> PrepareFinalization(
+        SessionTag sessionTag);
     [[nodiscard]] ProtocolResult<bool> RemoveSession(
         const SessionId& sessionId) noexcept;
 

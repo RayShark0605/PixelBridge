@@ -75,7 +75,11 @@ enum class ProtocolErrorCode : std::uint8_t
     // resume.state file IO failure: stat/open/regular-file check failed for
     // ReadResumeStateFile or open/write failed for WriteResumeStateFile. This
     // is a receiver-local persistence diagnostic and never enters wire bytes.
-    ResumeStateIoFailure
+    ResumeStateIoFailure,
+    // Outer recovery and byte verification may have succeeded while Segment
+    // storage has not yet been explicitly committed. This receiver-local
+    // diagnostic is never serialized into wire bytes. Keep append-only.
+    SegmentRecoveryIncomplete
 };
 
 struct ProtocolError

@@ -531,14 +531,31 @@ that rebuilds a second receiver purely from saved control bytes plus
 stat-first budget gate, and a structured dual-mode fuzz harness with a pinned
 13-seed corpus under `fuzz/corpus/resume-state/`.
 
-## Remaining Phase-0 Gate scope
+## Phase-0 acceptance versus later product requirements (P0-15)
 
-This status decision closes the ambiguity around the current descriptor bytes
-and marks the logical Bootstrap/Control byte protocol, bounded Control
-fragmentation, and resource-safe logical Receiver ingress GO. It does not
-declare the overall Phase-0 architecture Gate complete. Formal v1 Transport
-and Session/Visual/Interleave profile binding, Control/Bootstrap visual FEC,
-physical repetition cadence, PBStorage free-space/reservation and `.part`
-publication, the complete Decoder application/capture chain, complete file
-recovery, certified-profile freeze, resume.state crash-safe flush ordering (section 31.5), the live ingress resume write path, and ResumeDegraded quota marking remain separate work. Later CPU/GPU backend consistency gates also stay open. The current parser/Golden/Inspector chain is a reproducible
-tooling proof, not production receiver admission or complete file recovery.
+Phase 0 proves logical wire bytes, bounded Segment/FEC recovery, resource
+limits, basic save/destroy/load/replay resume, and CPU/reference file round trips.
+It does not require completing the future PixelBridge v1 product. The logical
+Bootstrap/Control bytes and bounded fragment reassembly remain unchanged.
+
+The opt-in P0-15 Gate now composes actual raster demodulation with independent
+fixed-profile/Control/Data framing checks and ReceiverIngress admission. The
+reference binding and its no-interleave interpretation are documented in
+`REFERENCE_RASTER.md` section 13. Receiver completion requires verified bytes
+followed by explicit stored commit. Finalization returns the bound authoritative
+manifest only for a complete stored Segment map; the Gate sequentially hashes
+the actual `.part` and compares final file bytes. Completed resume metadata is
+revalidated against the full SessionId and bound descriptor, then actual stored
+raw bytes are rehashed, including Zstandard Segments, without re-compression.
+
+Future Certified profiles, physical Bootstrap/Control FEC and repetition cadence,
+Present/Capture robustness, production storage free-space UX/preallocation and
+durable crash ordering, live ingress snapshot scheduling/ResumeDegraded, GPU,
+and MP4 remain **deferred product requirements**, not blanket Phase-0 blockers.
+Their Phase-0 subsets above must still pass independently; a deferred label
+does not excuse ambiguous reference parsing or missing basic resume.
+
+`PHASE0_GATE_REPORT.md` records the P0-15 scope, fixes and eight-view review.
+The exact clean-commit result and tag decision are sealed externally under
+`build-phase0-gate-evidence/<full-commit>-<timestamp>/`; this status document
+does not itself assert a final Gate PASS or v1 wire/certified-profile freeze.

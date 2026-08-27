@@ -128,6 +128,12 @@ private:
         const pbprotocol::SegmentDescriptor& segmentDescriptor,
         std::uint32_t expectedOuterBlockBytes,
         const OuterFecDecoderResourceManager& resourceManager);
+    [[nodiscard]] static OuterFecResult<DirectRepeatDecoder>
+    CreateFromDescriptor(
+        const pbprotocol::SegmentDescriptor& segmentDescriptor,
+        std::uint32_t expectedOuterBlockBytes,
+        const OuterFecDecoderResourceManager& resourceManager,
+        bool forceAllocationFailureAfterReservation);
 
     std::unique_ptr<detail::DirectRepeatDecoderImplementation> implementation_;
 };

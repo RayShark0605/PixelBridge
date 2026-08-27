@@ -415,10 +415,11 @@ baseline 提交）的 manifest schema 只接受顺序约束字段（`version>` /
    猜测。
 3. **PNG 摘要绑定 libpng/zlib 版本**：故 raw BGRA 摘要为主 pin（§9）。
 4. **Data lane 尾部零填充**由发送方产生，raster 层对内容不解释（与 §9.4
-   零 padding 约定一致）；56,168B 容量承载多 codeword/多帧拼接的协议解释
-   归数据面后续工作。
-5. **Control 每帧窗口固定 240B**：跨帧 record 分片/重组属控制面后续工作；
-   raster 层只搬运 240B 窗口字节。
+   零 padding 约定一致）；P0-15 reference Gate 的独立组合解释见 §13，
+   不把该组合扩充成生产数据面的可协商 framing。
+5. **Control 每帧窗口固定 240B**：raster 层只搬运窗口字节。已有逻辑
+   fragment/reassembly 单独验证；§13 Gate 只解释一个完整 record，不推断
+   fragment 类型，不声称已实现 production physical framing。
 6. **Sync 上下相位相反**（§3.3 注）：全局坐标定义的冻结行为。
 7. **margin 不对称**：mean 0 拒绝 / mean 255 接受（§5.2）：半距严格小于 8
    的整数边界使然，非 bug。
@@ -445,3 +446,45 @@ build-phase0-tooling-release\tools\Release\PBFrameInspector.exe --recovery `
 ```
 
 全量测试中与本任务无关的既有失败（若有）单独报告，不代改。
+
+## 13. P0-15 文件往返 Gate 的固定 reference 组合
+
+这是既有 wire/LDPC/raster 契约的**测试级组合**，不改变本页任何 Golden pin，
+也不把本页的任意 opaque raster fixture 重新定义为合法 Transport 帧。
+接收实现为 `tests/Phase0Gate/reference_frame_receiver.{h,cpp}`。
+
+| 绑定项 | 唯一支持值 |
+| --- | --- |
+| Bootstrap VisualProfileId / layout | `0x5042524546524153` / `1` |
+| PBVM 几何 | 本文 1920×1080、14 区域，manifest digest 仍为 §8.3 原 pin |
+| InnerFecProfileId | Robust `0x36BC661265E826C3` |
+| N / K / MatrixId | `16200` / `10800` / `0xB3F9EFAD6196DE85` |
+| MatrixDigest | `c6d8eabe59d8bc85b2076766d745bca6182f16e019117653121f1e247be34dd3` |
+| bit order / puncturing / interleave | LSB-first / none / none |
+| feature flags | 0；其他值拒绝，不静默 fallback |
+| outer / info / codeword | 1314 / 1350 / 2025 bytes |
+
+接收入口只读取 raster 和固定 binding。`ReferenceFrameDecoder::Decode` 不取得
+发送端的 Control 长度、block 数、SegmentOrdinal 或 OuterBlockId 列表，且在
+整帧结构校验完成前不调用 Receiver。返回的数据才由 ReceiverIngress 做权威
+descriptor/resource/outer admission；发送源只用于编码与最终 byte-equality oracle。
+
+1. 先执行现有 reference demod 和 `ParseBootstrapRecord`，再检查 profile/layout。
+   CRC-valid 的未知 ID、layout、非零 reserved/不支持 feature 也在 admission 前拒绝。
+2. **Control mode 固定为 PB-Control-1 完整 record。** 全零 240B 窗口表示没有 record；
+   否则只用已有 offset 22 的 little-endian `RecordBytes`（30..240）截取 record，
+   执行已有 parser/CRC 校验，并要求剩余窗口全零。Control SessionTag 必须等于
+   Bootstrap。没有 fragment/PBCR 猜测，没有新增 discriminator。
+3. Data 从 offset 0 按固定 2025B 窗口扫描，最多 27 个连续 codeword。遇到首个
+   全零窗口后，**全部余下 Data 必须为零**；满帧最后 1493B 也必须为零。
+   合法 Transport 的 BlockType=1，其 systematic codeword 不可能全零，因此无歧义。
+4. 每个非零完整窗口经过 Robust syndrome、硬判决 LLR、LDPC decode、1350B
+   info-block canonical padding、Transport 两级 CRC 和 SessionTag 一致性检查。
+   routing 只使用解码得到的 Transport header。
+
+`reference_frame_tests.cpp` 固定独立 Bootstrap literal（含 CRC）、PBVM/矩阵 pins，
+验证 0/1/27 codeword、17 种错误 binding、未知 ID/layout、长度、尾部、零窗口后
+非零、重编码后仍 CRC/padding 错误的 Transport、错误 packing；另有 seed=20260827、
+128 次有界确定性 mutation。逻辑 fragment/reassembly 的既有 corpus/冲突/配额
+矩阵继续独立运行。以上不是 Present/Capture 鲁棒性、物理 Control FEC、cadence
+或 Certified Profile 认证。
