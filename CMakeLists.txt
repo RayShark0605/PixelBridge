@@ -52,6 +52,9 @@ option(PB_BUILD_PHASE0_GATE
 option(PB_BUILD_PRESENTATION_GATE
     "Build opt-in interactive D3D11/GPU/display-mode gates (changes and restores display modes)"
     OFF)
+option(PB_BUILD_SCREEN_REGION_GATE
+    "Build opt-in interactive physical screen-region gates (moves/restores cursor, never changes display settings)"
+    OFF)
 
 if(PB_BUILD_PHASE0_GATE AND NOT (BUILD_TESTING AND PB_BUILD_TESTS))
     message(FATAL_ERROR

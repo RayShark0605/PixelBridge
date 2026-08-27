@@ -71,3 +71,30 @@ foreach(pbProbeWindows IN ITEMS ON OFF)
         endforeach()
     endforeach()
 endforeach()
+
+foreach(pbProbeWindows IN ITEMS ON OFF)
+    foreach(pbProbeTesting IN ITEMS ON OFF)
+        foreach(pbProbeTests IN ITEMS ON OFF)
+            foreach(pbProbeGate IN ITEMS ON OFF)
+                execute_process(
+                    COMMAND "${CMAKE_COMMAND}"
+                        "-DPB_MODULE_DIR=${PB_MODULE_DIR}"
+                        "-DPB_PROBE_WINDOWS=${pbProbeWindows}"
+                        "-DBUILD_TESTING=${pbProbeTesting}"
+                        "-DPB_BUILD_TESTS=${pbProbeTests}"
+                        "-DPB_BUILD_SCREEN_REGION_GATE=${pbProbeGate}"
+                        -P "${PB_PROBE_SCRIPT}"
+                    RESULT_VARIABLE pbProbeResult
+                    OUTPUT_VARIABLE pbProbeOutput
+                    ERROR_VARIABLE pbProbeError)
+                if(NOT pbProbeGate OR (pbProbeWindows AND pbProbeTesting AND pbProbeTests))
+                    if(NOT pbProbeResult EQUAL 0)
+                        message(FATAL_ERROR "Screen-region build matrix rejected a valid combination: ${pbProbeOutput}${pbProbeError}")
+                    endif()
+                elseif(pbProbeResult EQUAL 0 OR NOT pbProbeError MATCHES "PB_BUILD_SCREEN_REGION_GATE requires Windows")
+                    message(FATAL_ERROR "Screen-region build matrix accepted an invalid combination or lost its diagnostic: ${pbProbeOutput}${pbProbeError}")
+                endif()
+            endforeach()
+        endforeach()
+    endforeach()
+endforeach()

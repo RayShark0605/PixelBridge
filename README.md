@@ -78,6 +78,18 @@ API、指标公式、异常恢复、真实显示/模式恢复 Gate 和限制见
 [`docs/PRESENTATION.md`](docs/PRESENTATION.md)。默认测试不会弹出数据窗口或切换显示模式；
 显式开启 `PB_BUILD_PRESENTATION_GATE=ON` 才运行真实显示 Gate，模式测试由独立监督进程恢复设置。
 
+## 物理像素区域选择
+
+`PixelBridgeDecoder --select-region` 启动覆盖虚拟桌面的原生拖选 overlay，只有整个 ROI
+位于一个显示器内才接受。返回有符号 physical-pixel RECT、HMONITOR、effective DPI 和
+DXGI rotation；跨屏／空隙选区不裁剪、不吸附，允许重选。Escape 或右键取消。
+无参数 banner 保持不变；不依赖 Qt，也不把 logical coordinates 当作 WGC/DXGI 坐标。
+这不是屏幕捕获或 LocalDesktop 认证。
+
+接口及生命周期契约见 [`docs/SCREEN_REGION.md`](docs/SCREEN_REGION.md)。
+默认模型测试不显示 overlay；`PB_BUILD_SCREEN_REGION_GATE=ON` 显式启用真实桌面测试，
+会移动并恢复鼠标，不修改 DPI、分辨率、旋转或显示器布局。
+
 ## Source Segment 压缩
 
 `PBCompression` 将每个 Source Segment 独立编码为一个标准 zstd frame，
@@ -217,6 +229,7 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBProtocolBootstrapControlStructuredSelfTest`、`PBProtocolOrphanResourceFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
 | `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |
 | `PB_BUILD_PRESENTATION_GATE` | `OFF` | Windows-only：真实 GPU/HWND/双屏/受监督模式切换；要求两个 tests 开关均开启 |
+| `PB_BUILD_SCREEN_REGION_GATE` | `OFF` | Windows-only：真实 overlay／物理鼠标拖选／Decoder；恢复鼠标，不修改显示设置；要求两个 tests 开关均开启 |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
 

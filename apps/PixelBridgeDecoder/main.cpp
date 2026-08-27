@@ -3,8 +3,19 @@
 
 #include <iostream>
 
+#ifdef _WIN32
+int RunScreenRegionCommand(int argumentCount, wchar_t* arguments[]);
+int wmain(const int argumentCount, wchar_t* arguments[])
+#else
 int main()
+#endif
 {
+#ifdef _WIN32
+    if (argumentCount > 1)
+    {
+        return RunScreenRegionCommand(argumentCount, arguments);
+    }
+#endif
     const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
     const pbprotocol::ProtocolVersion protocolVersion = pbprotocol::GetProtocolVersion();
 
