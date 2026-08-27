@@ -7,8 +7,9 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 | 路径 | 用途 |
 | --- | --- |
-| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | 应用（当前为控制台空壳，Qt 6 UI 在后续里程碑接入） |
+| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | Encoder 支持 `--data-window` 呈现诊断入口；无参横幅保留，Qt 6 UI 后续接入 |
 | `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver` | 核心静态库（禁止依赖 Qt） |
+| `libs/PBPresentTiming`、`libs/PBRenderD3D` | 有界 DXGI observation 计时与独立原生 D3D11 数据窗口；不依赖 Qt |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
 | `docs` | 设计文档 |
@@ -51,6 +52,7 @@ decoder、segment-sized buffer、zstd context 或 output reservation。这里的
   只接受由 Control admission 签发的 `BoundSegmentDescriptor`；普通
   `SegmentDescriptor` 的创建 seam 仅位于未安装的 test/benchmark 私有头中。
 - `PBProtocol` 不依赖 `PBCore`；消费者只获得所链接 target 的公共头和链接闭包。
+- `PBPresentTiming` 与 Windows-only `PBRenderD3D` 是显式静态库，公共接口不暴露 Qt、HWND 或 DXGI 类型；独立链接及 no-Qt Gate 同样覆盖它们。
 - `PB::CompilerSettings` 仅供 PixelBridge 自有 target 私有使用，`/WX` 等策略不传播给外部消费者。
 - Qt 只允许由应用以 `PRIVATE` 方式链接；`libs/` 下的核心库和公共头禁止依赖 Qt。
 - PBOuterFec/PBFEC、协议与 CPU reference 模块保持平台无关。
@@ -58,6 +60,23 @@ decoder、segment-sized buffer、zstd context 或 output reservation。这里的
 - CUDA 选项只与真实 CUDA target 同时引入，默认关闭；显式启用后缺失依赖必须配置失败，不允许静默 fallback。
 
 CMake 在配置期审计核心 target 的 Qt 依赖、公共 `src/` 路径和公共编译选项泄漏。未来模块必须继续满足这些门禁。
+
+## 独立 D3D11 Data Window
+
+`PixelBridgeEncoder --data-window --frames 120 --telemetry NEW_FILE.jsonl`
+运行现有 BGRA reference raster 的呈现诊断，不是完整文件发送器。默认使用
+flip-discard、双缓冲、frame-latency waitable object、MaximumFrameLatency 1、
+`Present(1, 0)`、无 tearing/MSAA/alpha/filtering，以及 1920×1080 physical client。
+窗口与 immediate context 由专用 owner thread 持有，Qt 不参与数据像素合成。
+
+`--frames` 限制成功的 **CPU 帧提交**，不保证所有提交都到达显示器。遥测分别报告
+`PresentCallFPS`、基于 DXGI/Present ID/FrameSequence 关联的 `PresentedVisualFPS`
+及明确命名的观测下界；statistics 不可用或有关联缺口时，不拿调用数补齐视觉 FPS。
+本功能是 **Certified candidate 基础设施**，不是 Capture round-trip 或 LocalDesktop 认证。
+
+API、指标公式、异常恢复、真实显示/模式恢复 Gate 和限制见
+[`docs/PRESENTATION.md`](docs/PRESENTATION.md)。默认测试不会弹出数据窗口或切换显示模式；
+显式开启 `PB_BUILD_PRESENTATION_GATE=ON` 才运行真实显示 Gate，模式测试由独立监督进程恢复设置。
 
 ## Source Segment 压缩
 
@@ -197,6 +216,7 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
 | `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBProtocolBootstrapControlStructuredSelfTest`、`PBProtocolOrphanResourceFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
 | `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |
+| `PB_BUILD_PRESENTATION_GATE` | `OFF` | Windows-only：真实 GPU/HWND/双屏/受监督模式切换；要求两个 tests 开关均开启 |
 | `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
 | `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
 

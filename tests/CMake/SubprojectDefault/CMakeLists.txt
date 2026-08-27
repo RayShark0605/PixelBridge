@@ -33,8 +33,13 @@ if(PB_BUILD_TESTS)
     message(FATAL_ERROR "PixelBridge tests must default to OFF as a subproject")
 endif()
 
-if(TARGET PBCoreTests OR TARGET PBProtocolTests OR TARGET PBOuterFecTests)
+if(TARGET PBCoreTests OR TARGET PBProtocolTests OR TARGET PBOuterFecTests OR
+        TARGET PBPresentTimingTests OR TARGET PBRenderD3DTests OR TARGET PBPresentationGate)
     message(FATAL_ERROR "PixelBridge unexpectedly created test targets")
+endif()
+
+if(PB_BUILD_PRESENTATION_GATE)
+    message(FATAL_ERROR "Interactive presentation gates must default to OFF as a subproject")
 endif()
 
 add_executable(PBSubprojectConsumer consumer.cpp)

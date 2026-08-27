@@ -1,0 +1,4 @@
+PbAddUnitTest(PBPresentTimingTests test_present_timing.cpp)
+target_link_libraries(PBPresentTimingTests PRIVATE PB::PBPresentTiming)
+PbInstrumentPresentationTest(PBPresentTimingTests)
+set_tests_properties(PBPresentTimingTests PROPERTIES LABELS "presentation;presentation-unit")
