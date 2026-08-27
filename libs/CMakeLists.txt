@@ -10,6 +10,7 @@ add_subdirectory(PBPresentTiming)
 if(WIN32)
     add_subdirectory(PBRenderD3D)
     add_subdirectory(PBScreenRegion)
+    add_subdirectory(PBScreenCaptureWgc)
 endif()
 
 # Golden generation is test/tool/fuzz support, not a production core

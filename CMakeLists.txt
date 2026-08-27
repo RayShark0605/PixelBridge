@@ -55,6 +55,9 @@ option(PB_BUILD_PRESENTATION_GATE
 option(PB_BUILD_SCREEN_REGION_GATE
     "Build opt-in interactive physical screen-region gates (moves/restores cursor, never changes display settings)"
     OFF)
+option(PB_BUILD_WGC_GATE
+    "Build opt-in real monitor capture gates (displays test pixels, never changes display modes)"
+    OFF)
 
 if(PB_BUILD_PHASE0_GATE AND NOT (BUILD_TESTING AND PB_BUILD_TESTS))
     message(FATAL_ERROR
