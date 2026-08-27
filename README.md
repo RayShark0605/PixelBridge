@@ -10,6 +10,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 | `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | Encoder 支持 `--data-window` 呈现诊断入口；无参横幅保留，Qt 6 UI 后续接入 |
 | `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver` | 核心静态库（禁止依赖 Qt） |
 | `libs/PBPresentTiming`、`libs/PBRenderD3D` | 有界 DXGI observation 计时与独立原生 D3D11 数据窗口；不依赖 Qt |
+| `libs/PBScreenRegion`、`libs/PBScreenCaptureWgc` | 物理像素选区、Windows Graphics Capture 与 GPU 退休保护的 ROI texture ring；不依赖 Qt |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
 | `docs` | 设计文档 |
@@ -89,6 +90,22 @@ DXGI rotation；跨屏／空隙选区不裁剪、不吸附，允许重选。Esca
 接口及生命周期契约见 [`docs/SCREEN_REGION.md`](docs/SCREEN_REGION.md)。
 默认模型测试不显示 overlay；`PB_BUILD_SCREEN_REGION_GATE=ON` 显式启用真实桌面测试，
 会移动并恢复鼠标，不修改 DPI、分辨率、旋转或显示器布局。
+
+## WGC 屏幕捕获与 GPU lease 退休
+
+`PB::PBScreenCaptureWgc` 复用 `ScreenCaptureRegion`，使用 `CreateForMonitor` /
+`CreateFreeThreaded` 捕获单显示器。callback 仅获取 frame lease、验证 metadata 并进入
+有界队列；专用 D3D owner copy/crop 到自有 ROI ring，fence/event-query 确认 source 不再被
+GPU 使用后才 Close frame，consumer 工作另有退休标记。积压丢旧帧，尺寸/环境变化先 drain
+再 recreate 并递增 CaptureEpoch，错误/超时不提前归还 lease。
+
+cursor、Borderless 和 MinUpdateInterval 按真实 interface/权限探测；不把优化 setter 成功
+当作实际 FPS 或无边框保证。默认 BGRA，HDR 需显式使用 FP16；不静默做色调映射。
+这是 backend 和 normalization 接入边界，尚未接入 Decoder 解调/文件恢复，也不宣称
+LocalDesktop 性能认证。API、资源边界、验证命令与限制见
+[`docs/PBScreenCaptureWgc.md`](docs/PBScreenCaptureWgc.md)。
+真实桌面测试由 `PB_BUILD_WGC_GATE=ON` 显式启用；默认测试仅模型/COM mock/WARP，
+不弹出捕获窗口或改动显示设置。
 
 ## Source Segment 压缩
 
