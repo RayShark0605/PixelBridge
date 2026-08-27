@@ -34,12 +34,20 @@ if(PB_BUILD_TESTS)
 endif()
 
 if(TARGET PBCoreTests OR TARGET PBProtocolTests OR TARGET PBOuterFecTests OR
-        TARGET PBPresentTimingTests OR TARGET PBRenderD3DTests OR TARGET PBPresentationGate)
+        TARGET PBPresentTimingTests OR TARGET PBRenderD3DTests OR TARGET PBPresentationGate OR
+        TARGET PBScreenRegionTests OR TARGET PBScreenRegionDpiProbe OR TARGET PBScreenRegionDecoderHostProbe OR TARGET PBScreenRegionGate)
     message(FATAL_ERROR "PixelBridge unexpectedly created test targets")
 endif()
 
 if(PB_BUILD_PRESENTATION_GATE)
     message(FATAL_ERROR "Interactive presentation gates must default to OFF as a subproject")
+endif()
+
+if(PB_BUILD_SCREEN_REGION_GATE)
+    message(FATAL_ERROR "Interactive screen-region gates must default to OFF as a subproject")
+endif()
+if(WIN32 AND NOT TARGET PB::PBScreenRegion)
+    message(FATAL_ERROR "The Windows screen-region core library must not depend on applications or tests being enabled")
 endif()
 
 add_executable(PBSubprojectConsumer consumer.cpp)

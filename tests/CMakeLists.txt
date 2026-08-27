@@ -64,6 +64,12 @@ add_subdirectory(PBPresentTiming)
 if(TARGET PBRenderD3D)
     add_subdirectory(PBRenderD3D)
 endif()
+if(TARGET PBScreenRegion)
+    add_subdirectory(PBScreenRegion)
+endif()
+if(PB_BUILD_SCREEN_REGION_GATE)
+    add_subdirectory(ScreenRegionGate)
+endif()
 if(PB_BUILD_PRESENTATION_GATE)
     add_subdirectory(PresentationGate)
 endif()
@@ -200,4 +206,21 @@ if(TARGET PixelBridgeDecoder)
         PixelBridgeDecoderSmoke
         PixelBridgeDecoder
         "PixelBridgeDecoder ${PROJECT_VERSION} (protocol 1.0)")
+    if(WIN32)
+        set(pbDecoderInvalidArguments "--unknown" "--select-region|--select-region" "--select-region|extra" "--help|--select-region" "--select-region|--help")
+        set(pbDecoderArgumentIndex 0)
+        foreach(pbDecoderArguments IN LISTS pbDecoderInvalidArguments)
+            add_test(NAME "PixelBridgeDecoderRejectsArguments.${pbDecoderArgumentIndex}"
+                COMMAND "${CMAKE_COMMAND}"
+                    "-DPB_TEST_EXECUTABLE=$<TARGET_FILE:PixelBridgeDecoder>"
+                    "-DPB_EXPECTED_EXIT=2"
+                    "-DPB_TEST_ARGS_ENCODED=${pbDecoderArguments}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/AssertProcessExit.cmake")
+            math(EXPR pbDecoderArgumentIndex "${pbDecoderArgumentIndex} + 1")
+        endforeach()
+        add_test(NAME PixelBridgeDecoderHelp COMMAND PixelBridgeDecoder --help)
+        unset(pbDecoderInvalidArguments)
+        unset(pbDecoderArgumentIndex)
+        unset(pbDecoderArguments)
+    endif()
 endif()
