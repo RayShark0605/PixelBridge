@@ -58,6 +58,12 @@ option(PB_BUILD_SCREEN_REGION_GATE
 option(PB_BUILD_WGC_GATE
     "Build opt-in real monitor capture gates (displays test pixels, never changes display modes)"
     OFF)
+option(PB_BUILD_DXGI_GATE
+    "Build opt-in Desktop Duplication gates (displays test pixels, never changes display modes)"
+    OFF)
+option(PB_BUILD_LOCAL_DESKTOP_GATE
+    "Build opt-in SDR LocalDesktop Bootstrap pixel and application entry gates (never changes display settings)"
+    OFF)
 
 if(PB_BUILD_PHASE0_GATE AND NOT (BUILD_TESTING AND PB_BUILD_TESTS))
     message(FATAL_ERROR

@@ -2,9 +2,11 @@
 #include "pbprotocol/protocol_version.h"
 
 #include <iostream>
+#include <string_view>
 
 #ifdef _WIN32
 int RunScreenRegionCommand(int argumentCount, wchar_t* arguments[]);
+int RunCaptureBootstrapCommand(int argumentCount, wchar_t* arguments[]);
 int wmain(const int argumentCount, wchar_t* arguments[])
 #else
 int main()
@@ -13,6 +15,10 @@ int main()
 #ifdef _WIN32
     if (argumentCount > 1)
     {
+        if (std::wstring_view(arguments[1]) == L"--capture-bootstrap")
+        {
+            return RunCaptureBootstrapCommand(argumentCount, arguments);
+        }
         return RunScreenRegionCommand(argumentCount, arguments);
     }
 #endif

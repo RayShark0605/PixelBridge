@@ -24,8 +24,12 @@ unset(pbRegionAwareness)
 # failure switch or test-only command is added to the shipping application.
 add_executable(PBScreenRegionDecoderHostProbe
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/main.cpp"
-    "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/screen_region_cli.cpp")
-target_link_libraries(PBScreenRegionDecoderHostProbe PRIVATE PB::CompilerSettings PB::PBCore PB::PBProtocol PB::PBScreenRegion)
+    "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/screen_region_cli.cpp"
+    "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_cli.cpp"
+    "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/bootstrap_diagnostic.cpp"
+    "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp")
+target_link_libraries(PBScreenRegionDecoderHostProbe PRIVATE PB::CompilerSettings PB::PBCore PB::PBProtocol PB::PBScreenRegion
+    PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation)
 target_compile_definitions(PBScreenRegionDecoderHostProbe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 if(MSVC)
     target_compile_options(PBScreenRegionDecoderHostProbe PRIVATE /external:anglebrackets /external:W0)

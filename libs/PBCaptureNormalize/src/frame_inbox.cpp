@@ -1,15 +1,15 @@
-#include "capture_internal.h"
+#include "capture_runtime.h"
 #include "pbprotocol/checked_integer.h"
 
 #include <algorithm>
 #include <limits>
 
-namespace pbscreencapturewgc::detail
+namespace pbcapturenormalize::detail
 {
 
 FrameLease::FrameLease(void* const frame, const CloseFunction close, const TextureFunction texture, std::shared_ptr<LeaseCounters> counters,
                        const CaptureSize size, const std::int64_t timestamp, const std::uint64_t epoch) noexcept
-    : contentSize(size), timestamp100ns(timestamp), captureEpoch(epoch), frame_(frame), close_(close), texture_(texture), counters_(std::move(counters))
+    : contentSize(size), timestamp100ns(timestamp), captureEpoch(epoch), rawTimestamp(timestamp), frame_(frame), close_(close), texture_(texture), counters_(std::move(counters))
 {
     if (frame_ != nullptr && counters_)
     {
@@ -44,6 +44,11 @@ FrameLease& FrameLease::operator=(FrameLease&& other) noexcept
         timestamp100ns = other.timestamp100ns;
         captureEpoch = other.captureEpoch;
         arrivalOrdinal = other.arrivalOrdinal;
+        cursorState = other.cursorState;
+        pointer = other.pointer;
+        timestampDomain = other.timestampDomain;
+        rawTimestamp = other.rawTimestamp;
+        rawFrequency = other.rawFrequency;
     }
     return *this;
 }
@@ -58,7 +63,18 @@ void FrameLease::Reset() noexcept
             if (FAILED(result))
             {
                 HRESULT expected = S_OK;
-                counters_->closeError.compare_exchange_strong(expected, result);
+                if (!counters_->closeError.compare_exchange_strong(expected, result))
+                {
+                    const bool previousDeviceLoss = expected == DXGI_ERROR_DEVICE_REMOVED || expected == DXGI_ERROR_DEVICE_RESET || expected == DXGI_ERROR_DEVICE_HUNG;
+                    const bool currentDeviceLoss = result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET || result == DXGI_ERROR_DEVICE_HUNG;
+                    if (previousDeviceLoss && !currentDeviceLoss)
+                    {
+                        // At most one promotion follows the initial S_OK -> error.
+                        // A strong-CAS failure here means another non-device error
+                        // already won; keep that first error without a retry loop.
+                        static_cast<void>(counters_->closeError.compare_exchange_strong(expected, result));
+                    }
+                }
             }
             counters_->live.fetch_sub(1);
         }
@@ -81,7 +97,7 @@ HRESULT FrameLease::GetTexture(ID3D11Texture2D** const texture) const noexcept
     return frame_ != nullptr && texture_ != nullptr ? texture_(frame_, texture) : E_UNEXPECTED;
 }
 
-FrameInbox::FrameInbox(const WgcCaptureConfig& config) : counters(std::make_shared<LeaseCounters>()), limit_(config.queuedFrameLimit)
+FrameInbox::FrameInbox(const CaptureConfig& config) : counters(std::make_shared<LeaseCounters>()), limit_(config.queuedFrameLimit)
 {
 }
 
@@ -268,53 +284,4 @@ CaptureStatus ResolveRecreateContentSize(const CaptureSize requestedSize, const 
     return {};
 }
 
-CaptureStatus ValidateLayout(const WgcCaptureConfig& config, const CaptureEnvironment& environment, CaptureLayout& layout) noexcept
-{
-    if (config.queuedFrameLimit == 0 || config.queuedFrameLimit > maximumQueuedFrames || config.roiTextureCount < 2 ||
-        config.roiTextureCount > maximumRoiTextures ||
-        (config.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM && config.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT))
-    {
-        return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Configuration);
-    }
-    const auto& region = environment.region;
-    const auto& rectangle = region.physicalRect;
-    const auto& monitor = region.monitorPhysicalRect;
-    const auto width = static_cast<std::int64_t>(rectangle.right) - rectangle.left;
-    const auto height = static_cast<std::int64_t>(rectangle.bottom) - rectangle.top;
-    const auto monitorWidth = static_cast<std::int64_t>(monitor.right) - monitor.left;
-    const auto monitorHeight = static_cast<std::int64_t>(monitor.bottom) - monitor.top;
-    if (region.monitor == nullptr || width <= 0 || height <= 0 || monitorWidth <= 0 || monitorHeight <= 0 || monitorWidth > 16384 || monitorHeight > 16384 ||
-        rectangle.left < monitor.left || rectangle.top < monitor.top || rectangle.right > monitor.right || rectangle.bottom > monitor.bottom ||
-        environment.contentSize.width != monitorWidth || environment.contentSize.height != monitorHeight || region.dpiX == 0 || region.dpiY == 0 ||
-        region.rotation < DXGI_MODE_ROTATION_IDENTITY || region.rotation > DXGI_MODE_ROTATION_ROTATE270)
-    {
-        return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Region);
-    }
-    const std::uint64_t pixelBytes = config.pixelFormat == DXGI_FORMAT_B8G8R8A8_UNORM ? 4 : 8;
-    const auto roiPixels = pbprotocol::CheckedMultiplyUint64(static_cast<std::uint64_t>(width), static_cast<std::uint64_t>(height));
-    const auto roiBytes = roiPixels ? pbprotocol::CheckedMultiplyUint64(roiPixels.Value(), pixelBytes) : roiPixels;
-    const auto ringBytes = roiBytes ? pbprotocol::CheckedMultiplyUint64(roiBytes.Value(), config.roiTextureCount) : roiBytes;
-    const auto poolBuffers = config.queuedFrameLimit + config.roiTextureCount + 1;
-    const auto surfacePixels = pbprotocol::CheckedMultiplyUint64(static_cast<std::uint64_t>(monitorWidth), static_cast<std::uint64_t>(monitorHeight));
-    const auto surfaceBytes = surfacePixels ? pbprotocol::CheckedMultiplyUint64(surfacePixels.Value(), pixelBytes) : surfacePixels;
-    const auto poolBytes = surfaceBytes ? pbprotocol::CheckedMultiplyUint64(surfaceBytes.Value(), poolBuffers) : surfaceBytes;
-    const auto totalBytes = poolBytes && ringBytes ? pbprotocol::CheckedAddUint64(poolBytes.Value(), ringBytes.Value()) : poolBytes;
-    if (!roiBytes || !ringBytes || !poolBytes || !totalBytes || ringBytes.Value() > config.maximumRoiBytes || totalBytes.Value() > config.maximumCaptureBytes ||
-        !pbprotocol::CheckedUint64ToSize(totalBytes.Value()))
-    {
-        return CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration);
-    }
-    CaptureLayout candidate;
-    candidate.sourceBox = {static_cast<UINT>(static_cast<std::int64_t>(rectangle.left) - monitor.left),
-                           static_cast<UINT>(static_cast<std::int64_t>(rectangle.top) - monitor.top), 0,
-                           static_cast<UINT>(static_cast<std::int64_t>(rectangle.right) - monitor.left),
-                           static_cast<UINT>(static_cast<std::int64_t>(rectangle.bottom) - monitor.top), 1};
-    candidate.roiWidth = static_cast<std::uint32_t>(width);
-    candidate.roiHeight = static_cast<std::uint32_t>(height);
-    candidate.poolBufferCount = poolBuffers;
-    candidate.totalBytes = totalBytes.Value();
-    layout = candidate;
-    return {};
-}
-
-} // namespace pbscreencapturewgc::detail
+} // namespace pbcapturenormalize::detail

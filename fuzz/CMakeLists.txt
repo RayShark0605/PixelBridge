@@ -34,6 +34,8 @@ add_executable(PBOuterFecDirectRepeatFuzz
 add_executable(PBModulationReferenceRasterFuzz
     reference_raster_fuzz.cpp)
 
+include(local_desktop_bootstrap.cmake)
+
 add_executable(PBProtocolTransportFuzz
     transport_fuzz.cpp)
 
@@ -123,6 +125,7 @@ add_custom_target(PBParserFuzzHarness
         PBProtocolDescriptorResourceFuzz
         PBOuterFecWirehairV2Fuzz
         PBModulationReferenceRasterFuzz
+        PBModulationLocalDesktopBootstrapFuzz
         PBProtocolTransportFuzz
         PBProtocolTransportStructuredSelfTest
         PBInterleaveReferenceFuzz
@@ -175,6 +178,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(PBProtocol
         PRIVATE
             -fno-omit-frame-pointer
+            -fsanitize=fuzzer-no-link
+            -fno-sanitize-recover=undefined
             -fsanitize=address,undefined)
     target_compile_options(PBCompression
         PRIVATE
@@ -187,6 +192,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(PBModulation
         PRIVATE
             -fno-omit-frame-pointer
+            -fsanitize=fuzzer-no-link
+            -fno-sanitize-recover=undefined
             -fsanitize=address,undefined)
     target_compile_options(PBInterleave
         PRIVATE
@@ -200,7 +207,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         PRIVATE
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
-    foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PBScreenRegion PBScreenCaptureWgc PixelBridgeEncoder PixelBridgeDecoder)
+    foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PBScreenRegion PBCaptureNormalize PBScreenCaptureWgc PBScreenCaptureDxgi PixelBridgeEncoder PixelBridgeDecoder)
         if(TARGET ${pbPresentationTarget})
             target_compile_options(${pbPresentationTarget} PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
             if(pbPresentationTarget STREQUAL "PixelBridgeEncoder" OR pbPresentationTarget STREQUAL "PixelBridgeDecoder")
@@ -320,7 +327,7 @@ elseif(MSVC)
     target_compile_options(PBInterleave PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBInnerFec PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBReceiver PRIVATE /Zi /fsanitize=address)
-    foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PBScreenRegion PBScreenCaptureWgc PixelBridgeEncoder PixelBridgeDecoder)
+    foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PBScreenRegion PBCaptureNormalize PBScreenCaptureWgc PBScreenCaptureDxgi PixelBridgeEncoder PixelBridgeDecoder)
         if(TARGET ${pbPresentationTarget})
             target_compile_options(${pbPresentationTarget} PRIVATE /Zi /fsanitize=address)
             target_compile_definitions(${pbPresentationTarget} PRIVATE _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)

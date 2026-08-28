@@ -164,14 +164,18 @@ private:
 class ChildProcess
 {
 public:
-    explicit ChildProcess(std::wstring command)
+    explicit ChildProcess(std::wstring const& command)
     {
         Require(command.size() < 32767, "child command line too long");
+        // CreateProcessW mutates the command line in place (module-name
+        // quoting), so hand it an explicit mutable copy; the caller's string
+        // is never modified.
+        std::wstring line = command;
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         // Suppress only a console window. STARTF_USESHOWWINDOW/SW_HIDE would
         // also override the child's first ShowWindow and invalidate the gate.
-        Require(CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &information_) != FALSE,
+        Require(CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &information_) != FALSE,
                 "CreateProcess mode child failed");
         CloseHandle(information_.hThread);
         information_.hThread = nullptr;

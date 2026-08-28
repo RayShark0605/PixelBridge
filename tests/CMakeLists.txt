@@ -61,6 +61,8 @@ add_subdirectory(PBModulation)
 add_subdirectory(PBOuterFec)
 add_subdirectory(PBReceiver)
 add_subdirectory(PBPresentTiming)
+PbAddUnitTest(PBEncoderCliTests PresentationGate/test_encoder_arguments.cpp)
+PbInstrumentPresentationTest(PBEncoderCliTests)
 if(TARGET PBRenderD3D)
     add_subdirectory(PBRenderD3D)
 endif()
@@ -69,6 +71,12 @@ if(TARGET PBScreenRegion)
 endif()
 if(TARGET PBScreenCaptureWgc)
     add_subdirectory(PBScreenCaptureWgc)
+endif()
+if(TARGET PBCaptureNormalize)
+    add_subdirectory(PBCaptureNormalize)
+endif()
+if(TARGET PBScreenCaptureDxgi)
+    add_subdirectory(PBScreenCaptureDxgi)
 endif()
 if(PB_BUILD_SCREEN_REGION_GATE)
     add_subdirectory(ScreenRegionGate)
@@ -187,7 +195,10 @@ if(TARGET PixelBridgeEncoder)
             "--data-window|--frames|1x"
             "--data-window|--data-window"
             "--data-window|--frames|1|--frames|2"
-            "--data-window|--telemetry")
+            "--data-window|--telemetry"
+            "--visual"
+            "--visual|unknown"
+            "--visual|local-desktop-bootstrap|--visual|local-desktop-bootstrap")
         set(pbEncoderArgumentIndex 0)
         foreach(pbEncoderArguments IN LISTS pbEncoderInvalidArguments)
             add_test(NAME "PixelBridgeEncoderRejectsArguments.${pbEncoderArgumentIndex}"
@@ -210,7 +221,12 @@ if(TARGET PixelBridgeDecoder)
         PixelBridgeDecoder
         "PixelBridgeDecoder ${PROJECT_VERSION} (protocol 1.0)")
     if(WIN32)
-        set(pbDecoderInvalidArguments "--unknown" "--select-region|--select-region" "--select-region|extra" "--help|--select-region" "--select-region|--help")
+        set(pbDecoderInvalidArguments "--unknown" "--select-region|--select-region" "--select-region|extra" "--help|--select-region" "--select-region|--help"
+            "--capture-bootstrap" "--capture-bootstrap|--backend" "--capture-bootstrap|--backend|unknown"
+            "--capture-bootstrap|--backend|wgc|--seconds|0" "--capture-bootstrap|--backend|dxgi|--seconds|601"
+            "--capture-bootstrap|--backend|wgc|--roi|0|0|1" "--capture-bootstrap|--backend|dxgi|--roi|0|0|2147483648|1"
+            "--capture-bootstrap|--backend|wgc|--roi|1|0|0|1" "--capture-bootstrap|--backend|wgc|--session-tag|1"
+            "--capture-bootstrap|--backend|wgc|--telemetry")
         set(pbDecoderArgumentIndex 0)
         foreach(pbDecoderArguments IN LISTS pbDecoderInvalidArguments)
             add_test(NAME "PixelBridgeDecoderRejectsArguments.${pbDecoderArgumentIndex}"
@@ -222,6 +238,12 @@ if(TARGET PixelBridgeDecoder)
             math(EXPR pbDecoderArgumentIndex "${pbDecoderArgumentIndex} + 1")
         endforeach()
         add_test(NAME PixelBridgeDecoderHelp COMMAND PixelBridgeDecoder --help)
+        add_test(NAME PixelBridgeDecoderBootstrapHelp COMMAND PixelBridgeDecoder --capture-bootstrap --help)
+        add_test(NAME PixelBridgeDecoderBootstrapFileSafety
+            COMMAND "${CMAKE_COMMAND}" "-DPB_DECODER=$<TARGET_FILE:PixelBridgeDecoder>"
+                "-DPB_EVIDENCE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/bootstrap-cli"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/PBCaptureNormalize/VerifyDecoderFileSafety.cmake")
+        set_tests_properties(PixelBridgeDecoderBootstrapFileSafety PROPERTIES TIMEOUT 20 LABELS "bootstrap;decoder;telemetry")
         unset(pbDecoderInvalidArguments)
         unset(pbDecoderArgumentIndex)
         unset(pbDecoderArguments)
