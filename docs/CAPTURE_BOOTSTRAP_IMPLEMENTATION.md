@@ -264,3 +264,104 @@ CTest JSON and both caches were checked independently: 107 Release tests / 233 A
 The final review covered the actual backend facades and shared owner/ring, output/adapter resolution, GPU rotation mapping, Acquire/Release cleanup, source and consumer markers, deferred cleanup, staging/CPU lease separation, full-domain completion checks, worker-owned temporal state, RS/locator failure immutability, bounded search and history, CLI parsing/output/exit semantics, and CMake/Golden compatibility. Fixed findings and their red/green regressions are recorded above. A separate read-only review of the production readback → processor → telemetry/CLI path found no remaining actionable finding. No known unresolved Critical/High finding remains in the reviewed code; that review does not replace the still-failing native positive Gate.
 
 The read-only final audit script resides only in the ignored build tree, so it is not a new product dependency. It records hashes of every modified/untracked task file, checks whitespace and frozen-library/old-Golden scope, and verifies that the index remains empty. Generated logs/build products are not staging candidates. No test was deleted, skipped, re-pinned or weakened to turn the HDR precondition or earlier code regressions green.
+
+## Phase 4 (R12-R27) review convergence and final acceptance (appended after 35ba08e)
+
+The per-round ledger for R12-R27 (actual code regions inspected, commands, and evidence
+logs) is maintained in the ignored review journal `build-wgc-release/review-rounds.md`.
+This section appends the convergence result only; earlier sections are unchanged.
+
+### R12 findings (all High, all fixed with red->green regressions)
+
+1. **DO_NOT_WAIT Map hardware anomaly.** On this SDK/driver combination, after the GPU
+   fence completes, `Map` with `D3D11_MAP_READ | D3D11_MAP_DO_NOT_WAIT` returns
+   `S_FALSE/WAS_STILL_DRAWING` permanently, while a blocking `Map` returns `S_OK`
+   immediately. The diagnostic readback fast path would therefore never complete a
+   mapped frame. Fixed in `diagnostic_readback_internal.h`: the staging map now uses a
+   bounded blocking retry with a `mapBlockingRetries` telemetry counter; native runs show
+   `mapped=413 retires=413` on the fence path.
+2. **Telemetry TU bad edit** in the capture-bootstrap telemetry unit (corrupted hunk from
+   an earlier edit); restored and rebuilt.
+3. **Cross-backend signal-encoding inconsistency.** The FP16 -> LinearScRgb classification
+   was WGC-only, so the same SDR G22 FP16 pixel classified differently on the DXGI backend,
+   violating the backend-independent normalized contract. Minimal fix in
+   `normalize_consumer.cpp`: `signalEncoding = FP16 && (Wgc || (!hdr && colorSpace == 0))
+   ? LinearScRgb : (!hdr && colorSpace == 0 && !FP16) ? SdrRgb : Unknown`. Behavior matrix:
+   WGC FP16 is always LinearScRgb (HDR downstream-erased by the documented hdr gate);
+   DXGI FP16 flips to LinearScRgb only for SDR G22; non-FP16 SDR G22 is SdrRgb on both
+   backends; everything else stays Unknown (fail-closed). New regression:
+   "SDR G22 FP16 classifies identically across backends" in `test_contract.cpp` (64
+   assertions). The HDR pin in the same file is unchanged.
+4. **8-bit misdiagnosis correction (environment).** The SDR precondition checks
+   `colorSpace == 0 && !hdr` and never the bit depth, so the 10-bit G22 SDR scan-out
+   satisfies the documented precondition. No 8-bit switch was required.
+
+### R13-R21 and R22
+
+R13 (test validity), R14 (resource quotas / checked arithmetic), R15 (CMake / build
+matrix) were clean. R16 (final diff audit) fixed hygiene items only: five stray `.obj`
+files and `Testing/` leftovers removed from the repository root; 13 mixed-newline files
+normalized to their dominant newline. R17-R21 clean (cross-backend matrix re-derivation,
+Present stress re-check, DPI/rotation/negative-coordinate counterexamples, lease
+lifecycle re-trace, tearing/partial/duplicate/stale re-run). R22 (final verification
+matrix round) found and fixed 11 advisory cppcheck diagnostics (const-reference and
+member-promotion/NSDMI forms, no suppressions) and recorded one transient environment
+item: a `VMUIFrame` (VM-manager UI) window occluded the native fixtures at the tail of one
+full CTest run, and the visibility gate rejected fail-closed by design (no skip). With the
+occluder gone, the full re-run was green.
+
+### Convergence (R23-R27)
+
+R23 (fix-region re-verification incl. fresh /W4 single-TU compile of
+`mode_supervisor.cpp`), R24 (occlusion guard + test support oracle independence),
+R25 (full diff terminal audit: scope, debug residue, protocol invariants, option
+defaults), R26 (adversarial re-verification of the classification test pins + fresh
+native gate evidence), R27 (convergence final check: code-state freeze, ledger
+consistency, Target 5 epoch/domain and Target 6 no-cross-region-splice red lines) found
+no new issues. 27 complete review rounds total (>=15 required), R23-R27 five consecutive
+clean rounds.
+
+### Final verification matrix (all executed at the converged state)
+
+- Release tree full CTest: **107/107 PASS** (`final_release_ctest_r22b.log`, 250.47 s).
+- ASan tree full CTest: **233/233 PASS** (`final_asan_ctest_r22b.log`, 232.04 s).
+- cppcheck, 114 task files, enabled warning/performance/portability: **0 diagnostics,
+  exit 0** (`cppcheck_r22_final.log`).
+- Golden: `generate_local_desktop_golden.py --check` -> **PASS 32 independently
+  regenerated fixture files**.
+- Deterministic ASan fuzz: `PBModulationLocalDesktopBootstrapFuzz.exe 4096
+  5783543126721007665` -> `smoke=8 iterations=4096`, exit 0; 14 corpus replays pass.
+- `git diff --check` and `git diff --cached --check`: exit 0 (LF->CRLF notices are
+  autocrlf advisories).
+- Newline terminal audit: 121 task files, zero mixed-newline files.
+
+### SDR native gate (final required pass, executed at the converged state)
+
+Primary output at convergence: `R10G10B10A2_UNORM`, 10-bit, G22, non-HDR (colorSpace 0,
+`hdr=0`, adapter 0:94935) on a 2560x1440 180 Hz desktop; the documented SDR precondition
+(color space + HDR flag, not bit depth) is satisfied.
+
+- `PBLocalDesktopNativeTests`: **4/4 PASS** (512 assertions; CLI wgc/dxgi entry positive
+  cases embedded, exit 0).
+- `PBWgcNativeTests`: PASS. `PBDxgiNativeTests`: PASS (serial, `PixelBridgeDesktop`
+  resource lock).
+- Re-run at the R26/R27 checkpoints: 3/3 PASS with no occluder present.
+
+### Commit
+
+Task changes (goals 1-6 implementation + review fixes + tests/fixtures/docs) were staged
+by explicit task paths and committed atomically as `35ba08e` on `master` (parent
+`db47dd4`, no amend, no ignored build products): 151 files, 23549 insertions, 1144
+deletions, including the two WGC ring/inbox translation units moved into
+`PBCaptureNormalize` (rename-detected). This appended ledger section is committed
+separately as a docs-only follow-up so the atomic task commit is not amended.
+
+### Explicitly unverified (not simulated)
+
+Real portrait orientation, mixed-adapter/TDR and desktop-switch behavior, screen-size
+limited 2x native runs, and a real cursor-exclusion proof were not executed in this
+environment. The transient VMUIFrame occlusion shows the native gate depends on a clean
+desktop Z-order; the gate is fail-closed (never skips) and the fixtures are `HWND_TOPMOST`.
+WGC throughput in this environment was low (1 frame in a 3 s window vs 413 for DXGI);
+the static-pattern bootstrap gate needs only a few frames, so this does not block
+acceptance.
