@@ -1,4 +1,7 @@
+#include "presentation_cli_arguments.h"
+#include "../common/diagnostic_file.h"
 #include "pbrenderd3d/data_window.h"
+#include "pbmodulation/local_desktop_bootstrap.h"
 #include "pbmodulation/reference_raster.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/session_random.h"
@@ -22,67 +25,23 @@ namespace
 
 void Usage()
 {
-    std::cout << "Usage: PixelBridgeEncoder --data-window [--frames N] [--telemetry NEW_FILE.jsonl]\n"
+    std::cout << "Usage: PixelBridgeEncoder --data-window [--visual local-desktop-bootstrap] [--frames N] [--telemetry NEW_FILE.jsonl]\n"
+              << "       PixelBridgeEncoder --visual local-desktop-bootstrap [--frames N] [--telemetry NEW_FILE.jsonl]\n"
               << "N bounds accepted CPU frame submissions (1..1000000), not displayed frames.\n"
               << "Without --frames, press Escape in the data window to stop.\n"
-              << "Reference-raster presentation only; not a file sender or capture certification.\n";
-}
-
-bool ParseFrameCount(const std::wstring_view text, std::uint64_t& result)
-{
-    if (text.empty())
-    {
-        return false;
-    }
-    std::uint64_t value = 0;
-    for (const wchar_t character : text)
-    {
-        if (character < L'0' || character > L'9')
-        {
-            return false;
-        }
-        const std::uint64_t digit = static_cast<std::uint64_t>(character - L'0');
-        if (value > (1000000 - digit) / 10)
-        {
-            return false;
-        }
-        value = value * 10 + digit;
-    }
-    if (value == 0)
-    {
-        return false;
-    }
-    result = value;
-    return true;
+              << "Default --data-window remains PB-ReferenceRaster-1. The explicit visual selects experimental SDR Bootstrap only.\n"
+              << "Presentation diagnostics only; not a file sender or capture certification. Telemetry never overwrites an existing file.\n";
 }
 
 class DiagnosticFile
 {
 public:
-    explicit DiagnosticFile(const wchar_t* path)
+    explicit DiagnosticFile(const wchar_t* path) : file_(path)
     {
-        if (path == nullptr)
-        {
-            return;
-        }
-        handle_ = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (handle_ == INVALID_HANDLE_VALUE)
-        {
-            throw std::runtime_error("cannot create new telemetry file; win32=" + std::to_string(GetLastError()));
-        }
-    }
-    DiagnosticFile(const DiagnosticFile&) = delete;
-    DiagnosticFile& operator=(const DiagnosticFile&) = delete;
-    ~DiagnosticFile()
-    {
-        if (handle_ != INVALID_HANDLE_VALUE)
-        {
-            CloseHandle(handle_);
-        }
     }
     void Write(const pbrenderd3d::DataWindowSnapshot& snapshot)
     {
-        if (handle_ == INVALID_HANDLE_VALUE)
+        if (!file_.IsEnabled())
         {
             return;
         }
@@ -90,102 +49,50 @@ public:
         stream.exceptions(std::ios::badbit | std::ios::failbit);
         pbrenderd3d::WriteDataWindowSnapshotJson(stream, snapshot);
         stream << '\n';
-        const std::string text = stream.str();
-        constexpr std::size_t maximumLogBytes = 16 * 1024 * 1024;
-        if (text.size() > maximumLogBytes - bytesWritten_)
-        {
-            throw std::runtime_error("telemetry reached its 16 MiB limit; stopping instead of growing an unbounded log");
-        }
-        DWORD written = 0;
-        if (!WriteFile(handle_, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) || written != text.size())
-        {
-            throw std::runtime_error("telemetry write failed");
-        }
-        bytesWritten_ += written;
+        file_.Write(stream.str());
     }
     void Finish()
     {
-        if (handle_ != INVALID_HANDLE_VALUE)
-        {
-            if (!FlushFileBuffers(handle_))
-            {
-                throw std::runtime_error("telemetry flush failed");
-            }
-            const HANDLE handle = handle_;
-            handle_ = INVALID_HANDLE_VALUE;
-            if (!CloseHandle(handle))
-            {
-                throw std::runtime_error("telemetry close failed");
-            }
-        }
+        file_.Finish();
     }
 
 private:
-    HANDLE handle_ = INVALID_HANDLE_VALUE;
-    std::size_t bytesWritten_ = 0;
+    pbdiagnostic::DiagnosticFile file_;
 };
 
 }
 
 int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
 {
-    bool dataWindow = false;
-    bool hasFrameCount = false;
-    std::uint64_t frameLimit = 0;
-    const wchar_t* telemetryPath = nullptr;
-    if (argumentCount == 2 && std::wstring_view(arguments[1]) == L"--help")
-    {
-        Usage();
-        return 0;
-    }
-    for (int index = 1; index < argumentCount; index++)
-    {
-        const std::wstring_view argument(arguments[index]);
-        if (argument == L"--data-window" && !dataWindow)
-        {
-            dataWindow = true;
-        }
-        else if (argument == L"--frames" && !hasFrameCount && index + 1 < argumentCount)
-        {
-            index++;
-            if (!ParseFrameCount(arguments[index], frameLimit))
-            {
-                Usage();
-                return 2;
-            }
-            hasFrameCount = true;
-        }
-        else if (argument == L"--telemetry" && telemetryPath == nullptr && index + 1 < argumentCount)
-        {
-            index++;
-            telemetryPath = arguments[index];
-            if (*telemetryPath == 0)
-            {
-                Usage();
-                return 2;
-            }
-        }
-        else
-        {
-            Usage();
-            return 2;
-        }
-    }
-    if (!dataWindow)
+    pbencoder::DataWindowArguments options;
+    if (!pbencoder::ParseDataWindowArguments(argumentCount, arguments, options))
     {
         Usage();
         return 2;
     }
+    if (options.showHelp)
+    {
+        Usage();
+        return 0;
+    }
+    const bool localDesktopBootstrap = options.visual == pbencoder::PresentationVisual::LocalDesktopBootstrap;
+    const bool hasFrameCount = options.hasFrameCount;
+    const std::uint64_t frameLimit = options.frameLimit;
+    const std::uint32_t canvasWidth = localDesktopBootstrap ? pbmodulation::kLocalDesktopCanvasWidth : pbmodulation::kReferenceCanvasWidth;
+    const std::uint32_t canvasHeight = localDesktopBootstrap ? pbmodulation::kLocalDesktopCanvasHeight : pbmodulation::kReferenceCanvasHeight;
     try
     {
-        DiagnosticFile telemetry(telemetryPath);
+        DiagnosticFile telemetry(options.telemetryPath);
         const auto session = pbprotocol::GenerateRandomSessionId();
         if (!session)
         {
             throw std::runtime_error("OS CSPRNG session creation failed");
         }
         const auto sessionTag = pbprotocol::DeriveSessionTag(session.Value());
-        auto created = pbrenderd3d::DataWindow::Create({});
+        pbrenderd3d::DataWindowConfig windowConfig;
+        windowConfig.width = canvasWidth;
+        windowConfig.height = canvasHeight;
+        auto created = pbrenderd3d::DataWindow::Create(windowConfig);
         if (!created)
         {
             const auto error = created.Error();
@@ -193,10 +100,10 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
                                      ":" + std::to_string(error.nativeError));
         }
         const auto window = std::move(created).Value();
-        std::array<std::byte, pbmodulation::kReferenceBootstrapRecordBytes> bootstrapBytes{};
+        std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bootstrapBytes{};
         std::array<std::byte, pbmodulation::kReferenceControlWindowBytes> control{};
-        std::vector<std::byte> data(pbmodulation::kReferenceDataRegionBytes);
-        std::vector<std::byte> pixels(pbmodulation::kReferenceFrameBgraBytes);
+        std::vector<std::byte> data(localDesktopBootstrap ? 0 : pbmodulation::kReferenceDataRegionBytes);
+        std::vector<std::byte> pixels(localDesktopBootstrap ? pbmodulation::kLocalDesktopFrameBgraBytes : pbmodulation::kReferenceFrameBgraBytes);
         for (std::size_t index = 0; index < data.size(); index++)
         {
             data[index] = static_cast<std::byte>((index * 37 + 5) & 255);
@@ -244,18 +151,25 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
             }
             if ((!hasFrameCount || sequence < frameLimit) && snapshot.state == pbrenderd3d::WindowState::Running && !snapshot.pendingFrame)
             {
-                // This is the existing reference binding, not a new visual
-                // profile. Only Bootstrap sequence changes between frames.
+                // Each accepted submission advances the same in-band sequence.
+                // Only the explicit visual option changes the raster binding.
                 const pbprotocol::BootstrapRecord bootstrap{
-                    pbprotocol::kBootstrapVersion, pbprotocol::GetProtocolVersion(), 1, 0x5042524546524153ULL, sessionTag, sequence, 0, 0};
-                if (!pbprotocol::SerializeBootstrapRecord(bootstrap, bootstrapBytes) ||
-                    !pbmodulation::EncodeReferenceFrame({bootstrapBytes, control, data}, pixels))
+                    pbprotocol::kBootstrapVersion, pbprotocol::GetProtocolVersion(),
+                    localDesktopBootstrap ? pbmodulation::kLocalDesktopLayoutVersion : std::uint8_t{1},
+                    localDesktopBootstrap ? pbmodulation::kLocalDesktopVisualProfileId : 0x5042524546524153ULL, sessionTag, sequence, 0, 0};
+                if (!pbprotocol::SerializeBootstrapRecord(bootstrap, bootstrapBytes))
                 {
-                    throw std::runtime_error("canonical reference frame generation failed");
+                    throw std::runtime_error("canonical Bootstrap serialization failed");
+                }
+                const auto encoded = localDesktopBootstrap ? pbmodulation::EncodeLocalDesktopBootstrapFrame(bootstrapBytes, pixels) :
+                    pbmodulation::EncodeReferenceFrame({bootstrapBytes, control, data}, pixels);
+                if (!encoded)
+                {
+                    throw std::runtime_error(localDesktopBootstrap ? "LocalDesktop Bootstrap frame generation failed" : "canonical reference frame generation failed");
                 }
                 const auto status =
-                    window->SubmitFrame({pixels, pbmodulation::kReferenceCanvasWidth, pbmodulation::kReferenceCanvasHeight,
-                                         static_cast<std::size_t>(pbmodulation::kReferenceCanvasWidth) * 4, sequence, snapshot.timing.presentationEpoch});
+                    window->SubmitFrame({pixels, canvasWidth, canvasHeight, static_cast<std::size_t>(canvasWidth) * 4,
+                                         sequence, snapshot.timing.presentationEpoch});
                 if (status)
                 {
                     if (sequence == std::numeric_limits<std::uint64_t>::max())
@@ -267,7 +181,7 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
                 else if (status.code != pbrenderd3d::PresentationErrorCode::EpochMismatch && status.code != pbrenderd3d::PresentationErrorCode::Paused &&
                          status.code != pbrenderd3d::PresentationErrorCode::NotRunning)
                 {
-                    throw std::runtime_error("reference frame submission failed");
+                    throw std::runtime_error(localDesktopBootstrap ? "LocalDesktop Bootstrap frame submission failed" : "reference frame submission failed");
                 }
             }
             else

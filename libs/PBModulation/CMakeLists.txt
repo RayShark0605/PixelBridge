@@ -9,6 +9,10 @@ target_sources(PBModulation
         src/frame_io.cpp
         src/reference_raster.cpp
         src/reference_visual_profile.cpp
+        src/bootstrap_rs.cpp
+        src/local_desktop_bootstrap.cpp
+        src/local_desktop_decode.cpp
+        src/local_desktop_internal.h
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
@@ -16,7 +20,9 @@ target_sources(PBModulation
             include/pbmodulation/frame_io.h
             include/pbmodulation/modulation_result.h
             include/pbmodulation/reference_raster.h
-            include/pbmodulation/reference_visual_profile.h)
+            include/pbmodulation/reference_visual_profile.h
+            include/pbmodulation/local_desktop_bootstrap.h
+            include/pbmodulation/local_desktop_decode.h)
 
 target_include_directories(PBModulation
     PUBLIC

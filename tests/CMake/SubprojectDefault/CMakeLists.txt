@@ -46,6 +46,18 @@ endif()
 if(PB_BUILD_SCREEN_REGION_GATE)
     message(FATAL_ERROR "Interactive screen-region gates must default to OFF as a subproject")
 endif()
+if(PB_BUILD_WGC_GATE OR PB_BUILD_DXGI_GATE OR PB_BUILD_LOCAL_DESKTOP_GATE)
+    message(FATAL_ERROR "Native capture gates must default to OFF as a subproject")
+endif()
+if(TARGET PBScreenCaptureWgcTests OR TARGET PBScreenCaptureDxgiTests OR TARGET PBCaptureRotationTests OR TARGET PBCaptureNormalizeTests OR TARGET PBCapturePipelineTests OR
+        TARGET PBWgcNativeTests OR TARGET PBDxgiNativeTests OR TARGET PBLocalDesktopNativeTests OR TARGET PBBootstrapDiagnosticTests OR
+        TARGET PBLocalDesktopBootstrapTests OR TARGET PBLocalDesktopMatrixTests OR TARGET PBLocalDesktopNoAllocationProbe OR
+        TARGET PBEncoderCliTests OR TARGET PBDecoderCliTests OR TARGET PBDecoderTelemetryProbe)
+    message(FATAL_ERROR "PixelBridge unexpectedly created capture tests")
+endif()
+if(WIN32 AND (NOT TARGET PB::PBCaptureNormalize OR NOT TARGET PB::PBScreenCaptureWgc OR NOT TARGET PB::PBScreenCaptureDxgi))
+    message(FATAL_ERROR "Capture libraries must not depend on applications or tests being enabled")
+endif()
 if(WIN32 AND NOT TARGET PB::PBScreenRegion)
     message(FATAL_ERROR "The Windows screen-region core library must not depend on applications or tests being enabled")
 endif()

@@ -1,0 +1,390 @@
+{
+  "bootstrap_bit_order": "row-major cells; codeword[i//8] bit i%8",
+  "bootstrap_regions": [
+    [
+      96,
+      16,
+      608,
+      64
+    ],
+    [
+      1216,
+      1000,
+      608,
+      64
+    ]
+  ],
+  "canvas": [
+    1920,
+    1080
+  ],
+  "cell_pixels": 8,
+  "experimental": true,
+  "files": {
+    "a-record.bin": {
+      "blake3": "473d200950a416bd81804abd44f8c22ae332a9dfc16ecc21c69b526417bfb661",
+      "bytes": 44
+    },
+    "a-rs76.bin": {
+      "blake3": "335cac0266e1fe1cf827f32148fba101030029a9a1a21626f98afd24c592a0cb",
+      "bytes": 76
+    },
+    "a-timing-bits.bin": {
+      "blake3": "8cae93056d9dd0dcd4791acf61329588e9164180e47bc4a2925fada28a113055",
+      "bytes": 2304
+    },
+    "b-record.bin": {
+      "blake3": "3fb81e8f7428d38b421f5b0f85b00067a536f89ff0e4a5fc80721fc517f8663f",
+      "bytes": 44
+    },
+    "b-rs76.bin": {
+      "blake3": "74743df00d4575e96ff159e47fb59c349f8788c1f3541c27b251bad5e1ebcedb",
+      "bytes": 76
+    },
+    "b-timing-bits.bin": {
+      "blake3": "76132bb833148c44f20ccd37efc379b68ffa95cadccd8bef0cf3e7e7e8a98321",
+      "bytes": 2304
+    },
+    "badcrc-record.bin": {
+      "blake3": "52c725c4239256e1f280ad4de3d9060efdd9dbf7e7f1360dffbb5afcd6a1aa4f",
+      "bytes": 44
+    },
+    "badcrc-rs76.bin": {
+      "blake3": "7df7e9e3e4f3dd56bdc4630e0d3a10310b46682ae7a6580c1e5fa38817b8172d",
+      "bytes": 76
+    },
+    "badcrc-timing-bits.bin": {
+      "blake3": "234f0ececd5e7e63bd349fa099198021adc4fbd4099a8e9c79bbd5ebca82799d",
+      "bytes": 2304
+    },
+    "c-record.bin": {
+      "blake3": "86f12eb8a5b7812198093910ec66aa5988c2ac1da35c8040da13bbf605d6852e",
+      "bytes": 44
+    },
+    "c-rs76.bin": {
+      "blake3": "fad2f15984ff44ce09d833194a99d973427ba516f39f8754f7ccf76063abcc70",
+      "bytes": 76
+    },
+    "c-timing-bits.bin": {
+      "blake3": "2af8ac781b716a2da539f928970039e7809d7f5ab965e5134e2fe7476e95b0c0",
+      "bytes": 2304
+    },
+    "d-record.bin": {
+      "blake3": "ab5bd5ff8895d6bf202c872f0f01fc6371062f168c9aebbe07260b9d062b7d7a",
+      "bytes": 44
+    },
+    "d-rs76.bin": {
+      "blake3": "27fe2f7d335e26cd2f87419f44435d643d2aae4beb9d0fad93a5528ffb2454ac",
+      "bytes": 76
+    },
+    "d-timing-bits.bin": {
+      "blake3": "038954fe076a02b995475838e7822c8d76ce02c6329e8ce934266c0823899ad4",
+      "bytes": 2304
+    },
+    "e-record.bin": {
+      "blake3": "c5ae8ed66078dd79e7d16a6e2c1ece868a32e932065f5e61942283025c158cfd",
+      "bytes": 44
+    },
+    "e-rs76.bin": {
+      "blake3": "64ca8e0b142c46366e321885472e986b82f426cf69c59d41fe2a41359f1f9022",
+      "bytes": 76
+    },
+    "e-timing-bits.bin": {
+      "blake3": "da36c73d1c4fae8ef7b0fa700e6bbbfb1dfc4739582fef353042e76b5689d917",
+      "bytes": 2304
+    },
+    "f-record.bin": {
+      "blake3": "f3495dd5a029c368e3a3849911335a41692e768feee68a30e7d78370568ef6bf",
+      "bytes": 44
+    },
+    "f-rs76.bin": {
+      "blake3": "c7dc2e0a2487ac2d3b74bbed291e1a6a32f7724ec41355f05a6fa85f84b7cdf2",
+      "bytes": 76
+    },
+    "f-timing-bits.bin": {
+      "blake3": "cd2ec4421d349667911e0fb8d38e006b86128373afba4963fe2fbcbdf270ca5f",
+      "bytes": 2304
+    },
+    "marker-bits.bin": {
+      "blake3": "d5ffdb4aff6a8099ea0386be3172c17c297a292ff99d0572c80fc2d7f2de680e",
+      "bytes": 196
+    },
+    "protocol-rs76.bin": {
+      "blake3": "f41b5fad3323b93cf91281b2e59c9ad84cef65077b930ccb731d224565658fae",
+      "bytes": 76
+    },
+    "rootless-locator.bin": {
+      "blake3": "2e60801855d17a127f8362e85cdb93486e4f5ad3d7d97e4d4011565b969819bf",
+      "bytes": 76
+    },
+    "rs-generator.bin": {
+      "blake3": "cdba7a77fab99e54055be02c855e0e79cfa1afd8aaf9aac46323fda40753268c",
+      "bytes": 33
+    },
+    "shortening-prefix-first.bin": {
+      "blake3": "1e9e5c83a5fe0c424e94c3510710f3d2cc5f5588ec47c418d1e9fd94baf4981d",
+      "bytes": 76
+    },
+    "shortening-prefix-last.bin": {
+      "blake3": "b5c459979d48f050307d0c40426ea12e97faec9588d97d1d4a11b6944bbcfbab",
+      "bytes": 76
+    },
+    "uncorrectable-17.bin": {
+      "blake3": "9e5a45b69ceb3521031d71be2a15a809185816c4a73e551803d565ed6e1c85ae",
+      "bytes": 76
+    },
+    "unsupported-record.bin": {
+      "blake3": "14fb473f7bdcd87db364250c0a0ac13dc4a7ae27aa68bdb5f5fadd00d53f8c21",
+      "bytes": 44
+    },
+    "unsupported-rs76.bin": {
+      "blake3": "a2eda67aaf8a4272b90c146e87c069fc0f600bec84eaf4a29ded33aa3db92acc",
+      "bytes": 76
+    },
+    "unsupported-timing-bits.bin": {
+      "blake3": "3cb8eafee1aa55842e9a1fa67f157e18e6aea4e6d9c8d4cb93f0875130dd0702",
+      "bytes": 2304
+    }
+  },
+  "frames": {
+    "a": {
+      "canonical44_hex": "504252470101000231305342444c4250d0ba97d94b20df811817161514131211242322210000000099102656",
+      "frame_sequence": 1230066625199609624,
+      "pbrw_blake3": "57d95004025a05d659fc8d4d58948e1f9f565fa8c04e579af03632cdf547e753",
+      "raw_bgra_blake3": "248b075d46be224f982633732960cd13e80be8eea4f7329554179216d5ef293f",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "8d7e890381fee83fc97b30b7b0452af82658996918d9b2434402c314a48dca54",
+      "rs76_hex": "504252470101000231305342444c4250d0ba97d94b20df811817161514131211242322210000000099102656db45fbb1f5eb0076bd065155781f8da00b9e768c6863b6d1a237f0d6e67658da",
+      "session_tag": "0x81df204bd997bad0"
+    },
+    "b": {
+      "canonical44_hex": "504252470101000231305342444c4250d0ba97d94b20df8119171615141312112423222100000000671d2aa4",
+      "frame_sequence": 1230066625199609625,
+      "pbrw_blake3": "65cdf778f9aad77a84485952ae8f003e68f8e2bff910e83d2558c79734e18b9a",
+      "raw_bgra_blake3": "20717a03aa695e0e2f324fba1fadbb04b63fcd6a9d019bce09de07180dfbafac",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "345225119f66cb022bc2b72f0c32156563dc536cfed58f77dff055392880ff1e",
+      "rs76_hex": "504252470101000231305342444c4250d0ba97d94b20df8119171615141312112423222100000000671d2aa40bdad4aa441fd638a01d0a0b683d41683e252cd01f11e515bbd7122902d2b615",
+      "session_tag": "0x81df204bd997bad0"
+    },
+    "badcrc": {
+      "canonical44_hex": "504252470101000231305342444c4250d0ba97d94b20df811817161514131211242322210000000098102656",
+      "frame_sequence": 1230066625199609624,
+      "pbrw_blake3": "7cd105c25d434d15158056c6ebaa064d70387cdc56a63f80ec77c5716f2d1325",
+      "raw_bgra_blake3": "d058609e68554789e37623294fd7c48b22fb3ed842ce99517105b09e99b5efa8",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "cdcbc5fb92c44cae70548c5d8526ac2d5bad6957c0a3a374d489d143f406fa6f",
+      "rs76_hex": "504252470101000231305342444c4250d0ba97d94b20df811817161514131211242322210000000098102656d42c3210902eebc9c21abfbd9fd9670ccb5f4aa63fc6e63357a0f80086004bcd",
+      "session_tag": "0x81df204bd997bad0"
+    },
+    "c": {
+      "canonical44_hex": "504252470101000231305342444c4250d1ba97d94b20df811817161514131211242322210000000017d269ec",
+      "frame_sequence": 1230066625199609624,
+      "pbrw_blake3": "266b864e95df984f1cd82fa830962024dc63d66e53e1b5b58d06a4cb1681fdda",
+      "raw_bgra_blake3": "4fabf998261ce02c4e034ca8bbb5f2279484c90d7d984411f43a69d7189afaa5",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "6b4ed5d79e5caf2585426319a901697b079383cbdb415039ca58f63bcae80160",
+      "rs76_hex": "504252470101000231305342444c4250d1ba97d94b20df811817161514131211242322210000000017d269ec89bc02bc6c8efd597f67d78fad59773701857303d701f63ba12270073d928f51",
+      "session_tag": "0x81df204bd997bad1"
+    },
+    "d": {
+      "canonical44_hex": "504252470101000231305342444c4250d0ba97d94b20df811a171615141312112423222100000000947dd2b7",
+      "frame_sequence": 1230066625199609626,
+      "pbrw_blake3": "e1a3c9fc5934a21d33478676e25191959f10b1b13aa30442f91c85a2e224862b",
+      "raw_bgra_blake3": "8e893d5ca00dfb6187260f22852ebcf5c394cf4484ab44e93c990f9fa1d7d7a9",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "44192f42b82ce14bc74da77b83bca555c1c2e52276206fad46373944bf4ebbe0",
+      "rs76_hex": "504252470101000231305342444c4250d0ba97d94b20df811a171615141312112423222100000000947dd2b7bead238a38f10c4fdf61aa169fe35a3bf754aa8964c12d1d671caefab0f08c45",
+      "session_tag": "0x81df204bd997bad0"
+    },
+    "e": {
+      "canonical44_hex": "504252470101000231305342444c4250d0ba97d94b20df81181716151413131124232221000000003c6b709d",
+      "frame_sequence": 1230348100176320280,
+      "pbrw_blake3": "c416a0d6197c62282695c2aec7a8e8b59ec6cc010632e74121cffcae3f2c41f2",
+      "raw_bgra_blake3": "5bc886bf1da1b1050693da6b0680e53bd1638c9da2f85151d7101a9a979c1693",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "436f789e8f92f672229028d5f0f204be1668c0c91df1dd1500d05b8ba7436f95",
+      "rs76_hex": "504252470101000231305342444c4250d0ba97d94b20df81181716151413131124232221000000003c6b709d7deaf3abf169dd28fb5b8dc6ecf153c1be42bbcf50df5897601bb807294b8b8a",
+      "session_tag": "0x81df204bd997bad0"
+    },
+    "f": {
+      "canonical44_hex": "504252470101000231305342444c4250d0ba97d94b20df8118171615141312112523222100000000be6d1a1f",
+      "frame_sequence": 1230066625199609624,
+      "pbrw_blake3": "c18c25306800c8bfa44a777ae2815d690c153c2c51036d7151f5fc7cb7995806",
+      "raw_bgra_blake3": "44dd17081cce0f7cf3b95a0197d222b7712da932577fd2deaf3702cac7fa9e2c",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "bcdb84d0fe6f63b89ad0fe6225c3749c0f4ff4e52d9d5dce9a8670bad3f6c322",
+      "rs76_hex": "504252470101000231305342444c4250d0ba97d94b20df8118171615141312112523222100000000be6d1a1f510849811d247d27ad7055789f3edb12678247e61267877034de68d0e57601a9",
+      "session_tag": "0x81df204bd997bad0"
+    },
+    "unsupported": {
+      "canonical44_hex": "504252470101000331305342444c4250d0ba97d94b20df8118171615141312112423222100000000b63b1f0c",
+      "frame_sequence": 1230066625199609624,
+      "pbrw_blake3": "94884b9e6da42289d1ea34651f766352a128c049d9b45f339bec31a8fa7ca277",
+      "raw_bgra_blake3": "89c47e0c6914f8608ae000ae4a118570e172354d7ee50ef5381889e485869db2",
+      "raw_bgra_bytes": 8294400,
+      "raw_bgra_sha256": "fb3d7e14514b7823b15af64617c61cfb777cb038e9b739d51fc09ea6cbeae2e8",
+      "rs76_hex": "504252470101000331305342444c4250d0ba97d94b20df8118171615141312112423222100000000b63b1f0c17c3d27fdc050261d8b7b6b368948209972ddc7770c217db82b960411374e3a2",
+      "session_tag": "0x81df204bd997bad0"
+    }
+  },
+  "luma": {
+    "black": 32,
+    "reserved_background": 128,
+    "white": 224
+  },
+  "marker_quiet_pixels": 4,
+  "marker_regions": [
+    [
+      16,
+      16,
+      64,
+      64
+    ],
+    [
+      1840,
+      16,
+      64,
+      64
+    ],
+    [
+      16,
+      1000,
+      64,
+      64
+    ],
+    [
+      1840,
+      1000,
+      64,
+      64
+    ]
+  ],
+  "marker_role_positions": [
+    [
+      0,
+      0
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      5,
+      0
+    ],
+    [
+      6,
+      0
+    ],
+    [
+      0,
+      6
+    ],
+    [
+      1,
+      6
+    ],
+    [
+      5,
+      6
+    ],
+    [
+      6,
+      6
+    ]
+  ],
+  "marker_roles_lsb_first": [
+    0,
+    15,
+    51,
+    85
+  ],
+  "name": "PB-LocalDesktopBootstrap-X1",
+  "oracle": {
+    "blake3_package": "1.0.9",
+    "gf": "bitwise polynomial multiply; ascending generator; parity LFSR",
+    "python_baseline": "3.12",
+    "raw": "independent literal region painter; no production executable",
+    "script": "tests/PBModulation/generate_local_desktop_golden.py"
+  },
+  "pilot_bits": "BLAKE3 first16 bytes, LSB-first, each bit b -> [b,b^1]",
+  "pilot_input": "ASCII PB-LDBS-X1-Pilot (no NUL) || canonical44 || uint8 pilotIndex",
+  "pilot_regions": [
+    [
+      96,
+      160,
+      128,
+      128
+    ],
+    [
+      896,
+      160,
+      128,
+      128
+    ],
+    [
+      1696,
+      160,
+      128,
+      128
+    ],
+    [
+      96,
+      476,
+      128,
+      128
+    ],
+    [
+      896,
+      476,
+      128,
+      128
+    ],
+    [
+      1696,
+      476,
+      128,
+      128
+    ],
+    [
+      96,
+      792,
+      128,
+      128
+    ],
+    [
+      896,
+      792,
+      128,
+      128
+    ],
+    [
+      1696,
+      792,
+      128,
+      128
+    ]
+  ],
+  "pixel_format": "BGRA8, B=G=R, A=255",
+  "protocol": "PB-Bootstrap-1, canonical44 unchanged",
+  "rs": {
+    "alpha": 2,
+    "coefficients": "highest degree first",
+    "errors_only_limit": 16,
+    "field_polynomial": "0x11d",
+    "full_k": 223,
+    "full_n": 255,
+    "generator_hex": "01744034ae367e10c2a221219db0c5e10c3b37fde4942fb3b9188afd148e37ac58",
+    "k": 44,
+    "n": 76,
+    "parity": 32,
+    "roots": [
+      0,
+      31
+    ],
+    "zero_prefix": 179
+  },
+  "visual_layout_version": 2,
+  "visual_profile_id": "0x50424c4442533031"
+}

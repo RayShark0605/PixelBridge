@@ -43,6 +43,33 @@ RunBuildOptionProbe(ON OFF TRUE)
 RunBuildOptionProbe(OFF ON TRUE)
 RunBuildOptionProbe(ON ON FALSE)
 
+foreach(pbNativeGate IN ITEMS PB_BUILD_WGC_GATE PB_BUILD_DXGI_GATE PB_BUILD_LOCAL_DESKTOP_GATE)
+    foreach(pbProbeWindows IN ITEMS ON OFF)
+        foreach(pbProbeTesting IN ITEMS ON OFF)
+            foreach(pbProbeTests IN ITEMS ON OFF)
+                foreach(pbProbeGate IN ITEMS ON OFF)
+                    execute_process(
+                        COMMAND "${CMAKE_COMMAND}"
+                            "-DPB_MODULE_DIR=${PB_MODULE_DIR}"
+                            "-DPB_PROBE_WINDOWS=${pbProbeWindows}"
+                            "-DBUILD_TESTING=${pbProbeTesting}"
+                            "-DPB_BUILD_TESTS=${pbProbeTests}"
+                            "-D${pbNativeGate}=${pbProbeGate}"
+                            -P "${PB_PROBE_SCRIPT}"
+                        RESULT_VARIABLE pbProbeResult OUTPUT_VARIABLE pbProbeOutput ERROR_VARIABLE pbProbeError)
+                    if(NOT pbProbeGate OR (pbProbeWindows AND pbProbeTesting AND pbProbeTests))
+                        if(NOT pbProbeResult EQUAL 0)
+                            message(FATAL_ERROR "${pbNativeGate} rejected a valid combination: ${pbProbeOutput}${pbProbeError}")
+                        endif()
+                    elseif(pbProbeResult EQUAL 0 OR NOT pbProbeError MATCHES "${pbNativeGate} requires Windows")
+                        message(FATAL_ERROR "${pbNativeGate} accepted an invalid combination or lost its diagnostic: ${pbProbeOutput}${pbProbeError}")
+                    endif()
+                endforeach()
+            endforeach()
+        endforeach()
+    endforeach()
+endforeach()
+
 # Model the platform/test/gate switches in the same validator called by the
 # real root configure. Opting out never creates an interactive test target.
 foreach(pbProbeWindows IN ITEMS ON OFF)

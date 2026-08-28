@@ -1,5 +1,58 @@
 # PixelBridge parser fuzzing
 
+## LocalDesktop Bootstrap RS / luma / mixed-frame driver
+
+`PBModulationLocalDesktopBootstrapFuzz` uses the real private Bootstrap RS codec
+and public pixel decoder, with independently constructed canonical44 fixtures.
+Modes cover malformed RS lengths/failure immutability, successful-codeword
+radius checks, bounded arbitrary LumaView shape/stride/sampling, real
+Encode→960×540 Gray8 decode, independent 0..16 hard symbol errors in A/B,
+different-sequence tears and 50/50 blends. Assertions remain active in Release;
+this is not merely a no-crash harness. The compact input format and all 14 pinned
+semantic seeds are documented in
+[`corpus/local-desktop-bootstrap/README.md`](corpus/local-desktop-bootstrap/README.md).
+
+The non-libFuzzer runner accepts `[iterations] [seed]` (default 64, seed is any
+decimal uint64 including zero) or `--input <file>` with a strict 4096-byte read
+limit. Eight fixed semantic smoke inputs always precede mutation; a 64-iteration
+run additionally covers every 0..16 correction count in each copy with varying
+records/locations/masks. Raster memory is at most 9,331,200 bytes per structured
+input and public Decode uses the default 24M work limit. No mutable global cache
+or input-dependent large allocation exists.
+
+```powershell
+cmake --build build-fuzz-msvc --config RelWithDebInfo --target PBModulationLocalDesktopBootstrapFuzz --parallel
+$runner = '.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBModulationLocalDesktopBootstrapFuzz.exe'
+& $runner 64 5783276174784353841
+Get-ChildItem .\fuzz\corpus\local-desktop-bootstrap\*.bin | ForEach-Object {
+  & $runner --input $_.FullName
+  if ($LASTEXITCODE -ne 0) { throw "LocalDesktop semantic replay failed: $($_.Name)" }
+}
+```
+
+Success requires `LOCAL_DESKTOP_FUZZ_COMPLETED` or `CORPUS_REPLAY_VALIDATED`, exit
+zero, and no sanitizer diagnostic. MSVC is **deterministic mutation + ASan**, not
+coverage-guided fuzzing or UBSan. A Clang build defining `PB_USE_LIBFUZZER` uses
+the same `LLVMFuzzerTestOneInput`, without the deterministic `main`:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force .\build-fuzz-clang\local-desktop-artifacts | Out-Null
+# Clang CMake copies immutable seeds to this writable build-tree directory.
+# Never use the source corpus as libFuzzer's first directory argument.
+.\build-fuzz-clang\fuzz\PBModulationLocalDesktopBootstrapFuzz.exe `
+  .\build-fuzz-clang\fuzz\local-desktop-mutation-corpus -max_len=4096 -runs=128 `
+  -rss_limit_mb=512 -artifact_prefix=.\build-fuzz-clang\local-desktop-artifacts\
+```
+
+Only an actually instrumented Clang/libFuzzer + ASan/UBSan run can substantiate
+coverage-guided or UBSan claims; lack of that toolchain must be reported.
+The production PBModulation/PBProtocol translation units receive
+fuzzer-no-link coverage instrumentation, and their UBSan findings and this
+driver's findings are non-recovering failures rather than successful exits.
+
+## Existing protocol and reference drivers
+
 `PBProtocolBootstrapControlFuzz` sends every bounded input to the fixed 44-byte
 PB-Bootstrap-1 parser, the variable PB-Control-1 parser, and the
 PB-Control-Fragment-1 parser. A successful parse must reserialize byte-for-byte

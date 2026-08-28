@@ -1,11 +1,13 @@
 #include "d3d_roi_ring.h"
 #include "session_capabilities.h"
+#include "../../PBCaptureNormalize/src/native_support.h"
 
 #include <appmodel.h>
 #include <dxgi1_6.h>
 #include <roapi.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
+#include <type_traits>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
@@ -31,20 +33,6 @@ namespace
 [[nodiscard]] CaptureStatus ExceptionStatus(const CaptureStage stage) noexcept
 {
     return FromHresult(winrt::to_hresult(), stage);
-}
-
-void ReadOutputState(IDXGIOutput6& output, CaptureEnvironment& environment)
-{
-    DXGI_OUTPUT_DESC1 description{};
-    winrt::check_hresult(output.GetDesc1(&description));
-    environment.outputColorSpace = static_cast<std::uint32_t>(description.ColorSpace);
-    environment.bitsPerColor = description.BitsPerColor;
-    environment.hdr = description.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
-                      description.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
-    DEVMODEW mode{};
-    mode.dmSize = sizeof(mode);
-    winrt::check_bool(EnumDisplaySettingsExW(description.DeviceName, ENUM_CURRENT_SETTINGS, &mode, 0));
-    environment.displayFrequency = mode.dmDisplayFrequency;
 }
 
 [[nodiscard]] HRESULT CloseNativeFrame(void* const pointer) noexcept
@@ -82,8 +70,9 @@ void ReadOutputState(IDXGIOutput6& output, CaptureEnvironment& environment)
 class CallbackGate
 {
 public:
-    CallbackGate(std::shared_ptr<FrameInbox> input, const std::uint64_t epoch)
-        : inbox(std::move(input)), captureEpoch(epoch), idleEvent(CreateEventW(nullptr, TRUE, TRUE, nullptr))
+    CallbackGate(std::shared_ptr<FrameInbox> input, const std::uint64_t epoch, const bool cursorExcluded)
+        : inbox(std::move(input)), captureEpoch(epoch), cursorState(cursorExcluded ? pbcapturenormalize::CursorState::Excluded : pbcapturenormalize::CursorState::Unknown),
+          idleEvent(CreateEventW(nullptr, TRUE, TRUE, nullptr))
     {
         winrt::check_bool(idleEvent != nullptr);
     }
@@ -91,6 +80,10 @@ public:
     {
         CloseHandle(idleEvent);
     }
+    CallbackGate(const CallbackGate&) = delete;
+    CallbackGate& operator=(const CallbackGate&) = delete;
+    CallbackGate(CallbackGate&&) = delete;
+    CallbackGate& operator=(CallbackGate&&) = delete;
     [[nodiscard]] bool Enter() noexcept
     {
         const std::lock_guard lock(mutex_);
@@ -120,6 +113,7 @@ public:
     }
     std::shared_ptr<FrameInbox> inbox;
     const std::uint64_t captureEpoch;
+    const pbcapturenormalize::CursorState cursorState;
     HANDLE idleEvent = nullptr;
 
 private:
@@ -127,6 +121,9 @@ private:
     bool enabled_ = true;
     bool active_ = false;
 };
+
+static_assert(!std::is_copy_constructible_v<CallbackGate> && !std::is_copy_assignable_v<CallbackGate>);
+static_assert(!std::is_move_constructible_v<CallbackGate> && !std::is_move_assignable_v<CallbackGate>);
 
 void OnFrameArrived(const std::shared_ptr<CallbackGate>& gate, const Direct3D11CaptureFramePool& sender) noexcept
 {
@@ -155,6 +152,7 @@ void OnFrameArrived(const std::shared_ptr<CallbackGate>& gate, const Direct3D11C
         const auto timestamp = frame.SystemRelativeTime().count();
         FrameLease lease(winrt::detach_abi(frame), CloseNativeFrame, GetNativeTexture, gate->inbox->counters,
                          {size.Width, size.Height}, timestamp, gate->captureEpoch);
+        lease.cursorState = gate->cursorState;
         gate->inbox->Push(std::move(lease));
     }
     catch (...)
@@ -216,25 +214,16 @@ public:
             }
             Fault(stage);
             stage = CaptureStage::Device;
-            UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-            if (options_.debugLayer)
+            const auto deviceStatus = CreateCaptureDevice(adapter_.Get(), options_.debugLayer, device_, context_);
+            if (!deviceStatus)
             {
-                flags |= D3D11_CREATE_DEVICE_DEBUG;
+                return deviceStatus;
             }
-            const D3D_FEATURE_LEVEL requested[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-            D3D_FEATURE_LEVEL actual{};
-            winrt::check_hresult(D3D11CreateDevice(adapter_.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, requested, 2, D3D11_SDK_VERSION,
-                                                  &device_, &actual, &context_));
-            // Windows 10 baseline completion events make shutdown timeout safe even
-            // when a driver cannot supply fences. Probe before any frame is submitted.
-            winrt::check_hresult(device_.As(&device4_));
-            winrt::check_hresult(context_.As(&context3_));
-            retirementEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            winrt::check_bool(retirementEvent_ != nullptr);
-            winrt::check_hresult(device4_->RegisterDeviceRemovedEvent(retirementEvent_, &removedCookie_));
-            removedRegistered_ = true;
-            retirementWait_ = CreateThreadpoolWait(OnRetired, this, nullptr);
-            winrt::check_bool(retirementWait_ != nullptr);
+            const auto retirementStatus = retirement_.Initialize(device_.Get(), context_.Get());
+            if (!retirementStatus)
+            {
+                return retirementStatus;
+            }
             ComPtr<IDXGIDevice> dxgiDevice;
             winrt::check_hresult(device_.As(&dxgiDevice));
             winrt::com_ptr<::IInspectable> inspectable;
@@ -258,6 +247,8 @@ public:
             winrt::check_hresult(interop->CreateForMonitor(resolved.monitor, winrt::guid_of<GraphicsCaptureItem>(), winrt::put_abi(item_)));
             const auto itemSize = item_.Size();
             environment_.contentSize = {itemSize.Width, itemSize.Height};
+            environment_.sourceSize = environment_.contentSize;
+            environment_.sourceRotation = DXGI_MODE_ROTATION_IDENTITY;
             CaptureLayout layout;
             const auto layoutStatus = ValidateLayout(config_, environment_, layout);
             if (!layoutStatus)
@@ -301,7 +292,7 @@ public:
                 session_ = pool_.CreateCaptureSession(item_);
                 ProbeCapabilities();
             }
-            gate_ = std::make_shared<CallbackGate>(inbox_, epoch);
+            gate_ = std::make_shared<CallbackGate>(inbox_, epoch, capabilities_.cursorExcluded);
             const auto gate = gate_;
             frameToken_ = pool_.FrameArrived([gate](const auto& sender, const auto&)
             {
@@ -382,7 +373,7 @@ public:
                 return CaptureStatus::Failure(CaptureError::RegionChanged, CaptureStage::Region, status.nativeError);
             }
             auto currentOutput = environment_;
-            ReadOutputState(*output_.Get(), currentOutput);
+            winrt::check_hresult(ReadOutputState(*output_.Get(), currentOutput));
             changed = !factory_->IsCurrent() || !SameRectangle(current.monitorPhysicalRect, environment_.region.monitorPhysicalRect) ||
                       current.dpiX != environment_.region.dpiX || current.dpiY != environment_.region.dpiY ||
                       current.rotation != environment_.region.rotation || currentOutput.hdr != environment_.hdr ||
@@ -427,8 +418,10 @@ public:
             {
                 return sizeStatus;
             }
+            environment.sourceSize = environment.contentSize;
+            environment.sourceRotation = DXGI_MODE_ROTATION_IDENTITY;
             const winrt::Windows::Graphics::SizeInt32 size{environment.contentSize.width, environment.contentSize.height};
-            ReadOutputState(*output_.Get(), environment);
+            winrt::check_hresult(ReadOutputState(*output_.Get(), environment));
             if (environment.hdr && config_.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT)
             {
                 return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Recreate);
@@ -481,6 +474,10 @@ public:
     CaptureStatus Consume(RoiConsumer& consumer, const RoiFrameMetadata& metadata, const std::size_t slot) noexcept override
     {
         return ring_.Consume(consumer, metadata, slot);
+    }
+    CaptureStatus Complete(RoiConsumer& consumer, const RoiFrameMetadata& metadata, std::size_t, const bool cancelled) noexcept override
+    {
+        return ring_.Complete(consumer, metadata, cancelled);
     }
     CompletionResult Poll(const std::size_t slot) noexcept override
     {
@@ -537,23 +534,7 @@ public:
         }
         ring_.Reset();
         directDevice_ = nullptr;
-        if (removedRegistered_)
-        {
-            device4_->UnregisterDeviceRemoved(removedCookie_);
-            removedRegistered_ = false;
-        }
-        if (retirementWait_ != nullptr)
-        {
-            CloseThreadpoolWait(retirementWait_);
-            retirementWait_ = nullptr;
-        }
-        if (retirementEvent_ != nullptr)
-        {
-            CloseHandle(retirementEvent_);
-            retirementEvent_ = nullptr;
-        }
-        context3_.Reset();
-        device4_.Reset();
+        retirement_.Reset();
         context_.Reset();
         device_.Reset();
         output_.Reset();
@@ -572,11 +553,7 @@ public:
 
     void DeferShutdown(std::shared_ptr<DeferredCleanup> owner) noexcept override
     {
-        deferredOwner_ = std::move(owner);
-        // Flush1's event (or the registered device-removed event) is a retirement
-        // proof, unlike Flush alone. Everything was allocated before StartCapture.
-        context3_->Flush1(D3D11_CONTEXT_TYPE_ALL, retirementEvent_);
-        SetThreadpoolWait(retirementWait_, retirementEvent_, nullptr);
+        retirement_.Defer(std::move(owner), gate_ ? gate_->idleEvent : nullptr);
     }
 
 private:
@@ -590,48 +567,13 @@ private:
 
     [[nodiscard]] CaptureStatus FindAdapter()
     {
-        for (UINT adapterIndex = 0; adapterIndex < 64; adapterIndex++)
+        const auto status = FindCaptureAdapter(factory_.Get(), environment_.region, adapter_, output_, environment_);
+        if (!status)
         {
-            ComPtr<IDXGIAdapter1> adapter;
-            const HRESULT result = factory_->EnumAdapters1(adapterIndex, &adapter);
-            if (result == DXGI_ERROR_NOT_FOUND)
-            {
-                break;
-            }
-            winrt::check_hresult(result);
-            for (UINT outputIndex = 0; outputIndex < 64; outputIndex++)
-            {
-                ComPtr<IDXGIOutput> output;
-                const HRESULT outputResult = adapter->EnumOutputs(outputIndex, &output);
-                if (outputResult == DXGI_ERROR_NOT_FOUND)
-                {
-                    break;
-                }
-                winrt::check_hresult(outputResult);
-                DXGI_OUTPUT_DESC description{};
-                winrt::check_hresult(output->GetDesc(&description));
-                if (description.Monitor != environment_.region.monitor || !description.AttachedToDesktop)
-                {
-                    continue;
-                }
-                DXGI_ADAPTER_DESC1 adapterDescription{};
-                winrt::check_hresult(adapter->GetDesc1(&adapterDescription));
-                if ((adapterDescription.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
-                {
-                    return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Adapter);
-                }
-                winrt::check_hresult(output.As(&output_));
-                ReadOutputState(*output_.Get(), environment_);
-                if (environment_.hdr && config_.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT)
-                {
-                    return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Adapter);
-                }
-                environment_.adapterLuid = adapterDescription.AdapterLuid;
-                adapter_ = adapter;
-                return {};
-            }
+            return status;
         }
-        return CaptureStatus::Failure(CaptureError::RegionChanged, CaptureStage::Adapter);
+        return environment_.hdr && config_.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT
+                   ? CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Adapter) : CaptureStatus{};
     }
 
     void ProbeCapabilities()
@@ -726,64 +668,29 @@ private:
         winrt::check_hresult(error);
     }
 
-    static void CALLBACK OnRetired(PTP_CALLBACK_INSTANCE, void* context, PTP_WAIT, const TP_WAIT_RESULT result) noexcept
-    {
-        auto* const backend = static_cast<NativeCaptureBackend*>(context);
-        if (result != WAIT_OBJECT_0)
-        {
-            return;
-        }
-        if (backend->gate_ && !backend->gate_->Idle())
-        {
-            // The GPU is retired, but a pre-pause acquisition can still be in
-            // WinRT. The disabled gate can become idle only once. Rearm the
-            // preallocated wait instead of blocking a thread-pool worker.
-            SetThreadpoolWait(backend->retirementWait_, backend->gate_->idleEvent, nullptr);
-            return;
-        }
-        const HRESULT apartment = RoInitialize(RO_INIT_MULTITHREADED);
-        if (FAILED(apartment))
-        {
-            // Preserve the bounded owner on an OS cleanup failure; never report
-            // completion or destroy WinRT objects on an uninitialized apartment.
-            return;
-        }
-        {
-            const auto owner = std::move(backend->deferredOwner_);
-            owner->CompleteDeferredShutdown();
-        }
-        RoUninitialize();
-    }
-
     const NativeCaptureOptions options_;
     WgcCaptureConfig config_;
     CaptureEnvironment environment_;
     CaptureCapabilities capabilities_;
     std::shared_ptr<FrameInbox> inbox_;
     std::shared_ptr<CallbackGate> gate_;
-    std::shared_ptr<DeferredCleanup> deferredOwner_;
     ComPtr<IDXGIFactory1> factory_;
     ComPtr<IDXGIAdapter1> adapter_;
     ComPtr<IDXGIOutput6> output_;
     ComPtr<ID3D11Device> device_;
-    ComPtr<ID3D11Device4> device4_;
     ComPtr<ID3D11DeviceContext> context_;
-    ComPtr<ID3D11DeviceContext3> context3_;
     IDirect3DDevice directDevice_{nullptr};
     GraphicsCaptureItem item_{nullptr};
     Direct3D11CaptureFramePool pool_{nullptr};
     GraphicsCaptureSession session_{nullptr};
     winrt::Windows::Foundation::IAsyncOperation<AppCapabilityAccessStatus> borderlessRequest_{nullptr};
     D3dRoiRing ring_;
+    DeferredGpuRetirement retirement_;
     winrt::event_token frameToken_{};
     winrt::event_token closedToken_{};
     bool frameRegistered_ = false;
     bool closedRegistered_ = false;
     bool initializedBefore_ = false;
-    bool removedRegistered_ = false;
-    DWORD removedCookie_ = 0;
-    HANDLE retirementEvent_ = nullptr;
-    PTP_WAIT retirementWait_ = nullptr;
     CO_MTA_USAGE_COOKIE mtaUsage_ = nullptr;
 };
 

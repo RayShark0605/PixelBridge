@@ -38,9 +38,9 @@ inline bool WaitFor(const std::function<bool()>& predicate, const std::uint32_t 
 struct Event
 {
     std::string operation;
-    std::int64_t id;
-    std::uint64_t epoch;
-    std::thread::id thread;
+    std::int64_t id = 0;
+    std::uint64_t epoch = 0;
+    std::thread::id thread{};
 };
 
 struct Control
@@ -104,8 +104,8 @@ struct Control
 struct FakeFrame
 {
     std::shared_ptr<Control> control;
-    std::int64_t id;
-    HRESULT closeResult;
+    std::int64_t id = 0;
+    HRESULT closeResult = S_OK;
 };
 
 inline HRESULT CloseFrame(void* pointer) noexcept
