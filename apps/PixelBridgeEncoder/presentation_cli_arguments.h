@@ -9,7 +9,9 @@ namespace pbencoder
 enum class PresentationVisual
 {
     ReferenceRaster,
-    LocalDesktopBootstrap
+    LocalDesktopBootstrap,
+    DesktopLevels2,
+    DesktopLevels4
 };
 
 struct DataWindowArguments
@@ -86,12 +88,14 @@ struct DataWindowArguments
         else if (argument == L"--visual" && !explicitVisual && index + 1 < argumentCount)
         {
             index++;
-            if (std::wstring_view(arguments[index]) != L"local-desktop-bootstrap")
+            const std::wstring_view visual(arguments[index]);
+            if (visual != L"local-desktop-bootstrap" && visual != L"desktop-levels-2x2" && visual != L"desktop-levels-4x4")
             {
                 return false;
             }
             explicitVisual = true;
-            parsed.visual = PresentationVisual::LocalDesktopBootstrap;
+            parsed.visual = visual == L"local-desktop-bootstrap" ? PresentationVisual::LocalDesktopBootstrap :
+                visual == L"desktop-levels-2x2" ? PresentationVisual::DesktopLevels2 : PresentationVisual::DesktopLevels4;
             parsed.dataWindow = true;
         }
         else if (argument == L"--frames" && !parsed.hasFrameCount && index + 1 < argumentCount)

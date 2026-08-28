@@ -394,12 +394,13 @@ CaptureStatus CalculateDiagnosticReadbackBudget(const DiagnosticReadbackConfig& 
     const auto bytes = pixels ? pbprotocol::CheckedMultiplyUint64(pixels.Value(), 8) : pixels;
     const auto cpu = bytes ? pbprotocol::CheckedMultiplyUint64(bytes.Value(), diagnosticCpuBufferCount) : bytes;
     const auto staging = bytes ? pbprotocol::CheckedMultiplyUint64(bytes.Value(), config.stagingTextureCount) : bytes;
-    const auto total = cpu && staging ? pbprotocol::CheckedAddUint64(cpu.Value(), staging.Value()) : cpu;
+    const auto buffers = cpu && staging ? pbprotocol::CheckedAddUint64(cpu.Value(), staging.Value()) : cpu;
+    const auto total = buffers ? pbprotocol::CheckedAddUint64(buffers.Value(), config.processingReservedBytes) : buffers;
     if (!bytes || !cpu || !staging || !total || !pbprotocol::CheckedUint64ToSize(bytes.Value()) || total.Value() > config.maximumReadbackBytes)
     {
         return CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration);
     }
-    output = {bytes.Value(), cpu.Value(), staging.Value(), total.Value()};
+    output = {bytes.Value(), cpu.Value(), staging.Value(), total.Value(), config.processingReservedBytes};
     return {};
 }
 
@@ -492,6 +493,10 @@ CaptureStatus detail::DiagnosticReadbackTestAccess::Create(const DiagnosticReadb
     if (!processor)
     {
         return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Configuration);
+    }
+    if (config.processingReservedBytes < processor->ProcessingReservedBytes())
+    {
+        return CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration);
     }
     LARGE_INTEGER frequency{};
     if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0)

@@ -42,10 +42,25 @@ if(WIN32)
     # A standalone process replaces C++ allocation functions without intercepting
     # Catch2/framework allocations or weakening the ordinary test executable.
     add_executable(PBLocalDesktopNoAllocationProbe local_desktop_no_allocation_probe.cpp)
-    target_link_libraries(PBLocalDesktopNoAllocationProbe PRIVATE PB::CompilerSettings PB::PBModulation PB::PBProtocol)
+    target_link_libraries(PBLocalDesktopNoAllocationProbe PRIVATE PB::CompilerSettings PB::PBModulation PB::PBProtocol PB::PBDesktopLevelsReference)
     PbInstrumentPresentationTest(PBLocalDesktopNoAllocationProbe)
     set_property(GLOBAL APPEND PROPERTY PB_UNIT_TEST_TARGETS PBLocalDesktopNoAllocationProbe)
     add_test(NAME PBLocalDesktopNoAllocationProbe COMMAND PBLocalDesktopNoAllocationProbe)
-    set_tests_properties(PBLocalDesktopNoAllocationProbe PROPERTIES LABELS "bootstrap;local-desktop;allocation" TIMEOUT 30
+    set_tests_properties(PBLocalDesktopNoAllocationProbe PROPERTIES LABELS "bootstrap;local-desktop;desktop-levels;allocation" TIMEOUT 30
         PASS_REGULAR_EXPRESSION "LOCAL_DESKTOP_NO_ALLOCATION_PASS")
+endif()
+
+PbAddUnitTest(PBDesktopLevelsTests test_desktop_levels.cpp test_desktop_levels_reference.cpp test_desktop_levels_channel.cpp)
+target_link_libraries(PBDesktopLevelsTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInterleave PB::PBDesktopLevelsReference PB::PBInnerFec)
+target_compile_definitions(PBDesktopLevelsTests PRIVATE PB_DESKTOP_LEVELS_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/desktop-levels")
+PbInstrumentPresentationTest(PBDesktopLevelsTests)
+set_tests_properties(PBDesktopLevelsTests PROPERTIES LABELS "desktop-levels;golden;modulation" TIMEOUT 180)
+
+if(TARGET PBDesktopLevelsBaseline)
+    add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
+    set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)
+    add_test(NAME PBDesktopLevelsBaselineJson COMMAND "${CMAKE_COMMAND}" "-DPB_BASELINE=$<TARGET_FILE:PBDesktopLevelsBaseline>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyDesktopLevelsBaseline.cmake")
+    set_tests_properties(PBDesktopLevelsBaselineJson PROPERTIES LABELS "desktop-levels;integration;telemetry" TIMEOUT 130)
+    set_property(GLOBAL APPEND PROPERTY PB_UNIT_TEST_TARGETS PBDesktopLevelsBaseline)
 endif()

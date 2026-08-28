@@ -21,6 +21,7 @@ struct CaptureBootstrapArguments
     bool hasRoi = false;
     bool showHelp = false;
     const wchar_t* telemetryPath = nullptr;
+    bool desktopLevels = false;
 };
 
 namespace detail
@@ -72,11 +73,13 @@ inline bool ParsePhysicalCoordinate(std::wstring_view text, std::int32_t& output
 // caller state and performs no display, allocation, file or capture operation.
 inline bool ParseCaptureBootstrapArguments(const int argumentCount, const wchar_t* const arguments[], CaptureBootstrapArguments& output) noexcept
 {
-    if (argumentCount < 2 || arguments == nullptr || arguments[1] == nullptr || std::wstring_view(arguments[1]) != L"--capture-bootstrap")
+    if (argumentCount < 2 || arguments == nullptr || arguments[1] == nullptr ||
+        (std::wstring_view(arguments[1]) != L"--capture-bootstrap" && std::wstring_view(arguments[1]) != L"--capture-desktop-levels"))
     {
         return false;
     }
     CaptureBootstrapArguments parsed;
+    parsed.desktopLevels = std::wstring_view(arguments[1]) == L"--capture-desktop-levels";
     if (argumentCount == 3 && arguments[2] != nullptr && (std::wstring_view(arguments[2]) == L"--help" || std::wstring_view(arguments[2]) == L"-h"))
     {
         parsed.showHelp = true;

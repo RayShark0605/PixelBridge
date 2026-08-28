@@ -26,7 +26,7 @@ set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO "RelWithDebInfo;Release;None;")
 
 add_subdirectory("${PB_SOURCE_DIR}" PixelBridge)
 
-set(pbStaticTargets PBCore PBProtocol PBCompression PBModulation PBOuterFec PBReceiver PBPresentTiming)
+set(pbStaticTargets PBCore PBProtocol PBCompression PBModulation PBDesktopLevelsReference PBOuterFec PBReceiver PBPresentTiming)
 if(WIN32)
     list(APPEND pbStaticTargets PBRenderD3D PBScreenRegion PBCaptureNormalize PBScreenCaptureWgc PBScreenCaptureDxgi)
 endif()
@@ -84,6 +84,9 @@ target_link_libraries(PBCompressionOnlyConsumer PRIVATE PB::PBCompression)
 
 add_executable(PBModulationOnlyConsumer modulation_consumer.cpp)
 target_link_libraries(PBModulationOnlyConsumer PRIVATE PB::PBModulation)
+add_executable(PBDesktopLevelsOnlyConsumer desktop_levels_consumer.cpp)
+target_link_libraries(PBDesktopLevelsOnlyConsumer PRIVATE PB::PBDesktopLevelsReference)
+add_test(NAME PBDesktopLevelsOnlyConsumerRun COMMAND PBDesktopLevelsOnlyConsumer)
 # The scratch build runs without the vcpkg manifest toolchain, so the
 # libpng shared dependency and its zlib dependency are not auto-copied by
 # vcpkg's post-build step; replicate those copies for the consumer

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pbmodulation/local_desktop_bootstrap.h"
+#include "pbmodulation/desktop_levels.h"
 
 #include <array>
 #include <cstddef>
@@ -9,6 +9,17 @@
 
 namespace pbmodulation::detail
 {
+
+enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels };
+
+[[nodiscard]] inline bool MatchesLocalDesktopBinding(const std::uint64_t profileId, const std::uint8_t layout, const LocalDesktopBinding binding) noexcept
+{
+    return binding == LocalDesktopBinding::BootstrapOnly ? profileId == kLocalDesktopVisualProfileId && layout == kLocalDesktopLayoutVersion :
+        layout == kDesktopLevelsLayoutVersion && GetDesktopLevelsProfile(profileId) != nullptr;
+}
+[[nodiscard]] ModulationStatus EncodeLocalDesktopScaffold(std::span<const std::byte> record, std::span<std::byte> pixels, LocalDesktopBinding binding) noexcept;
+[[nodiscard]] LocalDesktopObservation DecodeLocalDesktopScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy, LocalDesktopBinding binding) noexcept;
+void FillLocalDesktopBlock(std::span<std::byte> pixels, const LocalDesktopRegion& region, std::uint8_t level) noexcept;
 
 inline constexpr std::uint16_t kBootstrapRsFieldPolynomial = 0x11D;
 inline constexpr std::uint32_t kBootstrapRsFullSymbols = 255;

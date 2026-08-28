@@ -49,3 +49,6 @@ target_link_libraries(PBFrameInspector
     PRIVATE
         PB::CompilerSettings
         PBFrameInspectorCore)
+
+add_executable(PBDesktopLevelsBaseline PBDesktopLevelsBaseline/main.cpp)
+target_link_libraries(PBDesktopLevelsBaseline PRIVATE PB::CompilerSettings PB::PBDesktopLevelsReference PB::PBProtocol)

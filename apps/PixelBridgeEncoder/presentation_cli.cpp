@@ -3,6 +3,7 @@
 #include "pbrenderd3d/data_window.h"
 #include "pbmodulation/local_desktop_bootstrap.h"
 #include "pbmodulation/reference_raster.h"
+#include "pbdesktoplevels/reference_channel.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/session_random.h"
 
@@ -25,11 +26,12 @@ namespace
 
 void Usage()
 {
-    std::cout << "Usage: PixelBridgeEncoder --data-window [--visual local-desktop-bootstrap] [--frames N] [--telemetry NEW_FILE.jsonl]\n"
+    std::cout << "Usage: PixelBridgeEncoder --data-window [--visual local-desktop-bootstrap|desktop-levels-2x2|desktop-levels-4x4] [--frames N] [--telemetry NEW_FILE.jsonl]\n"
               << "       PixelBridgeEncoder --visual local-desktop-bootstrap [--frames N] [--telemetry NEW_FILE.jsonl]\n"
               << "N bounds accepted CPU frame submissions (1..1000000), not displayed frames.\n"
               << "Without --frames, press Escape in the data window to stop.\n"
               << "Default --data-window remains PB-ReferenceRaster-1. The explicit visual selects experimental SDR Bootstrap only.\n"
+              << "DesktopLevels modes submit a new sequence every 500 ms, require 1:1 SDR and carry diagnostic Robust QC-LDPC data only.\n"
               << "Presentation diagnostics only; not a file sender or capture certification. Telemetry never overwrites an existing file.\n";
 }
 
@@ -76,6 +78,9 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
         return 0;
     }
     const bool localDesktopBootstrap = options.visual == pbencoder::PresentationVisual::LocalDesktopBootstrap;
+    const bool desktopLevels = options.visual == pbencoder::PresentationVisual::DesktopLevels2 || options.visual == pbencoder::PresentationVisual::DesktopLevels4;
+    const auto* const levelsProfile = desktopLevels ? pbmodulation::GetDesktopLevelsProfile(options.visual == pbencoder::PresentationVisual::DesktopLevels2 ?
+        pbmodulation::kDesktopLevels2ProfileId : pbmodulation::kDesktopLevels4ProfileId) : nullptr;
     const bool hasFrameCount = options.hasFrameCount;
     const std::uint64_t frameLimit = options.frameLimit;
     const std::uint32_t canvasWidth = localDesktopBootstrap ? pbmodulation::kLocalDesktopCanvasWidth : pbmodulation::kReferenceCanvasWidth;
@@ -102,7 +107,7 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
         const auto window = std::move(created).Value();
         std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bootstrapBytes{};
         std::array<std::byte, pbmodulation::kReferenceControlWindowBytes> control{};
-        std::vector<std::byte> data(localDesktopBootstrap ? 0 : pbmodulation::kReferenceDataRegionBytes);
+        std::vector<std::byte> data(desktopLevels ? levelsProfile->dataBytes : localDesktopBootstrap ? 0 : pbmodulation::kReferenceDataRegionBytes);
         std::vector<std::byte> pixels(localDesktopBootstrap ? pbmodulation::kLocalDesktopFrameBgraBytes : pbmodulation::kReferenceFrameBgraBytes);
         for (std::size_t index = 0; index < data.size(); index++)
         {
@@ -112,6 +117,7 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
         std::uint64_t lastPresents = 0;
         auto lastProgress = std::chrono::steady_clock::now();
         auto lastLog = lastProgress;
+        auto nextSequence = lastProgress;
         for (;;)
         {
             const auto snapshot = window->GetSnapshot();
@@ -149,19 +155,25 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
             {
                 throw std::runtime_error("finite presentation run made no progress for 10 seconds");
             }
-            if ((!hasFrameCount || sequence < frameLimit) && snapshot.state == pbrenderd3d::WindowState::Running && !snapshot.pendingFrame)
+            if ((!hasFrameCount || sequence < frameLimit) && snapshot.state == pbrenderd3d::WindowState::Running && !snapshot.pendingFrame &&
+                (!desktopLevels || now >= nextSequence))
             {
                 // Each accepted submission advances the same in-band sequence.
                 // Only the explicit visual option changes the raster binding.
                 const pbprotocol::BootstrapRecord bootstrap{
                     pbprotocol::kBootstrapVersion, pbprotocol::GetProtocolVersion(),
-                    localDesktopBootstrap ? pbmodulation::kLocalDesktopLayoutVersion : std::uint8_t{1},
-                    localDesktopBootstrap ? pbmodulation::kLocalDesktopVisualProfileId : 0x5042524546524153ULL, sessionTag, sequence, 0, 0};
+                    desktopLevels ? pbmodulation::kDesktopLevelsLayoutVersion : localDesktopBootstrap ? pbmodulation::kLocalDesktopLayoutVersion : std::uint8_t{1},
+                    desktopLevels ? levelsProfile->visualProfileId : localDesktopBootstrap ? pbmodulation::kLocalDesktopVisualProfileId : 0x5042524546524153ULL, sessionTag, sequence, 0, 0};
                 if (!pbprotocol::SerializeBootstrapRecord(bootstrap, bootstrapBytes))
                 {
                     throw std::runtime_error("canonical Bootstrap serialization failed");
                 }
-                const auto encoded = localDesktopBootstrap ? pbmodulation::EncodeLocalDesktopBootstrapFrame(bootstrapBytes, pixels) :
+                if (desktopLevels && !pbdesktoplevels::GenerateDiagnosticData(bootstrapBytes, data))
+                {
+                    throw std::runtime_error("DesktopLevels diagnostic Transport/Robust QC-LDPC generation failed");
+                }
+                const auto encoded = desktopLevels ? pbmodulation::EncodeDesktopLevelsFrame(bootstrapBytes, data, pixels) :
+                    localDesktopBootstrap ? pbmodulation::EncodeLocalDesktopBootstrapFrame(bootstrapBytes, pixels) :
                     pbmodulation::EncodeReferenceFrame({bootstrapBytes, control, data}, pixels);
                 if (!encoded)
                 {
@@ -177,6 +189,12 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
                         throw std::runtime_error("FrameSequence exhausted; a new Session is required");
                     }
                     sequence++;
+                    if (desktopLevels)
+                    {
+                        // Pace from the actual accepted submission, never rush
+                        // delayed sequences to catch up and shorten their dwell.
+                        nextSequence = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+                    }
                 }
                 else if (status.code != pbrenderd3d::PresentationErrorCode::EpochMismatch && status.code != pbrenderd3d::PresentationErrorCode::Paused &&
                          status.code != pbrenderd3d::PresentationErrorCode::NotRunning)

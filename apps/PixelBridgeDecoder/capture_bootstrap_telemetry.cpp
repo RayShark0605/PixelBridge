@@ -92,7 +92,8 @@ std::string SerializeBootstrapDiagnosticEvent(const BootstrapDiagnosticEvent& ev
     const auto& visual = event.visual;
     std::ostringstream stream;
     Configure(stream);
-    stream << "{\"event\":\"bootstrap-observation\",\"backend\":\"" << BackendName(metadata.backend) << "\",\"domain\":";
+    stream << "{\"event\":\"" << (event.desktopLevels ? "desktop-levels-observation" : "bootstrap-observation")
+           << "\",\"backend\":\"" << BackendName(metadata.backend) << "\",\"domain\":";
     WriteDomain(stream, metadata.domain);
     stream << ",\"observation\":\"" << metadata.captureObservation << "\",\"sourceGeneration\":\"" << metadata.sourceGeneration
            << "\",\"slotGeneration\":\"" << metadata.slotGeneration << "\",\"slot\":" << metadata.slotIndex
@@ -169,7 +170,15 @@ std::string SerializeBootstrapDiagnosticEvent(const BootstrapDiagnosticEvent& ev
     stream << ",\"sampleMidGrayFraction\":";
     WriteNumber(stream, visual.sampleMidGrayFraction);
     stream << ",\"markerCandidates\":" << visual.markerCandidates << ",\"geometryCandidates\":" << visual.geometryCandidates
-           << ",\"workUnits\":" << visual.workUnits << "}\n";
+           << ",\"workUnits\":" << visual.workUnits;
+    if (event.desktopLevels)
+    {
+        stream << ",\"desktopLevels\":";
+        pbdesktoplevels::WriteModulationJson(stream, event.levels.modulation);
+        stream << ",\"evaluation\":";
+        pbdesktoplevels::WriteEvaluationJson(stream, event.levels.evaluation);
+    }
+    stream << "}\n";
     return stream.str();
 }
 
@@ -231,7 +240,12 @@ std::string SerializeCaptureBootstrapSnapshot(const char* eventType, const Captu
         }
         stream << readback.drops[index];
     }
-    stream << "],\"workerStopped\":" << readback.workerStopped << "},\"visual\":{\"domain\":";
+    stream << "],\"workerStopped\":" << readback.workerStopped;
+    if (visual.desktopLevels)
+    {
+        stream << ",\"processingReservedBytes\":" << readback.reservation.processingBytes;
+    }
+    stream << "},\"visual\":{\"domain\":";
     if (visual.domain)
     {
         WriteDomain(stream, *visual.domain);
@@ -248,7 +262,27 @@ std::string SerializeCaptureBootstrapSnapshot(const char* eventType, const Captu
            << "\",\"calibrationGeneration\":\"" << visual.calibrationGeneration << "\",\"trackedSessions\":" << visual.trackedSessions
            << ",\"retainedSequences\":" << visual.retainedSequences << ",\"queuedEvents\":" << visual.queuedEvents << ",\"diagnosticQueueDrops\":" << visual.diagnosticQueueDrops
            << ",\"lastDisposition\":\"" << GetBootstrapDispositionName(visual.lastDisposition) << "\"},\"staleDiagnosticEvents\":" << staleDiagnosticEvents
-           << ",\"shutdownComplete\":" << capture.shutdownComplete << ",\"deferredCleanup\":" << capture.deferredCleanup << "}\n";
+           << ",\"shutdownComplete\":" << capture.shutdownComplete << ",\"deferredCleanup\":" << capture.deferredCleanup;
+    if (visual.desktopLevels)
+    {
+        stream << ",\"desktopLevels\":{\"unrecognizedBootstrap\":" << visual.unrecognizedBootstrap << ",\"statisticsFailures\":" << visual.statisticsFailures
+               << ",\"candidates\":[";
+        for (std::size_t index = 0; index < visual.candidates.size(); index++)
+        {
+            if (index != 0)
+            {
+                stream << ',';
+            }
+            const auto& candidate = visual.candidates[index];
+            stream << "{\"candidate\":\"desktop-levels-" << (index == 0 ? "2x2" : "4x4") << "\",\"geometryErasures\":" << candidate.geometryErasures
+                   << ",\"pilotErasures\":" << candidate.pilotErasures << ",\"otherErasures\":" << candidate.otherErasures
+                   << ",\"duplicates\":" << candidate.duplicates << ",\"metrics\":";
+            pbdesktoplevels::WriteStatisticsJson(stream, candidate.statistics);
+            stream << '}';
+        }
+        stream << "]}";
+    }
+    stream << "}\n";
     return stream.str();
 }
 

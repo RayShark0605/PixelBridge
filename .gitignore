@@ -14,3 +14,6 @@ target-dependency-graph.dot.*
 *.pdb
 *.idb
 *.ilk
+
+# Independent modulation oracle imports (not Golden artifacts)
+/tests/PBModulation/__pycache__/

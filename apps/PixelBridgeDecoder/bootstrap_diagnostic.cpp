@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 
 namespace pbdecoder
 {
@@ -27,6 +28,45 @@ BootstrapDiagnosticProcessor::BootstrapDiagnosticProcessor(const pbmodulation::L
 {
 }
 
+struct BootstrapDiagnosticProcessor::DesktopLevelsState
+{
+    pbdesktoplevels::ReferenceChannel channel;
+    std::array<pbdesktoplevels::ReferenceStatistics, 2> statistics;
+    pbmodulation::DesktopLevelsCalibration calibration;
+};
+
+BootstrapDiagnosticProcessor::~BootstrapDiagnosticProcessor() = default;
+
+std::uint64_t BootstrapDiagnosticProcessor::ProcessingReservedBytes() const noexcept
+{
+    return levels_ ? pbdesktoplevels::kProcessingReservationBytes : 0;
+}
+
+CaptureStatus BootstrapDiagnosticProcessor::CreateDesktopLevels(std::shared_ptr<BootstrapDiagnosticProcessor>& output) noexcept
+{
+    // ReferenceChannel's 16 MiB reservation includes 1 MiB for this bounded
+    // application state, including events/history and shared_ptr bookkeeping.
+    static_assert(sizeof(BootstrapDiagnosticProcessor) + sizeof(DesktopLevelsState) + 4096 <= 1024 * 1024);
+    try
+    {
+        auto channel = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
+        if (!channel)
+        {
+            return CaptureStatus::Failure(CaptureError::OutOfMemory, CaptureStage::Configuration);
+        }
+        auto processor = std::make_shared<BootstrapDiagnosticProcessor>();
+        processor->levels_ = std::make_unique<DesktopLevelsState>();
+        processor->levels_->channel = std::move(channel).Value();
+        processor->snapshot_.desktopLevels = true;
+        output = std::move(processor);
+        return {};
+    }
+    catch (const std::bad_alloc&)
+    {
+        return CaptureStatus::Failure(CaptureError::OutOfMemory, CaptureStage::Configuration);
+    }
+}
+
 void BootstrapDiagnosticProcessor::Reset(std::optional<ScreenCaptureDomain> domain) noexcept
 {
     const std::lock_guard lock(mutex_);
@@ -42,18 +82,29 @@ void BootstrapDiagnosticProcessor::Reset(std::optional<ScreenCaptureDomain> doma
     snapshot_.calibrationGeneration = 0;
     snapshot_.trackedSessions = 0;
     snapshot_.retainedSequences = 0;
-    snapshot_.diagnosticQueueDrops = pbprotocol::SaturatingAddUnsigned(snapshot_.diagnosticQueueDrops, static_cast<std::uint64_t>(eventCount_));
-    snapshot_.queuedEvents = 0;
+    if (!levels_)
+    {
+        snapshot_.diagnosticQueueDrops = pbprotocol::SaturatingAddUnsigned(snapshot_.diagnosticQueueDrops, static_cast<std::uint64_t>(eventCount_));
+        snapshot_.queuedEvents = 0;
+        eventHead_ = 0;
+        eventCount_ = 0;
+    }
+    // DesktopLevels keeps immutable, already-committed audit events with their
+    // original domains until drained. This is NOT live calibration/history and
+    // cannot be re-committed. In particular shutdown must not erase the last
+    // admitted failure from the raw denominator evidence. Queue remains bounded.
     history_ = {};
     sessions_ = {};
     nextHistory_ = 0;
-    eventHead_ = 0;
-    eventCount_ = 0;
     geometry_.reset();
     calibrated_ = false;
     blackLevel_ = 0;
     whiteLevel_ = 0;
     lastObservation_ = 0;
+    if (levels_)
+    {
+        levels_->calibration = {};
+    }
 }
 
 CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMetadata& metadata, const std::span<const std::byte> pixels, const std::size_t rowPitch)
@@ -63,6 +114,7 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
         return CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Consumer);
     }
     pending_ = {};
+    pending_.desktopLevels = levels_ != nullptr;
     pending_.capture = metadata;
     pendingReady_ = true;
     pending_.disposition = BootstrapDisposition::InvalidMetadata;
@@ -109,15 +161,25 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
         return {};
     }
     const pbmodulation::LumaView view{pixels, static_cast<std::uint32_t>(metadata.roiSize.width), static_cast<std::uint32_t>(metadata.roiSize.height), rowPitch, format};
-    pending_.visual = pbmodulation::DecodeLocalDesktopBootstrap(view, policy_);
+    if (levels_)
+    {
+        pending_.levels = levels_->channel.Decode(view);
+        pending_.visual = pending_.levels.modulation.bootstrap;
+    }
+    else
+    {
+        pending_.visual = pbmodulation::DecodeLocalDesktopBootstrap(view, policy_);
+    }
     if (!pending_.visual.IsAccepted())
     {
         pending_.disposition = BootstrapDisposition::VisualErasure;
         return {};
     }
     const auto record = pbprotocol::ParseBootstrapRecord(pending_.visual.canonical44);
-    if (!record || record.Value().visualProfileId != pbmodulation::kLocalDesktopVisualProfileId ||
-        record.Value().visualLayoutVersion != pbmodulation::kLocalDesktopLayoutVersion)
+    const bool bindingValid = record && (levels_ ?
+        pbmodulation::GetDesktopLevelsProfile(record.Value().visualProfileId) != nullptr && record.Value().visualLayoutVersion == pbmodulation::kDesktopLevelsLayoutVersion :
+        record.Value().visualProfileId == pbmodulation::kLocalDesktopVisualProfileId && record.Value().visualLayoutVersion == pbmodulation::kLocalDesktopLayoutVersion);
+    if (!bindingValid)
     {
         // The portable visual decoder already validates this. Fail closed if
         // its future implementation ever violates its accepted-result contract.
@@ -125,6 +187,11 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
         return {};
     }
     pending_.bootstrap = record.Value();
+    if (levels_ && (!pending_.levels.modulation.IsAccepted() || !pending_.levels.evaluation.evaluated))
+    {
+        pending_.disposition = BootstrapDisposition::VisualErasure;
+        return {};
+    }
     pending_.pixelDigest = pbprotocol::ComputeBlake3Digest(pixels);
     pending_.disposition = BootstrapDisposition::Accepted;
     return {};
@@ -165,6 +232,10 @@ BootstrapDisposition BootstrapDiagnosticProcessor::AdmitLocked(BootstrapDiagnost
     {
         return BootstrapDisposition::SessionLimit;
     }
+    if (session != nullptr && session->profileId != event.bootstrap.visualProfileId)
+    {
+        return BootstrapDisposition::IdentityConflict;
+    }
     if (found == nullptr && session != nullptr && sequence <= session->highestSequence)
     {
         // An evicted sequence is not magically a new independent observation.
@@ -172,7 +243,8 @@ BootstrapDisposition BootstrapDiagnosticProcessor::AdmitLocked(BootstrapDiagnost
         return BootstrapDisposition::StaleSequence;
     }
     const bool geometryChanged = !geometry_ || !SameTransform(*geometry_, event.visual.geometry);
-    const bool calibrationChanged = !calibrated_ || blackLevel_ != event.visual.blackLevel || whiteLevel_ != event.visual.whiteLevel;
+    const bool calibrationChanged = !calibrated_ || blackLevel_ != event.visual.blackLevel || whiteLevel_ != event.visual.whiteLevel ||
+        (levels_ && levels_->calibration != event.levels.modulation.calibration);
     if ((geometryChanged && snapshot_.geometryGeneration == std::numeric_limits<std::uint64_t>::max()) ||
         (calibrationChanged && snapshot_.calibrationGeneration == std::numeric_limits<std::uint64_t>::max()))
     {
@@ -189,6 +261,10 @@ BootstrapDisposition BootstrapDiagnosticProcessor::AdmitLocked(BootstrapDiagnost
         calibrated_ = true;
         blackLevel_ = event.visual.blackLevel;
         whiteLevel_ = event.visual.whiteLevel;
+        if (levels_)
+        {
+            levels_->calibration = event.levels.modulation.calibration;
+        }
     }
     event.geometryGeneration = snapshot_.geometryGeneration;
     event.calibrationGeneration = snapshot_.calibrationGeneration;
@@ -207,7 +283,7 @@ BootstrapDisposition BootstrapDiagnosticProcessor::AdmitLocked(BootstrapDiagnost
     if (session == nullptr)
     {
         session = emptySession;
-        *session = {true, tag, sequence};
+        *session = {true, tag, sequence, event.bootstrap.visualProfileId};
         snapshot_.trackedSessions++;
     }
     else
@@ -255,6 +331,56 @@ void BootstrapDiagnosticProcessor::Commit(const ScreenCaptureFrameMetadata& meta
     {
         pending_.disposition = AdmitLocked(pending_);
     }
+    if (levels_)
+    {
+        const auto& observation = pending_.levels.modulation;
+        const bool knownProfile = pbmodulation::GetDesktopLevelsProfile(observation.profileId) != nullptr;
+        const std::size_t candidate = observation.profileId == pbmodulation::kDesktopLevels2ProfileId ? 0 : 1;
+        if (pending_.disposition == BootstrapDisposition::Accepted)
+        {
+            if (!levels_->statistics[candidate].Add(pending_.levels.evaluation, pending_.bootstrap.frameSequence,
+                    levels_->channel.GetMarginHistogram(), observation.margin.minimum))
+            {
+                pending_.disposition = BootstrapDisposition::StatisticsFailure;
+                pbprotocol::SaturatingIncrementUnsigned(snapshot_.statisticsFailures);
+            }
+            else if (!pending_.levels.evaluation.IsVerified())
+            {
+                // Admission and deduplication already happened: capturing this
+                // failed identity again cannot improve a denominator or retry it.
+                pending_.disposition = BootstrapDisposition::PostFecFailure;
+            }
+        }
+        if (pending_.disposition == BootstrapDisposition::VisualErasure)
+        {
+            if (!observation.bootstrap.IsAccepted())
+            {
+                pbprotocol::SaturatingIncrementUnsigned(snapshot_.unrecognizedBootstrap);
+            }
+            else if (knownProfile)
+            {
+                using Erasure = pbmodulation::DesktopLevelsErasure;
+                if (observation.erasure == Erasure::ScaleOutOfRange || observation.erasure == Erasure::AlignmentOutOfRange || observation.erasure == Erasure::FrameOutOfBounds)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(snapshot_.candidates[candidate].geometryErasures);
+                }
+                else if (observation.erasure == Erasure::PilotClipping || observation.erasure == Erasure::PilotOrder || observation.erasure == Erasure::PilotVariance ||
+                    observation.erasure == Erasure::PilotSpatialMismatch || observation.erasure == Erasure::PhasePilotMismatch)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(snapshot_.candidates[candidate].pilotErasures);
+                }
+                else
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(snapshot_.candidates[candidate].otherErasures);
+                }
+            }
+        }
+        if (knownProfile && (pending_.disposition == BootstrapDisposition::DuplicatePixels || pending_.disposition == BootstrapDisposition::DuplicateObservation ||
+            pending_.disposition == BootstrapDisposition::DuplicateGeometryChanged || pending_.disposition == BootstrapDisposition::DuplicateCalibrationChanged))
+        {
+            pbprotocol::SaturatingIncrementUnsigned(snapshot_.candidates[candidate].duplicates);
+        }
+    }
     pbprotocol::SaturatingIncrementUnsigned(snapshot_.observations);
     switch (pending_.disposition)
     {
@@ -285,7 +411,15 @@ void BootstrapDiagnosticProcessor::Discard() noexcept
 BootstrapDiagnosticSnapshot BootstrapDiagnosticProcessor::GetSnapshot() const noexcept
 {
     const std::lock_guard lock(mutex_);
-    return snapshot_;
+    auto snapshot = snapshot_;
+    if (levels_)
+    {
+        for (std::size_t index = 0; index < snapshot.candidates.size(); index++)
+        {
+            snapshot.candidates[index].statistics = levels_->statistics[index].GetSummary();
+        }
+    }
+    return snapshot;
 }
 
 bool BootstrapDiagnosticProcessor::TakeEvent(BootstrapDiagnosticEvent& output) noexcept
@@ -319,6 +453,8 @@ const char* GetBootstrapDispositionName(const BootstrapDisposition disposition) 
     case BootstrapDisposition::StaleSequence: return "StaleSequence";
     case BootstrapDisposition::SessionLimit: return "SessionLimit";
     case BootstrapDisposition::GenerationExhausted: return "GenerationExhausted";
+    case BootstrapDisposition::PostFecFailure: return "PostFecFailure";
+    case BootstrapDisposition::StatisticsFailure: return "StatisticsFailure";
     }
     return "Unknown";
 }
@@ -330,6 +466,15 @@ bool IsTerminalDiagnosticFailure(const CaptureSnapshot& capture, const Diagnosti
 
 int GetBootstrapDiagnosticSuccessExitCode(const BootstrapDiagnosticSnapshot& snapshot) noexcept
 {
+    if (snapshot.desktopLevels)
+    {
+        if (snapshot.statisticsFailures != 0 || snapshot.identityConflicts != 0 || snapshot.candidates[0].statistics.falseAcceptedCodewords != 0 ||
+            snapshot.candidates[1].statistics.falseAcceptedCodewords != 0)
+        {
+            return 1;
+        }
+        return snapshot.candidates[0].statistics.verifiedFrames != 0 || snapshot.candidates[1].statistics.verifiedFrames != 0 ? 0 : 4;
+    }
     return snapshot.accepted != 0 ? 0 : 4;
 }
 

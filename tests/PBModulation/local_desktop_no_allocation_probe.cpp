@@ -1,6 +1,8 @@
 #include "pbmodulation/local_desktop_bootstrap.h"
 #include "pbmodulation/local_desktop_decode.h"
 #include "pbprotocol/blake3_digest.h"
+#include "pbprotocol/bootstrap_control_codec.h"
+#include "pbdesktoplevels/reference_channel.h"
 #include "../../libs/PBModulation/src/local_desktop_internal.h"
 
 #include <algorithm>
@@ -24,12 +26,18 @@ enum class AllocationKind : std::size_t
 };
 
 thread_local bool rejectAllocations = false;
+thread_local std::size_t allocationsBeforeFailure = 0;
 thread_local std::array<std::uint64_t, static_cast<std::size_t>(AllocationKind::Count)> deniedAllocations{};
 
 bool RejectAllocation(const AllocationKind kind) noexcept
 {
     if (!rejectAllocations)
     {
+        return false;
+    }
+    if (allocationsBeforeFailure != 0)
+    {
+        allocationsBeforeFailure--;
         return false;
     }
     // A successful probe has exactly two positive-control denials per kind.
@@ -404,6 +412,57 @@ void CheckRaster(ProbeChecks& checks, const std::span<std::byte> raster, const s
                  "guarded failed local sample modified output");
 }
 
+void CheckDesktopLevels(ProbeChecks& checks, const std::span<std::byte> raster)
+{
+    // Fault every allocation prefix, not only the first allocation. Each failed
+    // factory must release partial workspaces; ASan checks the same sweep.
+    bool reachedSuccess = false;
+    for (std::size_t prefix = 0; prefix < 64 && !reachedSuccess; prefix++)
+    {
+        {
+            const AllocationRejection guard;
+            allocationsBeforeFailure = prefix;
+            auto created = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
+            reachedSuccess = static_cast<bool>(created);
+            if (!created)
+            {
+                checks.Check(created.Error().code == pbmodulation::ModulationErrorCode::MemoryAllocationFailure, "DesktopLevels partial factory allocation did not fail closed");
+            }
+        }
+        allocationsBeforeFailure = 0;
+    }
+    checks.Check(reachedSuccess, "DesktopLevels allocation-prefix sweep did not reach a fully allocated instance");
+    auto created = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
+    checks.Check(static_cast<bool>(created), "DesktopLevels normal workspace allocation failed");
+    if (!created)
+    {
+        return;
+    }
+    auto channel = std::move(created).Value();
+    const auto data = std::make_unique<std::byte[]>(pbmodulation::kDesktopLevelsMaximumDataBytes);
+    const AllocationRejection guard;
+    const auto before = deniedAllocations;
+    checks.Check(!pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes - 1), "DesktopLevels accepted an under-reserved processor");
+    for (const auto profileId : {pbmodulation::kDesktopLevels2ProfileId, pbmodulation::kDesktopLevels4ProfileId})
+    {
+        pbprotocol::BootstrapRecord record;
+        record.visualLayoutVersion = pbmodulation::kDesktopLevelsLayoutVersion;
+        record.protocolVersion = pbprotocol::GetProtocolVersion();
+        record.visualProfileId = profileId;
+        record.sessionTag.value = 0x1122334455667788ULL;
+        const auto& profile = *pbmodulation::GetDesktopLevelsProfile(profileId);
+        const std::span logicalData(data.get(), profile.dataBytes);
+        std::array<std::byte, 44> bytes{};
+        checks.Check(static_cast<bool>(pbprotocol::SerializeBootstrapRecord(record, bytes)), "DesktopLevels guarded Bootstrap serialization failed");
+        checks.Check(static_cast<bool>(pbdesktoplevels::GenerateDiagnosticData(bytes, logicalData)), "DesktopLevels guarded Transport/LDPC generation failed");
+        checks.Check(static_cast<bool>(pbmodulation::EncodeDesktopLevelsFrame(bytes, logicalData, raster)), "DesktopLevels guarded renderer failed");
+        const auto result = channel.Decode({raster, 1920, 1080, 7680, pbmodulation::LumaPixelFormat::Bgra8});
+        checks.Check(result.modulation.IsAccepted() && result.evaluation.IsVerified() && result.evaluation.erroneousCodedBits == 0,
+            "DesktopLevels guarded end-to-end recovery failed");
+    }
+    checks.Check(deniedAllocations == before, "DesktopLevels hot path attempted C++ allocation");
+}
+
 } // namespace
 
 // Same replaceable-allocation boundary as the existing digest probe, expanded
@@ -518,6 +577,7 @@ int main()
                          "raster path changed its caller-owned guard bytes");
         }
     }
+    CheckDesktopLevels(checks, rasterAllocation.subspan(guardBytes, fullRasterBytes));
     if (checks.failures != 0)
     {
         std::fprintf(stderr, "LOCAL_DESKTOP_NO_ALLOCATION_FAILED checks=%u failures=%u first=%s\n", checks.count, checks.failures, checks.firstFailure);
@@ -531,6 +591,6 @@ int main()
         return 1;
     }
     ::operator delete(restored);
-    std::printf("LOCAL_DESKTOP_NO_ALLOCATION_PASS checks=%u positiveControls=8 sutAllocationAttempts=0 coldRs=1 correctedCounts=0..16 raster=full-and-half\n", checks.count);
+    std::printf("LOCAL_DESKTOP_NO_ALLOCATION_PASS checks=%u positiveControls=8 sutAllocationAttempts=0 coldRs=1 correctedCounts=0..16 raster=full-and-half DesktopLevelsAllocationGate=PASS\n", checks.count);
     return 0;
 }

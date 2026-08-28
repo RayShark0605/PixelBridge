@@ -12,7 +12,7 @@ target_link_libraries(PixelBridgeEncoder
 if(WIN32)
     target_sources(PixelBridgeEncoder PRIVATE presentation_cli.cpp
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
-    target_link_libraries(PixelBridgeEncoder PRIVATE PB::PBRenderD3D PB::PBModulation)
+    target_link_libraries(PixelBridgeEncoder PRIVATE PB::PBRenderD3D PB::PBModulation PB::PBDesktopLevelsReference)
     target_compile_definitions(PixelBridgeEncoder PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
     if(MSVC)
         target_compile_options(PixelBridgeEncoder PRIVATE /external:anglebrackets /external:W0)

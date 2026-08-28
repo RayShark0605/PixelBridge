@@ -157,7 +157,7 @@ bool BuildTimingBits(const std::span<const std::byte> record, const std::size_t 
 
 } // namespace detail
 
-ModulationStatus EncodeLocalDesktopBootstrapFrame(const std::span<const std::byte> bootstrapRecord, const std::span<std::byte> outBgra) noexcept
+ModulationStatus detail::EncodeLocalDesktopScaffold(const std::span<const std::byte> bootstrapRecord, const std::span<std::byte> outBgra, const LocalDesktopBinding binding) noexcept
 {
     if (bootstrapRecord.size() != kLocalDesktopBootstrapRecordBytes)
     {
@@ -174,11 +174,11 @@ ModulationStatus EncodeLocalDesktopBootstrapFrame(const std::span<const std::byt
     {
         return FromProtocolError(parsed.Error());
     }
-    if (parsed.Value().visualLayoutVersion != kLocalDesktopLayoutVersion)
+    if (parsed.Value().visualLayoutVersion != (binding == LocalDesktopBinding::BootstrapOnly ? kLocalDesktopLayoutVersion : kDesktopLevelsLayoutVersion))
     {
         return ModulationStatus::Failure(ModulationErrorCode::UnsupportedVersion, 7);
     }
-    if (parsed.Value().visualProfileId != kLocalDesktopVisualProfileId)
+    if (!MatchesLocalDesktopBinding(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion, binding))
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 8);
     }
@@ -228,6 +228,16 @@ ModulationStatus EncodeLocalDesktopBootstrapFrame(const std::span<const std::byt
         FillCells(outBgra, kLocalDesktopTimingRegions[index], timing[index]);
     }
     return ModulationStatus::Success();
+}
+
+ModulationStatus EncodeLocalDesktopBootstrapFrame(const std::span<const std::byte> bootstrapRecord, const std::span<std::byte> outBgra) noexcept
+{
+    return detail::EncodeLocalDesktopScaffold(bootstrapRecord, outBgra, detail::LocalDesktopBinding::BootstrapOnly);
+}
+
+void detail::FillLocalDesktopBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region, const std::uint8_t level) noexcept
+{
+    FillBlock(pixels, region, level);
 }
 
 } // namespace pbmodulation
