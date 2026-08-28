@@ -3,6 +3,7 @@
 #include "pbcapturenormalize/diagnostic_readback.h"
 #include "pbmodulation/local_desktop_decode.h"
 #include "pbprotocol/bootstrap_control_codec.h"
+#include "pbdesktoplevels/reference_channel.h"
 
 #include <array>
 #include <mutex>
@@ -14,7 +15,8 @@ namespace pbdecoder
 enum class BootstrapDisposition : std::uint8_t
 {
     None, Accepted, DuplicatePixels, DuplicateObservation, DuplicateGeometryChanged, DuplicateCalibrationChanged,
-    VisualErasure, UnsupportedSignal, InvalidMetadata, IdentityConflict, StaleSequence, SessionLimit, GenerationExhausted
+    VisualErasure, UnsupportedSignal, InvalidMetadata, IdentityConflict, StaleSequence, SessionLimit, GenerationExhausted,
+    PostFecFailure, StatisticsFailure
 };
 
 struct BootstrapDiagnosticEvent
@@ -26,6 +28,17 @@ struct BootstrapDiagnosticEvent
     std::uint64_t geometryGeneration = 0;
     std::uint64_t calibrationGeneration = 0;
     std::array<std::byte, 32> pixelDigest{};
+    bool desktopLevels = false;
+    pbdesktoplevels::ReferenceObservation levels;
+};
+
+struct DesktopLevelsCandidateSnapshot
+{
+    std::uint64_t geometryErasures = 0;
+    std::uint64_t pilotErasures = 0;
+    std::uint64_t otherErasures = 0;
+    std::uint64_t duplicates = 0;
+    pbdesktoplevels::StatisticsSummary statistics;
 };
 
 struct BootstrapDiagnosticSnapshot
@@ -46,11 +59,15 @@ struct BootstrapDiagnosticSnapshot
     std::uint32_t retainedSequences = 0;
     std::uint32_t queuedEvents = 0;
     BootstrapDisposition lastDisposition = BootstrapDisposition::None;
+    bool desktopLevels = false;
+    std::uint64_t unrecognizedBootstrap = 0;
+    std::uint64_t statisticsFailures = 0;
+    std::array<DesktopLevelsCandidateSnapshot, 2> candidates;
 };
 
-// Diagnostic application bridge, not a payload/FEC receiver. All temporal
-// mutation lives in Reset/Commit on the readback worker; Analyze is a candidate
-// transaction. No LLR storage or combine entry point exists in this baseline.
+// Explicit Bootstrap-only or DesktopLevels diagnostic mode, not a file receiver.
+// All admission/measurement mutation lives in Reset/Commit on the same worker;
+// Analyze creates a candidate. No cross-frame soft-combine entry point exists.
 class BootstrapDiagnosticProcessor final : public pbcapturenormalize::CpuFrameProcessor
 {
 public:
@@ -59,6 +76,9 @@ public:
     static constexpr std::size_t eventCapacity = 16;
 
     explicit BootstrapDiagnosticProcessor(const pbmodulation::LocalDesktopDecodePolicy& policy = {}) noexcept;
+    ~BootstrapDiagnosticProcessor() override;
+    [[nodiscard]] static pbcapturenormalize::CaptureStatus CreateDesktopLevels(std::shared_ptr<BootstrapDiagnosticProcessor>& output) noexcept;
+    [[nodiscard]] std::uint64_t ProcessingReservedBytes() const noexcept override;
     void Reset(std::optional<pbcapturenormalize::ScreenCaptureDomain> domain) noexcept override;
     [[nodiscard]] pbcapturenormalize::CaptureStatus Analyze(const pbcapturenormalize::ScreenCaptureFrameMetadata& metadata,
                                                           std::span<const std::byte> pixels, std::size_t rowPitch) override;
@@ -84,6 +104,7 @@ private:
         bool active = false;
         std::uint64_t tag = 0;
         std::uint64_t highestSequence = 0;
+        std::uint64_t profileId = 0;
     };
     void PublishLocked(const BootstrapDiagnosticEvent& event) noexcept;
     [[nodiscard]] BootstrapDisposition AdmitLocked(BootstrapDiagnosticEvent& event) noexcept;
@@ -106,6 +127,8 @@ private:
     // Worker-only candidate, not visible to telemetry readers or admission.
     BootstrapDiagnosticEvent pending_;
     bool pendingReady_ = false;
+    struct DesktopLevelsState;
+    std::unique_ptr<DesktopLevelsState> levels_;
 };
 
 [[nodiscard]] const char* GetBootstrapDispositionName(BootstrapDisposition disposition) noexcept;

@@ -1,6 +1,7 @@
 #include "pbmodulation/local_desktop_decode.h"
 
 #include "local_desktop_internal.h"
+#include "luma_reader.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/crc32c.h"
 
@@ -42,202 +43,9 @@ struct LocatorLimits
 
 using Erasure = LocalDesktopErasureReason;
 
-std::size_t BytesPerPixel(const LumaPixelFormat format) noexcept
-{
-    switch (format)
-    {
-    case LumaPixelFormat::Gray8: return 1;
-    case LumaPixelFormat::Bgra8:
-    case LumaPixelFormat::R10G10B10A2: return 4;
-    case LumaPixelFormat::Fp16LinearSdr: return 8;
-    default: return 0;
-    }
-}
-
-std::uint16_t Read16(const std::byte* bytes) noexcept
-{
-    return static_cast<std::uint16_t>(std::to_integer<std::uint16_t>(bytes[0]) |
-                                     (std::to_integer<std::uint16_t>(bytes[1]) << 8));
-}
-
-std::uint32_t Read32(const std::byte* bytes) noexcept
-{
-    return std::to_integer<std::uint32_t>(bytes[0]) | (std::to_integer<std::uint32_t>(bytes[1]) << 8) |
-           (std::to_integer<std::uint32_t>(bytes[2]) << 16) | (std::to_integer<std::uint32_t>(bytes[3]) << 24);
-}
-
-bool DecodeHalf(const std::uint16_t bits, double& value) noexcept
-{
-    const auto exponent = static_cast<unsigned>((bits >> 10) & 31u);
-    const auto fraction = static_cast<unsigned>(bits & 1023u);
-    if (exponent == 31)
-    {
-        return false;
-    }
-    const double magnitude = exponent == 0 ? std::ldexp(static_cast<double>(fraction), -24) :
-                                             std::ldexp(static_cast<double>(1024u + fraction), static_cast<int>(exponent) - 25);
-    value = (bits & 0x8000u) == 0 ? magnitude : -magnitude;
-    return true;
-}
-
-// Constructed only after one complete stride/footprint validation. Every read
-// still checks its coordinates and consumes a bounded work token. No image-
-// sized scratch, allocation, normalized copy, or mutable process state exists.
-class LumaReader
-{
-public:
-    LumaReader(const LumaView& view, const std::uint64_t maximumWork) noexcept :
-        view_(view), pixelBytes_(BytesPerPixel(view.pixelFormat)), maximumWork_(maximumWork)
-    {
-    }
-
-    [[nodiscard]] bool Charge(const std::uint64_t units = 1) noexcept
-    {
-        if (error_ != Erasure::None)
-        {
-            return false;
-        }
-        if (units > maximumWork_ - workUnits_)
-        {
-            error_ = Erasure::WorkBudgetExceeded;
-            return false;
-        }
-        workUnits_ += units;
-        return true;
-    }
-
-    [[nodiscard]] bool Contains(const double x, const double y) const noexcept
-    {
-        return std::isfinite(x) && std::isfinite(y) && x >= 0 && y >= 0 &&
-               x <= static_cast<double>(view_.width - 1u) && y <= static_cast<double>(view_.height - 1u);
-    }
-
-    [[nodiscard]] bool Pixel(const std::uint32_t x, const std::uint32_t y, double& output) noexcept
-    {
-        if (x >= view_.width || y >= view_.height)
-        {
-            error_ = Erasure::SampleOutOfBounds;
-            return false;
-        }
-        if (!Charge())
-        {
-            return false;
-        }
-        const auto* bytes = view_.pixels.data() + static_cast<std::size_t>(y) * view_.rowPitch + static_cast<std::size_t>(x) * pixelBytes_;
-        double value = 0;
-        switch (view_.pixelFormat)
-        {
-        case LumaPixelFormat::Gray8:
-            value = std::to_integer<std::uint8_t>(bytes[0]);
-            break;
-        case LumaPixelFormat::Bgra8:
-            value = 0.0722 * std::to_integer<std::uint8_t>(bytes[0]) + 0.7152 * std::to_integer<std::uint8_t>(bytes[1]) +
-                    0.2126 * std::to_integer<std::uint8_t>(bytes[2]);
-            break;
-        case LumaPixelFormat::R10G10B10A2:
-        {
-            const auto packed = Read32(bytes);
-            value = (0.2126 * (packed & 1023u) + 0.7152 * ((packed >> 10) & 1023u) +
-                     0.0722 * ((packed >> 20) & 1023u)) * (255.0 / 1023.0);
-            break;
-        }
-        case LumaPixelFormat::Fp16LinearSdr:
-        {
-            std::array<double, 4> components{};
-            for (std::size_t component = 0; component < components.size(); component++)
-            {
-                if (!DecodeHalf(Read16(bytes + component * 2), components[component]))
-                {
-                    error_ = Erasure::NonFinitePixel;
-                    return false;
-                }
-                if (components[component] < 0 || components[component] > 1)
-                {
-                    error_ = Erasure::InvalidPixelValue;
-                    return false;
-                }
-            }
-            const double linear = 0.2126 * components[0] + 0.7152 * components[1] + 0.0722 * components[2];
-            value = 255.0 * (linear <= 0.0031308 ? 12.92 * linear : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055);
-            break;
-        }
-        default:
-            error_ = Erasure::UnsupportedFormat;
-            return false;
-        }
-        output = value;
-        return true;
-    }
-
-    [[nodiscard]] bool Sample(const double x, const double y, double& output) noexcept
-    {
-        if (!Contains(x, y))
-        {
-            error_ = std::isfinite(x) && std::isfinite(y) ? Erasure::SampleOutOfBounds : Erasure::NonFinitePixel;
-            return false;
-        }
-        const auto left = static_cast<std::uint32_t>(std::floor(x));
-        const auto top = static_cast<std::uint32_t>(std::floor(y));
-        const double horizontal = x - left;
-        const double vertical = y - top;
-        const auto right = horizontal == 0 ? left : left + 1u;
-        const auto bottom = vertical == 0 ? top : top + 1u;
-        double topLeft = 0;
-        double topRight = 0;
-        double bottomLeft = 0;
-        double bottomRight = 0;
-        if (!Pixel(left, top, topLeft))
-        {
-            return false;
-        }
-        topRight = topLeft;
-        if (right != left && !Pixel(right, top, topRight))
-        {
-            return false;
-        }
-        bottomLeft = topLeft;
-        bottomRight = topRight;
-        if (bottom != top && (!Pixel(left, bottom, bottomLeft) || (right != left && !Pixel(right, bottom, bottomRight))))
-        {
-            return false;
-        }
-        if (right == left)
-        {
-            bottomRight = bottomLeft;
-        }
-        const double upper = topLeft + horizontal * (topRight - topLeft);
-        const double lower = bottomLeft + horizontal * (bottomRight - bottomLeft);
-        output = upper + vertical * (lower - upper);
-        return true;
-    }
-
-    [[nodiscard]] Erasure Error() const noexcept
-    {
-        return error_;
-    }
-
-    [[nodiscard]] std::uint64_t WorkUnits() const noexcept
-    {
-        return workUnits_;
-    }
-
-    [[nodiscard]] std::uint32_t Width() const noexcept
-    {
-        return view_.width;
-    }
-
-    [[nodiscard]] std::uint32_t Height() const noexcept
-    {
-        return view_.height;
-    }
-
-private:
-    const LumaView& view_;
-    const std::size_t pixelBytes_;
-    const std::uint64_t maximumWork_;
-    std::uint64_t workUnits_ = 0;
-    Erasure error_ = Erasure::None;
-};
+using detail::BytesPerPixel;
+using detail::Read32;
+using detail::LumaReader;
 
 bool ValidPolicy(const LocalDesktopDecodePolicy& policy) noexcept
 {
@@ -842,7 +650,7 @@ unsigned CountMidGraySamples(const CoreSample& sample, const double black, const
 }
 
 Erasure DecodeCopy(LumaReader& reader, const LocalDesktopDecodePolicy& policy, const LocalDesktopGeometry& geometry,
-                   const double black, const double white, const std::size_t copyIndex, LocalDesktopCopyObservation& output) noexcept
+                   const double black, const double white, const std::size_t copyIndex, LocalDesktopCopyObservation& output, const detail::LocalDesktopBinding binding) noexcept
 {
     const auto& region = kLocalDesktopBootstrapRegions[copyIndex];
     std::array<std::byte, kLocalDesktopRsCodewordBytes> codeword{};
@@ -886,8 +694,7 @@ Erasure DecodeCopy(LumaReader& reader, const LocalDesktopDecodePolicy& policy, c
         if (output.crcValid)
         {
             const auto parsed = pbprotocol::ParseBootstrapRecord(record);
-            output.recordValid = parsed && parsed.Value().visualLayoutVersion == kLocalDesktopLayoutVersion &&
-                                 parsed.Value().visualProfileId == kLocalDesktopVisualProfileId;
+            output.recordValid = parsed && detail::MatchesLocalDesktopBinding(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion, binding);
         }
     }
     // Soft constellation distance deliberately does not compare against the
@@ -974,7 +781,7 @@ Erasure CheckTiming(LumaReader& reader, const LocalDesktopDecodePolicy& policy, 
 }
 
 LocalDesktopObservation EvaluateGeometry(LumaReader& reader, const std::array<const Marker*, 4>& markers,
-                                          const LocalDesktopDecodePolicy& policy, LocalDesktopGeometry geometry) noexcept
+                                          const LocalDesktopDecodePolicy& policy, LocalDesktopGeometry geometry, const detail::LocalDesktopBinding binding) noexcept
 {
     LocalDesktopObservation observation;
     observation.geometry = geometry;
@@ -992,7 +799,7 @@ LocalDesktopObservation EvaluateGeometry(LumaReader& reader, const std::array<co
     std::array<Erasure, 2> copyErrors{};
     for (std::size_t copyIndex = 0; copyIndex < observation.copies.size(); copyIndex++)
     {
-        copyErrors[copyIndex] = DecodeCopy(reader, policy, geometry, observation.blackLevel, observation.whiteLevel, copyIndex, observation.copies[copyIndex]);
+        copyErrors[copyIndex] = DecodeCopy(reader, policy, geometry, observation.blackLevel, observation.whiteLevel, copyIndex, observation.copies[copyIndex], binding);
         observation.midGrayFraction = std::max(observation.midGrayFraction, observation.copies[copyIndex].midGrayFraction);
         observation.sampleMidGrayFraction = std::max(observation.sampleMidGrayFraction, observation.copies[copyIndex].sampleMidGrayFraction);
         if (reader.Error() != Erasure::None)
@@ -1089,7 +896,7 @@ Erasure SampleLuma(const LumaView& view, const double x, const double y, double&
     return reader.Sample(x, y, output) ? Erasure::None : reader.Error();
 }
 
-LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const LocalDesktopDecodePolicy& policy) noexcept
+LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy, const LocalDesktopBinding binding) noexcept
 {
     LocalDesktopObservation result;
     result.erasure = ValidateLumaView(view);
@@ -1159,7 +966,7 @@ LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const 
                         break;
                     }
                     geometries[geometryCount++] = geometry;
-                    auto observation = EvaluateGeometry(reader, markers, policy, geometry);
+                    auto observation = EvaluateGeometry(reader, markers, policy, geometry, binding);
                     if (reader.Error() != Erasure::None)
                     {
                         result = observation;
@@ -1199,6 +1006,11 @@ LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const 
         result.quality = 0;
     }
     return result;
+}
+
+LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const LocalDesktopDecodePolicy& policy) noexcept
+{
+    return detail::DecodeLocalDesktopScaffold(view, policy, detail::LocalDesktopBinding::BootstrapOnly);
 }
 
 const char* GetLocalDesktopErasureName(const Erasure reason) noexcept

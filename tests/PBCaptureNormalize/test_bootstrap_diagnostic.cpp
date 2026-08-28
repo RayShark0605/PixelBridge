@@ -2,6 +2,7 @@
 #include "../../apps/PixelBridgeDecoder/capture_bootstrap_telemetry.h"
 
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -105,6 +106,10 @@ public:
     DelayedProcessor(std::shared_ptr<BootstrapDiagnosticProcessor> processor, std::shared_ptr<DelayedControl> control)
         : processor_(std::move(processor)), control_(std::move(control))
     {
+    }
+    std::uint64_t ProcessingReservedBytes() const noexcept override
+    {
+        return processor_->ProcessingReservedBytes();
     }
     void Reset(std::optional<ScreenCaptureDomain> domain) noexcept override
     {
@@ -629,22 +634,60 @@ TEST_CASE("Bootstrap diagnostic bad visual input is an erasure rather than an ac
 
 TEST_CASE("Actual WARP readback and Bootstrap processor discard a decoded old-epoch candidate before committing new pixels", "[bootstrap-diagnostic][bootstrap-diagnostic-readback]")
 {
-    const auto firstRecord = CanonicalRecord();
-    const auto oldPendingRecord = CanonicalRecord(1);
-    const auto first = Render(firstRecord);
-    const auto oldPending = Render(oldPendingRecord);
+    const bool desktopLevels = GENERATE(false, true);
+    const auto MakeRecord = [desktopLevels](const std::uint64_t sequence)
+    {
+        if (!desktopLevels)
+        {
+            return CanonicalRecord(sequence);
+        }
+        pbprotocol::BootstrapRecord record;
+        record.visualLayoutVersion = pbmodulation::kDesktopLevelsLayoutVersion;
+        record.protocolVersion = pbprotocol::GetProtocolVersion();
+        record.visualProfileId = pbmodulation::kDesktopLevels4ProfileId;
+        record.sessionTag.value = sessionTag;
+        record.frameSequence = sequence;
+        std::array<std::byte, 44> bytes{};
+        REQUIRE(pbprotocol::SerializeBootstrapRecord(record, bytes));
+        return bytes;
+    };
+    const auto MakeRaster = [desktopLevels](const std::array<std::byte, 44>& record)
+    {
+        if (!desktopLevels)
+        {
+            return Render(record);
+        }
+        Raster raster{{1920, 1080}, std::vector<std::byte>(1920 * 1080 * 4)};
+        std::vector<std::byte> data(21672);
+        REQUIRE(pbdesktoplevels::GenerateDiagnosticData(record, data));
+        REQUIRE(pbmodulation::EncodeDesktopLevelsFrame(record, data, raster.pixels));
+        return raster;
+    };
+    const auto firstRecord = MakeRecord(0);
+    const auto oldPendingRecord = MakeRecord(1);
+    const auto first = MakeRaster(firstRecord);
+    const auto oldPending = MakeRaster(oldPendingRecord);
     const auto oldDomain = Domain();
     const auto newDomain = Domain(2);
     Graphics graphics;
     auto firstMetadata = Metadata(first.size, 1, oldDomain);
     firstMetadata.adapterLuid = graphics.adapterLuid;
     const auto environment = Environment(firstMetadata);
-    const auto processor = std::make_shared<BootstrapDiagnosticProcessor>();
+    std::shared_ptr<BootstrapDiagnosticProcessor> processor;
+    if (desktopLevels)
+    {
+        REQUIRE(BootstrapDiagnosticProcessor::CreateDesktopLevels(processor));
+    }
+    else
+    {
+        processor = std::make_shared<BootstrapDiagnosticProcessor>();
+    }
     const auto control = std::make_shared<DelayedControl>();
     DiagnosticReadbackConfig config;
     config.maximumRoiSize = first.size;
     config.maximumFrameAgeMilliseconds = 60000;
-    config.maximumReadbackBytes = 960ull * 540 * 8 * 6;
+    config.processingReservedBytes = processor->ProcessingReservedBytes();
+    config.maximumReadbackBytes = static_cast<std::uint64_t>(first.size.width) * first.size.height * 8 * 6 + config.processingReservedBytes;
     std::shared_ptr<DiagnosticCpuReadback> readback;
     REQUIRE(DiagnosticCpuReadback::Create(config, std::make_shared<DelayedProcessor>(processor, control), readback));
     const StopReadbackOnExit cleanup{control, readback};
@@ -706,9 +749,16 @@ TEST_CASE("Actual WARP readback and Bootstrap processor discard a decoded old-ep
     CHECK(snapshot.retainedSequences == 1);
     CHECK(snapshot.geometryGeneration == 1);
     CHECK(snapshot.calibrationGeneration == 1);
-    CHECK(snapshot.queuedEvents == 1);
-    CHECK(snapshot.diagnosticQueueDrops == 1);
+    CHECK(snapshot.queuedEvents == (desktopLevels ? 2u : 1u));
+    CHECK(snapshot.diagnosticQueueDrops == (desktopLevels ? 0u : 1u));
     BootstrapDiagnosticEvent event;
+    if (desktopLevels)
+    {
+        REQUIRE(processor->TakeEvent(event));
+        RequireAccepted(event, firstRecord);
+        REQUIRE(event.capture.domain == oldDomain);
+        REQUIRE(event.levels.evaluation.IsVerified());
+    }
     REQUIRE(processor->TakeEvent(event));
     RequireAccepted(event, firstRecord);
     CHECK(event.capture.domain == newDomain);

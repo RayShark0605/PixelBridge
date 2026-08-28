@@ -64,6 +64,9 @@ option(PB_BUILD_DXGI_GATE
 option(PB_BUILD_LOCAL_DESKTOP_GATE
     "Build opt-in SDR LocalDesktop Bootstrap pixel and application entry gates (never changes display settings)"
     OFF)
+option(PB_BUILD_DESKTOP_LEVELS_GATE
+    "Build opt-in real 1:1 SDR DesktopLevels WGC/DXGI application gates (never changes display settings)"
+    OFF)
 
 if(PB_BUILD_PHASE0_GATE AND NOT (BUILD_TESTING AND PB_BUILD_TESTS))
     message(FATAL_ERROR

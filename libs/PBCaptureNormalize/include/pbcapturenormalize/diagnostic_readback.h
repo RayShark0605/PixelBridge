@@ -25,6 +25,7 @@ struct DiagnosticReadbackConfig
     std::uint32_t stagingTextureCount = 3;
     std::uint32_t maximumFrameAgeMilliseconds = 250;
     std::uint64_t maximumReadbackBytes = 256ull * 1024 * 1024;
+    std::uint64_t processingReservedBytes = 0;
 };
 
 struct DiagnosticReadbackBudget
@@ -33,17 +34,25 @@ struct DiagnosticReadbackBudget
     std::uint64_t cpuBytes = 0;
     std::uint64_t stagingBytes = 0;
     std::uint64_t totalBytes = 0;
+    std::uint64_t processingBytes = 0;
     bool operator==(const DiagnosticReadbackBudget&) const = default;
 };
 
 // Fixed allocation reservation at eight bytes per pixel, including all CPU
-// buffers and all staging textures. Failure leaves the output unchanged.
+// buffers and all staging textures, plus the processor's fixed reservation.
+// Failure leaves the output unchanged.
 [[nodiscard]] CaptureStatus CalculateDiagnosticReadbackBudget(const DiagnosticReadbackConfig& config, DiagnosticReadbackBudget& output) noexcept;
 
 class CpuFrameProcessor
 {
 public:
     virtual ~CpuFrameProcessor() = default;
+    // Immutable startup reservation. Create rejects a readback configuration
+    // that has not charged it; old allocation-free processors default to zero.
+    [[nodiscard]] virtual std::uint64_t ProcessingReservedBytes() const noexcept
+    {
+        return 0;
+    }
     // All four methods run on ONE CPU worker. Reset is also dispatched after
     // invalidation with no following frame. A null domain clears temporal state.
     // Reset/Commit/Discard must be bounded, noexcept, and perform no I/O, waits,

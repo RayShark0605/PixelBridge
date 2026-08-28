@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pbinterleave/tile_permutation.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -141,8 +143,7 @@ private:
     const std::uint64_t shift =
         (GetInterleavePhase(frameSequence) * kInterleavePhaseStepTiles) %
         kInterleaveTileCount;
-    return (logicalTile * kInterleaveMultiplier + shift) %
-        kInterleaveTileCount;
+    return detail::ApplyAffineTile(logicalTile, kInterleaveTileCount, kInterleaveMultiplier, shift);
 }
 
 // logical = ((physical - phase * S) mod n) * M^-1 mod n. physicalTile must
@@ -156,7 +157,7 @@ private:
         kInterleaveTileCount;
     const std::uint64_t unshifted =
         (physicalTile + kInterleaveTileCount - shift) % kInterleaveTileCount;
-    return (unshifted * kInterleaveMultiplierInverse) % kInterleaveTileCount;
+    return detail::ApplyAffineTile(unshifted, kInterleaveTileCount, kInterleaveMultiplierInverse, 0);
 }
 
 // Moves every four-bit tile from logical to its physical position for

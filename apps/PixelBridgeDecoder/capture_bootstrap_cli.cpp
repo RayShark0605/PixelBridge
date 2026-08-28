@@ -20,11 +20,13 @@ void Usage()
 {
     std::cout << "Usage: PixelBridgeDecoder --capture-bootstrap --backend wgc|dxgi [--roi LEFT TOP RIGHT BOTTOM]\n"
                  "                          [--seconds N] [--telemetry NEW_FILE.jsonl]\n"
+                 "       PixelBridgeDecoder --capture-desktop-levels --backend wgc|dxgi [same ROI/duration/telemetry options]\n"
                  "ROI is signed physical desktop pixels, fully inside one monitor. Omit it to select interactively.\n"
                  "N is a finite capture duration (1..600 seconds, default 10); initialization/shutdown are separate bounded phases.\n"
                  "Experimental LocalDesktop Bootstrap only; identities are recovered only from captured pixels.\n"
                  "Explicit DiagnosticCpuReadback; no file receiver, HDR tone mapping or certified throughput claim.\n"
-                 "Exit: 0 = accepted Bootstrap, 4 = no accepted Bootstrap, 3 = selector cancelled, 2 = arguments, 1 = runtime error.\n";
+                 "DesktopLevels requires strict 1:1 SDR; no scaling, fallback or cross-frame soft combining.\n"
+                 "Exit: 0 = verified data (Bootstrap-only in old mode), 4 = none verified, 3 = selector cancelled, 2 = arguments, 1 = error.\n";
 }
 
 void Require(const CaptureStatus& status, const char* operation)
@@ -130,7 +132,18 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
         readbackConfig.stagingTextureCount = config.capture.roiTextureCount;
         readbackConfig.maximumFrameAgeMilliseconds = config.capture.maximumFrameAgeMilliseconds;
         readbackConfig.maximumReadbackBytes = 512ull * 1024 * 1024;
-        const auto processor = std::make_shared<pbdecoder::BootstrapDiagnosticProcessor>();
+        std::shared_ptr<pbdecoder::BootstrapDiagnosticProcessor> processor;
+        if (options.desktopLevels)
+        {
+            readbackConfig.processingReservedBytes = pbdesktoplevels::kProcessingReservationBytes;
+            DiagnosticReadbackBudget budget;
+            Require(CalculateDiagnosticReadbackBudget(readbackConfig, budget), "DesktopLevels processing reservation");
+            Require(pbdecoder::BootstrapDiagnosticProcessor::CreateDesktopLevels(processor), "DesktopLevels processor Create");
+        }
+        else
+        {
+            processor = std::make_shared<pbdecoder::BootstrapDiagnosticProcessor>();
+        }
         std::shared_ptr<DiagnosticCpuReadback> readback;
         Require(DiagnosticCpuReadback::Create(readbackConfig, processor, readback), "Diagnostic readback Create");
         const ReadbackStopGuard readbackStop{readback};
@@ -157,7 +170,7 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
             // Fixed queue capacity bounds each drain; callbacks never perform I/O.
             for (std::size_t index = 0; index < pbdecoder::BootstrapDiagnosticProcessor::eventCapacity && processor->TakeEvent(event); index++)
             {
-                if (!normalized.active || normalized.domain != event.capture.domain)
+                if (!options.desktopLevels && (!normalized.active || normalized.domain != event.capture.domain))
                 {
                     pbprotocol::SaturatingIncrementUnsigned(staleDiagnosticEvents);
                     continue;
@@ -185,6 +198,14 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
         const auto captureStop = capture.Stop();
         const auto workerStop = readback->Stop(3000);
         const auto stopped = capture.GetSnapshot();
+        if (options.desktopLevels)
+        {
+            pbdecoder::BootstrapDiagnosticEvent event;
+            for (std::size_t index = 0; index < pbdecoder::BootstrapDiagnosticProcessor::eventCapacity && processor->TakeEvent(event); index++)
+            {
+                emit(pbdecoder::SerializeBootstrapDiagnosticEvent(event));
+            }
+        }
         const auto finalVisual = processor->GetSnapshot();
         emit(pbdecoder::SerializeCaptureBootstrapSnapshot("capture-final", stopped, capture.GetNormalizationSnapshot(), readback->GetSnapshot(), finalVisual,
             staleDiagnosticEvents, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count())));

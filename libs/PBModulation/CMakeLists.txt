@@ -13,6 +13,9 @@ target_sources(PBModulation
         src/local_desktop_bootstrap.cpp
         src/local_desktop_decode.cpp
         src/local_desktop_internal.h
+        src/luma_reader.h
+        src/desktop_levels.cpp
+        src/desktop_levels_internal.h
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
@@ -22,7 +25,8 @@ target_sources(PBModulation
             include/pbmodulation/reference_raster.h
             include/pbmodulation/reference_visual_profile.h
             include/pbmodulation/local_desktop_bootstrap.h
-            include/pbmodulation/local_desktop_decode.h)
+            include/pbmodulation/local_desktop_decode.h
+            include/pbmodulation/desktop_levels.h)
 
 target_include_directories(PBModulation
     PUBLIC
@@ -37,6 +41,7 @@ target_link_libraries(PBModulation
     PRIVATE
         PB::CompilerSettings
         PB::PBProtocol
+        PB::PBInterleave
         PNG::PNG)
 
 # libpng headers are third-party: keep them out of the strict warning policy

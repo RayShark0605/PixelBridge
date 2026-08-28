@@ -85,5 +85,36 @@ int main()
     readback.active = true;
     normalized.active = false;
     std::cout << pbdecoder::SerializeCaptureBootstrapSnapshot("capture-snapshot", capture, normalized, readback, visual, 0, 2006);
+    visual.desktopLevels = true;
+    readback.reservation.processingBytes = 16 * 1024 * 1024;
+    std::cout << pbdecoder::SerializeCaptureBootstrapSnapshot("capture-snapshot", capture, normalized, readback, visual, 0, 3000);
+    pbdesktoplevels::ReferenceStatistics statistics;
+    pbdesktoplevels::FrameEvaluation evaluation;
+    evaluation.evaluated = evaluation.paddingValid = true;
+    evaluation.codewords = 10;
+    evaluation.comparedCodedBits = 162000;
+    std::array<std::uint64_t, 4096> histogram{};
+    histogram.back() = 86688;
+    if (!statistics.Add(evaluation, 0, histogram, 1))
+    {
+        return 1;
+    }
+    evaluation.erroneousCodedBits = 40500;
+    evaluation.fecFailures = 1;
+    if (!statistics.Add(evaluation, 15, histogram, 1))
+    {
+        return 1;
+    }
+    visual.candidates[1].statistics = statistics.GetSummary();
+    visual.candidates[1].geometryErasures = 3;
+    visual.candidates[1].pilotErasures = 4;
+    visual.candidates[1].duplicates = 5;
+    visual.unrecognizedBootstrap = 6;
+    std::cout << pbdecoder::SerializeCaptureBootstrapSnapshot("capture-final", capture, normalized, readback, visual, 0, 3001);
+    event.desktopLevels = true;
+    event.levels.modulation.profileId = pbmodulation::kDesktopLevels4ProfileId;
+    event.levels.modulation.calibration.phaseResidual = std::numeric_limits<double>::quiet_NaN();
+    event.levels.evaluation = evaluation;
+    std::cout << pbdecoder::SerializeBootstrapDiagnosticEvent(event);
     return std::cout ? 0 : 1;
 }

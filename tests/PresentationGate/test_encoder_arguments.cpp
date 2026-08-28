@@ -21,6 +21,25 @@ bool Parse(const std::initializer_list<const wchar_t*> options, DataWindowArgume
     return pbencoder::ParseDataWindowArguments(static_cast<int>(arguments.size()), arguments.data(), output);
 }
 
+TEST_CASE("Encoder DesktopLevels candidates require explicit names and do not change legacy defaults", "[encoder-cli][desktop-levels]")
+{
+    for (const auto name : {L"desktop-levels-2x2", L"desktop-levels-4x4"})
+    {
+        DataWindowArguments parsed;
+        REQUIRE(Parse({L"--visual", name, L"--frames", L"64"}, parsed));
+        REQUIRE(parsed.dataWindow);
+        REQUIRE(parsed.visual == (std::wstring_view(name) == L"desktop-levels-2x2" ? PresentationVisual::DesktopLevels2 : PresentationVisual::DesktopLevels4));
+        REQUIRE(parsed.frameLimit == 64);
+        const auto saved = parsed;
+        REQUIRE_FALSE(Parse({L"--visual", name, L"--visual", L"local-desktop-bootstrap"}, parsed));
+        REQUIRE(parsed == saved);
+        REQUIRE_FALSE(Parse({L"--visual", L"desktop-levels-8x8"}, parsed));
+        REQUIRE(parsed == saved);
+        REQUIRE(Parse({L"--data-window"}, parsed));
+        REQUIRE(parsed.visual == PresentationVisual::ReferenceRaster);
+    }
+}
+
 DataWindowArguments Sentinel()
 {
     return {true, true, true, 987654, L"unchanged-telemetry.jsonl", PresentationVisual::LocalDesktopBootstrap};

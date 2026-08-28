@@ -133,6 +133,8 @@ add_custom_target(PBParserFuzzHarness
         PBProtocolResumeStateFuzz
         PBProtocolResumeStateStructuredSelfTest)
 
+include(desktop_levels.cmake)
+
 target_include_directories(PBOuterFecWirehairV2Fuzz
     PRIVATE
         "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")

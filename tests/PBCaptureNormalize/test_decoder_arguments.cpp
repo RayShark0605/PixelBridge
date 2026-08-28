@@ -23,7 +23,7 @@ using pbdecoder::ParseCaptureBootstrapArguments;
 bool SameArguments(const CaptureBootstrapArguments& first, const CaptureBootstrapArguments& second)
 {
     return first.backend == second.backend && first.seconds == second.seconds && first.physicalRoi == second.physicalRoi &&
-           first.hasRoi == second.hasRoi && first.showHelp == second.showHelp && first.telemetryPath == second.telemetryPath;
+           first.hasRoi == second.hasRoi && first.showHelp == second.showHelp && first.telemetryPath == second.telemetryPath && first.desktopLevels == second.desktopLevels;
 }
 
 bool Parse(const std::vector<std::wstring>& arguments, CaptureBootstrapArguments& output)
@@ -262,4 +262,20 @@ TEST_CASE("Decoder final stdout flush failure cannot be reported as diagnostic s
     REQUIRE_NOTHROW(pbdiagnostic::FlushDiagnosticOutput(healthy));
     CHECK(healthy.good());
     CHECK(healthy.str() == "{\"accepted\":\"1\"}\n");
+}
+
+TEST_CASE("DesktopLevels decoder explicit mode parses without out-of-band identity hints", "[decoder-cli][desktop-levels]")
+{
+    CaptureBootstrapArguments output;
+    REQUIRE(Parse({L"decoder", L"--capture-desktop-levels", L"--backend", L"dxgi", L"--seconds", L"30", L"--roi", L"-1920", L"0", L"0", L"1080"}, output));
+    REQUIRE(output.desktopLevels);
+    REQUIRE(output.backend == BootstrapBackend::Dxgi);
+    REQUIRE(output.seconds == 30);
+    const auto saved = output;
+    REQUIRE_FALSE(Parse({L"decoder", L"--capture-desktop-levels", L"--backend", L"wgc", L"--profile", L"desktop-levels-2x2"}, output));
+    REQUIRE(SameArguments(output, saved));
+    REQUIRE_FALSE(Parse({L"decoder", L"--capture-desktop-levels", L"--backend", L"wgc", L"--capture-bootstrap"}, output));
+    REQUIRE(SameArguments(output, saved));
+    REQUIRE(Parse({L"decoder", L"--capture-bootstrap", L"--backend", L"wgc"}, output));
+    REQUIRE_FALSE(output.desktopLevels);
 }

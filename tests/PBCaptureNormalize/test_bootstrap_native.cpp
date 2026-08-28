@@ -58,11 +58,9 @@ LONG Coordinate(const std::int64_t value)
     return static_cast<LONG>(value);
 }
 
-std::vector<std::byte> HalfScaleIndependentRaster(const std::string_view stem = "a")
+std::vector<std::byte> HalfScaleRaster(const std::span<const std::byte> source)
 {
-    // The expected record is NEVER given to the capture/processor path. Only
-    // this sender image is presented; the processor receives actual OS pixels.
-    const auto source = localdesktoptest::MakeGoldenRaster(stem);
+    REQUIRE(source.size() == 1920 * 1080 * 4);
     std::vector<std::byte> scaled(std::size_t{960} * 540 * 4);
     for (std::uint32_t y = 0; y < 540; y++)
     {
@@ -86,10 +84,41 @@ std::vector<std::byte> HalfScaleIndependentRaster(const std::string_view stem = 
     return scaled;
 }
 
+std::vector<std::byte> HalfScaleIndependentRaster(const std::string_view stem = "a")
+{
+    // Only displayed pixels, never the expected record, enter the processor.
+    return HalfScaleRaster(localdesktoptest::MakeGoldenRaster(stem));
+}
+
+std::array<std::byte, 44> DesktopLevelsRecord(const std::string_view stem)
+{
+    const auto original = localdesktoptest::LoadGoldenRecord(stem);
+    const auto parsed = pbprotocol::ParseBootstrapRecord(original);
+    REQUIRE(parsed);
+    auto record = parsed.Value();
+    record.visualProfileId = pbmodulation::kDesktopLevels4ProfileId;
+    record.visualLayoutVersion = pbmodulation::kDesktopLevelsLayoutVersion;
+    std::array<std::byte, 44> bytes{};
+    REQUIRE(pbprotocol::SerializeBootstrapRecord(record, bytes));
+    return bytes;
+}
+
+std::vector<std::byte> DesktopLevelsRaster(const std::string_view stem)
+{
+    const auto record = DesktopLevelsRecord(stem);
+    std::vector<std::byte> data(21672);
+    std::vector<std::byte> pixels(1920 * 1080 * 4);
+    REQUIRE(pbdesktoplevels::GenerateDiagnosticData(record, data));
+    REQUIRE(pbmodulation::EncodeDesktopLevelsFrame(record, data, pixels));
+    return pixels;
+}
+
 struct NativeFixture
 {
-    void Initialize(const Clock::time_point deadline)
+    void Initialize(const Clock::time_point deadline, const bool desktopLevels = false)
     {
+        width = desktopLevels ? 1920u : 960u;
+        height = desktopLevels ? 1080u : 540u;
         INFO("Native Bootstrap requires a PMv2 test executable; no DPI mode is changed by this test");
         REQUIRE(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2));
         const HMONITOR primary = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
@@ -100,11 +129,11 @@ struct NativeFixture
         const auto workWidth = static_cast<std::int64_t>(monitor.rcWork.right) - monitor.rcWork.left;
         const auto workHeight = static_cast<std::int64_t>(monitor.rcWork.bottom) - monitor.rcWork.top;
         INFO("Native Bootstrap needs at least 960x540 unobstructed physical pixels on the primary output");
-        REQUIRE(workWidth >= 960);
-        REQUIRE(workHeight >= 540);
-        const auto left = static_cast<std::int64_t>(monitor.rcWork.left) + (workWidth - 960) / 2;
-        const auto top = static_cast<std::int64_t>(monitor.rcWork.top) + (workHeight - 540) / 2;
-        const RECT requested{Coordinate(left), Coordinate(top), Coordinate(left + 960), Coordinate(top + 540)};
+        REQUIRE(workWidth >= width);
+        REQUIRE(workHeight >= height);
+        const auto left = static_cast<std::int64_t>(monitor.rcWork.left) + (workWidth - width) / 2;
+        const auto top = static_cast<std::int64_t>(monitor.rcWork.top) + (workHeight - height) / 2;
+        const RECT requested{Coordinate(left), Coordinate(top), Coordinate(left + width), Coordinate(top + height)};
         const auto resolved = pbscreenregion::ResolveScreenCaptureRegion(requested, normalize.capture.region);
         INFO("ResolveScreenCaptureRegion=" << pbscreenregion::GetScreenRegionErrorName(resolved.code) << " HRESULT=" << resolved.nativeError);
         REQUIRE(resolved);
@@ -123,8 +152,8 @@ struct NativeFixture
         REQUIRE(environment.outputColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
 
         pbrenderd3d::DataWindowConfig windowConfig;
-        windowConfig.width = 960;
-        windowConfig.height = 540;
+        windowConfig.width = width;
+        windowConfig.height = height;
         windowConfig.clientOrigin = pbrenderd3d::PhysicalPoint{requested.left, requested.top};
         windowConfig.waitTimeoutMilliseconds = 2000;
         auto created = pbrenderd3d::DataWindow::Create(windowConfig);
@@ -143,14 +172,14 @@ struct NativeFixture
         const auto snapshot = window->GetSnapshot();
         REQUIRE(snapshot.environment.clientOrigin.x == requested.left);
         REQUIRE(snapshot.environment.clientOrigin.y == requested.top);
-        REQUIRE(snapshot.environment.clientWidth == 960);
-        REQUIRE(snapshot.environment.clientHeight == 540);
+        REQUIRE(snapshot.environment.clientWidth == width);
+        REQUIRE(snapshot.environment.clientHeight == height);
         REQUIRE(snapshot.contract.scalingNone);
         REQUIRE_FALSE(snapshot.softwareRasterizer);
         normalize.capture.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
         normalize.capture.maximumFrameAgeMilliseconds = 1000;
         normalize.capture.gpuTimeoutMilliseconds = 1000;
-        pixels = HalfScaleIndependentRaster();
+        pixels = desktopLevels ? DesktopLevelsRaster("a") : HalfScaleIndependentRaster();
         Present(deadline, 1);
         RequireVisible(deadline);
     }
@@ -158,7 +187,7 @@ struct NativeFixture
     void Present(const Clock::time_point deadline, const std::uint64_t presentationSequence)
     {
         const auto before = window->GetSnapshot();
-        const auto status = window->SubmitFrame({pixels, 960, 540, 960 * 4, presentationSequence, before.timing.presentationEpoch});
+        const auto status = window->SubmitFrame({pixels, width, height, static_cast<std::size_t>(width) * 4, presentationSequence, before.timing.presentationEpoch});
         INFO("Native fixture submit=" << pbrenderd3d::GetPresentationErrorName(status.code));
         REQUIRE(status);
         REQUIRE(Await((std::min)(deadline, Clock::now() + std::chrono::seconds(4)), [&]
@@ -171,7 +200,8 @@ struct NativeFixture
     {
         const auto& rectangle = normalize.capture.region.physicalRect;
         const std::array<POINT, 5> points{{{rectangle.left + 1, rectangle.top + 1}, {rectangle.right - 2, rectangle.top + 1},
-            {rectangle.left + 1, rectangle.bottom - 2}, {rectangle.right - 2, rectangle.bottom - 2}, {rectangle.left + 480, rectangle.top + 270}}};
+            {rectangle.left + 1, rectangle.bottom - 2}, {rectangle.right - 2, rectangle.bottom - 2},
+            {rectangle.left + static_cast<LONG>(width / 2), rectangle.top + static_cast<LONG>(height / 2)}}};
         return std::all_of(points.begin(), points.end(), [this](const POINT point)
         {
             return GetAncestor(WindowFromPoint(point), GA_ROOT) == windowHandle;
@@ -196,6 +226,8 @@ struct NativeFixture
     CaptureNormalizeConfig normalize;
     CaptureEnvironment environment;
     std::vector<std::byte> pixels;
+    std::uint32_t width = 960;
+    std::uint32_t height = 540;
 };
 
 class NativeCapture
@@ -243,6 +275,10 @@ public:
     explicit ResetObservedProcessor(std::shared_ptr<pbdecoder::BootstrapDiagnosticProcessor> processor) : processor_(std::move(processor))
     {
     }
+    std::uint64_t ProcessingReservedBytes() const noexcept override
+    {
+        return processor_->ProcessingReservedBytes();
+    }
     void Reset(std::optional<ScreenCaptureDomain> domain) noexcept override
     {
         processor_->Reset(std::move(domain));
@@ -273,18 +309,27 @@ private:
     pbdecoder::BootstrapDiagnosticSnapshot lastReset_;
 };
 
-void RunNativeBootstrap(const CaptureBackendKind kind)
+void RunNativeBootstrap(const CaptureBackendKind kind, const bool desktopLevels = false)
 {
     const auto started = Clock::now();
     const auto deadline = started + std::chrono::seconds(24);
     NativeFixture fixture;
-    fixture.Initialize(deadline);
-    const auto expected = localdesktoptest::LoadGoldenRecord("a");
-    const auto processor = std::make_shared<pbdecoder::BootstrapDiagnosticProcessor>();
+    fixture.Initialize(deadline, desktopLevels);
+    const auto expected = desktopLevels ? DesktopLevelsRecord("a") : localdesktoptest::LoadGoldenRecord("a");
+    std::shared_ptr<pbdecoder::BootstrapDiagnosticProcessor> processor;
+    if (desktopLevels)
+    {
+        REQUIRE(pbdecoder::BootstrapDiagnosticProcessor::CreateDesktopLevels(processor));
+    }
+    else
+    {
+        processor = std::make_shared<pbdecoder::BootstrapDiagnosticProcessor>();
+    }
     const auto resetObserver = std::make_shared<ResetObservedProcessor>(processor);
     DiagnosticReadbackConfig readbackConfig;
-    readbackConfig.maximumRoiSize = {960, 540};
+    readbackConfig.maximumRoiSize = {static_cast<std::int32_t>(fixture.width), static_cast<std::int32_t>(fixture.height)};
     readbackConfig.maximumFrameAgeMilliseconds = 1000;
+    readbackConfig.processingReservedBytes = processor->ProcessingReservedBytes();
     std::shared_ptr<DiagnosticCpuReadback> readback;
     REQUIRE(DiagnosticCpuReadback::Create(readbackConfig, resetObserver, readback));
     NativeCapture capture;
@@ -338,8 +383,13 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
         CHECK(copy.recordValid);
         CHECK(copy.canonical44 == expected);
     }
-    CHECK(accepted->bootstrap.visualProfileId == 0x50424C4442533031ULL);
-    CHECK(accepted->bootstrap.visualLayoutVersion == 2);
+    CHECK(accepted->bootstrap.visualProfileId == (desktopLevels ? pbmodulation::kDesktopLevels4ProfileId : 0x50424C4442533031ULL));
+    CHECK(accepted->bootstrap.visualLayoutVersion == (desktopLevels ? 3 : 2));
+    if (desktopLevels)
+    {
+        REQUIRE(accepted->levels.evaluation.IsVerified());
+        REQUIRE(accepted->levels.evaluation.falseAcceptedCodewords == 0);
+    }
     CHECK(accepted->bootstrap.sessionTag.value == 0x81DF204BD997BAD0ULL);
     CHECK(accepted->bootstrap.frameSequence == 0x1112131415161718ULL);
     CHECK(accepted->bootstrap.controlEpoch == 0x21222324u);
@@ -351,7 +401,7 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
     CHECK(accepted->capture.sourceGeneration > 0);
     CHECK(accepted->capture.slotGeneration > 0);
     CHECK(EqualRect(&accepted->capture.physicalRoi, &fixture.normalize.capture.region.physicalRect));
-    CHECK(accepted->capture.roiSize == CaptureSize{960, 540});
+    CHECK(accepted->capture.roiSize == readbackConfig.maximumRoiSize);
     CHECK(accepted->capture.adapterLuid.LowPart == fixture.environment.adapterLuid.LowPart);
     CHECK(accepted->capture.adapterLuid.HighPart == fixture.environment.adapterLuid.HighPart);
     CHECK(accepted->capture.isCursorExcluded);
@@ -362,8 +412,8 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
         ? CaptureSignalEncoding::LinearScRgb : CaptureSignalEncoding::SdrRgb));
     CHECK(accepted->capture.timestamp.monotonic100ns > 0);
     CHECK(accepted->capture.timestamp.domain == (kind == CaptureBackendKind::Wgc ? CaptureTimestampDomain::WgcSystemRelative100ns : CaptureTimestampDomain::DxgiQpcTicks));
-    CHECK(std::abs(accepted->visual.geometry.scaleX - 0.5) < 0.005);
-    CHECK(std::abs(accepted->visual.geometry.scaleY - 0.5) < 0.005);
+    CHECK(std::abs(accepted->visual.geometry.scaleX - (desktopLevels ? 1.0 : 0.5)) < 0.005);
+    CHECK(std::abs(accepted->visual.geometry.scaleY - (desktopLevels ? 1.0 : 0.5)) < 0.005);
     CHECK(std::abs(accepted->visual.geometry.originX) <= 1.25);
     CHECK(std::abs(accepted->visual.geometry.originY) <= 1.25);
     CHECK(processorSnapshot.accepted > 0);
@@ -371,8 +421,8 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
     CHECK(readbackSnapshot.mappedFrames > 0);
     CHECK(readbackSnapshot.committedFrames > 0);
 
-    const auto expectedNext = localdesktoptest::LoadGoldenRecord("b");
-    auto nextPixels = HalfScaleIndependentRaster("b");
+    const auto expectedNext = desktopLevels ? DesktopLevelsRecord("b") : localdesktoptest::LoadGoldenRecord("b");
+    auto nextPixels = desktopLevels ? DesktopLevelsRaster("b") : HalfScaleIndependentRaster("b");
     REQUIRE(expectedNext != expected);
     const auto originalDomain = accepted->capture.domain;
     const auto beforeRecreate = capture.GetSnapshot();
@@ -435,7 +485,14 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
     CHECK(resetState.calibrationGeneration == 0);
     CHECK(resetState.trackedSessions == 0);
     CHECK(resetState.retainedSequences == 0);
-    CHECK(resetState.queuedEvents == 0);
+    if (desktopLevels)
+    {
+        CHECK(resetState.queuedEvents <= pbdecoder::BootstrapDiagnosticProcessor::eventCapacity);
+    }
+    else
+    {
+        CHECK(resetState.queuedEvents == 0);
+    }
 
     fixture.pixels = std::move(nextPixels);
     fixture.Present(deadline, 3);
@@ -455,6 +512,14 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
             lastEvent = event;
             // Freshly captured 'a' pixels between restart and the sole 'b'
             // Present are valid. Old observations/domain relabeling are not.
+            if (desktopLevels && event.capture.domain == originalDomain)
+            {
+                // Immutable pre-reset audit events are retained only in the new
+                // mode, not re-admitted or relabelled as current calibration.
+                CHECK(event.visual.canonical44 == expected);
+                CHECK(event.capture.sourceGeneration == accepted->capture.sourceGeneration);
+                continue;
+            }
             CHECK(event.capture.domain == newDomain);
             CHECK(event.capture.domain != originalDomain);
             CHECK(event.capture.domain.sourceId == originalDomain.sourceId);
@@ -511,8 +576,8 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
         CHECK(copy.recordValid);
         CHECK(copy.canonical44 == expectedNext);
     }
-    CHECK(nextAccepted->bootstrap.visualProfileId == 0x50424C4442533031ULL);
-    CHECK(nextAccepted->bootstrap.visualLayoutVersion == 2);
+    CHECK(nextAccepted->bootstrap.visualProfileId == (desktopLevels ? 0xF9B7490A9251F15CULL : 0x50424C4442533031ULL));
+    CHECK(nextAccepted->bootstrap.visualLayoutVersion == (desktopLevels ? 3 : 2));
     CHECK(nextAccepted->bootstrap.sessionTag.value == 0x81DF204BD997BAD0ULL);
     CHECK(nextAccepted->bootstrap.frameSequence == 0x1112131415161719ULL);
     CHECK(nextAccepted->bootstrap.controlEpoch == 0x21222324u);
@@ -527,7 +592,7 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
     CHECK(nextAccepted->capture.captureObservation > beforeRecreate.arrivedFrames);
     CHECK(nextAccepted->capture.slotGeneration > 0);
     CHECK(EqualRect(&nextAccepted->capture.physicalRoi, &fixture.normalize.capture.region.physicalRect));
-    CHECK(nextAccepted->capture.roiSize == CaptureSize{960, 540});
+    CHECK(nextAccepted->capture.roiSize == readbackConfig.maximumRoiSize);
     CHECK(nextAccepted->capture.sourceContentSize == recoveredCapture.environment.contentSize);
     CHECK(nextAccepted->capture.sourceExtent == recoveredCapture.environment.sourceSize);
     CHECK(nextAccepted->capture.displayRotation == fixture.normalize.capture.region.rotation);
@@ -542,8 +607,13 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
         ? CaptureSignalEncoding::LinearScRgb : CaptureSignalEncoding::SdrRgb));
     CHECK(nextAccepted->capture.timestamp.monotonic100ns > accepted->capture.timestamp.monotonic100ns);
     CHECK(nextAccepted->capture.timestamp.domain == (kind == CaptureBackendKind::Wgc ? CaptureTimestampDomain::WgcSystemRelative100ns : CaptureTimestampDomain::DxgiQpcTicks));
-    CHECK(std::abs(nextAccepted->visual.geometry.scaleX - 0.5) < 0.005);
-    CHECK(std::abs(nextAccepted->visual.geometry.scaleY - 0.5) < 0.005);
+    CHECK(std::abs(nextAccepted->visual.geometry.scaleX - (desktopLevels ? 1.0 : 0.5)) < 0.005);
+    CHECK(std::abs(nextAccepted->visual.geometry.scaleY - (desktopLevels ? 1.0 : 0.5)) < 0.005);
+    if (desktopLevels)
+    {
+        REQUIRE(nextAccepted->levels.evaluation.IsVerified());
+        REQUIRE(processor->GetSnapshot().candidates[1].statistics.falseAcceptedCodewords == 0);
+    }
     CHECK(std::abs(nextAccepted->visual.geometry.originX) <= 1.25);
     CHECK(std::abs(nextAccepted->visual.geometry.originY) <= 1.25);
     CHECK(nextAccepted->geometryGeneration > 0);
@@ -581,6 +651,14 @@ void RunNativeBootstrap(const CaptureBackendKind kind)
     CHECK(readbackStopped.pendingStagingFrames == 0);
     CHECK(readbackStopped.queuedFrames == 0);
     CHECK(readbackStopped.cpuBuffersInUse == 0);
+    if (desktopLevels)
+    {
+        pbdecoder::BootstrapDiagnosticEvent audit;
+        for (std::size_t index = 0; index < pbdecoder::BootstrapDiagnosticProcessor::eventCapacity && processor->TakeEvent(audit); index++)
+        {
+            CHECK(audit.capture.domain == newDomain);
+        }
+    }
     const auto processorStopped = processor->GetSnapshot();
     CHECK_FALSE(processorStopped.domain.has_value());
     CHECK(processorStopped.geometryGeneration == 0);
@@ -644,3 +722,73 @@ TEST_CASE("Decoder diagnostic CLI accepts Bootstrap only from actual DXGI screen
 {
     RunNativeBootstrapCli(CaptureBackendKind::Dxgi);
 }
+
+#ifdef PB_DESKTOP_LEVELS_NATIVE_GATE
+TEST_CASE("DesktopLevels real WGC recreation resets calibration and recovers fresh exact data", "[desktop-levels-native-contract]")
+{
+    RunNativeBootstrap(CaptureBackendKind::Wgc, true);
+}
+
+TEST_CASE("DesktopLevels real DXGI recreation resets calibration and recovers fresh exact data", "[desktop-levels-native-contract]")
+{
+    RunNativeBootstrap(CaptureBackendKind::Dxgi, true);
+}
+
+TEST_CASE("DesktopLevels rejects truly displayed half-scale frames even with valid Bootstrap", "[desktop-levels-native-contract][desktop-levels-scale]")
+{
+    for (const auto kind : {CaptureBackendKind::Wgc, CaptureBackendKind::Dxgi})
+    {
+        const auto deadline = Clock::now() + std::chrono::seconds(20);
+        NativeFixture fixture;
+        fixture.Initialize(deadline);
+        fixture.pixels = HalfScaleRaster(DesktopLevelsRaster("a"));
+        fixture.Present(deadline, 2);
+        std::shared_ptr<pbdecoder::BootstrapDiagnosticProcessor> processor;
+        REQUIRE(pbdecoder::BootstrapDiagnosticProcessor::CreateDesktopLevels(processor));
+        DiagnosticReadbackConfig config;
+        config.maximumRoiSize = {960, 540};
+        config.maximumFrameAgeMilliseconds = 1000;
+        config.processingReservedBytes = processor->ProcessingReservedBytes();
+        std::shared_ptr<DiagnosticCpuReadback> readback;
+        REQUIRE(DiagnosticCpuReadback::Create(config, processor, readback));
+        NativeCapture capture;
+        REQUIRE(capture.Start(kind, fixture.normalize, readback));
+        fixture.Present(deadline, 3);
+        std::optional<pbdecoder::BootstrapDiagnosticEvent> located;
+        REQUIRE(Await(deadline, [&]
+        {
+            pbdecoder::BootstrapDiagnosticEvent event;
+            for (std::size_t index = 0; index < pbdecoder::BootstrapDiagnosticProcessor::eventCapacity && processor->TakeEvent(event); index++)
+            {
+                if (event.visual.IsAccepted())
+                {
+                    located = event;
+                    return true;
+                }
+            }
+            return false;
+        }));
+        REQUIRE(located.has_value());
+        REQUIRE(located->visual.canonical44 == DesktopLevelsRecord("a"));
+        REQUIRE(located->levels.modulation.erasure == pbmodulation::DesktopLevelsErasure::ScaleOutOfRange);
+        REQUIRE(located->levels.modulation.dataWorkUnits == 0);
+        REQUIRE_FALSE(located->levels.evaluation.evaluated);
+        REQUIRE(processor->GetSnapshot().candidates[1].statistics.frames == 0);
+        REQUIRE(processor->GetSnapshot().candidates[1].geometryErasures > 0);
+        REQUIRE(capture.Stop());
+        REQUIRE(readback->Stop(2000));
+        const auto& rectangle = fixture.normalize.capture.region.physicalRect;
+        std::vector<std::wstring> arguments{L"PixelBridgeDecoder", L"--capture-desktop-levels", L"--backend",
+            kind == CaptureBackendKind::Wgc ? L"wgc" : L"dxgi", L"--seconds", L"3", L"--roi",
+            std::to_wstring(rectangle.left), std::to_wstring(rectangle.top), std::to_wstring(rectangle.right), std::to_wstring(rectangle.bottom)};
+        std::vector<wchar_t*> pointers;
+        for (auto& argument : arguments)
+        {
+            pointers.push_back(argument.data());
+        }
+        REQUIRE(RunCaptureBootstrapCommand(static_cast<int>(pointers.size()), pointers.data()) == 4);
+        fixture.RequireVisible(deadline);
+        fixture.window->Stop();
+    }
+}
+#endif

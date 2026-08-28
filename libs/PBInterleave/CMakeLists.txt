@@ -8,7 +8,8 @@ target_sources(PBInterleave
         FILE_SET HEADERS
         BASE_DIRS include
         FILES
-            include/pbinterleave/interleave_reference.h)
+            include/pbinterleave/interleave_reference.h
+            include/pbinterleave/tile_permutation.h)
 
 target_include_directories(PBInterleave
     PUBLIC
