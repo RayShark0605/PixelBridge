@@ -60,7 +60,7 @@ TEST_CASE("DXGI single outstanding source lease is move only and released exactl
     REQUIRE(fixture.source.Acquire());
     FrameLease second;
     REQUIRE(fixture.inbox->TakeNewest(second));
-    REQUIRE(second.cursorState == CursorState::PossiblyComposited);
+    REQUIRE(second.cursorState == CursorState::KnownAbsent);
     second.Reset();
     REQUIRE(fixture.control->releases == 2);
     REQUIRE_FALSE(fixture.control->unsafeAcquire);
@@ -112,7 +112,7 @@ TEST_CASE("DXGI pointer-only updates never become image arrivals and shape metad
     REQUIRE(snapshot.accumulatedFrames == 2);
 }
 
-TEST_CASE("DXGI false or absent visibility never claims cursor excluded")
+TEST_CASE("DXGI absent pointer reports stay unknown and false visibility proves the frame cursor-free")
 {
     for (const auto acquisition : {Image(100), Image(100, 100, false)})
     {
@@ -121,9 +121,17 @@ TEST_CASE("DXGI false or absent visibility never claims cursor excluded")
         REQUIRE(fixture.source.Acquire());
         FrameLease frame;
         REQUIRE(fixture.inbox->TakeNewest(frame));
-        REQUIRE((frame.cursorState == CursorState::Unknown || frame.cursorState == CursorState::PossiblyComposited));
+        // A zero LastMouseUpdateTime is an unspecified report and stays
+        // Unknown. A well-formed report with Visible==FALSE is the compositor
+        // stating the pointer is not in the frame, so it is KnownAbsent and
+        // downstream keeps it; neither ever claims backend-level exclusion or
+        // a composited pointer box.
+        const bool wellFormed = acquisition.info.LastMouseUpdateTime.QuadPart != 0;
+        CHECK(frame.cursorState == (wellFormed ? CursorState::KnownAbsent : CursorState::Unknown));
         REQUIRE(frame.cursorState != CursorState::Excluded);
         REQUIRE(frame.cursorState != CursorState::SeparatePointer);
+        REQUIRE_FALSE(frame.pointer.positionKnown);
+        REQUIRE_FALSE(frame.pointer.separateVisible);
         frame.Reset();
     }
 }
@@ -155,7 +163,7 @@ TEST_CASE("DXGI invisible pointer discards unspecified coordinates until a later
             REQUIRE(frame.pointer.physicalLeft == 0);
             REQUIRE(frame.pointer.physicalTop == 0);
             REQUIRE(frame.pointer.rawUpdateTimestamp == 200);
-            REQUIRE(frame.cursorState == CursorState::PossiblyComposited);
+            REQUIRE(frame.cursorState == CursorState::KnownAbsent);
         }
         else
         {

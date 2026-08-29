@@ -16,6 +16,8 @@ target_sources(PBModulation
         src/luma_reader.h
         src/desktop_levels.cpp
         src/desktop_levels_internal.h
+        src/shape_chroma.cpp
+        src/shape_chroma_internal.h
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
@@ -26,7 +28,8 @@ target_sources(PBModulation
             include/pbmodulation/reference_visual_profile.h
             include/pbmodulation/local_desktop_bootstrap.h
             include/pbmodulation/local_desktop_decode.h
-            include/pbmodulation/desktop_levels.h)
+            include/pbmodulation/desktop_levels.h
+            include/pbmodulation/shape_chroma.h)
 
 target_include_directories(PBModulation
     PUBLIC

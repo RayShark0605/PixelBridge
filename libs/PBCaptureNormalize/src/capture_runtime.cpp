@@ -146,11 +146,19 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
         return backend->Start(working.captureEpoch);
     }
 
-    [[nodiscard]] bool Expired(const std::int64_t timestamp100ns) noexcept
+    [[nodiscard]] bool Expired(const std::int64_t timestamp100ns, const std::int64_t arrivalQpc100ns) noexcept
     {
         if (config.maximumFrameAgeMilliseconds == 0)
         {
             return false;
+        }
+        const auto effective = ResolveEffectiveCaptureTime100ns(timestamp100ns, arrivalQpc100ns);
+        if (effective < 0)
+        {
+            // Neither the backend claim nor the QPC arrival is usable; refuse
+            // the frame instead of guessing its age.
+            pbprotocol::SaturatingIncrementUnsigned(working.expiredFrames);
+            return true;
         }
         LARGE_INTEGER now{};
         std::int64_t now100ns = 0;
@@ -159,7 +167,7 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
             pbprotocol::SaturatingIncrementUnsigned(working.expiredFrames);
             return true;
         }
-        const auto classification = ClassifyFrameAge(now100ns, timestamp100ns, config.maximumFrameAgeMilliseconds);
+        const auto classification = ClassifyFrameAge(now100ns, effective, config.maximumFrameAgeMilliseconds);
         working.frameAgeHighWater100ns = std::max(working.frameAgeHighWater100ns, classification.age100ns);
         if (classification.disposition != CaptureFrameAgeDisposition::Current)
         {
@@ -216,12 +224,23 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
             }
             if (slot.state == SlotState::Copying)
             {
+                slot.metadata.roiCopyTime100ns = completion.roiCopyTime100ns;
+                if (completion.roiCopyTime100ns)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(working.roiCopyTimingSamples);
+                    working.roiCopyTimeTotal100ns = pbprotocol::SaturatingAddUnsigned(working.roiCopyTimeTotal100ns, *completion.roiCopyTime100ns);
+                    working.roiCopyTimeHighWater100ns = std::max(working.roiCopyTimeHighWater100ns, *completion.roiCopyTime100ns);
+                }
+                else if (completion.roiCopyTimingUnavailable)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(working.roiCopyTimingUnavailable);
+                }
                 // Poll proved the GPU no longer reads this OS capture surface.
                 slot.source.Reset();
                 SetError(FromHresult(inbox->counters->closeError.load(), CaptureStage::Completion));
                 const auto input = inbox->GetSnapshot();
                 if (deliver && working.error && input.error && !input.recreateRequested && !input.stopRequested &&
-                    !Expired(slot.metadata.systemRelativeTime100ns) && !Stale(slot.metadata.arrivalOrdinal))
+                    !Expired(slot.metadata.systemRelativeTime100ns, slot.metadata.arrivalQpc100ns) && !Stale(slot.metadata.arrivalOrdinal))
                 {
                     // Slot reuse is not capture ordering: a newer copy in a
                     // low-numbered slot can retire before an older high slot.
@@ -265,7 +284,7 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
             {
                 return;
             }
-            if (Expired(source.timestamp100ns))
+            if (Expired(source.timestamp100ns, source.arrivalQpc100ns))
             {
                 return;
             }
@@ -284,6 +303,7 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
             slot.metadata.timestampDomain = source.timestampDomain;
             slot.metadata.rawTimestamp = source.rawTimestamp;
             slot.metadata.rawFrequency = source.rawFrequency;
+            slot.metadata.arrivalQpc100ns = source.arrivalQpc100ns;
             bool submitted = false;
             const auto status = backend->Copy(source, index, submitted);
             // Even a failed Signal/End path may follow a successfully submitted copy.
@@ -392,6 +412,7 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
             status = CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Configuration);
         }
         clockFrequency = frequency.QuadPart;
+        inbox->SetClockFrequency(clockFrequency);
         if (status)
         {
             status = backend->Initialize(config, inbox);

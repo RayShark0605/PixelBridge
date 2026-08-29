@@ -24,6 +24,27 @@ using pbmodulation::ModulationErrorCode;
 using pbmodulation::ModulationStatus;
 using pbmodulation::ModulationResult;
 
+struct DiagnosticBinding
+{
+    std::uint64_t profileId = 0;
+    std::uint8_t layoutVersion = 0;
+    std::uint32_t dataBytes = 0;
+    std::uint32_t codewords = 0;
+    std::uint32_t paddingBytes = 0;
+    std::string_view payloadDomain{};
+};
+
+constexpr DiagnosticBinding desktop2Binding{pbmodulation::kDesktopLevels2ProfileId, pbmodulation::kDesktopLevelsLayoutVersion,
+    86688, 42, 1638, "PB-DesktopLevels-X1-Data"};
+constexpr DiagnosticBinding desktop4Binding{pbmodulation::kDesktopLevels4ProfileId, pbmodulation::kDesktopLevelsLayoutVersion,
+    21672, 10, 1422, "PB-DesktopLevels-X1-Data"};
+constexpr DiagnosticBinding shapeChromaBinding{pbmodulation::kShapeChromaProfileId, pbmodulation::kShapeChromaLayoutVersion,
+    pbmodulation::kShapeChromaDataBytes, pbmodulation::kShapeChromaCodewords, pbmodulation::kShapeChromaPaddingBytes,
+    "PB-ShapeChroma-1-Data"};
+static_assert(desktop2Binding.codewords * kCodewordBytes + desktop2Binding.paddingBytes == desktop2Binding.dataBytes);
+static_assert(desktop4Binding.codewords * kCodewordBytes + desktop4Binding.paddingBytes == desktop4Binding.dataBytes);
+static_assert(shapeChromaBinding.codewords * kCodewordBytes + shapeChromaBinding.paddingBytes == shapeChromaBinding.dataBytes);
+
 bool Overlap(const std::span<const std::byte> first, const std::span<const std::byte> second) noexcept
 {
     if (first.empty() || second.empty())
@@ -41,25 +62,33 @@ bool Overlap(const std::span<const std::byte> first, const std::span<const std::
     return firstAddress <= secondAddress ? secondAddress - firstAddress < first.size() : firstAddress - secondAddress < second.size();
 }
 
-const pbmodulation::DesktopLevelsProfile* ParseBinding(const std::span<const std::byte> bytes, pbprotocol::BootstrapRecord& record) noexcept
+const DiagnosticBinding* ParseBinding(const std::span<const std::byte> bytes, pbprotocol::BootstrapRecord& record) noexcept
 {
     if (bytes.size() != pbmodulation::kLocalDesktopBootstrapRecordBytes || bytes.data() == nullptr)
     {
         return nullptr;
     }
     const auto parsed = pbprotocol::ParseBootstrapRecord(bytes);
-    if (!parsed || parsed.Value().visualLayoutVersion != pbmodulation::kDesktopLevelsLayoutVersion)
+    if (!parsed)
     {
         return nullptr;
     }
     record = parsed.Value();
-    return pbmodulation::GetDesktopLevelsProfile(record.visualProfileId);
+    if (record.visualProfileId == desktop2Binding.profileId && record.visualLayoutVersion == desktop2Binding.layoutVersion)
+    {
+        return &desktop2Binding;
+    }
+    if (record.visualProfileId == desktop4Binding.profileId && record.visualLayoutVersion == desktop4Binding.layoutVersion)
+    {
+        return &desktop4Binding;
+    }
+    return record.visualProfileId == shapeChromaBinding.profileId && record.visualLayoutVersion == shapeChromaBinding.layoutVersion ?
+        &shapeChromaBinding : nullptr;
 }
 
-void GeneratePayload(const std::span<const std::byte> bootstrapRecord, const std::uint32_t slot,
-                     const std::span<std::byte, kPayloadBytes> payload) noexcept
+void GeneratePayload(const std::string_view domain, const std::span<const std::byte> bootstrapRecord, const std::uint32_t slot,
+                      const std::span<std::byte, kPayloadBytes> payload) noexcept
 {
-    constexpr std::string_view domain = "PB-DesktopLevels-X1-Data";
     for (std::size_t offset = 0; offset < payload.size(); offset += 32)
     {
         std::array<std::byte, 8> suffix{};
@@ -79,14 +108,14 @@ void GeneratePayload(const std::span<const std::byte> bootstrapRecord, const std
 }
 
 bool GenerateInto(const std::span<const std::byte> bootstrapRecord, const pbprotocol::BootstrapRecord& record,
-                  const pbmodulation::DesktopLevelsProfile& profile, const std::span<std::byte> data) noexcept
+                   const DiagnosticBinding& profile, const std::span<std::byte> data) noexcept
 {
     std::array<std::byte, kPayloadBytes> payload{};
     std::array<std::byte, kInfoBytes> transport{};
     std::array<std::byte, kInfoBytes> information{};
     for (std::uint32_t slot = 0; slot < profile.codewords; slot++)
     {
-        GeneratePayload(bootstrapRecord, slot, payload);
+        GeneratePayload(profile.payloadDomain, bootstrapRecord, slot, payload);
         pbprotocol::TransportBlockHeader header;
         header.sessionTag = record.sessionTag;
         header.segmentOrdinal = record.frameSequence;
@@ -212,12 +241,14 @@ bool AdaptSoftMetrics(const std::span<const float> metrics, const std::span<std:
 
 bool FrameEvaluation::IsVerified() const noexcept
 {
-    return evaluated && paddingValid && codewords != 0 && fecFailures == 0 && crcFailures == 0 && identityFailures == 0 && falseAcceptedCodewords == 0;
+    return evaluated && paddingValid && codewords != 0 && acceptedTransportBlocks == codewords && fecFailures == 0 &&
+        crcFailures == 0 && identityFailures == 0 && falseAcceptedCodewords == 0;
 }
 
 struct ReferenceChannel::Implementation
 {
     pbmodulation::DesktopLevelsWorkspace modulation;
+    pbmodulation::ShapeChromaWorkspace shapeChroma;
     pbinnerfec::QcLdpcDecoder decoder;
     std::array<std::byte, pbmodulation::kDesktopLevelsMaximumDataBytes> hard{};
     std::array<float, pbmodulation::kDesktopLevelsMaximumBits> soft{};
@@ -225,7 +256,10 @@ struct ReferenceChannel::Implementation
     std::array<std::byte, kCodewordBytes * kMaximumCodewords> recovered{};
     std::array<bool, kMaximumCodewords> crcValid{};
     std::array<std::int16_t, kCodewordBits> llr{};
+    std::array<AcceptedTransportBlock, kMaximumCodewords> accepted{};
+    std::size_t acceptedCount = 0;
     bool histogramValid = false;
+    bool shapeHistogramValid = false;
 };
 
 ReferenceChannel::ReferenceChannel() noexcept = default;
@@ -238,13 +272,15 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
     // 1 MiB bounds the existing Robust decoder; another MiB covers bounded
     // application state. Reject before allocation, including tiny budgets.
     if (maximumBytes < kProcessingReservationBytes ||
-        sizeof(Implementation) + pbmodulation::DesktopLevelsWorkspace::RequiredBytes() + 2 * 1024 * 1024 > kProcessingReservationBytes)
+        sizeof(Implementation) + pbmodulation::DesktopLevelsWorkspace::RequiredBytes() + pbmodulation::ShapeChromaWorkspace::RequiredBytes() +
+            2 * 1024 * 1024 > kProcessingReservationBytes)
     {
         return ModulationResult<ReferenceChannel>::Failure(ModulationErrorCode::InvalidInput, 0);
     }
     auto modulation = pbmodulation::DesktopLevelsWorkspace::Create(kProcessingReservationBytes);
+    auto shapeChroma = pbmodulation::ShapeChromaWorkspace::Create(kProcessingReservationBytes);
     auto decoder = pbinnerfec::QcLdpcDecoder::Create(pbinnerfec::kInnerFecProfileIdRobust);
-    if (!modulation || !decoder)
+    if (!modulation || !shapeChroma || !decoder)
     {
         return ModulationResult<ReferenceChannel>::Failure(ModulationErrorCode::MemoryAllocationFailure, 0);
     }
@@ -255,6 +291,7 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
         return ModulationResult<ReferenceChannel>::Failure(ModulationErrorCode::MemoryAllocationFailure, 0);
     }
     result.implementation_->modulation = std::move(modulation).Value();
+    result.implementation_->shapeChroma = std::move(shapeChroma).Value();
     result.implementation_->decoder = std::move(decoder).Value();
     return ModulationResult<ReferenceChannel>::Success(std::move(result));
 }
@@ -269,12 +306,38 @@ ReferenceObservation ReferenceChannel::Decode(const pbmodulation::LumaView& view
     }
     auto& state = *implementation_;
     state.histogramValid = false;
+    state.shapeHistogramValid = false;
+    state.acceptedCount = 0;
     result.modulation = pbmodulation::DecodeDesktopLevelsFrame(view, state.modulation, state.hard, state.soft, policy);
     if (result.modulation.IsAccepted())
     {
         const auto bytes = result.modulation.dataBytes;
         result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44, std::span(state.hard).first(bytes), std::span(state.soft).first(bytes * 8ULL));
         state.histogramValid = result.evaluation.evaluated;
+    }
+    return result;
+}
+
+ShapeChromaReferenceObservation ReferenceChannel::DecodeShapeChroma(const pbmodulation::LumaView& view,
+    const pbmodulation::ShapeChromaDecodePolicy& policy) noexcept
+{
+    ShapeChromaReferenceObservation result;
+    if (!implementation_)
+    {
+        result.modulation.erasure = pbmodulation::ShapeChromaErasure::WorkspaceUnavailable;
+        return result;
+    }
+    auto& state = *implementation_;
+    state.histogramValid = false;
+    state.shapeHistogramValid = false;
+    state.acceptedCount = 0;
+    result.modulation = pbmodulation::DecodeShapeChromaFrame(view, state.shapeChroma, state.hard, state.soft, policy);
+    if (result.modulation.IsAccepted())
+    {
+        result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44,
+            std::span(state.hard).first(result.modulation.dataBytes),
+            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
+        state.shapeHistogramValid = result.evaluation.evaluated;
     }
     return result;
 }
@@ -289,6 +352,8 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
     }
     auto& state = *implementation_;
     state.histogramValid = false;
+    state.shapeHistogramValid = false;
+    state.acceptedCount = 0;
     pbprotocol::BootstrapRecord record;
     const auto* const profile = ParseBinding(bootstrapRecord, record);
     const auto Finite = [](const float metric)
@@ -367,6 +432,13 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
         {
             result.identityFailures++;
         }
+        else
+        {
+            auto& accepted = state.accepted[state.acceptedCount++];
+            accepted.slot = slot;
+            std::copy(block.Value().begin(), block.Value().end(), accepted.bytes.begin());
+            result.acceptedTransportBlocks++;
+        }
     }
 
     // The trust boundary: ONLY scoring below this line can consult known data.
@@ -405,13 +477,33 @@ std::span<const std::uint64_t> ReferenceChannel::GetMarginHistogram() const noex
     return implementation_ && implementation_->histogramValid ? implementation_->modulation.GetMarginHistogram() : std::span<const std::uint64_t>{};
 }
 
+std::span<const std::uint64_t> ReferenceChannel::GetShapeMarginHistogram() const noexcept
+{
+    return implementation_ && implementation_->shapeHistogramValid ? implementation_->shapeChroma.GetShapeMarginHistogram() :
+        std::span<const std::uint64_t>{};
+}
+
+std::span<const std::uint64_t> ReferenceChannel::GetChromaMarginHistogram() const noexcept
+{
+    return implementation_ && implementation_->shapeHistogramValid ? implementation_->shapeChroma.GetChromaMarginHistogram() :
+        std::span<const std::uint64_t>{};
+}
+
+std::span<const AcceptedTransportBlock> ReferenceChannel::GetAcceptedTransportBlocks() const noexcept
+{
+    return implementation_ ? std::span<const AcceptedTransportBlock>(implementation_->accepted).first(implementation_->acceptedCount) :
+        std::span<const AcceptedTransportBlock>{};
+}
+
 bool ReferenceStatistics::Add(const FrameEvaluation& evaluation, const std::uint64_t sequence,
     const std::span<const std::uint64_t> histogram, const double minimumMargin) noexcept
 {
-    if (!evaluation.evaluated || (evaluation.codewords != 10 && evaluation.codewords != 42) ||
+    const std::uint64_t terminalFailures = static_cast<std::uint64_t>(evaluation.fecFailures) + evaluation.crcFailures + evaluation.identityFailures;
+    if (!evaluation.evaluated || (evaluation.codewords != 10 && evaluation.codewords != 32 && evaluation.codewords != 42) ||
         evaluation.comparedCodedBits != evaluation.codewords * kCodewordBits || evaluation.erroneousCodedBits > evaluation.comparedCodedBits ||
-        evaluation.fecFailures + static_cast<std::uint64_t>(evaluation.crcFailures) + evaluation.identityFailures > evaluation.codewords ||
-        evaluation.falseAcceptedCodewords > evaluation.codewords || evaluation.iterationsTotal > evaluation.codewords * 48 || evaluation.iterationsMaximum > 48 ||
+        terminalFailures > evaluation.codewords || static_cast<std::uint64_t>(evaluation.acceptedTransportBlocks) + terminalFailures != evaluation.codewords ||
+        evaluation.falseAcceptedCodewords > evaluation.codewords - evaluation.fecFailures - evaluation.crcFailures ||
+        evaluation.iterationsTotal > evaluation.codewords * 48 || evaluation.iterationsMaximum > 48 ||
         histogram.size() != histogram_.size() || histogram.data() == nullptr || !std::isfinite(minimumMargin) || minimumMargin < 0 || minimumMargin > 1)
     {
         return false;
@@ -506,6 +598,7 @@ void WriteEvaluationJson(std::ostream& output, const FrameEvaluation& evaluation
         << ",\"comparedCodedBits\":" << evaluation.comparedCodedBits << ",\"erroneousCodedBits\":" << evaluation.erroneousCodedBits
         << ",\"fecFailures\":" << evaluation.fecFailures << ",\"crcFailures\":" << evaluation.crcFailures
         << ",\"identityFailures\":" << evaluation.identityFailures << ",\"falseAcceptedCodewords\":" << evaluation.falseAcceptedCodewords
+        << ",\"acceptedTransportBlocks\":" << evaluation.acceptedTransportBlocks
         << ",\"iterationsTotal\":" << evaluation.iterationsTotal << ",\"iterationsMaximum\":" << evaluation.iterationsMaximum << '}';
 }
 

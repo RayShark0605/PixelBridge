@@ -339,7 +339,12 @@ CaptureStatus DuplicationFrameSource::UpdatePointer(const DXGI_OUTDUPL_FRAME_INF
     pointer.rawUpdateTimestamp = info.LastMouseUpdateTime.QuadPart;
     pointer_ = pointer;
     lastMouseUpdate_ = info.LastMouseUpdateTime.QuadPart;
-    cursorState_ = info.PointerPosition.Visible != FALSE ? CursorState::SeparatePointer : CursorState::PossiblyComposited;
+    // A well-formed report (validated above: non-zero, non-regressing mouse
+    // update timestamp) states whether the compositor drew the pointer into
+    // this output's frame. Visible==FALSE is per-frame proof the pixels carry
+    // no pointer, so the frame is cursor-free. Position stays unspecified for
+    // an invisible pointer, as in the zero-timestamp path.
+    cursorState_ = info.PointerPosition.Visible != FALSE ? CursorState::SeparatePointer : CursorState::KnownAbsent;
     return {};
 }
 

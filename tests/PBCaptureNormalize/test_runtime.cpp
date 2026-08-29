@@ -386,7 +386,7 @@ TEST_CASE("Capture owner rejects an older completed slot after delivering a newe
     }
 }
 
-TEST_CASE("Capture owner rejects expired or future source timestamps before submitting a GPU read")
+TEST_CASE("Capture owner rejects expired claims and bounds ahead-of-time claims by the QPC arrival")
 {
     for (const auto mode : {TimestampMode::Past, TimestampMode::Future})
     {
@@ -397,6 +397,9 @@ TEST_CASE("Capture owner rejects expired or future source timestamps before subm
         auto config = capturetest::MakeConfig();
         config.maximumFrameAgeMilliseconds = 250;
         control->copyComplete = true;
+        // Past: a 251 ms claim under a 250 ms limit. Future: a claim six
+        // seconds ahead of now, the WGC SystemRelativeTime failure mode; the
+        // inbox samples a real QPC arrival at push that must supersede it.
         const std::int64_t offset100ns = mode == TimestampMode::Past ? 2510000 : 600000000;
         std::unique_ptr<CaptureRuntime> capture;
         const ReleaseFakeGpuOnExit releaseOnExit{control};
@@ -404,28 +407,38 @@ TEST_CASE("Capture owner rejects expired or future source timestamps before subm
         REQUIRE(capturetest::WaitFor([&]
         {
             const auto snapshot = capture->GetSnapshot();
-            return snapshot.expiredFrames == 1 && snapshot.liveFrameLeases == 0;
+            const bool settled = mode == TimestampMode::Past ? snapshot.expiredFrames == 1 : snapshot.deliveredFrames == 1;
+            return settled && snapshot.liveFrameLeases == 0;
         }));
         REQUIRE(capture->Stop());
         const auto snapshot = capture->GetSnapshot();
-        REQUIRE(control->copies == 0);
-        REQUIRE(control->consumes == 0);
+        if (mode == TimestampMode::Past)
+        {
+            REQUIRE(control->copies == 0);
+            REQUIRE(control->consumes == 0);
+            REQUIRE(snapshot.copiedFrames == 0);
+            REQUIRE(snapshot.deliveredFrames == 0);
+            REQUIRE(snapshot.expiredFrames == 1);
+            REQUIRE(snapshot.frameAgeHighWater100ns >= 2510000);
+            REQUIRE(consumer->Ordinals().empty());
+        }
+        else
+        {
+            // The impossible claim is not trusted; the measured arrival bounds
+            // the age and the frame is admitted with a small age.
+            REQUIRE(control->copies == 1);
+            REQUIRE(control->consumes == 1);
+            REQUIRE(snapshot.copiedFrames == 1);
+            REQUIRE(snapshot.deliveredFrames == 1);
+            REQUIRE(snapshot.expiredFrames == 0);
+            REQUIRE(snapshot.frameAgeHighWater100ns < 2500000);
+            REQUIRE(consumer->Ordinals() == std::vector<std::uint64_t>{1});
+        }
         REQUIRE(snapshot.arrivedFrames == 1);
-        REQUIRE(snapshot.copiedFrames == 0);
-        REQUIRE(snapshot.deliveredFrames == 0);
         REQUIRE(snapshot.staleFrames == 0);
         REQUIRE(snapshot.busyRoiTextures == 0);
         REQUIRE(snapshot.shutdownComplete);
         REQUIRE_FALSE(snapshot.deferredCleanup);
-        REQUIRE(consumer->Ordinals().empty());
-        if (mode == TimestampMode::Past)
-        {
-            REQUIRE(snapshot.frameAgeHighWater100ns >= 2510000);
-        }
-        else
-        {
-            REQUIRE(snapshot.frameAgeHighWater100ns == 0);
-        }
         RequireOneClosePerFrame(control, 1);
     }
 }

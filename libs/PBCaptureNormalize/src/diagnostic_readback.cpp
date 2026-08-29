@@ -187,14 +187,21 @@ struct CpuState
         return !snapshot.stopRequested && activeDomain && *activeDomain == metadata.domain && revision == jobRevision;
     }
 
-    bool FreshLocked(const std::int64_t timestamp100ns, const DiagnosticReadbackDropReason expiredReason, std::int64_t& now100ns) noexcept
+    bool FreshLocked(const std::int64_t timestamp100ns, const std::int64_t arrivalQpc100ns,
+                     const DiagnosticReadbackDropReason expiredReason, std::int64_t& now100ns) noexcept
     {
         if (!ReadNow100ns(clockFrequency, now100ns))
         {
             DropLocked(DiagnosticReadbackDropReason::InvalidTimestamp);
             return false;
         }
-        const auto age = ClassifyFrameAge(now100ns, timestamp100ns, config.maximumFrameAgeMilliseconds);
+        const auto effective = ResolveEffectiveCaptureTime100ns(timestamp100ns, arrivalQpc100ns);
+        if (effective < 0)
+        {
+            DropLocked(DiagnosticReadbackDropReason::InvalidTimestamp);
+            return false;
+        }
+        const auto age = ClassifyFrameAge(now100ns, effective, config.maximumFrameAgeMilliseconds);
         snapshot.frameAgeHighWater100ns = std::max(snapshot.frameAgeHighWater100ns, age.age100ns);
         if (age.disposition == CaptureFrameAgeDisposition::InvalidTimestamp)
         {
@@ -246,7 +253,7 @@ struct CpuState
                 UpdateUsageLocked();
                 continue;
             }
-            if (!FreshLocked(buffer.metadata.timestamp.monotonic100ns, DiagnosticReadbackDropReason::ExpiredBeforeAnalyze, analyzeStart100ns))
+            if (!FreshLocked(buffer.metadata.timestamp.monotonic100ns, buffer.metadata.timestamp.arrivalQpc100ns, DiagnosticReadbackDropReason::ExpiredBeforeAnalyze, analyzeStart100ns))
             {
                 buffer.state = CpuBufferState::Free;
                 UpdateUsageLocked();
@@ -290,7 +297,7 @@ struct CpuState
             else
             {
                 std::int64_t now100ns = 0;
-                commit = FreshLocked(buffer.metadata.timestamp.monotonic100ns, DiagnosticReadbackDropReason::ExpiredBeforeCommit, now100ns);
+                commit = FreshLocked(buffer.metadata.timestamp.monotonic100ns, buffer.metadata.timestamp.arrivalQpc100ns, DiagnosticReadbackDropReason::ExpiredBeforeCommit, now100ns);
             }
             if (commit)
             {
@@ -712,7 +719,7 @@ CaptureStatus DiagnosticCpuReadback::Submit(const ScreenCaptureFrame& frame, ID3
         return {};
     }
     implementation.lastSubmittedObservation = frame.metadata.captureObservation;
-    if (!cpu->FreshLocked(frame.metadata.timestamp.monotonic100ns, DiagnosticReadbackDropReason::ExpiredBeforeReadback, slot.submitted100ns))
+    if (!cpu->FreshLocked(frame.metadata.timestamp.monotonic100ns, frame.metadata.timestamp.arrivalQpc100ns, DiagnosticReadbackDropReason::ExpiredBeforeReadback, slot.submitted100ns))
     {
         return {};
     }
@@ -778,7 +785,7 @@ CaptureStatus DiagnosticCpuReadback::Completed(const ScreenCaptureFrameMetadata&
             return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Consumer);
         }
         std::int64_t now100ns = 0;
-        if (!cpu->FreshLocked(slot.metadata.timestamp.monotonic100ns, DiagnosticReadbackDropReason::ExpiredBeforeReadback, now100ns))
+        if (!cpu->FreshLocked(slot.metadata.timestamp.monotonic100ns, slot.metadata.timestamp.arrivalQpc100ns, DiagnosticReadbackDropReason::ExpiredBeforeReadback, now100ns))
         {
             implementation.FinishStageLocked(metadata.slotIndex);
             return {};
@@ -868,7 +875,7 @@ CaptureStatus DiagnosticCpuReadback::Completed(const ScreenCaptureFrameMetadata&
             cpu->snapshot.readbackBytes = pbprotocol::SaturatingAddUnsigned(cpu->snapshot.readbackBytes, static_cast<std::uint64_t>(usedBytes));
             cpu->snapshot.lastMappedRowPitch = mapped.RowPitch;
             std::int64_t now100ns = 0;
-            const bool fresh = cpu->FreshLocked(storedMetadata.timestamp.monotonic100ns, DiagnosticReadbackDropReason::ExpiredAfterReadback, now100ns);
+            const bool fresh = cpu->FreshLocked(storedMetadata.timestamp.monotonic100ns, storedMetadata.timestamp.arrivalQpc100ns, DiagnosticReadbackDropReason::ExpiredAfterReadback, now100ns);
             if (now100ns >= submitted100ns)
             {
                 cpu->snapshot.readbackLatencyHighWater100ns = std::max(cpu->snapshot.readbackLatencyHighWater100ns, static_cast<std::uint64_t>(now100ns - submitted100ns));

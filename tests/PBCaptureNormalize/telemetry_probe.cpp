@@ -92,6 +92,7 @@ int main()
     pbdesktoplevels::FrameEvaluation evaluation;
     evaluation.evaluated = evaluation.paddingValid = true;
     evaluation.codewords = 10;
+    evaluation.acceptedTransportBlocks = 10;
     evaluation.comparedCodedBits = 162000;
     std::array<std::uint64_t, 4096> histogram{};
     histogram.back() = 86688;
@@ -101,6 +102,7 @@ int main()
     }
     evaluation.erroneousCodedBits = 40500;
     evaluation.fecFailures = 1;
+    evaluation.acceptedTransportBlocks = 9;
     if (!statistics.Add(evaluation, 15, histogram, 1))
     {
         return 1;

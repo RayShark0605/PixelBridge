@@ -90,7 +90,10 @@ enum class CaptureBackendKind : std::uint8_t
 };
 enum class CursorState : std::uint8_t
 {
-    Unknown, Excluded, SeparatePointer, PossiblyComposited
+    // KnownAbsent is per-frame proof the pointer is not in this frame's
+    // pixels (a well-formed source report stating the pointer is absent).
+    // Unlike Excluded it carries no backend capability claim.
+    Unknown, Excluded, SeparatePointer, PossiblyComposited, KnownAbsent
 };
 enum class CaptureTimestampDomain : std::uint8_t
 {
@@ -146,6 +149,15 @@ struct RawRoiFrameMetadata
     CaptureTimestampDomain timestampDomain = CaptureTimestampDomain::WgcSystemRelative100ns;
     std::int64_t rawTimestamp = 0;
     std::int64_t rawFrequency = 10000000;
+    // QPC-derived 100ns sampled when the frame entered the inbox (the arrival).
+    // Capture always precedes arrival, so this stays a valid age-bound even when
+    // the backend claim is untrusted (WGC SystemRelativeTime can stamp ahead of
+    // delivery). -1 = not measured.
+    std::int64_t arrivalQpc100ns = -1;
+    // GPU timestamp duration covering ROI crop/copy plus required rotation.
+    // Absent means the timestamp query was unsupported/disjoint, never zero by
+    // inference from CPU submission or completion time.
+    std::optional<std::uint64_t> roiCopyTime100ns;
     CapturePointerMetadata pointer;
 };
 
@@ -212,6 +224,10 @@ struct CaptureSnapshot
     std::uint32_t environmentAttempts = 0;
     std::uint64_t frameAgeHighWater100ns = 0;
     std::uint64_t staleFrames = 0;
+    std::uint64_t roiCopyTimingSamples = 0;
+    std::uint64_t roiCopyTimingUnavailable = 0;
+    std::uint64_t roiCopyTimeTotal100ns = 0;
+    std::uint64_t roiCopyTimeHighWater100ns = 0;
 };
 
 enum class CaptureFrameAgeDisposition : std::uint8_t
@@ -234,6 +250,13 @@ struct CaptureFrameAgeResult
 [[nodiscard]] const char* GetCaptureErrorName(CaptureError error) noexcept;
 // Invalid/overflowing input leaves output unchanged; no floating point rounding.
 [[nodiscard]] bool ConvertQpcTo100ns(std::int64_t ticks, std::int64_t frequency, std::int64_t& output) noexcept;
+
+// Effective capture time for the frame-age gate: the smallest non-negative
+// candidate among the backend claim and the measured QPC arrival. A claim that
+// stamps ahead of its own arrival (observed with WGC SystemRelativeTime) is
+// physically impossible for the capture instant and is superseded by the
+// arrival. -1 = no valid time source; the caller must fail closed.
+[[nodiscard]] std::int64_t ResolveEffectiveCaptureTime100ns(std::int64_t claimed100ns, std::int64_t arrivalQpc100ns) noexcept;
 
 
 } // namespace pbcapturenormalize

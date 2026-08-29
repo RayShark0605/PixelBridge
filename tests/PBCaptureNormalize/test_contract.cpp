@@ -183,7 +183,7 @@ TEST_CASE("Normalized contract preserves physical ROI, actual formats, rotation 
                 CHECK(frame.pixelFormat == format);
                 CHECK(frame.adapterLuid.LowPart == fixture.environment.adapterLuid.LowPart);
                 CHECK(frame.adapterLuid.HighPart == fixture.environment.adapterLuid.HighPart);
-                CHECK(frame.timestamp == ScreenCaptureTimestamp{raw.timestampDomain, raw.rawTimestamp, raw.rawFrequency, raw.systemRelativeTime100ns});
+                CHECK(frame.timestamp == ScreenCaptureTimestamp{raw.timestampDomain, raw.rawTimestamp, raw.rawFrequency, raw.systemRelativeTime100ns, raw.arrivalQpc100ns});
                 CHECK(frame.captureObservation == 1);
                 CHECK(frame.sourceGeneration == 1);
                 CHECK(frame.slotGeneration == 1);
@@ -230,6 +230,18 @@ TEST_CASE("Cursor proof failures are frame erasures, not fatal status or raw fal
         REQUIRE(fixture.normalizer->Submit(valid, fixture.texture.Get(), fixture.context.Get()));
         REQUIRE(fixture.receiver->submitted.size() == 1);
         REQUIRE(fixture.normalizer->Completed(valid, fixture.context.Get(), false));
+        observation++;
+        auto knownAbsent = fixture.Frame(observation);
+        knownAbsent.cursorState = CursorState::KnownAbsent;
+        knownAbsent.capabilities.cursorExcluded = false;
+        knownAbsent.pointer.separateVisible = false;
+        knownAbsent.pointer.positionKnown = false;
+        // Per-frame absence proof needs no capability and survives both
+        // backends in the outer loop.
+        REQUIRE(fixture.normalizer->Submit(knownAbsent, fixture.texture.Get(), fixture.context.Get()));
+        REQUIRE(fixture.receiver->submitted.size() == 2);
+        CHECK(fixture.receiver->submitted.back().isCursorExcluded);
+        REQUIRE(fixture.normalizer->Completed(knownAbsent, fixture.context.Get(), false));
         CHECK(fixture.normalizer->GetSnapshot().active);
         CHECK(fixture.normalizer->GetSnapshot().erasedFrames == 3);
     }
@@ -273,6 +285,44 @@ TEST_CASE("Normalizer rejects epoch, generation, time, environment and texture c
     REQUIRE(fixture.normalizer->Submit(good, fixture.texture.Get(), fixture.context.Get()));
     CHECK(fixture.receiver->erased.back().reason == CaptureErasureReason::StaleObservation);
     CHECK(fixture.receiver->submitted.size() == 1);
+}
+
+TEST_CASE("Ahead-of-time source timestamp falls back to the measured QPC arrival", "[normalize-contract]")
+{
+    for (const auto backend : {CaptureBackendKind::Wgc, CaptureBackendKind::Dxgi})
+    {
+        CAPTURE(backend);
+        Fixture fixture(backend);
+        fixture.Start();
+        std::int64_t arrival100ns = 0;
+        LARGE_INTEGER counter{};
+        LARGE_INTEGER frequency{};
+        REQUIRE(QueryPerformanceCounter(&counter));
+        REQUIRE(QueryPerformanceFrequency(&frequency));
+        REQUIRE(ConvertQpcTo100ns(counter.QuadPart, frequency.QuadPart, arrival100ns));
+        // Six seconds ahead in the backend's own domain units: the claim alone
+        // must stay invalid...
+        auto ahead = fixture.Frame(1);
+        const std::int64_t advance = 6 * ahead.rawFrequency;
+        ahead.rawTimestamp += advance;
+        ahead.systemRelativeTime100ns += advance;
+        REQUIRE(fixture.normalizer->Submit(ahead, fixture.texture.Get(), fixture.context.Get()));
+        REQUIRE(fixture.receiver->erased.size() == 1);
+        CHECK(fixture.receiver->erased.back().reason == CaptureErasureReason::InvalidTimestamp);
+        CHECK(fixture.receiver->submitted.empty());
+        // ...but the measured inbox arrival supersedes the impossible claim.
+        auto rescued = fixture.Frame(2);
+        const std::int64_t rescuedAdvance = 6 * rescued.rawFrequency;
+        rescued.rawTimestamp += rescuedAdvance;
+        rescued.systemRelativeTime100ns += rescuedAdvance;
+        rescued.arrivalQpc100ns = arrival100ns;
+        REQUIRE(fixture.normalizer->Submit(rescued, fixture.texture.Get(), fixture.context.Get()));
+        REQUIRE(fixture.receiver->submitted.size() == 1);
+        CHECK(fixture.receiver->submitted.back().timestamp.arrivalQpc100ns == arrival100ns);
+        REQUIRE(fixture.normalizer->Completed(rescued, fixture.context.Get(), false));
+        CHECK(fixture.receiver->completed.size() == 1);
+        CHECK(fixture.normalizer->GetSnapshot().erasedFrames == 1);
+    }
 }
 
 TEST_CASE("Original pending domain survives invalidation and completion cannot be relabelled", "[normalize-contract]")

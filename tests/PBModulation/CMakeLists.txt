@@ -56,6 +56,11 @@ target_compile_definitions(PBDesktopLevelsTests PRIVATE PB_DESKTOP_LEVELS_GOLDEN
 PbInstrumentPresentationTest(PBDesktopLevelsTests)
 set_tests_properties(PBDesktopLevelsTests PROPERTIES LABELS "desktop-levels;golden;modulation" TIMEOUT 180)
 
+PbAddUnitTest(PBShapeChromaTests test_shape_chroma.cpp)
+target_link_libraries(PBShapeChromaTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInterleave PB::PBDesktopLevelsReference PB::PBInnerFec)
+PbInstrumentPresentationTest(PBShapeChromaTests)
+set_tests_properties(PBShapeChromaTests PROPERTIES LABELS "shape-chroma;modulation;fec;integration" TIMEOUT 240)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

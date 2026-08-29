@@ -652,6 +652,9 @@ void ExercisePipeline(const CaptureBackendKind kind)
     REQUIRE(stopped.droppedFrames == 1);
     REQUIRE(stopped.copiedFrames == 3);
     REQUIRE(stopped.deliveredFrames == 3);
+    REQUIRE(stopped.roiCopyTimingSamples == stopped.copiedFrames);
+    REQUIRE(stopped.roiCopyTimingUnavailable == 0);
+    REQUIRE(stopped.roiCopyTimeTotal100ns >= stopped.roiCopyTimeHighWater100ns);
     REQUIRE(control->copies == 3);
     REQUIRE(control->consumes == 3);
     REQUIRE(control->completions == 3);

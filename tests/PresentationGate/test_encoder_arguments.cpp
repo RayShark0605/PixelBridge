@@ -42,7 +42,7 @@ TEST_CASE("Encoder DesktopLevels candidates require explicit names and do not ch
 
 DataWindowArguments Sentinel()
 {
-    return {true, true, true, 987654, L"unchanged-telemetry.jsonl", PresentationVisual::LocalDesktopBootstrap};
+    return {true, true, true, 987654, true, 4321, L"unchanged-telemetry.jsonl", PresentationVisual::LocalDesktopBootstrap};
 }
 }
 
@@ -178,5 +178,41 @@ TEST_CASE("Encoder help alone and native mutable argv use the same allocation-fr
     CHECK(output == before);
     arguments[1] = nullptr;
     REQUIRE_FALSE(pbencoder::ParseDataWindowArguments(2, arguments, output));
+    CHECK(output == before);
+}
+
+TEST_CASE("Encoder sequence interval parses exact bounds and fails closed on malformed or duplicate input", "[encoder-cli]")
+{
+    constexpr std::array<std::pair<const wchar_t*, std::uint32_t>, 5> validIntervals{{{L"50", 50}, {L"500", 500}, {L"640", 640}, {L"00640", 640}, {L"60000", 60000}}};
+    for (const auto& [text, expected] : validIntervals)
+    {
+        std::uint32_t value = 77;
+        REQUIRE(pbencoder::ParseSequenceIntervalMilliseconds(text, value));
+        CHECK(value == expected);
+        DataWindowArguments parsed;
+        REQUIRE(Parse({L"--visual", L"desktop-levels-2x2", L"--sequence-interval-ms", text}, parsed));
+        CHECK(parsed.hasSequenceInterval);
+        CHECK(parsed.sequenceIntervalMilliseconds == expected);
+    }
+    DataWindowArguments defaults;
+    REQUIRE(Parse({L"--visual", L"desktop-levels-2x2"}, defaults));
+    CHECK_FALSE(defaults.hasSequenceInterval);
+    CHECK(defaults.sequenceIntervalMilliseconds == 500);
+    for (const auto text : {L"", L"0", L"49", L"50 ", L" 50", L"-50", L"+50", L"50.0", L"5e2", L"\uFF16\uFF14\uFF10", L"60001",
+                            L"999999999999999999999", L"18446744073709551616"})
+    {
+        std::uint32_t value = 77;
+        REQUIRE_FALSE(pbencoder::ParseSequenceIntervalMilliseconds(text, value));
+        CHECK(value == 77);
+        auto output = Sentinel();
+        const auto before = output;
+        REQUIRE_FALSE(Parse({L"--visual", L"desktop-levels-2x2", L"--sequence-interval-ms", text}, output));
+        CHECK(output == before);
+    }
+    auto output = Sentinel();
+    const auto before = output;
+    REQUIRE_FALSE(Parse({L"--visual", L"desktop-levels-2x2", L"--sequence-interval-ms"}, output));
+    CHECK(output == before);
+    REQUIRE_FALSE(Parse({L"--visual", L"desktop-levels-2x2", L"--sequence-interval-ms", L"500", L"--sequence-interval-ms", L"640"}, output));
     CHECK(output == before);
 }

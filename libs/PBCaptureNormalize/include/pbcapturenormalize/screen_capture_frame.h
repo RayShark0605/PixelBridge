@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 
 namespace pbcapturenormalize
 {
@@ -23,6 +24,10 @@ struct ScreenCaptureTimestamp
     std::int64_t rawValue = 0;
     std::int64_t rawFrequency = 10000000;
     std::int64_t monotonic100ns = 0;
+    // QPC arrival sampled at inbox push; -1 = not measured. The age gate uses
+    // the earliest valid time source, so a backend claim stamped ahead of the
+    // arrival (WGC SystemRelativeTime) cannot masquerade as a fresh frame.
+    std::int64_t arrivalQpc100ns = -1;
     bool operator==(const ScreenCaptureTimestamp&) const = default;
 };
 
@@ -54,6 +59,7 @@ struct ScreenCaptureFrameMetadata
     CaptureSignalEncoding signalEncoding = CaptureSignalEncoding::Unknown;
     bool hdr = false;
     ScreenCaptureTimestamp timestamp;
+    std::optional<std::uint64_t> roiCopyTime100ns;
     bool isCursorExcluded = false;
     CursorState sourceCursorState = CursorState::Unknown;
     CapturePointerMetadata pointer;

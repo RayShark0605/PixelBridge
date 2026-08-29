@@ -233,12 +233,16 @@ TEST_CASE("DesktopLevels fixed adapter and metric denominators are explicit", "[
     pbdesktoplevels::FrameEvaluation evaluation;
     evaluation.evaluated = evaluation.paddingValid = true;
     evaluation.codewords = 10;
+    evaluation.acceptedTransportBlocks = 10;
     evaluation.comparedCodedBits = 162000;
     std::array<std::uint64_t, 4096> histogram{};
     histogram.back() = 86688;
     REQUIRE(statistics.Add(evaluation, 0, histogram, 1));
     evaluation.erroneousCodedBits = 2;
     evaluation.fecFailures = 1;
+    REQUIRE_FALSE(statistics.Add(evaluation, 1, histogram, 1));
+    REQUIRE(statistics.GetSummary().frames == 1);
+    evaluation.acceptedTransportBlocks = 9;
     REQUIRE(statistics.Add(evaluation, 1, histogram, 1));
     const auto summary = statistics.GetSummary();
     REQUIRE(summary.frames == 2);

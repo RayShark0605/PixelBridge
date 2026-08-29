@@ -3,6 +3,7 @@
 #include "pbprotocol/checked_integer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <new>
 
@@ -75,6 +76,8 @@ void BootstrapDiagnosticProcessor::Reset(std::optional<ScreenCaptureDomain> doma
         pbprotocol::SaturatingIncrementUnsigned(snapshot_.discardedCandidates);
     }
     pendingReady_ = false;
+    pendingPixelDigestValid_ = false;
+    pendingBootstrapRecovered_ = false;
     pending_ = {};
     snapshot_.domain = std::move(domain);
     pbprotocol::SaturatingIncrementUnsigned(snapshot_.resets);
@@ -101,6 +104,17 @@ void BootstrapDiagnosticProcessor::Reset(std::optional<ScreenCaptureDomain> doma
     blackLevel_ = 0;
     whiteLevel_ = 0;
     lastObservation_ = 0;
+    if (snapshot_.domain)
+    {
+        if (!telemetry_.BeginCaptureEpoch(*snapshot_.domain, 0))
+        {
+            pbprotocol::SaturatingIncrementUnsigned(snapshot_.telemetryFailures);
+        }
+    }
+    else
+    {
+        telemetry_.EndCaptureEpoch();
+    }
     if (levels_)
     {
         levels_->calibration = {};
@@ -114,6 +128,8 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
         return CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Consumer);
     }
     pending_ = {};
+    pendingPixelDigestValid_ = false;
+    pendingBootstrapRecovered_ = false;
     pending_.desktopLevels = levels_ != nullptr;
     pending_.capture = metadata;
     pendingReady_ = true;
@@ -161,6 +177,8 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
         return {};
     }
     const pbmodulation::LumaView view{pixels, static_cast<std::uint32_t>(metadata.roiSize.width), static_cast<std::uint32_t>(metadata.roiSize.height), rowPitch, format};
+    pending_.pixelDigest = pbprotocol::ComputeBlake3Digest(pixels);
+    pendingPixelDigestValid_ = true;
     if (levels_)
     {
         pending_.levels = levels_->channel.Decode(view);
@@ -187,12 +205,12 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
         return {};
     }
     pending_.bootstrap = record.Value();
+    pendingBootstrapRecovered_ = true;
     if (levels_ && (!pending_.levels.modulation.IsAccepted() || !pending_.levels.evaluation.evaluated))
     {
         pending_.disposition = BootstrapDisposition::VisualErasure;
         return {};
     }
-    pending_.pixelDigest = pbprotocol::ComputeBlake3Digest(pixels);
     pending_.disposition = BootstrapDisposition::Accepted;
     return {};
 }
@@ -201,15 +219,11 @@ BootstrapDisposition BootstrapDiagnosticProcessor::AdmitLocked(BootstrapDiagnost
 {
     const auto tag = event.bootstrap.sessionTag.value;
     const auto sequence = event.bootstrap.frameSequence;
-    HistoryEntry* found = nullptr;
-    for (auto& entry : history_)
+    const auto foundIterator = std::ranges::find_if(history_, [tag, sequence](const HistoryEntry& entry)
     {
-        if (entry.active && entry.sessionTag == tag && entry.sequence == sequence)
-        {
-            found = &entry;
-            break;
-        }
-    }
+        return entry.active && entry.sessionTag == tag && entry.sequence == sequence;
+    });
+    HistoryEntry* const found = foundIterator == history_.end() ? nullptr : &*foundIterator;
     if (found != nullptr && (found->conflict || found->canonical44 != event.visual.canonical44))
     {
         found->conflict = true;
@@ -322,14 +336,47 @@ void BootstrapDiagnosticProcessor::Commit(const ScreenCaptureFrameMetadata& meta
             pbprotocol::SaturatingIncrementUnsigned(snapshot_.discardedCandidates);
         }
         pendingReady_ = false;
+        pendingPixelDigestValid_ = false;
+        pendingBootstrapRecovered_ = false;
         return;
     }
     lastObservation_ = metadata.captureObservation;
+    pbtelemetry::CaptureSample captureSample{metadata.domain, metadata.captureObservation, metadata.timestamp.monotonic100ns,
+        metadata.roiCopyTime100ns, std::nullopt};
+    if (pendingPixelDigestValid_)
+    {
+        captureSample.pixelDigest = pending_.pixelDigest;
+    }
+    const auto captureTelemetryStatus = telemetry_.RecordCapture(captureSample);
+    if (!captureTelemetryStatus)
+    {
+        pbprotocol::SaturatingIncrementUnsigned(snapshot_.telemetryFailures);
+    }
+    else
+    {
+        pbtelemetry::BootstrapSample bootstrapSample{metadata.domain, metadata.captureObservation, pendingBootstrapRecovered_};
+        if (pendingBootstrapRecovered_)
+        {
+            bootstrapSample.scaleX = pending_.visual.geometry.scaleX;
+            bootstrapSample.scaleY = pending_.visual.geometry.scaleY;
+            bootstrapSample.phaseX = pending_.visual.geometry.originX - std::round(pending_.visual.geometry.originX);
+            bootstrapSample.phaseY = pending_.visual.geometry.originY - std::round(pending_.visual.geometry.originY);
+        }
+        if (!telemetry_.RecordBootstrap(bootstrapSample))
+        {
+            pbprotocol::SaturatingIncrementUnsigned(snapshot_.telemetryFailures);
+        }
+    }
     pending_.geometryGeneration = snapshot_.geometryGeneration;
     pending_.calibrationGeneration = snapshot_.calibrationGeneration;
     if (pending_.disposition == BootstrapDisposition::Accepted)
     {
         pending_.disposition = AdmitLocked(pending_);
+    }
+    if (captureTelemetryStatus && levels_ && pending_.disposition == BootstrapDisposition::Accepted && pending_.levels.evaluation.evaluated &&
+        !telemetry_.RecordFec({metadata.domain, metadata.captureObservation, pending_.levels.evaluation}))
+    {
+        pbprotocol::SaturatingIncrementUnsigned(snapshot_.telemetryFailures);
     }
     if (levels_)
     {
@@ -396,6 +443,8 @@ void BootstrapDiagnosticProcessor::Commit(const ScreenCaptureFrameMetadata& meta
     }
     PublishLocked(pending_);
     pendingReady_ = false;
+    pendingPixelDigestValid_ = false;
+    pendingBootstrapRecovered_ = false;
 }
 
 void BootstrapDiagnosticProcessor::Discard() noexcept
@@ -406,6 +455,8 @@ void BootstrapDiagnosticProcessor::Discard() noexcept
         pbprotocol::SaturatingIncrementUnsigned(snapshot_.discardedCandidates);
     }
     pendingReady_ = false;
+    pendingPixelDigestValid_ = false;
+    pendingBootstrapRecovered_ = false;
 }
 
 BootstrapDiagnosticSnapshot BootstrapDiagnosticProcessor::GetSnapshot() const noexcept
@@ -419,6 +470,7 @@ BootstrapDiagnosticSnapshot BootstrapDiagnosticProcessor::GetSnapshot() const no
             snapshot.candidates[index].statistics = levels_->statistics[index].GetSummary();
         }
     }
+    snapshot.telemetry = telemetry_.GetSnapshot();
     return snapshot;
 }
 

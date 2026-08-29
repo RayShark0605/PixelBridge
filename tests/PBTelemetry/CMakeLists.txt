@@ -1,0 +1,5 @@
+PbAddUnitTest(PBTelemetryTests test_telemetry.cpp)
+target_link_libraries(PBTelemetryTests PRIVATE PB::PBTelemetry PB::PBPresentTiming PB::PBProtocol)
+target_compile_definitions(PBTelemetryTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+PbInstrumentPresentationTest(PBTelemetryTests)
+set_tests_properties(PBTelemetryTests PROPERTIES LABELS "telemetry;capture;presentation;fec" TIMEOUT 30)

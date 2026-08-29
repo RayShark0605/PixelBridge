@@ -46,6 +46,10 @@ TEST_CASE("DesktopLevels processor commits metrics once including FEC failure an
     REQUIRE(snapshot.candidates[1].statistics.postFecFailedFrames == 1);
     REQUIRE(snapshot.candidates[1].statistics.erroneousCodedBits == 0);
     REQUIRE(snapshot.lastDisposition == BootstrapDisposition::PostFecFailure);
+    REQUIRE(snapshot.telemetry.fecEvaluatedFrames == 1);
+    REQUIRE(snapshot.telemetry.postFecFailedFrames == 1);
+    REQUIRE(snapshot.telemetry.fecFrameErrorRate == 1.0);
+    REQUIRE(snapshot.telemetryFailures == 0);
     BootstrapDiagnosticEvent event;
     REQUIRE(processor->TakeEvent(event));
     REQUIRE(event.desktopLevels);
@@ -63,6 +67,7 @@ TEST_CASE("DesktopLevels processor commits metrics once including FEC failure an
     REQUIRE(snapshot.candidates[1].statistics.frames == 1);
     REQUIRE(snapshot.candidates[1].statistics.verifiedFrames == 0);
     REQUIRE(snapshot.candidates[1].duplicates == 1);
+    REQUIRE(snapshot.telemetry.fecEvaluatedFrames == 1); // duplicate FrameSequence is not a second FER denominator
     REQUIRE(GetBootstrapDiagnosticSuccessExitCode(snapshot) == 4);
 
     const auto next = LevelsRaster(4, 1);
@@ -71,6 +76,9 @@ TEST_CASE("DesktopLevels processor commits metrics once including FEC failure an
     snapshot = processor->GetSnapshot();
     REQUIRE(snapshot.candidates[1].statistics.frames == 2);
     REQUIRE(snapshot.candidates[1].statistics.verifiedFrames == 1);
+    REQUIRE(snapshot.telemetry.fecEvaluatedFrames == 2);
+    REQUIRE(snapshot.telemetry.postFecFailedFrames == 1);
+    REQUIRE(snapshot.telemetry.fecFrameErrorRate == 0.5);
     REQUIRE(GetBootstrapDiagnosticSuccessExitCode(snapshot) == 0);
     const auto switched = LevelsRaster(2, 2);
     event = Observe(*processor, switched, Metadata(switched.size, 4));
@@ -106,6 +114,7 @@ TEST_CASE("DesktopLevels processor Discard stale Commit and Reset do not publish
     processor->Reset(std::nullopt);
     const auto snapshot = processor->GetSnapshot();
     REQUIRE_FALSE(snapshot.domain);
+    REQUIRE_FALSE(snapshot.telemetry.active);
     REQUIRE(snapshot.retainedSequences == 0);
     REQUIRE(snapshot.candidates[0].statistics.frames == 1); // cumulative measurement, no live old-domain calibration
 }

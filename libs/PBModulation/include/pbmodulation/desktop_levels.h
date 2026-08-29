@@ -37,6 +37,9 @@ struct DesktopLevelsProfile
 };
 
 [[nodiscard]] const DesktopLevelsProfile* GetDesktopLevelsProfile(std::uint64_t profileId) noexcept;
+// Shared LocalDesktop data geometry used by Direct-Level and the initial
+// ShapeChroma A/B baseline. Valid tile sizes are 2 and 4 pixels.
+[[nodiscard]] bool GetLocalDesktopDataTile(std::uint32_t tilePixels, std::uint32_t physicalIndex, LocalDesktopRegion& output) noexcept;
 // Physical indices enumerate the grid row-major, omitting all nine Timing
 // regions. Unknown profile/index leaves output unchanged.
 [[nodiscard]] bool GetDesktopLevelsTile(std::uint64_t profileId, std::uint32_t physicalIndex, LocalDesktopRegion& output) noexcept;

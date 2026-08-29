@@ -4,51 +4,6 @@
   "Rule": "Exact reviewed existing diagnostics only: no blanket suppression; changed file hashes or new diagnostics fail the Gate.",
   "Entries": [
     {
-      "File": "libs/PBCaptureNormalize/src/d3d_roi_ring.cpp",
-      "Line": 223,
-      "Id": "funcArgNamesDifferent",
-      "Severity": "style",
-      "Message": "Function 'Mark' argument 1 names different: declaration 'slot' definition 'slotIndex'.",
-      "SourceSHA256": "C22983847D83E38604223EBE9371A60C5E6C741E0D7A9CB75D18E9272CB870EF",
-      "Assessment": "Pre-existing parameter-name spelling only; declaration and definition types/calling convention match."
-    },
-    {
-      "File": "libs/PBCaptureNormalize/src/d3d_roi_ring.cpp",
-      "Line": 252,
-      "Id": "funcArgNamesDifferent",
-      "Severity": "style",
-      "Message": "Function 'Rotate' argument 1 names different: declaration 'slot' definition 'slotIndex'.",
-      "SourceSHA256": "C22983847D83E38604223EBE9371A60C5E6C741E0D7A9CB75D18E9272CB870EF",
-      "Assessment": "Pre-existing parameter-name spelling only; declaration and definition types/calling convention match."
-    },
-    {
-      "File": "libs/PBCaptureNormalize/src/d3d_roi_ring.cpp",
-      "Line": 274,
-      "Id": "funcArgNamesDifferent",
-      "Severity": "style",
-      "Message": "Function 'Copy' argument 2 names different: declaration 'slot' definition 'slotIndex'.",
-      "SourceSHA256": "C22983847D83E38604223EBE9371A60C5E6C741E0D7A9CB75D18E9272CB870EF",
-      "Assessment": "Pre-existing parameter-name spelling only; declaration and definition types/calling convention match."
-    },
-    {
-      "File": "libs/PBCaptureNormalize/src/d3d_roi_ring.cpp",
-      "Line": 312,
-      "Id": "funcArgNamesDifferent",
-      "Severity": "style",
-      "Message": "Function 'Consume' argument 3 names different: declaration 'slot' definition 'slotIndex'.",
-      "SourceSHA256": "C22983847D83E38604223EBE9371A60C5E6C741E0D7A9CB75D18E9272CB870EF",
-      "Assessment": "Pre-existing parameter-name spelling only; declaration and definition types/calling convention match."
-    },
-    {
-      "File": "libs/PBCaptureNormalize/src/d3d_roi_ring.cpp",
-      "Line": 346,
-      "Id": "funcArgNamesDifferent",
-      "Severity": "style",
-      "Message": "Function 'Poll' argument 1 names different: declaration 'slot' definition 'slotIndex'.",
-      "SourceSHA256": "C22983847D83E38604223EBE9371A60C5E6C741E0D7A9CB75D18E9272CB870EF",
-      "Assessment": "Pre-existing parameter-name spelling only; declaration and definition types/calling convention match."
-    },
-    {
       "File": "libs/PBCaptureNormalize/src/native_support.h",
       "Line": 40,
       "Id": "funcArgNamesDifferentUnnamed",
@@ -67,57 +22,39 @@
       "Assessment": "Pre-existing intentionally unused callback parameter; ABI and ownership unchanged."
     },
     {
-      "File": "libs/PBCaptureNormalize/src/normalize_consumer.cpp",
-      "Line": 300,
-      "Id": "funcArgNamesDifferent",
-      "Severity": "style",
-      "Message": "Function 'Submit' argument 1 names different: declaration 'metadata' definition 'raw'.",
-      "SourceSHA256": "722CA4075CE1D4AE042B111D27EEF80B7345785CB880B2758E135B7919ED76A3",
-      "Assessment": "Pre-existing parameter-name spelling only; declaration and definition types/calling convention match."
-    },
-    {
-      "File": "libs/PBCaptureNormalize/src/normalize_consumer.cpp",
-      "Line": 431,
-      "Id": "funcArgNamesDifferent",
-      "Severity": "style",
-      "Message": "Function 'Completed' argument 1 names different: declaration 'metadata' definition 'raw'.",
-      "SourceSHA256": "722CA4075CE1D4AE042B111D27EEF80B7345785CB880B2758E135B7919ED76A3",
-      "Assessment": "Pre-existing parameter-name spelling only; declaration and definition types/calling convention match."
-    },
-    {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 916,
+      "Line": 923,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbcapturenormalize::DiagnosticCpuReadback::RequestStop' can be const.",
-      "SourceSHA256": "879FCCE1D8A994919AF1FBFCE5B6EEC7030B98F307BCC2FC714CF932BDD59AE0",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
       "Assessment": "Actor RequestStop mutates shared CPU state under its mutex; shallow const suggestion is not a correctness defect."
     },
     {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 226,
+      "Line": 233,
       "Id": "knownConditionTrueFalse",
       "Severity": "style",
       "Message": "Condition 'revision==resetRevision' is always true",
-      "SourceSHA256": "879FCCE1D8A994919AF1FBFCE5B6EEC7030B98F307BCC2FC714CF932BDD59AE0",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
       "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
     },
     {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 226,
+      "Line": 233,
       "Id": "knownConditionTrueFalse",
       "Severity": "style",
       "Message": "Condition 'activeDomain==resetDomain' is always true",
-      "SourceSHA256": "879FCCE1D8A994919AF1FBFCE5B6EEC7030B98F307BCC2FC714CF932BDD59AE0",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
       "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
     },
     {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 590,
+      "Line": 597,
       "Id": "redundantAssignment",
       "Severity": "style",
       "Message": "Variable 'replacement' is reassigned a value before the old one has been used.",
-      "SourceSHA256": "879FCCE1D8A994919AF1FBFCE5B6EEC7030B98F307BCC2FC714CF932BDD59AE0",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
       "Assessment": "replacement={} deliberately releases moved old-generation COM objects outside the CPU mutex before allocating new staging resources. Removing it breaks lifetime/reservation ordering."
     },
     {
@@ -427,6 +364,33 @@
       "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
     },
     {
+      "File": "libs/PBDemodD3D11/src/demodulator.cpp",
+      "Line": 672,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbdemodd3d11::Demodulator::Poll' can be const.",
+      "SourceSHA256": "94757FBB1DF6ECD6BB62BC6B497BBB853DDC1C9741E13B19C1E3AD2D98D16D19",
+      "Assessment": "False positive from shallow unique_ptr analysis: Poll mutates slot completion, mapped metric retirement, CPU FEC output and pending counters. A const lifecycle mutator would misstate ownership and thread-safety."
+    },
+    {
+      "File": "libs/PBDemodD3D11/src/demodulator.cpp",
+      "Line": 817,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbdemodd3d11::Demodulator::Shutdown' can be const.",
+      "SourceSHA256": "94757FBB1DF6ECD6BB62BC6B497BBB853DDC1C9741E13B19C1E3AD2D98D16D19",
+      "Assessment": "False positive from shallow unique_ptr analysis: Shutdown drains GPU queries, retires texture leases, clears slots and changes the terminal lifecycle state. It must remain visibly mutating."
+    },
+    {
+      "File": "libs/PBRealCaptureReplay/src/replay_file.cpp",
+      "Line": 929,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbrealcapturereplay::ReplayWriter::Finalize' can be const.",
+      "SourceSHA256": "057F3F6FA2403773FF39070FA45CFA47323D32A83CE124436AE51989AFD6F436",
+      "Assessment": "False positive from shallow unique_ptr analysis: Finalize writes and flushes the footer, closes the partial file, publishes the final path and changes writer state. It must not be callable through a const writer."
+    },
+    {
       "File": "apps/PixelBridgeDecoder/capture_bootstrap_cli.cpp",
       "Line": 181,
       "Id": "nullPointer",
@@ -436,39 +400,30 @@
       "Assessment": "False positive: Require throws on failed DiagnosticCpuReadback::Create; successful factory publishes a non-null candidate only after starting the worker. Every failure preserves output. Existing allocation/error-path and real worker tests exercise this contract."
     },
     {
-      "File": "apps/PixelBridgeDecoder/bootstrap_diagnostic.cpp",
-      "Line": 208,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::find_if algorithm instead of a raw loop.",
-      "SourceSHA256": "760E84404C47079FA4A7BCDEC8B31FE68979E6F971E6E781AA5E31017F1C6FC3",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
-      "Line": 86,
-      "Id": "duplicateExpressionTernary",
-      "Severity": "style",
-      "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "4AA02BD11718E6B176B141D4ADA1A04BC3CE454AE1D2359257DD558251C721BB",
-      "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
-    },
-    {
       "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
       "Line": 87,
       "Id": "duplicateExpressionTernary",
       "Severity": "style",
       "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "4AA02BD11718E6B176B141D4ADA1A04BC3CE454AE1D2359257DD558251C721BB",
+      "SourceSHA256": "D2CCF5D85F8FD2E991010021F813C9349454BB3FA3C997CC1195FCE7798003FC",
       "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
     },
     {
       "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
-      "Line": 220,
+      "Line": 88,
       "Id": "duplicateExpressionTernary",
       "Severity": "style",
       "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "4AA02BD11718E6B176B141D4ADA1A04BC3CE454AE1D2359257DD558251C721BB",
+      "SourceSHA256": "D2CCF5D85F8FD2E991010021F813C9349454BB3FA3C997CC1195FCE7798003FC",
+      "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
+    },
+    {
+      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
+      "Line": 226,
+      "Id": "duplicateExpressionTernary",
+      "Severity": "style",
+      "Message": "Same expression in both branches of ternary operator.",
+      "SourceSHA256": "D2CCF5D85F8FD2E991010021F813C9349454BB3FA3C997CC1195FCE7798003FC",
       "Assessment": "GetSnapshot calls are separated by window Stop, so stoppedSample and finalSample can differ. The analyzer does not model backend thread state; keep failure telemetry selection."
     }
   ],

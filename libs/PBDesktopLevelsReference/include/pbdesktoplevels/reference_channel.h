@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pbmodulation/desktop_levels.h"
+#include "pbmodulation/shape_chroma.h"
 
 #include <array>
 #include <cstddef>
@@ -45,6 +46,7 @@ struct FrameEvaluation
     std::uint32_t crcFailures = 0;
     std::uint32_t identityFailures = 0;
     std::uint32_t falseAcceptedCodewords = 0;
+    std::uint32_t acceptedTransportBlocks = 0;
     // Actual iterative passes; a received soft-decision codeword with an
     // initially zero syndrome needs zero passes, but still undergoes CRC/truth.
     std::uint32_t iterationsTotal = 0;
@@ -59,6 +61,19 @@ struct ReferenceObservation
 {
     pbmodulation::DesktopLevelsObservation modulation;
     FrameEvaluation evaluation;
+};
+
+struct ShapeChromaReferenceObservation
+{
+    pbmodulation::ShapeChromaObservation modulation;
+    FrameEvaluation evaluation;
+};
+
+struct AcceptedTransportBlock
+{
+    std::uint32_t slot = 0;
+    std::array<std::byte, kInfoBytes> bytes{};
+    bool operator==(const AcceptedTransportBlock&) const = default;
 };
 
 class ReferenceChannel
@@ -76,11 +91,19 @@ public:
     // soft decoding, syndrome, CRC and identity checks; it cannot aid recovery.
     [[nodiscard]] ReferenceObservation Decode(const pbmodulation::LumaView& view,
                                              const pbmodulation::DesktopLevelsDecodePolicy& policy = {}) noexcept;
+    [[nodiscard]] ShapeChromaReferenceObservation DecodeShapeChroma(const pbmodulation::LumaView& view,
+        const pbmodulation::ShapeChromaDecodePolicy& policy = {}) noexcept;
     // Shared post-demod pipeline, also useful for independent channel tests.
     // No expected payload is accepted as an argument.
     [[nodiscard]] FrameEvaluation EvaluateCodewords(std::span<const std::byte> bootstrapRecord,
         std::span<const std::byte> hardData, std::span<const float> softMetrics) noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetMarginHistogram() const noexcept;
+    [[nodiscard]] std::span<const std::uint64_t> GetShapeMarginHistogram() const noexcept;
+    [[nodiscard]] std::span<const std::uint64_t> GetChromaMarginHistogram() const noexcept;
+    // Exact serialized Transport blocks that passed FEC, canonical padding,
+    // CRC and identity in the most recent evaluation. Invalid after the next
+    // Decode/Evaluate call or move.
+    [[nodiscard]] std::span<const AcceptedTransportBlock> GetAcceptedTransportBlocks() const noexcept;
 private:
     struct Implementation;
     std::unique_ptr<Implementation> implementation_;

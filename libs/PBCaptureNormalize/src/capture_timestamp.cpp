@@ -1,6 +1,7 @@
 #include "pbcapturenormalize/capture_types.h"
 #include "pbprotocol/checked_integer.h"
 
+#include <array>
 #include <limits>
 
 namespace pbcapturenormalize
@@ -18,6 +19,20 @@ CaptureFrameAgeResult ClassifyFrameAge(const std::int64_t now100ns, const std::i
     const auto age = static_cast<std::uint64_t>(now100ns - timestamp100ns);
     const auto limit100ns = static_cast<std::uint64_t>(maximumFrameAgeMilliseconds) * 10000;
     return {age > limit100ns ? CaptureFrameAgeDisposition::Expired : CaptureFrameAgeDisposition::Current, age};
+}
+
+std::int64_t ResolveEffectiveCaptureTime100ns(const std::int64_t claimed100ns, const std::int64_t arrivalQpc100ns) noexcept
+{
+    const std::array<std::int64_t, 2> candidates = {claimed100ns, arrivalQpc100ns};
+    std::int64_t effective = -1;
+    for (const auto candidate : candidates)
+    {
+        if (candidate >= 0 && (effective < 0 || candidate < effective))
+        {
+            effective = candidate;
+        }
+    }
+    return effective;
 }
 
 bool ConvertQpcTo100ns(const std::int64_t ticks, const std::int64_t frequency, std::int64_t& output) noexcept

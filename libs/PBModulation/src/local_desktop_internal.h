@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pbmodulation/desktop_levels.h"
+#include "pbmodulation/shape_chroma.h"
 
 #include <array>
 #include <cstddef>
@@ -10,16 +11,33 @@
 namespace pbmodulation::detail
 {
 
-enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels };
+enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma };
 
 [[nodiscard]] inline bool MatchesLocalDesktopBinding(const std::uint64_t profileId, const std::uint8_t layout, const LocalDesktopBinding binding) noexcept
 {
-    return binding == LocalDesktopBinding::BootstrapOnly ? profileId == kLocalDesktopVisualProfileId && layout == kLocalDesktopLayoutVersion :
-        layout == kDesktopLevelsLayoutVersion && GetDesktopLevelsProfile(profileId) != nullptr;
+    switch (binding)
+    {
+    case LocalDesktopBinding::BootstrapOnly: return profileId == kLocalDesktopVisualProfileId && layout == kLocalDesktopLayoutVersion;
+    case LocalDesktopBinding::DesktopLevels: return layout == kDesktopLevelsLayoutVersion && GetDesktopLevelsProfile(profileId) != nullptr;
+    case LocalDesktopBinding::ShapeChroma: return profileId == kShapeChromaProfileId && layout == kShapeChromaLayoutVersion;
+    }
+    return false;
+}
+[[nodiscard]] inline std::uint8_t GetLocalDesktopBindingLayoutVersion(const LocalDesktopBinding binding) noexcept
+{
+    switch (binding)
+    {
+    case LocalDesktopBinding::BootstrapOnly: return kLocalDesktopLayoutVersion;
+    case LocalDesktopBinding::DesktopLevels: return kDesktopLevelsLayoutVersion;
+    case LocalDesktopBinding::ShapeChroma: return kShapeChromaLayoutVersion;
+    }
+    return 0;
 }
 [[nodiscard]] ModulationStatus EncodeLocalDesktopScaffold(std::span<const std::byte> record, std::span<std::byte> pixels, LocalDesktopBinding binding) noexcept;
 [[nodiscard]] LocalDesktopObservation DecodeLocalDesktopScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy, LocalDesktopBinding binding) noexcept;
 void FillLocalDesktopBlock(std::span<std::byte> pixels, const LocalDesktopRegion& region, std::uint8_t level) noexcept;
+void FillLocalDesktopColorBlock(std::span<std::byte> pixels, const LocalDesktopRegion& region,
+    std::uint8_t blue, std::uint8_t green, std::uint8_t red) noexcept;
 
 inline constexpr std::uint16_t kBootstrapRsFieldPolynomial = 0x11D;
 inline constexpr std::uint32_t kBootstrapRsFullSymbols = 255;

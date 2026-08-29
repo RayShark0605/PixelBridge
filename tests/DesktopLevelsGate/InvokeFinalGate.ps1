@@ -34,8 +34,14 @@ function Write-NewJson([string]$Path, $Value)
 
 function Get-SourceIdentity
 {
-    $head = (& $git -C $SourceRoot rev-parse HEAD).Trim()
+    # Git can return empty output while the system is shutting down; an
+    # unguarded .Trim() there turns a shutdown into an unrecognizable
+    # "method on null" failure, so normalize to '' before any method call.
+    $headOutput = & $git -C $SourceRoot rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve repository HEAD' }
+    $head = ''
+    if ($null -ne $headOutput) { $head = (@($headOutput) | Select-Object -Last 1).Trim() }
+    if ($head.Length -eq 0) { throw 'Cannot resolve repository HEAD: git returned no output (git unavailable or the system is shutting down)' }
     $paths = @(& $git -C $SourceRoot -c core.quotePath=false ls-files --cached --others --exclude-standard | Sort-Object -Unique)
     if ($LASTEXITCODE -ne 0 -or $paths.Count -eq 0) { throw 'Cannot inventory source files' }
     $files = @(foreach ($path in $paths)
@@ -46,6 +52,33 @@ function Get-SourceIdentity
     $text = $files | ConvertTo-Json -Compress -Depth 4
     $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text)))
     return [pscustomobject]@{ Head=$head; Fingerprint=$digest; Files=$files }
+}
+
+function Assert-SystemStable([int]$MinimumUptimeSeconds)
+{
+    # Fail-closed preflight: a scheduled system restart (e.g. a Windows
+    # Update restart) kills the long-running native capture tests and aborts
+    # the Gate without complete evidence, so refuse to start while a restart
+    # indicator is set or the system has only just booted.
+    $problems = [Collections.Generic.List[string]]::new()
+    $pendingRename = $null
+    $sessionManagerKey = Get-ItemProperty -Path 'HKLM:/SYSTEM/CurrentControlSet/Control/Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
+    if ($null -ne $sessionManagerKey) { $pendingRename = $sessionManagerKey.PendingFileRenameOperations }
+    if ($null -ne $pendingRename -and @($pendingRename).Count -gt 0) { $problems.Add('PendingFileRenameOperations is set (system restart pending)') }
+    $wuRebootRequired = $null
+    $windowsUpdateKey = Get-ItemProperty -Path 'HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/WindowsUpdate/Auto Update' -Name RebootRequired -ErrorAction SilentlyContinue
+    if ($null -ne $windowsUpdateKey) { $wuRebootRequired = $windowsUpdateKey.RebootRequired }
+    if ($wuRebootRequired -eq 1) { $problems.Add('WindowsUpdate RebootRequired is set (system restart pending)') }
+    $cbsRebootRequired = $null
+    $cbsKey = Get-ItemProperty -Path 'HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/Component Based Servicing' -Name RebootRequired -ErrorAction SilentlyContinue
+    if ($null -ne $cbsKey) { $cbsRebootRequired = $cbsKey.RebootRequired }
+    if ($cbsRebootRequired -eq 1) { $problems.Add('Component Based Servicing RebootRequired is set (system restart pending)') }
+    $uptimeSeconds = [Math]::Floor([Environment]::TickCount / 1000)
+    if ($uptimeSeconds -lt $MinimumUptimeSeconds) { $problems.Add("system uptime ${uptimeSeconds}s is below the ${MinimumUptimeSeconds}s stability margin after a boot") }
+    if ($problems.Count -gt 0)
+    {
+        throw "System is not stable for the long-running Gate: $($problems -join '; '). Complete or cancel the pending restart and rerun the Gate on a settled system."
+    }
 }
 
 function Assert-Identity
@@ -126,8 +159,10 @@ function Register-Build([string]$Root, [bool]$Asan)
         $cache -notmatch '(?m)^CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\r?$' -or
         $cache -notmatch '(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\r?$') { throw 'Incorrect declared compiler/sanitizer configuration' }
     foreach ($project in @('libs/PBModulation/PBModulation','libs/PBDesktopLevelsReference/PBDesktopLevelsReference',
-        'libs/PBInnerFec/PBInnerFec','libs/PBCaptureNormalize/PBCaptureNormalize','apps/PixelBridgeEncoder/PixelBridgeEncoder',
-        'apps/PixelBridgeDecoder/PixelBridgeDecoder','tests/PBModulation/PBDesktopLevelsTests'))
+        'libs/PBInnerFec/PBInnerFec','libs/PBCaptureNormalize/PBCaptureNormalize','libs/PBDemodD3D11/PBDemodD3D11',
+        'libs/PBTelemetry/PBTelemetry','libs/PBRealCaptureReplay/PBRealCaptureReplay','apps/PixelBridgeEncoder/PixelBridgeEncoder',
+        'apps/PixelBridgeDecoder/PixelBridgeDecoder','tests/PBModulation/PBDesktopLevelsTests','tests/PBModulation/PBShapeChromaTests',
+        'tests/PBDemodD3D11/PBDemodD3D11Tests','tests/PBTelemetry/PBTelemetryTests','tests/PBRealCaptureReplay/PBRealCaptureReplayTests'))
     {
         $path = Join-Path $Root ($project + '.vcxproj')
         $content = Get-Content -LiteralPath $path -Raw
@@ -156,6 +191,7 @@ function Register-Build([string]$Root, [bool]$Asan)
 try
 {
     if ($env:ASAN_OPTIONS) { throw 'Gate requires default ASan options, not suppressed diagnostics' }
+    Assert-SystemStable 600
     $script:initial = Get-SourceIdentity
     $script:evidence = Join-Path $SourceRoot ("build-desktop-levels-evidence/{0}-{1}-{2}" -f $script:initial.Head,
         (Get-Date -Format 'yyyyMMdd-HHmmss'),([Guid]::NewGuid().ToString('N')))
@@ -182,7 +218,7 @@ try
         $built = Invoke-Gate "$flavor-default-build" $cmake @('--build',$build,'--config','Release','--parallel',"$Parallel") 2400
         if (-not $built.Passed) { continue }
         Register-Build $build ($flavor -eq 'asan')
-        $selected = '^(PBDesktopLevelsTests|PBDesktopLevelsBaselineJson|PBModulationTests|PBLocalDesktopBootstrapTests|PBLocalDesktopMatrixTests|PBLocalDesktopNoAllocationProbe|PBInnerFecTests|PBInterleaveTests|PBBootstrapDiagnosticTests|PBDecoderCliTests|PBEncoderCliTests|PBDecoderTelemetryJson|PBCaptureNormalizeTests|PBGoldenVectorTests|PBGoldenVectorCheckTests)$'
+        $selected = '^(PBDesktopLevelsTests|PBShapeChromaTests|PBDemodD3D11Tests|PBTelemetryTests|PBRealCaptureReplayTests|PBDesktopLevelsBaselineJson|PBModulationTests|PBLocalDesktopBootstrapTests|PBLocalDesktopMatrixTests|PBLocalDesktopNoAllocationProbe|PBInnerFecTests|PBInterleaveTests|PBBootstrapDiagnosticTests|PBCapturePipelineTests|PBCaptureRotationTests|PBDecoderCliTests|PBEncoderCliTests|PBDecoderTelemetryJson|PBCaptureNormalizeTests|PBGoldenVectorTests|PBGoldenVectorCheckTests)$'
         $null = Invoke-Gate "$flavor-related-ctest" $ctest @('--test-dir',$build,'--build-config','Release','--output-on-failure',
             '--parallel',"$Parallel",'-R',$selected,'--output-junit',(Join-Path $script:evidence "$flavor-related.xml"))
         $nativeRoot = Join-Path $build 'tests/DesktopLevelsGate/Release/evidence'
@@ -194,8 +230,13 @@ try
         # Full CTest includes the four 30-second application measurements,
         # legacy/new Golden, actual recreation/scale rejection, and ASan corpus.
         # Failures are retained; there is no exclusion, skip, or retry filter.
+        # The native loop selects its verified-frame/phase demand from the
+        # build flavor: release keeps the full 16-phase certification demand,
+        # asan keeps the documented baseline demand.
+        Set-Item -Path Env:PB_DESKTOP_LEVELS_NATIVE_MODE -Value $flavor
         $null = Invoke-Gate "$flavor-all-ctest" $ctest @('--test-dir',$build,'--build-config','Release','--output-on-failure',
             '--parallel',"$Parallel",'--output-junit',(Join-Path $script:evidence "$flavor-all.xml")) 9000
+        Remove-Item -Path Env:PB_DESKTOP_LEVELS_NATIVE_MODE -ErrorAction SilentlyContinue
         $reports = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse -File -Filter report.json | Where-Object { -not $previousReports.ContainsKey($_.FullName) })
         if ($reports.Count -ne 4) { $script:passed = $false }
         foreach ($file in $reports)
@@ -211,7 +252,8 @@ try
         }
     }
     $staticProjects = @('libs/PBInterleave/PBInterleave','libs/PBModulation/PBModulation','libs/PBDesktopLevelsReference/PBDesktopLevelsReference',
-        'libs/PBCaptureNormalize/PBCaptureNormalize','apps/PixelBridgeEncoder/PixelBridgeEncoder','apps/PixelBridgeDecoder/PixelBridgeDecoder',
+        'libs/PBCaptureNormalize/PBCaptureNormalize','libs/PBDemodD3D11/PBDemodD3D11','libs/PBTelemetry/PBTelemetry',
+        'libs/PBRealCaptureReplay/PBRealCaptureReplay','apps/PixelBridgeEncoder/PixelBridgeEncoder','apps/PixelBridgeDecoder/PixelBridgeDecoder',
         'tools/PBDesktopLevelsBaseline','fuzz/PBDesktopLevelsMutation')
     foreach ($project in $staticProjects)
     {

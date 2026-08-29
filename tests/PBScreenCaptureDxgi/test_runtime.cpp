@@ -22,7 +22,7 @@ TEST_CASE("DXGI shared owner retires the one source before reacquiring while con
     REQUIRE_FALSE(control->unsafeAcquire);
     const auto delivered = control->Delivered();
     REQUIRE(delivered[0].cursorState == CursorState::SeparatePointer);
-    REQUIRE(delivered[1].cursorState == CursorState::PossiblyComposited);
+    REQUIRE(delivered[1].cursorState == CursorState::KnownAbsent);
     REQUIRE(delivered[0].pointer.rawUpdateTimestamp == 100);
     REQUIRE(delivered[1].pointer.rawUpdateTimestamp == 200);
     REQUIRE(delivered[0].rawFrequency == 1000);

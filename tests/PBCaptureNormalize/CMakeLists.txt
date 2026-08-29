@@ -23,7 +23,7 @@ set_tests_properties(PBCapturePipelineTests PROPERTIES LABELS "capture;normalize
 PbAddUnitTest(PBDecoderCliTests test_decoder_arguments.cpp
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp"
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/bootstrap_diagnostic.cpp")
-target_link_libraries(PBDecoderCliTests PRIVATE PB::PBCaptureNormalize PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol)
+target_link_libraries(PBDecoderCliTests PRIVATE PB::PBCaptureNormalize PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol PB::PBTelemetry)
 target_compile_definitions(PBDecoderCliTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 PbInstrumentPresentationTest(PBDecoderCliTests)
 set_tests_properties(PBDecoderCliTests PROPERTIES LABELS "bootstrap;decoder;telemetry" TIMEOUT 60)
@@ -31,7 +31,7 @@ set_tests_properties(PBDecoderCliTests PROPERTIES LABELS "bootstrap;decoder;tele
 add_executable(PBDecoderTelemetryProbe telemetry_probe.cpp
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp"
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/bootstrap_diagnostic.cpp")
-target_link_libraries(PBDecoderTelemetryProbe PRIVATE PB::CompilerSettings PB::PBCaptureNormalize PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol)
+target_link_libraries(PBDecoderTelemetryProbe PRIVATE PB::CompilerSettings PB::PBCaptureNormalize PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol PB::PBTelemetry)
 target_compile_definitions(PBDecoderTelemetryProbe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 if(MSVC)
     target_compile_options(PBDecoderTelemetryProbe PRIVATE /external:anglebrackets /external:W0)
@@ -45,7 +45,7 @@ set_tests_properties(PBDecoderTelemetryJson PROPERTIES LABELS "bootstrap;decoder
 PbAddUnitTest(PBBootstrapDiagnosticTests test_bootstrap_diagnostic.cpp test_desktop_levels_diagnostic.cpp
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/bootstrap_diagnostic.cpp"
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp")
-target_link_libraries(PBBootstrapDiagnosticTests PRIVATE PB::PBCaptureNormalize PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol d3d11 dxgi)
+target_link_libraries(PBBootstrapDiagnosticTests PRIVATE PB::PBCaptureNormalize PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol PB::PBTelemetry d3d11 dxgi)
 target_compile_definitions(PBBootstrapDiagnosticTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
     PB_DESKTOP_LEVELS_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/desktop-levels")
 PbInstrumentPresentationTest(PBBootstrapDiagnosticTests)
@@ -57,7 +57,7 @@ if(PB_BUILD_LOCAL_DESKTOP_GATE OR PB_BUILD_DESKTOP_LEVELS_GATE)
         "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_cli.cpp"
         "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp"
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
-    target_link_libraries(PBLocalDesktopNativeTests PRIVATE PB::PBRenderD3D PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol d3d11 dxgi)
+    target_link_libraries(PBLocalDesktopNativeTests PRIVATE PB::PBRenderD3D PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol PB::PBTelemetry d3d11 dxgi)
     target_include_directories(PBLocalDesktopNativeTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBCaptureNormalize/src")
     target_compile_definitions(PBLocalDesktopNativeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
         PB_LOCAL_DESKTOP_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/local-desktop-bootstrap")
