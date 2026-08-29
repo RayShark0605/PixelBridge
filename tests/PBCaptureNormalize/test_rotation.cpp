@@ -152,7 +152,7 @@ FrameLease MakeSource(ID3D11Device& device, const CaptureEnvironment& environmen
     return FrameLease(source.release(), CloseSource, GetSourceTexture, counters, environment.contentSize, seed, 1);
 }
 
-bool WaitForSlot(D3dRoiRing& ring, const std::size_t slot)
+bool WaitForSlot(D3dRoiRing& ring, const std::size_t slot, CompletionResult* const output = nullptr)
 {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     do
@@ -164,6 +164,10 @@ bool WaitForSlot(D3dRoiRing& ring, const std::size_t slot)
         }
         if (completion.complete)
         {
+            if (output != nullptr)
+            {
+                *output = completion;
+            }
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -262,7 +266,10 @@ void VerifyPixels(GraphicsFixture& graphics, const CaptureEnvironment& environme
         REQUIRE(ring.Copy(source, slot, duplicateSubmitted).code == CaptureError::InvalidFrame);
         REQUIRE_FALSE(duplicateSubmitted);
         REQUIRE(ring.Consume(oracle, {}, slot).code == CaptureError::InternalError);
-        REQUIRE(WaitForSlot(ring, slot));
+        CompletionResult copyCompletion;
+        REQUIRE(WaitForSlot(ring, slot, &copyCompletion));
+        REQUIRE(copyCompletion.roiCopyTime100ns.has_value());
+        REQUIRE_FALSE(copyCompletion.roiCopyTimingUnavailable);
         source.Reset();
         REQUIRE(counters->live == 0);
         REQUIRE(*closes == iteration + 1);

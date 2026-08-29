@@ -4,6 +4,7 @@
 #include "pbmodulation/local_desktop_decode.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbdesktoplevels/reference_channel.h"
+#include "pbtelemetry/telemetry.h"
 
 #include <array>
 #include <mutex>
@@ -62,6 +63,8 @@ struct BootstrapDiagnosticSnapshot
     bool desktopLevels = false;
     std::uint64_t unrecognizedBootstrap = 0;
     std::uint64_t statisticsFailures = 0;
+    std::uint64_t telemetryFailures = 0;
+    pbtelemetry::TelemetrySnapshot telemetry;
     std::array<DesktopLevelsCandidateSnapshot, 2> candidates;
 };
 
@@ -124,9 +127,12 @@ private:
     double whiteLevel_ = 0;
     bool calibrated_ = false;
     std::uint64_t lastObservation_ = 0;
+    pbtelemetry::TelemetryAccumulator telemetry_;
     // Worker-only candidate, not visible to telemetry readers or admission.
     BootstrapDiagnosticEvent pending_;
     bool pendingReady_ = false;
+    bool pendingPixelDigestValid_ = false;
+    bool pendingBootstrapRecovered_ = false;
     struct DesktopLevelsState;
     std::unique_ptr<DesktopLevelsState> levels_;
 };

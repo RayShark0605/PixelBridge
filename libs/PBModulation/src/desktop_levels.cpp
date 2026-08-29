@@ -126,6 +126,12 @@ LocalDesktopRegion TileRegion(const DesktopLevelsProfile& profile, std::uint32_t
     return {};
 }
 
+LocalDesktopRegion TileRegion(const std::uint32_t tilePixels, std::uint32_t physicalIndex) noexcept
+{
+    const DesktopLevelsProfile geometry{0, tilePixels, tilePixels == 2 ? profile2.tileCount : profile4.tileCount, 0, 0, 0};
+    return TileRegion(geometry, physicalIndex);
+}
+
 DesktopLevelsErasure CalibrateLevels(detail::LumaReader& reader, const std::uint32_t originX, const std::uint32_t originY,
                                      const DesktopLevelsDecodePolicy& policy, DesktopLevelsCalibration& calibration) noexcept
 {
@@ -274,6 +280,17 @@ const DesktopLevelsProfile* GetDesktopLevelsProfile(const std::uint64_t profileI
     return profileId == profile2.visualProfileId ? &profile2 : profileId == profile4.visualProfileId ? &profile4 : nullptr;
 }
 
+bool GetLocalDesktopDataTile(const std::uint32_t tilePixels, const std::uint32_t physicalIndex, LocalDesktopRegion& output) noexcept
+{
+    const std::uint32_t tileCount = tilePixels == 2 ? profile2.tileCount : tilePixels == 4 ? profile4.tileCount : 0;
+    if (physicalIndex >= tileCount)
+    {
+        return false;
+    }
+    output = TileRegion(tilePixels, physicalIndex);
+    return true;
+}
+
 bool GetDesktopLevelsTile(const std::uint64_t profileId, const std::uint32_t physicalIndex, LocalDesktopRegion& output) noexcept
 {
     const auto* const profile = GetDesktopLevelsProfile(profileId);
@@ -281,8 +298,7 @@ bool GetDesktopLevelsTile(const std::uint64_t profileId, const std::uint32_t phy
     {
         return false;
     }
-    output = TileRegion(*profile, physicalIndex);
-    return true;
+    return GetLocalDesktopDataTile(profile->tilePixels, physicalIndex, output);
 }
 
 DesktopLevelsErasure ValidateDesktopLevelsGeometry(const LocalDesktopGeometry& geometry, const DesktopLevelsDecodePolicy& policy) noexcept

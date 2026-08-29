@@ -59,3 +59,35 @@ TEST_CASE("Capture QPC conversion agrees with independent 128 bit arithmetic")
         REQUIRE(output == (valid ? static_cast<std::int64_t>(expected) : -73));
     }
 }
+
+TEST_CASE("Effective capture time takes the earliest valid source and fails closed when none exists")
+{
+    struct Example
+    {
+        std::int64_t claimed100ns;
+        std::int64_t arrivalQpc100ns;
+        std::int64_t expected;
+    };
+    constexpr std::int64_t unmeasured = -1;
+    constexpr std::array examples{
+        // No usable time source at all: the caller must fail closed.
+        Example{unmeasured, unmeasured, unmeasured},
+        Example{-5, unmeasured, unmeasured},
+        Example{unmeasured, -7, unmeasured},
+        // A valid zero is a real time, not "unmeasured".
+        Example{0, unmeasured, 0},
+        Example{unmeasured, 0, 0},
+        // Normal: a claim at or before the arrival is the capture instant.
+        Example{100, 200, 100},
+        Example{200, 200, 200},
+        // An ahead-of-time claim (WGC SystemRelativeTime) is superseded by the arrival.
+        Example{500, 200, 200},
+        Example{9223372036854775807, 1, 1},
+        Example{9223372036854775807, unmeasured, 9223372036854775807},
+    };
+    for (const auto& example : examples)
+    {
+        CAPTURE(example.claimed100ns, example.arrivalQpc100ns);
+        REQUIRE(ResolveEffectiveCaptureTime100ns(example.claimed100ns, example.arrivalQpc100ns) == example.expected);
+    }
+}

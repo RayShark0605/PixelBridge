@@ -1,0 +1,10 @@
+#pragma once
+
+namespace pbdemodd3d11::detail
+{
+
+inline constexpr char kDemodComputeShader[] = R"PBHLSL(
+@PB_DEMOD_D3D11_HLSL@
+)PBHLSL";
+
+} // namespace pbdemodd3d11::detail

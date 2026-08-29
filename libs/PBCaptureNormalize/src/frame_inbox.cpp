@@ -49,6 +49,7 @@ FrameLease& FrameLease::operator=(FrameLease&& other) noexcept
         timestampDomain = other.timestampDomain;
         rawTimestamp = other.rawTimestamp;
         rawFrequency = other.rawFrequency;
+        arrivalQpc100ns = other.arrivalQpc100ns;
     }
     return *this;
 }
@@ -101,8 +102,25 @@ FrameInbox::FrameInbox(const CaptureConfig& config) : counters(std::make_shared<
 {
 }
 
+void FrameInbox::SetClockFrequency(const std::int64_t frequency) noexcept
+{
+    clockFrequency.store(frequency, std::memory_order_release);
+}
+
 void FrameInbox::Push(FrameLease frame) noexcept
 {
+    // Sample the arrival on the producer thread before any queue/epoch check:
+    // the capture instant is never later than this sample, so it bounds the
+    // frame age independently of the backend's own (possibly ahead-of-time)
+    // stamp. A failed sample leaves the lease invalid-marked and the age gate
+    // falls back to the backend claim, exactly as before this fix.
+    const auto frequency = clockFrequency.load(std::memory_order_acquire);
+    LARGE_INTEGER counter{};
+    std::int64_t arrival100ns = -1;
+    if (frequency > 0 && QueryPerformanceCounter(&counter) && ConvertQpcTo100ns(counter.QuadPart, frequency, arrival100ns))
+    {
+        frame.arrivalQpc100ns = arrival100ns;
+    }
     FrameLease stale;
     {
         const std::lock_guard lock(mutex_);

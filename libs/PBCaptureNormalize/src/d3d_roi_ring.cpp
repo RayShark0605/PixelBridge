@@ -2,6 +2,7 @@
 
 #include <d3dcompiler.h>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace pbcapturenormalize::detail
@@ -185,6 +186,8 @@ CaptureStatus D3dRoiRing::Recreate(const CaptureConfig& config, const CaptureEnv
     description.Usage = D3D11_USAGE_DEFAULT;
     description.BindFlags = D3D11_BIND_SHADER_RESOURCE | (rotated ? D3D11_BIND_RENDER_TARGET : 0u);
     const D3D11_QUERY_DESC queryDescription{D3D11_QUERY_EVENT, 0};
+    const D3D11_QUERY_DESC disjointDescription{D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+    const D3D11_QUERY_DESC timestampDescription{D3D11_QUERY_TIMESTAMP, 0};
     for (std::size_t index = 0; index < config.roiTextureCount; index++)
     {
         HRESULT result = device_->CreateTexture2D(&description, nullptr, &candidate[index].texture);
@@ -211,6 +214,21 @@ CaptureStatus D3dRoiRing::Recreate(const CaptureConfig& config, const CaptureEnv
         if (FAILED(result))
         {
             return FromHresult(result, CaptureStage::TextureRing);
+        }
+        HRESULT timingResult = device_->CreateQuery(&disjointDescription, &candidate[index].copyDisjoint);
+        if (SUCCEEDED(timingResult))
+        {
+            timingResult = device_->CreateQuery(&timestampDescription, &candidate[index].copyStart);
+        }
+        if (SUCCEEDED(timingResult))
+        {
+            timingResult = device_->CreateQuery(&timestampDescription, &candidate[index].copyEnd);
+        }
+        if (FAILED(timingResult))
+        {
+            candidate[index].copyDisjoint.Reset();
+            candidate[index].copyStart.Reset();
+            candidate[index].copyEnd.Reset();
         }
     }
     slots_.swap(candidate);
@@ -296,14 +314,26 @@ CaptureStatus D3dRoiRing::Copy(const FrameLease& frame, const std::size_t slotIn
         return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Surface);
     }
     submitted = true;
+    auto& slot = slots_[slotIndex];
+    if (slot.copyDisjoint)
+    {
+        context_->Begin(slot.copyDisjoint.Get());
+        context_->End(slot.copyStart.Get());
+    }
     if (environment_.sourceRotation == DXGI_MODE_ROTATION_IDENTITY)
     {
-        context_->CopySubresourceRegion(slots_[slotIndex].texture.Get(), 0, 0, 0, 0, source.Get(), 0, &layout_.sourceBox);
+        context_->CopySubresourceRegion(slot.texture.Get(), 0, 0, 0, 0, source.Get(), 0, &layout_.sourceBox);
     }
     else
     {
-        context_->CopySubresourceRegion(slots_[slotIndex].scratch.Get(), 0, 0, 0, 0, source.Get(), 0, &layout_.sourceBox);
+        context_->CopySubresourceRegion(slot.scratch.Get(), 0, 0, 0, 0, source.Get(), 0, &layout_.sourceBox);
         Rotate(slotIndex);
+    }
+    if (slot.copyDisjoint)
+    {
+        context_->End(slot.copyEnd.Get());
+        context_->End(slot.copyDisjoint.Get());
+        slot.copyTimingPending = true;
     }
     // source is released before the frame lease, which the owner retains until Poll.
     return Mark(slotIndex);
@@ -380,7 +410,50 @@ CompletionResult D3dRoiRing::Poll(const std::size_t slotIndex) noexcept
     }
     if (complete)
     {
+        std::optional<std::uint64_t> copyTime100ns;
+        bool timingUnavailable = false;
+        if (slot.copyTimingPending)
+        {
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
+            std::uint64_t start = 0;
+            std::uint64_t end = 0;
+            const HRESULT disjointStatus = context_->GetData(slot.copyDisjoint.Get(), &disjoint, sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            const HRESULT startStatus = context_->GetData(slot.copyStart.Get(), &start, sizeof(start), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            const HRESULT endStatus = context_->GetData(slot.copyEnd.Get(), &end, sizeof(end), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if (FAILED(disjointStatus) || FAILED(startStatus) || FAILED(endStatus))
+            {
+                if (DeviceRemoved())
+                {
+                    return {CaptureStatus::Failure(CaptureError::DeviceLost, CaptureStage::Completion,
+                        device_->GetDeviceRemovedReason()), false};
+                }
+                timingUnavailable = true;
+            }
+            else if (disjointStatus == S_FALSE || startStatus == S_FALSE || endStatus == S_FALSE)
+            {
+                return {{}, false};
+            }
+            else if (disjoint.Disjoint || disjoint.Frequency == 0 || end < start)
+            {
+                timingUnavailable = true;
+            }
+            else
+            {
+                const long double duration = static_cast<long double>(end - start) * 10000000.0L /
+                    static_cast<long double>(disjoint.Frequency);
+                if (!std::isfinite(duration) || duration < 0 || duration > static_cast<long double>(std::numeric_limits<std::uint64_t>::max()))
+                {
+                    timingUnavailable = true;
+                }
+                else
+                {
+                    copyTime100ns = static_cast<std::uint64_t>(duration + 0.5L);
+                }
+            }
+            slot.copyTimingPending = false;
+        }
         slot.pending = false;
+        return {{}, true, copyTime100ns, timingUnavailable || !slot.copyDisjoint};
     }
     return {{}, complete};
 }

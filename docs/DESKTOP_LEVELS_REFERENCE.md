@@ -104,7 +104,7 @@ build-desktop-levels-release\tools\Release\PBDesktopLevelsBaseline.exe --baselin
 build-desktop-levels-release\tools\Release\PBDesktopLevelsBaseline.exe --input frame.pbrw
 ```
 
-发送端两种新模式每次成功提交后等待 500 ms 再提交新 sequence；旧命令默认行为不变。输出 telemetry create-only，文件已存在即报错。接收命令成功需至少一帧完整 FEC/CRC/identity/exact-truth 验证，不能仅依赖 Bootstrap；专门 Gate 的样本要求更强。离线 `--input` 仅评分本诊断规则的 PBRW，不冒充通用文件恢复或任意 payload decoder。
+发送端两种新模式每次成功提交后等待 500 ms 再提交新 sequence；`--sequence-interval-ms 50..60000` 可覆盖该间隔（默认 500，Gate 使用 640），仅影响 DesktopLevels 呈现 pacing；旧命令默认行为不变。输出 telemetry create-only，文件已存在即报错。接收命令成功需至少一帧完整 FEC/CRC/identity/exact-truth 验证，不能仅依赖 Bootstrap；专门 Gate 的样本要求更强。离线 `--input` 仅评分本诊断规则的 PBRW，不冒充通用文件恢复或任意 payload decoder。
 
 ## 测试与可重放 Gate
 
@@ -122,9 +122,9 @@ pwsh -NoProfile -File tests\DesktopLevelsGate\InvokeFinalGate.ps1 `
   -CppcheckExecutable <本机cppcheck.exe的完整路径> -Parallel 4
 ```
 
-脚本分别配置/完整构建 `build-desktop-levels-release`、`build-desktop-levels-asan`，执行相关及全量 CTest、旧/新 Golden oracle、离线 baseline、ASan mutation/corpus 与 cppcheck。全量 CTest 包含每个配置下 **WGC × DXGI × 2×2/4×4** 的四个真实应用入口回环，各连续采集 30 秒，至少 16 个完整验证的不同 sequence，覆盖全部 16 phases。没有 BER/FER 数值上限，但任何错误接受、原始 JSONL 与汇总分母不一致、样本/phase 不足或捕获契约失败均为失败。真实缩小显示案例还要求 Bootstrap 能读、Data 明确 scale erasure；无法完整显示的放大案例由 CPU 矩阵承担。
+脚本分别配置/完整构建 `build-desktop-levels-release`、`build-desktop-levels-asan`，执行相关及全量 CTest、旧/新 Golden oracle、离线 baseline、ASan mutation/corpus 与 cppcheck。全量 CTest 包含每个配置下 **WGC × DXGI × 2×2/4×4** 的四个真实应用入口回环，各连续采集 30 秒。Release 配置要求至少 16 个完整验证帧且覆盖全部 16 phases；ASan 配置逐帧解码慢于 640 ms sequence 节奏，保持同一 30 秒窗口下的文档化 baseline 要求（至少 8 个完整验证帧、至少 8 个不同 phase）。发送端以 50 帧 × 640 ms（约 32 s，覆盖整个 30 s 窗口）提交，每个 phase 出现 3–4 次，同 phase 副本间隔至少 10.24 s，单次 readback 停顿不能消灭任一 phase。没有 BER/FER 数值上限，但任何错误接受、原始 JSONL 与汇总分母不一致、样本/phase 不足或捕获契约失败均为失败。真实缩小显示案例还要求 Bootstrap 能读、Data 明确 scale erasure；无法完整显示的放大案例由 CPU 矩阵承担。Gate 在启动前 fail-closed 检查系统稳定性：存在待重启标志（`PendingFileRenameOperations`、WindowsUpdate 或 CBS `RebootRequired`）或系统启动不足 600 s 即拒绝启动，避免计划内系统重启（如 Windows Update）在长时 native 采集中途杀死进程树并使证据不完整；若运行期间仍发生重启，Gate 以明确的 fatal error 终止并保留证据，不产出部分 PASS。
 
-所有 native 测试共享 `PixelBridgeDesktop` resource lock。只定位/管理测试自有 DataWindow，不自动改变 HDR、分辨率、DPI、显示模式、光标或其他应用窗口。必须有真实 SDR、完整物理画布和 cursor-excluded capture contract，前提失败是失败，不 skip、不降门槛。
+所有 native 测试共享 `PixelBridgeDesktop` resource lock。只定位/管理测试自有 DataWindow，不自动改变 HDR、分辨率、DPI、显示模式、光标或其他应用窗口。必须有真实 SDR、完整物理画布和 cursor-excluded capture contract，前提失败是失败，不 skip、不降门槛。帧龄 gate 以 backend 声明时间与 inbox 入队时 QPC 实测 arrival 中最早的有效值为准：声明早于自身 arrival 的超前时间戳（WGC SystemRelativeTime 实测可超前数毫秒）被 arrival 取代，两者均无效则拒绝该帧，不猜测帧龄。Gate 仅在 DXGI 捕获路径对 pointerInsideRoi 施加 fail-closed 环境检查（WGC 以 `IsCursorCaptureEnabled(false)` 显式禁用光标捕获，帧不受指针位置影响；DXGI 路径实测交付无指针像素，仍按保守契约拒绝指针位于 ROI 内的运行，防止操作员活动污染 30 s 证据），并披露 TopmostRaisedApplied。
 
 证据放在忽略的 `build-desktop-levels-evidence/` 及两个 build tree 内：源 HEAD、完整 tracked/untracked 源文件 fingerprint（允许提交前工作区，但 Gate 期间不得变化）、编译配置/依赖、命令及 stdout/stderr、JUnit、原始 JSONL、显示/ROI 可见性 metadata、四组对比、测试二进制 SHA256。Gate 不自动 commit；全部必要 Gate 通过、无未解决 Critical/High、完成最终 diff review 后，才可按任务路径创建非 amend 原子 commit。`ExecutionGate=PASS` 仍不等于 Certified Profile 或最终系统完成。
 

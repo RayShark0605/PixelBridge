@@ -110,7 +110,16 @@ std::string SerializeBootstrapDiagnosticEvent(const BootstrapDiagnosticEvent& ev
            << ",\"separateVisible\":" << metadata.pointer.separateVisible << ",\"physicalLeft\":" << metadata.pointer.physicalLeft << ",\"physicalTop\":" << metadata.pointer.physicalTop
            << "},\"timestamp\":{\"domain\":\"" << (metadata.timestamp.domain == CaptureTimestampDomain::WgcSystemRelative100ns ? "WgcSystemRelative100ns" : "DxgiQpcTicks")
            << "\",\"raw\":\"" << metadata.timestamp.rawValue << "\",\"frequency\":\"" << metadata.timestamp.rawFrequency
-           << "\",\"monotonic100ns\":\"" << metadata.timestamp.monotonic100ns << "\"},\"disposition\":\"" << GetBootstrapDispositionName(event.disposition)
+           << "\",\"monotonic100ns\":\"" << metadata.timestamp.monotonic100ns << "\",\"arrivalQpc100ns\":\"" << metadata.timestamp.arrivalQpc100ns << "\"},\"roiCopyTime100ns\":";
+    if (metadata.roiCopyTime100ns)
+    {
+        stream << *metadata.roiCopyTime100ns;
+    }
+    else
+    {
+        stream << "null";
+    }
+    stream << ",\"disposition\":\"" << GetBootstrapDispositionName(event.disposition)
            << "\",\"visualErasure\":\"" << pbmodulation::GetLocalDesktopErasureName(visual.erasure) << "\",\"geometryGeneration\":\"" << event.geometryGeneration
            << "\",\"calibrationGeneration\":\"" << event.calibrationGeneration << "\",\"identity\":";
     const bool hasIdentity = visual.IsAccepted() && event.disposition != BootstrapDisposition::InvalidMetadata && event.disposition != BootstrapDisposition::UnsupportedSignal;
@@ -207,6 +216,8 @@ std::string SerializeCaptureBootstrapSnapshot(const char* eventType, const Captu
            << ",\"recreates\":" << capture.recreates << ",\"accessLostEvents\":" << capture.accessLostEvents << ",\"rebuildReason\":\"" << RebuildName(capture.lastRebuildReason)
            << "\",\"waitingNativeError\":" << capture.waitingNativeError << ",\"environmentAttempts\":" << capture.environmentAttempts
            << ",\"frameLeaseHighWater\":" << capture.frameLeaseHighWater << ",\"frameAgeHighWater100ns\":" << capture.frameAgeHighWater100ns
+           << ",\"roiCopyTimingSamples\":" << capture.roiCopyTimingSamples << ",\"roiCopyTimingUnavailable\":" << capture.roiCopyTimingUnavailable
+           << ",\"roiCopyTimeTotal100ns\":" << capture.roiCopyTimeTotal100ns << ",\"roiCopyTimeHighWater100ns\":" << capture.roiCopyTimeHighWater100ns
            << ",\"normalizedFrames\":" << normalized.acceptedFrames << ",\"captureErasures\":" << normalized.erasedFrames
            << ",\"captureErasure\":\"" << GetCaptureErasureName(normalized.lastErasure) << "\",\"captureErasureCounts\":[";
     for (std::size_t index = 0; index < normalized.erasures.size(); index++)
@@ -282,6 +293,9 @@ std::string SerializeCaptureBootstrapSnapshot(const char* eventType, const Captu
         }
         stream << "]}";
     }
+    stream << ",\"linkMetrics\":";
+    pbtelemetry::WriteTelemetryJson(stream, visual.telemetry);
+    stream << ",\"telemetryFailures\":" << visual.telemetryFailures;
     stream << "}\n";
     return stream.str();
 }

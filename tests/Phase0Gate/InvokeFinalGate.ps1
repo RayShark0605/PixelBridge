@@ -25,7 +25,10 @@ $script:lastStage = 'precondition'
 
 function Get-CleanHead
 {
-    $head = (& $git -C $SourceRoot rev-parse HEAD).Trim()
+    # Normalize empty git output (e.g. system shutdown) before any method call.
+    $headOutput = & $git -C $SourceRoot rev-parse HEAD
+    $head = ''
+    if ($null -ne $headOutput) { $head = (@($headOutput) | Select-Object -Last 1).Trim() }
     if ($LASTEXITCODE -ne 0 -or $head -cne $ExpectedCommit)
     {
         throw "HEAD differs from FINAL_PHASE0_COMMIT: $head"

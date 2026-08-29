@@ -110,11 +110,13 @@ struct NormalizeConsumer::Implementation
         }
         LARGE_INTEGER counter{};
         std::int64_t now100ns = 0;
-        if (converted != raw.systemRelativeTime100ns || !QueryPerformanceCounter(&counter) || !ConvertQpcTo100ns(counter.QuadPart, clockFrequency, now100ns))
+        const auto effective = ResolveEffectiveCaptureTime100ns(converted, raw.arrivalQpc100ns);
+        if (converted != raw.systemRelativeTime100ns || effective < 0 || !QueryPerformanceCounter(&counter) ||
+            !ConvertQpcTo100ns(counter.QuadPart, clockFrequency, now100ns))
         {
             return CaptureErasureReason::InvalidTimestamp;
         }
-        const auto age = ClassifyFrameAge(now100ns, converted, runtimeConfig.maximumFrameAgeMilliseconds);
+        const auto age = ClassifyFrameAge(now100ns, effective, runtimeConfig.maximumFrameAgeMilliseconds);
         if (age.disposition == CaptureFrameAgeDisposition::InvalidTimestamp)
         {
             return CaptureErasureReason::InvalidTimestamp;
@@ -297,7 +299,7 @@ void NormalizeConsumer::EpochInvalidated(const std::uint64_t epoch) noexcept
     state.consumer->DomainInvalidated(domain);
 }
 
-CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& raw, ID3D11Texture2D* texture, ID3D11DeviceContext* context)
+CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& rawMetadata, ID3D11Texture2D* texture, ID3D11DeviceContext* context)
 {
     auto& state = *implementation_;
     const auto current = GetSnapshot();
@@ -306,45 +308,50 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& raw, ID3D11Te
         return CaptureStatus::Failure(CaptureError::WrongThread, CaptureStage::Consumer);
     }
     CaptureErasureReason reason = CaptureErasureReason::None;
-    if (!current.active || raw.captureEpoch != current.domain.captureEpoch)
+    if (!current.active || rawMetadata.captureEpoch != current.domain.captureEpoch)
     {
         reason = CaptureErasureReason::InactiveDomain;
     }
-    else if (raw.arrivalOrdinal == 0 || raw.arrivalOrdinal <= state.lastObservation)
+    else if (rawMetadata.arrivalOrdinal == 0 || rawMetadata.arrivalOrdinal <= state.lastObservation)
     {
         reason = CaptureErasureReason::StaleObservation;
     }
-    else if (!SameEnvironment(raw.environment, state.environment) || raw.slotIndex >= state.runtimeConfig.roiTextureCount ||
-             raw.slotGeneration == 0 || raw.sourceGeneration == 0 ||
-             (state.epochSourceGeneration != 0 && raw.sourceGeneration != state.epochSourceGeneration) ||
-             (state.epochSourceGeneration == 0 && raw.sourceGeneration <= state.lastSourceGeneration))
+    else if (!SameEnvironment(rawMetadata.environment, state.environment) || rawMetadata.slotIndex >= state.runtimeConfig.roiTextureCount ||
+             rawMetadata.slotGeneration == 0 || rawMetadata.sourceGeneration == 0 ||
+             (state.epochSourceGeneration != 0 && rawMetadata.sourceGeneration != state.epochSourceGeneration) ||
+             (state.epochSourceGeneration == 0 && rawMetadata.sourceGeneration <= state.lastSourceGeneration))
     {
         reason = CaptureErasureReason::InvalidMetadata;
     }
-    else if (state.pending[raw.slotIndex].active || raw.slotGeneration <= state.lastSlotGenerations[raw.slotIndex])
+    else if (state.pending[rawMetadata.slotIndex].active || rawMetadata.slotGeneration <= state.lastSlotGenerations[rawMetadata.slotIndex])
     {
         reason = CaptureErasureReason::InvalidMetadata;
     }
     if (reason != CaptureErasureReason::None)
     {
-        state.Erase(raw, reason);
+        state.Erase(rawMetadata, reason);
         return {};
     }
-    state.lastObservation = raw.arrivalOrdinal;
-    state.lastSlotGenerations[raw.slotIndex] = raw.slotGeneration;
-    state.epochSourceGeneration = raw.sourceGeneration;
-    state.lastSourceGeneration = raw.sourceGeneration;
-    reason = state.ValidateTime(raw);
-    const bool cursorExcluded = state.backend == CaptureBackendKind::Wgc ?
-                                raw.cursorState == CursorState::Excluded && raw.capabilities.cursorExcluded :
-                                raw.cursorState == CursorState::SeparatePointer && raw.pointer.separateVisible && raw.pointer.positionKnown;
+    state.lastObservation = rawMetadata.arrivalOrdinal;
+    state.lastSlotGenerations[rawMetadata.slotIndex] = rawMetadata.slotGeneration;
+    state.epochSourceGeneration = rawMetadata.sourceGeneration;
+    state.lastSourceGeneration = rawMetadata.sourceGeneration;
+    reason = state.ValidateTime(rawMetadata);
+    // KnownAbsent is per-frame proof from the source that the pointer is not
+    // in the frame's pixels; it needs no backend capability and applies to
+    // both backends. The other branches keep their capability/position proofs.
+    const bool cursorKnownAbsent = rawMetadata.cursorState == CursorState::KnownAbsent;
+    const bool cursorExcluded = cursorKnownAbsent ||
+                                (state.backend == CaptureBackendKind::Wgc ?
+                                 rawMetadata.cursorState == CursorState::Excluded && rawMetadata.capabilities.cursorExcluded :
+                                 rawMetadata.cursorState == CursorState::SeparatePointer && rawMetadata.pointer.separateVisible && rawMetadata.pointer.positionKnown);
     if (reason == CaptureErasureReason::None && !cursorExcluded)
     {
-        reason = raw.cursorState == CursorState::PossiblyComposited ? CaptureErasureReason::CursorPossiblyComposited : CaptureErasureReason::CursorUnknown;
+        reason = rawMetadata.cursorState == CursorState::PossiblyComposited ? CaptureErasureReason::CursorPossiblyComposited : CaptureErasureReason::CursorUnknown;
     }
     if (reason != CaptureErasureReason::None)
     {
-        state.Erase(raw, reason);
+        state.Erase(rawMetadata, reason);
         return {};
     }
     D3D11_TEXTURE2D_DESC description{};
@@ -367,17 +374,17 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& raw, ID3D11Te
         description.Format != state.environment.pixelFormat || description.MipLevels != 1 || description.ArraySize != 1 ||
         description.SampleDesc.Count != 1 || description.SampleDesc.Quality != 0 || description.Usage != D3D11_USAGE_DEFAULT || description.CPUAccessFlags != 0)
     {
-        state.Erase(raw, CaptureErasureReason::InvalidOwnedTexture);
+        state.Erase(rawMetadata, CaptureErasureReason::InvalidOwnedTexture);
         return {};
     }
     ScreenCaptureFrame frame;
     auto& metadata = frame.metadata;
     metadata.domain = current.domain;
     metadata.backend = state.backend;
-    metadata.captureObservation = raw.arrivalOrdinal;
-    metadata.sourceGeneration = raw.sourceGeneration;
-    metadata.slotIndex = raw.slotIndex;
-    metadata.slotGeneration = raw.slotGeneration;
+    metadata.captureObservation = rawMetadata.arrivalOrdinal;
+    metadata.sourceGeneration = rawMetadata.sourceGeneration;
+    metadata.slotIndex = rawMetadata.slotIndex;
+    metadata.slotGeneration = rawMetadata.slotGeneration;
     metadata.physicalRoi = rectangle;
     metadata.sourceContentSize = state.environment.contentSize;
     metadata.sourceExtent = state.environment.sourceSize;
@@ -403,12 +410,14 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& raw, ID3D11Te
         : !metadata.hdr && metadata.outputColorSpace == 0 && metadata.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT
         ? CaptureSignalEncoding::SdrRgb
         : CaptureSignalEncoding::Unknown;
-    metadata.timestamp = {raw.timestampDomain, raw.rawTimestamp, raw.rawFrequency, raw.systemRelativeTime100ns};
+    metadata.timestamp = {rawMetadata.timestampDomain, rawMetadata.rawTimestamp, rawMetadata.rawFrequency,
+                          rawMetadata.systemRelativeTime100ns, rawMetadata.arrivalQpc100ns};
+    metadata.roiCopyTime100ns = rawMetadata.roiCopyTime100ns;
     metadata.isCursorExcluded = true;
-    metadata.sourceCursorState = raw.cursorState;
-    metadata.pointer = raw.pointer;
+    metadata.sourceCursorState = rawMetadata.cursorState;
+    metadata.pointer = rawMetadata.pointer;
     frame.texture = texture;
-    auto& pending = state.pending[raw.slotIndex];
+    auto& pending = state.pending[rawMetadata.slotIndex];
     pending = {true, true, metadata};
     CaptureStatus status;
     try
@@ -428,23 +437,23 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& raw, ID3D11Te
     return status;
 }
 
-CaptureStatus NormalizeConsumer::Completed(const RawRoiFrameMetadata& raw, ID3D11DeviceContext* context, const bool cancelled)
+CaptureStatus NormalizeConsumer::Completed(const RawRoiFrameMetadata& rawMetadata, ID3D11DeviceContext* context, const bool cancelled)
 {
     auto& state = *implementation_;
     if (!cancelled && state.ownerThread != GetCurrentThreadId())
     {
         return CaptureStatus::Failure(CaptureError::WrongThread, CaptureStage::Completion);
     }
-    if (raw.slotIndex >= state.pending.size())
+    if (rawMetadata.slotIndex >= state.pending.size())
     {
         return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion);
     }
-    auto& pending = state.pending[raw.slotIndex];
+    auto& pending = state.pending[rawMetadata.slotIndex];
     if (!pending.active)
     {
         return {};
     }
-    if (!SameCompletion(raw, pending.metadata))
+    if (!SameCompletion(rawMetadata, pending.metadata))
     {
         return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion);
     }

@@ -9,6 +9,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -31,7 +32,7 @@ void Usage()
               << "N bounds accepted CPU frame submissions (1..1000000), not displayed frames.\n"
               << "Without --frames, press Escape in the data window to stop.\n"
               << "Default --data-window remains PB-ReferenceRaster-1. The explicit visual selects experimental SDR Bootstrap only.\n"
-              << "DesktopLevels modes submit a new sequence every 500 ms, require 1:1 SDR and carry diagnostic Robust QC-LDPC data only.\n"
+              << "DesktopLevels modes submit a new sequence every 500 ms by default (--sequence-interval-ms 50..60000 overrides), require 1:1 SDR and carry diagnostic Robust QC-LDPC data only.\n"
               << "Presentation diagnostics only; not a file sender or capture certification. Telemetry never overwrites an existing file.\n";
 }
 
@@ -118,6 +119,11 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
         auto lastProgress = std::chrono::steady_clock::now();
         auto lastLog = lastProgress;
         auto nextSequence = lastProgress;
+        // The configured DesktopLevels dwell is expected silence between
+        // presents, not a hang: the no-progress deadline spans two full
+        // configured intervals.
+        const auto noProgressLimit = std::chrono::milliseconds(std::max<std::uint64_t>(10000, desktopLevels ?
+            2 * std::uint64_t(options.sequenceIntervalMilliseconds) + 1000 : 0ull));
         for (;;)
         {
             const auto snapshot = window->GetSnapshot();
@@ -151,9 +157,9 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
                 break;
             }
-            if (hasFrameCount && now - lastProgress > std::chrono::seconds(10))
+            if (hasFrameCount && now - lastProgress > noProgressLimit)
             {
-                throw std::runtime_error("finite presentation run made no progress for 10 seconds");
+                throw std::runtime_error("finite presentation run made no progress for " + std::to_string(noProgressLimit.count()) + " ms");
             }
             if ((!hasFrameCount || sequence < frameLimit) && snapshot.state == pbrenderd3d::WindowState::Running && !snapshot.pendingFrame &&
                 (!desktopLevels || now >= nextSequence))
@@ -193,7 +199,7 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
                     {
                         // Pace from the actual accepted submission, never rush
                         // delayed sequences to catch up and shorten their dwell.
-                        nextSequence = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+                        nextSequence = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.sequenceIntervalMilliseconds);
                     }
                 }
                 else if (status.code != pbrenderd3d::PresentationErrorCode::EpochMismatch && status.code != pbrenderd3d::PresentationErrorCode::Paused &&

@@ -79,6 +79,22 @@ void FillBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& regi
     }
 }
 
+void FillColorBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region, const std::uint8_t blue,
+                    const std::uint8_t green, const std::uint8_t red) noexcept
+{
+    for (std::uint32_t row = 0; row < region.height; row++)
+    {
+        for (std::uint32_t column = 0; column < region.width; column++)
+        {
+            const std::size_t offset = ((static_cast<std::size_t>(region.y) + row) * kLocalDesktopCanvasWidth + region.x + column) * 4;
+            pixels[offset] = static_cast<std::byte>(blue);
+            pixels[offset + 1] = static_cast<std::byte>(green);
+            pixels[offset + 2] = static_cast<std::byte>(red);
+            pixels[offset + 3] = std::byte{255};
+        }
+    }
+}
+
 void FillCells(const std::span<std::byte> pixels, const LocalDesktopRegion& region, const std::span<const std::uint8_t> bits) noexcept
 {
     const std::uint32_t columns = region.width / kLocalDesktopCellPixels;
@@ -174,7 +190,7 @@ ModulationStatus detail::EncodeLocalDesktopScaffold(const std::span<const std::b
     {
         return FromProtocolError(parsed.Error());
     }
-    if (parsed.Value().visualLayoutVersion != (binding == LocalDesktopBinding::BootstrapOnly ? kLocalDesktopLayoutVersion : kDesktopLevelsLayoutVersion))
+    if (parsed.Value().visualLayoutVersion != GetLocalDesktopBindingLayoutVersion(binding))
     {
         return ModulationStatus::Failure(ModulationErrorCode::UnsupportedVersion, 7);
     }
@@ -238,6 +254,12 @@ ModulationStatus EncodeLocalDesktopBootstrapFrame(const std::span<const std::byt
 void detail::FillLocalDesktopBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region, const std::uint8_t level) noexcept
 {
     FillBlock(pixels, region, level);
+}
+
+void detail::FillLocalDesktopColorBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region,
+                                        const std::uint8_t blue, const std::uint8_t green, const std::uint8_t red) noexcept
+{
+    FillColorBlock(pixels, region, blue, green, red);
 }
 
 } // namespace pbmodulation

@@ -49,6 +49,8 @@ public:
     CaptureTimestampDomain timestampDomain = CaptureTimestampDomain::WgcSystemRelative100ns;
     std::int64_t rawTimestamp = 0;
     std::int64_t rawFrequency = 10000000;
+    // Filled by FrameInbox::Push from a QPC sample on the producer thread; -1 until then.
+    std::int64_t arrivalQpc100ns = -1;
 
 private:
     void* frame_ = nullptr;
@@ -75,6 +77,8 @@ public:
     // Push/ReportError are the only producer entrypoints. No COM Close, user
     // call, texture operation or OS teardown is performed under this mutex.
     void Push(FrameLease frame) noexcept;
+    // Owner-thread setup before the first Resume; Push may run on any producer thread.
+    void SetClockFrequency(std::int64_t frequency) noexcept;
     void ReportError(CaptureStatus status, std::uint64_t epoch) noexcept;
     void Resume(CaptureSize size, std::uint64_t epoch) noexcept;
     void Pause() noexcept;
@@ -87,6 +91,7 @@ public:
 
 private:
     const std::uint32_t limit_;
+    std::atomic<std::int64_t> clockFrequency{0};
     mutable std::mutex mutex_;
     std::condition_variable wake_;
     std::array<FrameLease, maximumQueuedFrames> frames_;
@@ -117,6 +122,8 @@ struct CompletionResult
 {
     CaptureStatus status;
     bool complete = false;
+    std::optional<std::uint64_t> roiCopyTime100ns;
+    bool roiCopyTimingUnavailable = false;
 };
 
 class DeferredCleanup
