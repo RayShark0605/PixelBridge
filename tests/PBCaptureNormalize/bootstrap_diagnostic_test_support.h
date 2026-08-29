@@ -27,18 +27,18 @@ using Microsoft::WRL::ComPtr;
 inline constexpr std::uint64_t sessionTag = 0x1122334455667788ULL;
 inline constexpr CaptureSize smallCanvas{960, 540};
 
-inline std::array<std::byte, 44> CanonicalRecord(const std::uint64_t sequence = 0, const std::uint64_t tag = sessionTag,
-                                               const std::uint32_t controlEpoch = 0)
+inline std::array<std::byte, 44> CanonicalBoundRecord(const std::uint64_t visualProfileId, const std::uint8_t visualLayoutVersion,
+    const std::uint64_t sequence = 0, const std::uint64_t tag = sessionTag, const std::uint32_t controlEpoch = 0)
 {
     // Independent wire fixture: explicit LE fields and a bitwise CRC32C oracle,
     // never the product serializer, product CRC or an accepted decode result.
     std::array<std::byte, 44> bytes{};
-    constexpr std::array<std::uint8_t, 8> prefix{0x50, 0x42, 0x52, 0x47, 1, 1, 0, 2};
+    const std::array<std::uint8_t, 8> prefix{0x50, 0x42, 0x52, 0x47, 1, 1, 0, visualLayoutVersion};
     for (std::size_t index = 0; index < prefix.size(); index++)
     {
         bytes[index] = static_cast<std::byte>(prefix[index]);
     }
-    const std::array<std::uint64_t, 3> fields{0x50424C4442533031ULL, tag, sequence};
+    const std::array<std::uint64_t, 3> fields{visualProfileId, tag, sequence};
     for (std::size_t field = 0; field < fields.size(); field++)
     {
         for (std::size_t index = 0; index < 8; index++)
@@ -65,6 +65,18 @@ inline std::array<std::byte, 44> CanonicalRecord(const std::uint64_t sequence = 
         bytes[40 + index] = static_cast<std::byte>((checksum >> (index * 8)) & 255u);
     }
     return bytes;
+}
+
+inline std::array<std::byte, 44> CanonicalRecord(const std::uint64_t sequence = 0, const std::uint64_t tag = sessionTag,
+                                               const std::uint32_t controlEpoch = 0)
+{
+    return CanonicalBoundRecord(0x50424C4442533031ULL, 2, sequence, tag, controlEpoch);
+}
+
+inline std::array<std::byte, 44> CanonicalShapeChromaRecord(const std::uint64_t sequence = 0, const std::uint64_t tag = sessionTag,
+    const std::uint32_t controlEpoch = 0)
+{
+    return CanonicalBoundRecord(0x5042534843503031ULL, 4, sequence, tag, controlEpoch);
 }
 
 inline std::string Hex(const std::span<const std::byte> bytes)

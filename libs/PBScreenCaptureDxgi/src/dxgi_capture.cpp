@@ -26,7 +26,9 @@ CaptureStatus DxgiCapture::Create(const CaptureNormalizeConfig& config, std::sha
 {
     try
     {
-        return DxgiCaptureTestAccess::CreateNormalized(config, std::move(consumer), detail::MakeNativeDxgiBackend(), output);
+        detail::NativeDxgiOptions options;
+        options.normalizeConfiguredFormat = true;
+        return DxgiCaptureTestAccess::CreateNormalized(config, std::move(consumer), detail::MakeNativeDxgiBackend(options), output);
     }
     catch (const std::bad_alloc&)
     {

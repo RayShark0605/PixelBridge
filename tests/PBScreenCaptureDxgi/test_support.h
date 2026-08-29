@@ -163,6 +163,7 @@ struct Control
     std::atomic<std::uint32_t> shutdowns{0};
     std::atomic<bool> unsafeAcquire{false};
     std::atomic<bool> nonzeroTimeout{false};
+    std::atomic<std::uint32_t> acquireTimeoutMilliseconds{0};
     std::atomic<bool> unsafeRecreate{false};
     std::atomic<bool> copyComplete{false};
     std::atomic<bool> consumeComplete{true};
@@ -210,6 +211,7 @@ public:
     {
         control_->acquireCalls++;
         control_->nonzeroTimeout = control_->nonzeroTimeout || milliseconds != 0;
+        control_->acquireTimeoutMilliseconds = milliseconds;
         if (outstanding_)
         {
             control_->unsafeAcquire = true;

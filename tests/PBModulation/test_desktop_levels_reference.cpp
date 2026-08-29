@@ -21,6 +21,16 @@ std::vector<float> Metrics(const std::span<const std::byte> data)
     }
     return result;
 }
+
+void EncodeTransportCodeword(const pbprotocol::TransportBlockHeader& header, const std::span<const std::byte> payload,
+    const std::span<std::byte> codeword)
+{
+    std::vector<std::byte> serialized(pbprotocol::GetTransportSerializedSize(header));
+    REQUIRE(pbprotocol::SerializeTransportBlock(header, payload, serialized));
+    std::array<std::byte, pbdesktoplevels::kInfoBytes> information{};
+    REQUIRE(pbprotocol::FrameTransportBlockIntoInfoBlock(serialized, information.size(), information));
+    REQUIRE(pbinnerfec::EncodeQcLdpcCodeword(pbinnerfec::kInnerFecProfileIdRobust, information, codeword));
+}
 } // namespace
 
 TEST_CASE("DesktopLevels diagnostic generator matches independent Transport LDPC oracle", "[desktop-levels][fec][golden]")
@@ -133,14 +143,112 @@ TEST_CASE("DesktopLevels FEC scoring retains failures and never repairs from kno
         REQUIRE(result.erroneousCodedBits == 0);
         REQUIRE(result.iterationsTotal == 0); // zero soft decisions pass parity, not Transport/truth
     }
+    SECTION("zero-syndrome fast decision matches the fixed adapter rounding boundary")
+    {
+        constexpr float adapterBoundary = static_cast<float>(0.5 / pbdesktoplevels::kSoftMetricScale);
+        auto boundaryMetrics = Metrics(data);
+        for (float& metric : boundaryMetrics)
+        {
+            metric *= adapterBoundary;
+        }
+        const auto boundary = channel.EvaluateCodewords(record, data, boundaryMetrics);
+        REQUIRE(boundary.IsVerified());
+        REQUIRE(boundary.iterationsTotal == 0);
+
+        const float belowBoundary = std::nextafter(adapterBoundary, 0.0f);
+        auto belowMetrics = Metrics(data);
+        for (float& metric : belowMetrics)
+        {
+            metric *= belowBoundary;
+        }
+        const auto below = channel.EvaluateCodewords(record, data, belowMetrics);
+        REQUIRE(below.evaluated);
+        REQUIRE_FALSE(below.IsVerified());
+        REQUIRE(below.crcFailures + below.fecFailures == 10);
+        REQUIRE(below.iterationsTotal == 0);
+    }
     SECTION("nonfinite and short metric inputs cannot be evaluated")
     {
         auto metrics = Metrics(data);
         metrics.back() = std::numeric_limits<float>::infinity();
         REQUIRE_FALSE(channel.EvaluateCodewords(record, data, metrics).evaluated);
+        REQUIRE(channel.GetAcceptedTransportBlocks().empty());
         metrics.back() = 1;
         REQUIRE_FALSE(channel.EvaluateCodewords(record, data, std::span(metrics).first(metrics.size() - 1)).evaluated);
     }
+}
+
+TEST_CASE("DesktopLevels production Transport mode preserves business block identities and variable payload sizes",
+    "[desktop-levels][fec][transport][receiver]")
+{
+    const auto record = desktoptest::Record(4, 5);
+    const auto parsedRecord = pbprotocol::ParseBootstrapRecord(record);
+    REQUIRE(parsedRecord);
+    std::vector<std::byte> data(21672);
+    std::array<std::uint32_t, 10> serializedSizes{};
+    for (std::uint32_t slot = 0; slot < 10; slot++)
+    {
+        std::vector<std::byte> payload(17 + slot);
+        for (std::size_t index = 0; index < payload.size(); index++)
+        {
+            payload[index] = static_cast<std::byte>((slot * 31 + index * 7 + 3) & 255);
+        }
+        const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData, pbprotocol::kTransportProtocolMinor, 0,
+            parsedRecord.Value().sessionTag, 900 + slot, 1000 + slot, static_cast<std::uint16_t>(payload.size())};
+        serializedSizes[slot] = static_cast<std::uint32_t>(pbprotocol::GetTransportSerializedSize(header));
+        EncodeTransportCodeword(header, payload, std::span(data).subspan(slot * 2025, 2025));
+    }
+    auto created = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
+    REQUIRE(created);
+    auto channel = std::move(created).Value();
+    const auto evaluation = channel.EvaluateCodewords(record, data, Metrics(data), pbdesktoplevels::EvaluationMode::Transport);
+    REQUIRE(evaluation.evaluated);
+    REQUIRE(evaluation.IsVerified());
+    REQUIRE(evaluation.codewords == 10);
+    REQUIRE(evaluation.acceptedTransportBlocks == 10);
+    REQUIRE(evaluation.fecFailures == 0);
+    REQUIRE(evaluation.crcFailures == 0);
+    REQUIRE(evaluation.identityFailures == 0);
+    REQUIRE(evaluation.falseAcceptedCodewords == 0);
+    REQUIRE(evaluation.comparedCodedBits == 0);
+    REQUIRE(evaluation.erroneousCodedBits == 0);
+    const auto accepted = channel.GetAcceptedTransportBlocks();
+    REQUIRE(accepted.size() == 10);
+    for (std::uint32_t slot = 0; slot < accepted.size(); slot++)
+    {
+        REQUIRE(accepted[slot].slot == slot);
+        REQUIRE(accepted[slot].byteCount == serializedSizes[slot]);
+        const auto block = pbprotocol::ParseTransportBlock(std::span(accepted[slot].bytes).first(accepted[slot].byteCount));
+        REQUIRE(block);
+        REQUIRE(block.Value().header.sessionTag == parsedRecord.Value().sessionTag);
+        REQUIRE(block.Value().header.segmentOrdinal == 900 + slot);
+        REQUIRE(block.Value().header.outerBlockId == 1000 + slot);
+        REQUIRE(block.Value().header.payloadBytes == 17 + slot);
+        REQUIRE(std::ranges::all_of(std::span(accepted[slot].bytes).subspan(accepted[slot].byteCount),
+            [](const std::byte value) { return value == std::byte{0}; }));
+    }
+
+    std::array<std::byte, 17> wrongSessionPayload{};
+    auto wrongSession = parsedRecord.Value().sessionTag;
+    wrongSession.value++;
+    const pbprotocol::TransportBlockHeader wrongSessionHeader{pbprotocol::kTransportBlockTypeData, pbprotocol::kTransportProtocolMinor, 0,
+        wrongSession, 900, 1000, static_cast<std::uint16_t>(wrongSessionPayload.size())};
+    EncodeTransportCodeword(wrongSessionHeader, wrongSessionPayload, std::span(data).first(2025));
+    const auto mismatch = channel.EvaluateCodewords(record, data, Metrics(data), pbdesktoplevels::EvaluationMode::Transport);
+    REQUIRE(mismatch.evaluated);
+    REQUIRE_FALSE(mismatch.IsVerified());
+    REQUIRE(mismatch.identityFailures == 1);
+    REQUIRE(mismatch.acceptedTransportBlocks == 9);
+    REQUIRE(channel.GetAcceptedTransportBlocks().size() == 9);
+
+    const auto diagnostic = channel.EvaluateCodewords(record, data, Metrics(data));
+    REQUIRE(diagnostic.evaluated);
+    REQUIRE_FALSE(diagnostic.IsVerified());
+    REQUIRE(diagnostic.identityFailures == 10);
+    REQUIRE(diagnostic.falseAcceptedCodewords == 10);
+    REQUIRE(channel.GetAcceptedTransportBlocks().empty());
+    REQUIRE_FALSE(channel.EvaluateCodewords(record, data, Metrics(data), static_cast<pbdesktoplevels::EvaluationMode>(255)).evaluated);
+    REQUIRE(channel.GetAcceptedTransportBlocks().empty());
 }
 
 TEST_CASE("DesktopLevels raster disturbances correct one bit and reject a wholly erased codeword", "[desktop-levels][fec][raster]")

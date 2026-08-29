@@ -25,6 +25,7 @@ public:
     bool throwOnSubmit = false;
     bool failSubmit = false;
     std::vector<ScreenCaptureDomain> started;
+    std::vector<CaptureEnvironment> startedEnvironments;
     std::vector<ScreenCaptureDomain> invalidated;
     std::vector<ScreenCaptureFrameMetadata> submitted;
     std::vector<ScreenCaptureFrameMetadata> completed;
@@ -34,9 +35,10 @@ public:
     ID3D11Texture2D* borrowedTexture = nullptr;
 
     std::uint64_t ReservedBytes() const noexcept override { return reservedBytes; }
-    CaptureStatus DomainStarted(const ScreenCaptureDomain& domain, const CaptureEnvironment&, ID3D11Device*) override
+    CaptureStatus DomainStarted(const ScreenCaptureDomain& domain, const CaptureEnvironment& environment, ID3D11Device*) override
     {
         started.push_back(domain);
+        startedEnvironments.push_back(environment);
         if (throwOnStart)
         {
             throw std::runtime_error("injected start failure");
@@ -81,7 +83,8 @@ struct Fixture
     std::shared_ptr<NormalizeConsumer> normalizer;
 
     Fixture(const CaptureBackendKind backend = CaptureBackendKind::Wgc, const DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM,
-            const DXGI_MODE_ROTATION rotation = DXGI_MODE_ROTATION_IDENTITY)
+            const DXGI_MODE_ROTATION rotation = DXGI_MODE_ROTATION_IDENTITY,
+            const DXGI_FORMAT normalizedFormat = DXGI_FORMAT_UNKNOWN)
     {
         D3D_FEATURE_LEVEL featureLevel{};
         REQUIRE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
@@ -102,7 +105,7 @@ struct Fixture
         REQUIRE(SUCCEEDED(adapter->GetDesc(&description)));
         environment.adapterLuid = description.AdapterLuid;
         config.capture.region = environment.region;
-        config.capture.pixelFormat = format;
+        config.capture.pixelFormat = normalizedFormat == DXGI_FORMAT_UNKNOWN ? format : normalizedFormat;
         config.capture.initialCaptureEpoch = 7;
         config.capture.maximumFrameAgeMilliseconds = 1000;
         D3D11_TEXTURE2D_DESC textureDescription{};
@@ -110,7 +113,7 @@ struct Fixture
         textureDescription.Height = 5;
         textureDescription.MipLevels = 1;
         textureDescription.ArraySize = 1;
-        textureDescription.Format = format;
+        textureDescription.Format = config.capture.pixelFormat;
         textureDescription.SampleDesc.Count = 1;
         textureDescription.Usage = D3D11_USAGE_DEFAULT;
         REQUIRE(SUCCEEDED(device->CreateTexture2D(&textureDescription, nullptr, &texture)));
@@ -197,6 +200,29 @@ TEST_CASE("Normalized contract preserves physical ROI, actual formats, rotation 
                 CHECK(fixture.normalizer->GetSnapshot().acceptedFrames == 1);
             }
         }
+    }
+}
+
+TEST_CASE("DXGI normalization exposes actual source format and configured output as separate contracts", "[normalize-contract][conversion]")
+{
+    for (const auto sourceFormat : {DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT})
+    {
+        CAPTURE(sourceFormat);
+        Fixture fixture(CaptureBackendKind::Dxgi, sourceFormat, DXGI_MODE_ROTATION_IDENTITY,
+                        DXGI_FORMAT_B8G8R8A8_UNORM);
+        fixture.Start();
+        REQUIRE(fixture.receiver->started.size() == 1);
+        REQUIRE(fixture.receiver->startedEnvironments.size() == 1);
+        CHECK(fixture.environment.pixelFormat == sourceFormat);
+        CHECK(fixture.receiver->startedEnvironments.front().pixelFormat == DXGI_FORMAT_B8G8R8A8_UNORM);
+        const auto raw = fixture.Frame();
+        REQUIRE(fixture.normalizer->Submit(raw, fixture.texture.Get(), fixture.context.Get()));
+        REQUIRE(fixture.receiver->submitted.size() == 1);
+        const auto& metadata = fixture.receiver->submitted.front();
+        CHECK(metadata.sourcePixelFormat == sourceFormat);
+        CHECK(metadata.pixelFormat == DXGI_FORMAT_B8G8R8A8_UNORM);
+        CHECK(metadata.signalEncoding == CaptureSignalEncoding::SdrRgb);
+        REQUIRE(fixture.normalizer->Completed(raw, fixture.context.Get(), false));
     }
 }
 

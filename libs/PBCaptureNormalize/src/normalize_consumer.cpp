@@ -130,7 +130,8 @@ struct NormalizeConsumer::Implementation
     const std::int64_t clockFrequency;
     mutable std::mutex snapshotMutex;
     CaptureNormalizeSnapshot snapshot;
-    CaptureEnvironment environment;
+    CaptureEnvironment sourceEnvironment;
+    CaptureEnvironment normalizedEnvironment;
     Microsoft::WRL::ComPtr<ID3D11Device> device;
     DWORD ownerThread = 0;
     std::uint64_t lastObservation = 0;
@@ -233,10 +234,15 @@ CaptureStatus NormalizeConsumer::EpochStarted(const std::uint64_t epoch, const C
     {
         return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Recreate);
     }
-    auto actualConfig = state.runtimeConfig;
-    actualConfig.pixelFormat = environment.pixelFormat;
+    const bool converting = environment.pixelFormat != state.runtimeConfig.pixelFormat;
+    if (converting && (state.backend != CaptureBackendKind::Dxgi || state.runtimeConfig.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM ||
+        environment.hdr || environment.outputColorSpace != 0 ||
+        (environment.pixelFormat != DXGI_FORMAT_R10G10B10A2_UNORM && environment.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT)))
+    {
+        return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Surface);
+    }
     CaptureLayout layout;
-    const auto status = ValidateLayout(actualConfig, environment, layout);
+    const auto status = ValidateLayout(state.runtimeConfig, environment, layout);
     if (!status)
     {
         return status;
@@ -254,7 +260,10 @@ CaptureStatus NormalizeConsumer::EpochStarted(const std::uint64_t epoch, const C
     {
         return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Adapter);
     }
-    state.environment = environment;
+    auto normalizedEnvironment = environment;
+    normalizedEnvironment.pixelFormat = state.runtimeConfig.pixelFormat;
+    state.sourceEnvironment = environment;
+    state.normalizedEnvironment = normalizedEnvironment;
     state.device = device;
     state.ownerThread = GetCurrentThreadId();
     state.epochSourceGeneration = 0;
@@ -269,7 +278,7 @@ CaptureStatus NormalizeConsumer::EpochStarted(const std::uint64_t epoch, const C
     CaptureStatus notification;
     try
     {
-        notification = state.consumer->DomainStarted(domain, environment, device);
+        notification = state.consumer->DomainStarted(domain, normalizedEnvironment, device);
     }
     catch (...)
     {
@@ -316,7 +325,7 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& rawMetadata, 
     {
         reason = CaptureErasureReason::StaleObservation;
     }
-    else if (!SameEnvironment(rawMetadata.environment, state.environment) || rawMetadata.slotIndex >= state.runtimeConfig.roiTextureCount ||
+    else if (!SameEnvironment(rawMetadata.environment, state.sourceEnvironment) || rawMetadata.slotIndex >= state.runtimeConfig.roiTextureCount ||
              rawMetadata.slotGeneration == 0 || rawMetadata.sourceGeneration == 0 ||
              (state.epochSourceGeneration != 0 && rawMetadata.sourceGeneration != state.epochSourceGeneration) ||
              (state.epochSourceGeneration == 0 && rawMetadata.sourceGeneration <= state.lastSourceGeneration))
@@ -366,12 +375,12 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& rawMetadata, 
     {
         context->GetDevice(&contextDevice);
     }
-    const auto& rectangle = state.environment.region.physicalRect;
+    const auto& rectangle = state.sourceEnvironment.region.physicalRect;
     const auto width = static_cast<UINT>(static_cast<std::int64_t>(rectangle.right) - rectangle.left);
     const auto height = static_cast<UINT>(static_cast<std::int64_t>(rectangle.bottom) - rectangle.top);
     if (textureDevice.Get() != state.device.Get() || contextDevice.Get() != state.device.Get() || context == nullptr ||
         context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE || description.Width != width || description.Height != height ||
-        description.Format != state.environment.pixelFormat || description.MipLevels != 1 || description.ArraySize != 1 ||
+        description.Format != state.normalizedEnvironment.pixelFormat || description.MipLevels != 1 || description.ArraySize != 1 ||
         description.SampleDesc.Count != 1 || description.SampleDesc.Quality != 0 || description.Usage != D3D11_USAGE_DEFAULT || description.CPUAccessFlags != 0)
     {
         state.Erase(rawMetadata, CaptureErasureReason::InvalidOwnedTexture);
@@ -386,24 +395,20 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& rawMetadata, 
     metadata.slotIndex = rawMetadata.slotIndex;
     metadata.slotGeneration = rawMetadata.slotGeneration;
     metadata.physicalRoi = rectangle;
-    metadata.sourceContentSize = state.environment.contentSize;
-    metadata.sourceExtent = state.environment.sourceSize;
+    metadata.sourceContentSize = state.sourceEnvironment.contentSize;
+    metadata.sourceExtent = state.sourceEnvironment.sourceSize;
     metadata.roiSize = {static_cast<std::int32_t>(width), static_cast<std::int32_t>(height)};
-    metadata.displayRotation = state.environment.region.rotation;
-    metadata.sourceTransform = state.environment.sourceRotation;
-    metadata.sourcePixelFormat = state.environment.pixelFormat;
-    metadata.pixelFormat = state.environment.pixelFormat;
-    metadata.adapterLuid = state.environment.adapterLuid;
-    metadata.bitsPerColor = state.environment.bitsPerColor;
-    metadata.outputColorSpace = state.environment.outputColorSpace;
-    metadata.hdr = state.environment.hdr;
-    // WGC FP16 carries a documented linear-scRGB capture contract. The DXGI
-    // duplication backend converts the negotiated SDR scan-out format into the
-    // same FP16 ROI without tone mapping, so identical SDR G22 metadata must
-    // classify identically across backends (unified normalized frame contract).
-    // An HDR scan-out descriptor alone does not establish a linear conversion;
-    // such frames stay Unknown and are erased downstream by the authoritative
-    // hdr flag. No tone-map is invented here.
+    metadata.displayRotation = state.sourceEnvironment.region.rotation;
+    metadata.sourceTransform = state.sourceEnvironment.sourceRotation;
+    metadata.sourcePixelFormat = state.sourceEnvironment.pixelFormat;
+    metadata.pixelFormat = state.normalizedEnvironment.pixelFormat;
+    metadata.adapterLuid = state.sourceEnvironment.adapterLuid;
+    metadata.bitsPerColor = state.sourceEnvironment.bitsPerColor;
+    metadata.outputColorSpace = state.sourceEnvironment.outputColorSpace;
+    metadata.hdr = state.sourceEnvironment.hdr;
+    // The normalized output format determines the consumer signal contract.
+    // Source format remains independently visible above, so an explicit SDR
+    // FP16/R10 -> BGRA8 conversion cannot masquerade as native BGRA capture.
     metadata.signalEncoding = metadata.pixelFormat == DXGI_FORMAT_R16G16B16A16_FLOAT &&
                               (state.backend == CaptureBackendKind::Wgc || (!metadata.hdr && metadata.outputColorSpace == 0))
         ? CaptureSignalEncoding::LinearScRgb

@@ -189,6 +189,44 @@ TEST_CASE("LocalDesktop independently painted Golden frames decode all canonical
     }
 }
 
+TEST_CASE("LocalDesktop fixed-canvas Bootstrap path preserves all same-frame gates without a full marker scan", "[pbmodulation][localdesktop][fixed-canvas][torn]")
+{
+    const LocalDesktopBootstrapBinding binding{kLocalDesktopVisualProfileId, kLocalDesktopLayoutVersion};
+    for (const std::string stem : {"a", "b", "c", "d", "e", "f"})
+    {
+        INFO(stem);
+        const auto gray = GrayFromGolden(MakeGoldenRaster(stem));
+        const auto fixed = DecodeLocalDesktopFixedCanvasBootstrap(gray.View(), binding);
+        RequireAccepted(fixed, LoadGoldenRecord(stem));
+        REQUIRE(fixed.markerCandidates == 4);
+        REQUIRE(fixed.geometryCandidates == 1);
+        const auto searched = DecodeLocalDesktopBootstrap(gray.View());
+        REQUIRE(fixed.canonical44 == searched.canonical44);
+        REQUIRE(fixed.geometry == searched.geometry);
+        REQUIRE(fixed.workUnits < searched.workUnits);
+    }
+
+    const auto baseline = GrayFromGolden(MakeGoldenRaster("a"));
+    auto torn = baseline;
+    const auto otherWord = LoadGoldenBytes("b-rs76.bin", 76);
+    PaintCopy(torn, 1, otherWord);
+    RequireErased(DecodeLocalDesktopFixedCanvasBootstrap(torn.View(), binding), Erasure::BootstrapMismatch);
+
+    auto mixedTiming = baseline;
+    const auto foreign = GrayFromGolden(MakeGoldenRaster("b"));
+    CopyBlock(foreign, mixedTiming, 896, 476, 128, 128, 896, 476);
+    const auto timing = DecodeLocalDesktopFixedCanvasBootstrap(mixedTiming.View(), binding);
+    REQUIRE_FALSE(timing.IsAccepted());
+    REQUIRE((timing.erasure == Erasure::TimingMismatch || timing.erasure == Erasure::DoubleImage || timing.erasure == Erasure::ExcessResidual));
+
+    const auto half = Resample(baseline, 0.5, 0.5, 0, 0, FixtureFilter::Area, 0);
+    RequireErased(DecodeLocalDesktopFixedCanvasBootstrap(half.View(), binding), Erasure::InvalidView);
+    const LocalDesktopBootstrapBinding wrongBinding{0xEBB15DCE41AB436EULL, 3};
+    RequireErased(DecodeLocalDesktopFixedCanvasBootstrap(baseline.View(), wrongBinding), Erasure::UnsupportedRecord);
+    const auto unknown = DecodeLocalDesktopFixedCanvasBootstrap(baseline.View(), {0xDEADBEEF, 0xFF});
+    RequireErased(unknown, Erasure::UnsupportedRecord);
+}
+
 TEST_CASE("LocalDesktop locator supports anisotropic subpixel area and bilinear sampling", "[pbmodulation][localdesktop][geometry]")
 {
     const auto source = GrayFromGolden(MakeGoldenRaster());

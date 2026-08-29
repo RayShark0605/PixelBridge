@@ -26,7 +26,8 @@ TEST_CASE("DXGI timeout and unsuccessful acquire never call ReleaseFrame")
     CaptureSnapshot snapshot;
     fixture.source.UpdateSnapshot(snapshot);
     REQUIRE(snapshot.acquireTimeouts == 1);
-    REQUIRE_FALSE(fixture.control->nonzeroTimeout);
+    REQUIRE(fixture.control->nonzeroTimeout);
+    REQUIRE(fixture.control->acquireTimeoutMilliseconds == acquisitionWaitMilliseconds);
 }
 
 TEST_CASE("DXGI single outstanding source lease is move only and released exactly once")

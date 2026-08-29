@@ -177,6 +177,12 @@ struct NativeFixture
         REQUIRE(snapshot.contract.scalingNone);
         REQUIRE_FALSE(snapshot.softwareRasterizer);
         normalize.capture.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        // Match the bounded diagnostic application budget. A 1080p FP16 DXGI
+        // source needs a per-slot source-format scratch ring before the owned
+        // BGRA8 ROI can be demodulated; the legacy 64 MiB ROI default is too
+        // small for that explicitly accounted conversion path.
+        normalize.capture.maximumRoiBytes = 512ull * 1024 * 1024;
+        normalize.capture.maximumCaptureBytes = 1024ull * 1024 * 1024;
         normalize.capture.maximumFrameAgeMilliseconds = 1000;
         normalize.capture.gpuTimeoutMilliseconds = 1000;
         pixels = desktopLevels ? DesktopLevelsRaster("a") : HalfScaleIndependentRaster();
@@ -406,8 +412,8 @@ void RunNativeBootstrap(const CaptureBackendKind kind, const bool desktopLevels 
     CHECK(accepted->capture.adapterLuid.HighPart == fixture.environment.adapterLuid.HighPart);
     CHECK(accepted->capture.isCursorExcluded);
     CHECK_FALSE(accepted->capture.hdr);
-    // The DXGI duplication backend converts the SDR scan-out into the FP16 ROI contract, so the
-    // expected signal class follows the delivered pixel format (backend-independent normalized contract).
+    CHECK(accepted->capture.pixelFormat == fixture.normalize.capture.pixelFormat);
+    CHECK(accepted->capture.sourcePixelFormat == captureSnapshot.environment.pixelFormat);
     CHECK(accepted->capture.signalEncoding == (accepted->capture.pixelFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
         ? CaptureSignalEncoding::LinearScRgb : CaptureSignalEncoding::SdrRgb));
     CHECK(accepted->capture.timestamp.monotonic100ns > 0);
@@ -598,7 +604,7 @@ void RunNativeBootstrap(const CaptureBackendKind kind, const bool desktopLevels 
     CHECK(nextAccepted->capture.displayRotation == fixture.normalize.capture.region.rotation);
     CHECK(nextAccepted->capture.sourceTransform == recoveredCapture.environment.sourceRotation);
     CHECK(nextAccepted->capture.sourcePixelFormat == recoveredCapture.environment.pixelFormat);
-    CHECK(nextAccepted->capture.pixelFormat == nextAccepted->capture.sourcePixelFormat);
+    CHECK(nextAccepted->capture.pixelFormat == fixture.normalize.capture.pixelFormat);
     CHECK(nextAccepted->capture.adapterLuid.LowPart == fixture.environment.adapterLuid.LowPart);
     CHECK(nextAccepted->capture.adapterLuid.HighPart == fixture.environment.adapterLuid.HighPart);
     CHECK(nextAccepted->capture.isCursorExcluded);

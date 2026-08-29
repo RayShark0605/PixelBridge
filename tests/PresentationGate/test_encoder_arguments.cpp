@@ -21,14 +21,16 @@ bool Parse(const std::initializer_list<const wchar_t*> options, DataWindowArgume
     return pbencoder::ParseDataWindowArguments(static_cast<int>(arguments.size()), arguments.data(), output);
 }
 
-TEST_CASE("Encoder DesktopLevels candidates require explicit names and do not change legacy defaults", "[encoder-cli][desktop-levels]")
+TEST_CASE("Encoder physical-layer candidates require explicit names and do not change legacy defaults", "[encoder-cli][physical-layer]")
 {
-    for (const auto name : {L"desktop-levels-2x2", L"desktop-levels-4x4"})
+    for (const auto name : {L"desktop-levels-2x2", L"desktop-levels-4x4", L"shape-chroma"})
     {
         DataWindowArguments parsed;
         REQUIRE(Parse({L"--visual", name, L"--frames", L"64"}, parsed));
         REQUIRE(parsed.dataWindow);
-        REQUIRE(parsed.visual == (std::wstring_view(name) == L"desktop-levels-2x2" ? PresentationVisual::DesktopLevels2 : PresentationVisual::DesktopLevels4));
+        const auto expected = std::wstring_view(name) == L"desktop-levels-2x2" ? PresentationVisual::DesktopLevels2 :
+            std::wstring_view(name) == L"desktop-levels-4x4" ? PresentationVisual::DesktopLevels4 : PresentationVisual::ShapeChroma;
+        REQUIRE(parsed.visual == expected);
         REQUIRE(parsed.frameLimit == 64);
         const auto saved = parsed;
         REQUIRE_FALSE(Parse({L"--visual", name, L"--visual", L"local-desktop-bootstrap"}, parsed));
@@ -183,7 +185,8 @@ TEST_CASE("Encoder help alone and native mutable argv use the same allocation-fr
 
 TEST_CASE("Encoder sequence interval parses exact bounds and fails closed on malformed or duplicate input", "[encoder-cli]")
 {
-    constexpr std::array<std::pair<const wchar_t*, std::uint32_t>, 5> validIntervals{{{L"50", 50}, {L"500", 500}, {L"640", 640}, {L"00640", 640}, {L"60000", 60000}}};
+    constexpr std::array<std::pair<const wchar_t*, std::uint32_t>, 7> validIntervals{{
+        {L"1", 1}, {L"16", 16}, {L"50", 50}, {L"500", 500}, {L"640", 640}, {L"00640", 640}, {L"60000", 60000}}};
     for (const auto& [text, expected] : validIntervals)
     {
         std::uint32_t value = 77;
@@ -193,12 +196,15 @@ TEST_CASE("Encoder sequence interval parses exact bounds and fails closed on mal
         REQUIRE(Parse({L"--visual", L"desktop-levels-2x2", L"--sequence-interval-ms", text}, parsed));
         CHECK(parsed.hasSequenceInterval);
         CHECK(parsed.sequenceIntervalMilliseconds == expected);
+        REQUIRE(Parse({L"--visual", L"shape-chroma", L"--sequence-interval-ms", text}, parsed));
+        CHECK(parsed.visual == PresentationVisual::ShapeChroma);
+        CHECK(parsed.sequenceIntervalMilliseconds == expected);
     }
     DataWindowArguments defaults;
     REQUIRE(Parse({L"--visual", L"desktop-levels-2x2"}, defaults));
     CHECK_FALSE(defaults.hasSequenceInterval);
     CHECK(defaults.sequenceIntervalMilliseconds == 500);
-    for (const auto text : {L"", L"0", L"49", L"50 ", L" 50", L"-50", L"+50", L"50.0", L"5e2", L"\uFF16\uFF14\uFF10", L"60001",
+    for (const auto text : {L"", L"0", L"1 ", L" 1", L"-1", L"+1", L"1.0", L"5e2", L"\uFF16\uFF14\uFF10", L"60001",
                             L"999999999999999999999", L"18446744073709551616"})
     {
         std::uint32_t value = 77;
@@ -214,5 +220,9 @@ TEST_CASE("Encoder sequence interval parses exact bounds and fails closed on mal
     REQUIRE_FALSE(Parse({L"--visual", L"desktop-levels-2x2", L"--sequence-interval-ms"}, output));
     CHECK(output == before);
     REQUIRE_FALSE(Parse({L"--visual", L"desktop-levels-2x2", L"--sequence-interval-ms", L"500", L"--sequence-interval-ms", L"640"}, output));
+    CHECK(output == before);
+    REQUIRE_FALSE(Parse({L"--data-window", L"--sequence-interval-ms", L"16"}, output));
+    CHECK(output == before);
+    REQUIRE_FALSE(Parse({L"--visual", L"local-desktop-bootstrap", L"--sequence-interval-ms", L"16"}, output));
     CHECK(output == before);
 }

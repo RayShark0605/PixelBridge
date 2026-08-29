@@ -3,12 +3,29 @@
 
 namespace pbcapturenormalize::detail
 {
+namespace
+{
+[[nodiscard]] std::uint64_t PixelBytes(const DXGI_FORMAT format) noexcept
+{
+    if (format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+    {
+        return 8;
+    }
+    if (format == DXGI_FORMAT_B8G8R8A8_UNORM || format == DXGI_FORMAT_R10G10B10A2_UNORM)
+    {
+        return 4;
+    }
+    return 0;
+}
+}
+
 CaptureStatus ValidateLayout(const CaptureConfig& config, const CaptureEnvironment& environment, CaptureLayout& layout) noexcept
 {
+    const std::uint64_t outputPixelBytes = PixelBytes(config.pixelFormat);
+    const std::uint64_t sourcePixelBytes = PixelBytes(environment.pixelFormat);
     if (config.queuedFrameLimit == 0 || config.queuedFrameLimit > maximumQueuedFrames || config.roiTextureCount < 2 ||
         config.roiTextureCount > maximumRoiTextures ||
-        (config.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM && config.pixelFormat != DXGI_FORMAT_R10G10B10A2_UNORM &&
-         config.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT) ||
+        outputPixelBytes == 0 || sourcePixelBytes == 0 ||
         (environment.backendKind != CaptureBackendKind::Wgc && environment.backendKind != CaptureBackendKind::Dxgi))
     {
         return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Configuration);
@@ -34,20 +51,25 @@ CaptureStatus ValidateLayout(const CaptureConfig& config, const CaptureEnvironme
     {
         return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Surface);
     }
-    const bool rotated = environment.sourceRotation != DXGI_MODE_ROTATION_IDENTITY;
-    const std::uint64_t pixelBytes = config.pixelFormat == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4;
+    const bool transformRequired = environment.sourceRotation != DXGI_MODE_ROTATION_IDENTITY || environment.pixelFormat != config.pixelFormat;
     const auto roiPixels = pbprotocol::CheckedMultiplyUint64(static_cast<std::uint64_t>(width), static_cast<std::uint64_t>(height));
-    const auto roiBytes = roiPixels ? pbprotocol::CheckedMultiplyUint64(roiPixels.Value(), pixelBytes) : roiPixels;
-    // Rotation needs a shader-readable raw ROI scratch for every owned output
-    // slot: acquired desktop surfaces are not required to support SRV binding.
-    const auto outputRingBytes = roiBytes ? pbprotocol::CheckedMultiplyUint64(roiBytes.Value(), config.roiTextureCount) : roiBytes;
-    const auto ringBytes = outputRingBytes ? pbprotocol::CheckedMultiplyUint64(outputRingBytes.Value(), rotated ? 2u : 1u) : outputRingBytes;
+    const auto outputRoiBytes = roiPixels ? pbprotocol::CheckedMultiplyUint64(roiPixels.Value(), outputPixelBytes) : roiPixels;
+    const auto sourceRoiBytes = roiPixels ? pbprotocol::CheckedMultiplyUint64(roiPixels.Value(), sourcePixelBytes) : roiPixels;
+    const auto outputRingBytes = outputRoiBytes ? pbprotocol::CheckedMultiplyUint64(outputRoiBytes.Value(), config.roiTextureCount) : outputRoiBytes;
+    // Rotation or format conversion needs one shader-readable source-format
+    // ROI scratch per owned output slot. Acquired desktop surfaces need not
+    // expose SRV bind flags, so they are never sampled directly.
+    const auto scratchRingBytes = sourceRoiBytes ? pbprotocol::CheckedMultiplyUint64(sourceRoiBytes.Value(),
+        transformRequired ? config.roiTextureCount : 0U) : sourceRoiBytes;
+    const auto ringBytes = outputRingBytes && scratchRingBytes ?
+        pbprotocol::CheckedAddUint64(outputRingBytes.Value(), scratchRingBytes.Value()) : outputRingBytes;
     const auto poolBuffers = environment.backendKind == CaptureBackendKind::Dxgi ? 1u : config.queuedFrameLimit + config.roiTextureCount + 1;
     const auto surfacePixels = pbprotocol::CheckedMultiplyUint64(static_cast<std::uint64_t>(monitorWidth), static_cast<std::uint64_t>(monitorHeight));
-    const auto surfaceBytes = surfacePixels ? pbprotocol::CheckedMultiplyUint64(surfacePixels.Value(), pixelBytes) : surfacePixels;
+    const auto surfaceBytes = surfacePixels ? pbprotocol::CheckedMultiplyUint64(surfacePixels.Value(), sourcePixelBytes) : surfacePixels;
     const auto poolBytes = surfaceBytes ? pbprotocol::CheckedMultiplyUint64(surfaceBytes.Value(), poolBuffers) : surfaceBytes;
     const auto totalBytes = poolBytes && ringBytes ? pbprotocol::CheckedAddUint64(poolBytes.Value(), ringBytes.Value()) : poolBytes;
-    if (!roiBytes || !ringBytes || !poolBytes || !totalBytes || ringBytes.Value() > config.maximumRoiBytes || totalBytes.Value() > config.maximumCaptureBytes ||
+    if (!outputRoiBytes || !sourceRoiBytes || !outputRingBytes || !scratchRingBytes || !ringBytes || !poolBytes || !totalBytes ||
+        ringBytes.Value() > config.maximumRoiBytes || totalBytes.Value() > config.maximumCaptureBytes ||
         !pbprotocol::CheckedUint64ToSize(totalBytes.Value()))
     {
         return CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration);

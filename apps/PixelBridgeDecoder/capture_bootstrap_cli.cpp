@@ -21,11 +21,12 @@ void Usage()
     std::cout << "Usage: PixelBridgeDecoder --capture-bootstrap --backend wgc|dxgi [--roi LEFT TOP RIGHT BOTTOM]\n"
                  "                          [--seconds N] [--telemetry NEW_FILE.jsonl]\n"
                  "       PixelBridgeDecoder --capture-desktop-levels --backend wgc|dxgi [same ROI/duration/telemetry options]\n"
+                 "       PixelBridgeDecoder --capture-shape-chroma --backend wgc|dxgi [same ROI/duration/telemetry options]\n"
                  "ROI is signed physical desktop pixels, fully inside one monitor. Omit it to select interactively.\n"
                  "N is a finite capture duration (1..600 seconds, default 10); initialization/shutdown are separate bounded phases.\n"
                  "Experimental LocalDesktop Bootstrap only; identities are recovered only from captured pixels.\n"
                  "Explicit DiagnosticCpuReadback; no file receiver, HDR tone mapping or certified throughput claim.\n"
-                 "DesktopLevels requires strict 1:1 SDR; no scaling, fallback or cross-frame soft combining.\n"
+                 "Physical-layer modes require strict 1:1 SDR; no scaling, fallback or cross-frame soft combining.\n"
                  "Exit: 0 = verified data (Bootstrap-only in old mode), 4 = none verified, 3 = selector cancelled, 2 = arguments, 1 = error.\n";
 }
 
@@ -101,6 +102,7 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
     }
     try
     {
+        const bool physicalLayer = options.desktopLevels || options.shapeChroma;
         pbdiagnostic::DiagnosticFile telemetry(options.telemetryPath);
         pbscreenregion::ScreenCaptureRegion region;
         const RECT physicalRoi{options.physicalRoi[0], options.physicalRoi[1], options.physicalRoi[2], options.physicalRoi[3]};
@@ -120,7 +122,10 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
         }
         CaptureNormalizeConfig config;
         config.capture.region = region;
-        config.capture.pixelFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        // ShapeChroma's frozen CPU baseline consumes exact BGRA8 samples. The
+        // signal remains SDR and format-preserving; no HDR tone map/fallback is
+        // introduced. DesktopLevels retains the high-depth diagnostic format.
+        config.capture.pixelFormat = options.shapeChroma ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
         // A diagnostic reference decoder has a finite, explicit CPU-age budget.
         // Capture/crop/rotation remain GPU-only; this reservation includes every
         // ring/scratch/staging/CPU buffer rather than counting only one texture.
@@ -133,12 +138,19 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
         readbackConfig.maximumFrameAgeMilliseconds = config.capture.maximumFrameAgeMilliseconds;
         readbackConfig.maximumReadbackBytes = 512ull * 1024 * 1024;
         std::shared_ptr<pbdecoder::BootstrapDiagnosticProcessor> processor;
-        if (options.desktopLevels)
+        if (physicalLayer)
         {
             readbackConfig.processingReservedBytes = pbdesktoplevels::kProcessingReservationBytes;
             DiagnosticReadbackBudget budget;
-            Require(CalculateDiagnosticReadbackBudget(readbackConfig, budget), "DesktopLevels processing reservation");
-            Require(pbdecoder::BootstrapDiagnosticProcessor::CreateDesktopLevels(processor), "DesktopLevels processor Create");
+            Require(CalculateDiagnosticReadbackBudget(readbackConfig, budget), "physical-layer processing reservation");
+            if (options.shapeChroma)
+            {
+                Require(pbdecoder::BootstrapDiagnosticProcessor::CreateShapeChroma(processor), "ShapeChroma processor Create");
+            }
+            else
+            {
+                Require(pbdecoder::BootstrapDiagnosticProcessor::CreateDesktopLevels(processor), "DesktopLevels processor Create");
+            }
         }
         else
         {
@@ -170,7 +182,7 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
             // Fixed queue capacity bounds each drain; callbacks never perform I/O.
             for (std::size_t index = 0; index < pbdecoder::BootstrapDiagnosticProcessor::eventCapacity && processor->TakeEvent(event); index++)
             {
-                if (!options.desktopLevels && (!normalized.active || normalized.domain != event.capture.domain))
+                if (!physicalLayer && (!normalized.active || normalized.domain != event.capture.domain))
                 {
                     pbprotocol::SaturatingIncrementUnsigned(staleDiagnosticEvents);
                     continue;
@@ -198,7 +210,7 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
         const auto captureStop = capture.Stop();
         const auto workerStop = readback->Stop(3000);
         const auto stopped = capture.GetSnapshot();
-        if (options.desktopLevels)
+        if (physicalLayer)
         {
             pbdecoder::BootstrapDiagnosticEvent event;
             for (std::size_t index = 0; index < pbdecoder::BootstrapDiagnosticProcessor::eventCapacity && processor->TakeEvent(event); index++)

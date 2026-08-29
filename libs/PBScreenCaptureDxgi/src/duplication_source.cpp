@@ -65,14 +65,14 @@ CaptureStatus ValidateDuplicationPreflight(const CaptureConfig& config, const pb
     {
         return status;
     }
-    // DuplicateOutput1 may choose any advertised format, not just the preferred
-    // one. Reserve its largest candidate before the OS creates a duplication
-    // surface; a budget must never be satisfied by dropping high-depth formats.
-    admissionConfig.pixelFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    // DuplicateOutput1 may choose any advertised source format, not just the
+    // preferred normalized output. Reserve the largest source plus a separate
+    // source-format transform scratch before the OS creates the duplication.
+    // A budget must never be satisfied by dropping high-depth formats.
     CaptureEnvironment environment;
     environment.region = currentRegion;
     environment.backendKind = CaptureBackendKind::Dxgi;
-    environment.pixelFormat = admissionConfig.pixelFormat;
+    environment.pixelFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     environment.contentSize = {static_cast<std::int32_t>(static_cast<std::int64_t>(currentRegion.monitorPhysicalRect.right) - currentRegion.monitorPhysicalRect.left),
                                static_cast<std::int32_t>(static_cast<std::int64_t>(currentRegion.monitorPhysicalRect.bottom) - currentRegion.monitorPhysicalRect.top)};
     environment.sourceRotation = currentRegion.rotation;
@@ -129,7 +129,7 @@ CaptureStatus ResolveDuplicationEnvironment(const CaptureConfig& config, const D
         (environment.hdr && actualFormat == DXGI_FORMAT_B8G8R8A8_UNORM) ||
         (!modernDuplication && (!plan.allowLegacy || environment.bitsPerColor == 0 || environment.bitsPerColor > 8 || actualFormat != DXGI_FORMAT_B8G8R8A8_UNORM)))
     {
-        return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::CaptureItem);
+        return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Surface);
     }
     const auto width = static_cast<std::int64_t>(environment.region.monitorPhysicalRect.right) - environment.region.monitorPhysicalRect.left;
     const auto height = static_cast<std::int64_t>(environment.region.monitorPhysicalRect.bottom) - environment.region.monitorPhysicalRect.top;
@@ -158,9 +158,11 @@ CaptureStatus ResolveDuplicationEnvironment(const CaptureConfig& config, const D
     resolved.sourceSize = sourceSize;
     resolved.sourceRotation = description.Rotation;
     CaptureLayout layout;
-    auto actualConfig = config;
-    actualConfig.pixelFormat = actualFormat;
-    const auto layoutStatus = ValidateLayout(actualConfig, resolved, layout);
+    // Preserve the configured normalized output while charging the actual
+    // duplication source. The native raw test path can choose an actual-format
+    // ring later, but public admission already reserves this conservative
+    // source/output/scratch layout and must not lose that proof here.
+    const auto layoutStatus = ValidateLayout(config, resolved, layout);
     if (!layoutStatus)
     {
         return layoutStatus;
@@ -359,7 +361,11 @@ CaptureStatus DuplicationFrameSource::Acquire() noexcept
         return CaptureStatus::Failure(CaptureError::InternalError, CaptureStage::Callback);
     }
     DXGI_OUTDUPL_FRAME_INFO info{};
-    const HRESULT result = duplication_->AcquireNextFrame(0, info, resource_);
+    // This synchronous backend has no producer callback to wake FrameInbox.
+    // Let Desktop Duplication provide the bounded wait instead of relying on a
+    // nominal 2 ms condition-variable timeout whose Windows timer rounding can
+    // skip every other 60 Hz update. Stop/recreate latency remains capped here.
+    const HRESULT result = duplication_->AcquireNextFrame(acquisitionWaitMilliseconds, info, resource_);
     if (result == DXGI_ERROR_WAIT_TIMEOUT)
     {
         pbprotocol::SaturatingIncrementUnsigned(acquireTimeouts_);

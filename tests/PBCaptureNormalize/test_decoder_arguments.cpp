@@ -23,7 +23,8 @@ using pbdecoder::ParseCaptureBootstrapArguments;
 bool SameArguments(const CaptureBootstrapArguments& first, const CaptureBootstrapArguments& second)
 {
     return first.backend == second.backend && first.seconds == second.seconds && first.physicalRoi == second.physicalRoi &&
-           first.hasRoi == second.hasRoi && first.showHelp == second.showHelp && first.telemetryPath == second.telemetryPath && first.desktopLevels == second.desktopLevels;
+           first.hasRoi == second.hasRoi && first.showHelp == second.showHelp && first.telemetryPath == second.telemetryPath &&
+           first.desktopLevels == second.desktopLevels && first.shapeChroma == second.shapeChroma;
 }
 
 bool Parse(const std::vector<std::wstring>& arguments, CaptureBootstrapArguments& output)
@@ -100,7 +101,7 @@ TEST_CASE("Decoder Bootstrap requires an explicit backend and has a finite diagn
 
 TEST_CASE("Decoder Bootstrap rejects duplicate, missing, unknown and payload identity arguments atomically", "[bootstrap-cli]")
 {
-    const CaptureBootstrapArguments sentinel{BootstrapBackend::Dxgi, 27, {-7, -8, 9, 10}, true, true, L"untouched"};
+    const CaptureBootstrapArguments sentinel{BootstrapBackend::Dxgi, 27, {-7, -8, 9, 10}, true, true, L"untouched", false, true};
     const std::vector<std::vector<std::wstring>> invalid{
         {L"decoder"}, {L"decoder", L"--capture-bootstrap"}, {L"decoder", L"--backend", L"dxgi"},
         {L"decoder", L"--capture-bootstrap", L"--backend"}, {L"decoder", L"--capture-bootstrap", L"--backend", L"WGC"},
@@ -278,4 +279,20 @@ TEST_CASE("DesktopLevels decoder explicit mode parses without out-of-band identi
     REQUIRE(SameArguments(output, saved));
     REQUIRE(Parse({L"decoder", L"--capture-bootstrap", L"--backend", L"wgc"}, output));
     REQUIRE_FALSE(output.desktopLevels);
+    REQUIRE_FALSE(output.shapeChroma);
+}
+
+TEST_CASE("ShapeChroma decoder explicit mode is mutually exclusive and has no out-of-band profile hint", "[decoder-cli][shape-chroma]")
+{
+    CaptureBootstrapArguments output;
+    REQUIRE(Parse({L"decoder", L"--capture-shape-chroma", L"--backend", L"wgc", L"--seconds", L"30", L"--roi", L"0", L"0", L"1920", L"1080"}, output));
+    REQUIRE(output.shapeChroma);
+    REQUIRE_FALSE(output.desktopLevels);
+    REQUIRE(output.backend == BootstrapBackend::Wgc);
+    REQUIRE(output.seconds == 30);
+    const auto saved = output;
+    REQUIRE_FALSE(Parse({L"decoder", L"--capture-shape-chroma", L"--backend", L"dxgi", L"--profile", L"shape-chroma"}, output));
+    REQUIRE(SameArguments(output, saved));
+    REQUIRE_FALSE(Parse({L"decoder", L"--capture-shape-chroma", L"--backend", L"dxgi", L"--capture-desktop-levels"}, output));
+    REQUIRE(SameArguments(output, saved));
 }

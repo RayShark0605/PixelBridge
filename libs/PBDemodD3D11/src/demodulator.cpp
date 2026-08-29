@@ -3,6 +3,7 @@
 #include "demod_shader_source.h"
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/shape_chroma.h"
+#include "pbinterleave/tile_permutation.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/checked_integer.h"
 
@@ -307,6 +308,9 @@ struct Demodulator::Implementation
         ComPtr<ID3D11ShaderResourceView> calibrationSrv;
         ComPtr<ID3D11Buffer> constants;
         ComPtr<ID3D11Query> completion;
+        ComPtr<ID3D11Query> timestampDisjoint;
+        ComPtr<ID3D11Query> timestampStart;
+        ComPtr<ID3D11Query> timestampEnd;
         ComPtr<ID3D11Texture2D> inputTexture;
         ComPtr<ID3D11ShaderResourceView> inputSrv;
         ScreenCaptureFrame frame;
@@ -315,6 +319,7 @@ struct Demodulator::Implementation
         std::uint64_t generation = 0;
         bool busy = false;
         bool cancelled = false;
+        bool unbound = false;
     };
 
     ComPtr<ID3D11Device> device;
@@ -328,8 +333,10 @@ struct Demodulator::Implementation
     DWORD ownerThread = 0;
     std::optional<ScreenCaptureDomain> activeDomain;
     std::array<float, maximumMetricCount> cpuMetrics{};
+    std::array<float, maximumMetricCount> logicalMetrics{};
     std::array<std::byte, pbmodulation::kDesktopLevelsMaximumDataBytes> hard{};
     pbdesktoplevels::ReferenceChannel evaluator;
+    pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::DiagnosticTruth;
     mutable std::mutex snapshotMutex;
     DemodSnapshot snapshot;
 };
@@ -354,6 +361,7 @@ void RetireSlot(Demodulator::Implementation& state, Demodulator::Implementation:
     slot.frame = {};
     slot.busy = false;
     slot.cancelled = false;
+    slot.unbound = false;
     const std::lock_guard lock(state.snapshotMutex);
     if (state.snapshot.pendingFrames != 0)
     {
@@ -427,9 +435,11 @@ Demodulator::Demodulator(Demodulator&&) noexcept = default;
 Demodulator& Demodulator::operator=(Demodulator&&) noexcept = default;
 Demodulator::~Demodulator() = default;
 
-DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config, std::unique_ptr<Demodulator>& output) noexcept
+DemodStatus CalculateDemodulatorResidentBytes(const DemodConfig& config, std::uint64_t& output) noexcept
 {
-    if (device == nullptr || config.readbackSlotCount < minimumSlots || config.readbackSlotCount > maximumSlots)
+    if (config.readbackSlotCount < minimumSlots || config.readbackSlotCount > maximumSlots ||
+        (config.evaluationMode != pbdesktoplevels::EvaluationMode::DiagnosticTruth &&
+         config.evaluationMode != pbdesktoplevels::EvaluationMode::Transport))
     {
         return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Configuration);
     }
@@ -447,14 +457,31 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
     }
     const auto allSlotBytes = pbprotocol::CheckedMultiplyUint64(perSlotBytes.Value(), config.readbackSlotCount);
     const auto residentFirst = allSlotBytes ? pbprotocol::CheckedAddUint64(allSlotBytes.Value(), maximumMetricBytes) : allSlotBytes;
-    const auto residentSecond = residentFirst ?
-        pbprotocol::CheckedAddUint64(residentFirst.Value(), pbmodulation::kDesktopLevelsMaximumDataBytes) : residentFirst;
+    const auto residentSecond = residentFirst ? pbprotocol::CheckedAddUint64(residentFirst.Value(), maximumMetricBytes) : residentFirst;
     const auto residentThird = residentSecond ?
-        pbprotocol::CheckedAddUint64(residentSecond.Value(), pbdesktoplevels::kProcessingReservationBytes) : residentSecond;
-    const auto residentBytesResult = residentThird ? pbprotocol::CheckedAddUint64(residentThird.Value(), 1024ULL * 1024) : residentThird;
+        pbprotocol::CheckedAddUint64(residentSecond.Value(), pbmodulation::kDesktopLevelsMaximumDataBytes) : residentSecond;
+    const auto residentFourth = residentThird ?
+        pbprotocol::CheckedAddUint64(residentThird.Value(), pbdesktoplevels::kProcessingReservationBytes) : residentThird;
+    const auto residentBytesResult = residentFourth ? pbprotocol::CheckedAddUint64(residentFourth.Value(), 1024ULL * 1024) : residentFourth;
     if (!residentBytesResult || residentBytesResult.Value() > config.maximumResidentBytes)
     {
         return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Configuration);
+    }
+    output = residentBytesResult.Value();
+    return {};
+}
+
+DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config, std::unique_ptr<Demodulator>& output) noexcept
+{
+    if (device == nullptr)
+    {
+        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Configuration);
+    }
+    std::uint64_t residentBytes = 0;
+    const auto budgetStatus = CalculateDemodulatorResidentBytes(config, residentBytes);
+    if (!budgetStatus)
+    {
+        return budgetStatus;
     }
     try
     {
@@ -473,6 +500,7 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
             return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Resource);
         }
         state->evaluator = std::move(evaluator).Value();
+        state->evaluationMode = config.evaluationMode;
         DemodStatus status = GetAdapterLuid(device, state->snapshot.adapterLuid);
         if (!status)
         {
@@ -536,12 +564,26 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
             D3D11_QUERY_DESC query{};
             query.Query = D3D11_QUERY_EVENT;
             native = device->CreateQuery(&query, &slot.completion);
+            if (SUCCEEDED(native))
+            {
+                query.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+                native = device->CreateQuery(&query, &slot.timestampDisjoint);
+            }
+            if (SUCCEEDED(native))
+            {
+                query.Query = D3D11_QUERY_TIMESTAMP;
+                native = device->CreateQuery(&query, &slot.timestampStart);
+            }
+            if (SUCCEEDED(native))
+            {
+                native = device->CreateQuery(&query, &slot.timestampEnd);
+            }
             if (FAILED(native))
             {
                 return DemodStatus::Failure(DemodError::NativeFailure, DemodStage::Resource, native);
             }
         }
-        state->snapshot.residentBytes = residentBytesResult.Value();
+        state->snapshot.residentBytes = residentBytes;
         auto candidate = std::unique_ptr<Demodulator>(new (std::nothrow) Demodulator(std::move(state)));
         if (!candidate)
         {
@@ -621,6 +663,8 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     }
     const FrameConstants constants{static_cast<std::uint32_t>(binding.mode), binding.tilePixels, binding.tileCount,
         binding.rowTiles, binding.interleavePhase, binding.metricCount, 0, 0};
+    context->Begin(slot.timestampDisjoint.Get());
+    context->End(slot.timestampStart.Get());
     context->UpdateSubresource(slot.constants.Get(), 0, nullptr, &constants, 0, 0);
     ID3D11Buffer* constantBuffers[]{slot.constants.Get()};
     context->CSSetConstantBuffers(0, 1, constantBuffers);
@@ -647,6 +691,8 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     context->CSSetShader(nullptr, nullptr, 0);
     context->CopyResource(slot.calibrationStaging.Get(), slot.calibration.Get());
     context->CopyResource(slot.metricsStaging.Get(), slot.metrics.Get());
+    context->End(slot.timestampEnd.Get());
+    context->End(slot.timestampDisjoint.Get());
     context->End(slot.completion.Get());
 
     slot.inputSrv = std::move(inputSrv);
@@ -658,6 +704,7 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     slot.generation++;
     slot.busy = true;
     slot.cancelled = false;
+    slot.unbound = false;
     DemodSubmission submission{slotIndex, slot.generation, frame.metadata.domain, frame.metadata.captureObservation};
     {
         const std::lock_guard lock(state.snapshotMutex);
@@ -669,13 +716,50 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     return {};
 }
 
-DemodPollResult Demodulator::Poll(ID3D11DeviceContext* context, const DemodSubmission& submission, DemodFrameResult& output) noexcept
+DemodStatus Demodulator::SubmitUnbound(const ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
+    const std::uint64_t expectedVisualProfileId, DemodSubmission& output) noexcept
 {
     if (!implementation_)
     {
-        return {DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion), false};
+        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Submission);
     }
-    auto& state = *implementation_;
+    pbprotocol::BootstrapRecord placeholder;
+    placeholder.protocolVersion = pbprotocol::GetProtocolVersion();
+    placeholder.sessionTag.value = 1;
+    placeholder.visualProfileId = expectedVisualProfileId;
+    if (expectedVisualProfileId == pbmodulation::kShapeChromaProfileId)
+    {
+        placeholder.visualLayoutVersion = pbmodulation::kShapeChromaLayoutVersion;
+    }
+    else if (pbmodulation::GetDesktopLevelsProfile(expectedVisualProfileId) != nullptr)
+    {
+        placeholder.visualLayoutVersion = pbmodulation::kDesktopLevelsLayoutVersion;
+    }
+    else
+    {
+        return DemodStatus::Failure(DemodError::UnsupportedProfile, DemodStage::Binding);
+    }
+    std::array<std::byte, pbprotocol::kBootstrapRecordBytes> placeholderBytes{};
+    if (!pbprotocol::SerializeBootstrapRecord(placeholder, placeholderBytes))
+    {
+        return DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding);
+    }
+    DemodSubmission submission;
+    const auto status = Submit(frame, context, placeholderBytes, submission);
+    if (!status)
+    {
+        return status;
+    }
+    implementation_->slots[submission.slotIndex].unbound = true;
+    output = submission;
+    return {};
+}
+
+namespace
+{
+DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceContext* context, const DemodSubmission& submission,
+    const bool unboundCall, const std::span<const std::byte> suppliedBootstrapRecord, DemodFrameResult& output) noexcept
+{
     auto status = ValidateOwner(state, context, DemodStage::Completion);
     if (!status)
     {
@@ -687,7 +771,7 @@ DemodPollResult Demodulator::Poll(ID3D11DeviceContext* context, const DemodSubmi
     }
     auto& slot = state.slots[submission.slotIndex];
     if (!slot.busy || slot.generation != submission.slotGeneration || slot.frame.metadata.domain != submission.domain ||
-        slot.frame.metadata.captureObservation != submission.captureObservation)
+        slot.frame.metadata.captureObservation != submission.captureObservation || slot.unbound != unboundCall)
     {
         return {DemodStatus::Failure(DemodError::InvalidSubmission, DemodStage::Completion), false};
     }
@@ -708,6 +792,65 @@ DemodPollResult Demodulator::Poll(ID3D11DeviceContext* context, const DemodSubmi
         const std::lock_guard lock(state.snapshotMutex);
         pbprotocol::SaturatingIncrementUnsigned(state.snapshot.cancelledFrames);
         return {DemodStatus::Failure(DemodError::Cancelled, DemodStage::Completion), true};
+    }
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT timestampDisjoint{};
+    std::uint64_t timestampStart = 0;
+    std::uint64_t timestampEnd = 0;
+    const HRESULT disjointStatus = context->GetData(slot.timestampDisjoint.Get(), &timestampDisjoint,
+        sizeof(timestampDisjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    const HRESULT startStatus = context->GetData(slot.timestampStart.Get(), &timestampStart,
+        sizeof(timestampStart), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    const HRESULT endStatus = context->GetData(slot.timestampEnd.Get(), &timestampEnd,
+        sizeof(timestampEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    for (const HRESULT timingStatus : {disjointStatus, startStatus, endStatus})
+    {
+        if (FAILED(timingStatus))
+        {
+            const auto failure = ClassifyNativeFailure(state, timingStatus, DemodStage::Completion, DemodError::NativeFailure);
+            RetireSlot(state, slot, true);
+            return {failure, true};
+        }
+    }
+    std::uint64_t gpuTime100ns = 0;
+    bool gpuTimingValid = disjointStatus == S_OK && startStatus == S_OK && endStatus == S_OK &&
+        !timestampDisjoint.Disjoint && timestampDisjoint.Frequency != 0 && timestampEnd >= timestampStart;
+    if (gpuTimingValid)
+    {
+        const std::uint64_t delta = timestampEnd - timestampStart;
+        const auto wholeSeconds = pbprotocol::CheckedMultiplyUint64(delta / timestampDisjoint.Frequency, 10000000ULL);
+        const auto remainderScaled = pbprotocol::CheckedMultiplyUint64(delta % timestampDisjoint.Frequency, 10000000ULL);
+        if (!wholeSeconds || !remainderScaled)
+        {
+            gpuTimingValid = false;
+        }
+        else
+        {
+            const auto converted = pbprotocol::CheckedAddUint64(
+                wholeSeconds.Value(), remainderScaled.Value() / timestampDisjoint.Frequency);
+            if (!converted)
+            {
+                gpuTimingValid = false;
+            }
+            else
+            {
+                gpuTime100ns = converted.Value();
+            }
+        }
+    }
+    Binding evaluationBinding = slot.binding;
+    std::array<std::byte, pbprotocol::kBootstrapRecordBytes> evaluationBootstrap = slot.bootstrapRecord;
+    if (unboundCall)
+    {
+        status = ParseBinding(suppliedBootstrapRecord, evaluationBinding);
+        if (!status || evaluationBinding.profileId != slot.binding.profileId || evaluationBinding.mode != slot.binding.mode ||
+            evaluationBinding.tilePixels != slot.binding.tilePixels || evaluationBinding.tileCount != slot.binding.tileCount ||
+            evaluationBinding.dataBytes != slot.binding.dataBytes || evaluationBinding.metricCount != slot.binding.metricCount)
+        {
+            RetireSlot(state, slot, true);
+            return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding,
+                status ? 0 : status.nativeError), true};
+        }
+        std::copy(suppliedBootstrapRecord.begin(), suppliedBootstrapRecord.end(), evaluationBootstrap.begin());
     }
 
     std::array<std::array<float, 4>, calibrationEntries> calibration{};
@@ -752,14 +895,37 @@ DemodPollResult Demodulator::Poll(ID3D11DeviceContext* context, const DemodSubmi
     const std::size_t metricBytes = static_cast<std::size_t>(slot.binding.metricCount) * sizeof(float);
     std::memcpy(state.cpuMetrics.data(), mapped.pData, metricBytes);
     context->Unmap(slot.metricsStaging.Get(), 0);
-    const auto metrics = std::span(state.cpuMetrics).first(slot.binding.metricCount);
+    auto metrics = std::span(state.cpuMetrics).first(slot.binding.metricCount);
     if (!std::ranges::all_of(metrics, [](const float value) { return std::isfinite(value); }))
     {
         RetireSlot(state, slot, true);
         return {DemodStatus::Failure(DemodError::NonFiniteMetric, DemodStage::Readback), true};
     }
+    if (unboundCall)
+    {
+        const auto* const permutation = pbinterleave::GetDesktopLevelsPermutation(slot.binding.tilePixels);
+        const std::uint32_t metricsPerTile = slot.binding.metricCount / slot.binding.tileCount;
+        if (permutation == nullptr || metricsPerTile == 0 || metricsPerTile * slot.binding.tileCount != slot.binding.metricCount)
+        {
+            RetireSlot(state, slot, true);
+            return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding), true};
+        }
+        for (std::uint32_t physical = 0; physical < slot.binding.tileCount; physical++)
+        {
+            const std::uint32_t phaseZeroLogical = permutation->ToLogical(physical, 0);
+            const std::uint32_t actualLogical = permutation->ToLogical(physical, evaluationBinding.interleavePhase);
+            for (std::uint32_t metric = 0; metric < metricsPerTile; metric++)
+            {
+                state.logicalMetrics[static_cast<std::size_t>(actualLogical) * metricsPerTile + metric] =
+                    metrics[static_cast<std::size_t>(phaseZeroLogical) * metricsPerTile + metric];
+            }
+        }
+        metrics = std::span(state.logicalMetrics).first(slot.binding.metricCount);
+    }
     std::fill_n(state.hard.begin(), slot.binding.dataBytes, std::byte{0});
-    for (std::size_t bit = 0; bit < metrics.size(); bit++)
+    const std::size_t firstHardBit = state.evaluationMode == pbdesktoplevels::EvaluationMode::Transport ?
+        static_cast<std::size_t>(slot.binding.codewords) * pbdesktoplevels::kCodewordBits : 0;
+    for (std::size_t bit = firstHardBit; bit < metrics.size(); bit++)
     {
         if (metrics[bit] < 0)
         {
@@ -767,15 +933,16 @@ DemodPollResult Demodulator::Poll(ID3D11DeviceContext* context, const DemodSubmi
         }
     }
     const auto metadata = slot.frame.metadata;
-    const auto binding = slot.binding;
-    const auto bootstrapRecord = slot.bootstrapRecord;
     RetireSlot(state, slot, false);
 
     DemodFrameResult result;
     result.metadata = metadata;
-    result.visualProfileId = binding.profileId;
+    result.visualProfileId = evaluationBinding.profileId;
     result.metricReadbackBytes = metricBytes + calibrationBytes;
-    result.evaluation = state.evaluator.EvaluateCodewords(bootstrapRecord, std::span(state.hard).first(binding.dataBytes), metrics);
+    result.gpuTime100ns = gpuTime100ns;
+    result.gpuTimingValid = gpuTimingValid;
+    result.evaluation = state.evaluator.EvaluateCodewords(evaluationBootstrap,
+        std::span(state.hard).first(evaluationBinding.dataBytes), metrics, state.evaluationMode);
     const auto accepted = state.evaluator.GetAcceptedTransportBlocks();
     result.acceptedTransportBlockCount = static_cast<std::uint32_t>(accepted.size());
     std::copy(accepted.begin(), accepted.end(), result.acceptedTransportBlocks.begin());
@@ -783,9 +950,62 @@ DemodPollResult Demodulator::Poll(ID3D11DeviceContext* context, const DemodSubmi
         const std::lock_guard lock(state.snapshotMutex);
         pbprotocol::SaturatingIncrementUnsigned(state.snapshot.completedFrames);
         state.snapshot.metricReadbackBytes = pbprotocol::SaturatingAddUnsigned(state.snapshot.metricReadbackBytes, result.metricReadbackBytes);
+        if (result.gpuTimingValid)
+        {
+            pbprotocol::SaturatingIncrementUnsigned(state.snapshot.gpuTimingSamples);
+            state.snapshot.gpuTimeTotal100ns = pbprotocol::SaturatingAddUnsigned(state.snapshot.gpuTimeTotal100ns, result.gpuTime100ns);
+            state.snapshot.gpuTimeHighWater100ns = std::max(state.snapshot.gpuTimeHighWater100ns, result.gpuTime100ns);
+        }
+        else
+        {
+            pbprotocol::SaturatingIncrementUnsigned(state.snapshot.gpuTimingUnavailable);
+        }
     }
     output = result;
     return {{}, true};
+}
+} // namespace
+
+DemodPollResult Demodulator::Poll(ID3D11DeviceContext* context, const DemodSubmission& submission, DemodFrameResult& output) noexcept
+{
+    if (!implementation_)
+    {
+        return {DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion), false};
+    }
+    return PollInternal(*implementation_, context, submission, false, {}, output);
+}
+
+DemodPollResult Demodulator::PollUnbound(ID3D11DeviceContext* context, const DemodSubmission& submission,
+    const std::span<const std::byte> bootstrapRecord, DemodFrameResult& output) noexcept
+{
+    if (!implementation_)
+    {
+        return {DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion), false};
+    }
+    return PollInternal(*implementation_, context, submission, true, bootstrapRecord, output);
+}
+
+DemodStatus Demodulator::RetireAfterExternalCompletion(const DemodSubmission& submission) noexcept
+{
+    if (!implementation_)
+    {
+        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion);
+    }
+    auto& state = *implementation_;
+    if (submission.slotIndex >= state.slotCount)
+    {
+        return DemodStatus::Failure(DemodError::InvalidSubmission, DemodStage::Completion);
+    }
+    auto& slot = state.slots[submission.slotIndex];
+    if (!slot.busy || slot.generation != submission.slotGeneration || slot.frame.metadata.domain != submission.domain ||
+        slot.frame.metadata.captureObservation != submission.captureObservation)
+    {
+        return DemodStatus::Failure(DemodError::InvalidSubmission, DemodStage::Completion);
+    }
+    RetireSlot(state, slot, false);
+    const std::lock_guard lock(state.snapshotMutex);
+    pbprotocol::SaturatingIncrementUnsigned(state.snapshot.cancelledFrames);
+    return {};
 }
 
 DemodStatus Demodulator::InvalidateDomain(const ScreenCaptureDomain& domain) noexcept
@@ -811,6 +1031,25 @@ DemodStatus Demodulator::InvalidateDomain(const ScreenCaptureDomain& domain) noe
             slot.cancelled = true;
         }
     }
+    return {};
+}
+
+DemodStatus Demodulator::ShutdownAfterExternalCompletion() noexcept
+{
+    if (!implementation_)
+    {
+        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Shutdown);
+    }
+    auto& state = *implementation_;
+    {
+        const std::lock_guard lock(state.snapshotMutex);
+        if (state.snapshot.pendingFrames != 0)
+        {
+            return DemodStatus::Failure(DemodError::ShutdownRequired, DemodStage::Shutdown);
+        }
+        state.snapshot.shutdown = true;
+    }
+    state.activeDomain.reset();
     return {};
 }
 

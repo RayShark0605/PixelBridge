@@ -13,6 +13,7 @@ struct NativeDxgiOptions
     bool debugLayer = false;
     bool forceQuery = false;
     bool holdCompletionPolling = false;
+    bool normalizeConfiguredFormat = false;
     CaptureStage failAfterStage = CaptureStage::None;
 };
 

@@ -22,6 +22,7 @@ struct CaptureBootstrapArguments
     bool showHelp = false;
     const wchar_t* telemetryPath = nullptr;
     bool desktopLevels = false;
+    bool shapeChroma = false;
 };
 
 namespace detail
@@ -74,12 +75,14 @@ inline bool ParsePhysicalCoordinate(std::wstring_view text, std::int32_t& output
 inline bool ParseCaptureBootstrapArguments(const int argumentCount, const wchar_t* const arguments[], CaptureBootstrapArguments& output) noexcept
 {
     if (argumentCount < 2 || arguments == nullptr || arguments[1] == nullptr ||
-        (std::wstring_view(arguments[1]) != L"--capture-bootstrap" && std::wstring_view(arguments[1]) != L"--capture-desktop-levels"))
+        (std::wstring_view(arguments[1]) != L"--capture-bootstrap" && std::wstring_view(arguments[1]) != L"--capture-desktop-levels" &&
+         std::wstring_view(arguments[1]) != L"--capture-shape-chroma"))
     {
         return false;
     }
     CaptureBootstrapArguments parsed;
     parsed.desktopLevels = std::wstring_view(arguments[1]) == L"--capture-desktop-levels";
+    parsed.shapeChroma = std::wstring_view(arguments[1]) == L"--capture-shape-chroma";
     if (argumentCount == 3 && arguments[2] != nullptr && (std::wstring_view(arguments[2]) == L"--help" || std::wstring_view(arguments[2]) == L"-h"))
     {
         parsed.showHelp = true;

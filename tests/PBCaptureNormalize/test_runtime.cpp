@@ -6,6 +6,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -23,6 +24,21 @@ bool ReadNow100ns(std::int64_t& timestamp100ns) noexcept
     LARGE_INTEGER frequency{};
     return QueryPerformanceFrequency(&frequency) && QueryPerformanceCounter(&counter) &&
            ConvertQpcTo100ns(counter.QuadPart, frequency.QuadPart, timestamp100ns);
+}
+
+TEST_CASE("Frame inbox observes producer work that predates its wait without a lost-wake timeout", "[capture][runtime][wgc]")
+{
+    CaptureConfig config;
+    FrameInbox inbox(config);
+    inbox.Resume({1, 1}, 1);
+    inbox.RequestStop();
+    const auto started = std::chrono::steady_clock::now();
+    for (std::uint32_t iteration = 0; iteration < 256; iteration++)
+    {
+        inbox.Wait();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    REQUIRE(elapsed < std::chrono::milliseconds(250));
 }
 
 struct ReleaseFakeGpuOnExit
@@ -64,6 +80,163 @@ struct OrderingObservations
 {
     std::atomic<std::size_t> secondSlot{maximumRoiTextures};
     std::atomic<std::size_t> thirdSlot{maximumRoiTextures};
+};
+
+class AcquisitionPriorityBackend final : public capturetest::Backend
+{
+public:
+    explicit AcquisitionPriorityBackend(std::shared_ptr<capturetest::Control> control)
+        : capturetest::Backend(control), control_(std::move(control))
+    {
+    }
+    CaptureBackendKind Kind() const noexcept override
+    {
+        return CaptureBackendKind::Dxgi;
+    }
+    CaptureStatus Acquire() noexcept override
+    {
+        if (emitted_ == 3)
+        {
+            return {};
+        }
+        try
+        {
+            emitted_++;
+            control_->Record("priority-acquire", emitted_);
+            control_->inbox.load()->Push(capturetest::MakeFrame(control_, emitted_));
+            return {};
+        }
+        catch (...)
+        {
+            return CaptureStatus::Failure(CaptureError::OutOfMemory, CaptureStage::Callback);
+        }
+    }
+    CaptureStatus Copy(const FrameLease& frame, const std::size_t slot, bool& submitted) noexcept override
+    {
+        const auto status = capturetest::Backend::Copy(frame, slot, submitted);
+        if (submitted)
+        {
+            phases_[slot] = 1;
+            ordinals_[slot] = frame.arrivalOrdinal;
+        }
+        return status;
+    }
+    CaptureStatus Consume(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, const std::size_t slot) noexcept override
+    {
+        phases_[slot] = 2;
+        ordinals_[slot] = metadata.arrivalOrdinal;
+        return capturetest::Backend::Consume(consumer, metadata, slot);
+    }
+    CaptureStatus Complete(RawRoiConsumer&, const RawRoiFrameMetadata& metadata, std::size_t, bool) noexcept override
+    {
+        control_->Record("priority-complete", static_cast<std::int64_t>(metadata.arrivalOrdinal));
+        return {};
+    }
+    CompletionResult Poll(const std::size_t slot) noexcept override
+    {
+        if (phases_[slot] == 1)
+        {
+            phases_[slot] = 0;
+            return {{}, true};
+        }
+        if (phases_[slot] == 2)
+        {
+            if (ordinals_[slot] == 1 && firstConsumePolls_++ == 0)
+            {
+                return {{}, false};
+            }
+            phases_[slot] = 0;
+            return {{}, true};
+        }
+        return {{}, true};
+    }
+
+private:
+    const std::shared_ptr<capturetest::Control> control_;
+    std::array<std::uint8_t, maximumRoiTextures> phases_{};
+    std::array<std::uint64_t, maximumRoiTextures> ordinals_{};
+    std::int64_t emitted_ = 0;
+    std::uint32_t firstConsumePolls_ = 0;
+};
+
+class SynchronousCompletionOrderingBackend final : public capturetest::Backend
+{
+public:
+    explicit SynchronousCompletionOrderingBackend(std::shared_ptr<capturetest::Control> control)
+        : capturetest::Backend(control), control_(std::move(control))
+    {
+    }
+    CaptureBackendKind Kind() const noexcept override
+    {
+        return CaptureBackendKind::Dxgi;
+    }
+    CaptureStatus Acquire() noexcept override
+    {
+        if (emitted_ == 3)
+        {
+            return {};
+        }
+        try
+        {
+            emitted_++;
+            control_->inbox.load()->Push(capturetest::MakeFrame(control_, emitted_));
+            return {};
+        }
+        catch (...)
+        {
+            return CaptureStatus::Failure(CaptureError::OutOfMemory, CaptureStage::Callback);
+        }
+    }
+    CaptureStatus Copy(const FrameLease& frame, const std::size_t slot, bool& submitted) noexcept override
+    {
+        const auto status = capturetest::Backend::Copy(frame, slot, submitted);
+        if (submitted)
+        {
+            phases_[slot] = 1;
+            ordinals_[slot] = frame.arrivalOrdinal;
+        }
+        return status;
+    }
+    CaptureStatus Consume(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, const std::size_t slot) noexcept override
+    {
+        phases_[slot] = 2;
+        ordinals_[slot] = metadata.arrivalOrdinal;
+        if (metadata.arrivalOrdinal == 3)
+        {
+            thirdConsuming_ = true;
+        }
+        return capturetest::Backend::Consume(consumer, metadata, slot);
+    }
+    CaptureStatus Complete(RawRoiConsumer&, const RawRoiFrameMetadata& metadata, std::size_t, bool) noexcept override
+    {
+        control_->Record("ordered-dxgi-complete", static_cast<std::int64_t>(metadata.arrivalOrdinal));
+        return {};
+    }
+    CompletionResult Poll(const std::size_t slot) noexcept override
+    {
+        if (phases_[slot] == 1)
+        {
+            phases_[slot] = 0;
+            return {{}, true};
+        }
+        if (phases_[slot] == 2)
+        {
+            const bool complete = ordinals_[slot] == 1 || thirdConsuming_;
+            if (complete)
+            {
+                phases_[slot] = 0;
+            }
+            return {{}, complete};
+        }
+        return {{}, true};
+    }
+
+private:
+    const std::shared_ptr<capturetest::Control> control_;
+    std::array<std::uint8_t, maximumRoiTextures> phases_{};
+    std::array<std::uint64_t, maximumRoiTextures> ordinals_{};
+    std::int64_t emitted_ = 0;
+    bool thirdConsuming_ = false;
 };
 
 // Only OS acquisition and GPU markers are simulated. The production owner,
@@ -384,6 +557,59 @@ TEST_CASE("Capture owner rejects an older completed slot after delivering a newe
         REQUIRE(secondCompletion < events.size());
         RequireOneClosePerFrame(control, 3);
     }
+}
+
+TEST_CASE("Capture owner attempts synchronous acquisition before completed consumer CPU work")
+{
+    const auto control = std::make_shared<capturetest::Control>();
+    const auto consumer = std::make_shared<SequenceConsumer>();
+    auto config = capturetest::MakeConfig();
+    config.roiTextureCount = 3;
+    std::unique_ptr<CaptureRuntime> capture;
+    REQUIRE(CaptureRuntime::Create(config, consumer, std::make_unique<AcquisitionPriorityBackend>(control), capture));
+    REQUIRE(capturetest::WaitFor([&]
+    {
+        const auto events = control->Events();
+        return capturetest::FindEvent(events, "priority-acquire", 3) < events.size() &&
+               capturetest::FindEvent(events, "priority-complete", 1) < events.size();
+    }));
+    REQUIRE(capture->Stop());
+    const auto events = control->Events();
+    const auto thirdAcquire = capturetest::FindEvent(events, "priority-acquire", 3);
+    const auto firstCompletion = capturetest::FindEvent(events, "priority-complete", 1);
+    REQUIRE(thirdAcquire < firstCompletion);
+    REQUIRE(firstCompletion < events.size());
+    REQUIRE(capture->GetSnapshot().liveFrameLeases == 0);
+    RequireOneClosePerFrame(control, 3);
+}
+
+TEST_CASE("Capture owner completes ready synchronous consumer jobs by capture ordinal rather than recycled slot")
+{
+    const auto control = std::make_shared<capturetest::Control>();
+    const auto consumer = std::make_shared<SequenceConsumer>();
+    auto config = capturetest::MakeConfig();
+    config.roiTextureCount = 2;
+    std::unique_ptr<CaptureRuntime> capture;
+    REQUIRE(CaptureRuntime::Create(config, consumer, std::make_unique<SynchronousCompletionOrderingBackend>(control), capture));
+    REQUIRE(capturetest::WaitFor([&]
+    {
+        const auto snapshot = capture->GetSnapshot();
+        return snapshot.copiedFrames == 3 && snapshot.liveFrameLeases == 0 && snapshot.busyRoiTextures == 0;
+    }));
+    REQUIRE(capture->Stop());
+    const auto snapshot = capture->GetSnapshot();
+    const auto events = control->Events();
+    const auto secondCompletion = capturetest::FindEvent(events, "ordered-dxgi-complete", 2);
+    const auto thirdCompletion = capturetest::FindEvent(events, "ordered-dxgi-complete", 3);
+    REQUIRE(consumer->Ordinals() == std::vector<std::uint64_t>{1, 2, 3});
+    REQUIRE(secondCompletion < thirdCompletion);
+    REQUIRE(thirdCompletion < events.size());
+    REQUIRE(snapshot.deliveredFrames == 3);
+    REQUIRE(snapshot.staleFrames == 0);
+    REQUIRE(snapshot.liveFrameLeases == 0);
+    REQUIRE(snapshot.shutdownComplete);
+    REQUIRE_FALSE(snapshot.deferredCleanup);
+    RequireOneClosePerFrame(control, 3);
 }
 
 TEST_CASE("Capture owner rejects expired claims and bounds ahead-of-time claims by the QPC arrival")
