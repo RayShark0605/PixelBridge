@@ -72,8 +72,14 @@ struct ShapeChromaReferenceObservation
 struct AcceptedTransportBlock
 {
     std::uint32_t slot = 0;
+    std::uint32_t byteCount = 0;
     std::array<std::byte, kInfoBytes> bytes{};
     bool operator==(const AcceptedTransportBlock&) const = default;
+};
+
+enum class EvaluationMode : std::uint8_t
+{
+    DiagnosticTruth, Transport
 };
 
 class ReferenceChannel
@@ -95,8 +101,14 @@ public:
         const pbmodulation::ShapeChromaDecodePolicy& policy = {}) noexcept;
     // Shared post-demod pipeline, also useful for independent channel tests.
     // No expected payload is accepted as an argument.
+    // DiagnosticTruth additionally compares against the deterministic Gate
+    // payload and binds its synthetic segment/block identifiers to the visual
+    // sequence/slot. Transport performs the production trust boundary only:
+    // QC-LDPC, canonical Transport framing/CRC, Bootstrap SessionTag and
+    // canonical zero padding. It never maps FrameSequence to SegmentOrdinal.
     [[nodiscard]] FrameEvaluation EvaluateCodewords(std::span<const std::byte> bootstrapRecord,
-        std::span<const std::byte> hardData, std::span<const float> softMetrics) noexcept;
+        std::span<const std::byte> hardData, std::span<const float> softMetrics,
+        EvaluationMode mode = EvaluationMode::DiagnosticTruth) noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetMarginHistogram() const noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetShapeMarginHistogram() const noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetChromaMarginHistogram() const noexcept;

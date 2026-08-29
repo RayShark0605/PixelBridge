@@ -30,7 +30,9 @@ struct BootstrapDiagnosticEvent
     std::uint64_t calibrationGeneration = 0;
     std::array<std::byte, 32> pixelDigest{};
     bool desktopLevels = false;
+    bool shapeChroma = false;
     pbdesktoplevels::ReferenceObservation levels;
+    pbdesktoplevels::ShapeChromaReferenceObservation shape;
 };
 
 struct DesktopLevelsCandidateSnapshot
@@ -40,6 +42,16 @@ struct DesktopLevelsCandidateSnapshot
     std::uint64_t otherErasures = 0;
     std::uint64_t duplicates = 0;
     pbdesktoplevels::StatisticsSummary statistics;
+};
+
+struct ShapeChromaCandidateSnapshot
+{
+    std::uint64_t geometryErasures = 0;
+    std::uint64_t pilotErasures = 0;
+    std::uint64_t otherErasures = 0;
+    std::uint64_t duplicates = 0;
+    pbdesktoplevels::StatisticsSummary statistics;
+    pbmodulation::ShapeChromaMargin chromaMargin;
 };
 
 struct BootstrapDiagnosticSnapshot
@@ -61,14 +73,17 @@ struct BootstrapDiagnosticSnapshot
     std::uint32_t queuedEvents = 0;
     BootstrapDisposition lastDisposition = BootstrapDisposition::None;
     bool desktopLevels = false;
+    bool shapeChroma = false;
     std::uint64_t unrecognizedBootstrap = 0;
     std::uint64_t statisticsFailures = 0;
     std::uint64_t telemetryFailures = 0;
     pbtelemetry::TelemetrySnapshot telemetry;
     std::array<DesktopLevelsCandidateSnapshot, 2> candidates;
+    ShapeChromaCandidateSnapshot shape;
 };
 
-// Explicit Bootstrap-only or DesktopLevels diagnostic mode, not a file receiver.
+// Explicit Bootstrap-only, DesktopLevels, or ShapeChroma diagnostic mode, not
+// a file receiver.
 // All admission/measurement mutation lives in Reset/Commit on the same worker;
 // Analyze creates a candidate. No cross-frame soft-combine entry point exists.
 class BootstrapDiagnosticProcessor final : public pbcapturenormalize::CpuFrameProcessor
@@ -81,6 +96,7 @@ public:
     explicit BootstrapDiagnosticProcessor(const pbmodulation::LocalDesktopDecodePolicy& policy = {}) noexcept;
     ~BootstrapDiagnosticProcessor() override;
     [[nodiscard]] static pbcapturenormalize::CaptureStatus CreateDesktopLevels(std::shared_ptr<BootstrapDiagnosticProcessor>& output) noexcept;
+    [[nodiscard]] static pbcapturenormalize::CaptureStatus CreateShapeChroma(std::shared_ptr<BootstrapDiagnosticProcessor>& output) noexcept;
     [[nodiscard]] std::uint64_t ProcessingReservedBytes() const noexcept override;
     void Reset(std::optional<pbcapturenormalize::ScreenCaptureDomain> domain) noexcept override;
     [[nodiscard]] pbcapturenormalize::CaptureStatus Analyze(const pbcapturenormalize::ScreenCaptureFrameMetadata& metadata,
@@ -133,8 +149,8 @@ private:
     bool pendingReady_ = false;
     bool pendingPixelDigestValid_ = false;
     bool pendingBootstrapRecovered_ = false;
-    struct DesktopLevelsState;
-    std::unique_ptr<DesktopLevelsState> levels_;
+    struct PhysicalLayerState;
+    std::unique_ptr<PhysicalLayerState> physical_;
 };
 
 [[nodiscard]] const char* GetBootstrapDispositionName(BootstrapDisposition disposition) noexcept;

@@ -11,7 +11,8 @@ enum class PresentationVisual
     ReferenceRaster,
     LocalDesktopBootstrap,
     DesktopLevels2,
-    DesktopLevels4
+    DesktopLevels4,
+    ShapeChroma
 };
 
 struct DataWindowArguments
@@ -21,9 +22,9 @@ struct DataWindowArguments
     bool hasFrameCount = false;
     std::uint64_t frameLimit = 0;
     bool hasSequenceInterval = false;
-    // DesktopLevels only: dwell after each accepted submission. 500 ms is the
-    // reference carousel rate; the native gate selects a slower rate whose
-    // dwell exceeds the measured diagnostic readback period.
+    // LocalDesktop physical-layer diagnostic candidates only: dwell after each
+    // accepted submission. The separate file Gate submits against the
+    // frame-latency/vsync contract and measures receiver UniqueVisualFPS.
     std::uint32_t sequenceIntervalMilliseconds = 500;
     const wchar_t* telemetryPath = nullptr;
     PresentationVisual visual = PresentationVisual::ReferenceRaster;
@@ -58,7 +59,8 @@ struct DataWindowArguments
     return true;
 }
 
-// Bounded 50..60000 ms; output unchanged on failure.
+// Bounded 1..60000 ms; output unchanged on failure. One millisecond permits a
+// demand above the display cadence while flip/vsync remains authoritative.
 [[nodiscard]] inline bool ParseSequenceIntervalMilliseconds(const std::wstring_view text, std::uint32_t& result) noexcept
 {
     if (text.empty())
@@ -79,7 +81,7 @@ struct DataWindowArguments
         }
         value = value * 10 + digit;
     }
-    if (value < 50)
+    if (value < 1)
     {
         return false;
     }
@@ -123,13 +125,15 @@ struct DataWindowArguments
         {
             index++;
             const std::wstring_view visual(arguments[index]);
-            if (visual != L"local-desktop-bootstrap" && visual != L"desktop-levels-2x2" && visual != L"desktop-levels-4x4")
+            if (visual != L"local-desktop-bootstrap" && visual != L"desktop-levels-2x2" && visual != L"desktop-levels-4x4" &&
+                visual != L"shape-chroma")
             {
                 return false;
             }
             explicitVisual = true;
             parsed.visual = visual == L"local-desktop-bootstrap" ? PresentationVisual::LocalDesktopBootstrap :
-                visual == L"desktop-levels-2x2" ? PresentationVisual::DesktopLevels2 : PresentationVisual::DesktopLevels4;
+                visual == L"desktop-levels-2x2" ? PresentationVisual::DesktopLevels2 :
+                visual == L"desktop-levels-4x4" ? PresentationVisual::DesktopLevels4 : PresentationVisual::ShapeChroma;
             parsed.dataWindow = true;
         }
         else if (argument == L"--frames" && !parsed.hasFrameCount && index + 1 < argumentCount)
@@ -164,7 +168,9 @@ struct DataWindowArguments
             return false;
         }
     }
-    if (!parsed.dataWindow)
+    const bool physicalLayer = parsed.visual == PresentationVisual::DesktopLevels2 ||
+        parsed.visual == PresentationVisual::DesktopLevels4 || parsed.visual == PresentationVisual::ShapeChroma;
+    if (!parsed.dataWindow || (parsed.hasSequenceInterval && !physicalLayer))
     {
         return false;
     }

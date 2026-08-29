@@ -109,6 +109,13 @@ struct LocalDesktopObservation
     }
 };
 
+struct LocalDesktopBootstrapBinding
+{
+    std::uint64_t visualProfileId = 0;
+    std::uint8_t visualLayoutVersion = 0;
+    bool operator==(const LocalDesktopBootstrapBinding&) const = default;
+};
+
 // Sample coordinates address pixel centres: (0,0) is the first pixel. Bilinear
 // interpolation reads at most four pixels, never clamps outside the view, and
 // leaves output unchanged on failure. All sampled components must be finite.
@@ -120,6 +127,14 @@ struct LocalDesktopObservation
 // all 44 bytes must agree and every distributed timing patch must match. This
 // function is stateless and does not track capture epochs or duplicate frames.
 [[nodiscard]] LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const LocalDesktopDecodePolicy& policy = {}) noexcept;
+// Certified 1920x1080 1:1 fast path. It skips the full-ROI marker search but
+// still re-reads and validates all four fixed markers, refines their edges,
+// independently RS/CRC/parses both Bootstrap copies, requires exact 44-byte
+// agreement, and checks every distributed timing patch in this same frame.
+// Only known frozen LocalDesktop bindings are accepted. Any size, geometry,
+// binding, mixed/torn, or signal failure erases the whole frame.
+[[nodiscard]] LocalDesktopObservation DecodeLocalDesktopFixedCanvasBootstrap(const LumaView& view,
+    const LocalDesktopBootstrapBinding& binding, const LocalDesktopDecodePolicy& policy = {}) noexcept;
 [[nodiscard]] const char* GetLocalDesktopErasureName(LocalDesktopErasureReason reason) noexcept;
 
 } // namespace pbmodulation

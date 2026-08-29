@@ -1008,9 +1008,115 @@ LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view,
     return result;
 }
 
+LocalDesktopObservation detail::DecodeLocalDesktopFixedCanvasScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy,
+    const LocalDesktopBinding binding, const LocalDesktopBootstrapBinding& expectedBinding) noexcept
+{
+    LocalDesktopObservation result;
+    result.erasure = ValidateLumaView(view);
+    if (result.erasure != Erasure::None)
+    {
+        return result;
+    }
+    if (!ValidPolicy(policy))
+    {
+        result.erasure = Erasure::InvalidPolicy;
+        return result;
+    }
+    if (view.width != kLocalDesktopCanvasWidth || view.height != kLocalDesktopCanvasHeight)
+    {
+        result.erasure = Erasure::InvalidView;
+        return result;
+    }
+    LumaReader reader(view, policy.maximumWorkUnits);
+    std::array<Marker, 4> fixedMarkers{};
+    std::array<const Marker*, 4> markerPointers{};
+    bool lowContrast = false;
+    for (std::size_t role = 0; role < fixedMarkers.size(); role++)
+    {
+        const auto& region = kLocalDesktopMarkerRegions[role];
+        auto& marker = fixedMarkers[role];
+        marker.centreX = static_cast<double>(region.x) + static_cast<double>(region.width) * 0.5;
+        marker.centreY = static_cast<double>(region.y) + static_cast<double>(region.height) * 0.5;
+        marker.scaleX = 1;
+        marker.scaleY = 1;
+        if (!VerifyMarker(reader, policy, marker, lowContrast) || marker.role != role)
+        {
+            result.erasure = reader.Error() != Erasure::None ? reader.Error() :
+                lowContrast ? Erasure::LowContrast : Erasure::MarkersNotFound;
+            result.markerCandidates = static_cast<std::uint32_t>(role);
+            result.workUnits = reader.WorkUnits();
+            return result;
+        }
+        markerPointers[role] = &marker;
+    }
+    result.markerCandidates = static_cast<std::uint32_t>(fixedMarkers.size());
+    LocalDesktopGeometry geometry;
+    if (!MakeGeometry(markerPointers, policy, geometry))
+    {
+        result.erasure = Erasure::InvalidGeometry;
+        result.workUnits = reader.WorkUnits();
+        return result;
+    }
+    result.geometryCandidates = 1;
+    result = EvaluateGeometry(reader, markerPointers, policy, geometry, binding);
+    result.markerCandidates = static_cast<std::uint32_t>(fixedMarkers.size());
+    result.geometryCandidates = 1;
+    result.workUnits = reader.WorkUnits();
+    if (result.IsAccepted())
+    {
+        const auto parsed = pbprotocol::ParseBootstrapRecord(result.canonical44);
+        if (!parsed || parsed.Value().visualProfileId != expectedBinding.visualProfileId ||
+            parsed.Value().visualLayoutVersion != expectedBinding.visualLayoutVersion)
+        {
+            result.erasure = Erasure::UnsupportedRecord;
+        }
+        else if (binding == LocalDesktopBinding::DesktopLevels &&
+            ValidateDesktopLevelsGeometry(result.geometry) != DesktopLevelsErasure::None)
+        {
+            result.erasure = Erasure::InvalidGeometry;
+        }
+        else if (binding == LocalDesktopBinding::ShapeChroma &&
+            ValidateShapeChromaGeometry(result.geometry) != ShapeChromaErasure::None)
+        {
+            result.erasure = Erasure::InvalidGeometry;
+        }
+    }
+    if (!result.IsAccepted())
+    {
+        result.canonical44.fill(std::byte{0});
+        result.quality = 0;
+    }
+    return result;
+}
+
 LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const LocalDesktopDecodePolicy& policy) noexcept
 {
     return detail::DecodeLocalDesktopScaffold(view, policy, detail::LocalDesktopBinding::BootstrapOnly);
+}
+
+LocalDesktopObservation DecodeLocalDesktopFixedCanvasBootstrap(const LumaView& view, const LocalDesktopBootstrapBinding& binding,
+    const LocalDesktopDecodePolicy& policy) noexcept
+{
+    detail::LocalDesktopBinding family;
+    if (binding == LocalDesktopBootstrapBinding{kLocalDesktopVisualProfileId, kLocalDesktopLayoutVersion})
+    {
+        family = detail::LocalDesktopBinding::BootstrapOnly;
+    }
+    else if (binding.visualLayoutVersion == kDesktopLevelsLayoutVersion && GetDesktopLevelsProfile(binding.visualProfileId) != nullptr)
+    {
+        family = detail::LocalDesktopBinding::DesktopLevels;
+    }
+    else if (binding == LocalDesktopBootstrapBinding{kShapeChromaProfileId, kShapeChromaLayoutVersion})
+    {
+        family = detail::LocalDesktopBinding::ShapeChroma;
+    }
+    else
+    {
+        LocalDesktopObservation result;
+        result.erasure = LocalDesktopErasureReason::UnsupportedRecord;
+        return result;
+    }
+    return detail::DecodeLocalDesktopFixedCanvasScaffold(view, policy, family, binding);
 }
 
 const char* GetLocalDesktopErasureName(const Erasure reason) noexcept

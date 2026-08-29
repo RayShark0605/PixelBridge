@@ -1,8 +1,89 @@
 {
   "Cppcheck": "2.21.0",
-  "BaselineHead": "5c136a6570d45c20f7943a37813d63d189288141",
+  "BaselineHead": "a9fb5e6dc546e9b2959990f32a2156f75cda559e",
   "Rule": "Exact reviewed existing diagnostics only: no blanket suppression; changed file hashes or new diagnostics fail the Gate.",
   "Entries": [
+    {
+      "File": "apps/PixelBridgeDecoder/capture_bootstrap_cli.cpp",
+      "Line": 193,
+      "Id": "nullPointer",
+      "Severity": "warning",
+      "Message": "Possible null pointer dereference: readback",
+      "SourceSHA256": "CD21748EF70B94C27D238E43F021D41689E7AA65488CF93CB637A5054D37A4C4",
+      "Assessment": "False positive: Require throws on failed DiagnosticCpuReadback::Create; successful factory publishes a non-null candidate only after starting the worker. Every failure preserves output. Existing allocation/error-path and real worker tests exercise this contract."
+    },
+    {
+      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
+      "Line": 90,
+      "Id": "duplicateExpressionTernary",
+      "Severity": "style",
+      "Message": "Same expression in both branches of ternary operator.",
+      "SourceSHA256": "6FEF364DCD59CB66D3A23F69840B7D943B32DAC6C5B099BA1B0C12A2E76A8735",
+      "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
+    },
+    {
+      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
+      "Line": 91,
+      "Id": "duplicateExpressionTernary",
+      "Severity": "style",
+      "Message": "Same expression in both branches of ternary operator.",
+      "SourceSHA256": "6FEF364DCD59CB66D3A23F69840B7D943B32DAC6C5B099BA1B0C12A2E76A8735",
+      "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
+    },
+    {
+      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
+      "Line": 234,
+      "Id": "duplicateExpressionTernary",
+      "Severity": "style",
+      "Message": "Same expression in both branches of ternary operator.",
+      "SourceSHA256": "6FEF364DCD59CB66D3A23F69840B7D943B32DAC6C5B099BA1B0C12A2E76A8735",
+      "Assessment": "GetSnapshot calls are separated by window Stop, so stoppedSample and finalSample can differ. The analyzer does not model backend thread state; keep failure telemetry selection."
+    },
+    {
+      "File": "libs/PBCaptureNormalize/include/pbcapturenormalize/diagnostic_readback.h",
+      "Line": 134,
+      "Id": "funcArgNamesDifferentUnnamed",
+      "Severity": "style",
+      "Message": "Function 'Erased' argument 1 names different: declaration 'erasure' definition '<unnamed>'.",
+      "SourceSHA256": "8D9D7020581CFBD63FE1ECF311162FA72ECF3AB871D8CD84ED3CF7DA7282A28E",
+      "Assessment": "Pre-existing intentionally unused callback parameter; ABI and ownership unchanged."
+    },
+    {
+      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
+      "Line": 233,
+      "Id": "knownConditionTrueFalse",
+      "Severity": "style",
+      "Message": "Condition 'activeDomain==resetDomain' is always true",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
+    },
+    {
+      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
+      "Line": 233,
+      "Id": "knownConditionTrueFalse",
+      "Severity": "style",
+      "Message": "Condition 'revision==resetRevision' is always true",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
+    },
+    {
+      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
+      "Line": 597,
+      "Id": "redundantAssignment",
+      "Severity": "style",
+      "Message": "Variable 'replacement' is reassigned a value before the old one has been used.",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "Assessment": "replacement={} deliberately releases moved old-generation COM objects outside the CPU mutex before allocating new staging resources. Removing it breaks lifetime/reservation ordering."
+    },
+    {
+      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
+      "Line": 923,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbcapturenormalize::DiagnosticCpuReadback::RequestStop' can be const.",
+      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "Assessment": "Actor RequestStop mutates shared CPU state under its mutex; shallow const suggestion is not a correctness defect."
+    },
     {
       "File": "libs/PBCaptureNormalize/src/native_support.h",
       "Line": 40,
@@ -22,49 +103,58 @@
       "Assessment": "Pre-existing intentionally unused callback parameter; ABI and ownership unchanged."
     },
     {
-      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 923,
+      "File": "libs/PBDemodD3D11/src/capture_demodulator.cpp",
+      "Line": 848,
       "Id": "functionConst",
       "Severity": "style",
-      "Message": "Technically the member function 'pbcapturenormalize::DiagnosticCpuReadback::RequestStop' can be const.",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
-      "Assessment": "Actor RequestStop mutates shared CPU state under its mutex; shallow const suggestion is not a correctness defect."
+      "Message": "Technically the member function 'pbdemodd3d11::CaptureDemodulator::TakeResult' can be const.",
+      "SourceSHA256": "96A65CC9B618B917A0B4564DFE1E305DBC4570C488B33F1332F0AFE9781A5B0F",
+      "Assessment": "False positive from shallow unique_ptr analysis: TakeResult advances the bounded ring head, decrements queued state, increments resultsTaken, and writes the caller output. A const queue consumer would misstate thread-safety and ownership."
     },
     {
-      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 233,
-      "Id": "knownConditionTrueFalse",
+      "File": "libs/PBDemodD3D11/src/demodulator.cpp",
+      "Line": 988,
+      "Id": "functionConst",
       "Severity": "style",
-      "Message": "Condition 'revision==resetRevision' is always true",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
-      "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
+      "Message": "Technically the member function 'pbdemodd3d11::Demodulator::RetireAfterExternalCompletion' can be const.",
+      "SourceSHA256": "1DBF98EA9CC97F65F410614ECD7B1CE0F342C567A51D3C1656262BA77AB226FC",
+      "Assessment": "False positive from shallow unique_ptr analysis: this lifecycle mutator releases a busy slot and capture texture, decrements pending work, and records cancellation after external GPU-retirement proof. It must not be callable through a const demodulator."
     },
     {
-      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 233,
-      "Id": "knownConditionTrueFalse",
+      "File": "libs/PBDemodD3D11/src/demodulator.cpp",
+      "Line": 1037,
+      "Id": "functionConst",
       "Severity": "style",
-      "Message": "Condition 'activeDomain==resetDomain' is always true",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
-      "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
+      "Message": "Technically the member function 'pbdemodd3d11::Demodulator::ShutdownAfterExternalCompletion' can be const.",
+      "SourceSHA256": "1DBF98EA9CC97F65F410614ECD7B1CE0F342C567A51D3C1656262BA77AB226FC",
+      "Assessment": "False positive from shallow unique_ptr analysis: this lifecycle mutator sets terminal shutdown state and clears the active capture domain after externally proven retirement. It must not be callable through a const demodulator."
     },
     {
-      "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 597,
-      "Id": "redundantAssignment",
+      "File": "libs/PBDemodD3D11/src/demodulator.cpp",
+      "Line": 1056,
+      "Id": "functionConst",
       "Severity": "style",
-      "Message": "Variable 'replacement' is reassigned a value before the old one has been used.",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
-      "Assessment": "replacement={} deliberately releases moved old-generation COM objects outside the CPU mutex before allocating new staging resources. Removing it breaks lifetime/reservation ordering."
+      "Message": "Technically the member function 'pbdemodd3d11::Demodulator::Shutdown' can be const.",
+      "SourceSHA256": "1DBF98EA9CC97F65F410614ECD7B1CE0F342C567A51D3C1656262BA77AB226FC",
+      "Assessment": "False positive from shallow unique_ptr analysis: Shutdown drains GPU queries, retires texture leases, clears slots and changes the terminal lifecycle state. It must remain visibly mutating."
     },
     {
-      "File": "libs/PBCaptureNormalize/include/pbcapturenormalize/diagnostic_readback.h",
-      "Line": 134,
-      "Id": "funcArgNamesDifferentUnnamed",
+      "File": "libs/PBModulation/src/bootstrap_rs.cpp",
+      "Line": 57,
+      "Id": "shadowVariable",
       "Severity": "style",
-      "Message": "Function 'Erased' argument 1 names different: declaration 'erasure' definition '<unnamed>'.",
-      "SourceSHA256": "8D9D7020581CFBD63FE1ECF311162FA72ECF3AB871D8CD84ED3CF7DA7282A28E",
-      "Assessment": "Pre-existing intentionally unused callback parameter; ABI and ownership unchanged."
+      "Message": "Local variable 'generator' shadows outer variable",
+      "SourceSHA256": "3FEAF91D10B581D3C07A9C987FA86F7C2C1E70705C41599BAA83359FC1F9AED1",
+      "Assessment": "Existing RS generator local and static generator are separate lexical scopes; independent RS Golden and allocation probe verify behavior."
+    },
+    {
+      "File": "libs/PBModulation/src/bootstrap_rs.cpp",
+      "Line": 88,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
+      "SourceSHA256": "3FEAF91D10B581D3C07A9C987FA86F7C2C1E70705C41599BAA83359FC1F9AED1",
+      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
     },
     {
       "File": "libs/PBModulation/src/frame_io.cpp",
@@ -119,6 +209,60 @@
       "Message": "Variable 'status' is reassigned a value before the old one has been used.",
       "SourceSHA256": "E000F6842119F35407ADFD97BF9B4C6F5BFEEB82A0E6E594AECAADC0251C6952",
       "Assessment": "Frozen fixed-size writer has preallocated exact capacity and monotonically increasing offsets; final status plus exact Position invariant and independent Golden verify the complete layout. No attacker-sized write sequence here."
+    },
+    {
+      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
+      "Line": 107,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
+      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
+      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+    },
+    {
+      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
+      "Line": 647,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
+      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
+      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+    },
+    {
+      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
+      "Line": 814,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::find_if algorithm instead of a raw loop.",
+      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
+      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+    },
+    {
+      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
+      "Line": 822,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::find_if algorithm instead of a raw loop.",
+      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
+      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+    },
+    {
+      "File": "libs/PBModulation/src/reference_visual_profile.cpp",
+      "Line": 27,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::all_of or std::none_of algorithm instead of a raw loop.",
+      "SourceSHA256": "C0153626882A403F8EAE42DEFCA905316BE612AAC28D580CB0B1D229E3775362",
+      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+    },
+    {
+      "File": "libs/PBModulation/src/reference_visual_profile.cpp",
+      "Line": 51,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::all_of or std::none_of algorithm instead of a raw loop.",
+      "SourceSHA256": "C0153626882A403F8EAE42DEFCA905316BE612AAC28D580CB0B1D229E3775362",
+      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
     },
     {
       "File": "libs/PBModulation/src/reference_visual_profile.cpp",
@@ -292,96 +436,6 @@
       "Assessment": "Frozen fixed-size writer has preallocated exact capacity and monotonically increasing offsets; final status plus exact Position invariant and independent Golden verify the complete layout. No attacker-sized write sequence here."
     },
     {
-      "File": "libs/PBModulation/src/reference_visual_profile.cpp",
-      "Line": 27,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::all_of or std::none_of algorithm instead of a raw loop.",
-      "SourceSHA256": "C0153626882A403F8EAE42DEFCA905316BE612AAC28D580CB0B1D229E3775362",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "libs/PBModulation/src/reference_visual_profile.cpp",
-      "Line": 51,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::all_of or std::none_of algorithm instead of a raw loop.",
-      "SourceSHA256": "C0153626882A403F8EAE42DEFCA905316BE612AAC28D580CB0B1D229E3775362",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "libs/PBModulation/src/bootstrap_rs.cpp",
-      "Line": 57,
-      "Id": "shadowVariable",
-      "Severity": "style",
-      "Message": "Local variable 'generator' shadows outer variable",
-      "SourceSHA256": "3FEAF91D10B581D3C07A9C987FA86F7C2C1E70705C41599BAA83359FC1F9AED1",
-      "Assessment": "Existing RS generator local and static generator are separate lexical scopes; independent RS Golden and allocation probe verify behavior."
-    },
-    {
-      "File": "libs/PBModulation/src/bootstrap_rs.cpp",
-      "Line": 88,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
-      "SourceSHA256": "3FEAF91D10B581D3C07A9C987FA86F7C2C1E70705C41599BAA83359FC1F9AED1",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
-      "Line": 107,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
-      "SourceSHA256": "208C1DD2961FA7C21605ED65C120D39320606837464FDBA78647B27A87B8D1AB",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
-      "Line": 647,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
-      "SourceSHA256": "208C1DD2961FA7C21605ED65C120D39320606837464FDBA78647B27A87B8D1AB",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
-      "Line": 814,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::find_if algorithm instead of a raw loop.",
-      "SourceSHA256": "208C1DD2961FA7C21605ED65C120D39320606837464FDBA78647B27A87B8D1AB",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "libs/PBModulation/src/local_desktop_decode.cpp",
-      "Line": 822,
-      "Id": "useStlAlgorithm",
-      "Severity": "style",
-      "Message": "Consider using std::find_if algorithm instead of a raw loop.",
-      "SourceSHA256": "208C1DD2961FA7C21605ED65C120D39320606837464FDBA78647B27A87B8D1AB",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
-    },
-    {
-      "File": "libs/PBDemodD3D11/src/demodulator.cpp",
-      "Line": 672,
-      "Id": "functionConst",
-      "Severity": "style",
-      "Message": "Technically the member function 'pbdemodd3d11::Demodulator::Poll' can be const.",
-      "SourceSHA256": "94757FBB1DF6ECD6BB62BC6B497BBB853DDC1C9741E13B19C1E3AD2D98D16D19",
-      "Assessment": "False positive from shallow unique_ptr analysis: Poll mutates slot completion, mapped metric retirement, CPU FEC output and pending counters. A const lifecycle mutator would misstate ownership and thread-safety."
-    },
-    {
-      "File": "libs/PBDemodD3D11/src/demodulator.cpp",
-      "Line": 817,
-      "Id": "functionConst",
-      "Severity": "style",
-      "Message": "Technically the member function 'pbdemodd3d11::Demodulator::Shutdown' can be const.",
-      "SourceSHA256": "94757FBB1DF6ECD6BB62BC6B497BBB853DDC1C9741E13B19C1E3AD2D98D16D19",
-      "Assessment": "False positive from shallow unique_ptr analysis: Shutdown drains GPU queries, retires texture leases, clears slots and changes the terminal lifecycle state. It must remain visibly mutating."
-    },
-    {
       "File": "libs/PBRealCaptureReplay/src/replay_file.cpp",
       "Line": 929,
       "Id": "functionConst",
@@ -391,40 +445,13 @@
       "Assessment": "False positive from shallow unique_ptr analysis: Finalize writes and flushes the footer, closes the partial file, publishes the final path and changes writer state. It must not be callable through a const writer."
     },
     {
-      "File": "apps/PixelBridgeDecoder/capture_bootstrap_cli.cpp",
-      "Line": 181,
-      "Id": "nullPointer",
-      "Severity": "warning",
-      "Message": "Possible null pointer dereference: readback",
-      "SourceSHA256": "E734E0506BD3735716556A9F3C54C2F9D0DFCCF1F7A20547E16CF18A1AB06CF2",
-      "Assessment": "False positive: Require throws on failed DiagnosticCpuReadback::Create; successful factory publishes a non-null candidate only after starting the worker. Every failure preserves output. Existing allocation/error-path and real worker tests exercise this contract."
-    },
-    {
-      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
-      "Line": 87,
-      "Id": "duplicateExpressionTernary",
-      "Severity": "style",
-      "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "D2CCF5D85F8FD2E991010021F813C9349454BB3FA3C997CC1195FCE7798003FC",
-      "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
-    },
-    {
-      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
-      "Line": 88,
-      "Id": "duplicateExpressionTernary",
-      "Severity": "style",
-      "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "D2CCF5D85F8FD2E991010021F813C9349454BB3FA3C997CC1195FCE7798003FC",
-      "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
-    },
-    {
-      "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
-      "Line": 226,
-      "Id": "duplicateExpressionTernary",
-      "Severity": "style",
-      "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "D2CCF5D85F8FD2E991010021F813C9349454BB3FA3C997CC1195FCE7798003FC",
-      "Assessment": "GetSnapshot calls are separated by window Stop, so stoppedSample and finalSample can differ. The analyzer does not model backend thread state; keep failure telemetry selection."
+      "File": "tests/DesktopLevelsGate/phase1_file_metrics.h",
+      "Line": 170,
+      "Id": "returnByReference",
+      "Severity": "performance",
+      "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
+      "SourceSHA256": "332EF17834868B8687774FBB66ACFCD3702A14FFC7D6DCD20A0B35508CBC6EE3",
+      "Assessment": "Deliberate value snapshot: the fixed counter record is copied so callers cannot alias mutable accumulator state or retain a reference across later observations. Returning a reference would weaken snapshot lifetime and immutability."
     }
   ],
   "HashEncoding": "SHA256 of UTF-8 source normalized to LF; no automatic re-review"

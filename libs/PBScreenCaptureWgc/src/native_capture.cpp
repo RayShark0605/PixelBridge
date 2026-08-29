@@ -272,6 +272,7 @@ public:
             }
             pool_ = poolFactory.CreateFreeThreaded(directDevice_, static_cast<DirectXPixelFormat>(config_.pixelFormat),
                                                    static_cast<std::int32_t>(layout.poolBufferCount), itemSize);
+            poolBufferCount_ = layout.poolBufferCount;
             Fault(stage);
             initializedBefore_ = true;
             return {};
@@ -308,6 +309,21 @@ public:
             if (newSession)
             {
                 session_.StartCapture();
+            }
+            else
+            {
+                // A continuously presenting source can fill the recreated pool
+                // while Pause has revoked the old FrameArrived handler. WinRT
+                // does not guarantee a new event merely because a handler is
+                // attached to an already-nonempty pool. Drain at most the fixed
+                // pool capacity through the new epoch gate so the queue reaches
+                // an event-producing state again. FrameInbox remains bounded
+                // and drops older arrivals if more than its configured limit
+                // are recovered here.
+                for (std::uint32_t index = 0; index < poolBufferCount_; index++)
+                {
+                    OnFrameArrived(gate, pool_);
+                }
             }
             return {};
         }
@@ -435,6 +451,7 @@ public:
             // All acquired frames are closed and all submitted work is retired.
             pool_.Recreate(directDevice_, static_cast<DirectXPixelFormat>(config_.pixelFormat),
                            static_cast<std::int32_t>(layout.poolBufferCount), size);
+            poolBufferCount_ = layout.poolBufferCount;
             status = ring_.Recreate(config_, environment);
             if (status)
             {
@@ -519,6 +536,7 @@ public:
             status = status ? ExceptionStatus(CaptureStage::Shutdown) : status;
         }
         pool_ = nullptr;
+        poolBufferCount_ = 0;
         item_ = nullptr;
         frameRegistered_ = false;
         closedRegistered_ = false;
@@ -682,6 +700,7 @@ private:
     IDirect3DDevice directDevice_{nullptr};
     GraphicsCaptureItem item_{nullptr};
     Direct3D11CaptureFramePool pool_{nullptr};
+    std::uint32_t poolBufferCount_ = 0;
     GraphicsCaptureSession session_{nullptr};
     winrt::Windows::Foundation::IAsyncOperation<AppCapabilityAccessStatus> borderlessRequest_{nullptr};
     D3dRoiRing ring_;

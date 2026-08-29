@@ -29,25 +29,84 @@ BootstrapDiagnosticProcessor::BootstrapDiagnosticProcessor(const pbmodulation::L
 {
 }
 
-struct BootstrapDiagnosticProcessor::DesktopLevelsState
+struct BootstrapDiagnosticProcessor::PhysicalLayerState
 {
+    enum class Mode : std::uint8_t
+    {
+        DesktopLevels,
+        ShapeChroma
+    };
+
+    explicit PhysicalLayerState(const Mode selectedMode) noexcept : mode(selectedMode)
+    {
+    }
+
+    [[nodiscard]] bool AddShapeChroma(const pbdesktoplevels::ShapeChromaReferenceObservation& observation,
+        const std::uint64_t sequence) noexcept
+    {
+        const auto shapeHistogram = channel.GetShapeMarginHistogram();
+        const auto chroma = channel.GetChromaMarginHistogram();
+        if (shapeHistogram.size() != pbmodulation::kShapeChromaMetricBins || chroma.size() != chromaHistogram.size() ||
+            shapeHistogram.data() == nullptr || chroma.data() == nullptr || !std::isfinite(observation.modulation.chromaMargin.minimum) ||
+            observation.modulation.chromaMargin.minimum < 0 || observation.modulation.chromaMargin.minimum > 1)
+        {
+            return false;
+        }
+        const auto chromaSummary = pbmodulation::SummarizeShapeChromaMargin(chroma, observation.modulation.chromaMargin.minimum);
+        const auto nextSamples = pbprotocol::CheckedAddUnsigned(chromaSamples, chromaSummary.samples);
+        if (chromaSummary.samples != pbmodulation::kShapeChromaTileCount || !nextSamples)
+        {
+            return false;
+        }
+        for (std::size_t index = 0; index < chromaHistogram.size(); index++)
+        {
+            if (chroma[index] > std::numeric_limits<std::uint64_t>::max() - chromaHistogram[index])
+            {
+                return false;
+            }
+        }
+        if (!shapeStatistics.Add(observation.evaluation, sequence, shapeHistogram, observation.modulation.shapeMargin.minimum))
+        {
+            return false;
+        }
+        for (std::size_t index = 0; index < chromaHistogram.size(); index++)
+        {
+            chromaHistogram[index] += chroma[index];
+        }
+        chromaMinimum = chromaSamples == 0 ? observation.modulation.chromaMargin.minimum :
+            std::min(chromaMinimum, observation.modulation.chromaMargin.minimum);
+        chromaSamples = nextSamples.Value();
+        return true;
+    }
+
+    [[nodiscard]] pbmodulation::ShapeChromaMargin GetChromaMargin() const noexcept
+    {
+        return pbmodulation::SummarizeShapeChromaMargin(chromaHistogram, chromaSamples == 0 ? 0 : chromaMinimum);
+    }
+
+    Mode mode;
     pbdesktoplevels::ReferenceChannel channel;
     std::array<pbdesktoplevels::ReferenceStatistics, 2> statistics;
-    pbmodulation::DesktopLevelsCalibration calibration;
+    pbdesktoplevels::ReferenceStatistics shapeStatistics;
+    pbmodulation::DesktopLevelsCalibration levelsCalibration;
+    pbmodulation::ShapeChromaCalibration shapeCalibration;
+    std::array<std::uint64_t, pbmodulation::kShapeChromaMetricBins> chromaHistogram{};
+    std::uint64_t chromaSamples = 0;
+    double chromaMinimum = 0;
 };
 
 BootstrapDiagnosticProcessor::~BootstrapDiagnosticProcessor() = default;
 
 std::uint64_t BootstrapDiagnosticProcessor::ProcessingReservedBytes() const noexcept
 {
-    return levels_ ? pbdesktoplevels::kProcessingReservationBytes : 0;
+    return physical_ ? pbdesktoplevels::kProcessingReservationBytes : 0;
 }
 
 CaptureStatus BootstrapDiagnosticProcessor::CreateDesktopLevels(std::shared_ptr<BootstrapDiagnosticProcessor>& output) noexcept
 {
     // ReferenceChannel's 16 MiB reservation includes 1 MiB for this bounded
     // application state, including events/history and shared_ptr bookkeeping.
-    static_assert(sizeof(BootstrapDiagnosticProcessor) + sizeof(DesktopLevelsState) + 4096 <= 1024 * 1024);
+    static_assert(sizeof(BootstrapDiagnosticProcessor) + sizeof(PhysicalLayerState) + 4096 <= 1024 * 1024);
     try
     {
         auto channel = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
@@ -56,9 +115,32 @@ CaptureStatus BootstrapDiagnosticProcessor::CreateDesktopLevels(std::shared_ptr<
             return CaptureStatus::Failure(CaptureError::OutOfMemory, CaptureStage::Configuration);
         }
         auto processor = std::make_shared<BootstrapDiagnosticProcessor>();
-        processor->levels_ = std::make_unique<DesktopLevelsState>();
-        processor->levels_->channel = std::move(channel).Value();
+        processor->physical_ = std::make_unique<PhysicalLayerState>(PhysicalLayerState::Mode::DesktopLevels);
+        processor->physical_->channel = std::move(channel).Value();
         processor->snapshot_.desktopLevels = true;
+        output = std::move(processor);
+        return {};
+    }
+    catch (const std::bad_alloc&)
+    {
+        return CaptureStatus::Failure(CaptureError::OutOfMemory, CaptureStage::Configuration);
+    }
+}
+
+CaptureStatus BootstrapDiagnosticProcessor::CreateShapeChroma(std::shared_ptr<BootstrapDiagnosticProcessor>& output) noexcept
+{
+    static_assert(sizeof(BootstrapDiagnosticProcessor) + sizeof(PhysicalLayerState) + 4096 <= 1024 * 1024);
+    try
+    {
+        auto channel = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
+        if (!channel)
+        {
+            return CaptureStatus::Failure(CaptureError::OutOfMemory, CaptureStage::Configuration);
+        }
+        auto processor = std::make_shared<BootstrapDiagnosticProcessor>();
+        processor->physical_ = std::make_unique<PhysicalLayerState>(PhysicalLayerState::Mode::ShapeChroma);
+        processor->physical_->channel = std::move(channel).Value();
+        processor->snapshot_.shapeChroma = true;
         output = std::move(processor);
         return {};
     }
@@ -85,14 +167,14 @@ void BootstrapDiagnosticProcessor::Reset(std::optional<ScreenCaptureDomain> doma
     snapshot_.calibrationGeneration = 0;
     snapshot_.trackedSessions = 0;
     snapshot_.retainedSequences = 0;
-    if (!levels_)
+    if (!physical_)
     {
         snapshot_.diagnosticQueueDrops = pbprotocol::SaturatingAddUnsigned(snapshot_.diagnosticQueueDrops, static_cast<std::uint64_t>(eventCount_));
         snapshot_.queuedEvents = 0;
         eventHead_ = 0;
         eventCount_ = 0;
     }
-    // DesktopLevels keeps immutable, already-committed audit events with their
+    // Physical-layer modes keep immutable, already-committed audit events with their
     // original domains until drained. This is NOT live calibration/history and
     // cannot be re-committed. In particular shutdown must not erase the last
     // admitted failure from the raw denominator evidence. Queue remains bounded.
@@ -115,9 +197,10 @@ void BootstrapDiagnosticProcessor::Reset(std::optional<ScreenCaptureDomain> doma
     {
         telemetry_.EndCaptureEpoch();
     }
-    if (levels_)
+    if (physical_)
     {
-        levels_->calibration = {};
+        physical_->levelsCalibration = {};
+        physical_->shapeCalibration = {};
     }
 }
 
@@ -130,7 +213,8 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
     pending_ = {};
     pendingPixelDigestValid_ = false;
     pendingBootstrapRecovered_ = false;
-    pending_.desktopLevels = levels_ != nullptr;
+    pending_.desktopLevels = physical_ && physical_->mode == PhysicalLayerState::Mode::DesktopLevels;
+    pending_.shapeChroma = physical_ && physical_->mode == PhysicalLayerState::Mode::ShapeChroma;
     pending_.capture = metadata;
     pendingReady_ = true;
     pending_.disposition = BootstrapDisposition::InvalidMetadata;
@@ -179,10 +263,15 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
     const pbmodulation::LumaView view{pixels, static_cast<std::uint32_t>(metadata.roiSize.width), static_cast<std::uint32_t>(metadata.roiSize.height), rowPitch, format};
     pending_.pixelDigest = pbprotocol::ComputeBlake3Digest(pixels);
     pendingPixelDigestValid_ = true;
-    if (levels_)
+    if (pending_.desktopLevels)
     {
-        pending_.levels = levels_->channel.Decode(view);
+        pending_.levels = physical_->channel.Decode(view);
         pending_.visual = pending_.levels.modulation.bootstrap;
+    }
+    else if (pending_.shapeChroma)
+    {
+        pending_.shape = physical_->channel.DecodeShapeChroma(view);
+        pending_.visual = pending_.shape.modulation.bootstrap;
     }
     else
     {
@@ -194,8 +283,10 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
         return {};
     }
     const auto record = pbprotocol::ParseBootstrapRecord(pending_.visual.canonical44);
-    const bool bindingValid = record && (levels_ ?
+    const bool bindingValid = record && (pending_.desktopLevels ?
         pbmodulation::GetDesktopLevelsProfile(record.Value().visualProfileId) != nullptr && record.Value().visualLayoutVersion == pbmodulation::kDesktopLevelsLayoutVersion :
+        pending_.shapeChroma ? record.Value().visualProfileId == pbmodulation::kShapeChromaProfileId &&
+            record.Value().visualLayoutVersion == pbmodulation::kShapeChromaLayoutVersion :
         record.Value().visualProfileId == pbmodulation::kLocalDesktopVisualProfileId && record.Value().visualLayoutVersion == pbmodulation::kLocalDesktopLayoutVersion);
     if (!bindingValid)
     {
@@ -206,7 +297,8 @@ CaptureStatus BootstrapDiagnosticProcessor::Analyze(const ScreenCaptureFrameMeta
     }
     pending_.bootstrap = record.Value();
     pendingBootstrapRecovered_ = true;
-    if (levels_ && (!pending_.levels.modulation.IsAccepted() || !pending_.levels.evaluation.evaluated))
+    if ((pending_.desktopLevels && (!pending_.levels.modulation.IsAccepted() || !pending_.levels.evaluation.evaluated)) ||
+        (pending_.shapeChroma && (!pending_.shape.modulation.IsAccepted() || !pending_.shape.evaluation.evaluated)))
     {
         pending_.disposition = BootstrapDisposition::VisualErasure;
         return {};
@@ -258,7 +350,8 @@ BootstrapDisposition BootstrapDiagnosticProcessor::AdmitLocked(BootstrapDiagnost
     }
     const bool geometryChanged = !geometry_ || !SameTransform(*geometry_, event.visual.geometry);
     const bool calibrationChanged = !calibrated_ || blackLevel_ != event.visual.blackLevel || whiteLevel_ != event.visual.whiteLevel ||
-        (levels_ && levels_->calibration != event.levels.modulation.calibration);
+        (event.desktopLevels && physical_->levelsCalibration != event.levels.modulation.calibration) ||
+        (event.shapeChroma && physical_->shapeCalibration != event.shape.modulation.calibration);
     if ((geometryChanged && snapshot_.geometryGeneration == std::numeric_limits<std::uint64_t>::max()) ||
         (calibrationChanged && snapshot_.calibrationGeneration == std::numeric_limits<std::uint64_t>::max()))
     {
@@ -275,9 +368,13 @@ BootstrapDisposition BootstrapDiagnosticProcessor::AdmitLocked(BootstrapDiagnost
         calibrated_ = true;
         blackLevel_ = event.visual.blackLevel;
         whiteLevel_ = event.visual.whiteLevel;
-        if (levels_)
+        if (event.desktopLevels)
         {
-            levels_->calibration = event.levels.modulation.calibration;
+            physical_->levelsCalibration = event.levels.modulation.calibration;
+        }
+        else if (event.shapeChroma)
+        {
+            physical_->shapeCalibration = event.shape.modulation.calibration;
         }
     }
     event.geometryGeneration = snapshot_.geometryGeneration;
@@ -373,20 +470,22 @@ void BootstrapDiagnosticProcessor::Commit(const ScreenCaptureFrameMetadata& meta
     {
         pending_.disposition = AdmitLocked(pending_);
     }
-    if (captureTelemetryStatus && levels_ && pending_.disposition == BootstrapDisposition::Accepted && pending_.levels.evaluation.evaluated &&
-        !telemetry_.RecordFec({metadata.domain, metadata.captureObservation, pending_.levels.evaluation}))
+    const auto* const physicalEvaluation = pending_.desktopLevels ? &pending_.levels.evaluation :
+        pending_.shapeChroma ? &pending_.shape.evaluation : nullptr;
+    if (captureTelemetryStatus && physicalEvaluation != nullptr && pending_.disposition == BootstrapDisposition::Accepted && physicalEvaluation->evaluated &&
+        !telemetry_.RecordFec({metadata.domain, metadata.captureObservation, *physicalEvaluation}))
     {
         pbprotocol::SaturatingIncrementUnsigned(snapshot_.telemetryFailures);
     }
-    if (levels_)
+    if (pending_.desktopLevels)
     {
         const auto& observation = pending_.levels.modulation;
         const bool knownProfile = pbmodulation::GetDesktopLevelsProfile(observation.profileId) != nullptr;
         const std::size_t candidate = observation.profileId == pbmodulation::kDesktopLevels2ProfileId ? 0 : 1;
         if (pending_.disposition == BootstrapDisposition::Accepted)
         {
-            if (!levels_->statistics[candidate].Add(pending_.levels.evaluation, pending_.bootstrap.frameSequence,
-                    levels_->channel.GetMarginHistogram(), observation.margin.minimum))
+            if (!physical_->statistics[candidate].Add(pending_.levels.evaluation, pending_.bootstrap.frameSequence,
+                    physical_->channel.GetMarginHistogram(), observation.margin.minimum))
             {
                 pending_.disposition = BootstrapDisposition::StatisticsFailure;
                 pbprotocol::SaturatingIncrementUnsigned(snapshot_.statisticsFailures);
@@ -428,6 +527,52 @@ void BootstrapDiagnosticProcessor::Commit(const ScreenCaptureFrameMetadata& meta
             pbprotocol::SaturatingIncrementUnsigned(snapshot_.candidates[candidate].duplicates);
         }
     }
+    else if (pending_.shapeChroma)
+    {
+        const auto& observation = pending_.shape.modulation;
+        if (pending_.disposition == BootstrapDisposition::Accepted)
+        {
+            if (!physical_->AddShapeChroma(pending_.shape, pending_.bootstrap.frameSequence))
+            {
+                pending_.disposition = BootstrapDisposition::StatisticsFailure;
+                pbprotocol::SaturatingIncrementUnsigned(snapshot_.statisticsFailures);
+            }
+            else if (!pending_.shape.evaluation.IsVerified())
+            {
+                pending_.disposition = BootstrapDisposition::PostFecFailure;
+            }
+        }
+        if (pending_.disposition == BootstrapDisposition::VisualErasure)
+        {
+            if (!observation.bootstrap.IsAccepted())
+            {
+                pbprotocol::SaturatingIncrementUnsigned(snapshot_.unrecognizedBootstrap);
+            }
+            else
+            {
+                using Erasure = pbmodulation::ShapeChromaErasure;
+                if (observation.erasure == Erasure::ScaleOutOfRange || observation.erasure == Erasure::AlignmentOutOfRange ||
+                    observation.erasure == Erasure::FrameOutOfBounds)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(snapshot_.shape.geometryErasures);
+                }
+                else if (observation.erasure == Erasure::ChromaPilotClipping || observation.erasure == Erasure::ChromaPilotVariance ||
+                    observation.erasure == Erasure::ChromaPilotSeparation || observation.erasure == Erasure::ChromaPilotSpatialMismatch)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(snapshot_.shape.pilotErasures);
+                }
+                else
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(snapshot_.shape.otherErasures);
+                }
+            }
+        }
+        if (pending_.disposition == BootstrapDisposition::DuplicatePixels || pending_.disposition == BootstrapDisposition::DuplicateObservation ||
+            pending_.disposition == BootstrapDisposition::DuplicateGeometryChanged || pending_.disposition == BootstrapDisposition::DuplicateCalibrationChanged)
+        {
+            pbprotocol::SaturatingIncrementUnsigned(snapshot_.shape.duplicates);
+        }
+    }
     pbprotocol::SaturatingIncrementUnsigned(snapshot_.observations);
     switch (pending_.disposition)
     {
@@ -463,12 +608,17 @@ BootstrapDiagnosticSnapshot BootstrapDiagnosticProcessor::GetSnapshot() const no
 {
     const std::lock_guard lock(mutex_);
     auto snapshot = snapshot_;
-    if (levels_)
+    if (physical_ && physical_->mode == PhysicalLayerState::Mode::DesktopLevels)
     {
         for (std::size_t index = 0; index < snapshot.candidates.size(); index++)
         {
-            snapshot.candidates[index].statistics = levels_->statistics[index].GetSummary();
+            snapshot.candidates[index].statistics = physical_->statistics[index].GetSummary();
         }
+    }
+    else if (physical_ && physical_->mode == PhysicalLayerState::Mode::ShapeChroma)
+    {
+        snapshot.shape.statistics = physical_->shapeStatistics.GetSummary();
+        snapshot.shape.chromaMargin = physical_->GetChromaMargin();
     }
     snapshot.telemetry = telemetry_.GetSnapshot();
     return snapshot;
@@ -526,6 +676,14 @@ int GetBootstrapDiagnosticSuccessExitCode(const BootstrapDiagnosticSnapshot& sna
             return 1;
         }
         return snapshot.candidates[0].statistics.verifiedFrames != 0 || snapshot.candidates[1].statistics.verifiedFrames != 0 ? 0 : 4;
+    }
+    if (snapshot.shapeChroma)
+    {
+        if (snapshot.statisticsFailures != 0 || snapshot.identityConflicts != 0 || snapshot.shape.statistics.falseAcceptedCodewords != 0)
+        {
+            return 1;
+        }
+        return snapshot.shape.statistics.verifiedFrames != 0 ? 0 : 4;
     }
     return snapshot.accepted != 0 ? 0 : 4;
 }

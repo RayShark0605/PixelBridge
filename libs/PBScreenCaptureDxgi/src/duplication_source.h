@@ -14,6 +14,7 @@ namespace pbscreencapturedxgi::detail
 inline constexpr std::uint32_t maximumPointerShapeBytes = 256 * 1024;
 inline constexpr std::uint32_t maximumPointerDimension = 2048;
 inline constexpr std::uint32_t maximumEnvironmentAttempts = 3;
+inline constexpr std::uint32_t acquisitionWaitMilliseconds = 8;
 
 struct DuplicationFormatPlan
 {

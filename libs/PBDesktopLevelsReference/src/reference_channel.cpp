@@ -219,6 +219,15 @@ ModulationStatus GenerateDiagnosticData(const std::span<const std::byte> bootstr
     return ModulationStatus::Success();
 }
 
+void AdaptFiniteSoftMetrics(const std::span<const float> metrics, const std::span<std::int16_t> output) noexcept
+{
+    for (std::size_t index = 0; index < metrics.size(); index++)
+    {
+        const double scaled = std::clamp(static_cast<double>(metrics[index]) * kSoftMetricScale, -32767.0, 32767.0);
+        output[index] = static_cast<std::int16_t>(std::round(scaled));
+    }
+}
+
 bool AdaptSoftMetrics(const std::span<const float> metrics, const std::span<std::int16_t> output) noexcept
 {
     const auto Finite = [](const float metric)
@@ -231,11 +240,7 @@ bool AdaptSoftMetrics(const std::span<const float> metrics, const std::span<std:
     {
         return false;
     }
-    for (std::size_t index = 0; index < metrics.size(); index++)
-    {
-        const double scaled = std::clamp(static_cast<double>(metrics[index]) * kSoftMetricScale, -32767.0, 32767.0);
-        output[index] = static_cast<std::int16_t>(std::round(scaled));
-    }
+    AdaptFiniteSoftMetrics(metrics, output);
     return true;
 }
 
@@ -343,7 +348,7 @@ ShapeChromaReferenceObservation ReferenceChannel::DecodeShapeChroma(const pbmodu
 }
 
 FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::byte> bootstrapRecord,
-    const std::span<const std::byte> hardData, const std::span<const float> softMetrics) noexcept
+    const std::span<const std::byte> hardData, const std::span<const float> softMetrics, const EvaluationMode mode) noexcept
 {
     FrameEvaluation result;
     if (!implementation_)
@@ -356,13 +361,9 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
     state.acceptedCount = 0;
     pbprotocol::BootstrapRecord record;
     const auto* const profile = ParseBinding(bootstrapRecord, record);
-    const auto Finite = [](const float metric)
-    {
-        return std::isfinite(metric);
-    };
-    if (profile == nullptr || hardData.size() != profile->dataBytes || softMetrics.size() != profile->dataBytes * 8ULL ||
-        hardData.data() == nullptr || softMetrics.data() == nullptr ||
-        !std::ranges::all_of(softMetrics, Finite))
+    if ((mode != EvaluationMode::DiagnosticTruth && mode != EvaluationMode::Transport) || profile == nullptr ||
+        hardData.size() != profile->dataBytes || softMetrics.size() != profile->dataBytes * 8ULL ||
+        hardData.data() == nullptr || softMetrics.data() == nullptr)
     {
         return result;
     }
@@ -377,20 +378,25 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
     for (std::uint32_t slot = 0; slot < profile->codewords; slot++)
     {
         const auto recovered = std::span(state.recovered).subspan(slot * kCodewordBytes, kCodewordBytes);
-        if (!AdaptSoftMetrics(softMetrics.subspan(slot * kCodewordBits, kCodewordBits), state.llr))
-        {
-            return {};
-        }
+        const auto codewordMetrics = softMetrics.subspan(slot * kCodewordBits, kCodewordBits);
         // A zero syndrome already satisfies the full QC-LDPC parity system.
-        // Derive this candidate from the ADAPTED metrics, never hardData or
-        // known truth: zero/erased soft input must not borrow correct hard bits.
-        // CRC, identity and exact-truth scoring below remain mandatory.
+        // Derive this candidate from the exact fixed-adapter rounding boundary,
+        // never hardData or known truth: zero/erased soft input must not borrow
+        // correct hard bits. Full LLR adaptation remains mandatory before any
+        // iterative decode. CRC, identity and truth scoring remain mandatory.
+        constexpr float negativeDecisionThreshold = static_cast<float>(-0.5 / kSoftMetricScale);
         for (std::size_t byte = 0; byte < recovered.size(); byte++)
         {
             unsigned value = 0;
             for (std::size_t bit = 0; bit < 8; bit++)
             {
-                value |= static_cast<unsigned>(state.llr[byte * 8 + bit] < 0) << bit;
+                const float metric = codewordMetrics[byte * 8 + bit];
+                if (!std::isfinite(metric))
+                {
+                    state.acceptedCount = 0;
+                    return {};
+                }
+                value |= static_cast<unsigned>(metric <= negativeDecisionThreshold) << bit;
             }
             recovered[byte] = static_cast<std::byte>(value);
         }
@@ -402,6 +408,7 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
         }
         if (!initialSyndrome.Value())
         {
+            AdaptFiniteSoftMetrics(codewordMetrics, state.llr);
             const auto decoded = state.decoder.Decode(state.llr, options, recovered);
             const auto iterations = decoded ? decoded.Value().iterationsUsed :
                 (decoded.Error().code == pbinnerfec::InnerFecErrorCode::SyndromeFailure ? options.maxIterations : 0);
@@ -427,8 +434,11 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
         }
         state.crcValid[slot] = true;
         const auto& header = transport.Value().header;
-        if (header.sessionTag != record.sessionTag || header.segmentOrdinal != record.frameSequence ||
-            header.outerBlockId != slot || header.payloadBytes != kPayloadBytes)
+        const bool identityValid = mode == EvaluationMode::DiagnosticTruth ?
+            header.sessionTag == record.sessionTag && header.segmentOrdinal == record.frameSequence &&
+                header.outerBlockId == slot && header.payloadBytes == kPayloadBytes :
+            header.sessionTag == record.sessionTag;
+        if (!identityValid)
         {
             result.identityFailures++;
         }
@@ -436,32 +446,43 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
         {
             auto& accepted = state.accepted[state.acceptedCount++];
             accepted.slot = slot;
+            accepted.byteCount = static_cast<std::uint32_t>(block.Value().size());
+            accepted.bytes.fill(std::byte{0});
             std::copy(block.Value().begin(), block.Value().end(), accepted.bytes.begin());
             result.acceptedTransportBlocks++;
         }
     }
 
-    // The trust boundary: ONLY scoring below this line can consult known data.
-    // No recovered buffer or decoder input is modified by this comparison.
-    const auto expected = std::span(state.expected).first(profile->dataBytes);
-    if (!GenerateInto(bootstrapRecord, record, *profile, expected))
+    const std::size_t codedBytes = profile->codewords * kCodewordBytes;
+    if (!std::ranges::all_of(softMetrics.subspan(codedBytes * 8), [](const float metric) { return std::isfinite(metric); }))
     {
+        state.acceptedCount = 0;
         return {};
     }
-    const std::size_t codedBytes = profile->codewords * kCodewordBytes;
-    result.comparedCodedBits = codedBytes * 8;
-    for (std::size_t index = 0; index < codedBytes; index++)
+    if (mode == EvaluationMode::DiagnosticTruth)
     {
-        result.erroneousCodedBits += std::popcount(std::to_integer<unsigned>(hardData[index] ^ expected[index]));
-    }
-    for (std::uint32_t slot = 0; slot < profile->codewords; slot++)
-    {
-        const auto offset = slot * kCodewordBytes;
-        // Count ANY CRC-valid non-truth codeword, including a different valid
-        // identity, as a dangerous false-accept candidate. Never mark it verified.
-        if (state.crcValid[slot] && !std::equal(state.recovered.begin() + offset, state.recovered.begin() + offset + kCodewordBytes, expected.begin() + offset))
+        // Only diagnostic scoring below this line may consult known data. No
+        // recovered buffer or decoder input is modified by this comparison.
+        const auto expected = std::span(state.expected).first(profile->dataBytes);
+        if (!GenerateInto(bootstrapRecord, record, *profile, expected))
         {
-            result.falseAcceptedCodewords++;
+            return {};
+        }
+        result.comparedCodedBits = codedBytes * 8;
+        for (std::size_t index = 0; index < codedBytes; index++)
+        {
+            result.erroneousCodedBits += std::popcount(std::to_integer<unsigned>(hardData[index] ^ expected[index]));
+        }
+        for (std::uint32_t slot = 0; slot < profile->codewords; slot++)
+        {
+            const auto offset = slot * kCodewordBytes;
+            // Count ANY CRC-valid non-truth codeword, including a different
+            // valid identity, as a dangerous false-accept candidate.
+            if (state.crcValid[slot] &&
+                !std::equal(state.recovered.begin() + offset, state.recovered.begin() + offset + kCodewordBytes, expected.begin() + offset))
+            {
+                result.falseAcceptedCodewords++;
+            }
         }
     }
     result.paddingValid = std::ranges::all_of(hardData.subspan(codedBytes), [](const std::byte value)

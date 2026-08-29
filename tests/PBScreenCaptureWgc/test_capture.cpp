@@ -13,6 +13,7 @@ TEST_CASE("WGC configuration validates signed physical geometry and total resour
     CaptureEnvironment environment;
     environment.region = baseline.region;
     environment.contentSize = {100, 80};
+    environment.pixelFormat = baseline.pixelFormat;
     CaptureLayout layout;
     REQUIRE(ValidateLayout(baseline, environment, layout));
     REQUIRE(layout.sourceBox.left == 10);

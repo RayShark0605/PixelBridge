@@ -40,8 +40,9 @@ private:
         bool pending = false;
         bool copyTimingPending = false;
     };
-    [[nodiscard]] CaptureStatus CreateRotationPipeline(const CaptureEnvironment& environment, const CaptureLayout& layout) noexcept;
-    void Rotate(std::size_t slotIndex) noexcept;
+    [[nodiscard]] CaptureStatus CreateTransformPipeline(const CaptureConfig& config, const CaptureEnvironment& environment,
+                                                        const CaptureLayout& layout) noexcept;
+    void Transform(std::size_t slotIndex) noexcept;
     [[nodiscard]] CaptureStatus Mark(std::size_t slotIndex) noexcept;
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
@@ -55,6 +56,7 @@ private:
     std::array<Slot, maximumRoiTextures> slots_;
     CaptureEnvironment environment_;
     CaptureLayout layout_;
+    DXGI_FORMAT outputPixelFormat_ = DXGI_FORMAT_UNKNOWN;
     std::size_t slotCount_ = 0;
     std::uint64_t nextFenceValue_ = 0;
 };

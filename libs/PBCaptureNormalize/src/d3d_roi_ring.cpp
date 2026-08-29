@@ -17,7 +17,7 @@ cbuffer RotationParameters : register(b0)
     uint roiWidth;
     uint roiHeight;
     uint sourceRotation;
-    uint reserved;
+    uint conversionMode;
 };
 Texture2D<float4> sourceTexture : register(t0);
 
@@ -43,7 +43,18 @@ float4 PixelMain(float4 position : SV_Position) : SV_Target
     {
         sourcePixel = uint2(roiHeight - 1 - pixel.y, pixel.x);
     }
-    return sourceTexture.Load(int3(sourcePixel, 0));
+    float4 color = sourceTexture.Load(int3(sourcePixel, 0));
+    if (conversionMode == 1)
+    {
+        const float3 linearColor = saturate(color.rgb);
+        const float3 lower = linearColor * 12.92;
+        const float inverseGamma = 1.0 / 2.4;
+        const float3 powered = float3(pow(linearColor.r, inverseGamma), pow(linearColor.g, inverseGamma), pow(linearColor.b, inverseGamma));
+        const float3 upper = 1.055 * powered - 0.055;
+        color.rgb = lerp(upper, lower, step(linearColor, 0.0031308));
+        color.a = saturate(color.a);
+    }
+    return color;
 }
 )hlsl";
 }
@@ -84,20 +95,28 @@ CaptureStatus D3dRoiRing::Initialize(ID3D11Device* const device, ID3D11DeviceCon
     return Recreate(config, environment);
 }
 
-CaptureStatus D3dRoiRing::CreateRotationPipeline(const CaptureEnvironment& environment, const CaptureLayout& layout) noexcept
+CaptureStatus D3dRoiRing::CreateTransformPipeline(const CaptureConfig& config, const CaptureEnvironment& environment,
+                                                  const CaptureLayout& layout) noexcept
 {
     if (device_->GetFeatureLevel() < D3D_FEATURE_LEVEL_11_0)
     {
         return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::TextureRing);
     }
-    UINT support = 0;
-    HRESULT result = device_->CheckFormatSupport(environment.pixelFormat, &support);
+    UINT sourceSupport = 0;
+    HRESULT result = device_->CheckFormatSupport(environment.pixelFormat, &sourceSupport);
     if (FAILED(result))
     {
         return FromHresult(result, CaptureStage::TextureRing);
     }
-    constexpr UINT requiredSupport = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_LOAD | D3D11_FORMAT_SUPPORT_RENDER_TARGET;
-    if ((support & requiredSupport) != requiredSupport)
+    UINT outputSupport = 0;
+    result = device_->CheckFormatSupport(config.pixelFormat, &outputSupport);
+    if (FAILED(result))
+    {
+        return FromHresult(result, CaptureStage::TextureRing);
+    }
+    constexpr UINT requiredSourceSupport = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_LOAD;
+    constexpr UINT requiredOutputSupport = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_RENDER_TARGET;
+    if ((sourceSupport & requiredSourceSupport) != requiredSourceSupport || (outputSupport & requiredOutputSupport) != requiredOutputSupport)
     {
         return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::TextureRing);
     }
@@ -124,7 +143,10 @@ CaptureStatus D3dRoiRing::CreateRotationPipeline(const CaptureEnvironment& envir
     {
         return FromHresult(result, CaptureStage::TextureRing);
     }
-    const std::array<std::uint32_t, 4> parameters{layout.roiWidth, layout.roiHeight, static_cast<std::uint32_t>(environment.sourceRotation), 0};
+    const std::uint32_t conversionMode = environment.pixelFormat == DXGI_FORMAT_R16G16B16A16_FLOAT &&
+        config.pixelFormat == DXGI_FORMAT_B8G8R8A8_UNORM ? 1U : 0U;
+    const std::array<std::uint32_t, 4> parameters{layout.roiWidth, layout.roiHeight,
+        static_cast<std::uint32_t>(environment.sourceRotation), conversionMode};
     D3D11_BUFFER_DESC bufferDescription{};
     bufferDescription.ByteWidth = static_cast<UINT>(sizeof(parameters));
     bufferDescription.Usage = D3D11_USAGE_IMMUTABLE;
@@ -144,9 +166,15 @@ CaptureStatus D3dRoiRing::CreateRotationPipeline(const CaptureEnvironment& envir
 
 CaptureStatus D3dRoiRing::Recreate(const CaptureConfig& config, const CaptureEnvironment& environment) noexcept
 {
-    if (!device_ || environment.pixelFormat != config.pixelFormat)
+    if (!device_)
     {
         return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::TextureRing);
+    }
+    const bool converting = environment.pixelFormat != config.pixelFormat;
+    if (converting && (config.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM || environment.hdr || environment.outputColorSpace != 0 ||
+        (environment.pixelFormat != DXGI_FORMAT_R10G10B10A2_UNORM && environment.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT)))
+    {
+        return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::TextureRing);
     }
     CaptureLayout layout;
     const auto validation = ValidateLayout(config, environment, layout);
@@ -166,10 +194,10 @@ CaptureStatus D3dRoiRing::Recreate(const CaptureConfig& config, const CaptureEnv
     rotationPixelShader_.Reset();
     rotationConstants_.Reset();
     rotationRasterizer_.Reset();
-    const bool rotated = environment.sourceRotation != DXGI_MODE_ROTATION_IDENTITY;
-    if (rotated)
+    const bool transformRequired = environment.sourceRotation != DXGI_MODE_ROTATION_IDENTITY || converting;
+    if (transformRequired)
     {
-        const auto pipelineStatus = CreateRotationPipeline(environment, layout);
+        const auto pipelineStatus = CreateTransformPipeline(config, environment, layout);
         if (!pipelineStatus)
         {
             return pipelineStatus;
@@ -184,14 +212,14 @@ CaptureStatus D3dRoiRing::Recreate(const CaptureConfig& config, const CaptureEnv
     description.Format = config.pixelFormat;
     description.SampleDesc.Count = 1;
     description.Usage = D3D11_USAGE_DEFAULT;
-    description.BindFlags = D3D11_BIND_SHADER_RESOURCE | (rotated ? D3D11_BIND_RENDER_TARGET : 0u);
+    description.BindFlags = D3D11_BIND_SHADER_RESOURCE | (transformRequired ? D3D11_BIND_RENDER_TARGET : 0u);
     const D3D11_QUERY_DESC queryDescription{D3D11_QUERY_EVENT, 0};
     const D3D11_QUERY_DESC disjointDescription{D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
     const D3D11_QUERY_DESC timestampDescription{D3D11_QUERY_TIMESTAMP, 0};
     for (std::size_t index = 0; index < config.roiTextureCount; index++)
     {
         HRESULT result = device_->CreateTexture2D(&description, nullptr, &candidate[index].texture);
-        if (SUCCEEDED(result) && rotated)
+        if (SUCCEEDED(result) && transformRequired)
         {
             result = device_->CreateRenderTargetView(candidate[index].texture.Get(), nullptr, &candidate[index].targetView);
             if (SUCCEEDED(result))
@@ -199,6 +227,7 @@ CaptureStatus D3dRoiRing::Recreate(const CaptureConfig& config, const CaptureEnv
                 auto scratchDescription = description;
                 scratchDescription.Width = layout.sourceBox.right - layout.sourceBox.left;
                 scratchDescription.Height = layout.sourceBox.bottom - layout.sourceBox.top;
+                scratchDescription.Format = environment.pixelFormat;
                 scratchDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 result = device_->CreateTexture2D(&scratchDescription, nullptr, &candidate[index].scratch);
             }
@@ -234,6 +263,7 @@ CaptureStatus D3dRoiRing::Recreate(const CaptureConfig& config, const CaptureEnv
     slots_.swap(candidate);
     environment_ = environment;
     layout_ = layout;
+    outputPixelFormat_ = config.pixelFormat;
     slotCount_ = config.roiTextureCount;
     return CheckDebug();
 }
@@ -267,7 +297,7 @@ CaptureStatus D3dRoiRing::Mark(const std::size_t slotIndex) noexcept
     return status ? CheckDebug() : status;
 }
 
-void D3dRoiRing::Rotate(const std::size_t slotIndex) noexcept
+void D3dRoiRing::Transform(const std::size_t slotIndex) noexcept
 {
     const auto& slot = slots_[slotIndex];
     context_->ClearState();
@@ -284,8 +314,9 @@ void D3dRoiRing::Rotate(const std::size_t slotIndex) noexcept
     ID3D11RenderTargetView* const targetView = slot.targetView.Get();
     context_->OMSetRenderTargets(1, &targetView, nullptr);
     context_->Draw(3, 0);
-    // Integer Load and a same-format RTV preserve the capture signal. No sample
-    // filtering, alpha blending, sRGB view, tone mapping, or CPU round-trip.
+    // Integer Load preserves exact texel positions. Same-format rotation does
+    // no color transform; the only conversion is the explicit SDR FP16 linear
+    // to BGRA8 transfer selected in the immutable constants above.
     context_->ClearState();
 }
 
@@ -320,14 +351,14 @@ CaptureStatus D3dRoiRing::Copy(const FrameLease& frame, const std::size_t slotIn
         context_->Begin(slot.copyDisjoint.Get());
         context_->End(slot.copyStart.Get());
     }
-    if (environment_.sourceRotation == DXGI_MODE_ROTATION_IDENTITY)
+    if (environment_.sourceRotation == DXGI_MODE_ROTATION_IDENTITY && environment_.pixelFormat == outputPixelFormat_)
     {
         context_->CopySubresourceRegion(slot.texture.Get(), 0, 0, 0, 0, source.Get(), 0, &layout_.sourceBox);
     }
     else
     {
         context_->CopySubresourceRegion(slot.scratch.Get(), 0, 0, 0, 0, source.Get(), 0, &layout_.sourceBox);
-        Rotate(slotIndex);
+        Transform(slotIndex);
     }
     if (slot.copyDisjoint)
     {
@@ -500,6 +531,7 @@ void D3dRoiRing::Reset() noexcept
     rotationRasterizer_.Reset();
     context_.Reset();
     device_.Reset();
+    outputPixelFormat_ = DXGI_FORMAT_UNKNOWN;
     slotCount_ = 0;
     nextFenceValue_ = 0;
 }

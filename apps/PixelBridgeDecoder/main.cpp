@@ -15,7 +15,8 @@ int main()
 #ifdef _WIN32
     if (argumentCount > 1)
     {
-        if (std::wstring_view(arguments[1]) == L"--capture-bootstrap" || std::wstring_view(arguments[1]) == L"--capture-desktop-levels")
+        if (std::wstring_view(arguments[1]) == L"--capture-bootstrap" || std::wstring_view(arguments[1]) == L"--capture-desktop-levels" ||
+            std::wstring_view(arguments[1]) == L"--capture-shape-chroma")
         {
             return RunCaptureBootstrapCommand(argumentCount, arguments);
         }

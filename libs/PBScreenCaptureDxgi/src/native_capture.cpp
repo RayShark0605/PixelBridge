@@ -398,7 +398,7 @@ public:
         if (std::find(formatPlan.formats.begin(), formatPlan.formats.begin() + formatPlan.formatCount, description.ModeDesc.Format) ==
             formatPlan.formats.begin() + formatPlan.formatCount)
         {
-            return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::CaptureItem);
+            return CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::Surface);
         }
         status = ResolveDuplicationEnvironment(config_, description, modernDuplication, environment_);
         if (!status)
@@ -431,9 +431,12 @@ public:
         {
             return status;
         }
-        auto actualConfig = config_;
-        actualConfig.pixelFormat = environment_.pixelFormat;
-        status = ring_.Initialize(device_.Get(), context_.Get(), actualConfig, environment_, options_.forceQuery);
+        auto ringConfig = config_;
+        if (!options_.normalizeConfiguredFormat)
+        {
+            ringConfig.pixelFormat = environment_.pixelFormat;
+        }
+        status = ring_.Initialize(device_.Get(), context_.Get(), ringConfig, environment_, options_.forceQuery);
         if (!status)
         {
             return status;

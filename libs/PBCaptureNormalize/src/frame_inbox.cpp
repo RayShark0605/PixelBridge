@@ -266,7 +266,14 @@ InboxSnapshot FrameInbox::GetSnapshot() const noexcept
 void FrameInbox::Wait() noexcept
 {
     std::unique_lock lock(mutex_);
-    wake_.wait_for(lock, std::chrono::milliseconds(2));
+    wake_.wait_for(lock, std::chrono::milliseconds(2), [this]
+    {
+        // The producer can publish just before the owner enters wait. Recheck
+        // every durable wake reason under the same mutex so that notification
+        // order cannot add a fixed 2 ms delay to an already queued WGC frame.
+        // An empty healthy queue still times out to poll GPU completions.
+        return count_ != 0 || snapshot_.stopRequested || snapshot_.recreateRequested || !snapshot_.error;
+    });
 }
 
 CaptureStatus FromHresult(const HRESULT result, const CaptureStage stage) noexcept

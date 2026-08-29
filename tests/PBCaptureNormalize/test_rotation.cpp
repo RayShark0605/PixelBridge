@@ -329,6 +329,88 @@ TEST_CASE("Capture layout pins inverse half-open rotation boxes and charges the 
     }
 }
 
+TEST_CASE("Capture layout rejects oversized source geometry before scratch accounting atomically", "[capture][conversion][layout]")
+{
+    const auto validEnvironment = MakeEnvironment(DXGI_MODE_ROTATION_IDENTITY, DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                  {8, 6}, {1, 1, 4, 3});
+    auto config = MakeConfig(validEnvironment);
+    config.roiTextureCount = 4;
+    CaptureLayout layout;
+    REQUIRE(ValidateLayout(config, validEnvironment, layout));
+    const auto sentinel = layout;
+
+    // The physical-desktop contract caps either monitor axis at 16K before
+    // any byte accounting. Keep that decisive bound ahead of defensive
+    // checked scratch arithmetic and preserve the caller's previous layout.
+    const auto sourceEnvironment = MakeEnvironment(DXGI_MODE_ROTATION_IDENTITY, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                                   {16385, 1}, {0, 0, 16385, 1});
+    config.region = sourceEnvironment.region;
+    config.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    config.maximumRoiBytes = std::numeric_limits<std::uint64_t>::max();
+    config.maximumCaptureBytes = std::numeric_limits<std::uint64_t>::max();
+    REQUIRE(ValidateLayout(config, sourceEnvironment, layout) ==
+            CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Region));
+    REQUIRE(SameLayout(layout, sentinel));
+}
+
+TEST_CASE("D3D SDR FP16 normalization applies the pinned sRGB transfer into BGRA8", "[capture][conversion][d3d]")
+{
+    GraphicsFixture graphics;
+    const auto environment = MakeEnvironment(DXGI_MODE_ROTATION_IDENTITY, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                             {1, 1}, {0, 0, 1, 1});
+    auto config = MakeConfig(environment);
+    config.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    CaptureLayout layout;
+    REQUIRE(ValidateLayout(config, environment, layout));
+    constexpr std::uint64_t sourcePoolBytes = 8;
+    constexpr std::uint64_t outputRingBytes = 4 * 3;
+    constexpr std::uint64_t sourceScratchBytes = 8 * 3;
+    REQUIRE(layout.totalBytes == sourcePoolBytes + outputRingBytes + sourceScratchBytes);
+    config.maximumRoiBytes = outputRingBytes + sourceScratchBytes;
+    config.maximumCaptureBytes = layout.totalBytes;
+    REQUIRE(ValidateLayout(config, environment, layout));
+    const auto sentinel = layout;
+    config.maximumRoiBytes--;
+    REQUIRE(ValidateLayout(config, environment, layout) ==
+            CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration));
+    REQUIRE(SameLayout(layout, sentinel));
+    config.maximumRoiBytes++;
+
+    D3dRoiRing ring;
+    REQUIRE(ring.Initialize(graphics.device.Get(), graphics.context.Get(), config, environment, true));
+    // Independent IEEE-754 binary16 constants: R=.25, G=.5, B=1, A=1.
+    // Standard sRGB OETF and UNORM rounding produce BGRA {255,188,137,255}.
+    constexpr std::array<std::uint16_t, 4> fp16Pixel{0x3400, 0x3800, 0x3c00, 0x3c00};
+    D3D11_TEXTURE2D_DESC sourceDescription{};
+    sourceDescription.Width = 1;
+    sourceDescription.Height = 1;
+    sourceDescription.MipLevels = 1;
+    sourceDescription.ArraySize = 1;
+    sourceDescription.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    sourceDescription.SampleDesc.Count = 1;
+    sourceDescription.Usage = D3D11_USAGE_DEFAULT;
+    const D3D11_SUBRESOURCE_DATA sourceData{fp16Pixel.data(), 8, 0};
+    const auto counters = std::make_shared<LeaseCounters>();
+    const auto closes = std::make_shared<std::atomic<std::uint32_t>>(0);
+    auto sourceStorage = std::make_unique<SourceTexture>();
+    sourceStorage->closes = closes;
+    REQUIRE(SUCCEEDED(graphics.device->CreateTexture2D(&sourceDescription, &sourceData, &sourceStorage->texture)));
+    FrameLease source(sourceStorage.release(), CloseSource, GetSourceTexture, counters, environment.contentSize, 1, 1);
+    bool submitted = false;
+    REQUIRE(ring.Copy(source, 0, submitted));
+    REQUIRE(submitted);
+    REQUIRE(WaitForSlot(ring, 0));
+    source.Reset();
+    REQUIRE(*closes == 1);
+    PixelReadback oracle;
+    REQUIRE(ring.Consume(oracle, {}, 0));
+    REQUIRE(WaitForSlot(ring, 0));
+    REQUIRE(oracle.description.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
+    REQUIRE(oracle.pixels == std::vector<std::byte>{std::byte{255}, std::byte{188}, std::byte{137}, std::byte{255}});
+    REQUIRE(ring.CheckDebug());
+    ring.Reset();
+}
+
 TEST_CASE("Capture layout rejects ambiguous source geometry without changing its output", "[capture][rotation][layout]")
 {
     const auto baseline = MakeEnvironment(DXGI_MODE_ROTATION_ROTATE90, DXGI_FORMAT_B8G8R8A8_UNORM, {8, 6}, {1, 1, 4, 3});

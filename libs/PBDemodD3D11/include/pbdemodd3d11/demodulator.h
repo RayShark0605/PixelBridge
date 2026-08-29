@@ -45,7 +45,13 @@ struct DemodConfig
 {
     std::uint32_t readbackSlotCount = 3;
     std::uint64_t maximumResidentBytes = 64ULL * 1024 * 1024;
+    pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::DiagnosticTruth;
 };
+
+// Exact fixed reservation used by Create, including all per-slot GPU buffers,
+// CPU metric/FEC state, and bounded evaluator processing storage. Failure does
+// not change output.
+[[nodiscard]] DemodStatus CalculateDemodulatorResidentBytes(const DemodConfig& config, std::uint64_t& output) noexcept;
 
 struct DemodSubmission
 {
@@ -64,6 +70,11 @@ struct DemodFrameResult
     std::array<pbdesktoplevels::AcceptedTransportBlock, pbdesktoplevels::kMaximumCodewords> acceptedTransportBlocks{};
     std::uint32_t acceptedTransportBlockCount = 0;
     std::uint64_t metricReadbackBytes = 0;
+    // Timestamp scope: constants/upload, calibration dispatch, data dispatch,
+    // and metric/calibration copies into staging. This is GPU execution time,
+    // not CPU submission time or the upstream ROI-copy duration.
+    std::uint64_t gpuTime100ns = 0;
+    bool gpuTimingValid = false;
 };
 
 struct DemodPollResult
@@ -81,6 +92,10 @@ struct DemodSnapshot
     std::uint64_t failedFrames = 0;
     std::uint64_t metricReadbackBytes = 0;
     std::uint64_t rawPixelReadbackBytes = 0;
+    std::uint64_t gpuTimingSamples = 0;
+    std::uint64_t gpuTimingUnavailable = 0;
+    std::uint64_t gpuTimeTotal100ns = 0;
+    std::uint64_t gpuTimeHighWater100ns = 0;
     std::uint32_t pendingFrames = 0;
     std::uint32_t highWater = 0;
     std::uint64_t residentBytes = 0;
@@ -115,13 +130,30 @@ public:
         std::unique_ptr<Demodulator>& output) noexcept;
     [[nodiscard]] DemodStatus Submit(const pbcapturenormalize::ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
         std::span<const std::byte> bootstrapRecord, DemodSubmission& output) noexcept;
+    // Fixed-profile first stage for a same-frame Bootstrap readback pipeline.
+    // The profile selects only GPU geometry; no sender identity or sequence is
+    // trusted here. PollUnbound must later receive the canonical Bootstrap
+    // recovered from this exact frame before any Transport block is evaluated.
+    [[nodiscard]] DemodStatus SubmitUnbound(const pbcapturenormalize::ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
+        std::uint64_t expectedVisualProfileId, DemodSubmission& output) noexcept;
     // Nonblocking: ready=false means the event query is not complete and no Map
     // occurred. On ready=true, output changes only for a successful status.
     [[nodiscard]] DemodPollResult Poll(ID3D11DeviceContext* context, const DemodSubmission& submission,
         DemodFrameResult& output) noexcept;
+    [[nodiscard]] DemodPollResult PollUnbound(ID3D11DeviceContext* context, const DemodSubmission& submission,
+        std::span<const std::byte> bootstrapRecord, DemodFrameResult& output) noexcept;
+    // Capture-runtime cancellation path only. The caller must already have
+    // proof from a later GPU marker, or confirmed device removal, that every
+    // command submitted for this frame is retired. No context access occurs,
+    // so deferred cleanup may call this from its cleanup thread.
+    [[nodiscard]] DemodStatus RetireAfterExternalCompletion(const DemodSubmission& submission) noexcept;
     // Marks matching pending work cancelled. GPU/source retirement still occurs
     // only through Poll after its event query completes.
     [[nodiscard]] DemodStatus InvalidateDomain(const pbcapturenormalize::ScreenCaptureDomain& domain) noexcept;
+    // Completes deferred-cleanup bookkeeping after every pending submission was
+    // retired through an externally proven marker/device-removal path. It does
+    // not inspect or submit to a D3D context.
+    [[nodiscard]] DemodStatus ShutdownAfterExternalCompletion() noexcept;
     // Succeeds only with no pending work. It never Flushes and pretends that
     // submission equals completion.
     [[nodiscard]] DemodStatus Shutdown(ID3D11DeviceContext* context) noexcept;

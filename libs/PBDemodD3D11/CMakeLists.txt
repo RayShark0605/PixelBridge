@@ -5,14 +5,14 @@ unset(PB_DEMOD_D3D11_HLSL)
 
 add_library(PBDemodD3D11 STATIC)
 add_library(PB::PBDemodD3D11 ALIAS PBDemodD3D11)
-target_sources(PBDemodD3D11 PRIVATE src/demodulator.cpp src/demod_compute.hlsl
-    PUBLIC FILE_SET HEADERS BASE_DIRS include FILES include/pbdemodd3d11/demodulator.h)
+target_sources(PBDemodD3D11 PRIVATE src/demodulator.cpp src/capture_demodulator.cpp src/demod_compute.hlsl
+    PUBLIC FILE_SET HEADERS BASE_DIRS include FILES include/pbdemodd3d11/demodulator.h include/pbdemodd3d11/capture_demodulator.h)
 set_source_files_properties(src/demod_compute.hlsl PROPERTIES HEADER_FILE_ONLY TRUE)
 target_include_directories(PBDemodD3D11 PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
     PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(PBDemodD3D11 PUBLIC PB::PBCaptureNormalize PB::PBDesktopLevelsReference
-    PRIVATE PB::CompilerSettings PB::PBProtocol d3d11 dxgi d3dcompiler)
+    PRIVATE PB::CompilerSettings PB::PBProtocol PB::PBInterleave d3d11 dxgi d3dcompiler)
 target_compile_features(PBDemodD3D11 PUBLIC cxx_std_20)
 target_compile_definitions(PBDemodD3D11 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 if(MSVC)

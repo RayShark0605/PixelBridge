@@ -35,9 +35,35 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma };
 }
 [[nodiscard]] ModulationStatus EncodeLocalDesktopScaffold(std::span<const std::byte> record, std::span<std::byte> pixels, LocalDesktopBinding binding) noexcept;
 [[nodiscard]] LocalDesktopObservation DecodeLocalDesktopScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy, LocalDesktopBinding binding) noexcept;
-void FillLocalDesktopBlock(std::span<std::byte> pixels, const LocalDesktopRegion& region, std::uint8_t level) noexcept;
-void FillLocalDesktopColorBlock(std::span<std::byte> pixels, const LocalDesktopRegion& region,
-    std::uint8_t blue, std::uint8_t green, std::uint8_t red) noexcept;
+[[nodiscard]] LocalDesktopObservation DecodeLocalDesktopFixedCanvasScaffold(const LumaView& view,
+    const LocalDesktopDecodePolicy& policy, LocalDesktopBinding binding, const LocalDesktopBootstrapBinding& expectedBinding) noexcept;
+// Encoding callers reach these stores only after exact-canvas validation and
+// use the frozen region manifest. Keeping the private loops inline avoids one
+// cross-translation-unit call per 1x1 ShapeChroma pixel or Direct-Level tile;
+// no untrusted geometry is accepted here.
+inline void FillLocalDesktopColorBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region,
+    const std::uint8_t blue, const std::uint8_t green, const std::uint8_t red) noexcept
+{
+    for (std::uint32_t row = 0; row < region.height; row++)
+    {
+        std::byte* pixel = pixels.data() +
+            ((static_cast<std::size_t>(region.y) + row) * kLocalDesktopCanvasWidth + region.x) * 4U;
+        for (std::uint32_t column = 0; column < region.width; column++)
+        {
+            pixel[0] = static_cast<std::byte>(blue);
+            pixel[1] = static_cast<std::byte>(green);
+            pixel[2] = static_cast<std::byte>(red);
+            pixel[3] = std::byte{255};
+            pixel += 4;
+        }
+    }
+}
+
+inline void FillLocalDesktopBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region,
+    const std::uint8_t level) noexcept
+{
+    FillLocalDesktopColorBlock(pixels, region, level, level, level);
+}
 
 inline constexpr std::uint16_t kBootstrapRsFieldPolynomial = 0x11D;
 inline constexpr std::uint32_t kBootstrapRsFullSymbols = 255;

@@ -142,7 +142,7 @@ TEST_CASE("WGC real D3D11 crop has independently verified pixels and fence/query
         REQUIRE(ring.Consume(oracle, {}, config.roiTextureCount).code == CaptureError::InternalError);
         auto wrongEnvironment = environment;
         wrongEnvironment.pixelFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        REQUIRE(ring.Recreate(config, wrongEnvironment).code == CaptureError::InvalidConfiguration);
+        REQUIRE(ring.Recreate(config, wrongEnvironment).code == CaptureError::Unsupported);
         ComPtr<ID3D11Device> otherDevice;
         ComPtr<ID3D11DeviceContext> otherContext;
         REQUIRE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG,

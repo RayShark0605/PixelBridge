@@ -2,7 +2,7 @@
 
 ## 定位与兼容边界
 
-这是实验性、显式选择的 **诊断 Data Plane**。仅适用于完整可见的、物理像素 1:1 的 `1920×1080` LocalDesktop SDR。它不是 Certified Profile，不是文件接收器，也不代表最终系统完成。未实现 Control/SessionDescriptor 接收、文件恢复、Outer FEC、Chroma、GPU demod、HDR、视频或最大 bits/pixel 优化。
+这是实验性、显式选择的 **诊断 Data Plane**。仅适用于完整可见的、物理像素 1:1 的 `1920×1080` LocalDesktop SDR。它不是 Certified Profile，也不代表最终系统完成。Encoder/Decoder 的诊断命令仍不是通用文件接收器；Phase 1 Gate 另以 tests-only 编排复用生产 Control/Transport/FEC/Receiver/Storage 和 GPU demod，证明一条窄的真实像素文件闭环，不把 Gate 编排变成第二套产品架构。HDR、视频、生产调度和最大 bits/pixel 优化不在本阶段。
 
 实现复用现有 PBModulation 的四角定位、独立 A/B RS Bootstrap、九处 Timing、LumaView 像素读取，PBInterleave 的 affine arithmetic，Robust QC-LDPC、Transport framing，以及应用已有 DataWindow/VSync、WGC/DXGI、CaptureNormalize、readback worker。`PBDesktopLevelsReference` 只是两端工具共用的有界诊断编排/评分层，不另建捕获或 FEC 实现；所有核心库仍不依赖 Qt、Windows 或捕获后端。
 
@@ -104,7 +104,41 @@ build-desktop-levels-release\tools\Release\PBDesktopLevelsBaseline.exe --baselin
 build-desktop-levels-release\tools\Release\PBDesktopLevelsBaseline.exe --input frame.pbrw
 ```
 
-发送端两种新模式每次成功提交后等待 500 ms 再提交新 sequence；`--sequence-interval-ms 50..60000` 可覆盖该间隔（默认 500，Gate 使用 640），仅影响 DesktopLevels 呈现 pacing；旧命令默认行为不变。输出 telemetry create-only，文件已存在即报错。接收命令成功需至少一帧完整 FEC/CRC/identity/exact-truth 验证，不能仅依赖 Bootstrap；专门 Gate 的样本要求更强。离线 `--input` 仅评分本诊断规则的 PBRW，不冒充通用文件恢复或任意 payload decoder。
+发送端 Direct-Level 与 ShapeChroma 诊断模式每次成功提交后等待 500 ms 再提交新 sequence；`--sequence-interval-ms 1..60000` 可覆盖该间隔（默认 500，30 秒 native 诊断 Gate 使用 640），仅影响物理层诊断呈现 pacing；真实文件 Gate 使用独立的无额外 dwell sender，由 flip/vsync 和 frame-latency contract 限速并以 receiver `UniqueVisualFPS` 验证。旧命令默认行为不变。输出 telemetry create-only，文件已存在即报错。接收命令成功需至少一帧完整 FEC/CRC/identity/exact-truth 验证，不能仅依赖 Bootstrap；专门 Gate 的样本要求更强。离线 `--input` 仅评分本诊断规则的 PBRW，不冒充通用文件恢复或任意 payload decoder。
+
+## Phase 1 真实文件闭环
+
+`PBPhase1FileGate` 是 tests-only sender/receiver，不新增隐藏 IPC，也不复制生产协议组件。sender 创建固定 seed 的 8 MiB 高熵源文件并保持源 handle 打开以验证 identity/size/mtime 不变；RAW Segment 使用现有 Wirehair V2、1,314-byte Outer block、Transport CRC、Robust QC-LDPC，Control 使用现有 `PB-ReferenceRaster-1` 承载真实 SessionDescriptor/SegmentDescriptor/FinalManifest。data frame 分别使用 `desktop-levels-2x2` 和 `shape-chroma`。receiver 走 WGC/DXGI → CaptureNormalize bounded ROI ring → 同帧固定 A/B Bootstrap → D3D11 demod → QC-LDPC/Transport → ReceiverIngress → Outer FEC → encoded/raw digest → `.part` → WholeFileDigest → 同目录 write-through rename；rename 后再次顺序 digest。最终文件还由父脚本独立 SHA-256/长度比较，`.part` 必须消失。
+
+CaptureNormalize 把 **采集源格式** 与 **归一化输出格式** 分开建模。当前真实 SDR DXGI 桌面可能由 duplication 交付 `DXGI_FORMAT_R16G16B16A16_FLOAT` 或 `DXGI_FORMAT_R10G10B10A2_UNORM`，而 Gate 的 owned ROI/Demod 输入固定为 `DXGI_FORMAT_B8G8R8A8_UNORM`；资源预算分别计入实际 source pool、固定 BGRA8 output ring，以及仅在旋转或格式转换时存在的 per-slot source-format scratch。SDR 的 R10/FP16→BGRA8 与旋转在同一次 bounded GPU transform 中完成，不引入 GPU→CPU→GPU 往返；FP16 scRGB 使用标准 sRGB OETF。未知格式、HDR/非 SDR colorspace、非 BGRA8 目标或任一 checked-size/quota 失败均 fail closed。metadata 同时记录 `sourcePixelFormat` 与归一化 `pixelFormat`，后端原始元数据按 source domain 校验，交给 consumer 的 owned texture 按 output domain 校验；因此 GPU ROI cost 包含实际发生的格式转换，而不会把高位深源错误记成 BGRA8 copy。
+
+每个 132-frame carousel 固定插入 4 个 mixed/torn frame：A 区来自 sequence N，B 区来自 N+1，数据不前移。Gate 要求 `BootstrapMismatch` 计数非零且这些帧不能进入任何 Transport/Control 分母；Control 解码失败、result queue overflow 或 reordered accepted identity 都是失败。文件 Gate 只拥有一个由已验证 `SessionDescriptor` 绑定的输出 Session；此后即使某个像素帧的 Bootstrap 与 Control 各自 CRC 有效，只要其 `SessionTag` 不是该权威 Session，也必须在进入 ReceiverIngress、FER 和 `UniqueVisualFPS` 前作为 bounded erasure 丢弃并单列 `foreignSessionErasedFrames`。CaptureEpoch reset 后、重复 SessionDescriptor 重新绑定 ReceiverIngress 前，合法同 Session 的 Segment/Manifest `UnknownSession` 只允许作为 bounded retryable erasure 单列；重新绑定后同类错误仍是致命状态不一致。初始权威 Session 尚未建立的视觉帧也不计入 `UniqueVisualFPS`，并由 `unboundSessionVisualFrames` 限界。三类 erasure 的固定上限分别为 16、16、128，任何越界都使 Gate 失败，不能借此隐藏持续串帧或接收器失配。CaptureEpoch invalidation 可丢弃尚未被父线程取走的旧 epoch result，但必须单列 `staleResultDrops` 且不超过固定 128-entry ring，不能跨 epoch 接受。数据帧允许记录真实 Post-FEC 失败，但错误 Transport 不能进入 Receiver，最终发布只能在 WholeFileDigest 完全一致后发生。
+
+真实恢复序列包含三条互不替代的证据：
+
+1. 父脚本只对测试自有 `WS_POPUP` DataWindow 做 `1920×1080 → 1600×900 → 1920×1080`，要求稳定 flip/vsync contract 恢复、PresentationEpoch/swap-chain/buffer generation 前进，并在恢复后重新证明 1:1 可见性；缩小时不允许偷偷缩放/接受数据。
+2. 每个 backend 在同一 native capture 内请求一次 bounded recreate，CaptureEpoch 前进后 ReceiverIngress fail-closed reset；随后完整 Stop/零 lease/零 busy texture/零 pending GPU work，再创建第二个 native capture，第二次 CaptureEpoch reset 后继续同一个文件闭环。
+3. WGC/DXGI/CaptureNormalize 单元和 native integration 保留 mode/ContentSize、access-lost、device-lost、epoch overflow、stale completion、恢复上限及 source GPU retirement 故障注入。Gate 不自动热拔真实显示器或改变用户显示模式；跨实际 adapter/HDR/hot-plug、SDR duplication source-format/bit-depth 变化的硬件矩阵列为 Phase 2 必修，不把确定性恢复测试冒充那一矩阵。
+
+固定 Gate 资源上限为 native queued frame 4、ROI textures/GPU slots 4、WGC FrameLease high-water 6（DXGI 更低）、CaptureDemod pending 4、result ring 128、frame age 250 ms。每个 capture/domain 停止后必须 `liveFrameLeases=0`、`busyRoiTextures=0`、无 deferred cleanup、consumer/domain inactive、D3D demod shutdown。`captureDelivered/captureArrivals` 必须至少 90%，并从原始计数重新核算；drop 与 expired 终态计数之和不能超过 arrivals。GPU cost 分开报告 ROI copy/transform 和 demod timestamp query 平均值及 unavailable 样本；CPU cost 分开报告完整 Bootstrap 检查和 post-GPU/FEC 平均值，父脚本另以进程 CPU-time/wall-time 报告 sender/receiver equivalent cores。GPU timing unavailable 比例不得超过 2%，CPU timing 不可缺失。
+
+WGC 与 DXGI 共用同一个 CaptureRuntime、ROI ring 和 consumer contract，但按生产模型采用不同的有界调度。WGC 的 callback producer 独立入队，因此 owner 先轮询完整 GPU/consumer ring、释放可复用 slot，再只取 callback queue 的最新帧；DXGI 是 owner 同步 acquisition，`AcquireNextFrame` 使用 8 ms 非零且有界的 OS wait，owner 先退休所有 Copying slot 并释放 duplication source，再尝试取得/提交最新帧，最后才执行可能包含 CPU demod/FEC 的 Consuming completion。活动 DXGI 不再叠加通用 condition-variable 定时等待，只在 GPU slot 周转时 yield；等待 environment 时仍使用通用等待。这样既不延长 source lease，也避免 Windows 粗粒度 timer 形成“每次成功 acquire 后再空等一次”的约 30 FPS 假上限，同时保留单 D3D11 immediate-context owner 与停止/重建最多额外 8 ms 的响应界限。
+
+`UniqueVisualFPS` 是 receiver 观察到的稳态显示 cadence：只累计同一 CaptureEpoch 内、相邻且严格递增的 accepted `FrameSequence`，分母使用对应 native capture monotonic timestamp；duplicate、reordered、Bootstrap erasure、sequence gap 与 CaptureEpoch 恢复暂停均不能伪造或拖慢稳态 cadence。Gate 至少要求 60 个 cadence interval 且 `55.0 <= UniqueVisualFPS <= 65.0`。WGC Gate 设置可选的 10 ms `MinUpdateInterval` cadence hint；它快于 60 Hz 源，不节流也不生成新视觉帧，且不能替代 `UniqueVisualFPS` 实测。每个非 long-soak 文件 Gate 在最终文件发布后仍让完整 capture/demod/FEC/Transport 链路运行至少 15 秒，并在 final telemetry 中同时记录要求值与实测 observation；55 FPS、90% delivery、FER、队列边界和恢复计数均对包含启动与两次 CaptureEpoch 恢复的整段运行重新核算，不能删去坏窗口。另报 `EndToEndUniqueVisualFPS=(strictly increasing accepted FrameSequence count-1)/(first..last receiver QPC)`，它保留 resize/recreate/restart/drop 的实际停顿，必须有限、正值且不超过 65 FPS；gap、skipped sequence 与 CaptureEpoch boundary 分别计数并与 receiver reset 交叉验证。`VerifiedEncodedGoodput=verified encoded Segment bytes/(首个已接收 Control 到 encoded/raw Segment 验证完成)`；FER 是所有有合法同帧 Bootstrap、进入物理解调的 data frame 中 Post-FEC failed/evaluated，不能用 capture erasure 缩小分母后再伪称 capture FER。四个 backend/profile 组合都保留原始分子、分母、timing 和错误模式。
+
+Release 最终 Gate 还对 WGC/DXGI × Direct-Level 2×2/ShapeChroma 四组各执行 300 秒 publication 后 soak。每秒采样两个 test-owned 进程；publication 后 30 秒 warmup，比较随后 30 秒与最后 30 秒的 private bytes/handle median，并检查 warmup 后 high-water。median private 增长上限 32 MiB、high-water 增量 64 MiB、median handle 增长 4、high-water 增量 16；任一窗口少于 20 个样本或 post-warmup 少于 200 个样本均失败。该阈值是泄漏 Gate，不是性能预算。
+
+快速单组重放示例（ROI 由脚本从当前物理环境读取，输出 create-only）：
+
+```powershell
+pwsh -NoProfile -File tests\DesktopLevelsGate\InvokePhase1FileLoop.ps1 `
+  -GateExecutable build-desktop-levels-release\tests\DesktopLevelsGate\Release\PBPhase1FileGate.exe `
+  -Support build-desktop-levels-release\tests\DesktopLevelsGate\Release\PBDesktopLevelsNativeSupport.exe `
+  -Backend wgc -Profile desktop-levels-2x2 `
+  -EvidenceRoot build-desktop-levels-release\tests\DesktopLevelsGate\Release\phase1-file-evidence
+```
+
+`-SoakSeconds` 只能是 0 或 300..1680，防止把几秒运行命名为 long soak。脚本只关闭/resize 自己创建的窗口和进程；任何外部遮挡、非 SDR、ROI 不完整或 DXGI pointer guard 失败都会保留 evidence 并返回失败。
 
 ## 测试与可重放 Gate
 
@@ -122,10 +156,10 @@ pwsh -NoProfile -File tests\DesktopLevelsGate\InvokeFinalGate.ps1 `
   -CppcheckExecutable <本机cppcheck.exe的完整路径> -Parallel 4
 ```
 
-脚本分别配置/完整构建 `build-desktop-levels-release`、`build-desktop-levels-asan`，执行相关及全量 CTest、旧/新 Golden oracle、离线 baseline、ASan mutation/corpus 与 cppcheck。全量 CTest 包含每个配置下 **WGC × DXGI × 2×2/4×4** 的四个真实应用入口回环，各连续采集 30 秒。Release 配置要求至少 16 个完整验证帧且覆盖全部 16 phases；ASan 配置逐帧解码慢于 640 ms sequence 节奏，保持同一 30 秒窗口下的文档化 baseline 要求（至少 8 个完整验证帧、至少 8 个不同 phase）。发送端以 50 帧 × 640 ms（约 32 s，覆盖整个 30 s 窗口）提交，每个 phase 出现 3–4 次，同 phase 副本间隔至少 10.24 s，单次 readback 停顿不能消灭任一 phase。没有 BER/FER 数值上限，但任何错误接受、原始 JSONL 与汇总分母不一致、样本/phase 不足或捕获契约失败均为失败。真实缩小显示案例还要求 Bootstrap 能读、Data 明确 scale erasure；无法完整显示的放大案例由 CPU 矩阵承担。Gate 在启动前 fail-closed 检查系统稳定性：存在待重启标志（`PendingFileRenameOperations`、WindowsUpdate 或 CBS `RebootRequired`）或系统启动不足 600 s 即拒绝启动，避免计划内系统重启（如 Windows Update）在长时 native 采集中途杀死进程树并使证据不完整；若运行期间仍发生重启，Gate 以明确的 fatal error 终止并保留证据，不产出部分 PASS。
+脚本分别配置/完整构建 `build-desktop-levels-release`、`build-desktop-levels-asan`，执行相关及全量 CTest、旧/新 Golden oracle、离线 baseline、ASan mutation/corpus 与 cppcheck。全量 CTest 包含每个配置下 **WGC × DXGI × 2×2/4×4/ShapeChroma** 的六个 30 秒真实诊断入口，以及 **WGC × DXGI × Direct-Level 2×2/ShapeChroma** 的四个真实文件闭环；Release 快速矩阵全部通过后，最终脚本再串行执行四个 300 秒 Release soak。Release 诊断要求至少 16 个完整验证帧且覆盖全部 16 phases；ASan 配置逐帧解码慢于 640 ms sequence 节奏，保持同一 30 秒窗口下的文档化 baseline 要求（至少 8 个完整验证帧、至少 8 个不同 phase）。诊断发送端以 80 帧 × 640 ms（约 51.2 s，长于 receiver 的 45 s 有界 deadline 与启动余量）提交，并在 receiver 完成后自然跑完，以保留成功退出状态和完整 sender telemetry。每个 phase 有多个副本，同 phase 副本间隔至少 10.24 s，单次 readback 停顿不能消灭任一 phase。任何错误接受、原始 JSONL 与汇总分母不一致、文件/digest/恢复/soak/timing/样本不足或捕获契约失败均为失败。真实缩小显示案例还要求 Bootstrap 能读、Data 明确 scale erasure；无法完整显示的放大案例由 CPU 矩阵承担。Gate 在启动前 fail-closed 检查系统稳定性：存在待重启标志（`PendingFileRenameOperations`、WindowsUpdate 或 CBS `RebootRequired`）或系统启动不足 600 s 即拒绝启动，避免计划内系统重启（如 Windows Update）在长时 native 采集中途杀死进程树并使证据不完整；若运行期间仍发生重启，Gate 以明确的 fatal error 终止并保留证据，不产出部分 PASS。
 
 所有 native 测试共享 `PixelBridgeDesktop` resource lock。只定位/管理测试自有 DataWindow，不自动改变 HDR、分辨率、DPI、显示模式、光标或其他应用窗口。必须有真实 SDR、完整物理画布和 cursor-excluded capture contract，前提失败是失败，不 skip、不降门槛。帧龄 gate 以 backend 声明时间与 inbox 入队时 QPC 实测 arrival 中最早的有效值为准：声明早于自身 arrival 的超前时间戳（WGC SystemRelativeTime 实测可超前数毫秒）被 arrival 取代，两者均无效则拒绝该帧，不猜测帧龄。Gate 仅在 DXGI 捕获路径对 pointerInsideRoi 施加 fail-closed 环境检查（WGC 以 `IsCursorCaptureEnabled(false)` 显式禁用光标捕获，帧不受指针位置影响；DXGI 路径实测交付无指针像素，仍按保守契约拒绝指针位于 ROI 内的运行，防止操作员活动污染 30 s 证据），并披露 TopmostRaisedApplied。
 
-证据放在忽略的 `build-desktop-levels-evidence/` 及两个 build tree 内：源 HEAD、完整 tracked/untracked 源文件 fingerprint（允许提交前工作区，但 Gate 期间不得变化）、编译配置/依赖、命令及 stdout/stderr、JUnit、原始 JSONL、显示/ROI 可见性 metadata、四组对比、测试二进制 SHA256。Gate 不自动 commit；全部必要 Gate 通过、无未解决 Critical/High、完成最终 diff review 后，才可按任务路径创建非 amend 原子 commit。`ExecutionGate=PASS` 仍不等于 Certified Profile 或最终系统完成。
+证据放在忽略的 `build-desktop-levels-evidence/` 及两个 build tree 内：源 HEAD、完整 tracked/untracked 源文件 fingerprint（允许提交前工作区，但 Gate 期间不得变化）、编译配置/依赖、命令及 stdout/stderr、JUnit、原始 JSONL、显示/ROI 可见性、resize、逐秒资源样本、WholeFileDigest/SHA-256、两物理层 VerifiedEncodedGoodput/FER/GPU/CPU cost、主要错误模式、四组 long soak 和测试二进制 SHA256。Gate 不自动 commit；`phase1-comparison.json` 只有在 12 个诊断组、8 个 Release/ASan 快速文件组和 4 个 Release long-soak 组全部 PASS 后才给出 `TagAllowedAfterDiffReview=true`。仍须无未解决 Critical/High、完成最终 scoped diff/static review 和原子 commit，才可创建非 amend 的 `phase1-gate-pass` tag。`ExecutionGate=PASS` 仍不等于 Certified Profile 或最终系统完成。
 
 静态检查完整保留 cppcheck XML，不做 blanket warning suppression。`tests/DesktopLevelsGate/cppcheck_review.json` 逐条记录本次审查的既有 style 建议/分析器误报、理由、行号、消息和源文件 SHA256；例如不能删除解锁后 revision/domain 重验，也不能删除先释放旧 COM generation 的语句。工具版本、消息、位置或文件 hash 改变，或出现任何新诊断，Gate 必须重新审查并拒绝自动放行。新 DesktopLevels 核心、共享 evaluator、baseline tool、mutation runner 不在该既有诊断清单中。

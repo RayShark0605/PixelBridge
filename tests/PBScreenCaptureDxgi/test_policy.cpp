@@ -128,7 +128,9 @@ TEST_CASE("DXGI actual format rotation and byte quotas are verified before alloc
     REQUIRE_FALSE(ResolveDuplicationEnvironment(config, description, true, environment));
     description.ModeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     REQUIRE(ResolveDuplicationEnvironment(config, description, true, environment));
-    constexpr std::uint64_t exactBytes = 100 * 80 * 8 + 30 * 20 * 8 * 3 + maximumPointerShapeBytes;
+    constexpr std::uint64_t outputRingBytes = 30 * 20 * 4 * 3;
+    constexpr std::uint64_t sourceScratchBytes = 30 * 20 * 8 * 3;
+    constexpr std::uint64_t exactBytes = 100 * 80 * 8 + outputRingBytes + sourceScratchBytes + maximumPointerShapeBytes;
     config.maximumCaptureBytes = exactBytes - 1;
     REQUIRE(ResolveDuplicationEnvironment(config, description, true, environment).code == CaptureError::ResourceLimit);
     config.maximumCaptureBytes++;
@@ -180,8 +182,11 @@ TEST_CASE("DXGI public preflight reserves the largest advertised format without 
             auto config = MakeConfig();
             config.pixelFormat = preferred;
             config.region.rotation = rotation;
-            const std::uint64_t scratchFactor = rotation == DXGI_MODE_ROTATION_IDENTITY ? 1 : 2;
-            const std::uint64_t ringBytes = 30 * 20 * 8 * 3 * scratchFactor;
+            const std::uint64_t outputPixelBytes = preferred == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4;
+            const std::uint64_t outputRingBytes = 30 * 20 * outputPixelBytes * 3;
+            const bool transformRequired = rotation != DXGI_MODE_ROTATION_IDENTITY || preferred != DXGI_FORMAT_R16G16B16A16_FLOAT;
+            const std::uint64_t scratchRingBytes = transformRequired ? 30 * 20 * 8 * 3 : 0;
+            const std::uint64_t ringBytes = outputRingBytes + scratchRingBytes;
             const std::uint64_t totalBytes = 100 * 80 * 8 + ringBytes + maximumPointerShapeBytes;
             config.maximumRoiBytes = ringBytes;
             config.maximumCaptureBytes = totalBytes;
@@ -192,7 +197,7 @@ TEST_CASE("DXGI public preflight reserves the largest advertised format without 
             config.maximumRoiBytes = ringBytes - 1;
             CHECK(ValidateDxgiCaptureConfig(config) == CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration));
             config.maximumRoiBytes = ringBytes;
-            config.maximumCaptureBytes = 100 * 80 * 4 + 30 * 20 * 4 * 3 * scratchFactor + maximumPointerShapeBytes;
+            config.maximumCaptureBytes = 100 * 80 * 4 + ringBytes + maximumPointerShapeBytes;
             CHECK(ValidateDxgiCaptureConfig(config) == CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration));
 
             DuplicationFormatPlan plan;
@@ -206,6 +211,7 @@ TEST_CASE("DXGI public preflight reserves the largest advertised format without 
 TEST_CASE("DXGI native preflight rechecks current same-monitor geometry instead of the initial selection snapshot", "[dxgi-preflight]")
 {
     auto config = MakeConfig();
+    config.pixelFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr std::uint64_t outputRingBytes = 30 * 20 * 8 * 3;
     config.maximumRoiBytes = outputRingBytes;
     config.maximumCaptureBytes = 100 * 80 * 8 + outputRingBytes + maximumPointerShapeBytes;

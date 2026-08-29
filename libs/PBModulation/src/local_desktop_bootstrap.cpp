@@ -251,15 +251,4 @@ ModulationStatus EncodeLocalDesktopBootstrapFrame(const std::span<const std::byt
     return detail::EncodeLocalDesktopScaffold(bootstrapRecord, outBgra, detail::LocalDesktopBinding::BootstrapOnly);
 }
 
-void detail::FillLocalDesktopBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region, const std::uint8_t level) noexcept
-{
-    FillBlock(pixels, region, level);
-}
-
-void detail::FillLocalDesktopColorBlock(const std::span<std::byte> pixels, const LocalDesktopRegion& region,
-                                        const std::uint8_t blue, const std::uint8_t green, const std::uint8_t red) noexcept
-{
-    FillColorBlock(pixels, region, blue, green, red);
-}
-
 } // namespace pbmodulation

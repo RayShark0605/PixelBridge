@@ -5,12 +5,14 @@ param(
     [string]$VcpkgRoot = 'D:/vcpkg',
     [Parameter(Mandatory)][string]$PythonExecutable,
     [Parameter(Mandatory)][string]$CppcheckExecutable,
-    [ValidateRange(1,16)][int]$Parallel = 4
+    [ValidateRange(1,16)][int]$Parallel = 4,
+    [ValidateRange(300,1680)][UInt32]$Phase1SoakSeconds = 300
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'StaticReview.ps1')
+. (Join-Path $PSScriptRoot 'GateJson.ps1')
 $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $VcpkgRoot = (Resolve-Path -LiteralPath $VcpkgRoot).Path
 $PythonExecutable = (Get-Command $PythonExecutable -ErrorAction Stop).Source
@@ -18,19 +20,14 @@ $CppcheckExecutable = (Get-Command $CppcheckExecutable -ErrorAction Stop).Source
 $cmake = (Get-Command cmake -ErrorAction Stop).Source
 $ctest = (Get-Command ctest -ErrorAction Stop).Source
 $git = (Get-Command git -ErrorAction Stop).Source
+$powershell = (Get-Command pwsh -ErrorAction Stop).Source
 $script:steps = [Collections.Generic.List[object]]::new()
 $script:artifacts = @{}
 $script:nativeResults = [Collections.Generic.List[object]]::new()
+$script:fileResults = [Collections.Generic.List[object]]::new()
+$script:soakResults = [Collections.Generic.List[object]]::new()
 $script:stage = 'precondition'
 $script:passed = $true
-
-function Write-NewJson([string]$Path, $Value)
-{
-    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 24))
-    $file = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) }
-    finally { $file.Dispose() }
-}
 
 function Get-SourceIdentity
 {
@@ -64,16 +61,20 @@ function Assert-SystemStable([int]$MinimumUptimeSeconds)
     $pendingRename = $null
     $sessionManagerKey = Get-ItemProperty -Path 'HKLM:/SYSTEM/CurrentControlSet/Control/Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
     if ($null -ne $sessionManagerKey) { $pendingRename = $sessionManagerKey.PendingFileRenameOperations }
-    if ($null -ne $pendingRename -and @($pendingRename).Count -gt 0) { $problems.Add('PendingFileRenameOperations is set (system restart pending)') }
-    $wuRebootRequired = $null
-    $windowsUpdateKey = Get-ItemProperty -Path 'HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/WindowsUpdate/Auto Update' -Name RebootRequired -ErrorAction SilentlyContinue
-    if ($null -ne $windowsUpdateKey) { $wuRebootRequired = $windowsUpdateKey.RebootRequired }
-    if ($wuRebootRequired -eq 1) { $problems.Add('WindowsUpdate RebootRequired is set (system restart pending)') }
-    $cbsRebootRequired = $null
-    $cbsKey = Get-ItemProperty -Path 'HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/Component Based Servicing' -Name RebootRequired -ErrorAction SilentlyContinue
-    if ($null -ne $cbsKey) { $cbsRebootRequired = $cbsKey.RebootRequired }
-    if ($cbsRebootRequired -eq 1) { $problems.Add('Component Based Servicing RebootRequired is set (system restart pending)') }
-    $uptimeSeconds = [Math]::Floor([Environment]::TickCount / 1000)
+    # Some systems expose an empty REG_MULTI_SZ as a one-element array whose
+    # only element is $null. Count only actual source/destination strings; a
+    # real pending rename always retains at least its nonempty source entry.
+    $pendingRenameEntries = @($pendingRename | Where-Object { -not [string]::IsNullOrEmpty([string]$_) })
+    if ($pendingRenameEntries.Count -gt 0) { $problems.Add('PendingFileRenameOperations is set (system restart pending)') }
+    if (Test-Path -LiteralPath 'HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/WindowsUpdate/Auto Update/RebootRequired')
+    {
+        $problems.Add('WindowsUpdate RebootRequired key exists (system restart pending)')
+    }
+    if (Test-Path -LiteralPath 'HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/Component Based Servicing/RebootPending')
+    {
+        $problems.Add('Component Based Servicing RebootPending key exists (system restart pending)')
+    }
+    $uptimeSeconds = [Math]::Floor([Environment]::TickCount64 / 1000)
     if ($uptimeSeconds -lt $MinimumUptimeSeconds) { $problems.Add("system uptime ${uptimeSeconds}s is below the ${MinimumUptimeSeconds}s stability margin after a boot") }
     if ($problems.Count -gt 0)
     {
@@ -94,6 +95,36 @@ function Assert-Identity
         {
             throw "Tested configuration/binary changed during Gate: $($entry.Key)"
         }
+    }
+}
+
+function Preserve-Phase0Scratch([string]$Build, [string]$Flavor)
+{
+    $buildRoot = [IO.Path]::GetFullPath($Build).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $phase0Root = [IO.Path]::GetFullPath((Join-Path $Build 'tests/Phase0Gate/Release')).TrimEnd([IO.Path]::DirectorySeparatorChar) +
+        [IO.Path]::DirectorySeparatorChar
+    if (-not $phase0Root.StartsWith($buildRoot, [StringComparison]::OrdinalIgnoreCase))
+    {
+        throw 'Phase 0 scratch root escaped the intended build tree'
+    }
+    $evidenceRoot = [IO.Path]::GetFullPath($script:evidence).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $archiveRoot = [IO.Path]::GetFullPath((Join-Path $script:evidence "preexisting-phase0-scratch/$Flavor"))
+    if (-not $archiveRoot.StartsWith($evidenceRoot, [StringComparison]::OrdinalIgnoreCase))
+    {
+        throw 'Phase 0 scratch archive escaped the current evidence root'
+    }
+    $candidates = @('fast','large','resume','scratch-safety','phase0-fast.jsonl','phase0-large.jsonl',
+        'phase0-resume.jsonl','phase0-scratch-safety.jsonl','phase0-resume-regressions.jsonl')
+    foreach ($name in $candidates)
+    {
+        $source = [IO.Path]::GetFullPath((Join-Path $phase0Root $name))
+        if (-not $source.StartsWith($phase0Root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $source))
+        {
+            continue
+        }
+        [IO.Directory]::CreateDirectory($archiveRoot) | Out-Null
+        $destination = Join-Path $archiveRoot ("{0}-{1}" -f $name,([Guid]::NewGuid().ToString('N')))
+        Move-Item -LiteralPath $source -Destination $destination
     }
 }
 
@@ -162,7 +193,9 @@ function Register-Build([string]$Root, [bool]$Asan)
         'libs/PBInnerFec/PBInnerFec','libs/PBCaptureNormalize/PBCaptureNormalize','libs/PBDemodD3D11/PBDemodD3D11',
         'libs/PBTelemetry/PBTelemetry','libs/PBRealCaptureReplay/PBRealCaptureReplay','apps/PixelBridgeEncoder/PixelBridgeEncoder',
         'apps/PixelBridgeDecoder/PixelBridgeDecoder','tests/PBModulation/PBDesktopLevelsTests','tests/PBModulation/PBShapeChromaTests',
-        'tests/PBDemodD3D11/PBDemodD3D11Tests','tests/PBTelemetry/PBTelemetryTests','tests/PBRealCaptureReplay/PBRealCaptureReplayTests'))
+        'tests/PBDemodD3D11/PBDemodD3D11Tests','tests/PBTelemetry/PBTelemetryTests','tests/PBRealCaptureReplay/PBRealCaptureReplayTests',
+        'tests/DesktopLevelsGate/PBPhase1FileGate','tests/DesktopLevelsGate/PBDesktopLevelsNativeSupport',
+        'tests/DesktopLevelsGate/PBPhase1FileGateArgumentsTests'))
     {
         $path = Join-Path $Root ($project + '.vcxproj')
         $content = Get-Content -LiteralPath $path -Raw
@@ -193,8 +226,17 @@ try
     if ($env:ASAN_OPTIONS) { throw 'Gate requires default ASan options, not suppressed diagnostics' }
     Assert-SystemStable 600
     $script:initial = Get-SourceIdentity
-    $script:evidence = Join-Path $SourceRoot ("build-desktop-levels-evidence/{0}-{1}-{2}" -f $script:initial.Head,
-        (Get-Date -Format 'yyyyMMdd-HHmmss'),([Guid]::NewGuid().ToString('N')))
+    # Keep every nested source/output/.part path below legacy MAX_PATH even on
+    # hosts where the long-path policy is disabled. HEAD remains sealed in
+    # source-identity.json; it need not be duplicated in the directory name.
+    $runToken = [Guid]::NewGuid().ToString('N').Substring(0,12)
+    $script:evidence = Join-Path $SourceRoot ("build-desktop-levels-evidence/phase1-{0}-{1}" -f
+        (Get-Date -Format 'yyyyMMdd-HHmmss'),$runToken)
+    $maximumNestedPath = Join-Path $script:evidence ("phase1-long-soak/{0}/accepted.bin.part" -f ('x' * 96))
+    if ($maximumNestedPath.Length -ge 260)
+    {
+        throw 'Phase 1 evidence root is too deep for the legacy Win32 storage path used by the physical file Gate'
+    }
     [IO.Directory]::CreateDirectory($script:evidence) | Out-Null
     Write-NewJson (Join-Path $script:evidence 'source-identity.json') $script:initial
     Write-NewJson (Join-Path $script:evidence 'worktree.json') @(& $git -C $SourceRoot status --porcelain=v1 --untracked-files=all)
@@ -218,32 +260,122 @@ try
         $built = Invoke-Gate "$flavor-default-build" $cmake @('--build',$build,'--config','Release','--parallel',"$Parallel") 2400
         if (-not $built.Passed) { continue }
         Register-Build $build ($flavor -eq 'asan')
-        $selected = '^(PBDesktopLevelsTests|PBShapeChromaTests|PBDemodD3D11Tests|PBTelemetryTests|PBRealCaptureReplayTests|PBDesktopLevelsBaselineJson|PBModulationTests|PBLocalDesktopBootstrapTests|PBLocalDesktopMatrixTests|PBLocalDesktopNoAllocationProbe|PBInnerFecTests|PBInterleaveTests|PBBootstrapDiagnosticTests|PBCapturePipelineTests|PBCaptureRotationTests|PBDecoderCliTests|PBEncoderCliTests|PBDecoderTelemetryJson|PBCaptureNormalizeTests|PBGoldenVectorTests|PBGoldenVectorCheckTests)$'
+        $selected = '^(PBDesktopLevelsTests|PBShapeChromaTests|PBDemodD3D11Tests|PBTelemetryTests|PBRealCaptureReplayTests|PBDesktopLevelsBaselineJson|PBModulationTests|PBLocalDesktopBootstrapTests|PBLocalDesktopMatrixTests|PBLocalDesktopNoAllocationProbe|PBInnerFecTests|PBInterleaveTests|PBBootstrapDiagnosticTests|PBCapturePipelineTests|PBCaptureRotationTests|PBDecoderCliTests|PBEncoderCliTests|PBDecoderTelemetryJson|PBCaptureNormalizeTests|PBGoldenVectorTests|PBGoldenVectorCheckTests|PBPhase1FileGatePolicyTests|PBPhase1FileResourcesTests|PBPhase1FileGateArgumentsTests)$'
         $null = Invoke-Gate "$flavor-related-ctest" $ctest @('--test-dir',$build,'--build-config','Release','--output-on-failure',
             '--parallel',"$Parallel",'-R',$selected,'--output-junit',(Join-Path $script:evidence "$flavor-related.xml"))
         $nativeRoot = Join-Path $build 'tests/DesktopLevelsGate/Release/evidence'
+        $fileRoot = Join-Path $build 'tests/DesktopLevelsGate/Release/phase1-file-evidence'
         $previousReports = @{}
+        $previousFileReports = @{}
         if (Test-Path -LiteralPath $nativeRoot)
         {
             foreach ($file in Get-ChildItem -LiteralPath $nativeRoot -Recurse -File -Filter report.json) { $previousReports[$file.FullName] = $true }
         }
-        # Full CTest includes the four 30-second application measurements,
+        if (Test-Path -LiteralPath $fileRoot)
+        {
+            foreach ($file in Get-ChildItem -LiteralPath $fileRoot -Recurse -File -Filter phase1-file-report.json)
+            {
+                $previousFileReports[$file.FullName] = $true
+            }
+        }
+        # Full CTest includes six 30-second application measurements (both
+        # backends times the two Direct-Level candidates and ShapeChroma),
         # legacy/new Golden, actual recreation/scale rejection, and ASan corpus.
         # Failures are retained; there is no exclusion, skip, or retry filter.
         # The native loop selects its verified-frame/phase demand from the
         # build flavor: release keeps the full 16-phase certification demand,
         # asan keeps the documented baseline demand.
+        Preserve-Phase0Scratch $build $flavor
         Set-Item -Path Env:PB_DESKTOP_LEVELS_NATIVE_MODE -Value $flavor
-        $null = Invoke-Gate "$flavor-all-ctest" $ctest @('--test-dir',$build,'--build-config','Release','--output-on-failure',
+        $allCtest = Invoke-Gate "$flavor-all-ctest" $ctest @('--test-dir',$build,'--build-config','Release','--output-on-failure',
             '--parallel',"$Parallel",'--output-junit',(Join-Path $script:evidence "$flavor-all.xml")) 9000
         Remove-Item -Path Env:PB_DESKTOP_LEVELS_NATIVE_MODE -ErrorAction SilentlyContinue
         $reports = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse -File -Filter report.json | Where-Object { -not $previousReports.ContainsKey($_.FullName) })
-        if ($reports.Count -ne 4) { $script:passed = $false }
+        if ($reports.Count -ne 6) { $script:passed = $false }
+        $nativeMatrix = [Collections.Generic.HashSet[string]]::new()
         foreach ($file in $reports)
         {
             $report = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
-            if ($report.Gate -ne 'PASS') { $script:passed = $false }
+            $matrixKey = "$($report.Backend)/$($report.Candidate)"
+            if (-not $nativeMatrix.Add($matrixKey) -or $report.Gate -cne 'PASS' -or
+                [string]$report.Backend -notin @('wgc','dxgi') -or
+                [string]$report.Candidate -notin @('desktop-levels-2x2','desktop-levels-4x4','shape-chroma'))
+            {
+                $script:passed = $false
+            }
             $script:nativeResults.Add([ordered]@{ Configuration=$flavor; ReportPath=$file.FullName; Result=$report })
+        }
+        if ($nativeMatrix.Count -ne 6) { $script:passed = $false }
+        $fileReports = @()
+        if (Test-Path -LiteralPath $fileRoot)
+        {
+            $fileReports = @(Get-ChildItem -LiteralPath $fileRoot -Recurse -File -Filter phase1-file-report.json |
+                Where-Object { -not $previousFileReports.ContainsKey($_.FullName) })
+        }
+        $regularFilePassed = $allCtest.Passed -and $fileReports.Count -eq 4
+        $regularMatrix = [Collections.Generic.HashSet[string]]::new()
+        foreach ($file in $fileReports)
+        {
+            $report = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            $matrixKey = "$($report.Backend)/$($report.Profile)"
+            if (-not $regularMatrix.Add($matrixKey) -or $report.Gate -cne 'PASS' -or
+                [string]$report.Backend -notin @('wgc','dxgi') -or
+                [string]$report.Profile -notin @('desktop-levels-2x2','shape-chroma') -or
+                [string]$report.NativeMode -cne $flavor -or
+                [bool]$report.PerformanceCertification -ne ($flavor -ceq 'release') -or
+                [UInt32]$report.RequestedSoakSeconds -ne 0)
+            {
+                $regularFilePassed = $false
+            }
+            $script:fileResults.Add([ordered]@{ Configuration=$flavor; ReportPath=$file.FullName; Result=$report })
+        }
+        if ($regularMatrix.Count -ne 4)
+        {
+            $regularFilePassed = $false
+        }
+        if (-not $regularFilePassed)
+        {
+            $script:passed = $false
+        }
+        if ($flavor -eq 'release' -and $regularFilePassed)
+        {
+            $soakRoot = Join-Path $script:evidence 'phase1-long-soak'
+            foreach ($backend in @('wgc','dxgi'))
+            {
+                foreach ($profile in @('desktop-levels-2x2','shape-chroma'))
+                {
+                    $null = Invoke-Gate "release-phase1-soak-$backend-$profile" $powershell @('-NoProfile','-File',
+                        (Join-Path $SourceRoot 'tests/DesktopLevelsGate/InvokePhase1FileLoop.ps1'),
+                        '-GateExecutable',(Join-Path $build 'tests/DesktopLevelsGate/Release/PBPhase1FileGate.exe'),
+                        '-Support',(Join-Path $build 'tests/DesktopLevelsGate/Release/PBDesktopLevelsNativeSupport.exe'),
+                        '-Backend',$backend,'-Profile',$profile,'-EvidenceRoot',$soakRoot,
+                        '-NativeMode','release','-SoakSeconds',"$Phase1SoakSeconds") ([int]$Phase1SoakSeconds + 180)
+                }
+            }
+            $soakReports = @(Get-ChildItem -LiteralPath $soakRoot -Recurse -File -Filter phase1-file-report.json)
+            $soakMatrix = [Collections.Generic.HashSet[string]]::new()
+            if ($soakReports.Count -ne 4)
+            {
+                $script:passed = $false
+            }
+            foreach ($file in $soakReports)
+            {
+                $report = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+                $matrixKey = "$($report.Backend)/$($report.Profile)"
+                if (-not $soakMatrix.Add($matrixKey) -or $report.Gate -cne 'PASS' -or
+                    [string]$report.Backend -notin @('wgc','dxgi') -or
+                    [string]$report.Profile -notin @('desktop-levels-2x2','shape-chroma') -or
+                    [string]$report.NativeMode -cne 'release' -or -not [bool]$report.PerformanceCertification -or
+                    [UInt32]$report.RequestedSoakSeconds -ne $Phase1SoakSeconds -or -not [bool]$report.Resources.LongSoakVerified)
+                {
+                    $script:passed = $false
+                }
+                $script:soakResults.Add([ordered]@{ Configuration=$flavor; ReportPath=$file.FullName; Result=$report })
+            }
+            if ($soakMatrix.Count -ne 4)
+            {
+                $script:passed = $false
+            }
         }
         $null = Invoke-Gate "$flavor-cpu-baseline" (Join-Path $build 'tools/Release/PBDesktopLevelsBaseline.exe') @('--baseline')
         if ($flavor -eq 'asan')
@@ -254,6 +386,7 @@ try
     $staticProjects = @('libs/PBInterleave/PBInterleave','libs/PBModulation/PBModulation','libs/PBDesktopLevelsReference/PBDesktopLevelsReference',
         'libs/PBCaptureNormalize/PBCaptureNormalize','libs/PBDemodD3D11/PBDemodD3D11','libs/PBTelemetry/PBTelemetry',
         'libs/PBRealCaptureReplay/PBRealCaptureReplay','apps/PixelBridgeEncoder/PixelBridgeEncoder','apps/PixelBridgeDecoder/PixelBridgeDecoder',
+        'tests/DesktopLevelsGate/PBPhase1FileGate','tests/DesktopLevelsGate/PBDesktopLevelsNativeSupport',
         'tools/PBDesktopLevelsBaseline','fuzz/PBDesktopLevelsMutation')
     foreach ($project in $staticProjects)
     {
@@ -281,14 +414,82 @@ finally
     {
         Write-NewJson (Join-Path $script:evidence 'commands.json') @($script:steps)
         Write-NewJson (Join-Path $script:evidence 'native-comparison.json') @($script:nativeResults)
+        Write-NewJson (Join-Path $script:evidence 'phase1-file-regular.json') @($script:fileResults)
+        Write-NewJson (Join-Path $script:evidence 'phase1-file-soak.json') @($script:soakResults)
         Write-NewJson (Join-Path $script:evidence 'tested-artifacts.json') @($script:artifacts.GetEnumerator() | Sort-Object Key | ForEach-Object {
             [ordered]@{ Path=$_.Key; SHA256=$_.Value }
         })
         $status = if ($script:passed) { 'PASS' } else { 'FAIL' }
+        $releaseRegular = @($script:fileResults | Where-Object { $_.Configuration -ceq 'release' })
+        $successfulReleaseRegular = @($releaseRegular | Where-Object { Test-Phase1SuccessfulFileResult $_.Result })
+        $profileBaselines = @(foreach ($profile in @('desktop-levels-2x2','shape-chroma'))
+        {
+            $runs = @($successfulReleaseRegular | Where-Object { $_.Result.Profile -ceq $profile })
+            [ordered]@{
+                Profile=$profile
+                Runs=@($runs | ForEach-Object {
+                    [ordered]@{
+                        Backend=$_.Result.Backend
+                        VerifiedEncodedGoodputBytesPerSecond=$_.Result.Receiver.verifiedEncodedGoodputBytesPerSecond
+                        PostFecFER=$_.Result.Receiver.postFecFer
+                        UniqueVisualFPS=$_.Result.Receiver.uniqueVisualFps
+                        EndToEndUniqueVisualFPS=$_.Result.Receiver.endToEndUniqueVisualFps
+                        UniqueVisualCadenceIntervals=$_.Result.Receiver.uniqueVisualCadenceIntervals
+                        CaptureDeliveryRatio=$_.Result.Receiver.captureDeliveryRatio
+                        RequiredPostPublishObservationSeconds=$_.Result.Receiver.requiredPostPublishObservationSeconds
+                        PostPublishObservationSeconds=$_.Result.Receiver.postPublishObservationSeconds
+                        RoiGpuAverageMilliseconds=$_.Result.Receiver.roiGpuAverageMilliseconds
+                        DemodGpuAverageMilliseconds=$_.Result.Receiver.demodGpuAverageMilliseconds
+                        BootstrapCpuAverageMilliseconds=$_.Result.Receiver.bootstrapCpuAverageMilliseconds
+                        PostGpuFecCpuAverageMilliseconds=$_.Result.Receiver.postGpuFecCpuAverageMilliseconds
+                        SenderEquivalentCpuCores=$_.Result.Resources.SenderEquivalentCpuCores
+                        ReceiverEquivalentCpuCores=$_.Result.Resources.ReceiverEquivalentCpuCores
+                    }
+                })
+            }
+        })
+        $primaryErrorModes = @($successfulReleaseRegular | ForEach-Object {
+            [ordered]@{
+                Backend=$_.Result.Backend
+                Profile=$_.Result.Profile
+                PostFecFailedFrames=$_.Result.Receiver.postFecFailedFrames
+                BootstrapMismatchErasures=$_.Result.Receiver.bootstrapMismatchFrames
+                ForeignSessionErasedFrames=$_.Result.Receiver.foreignSessionErasedFrames
+                RetryableUnknownSessionControlDrops=$_.Result.Receiver.retryableUnknownSessionControlDrops
+                UnboundSessionVisualFrames=$_.Result.Receiver.unboundSessionVisualFrames
+                CaptureDrops=$_.Result.Receiver.captureDrops
+                CaptureExpired=$_.Result.Receiver.captureExpired
+                CaptureDeliveryRatio=$_.Result.Receiver.captureDeliveryRatio
+                DuplicateVisualFrames=$_.Result.Receiver.duplicateVisualFrames
+                UniqueVisualGapEvents=$_.Result.Receiver.uniqueVisualGapEvents
+                SkippedVisualSequences=$_.Result.Receiver.skippedVisualSequences
+                RoiGpuTimingUnavailable=$_.Result.Receiver.roiGpuTimingUnavailable
+                DemodGpuTimingUnavailable=$_.Result.Receiver.demodGpuTimingUnavailable
+            }
+        })
+        $tagAllowedAfterReview = $script:passed -and $script:nativeResults.Count -eq 12 -and
+            $script:fileResults.Count -eq 8 -and $script:soakResults.Count -eq 4
+        Write-NewJson (Join-Path $script:evidence 'phase1-comparison.json') ([ordered]@{
+            Gate=$status
+            PhysicalLayerBaselines=$profileBaselines
+            PrimaryErrorModes=$primaryErrorModes
+            LongSoakRuns=@($script:soakResults)
+            Phase2Required=@(
+                'Move fixed Bootstrap/Control extraction off the full 1920x1080 CPU readback path while preserving same-frame retirement proof',
+                'Replace the literal experimental ShapeChroma A/B codebook with measured profile selection and a separately reviewed certified wire/profile baseline',
+                'Extend the hardware matrix to actual adapter removal, hot-plug, HDR/SDR transitions, SDR duplication source-format/bit-depth changes and multi-monitor mode changes beyond deterministic fault injection and requested recreation',
+                'Integrate the proven single-segment Gate path into the bounded production scheduler without duplicating Receiver, FEC, storage or capture architecture'
+            )
+            TagAllowedAfterDiffReview=$tagAllowedAfterReview
+            CertifiedProfile=$false
+            FinalSystemComplete=$false
+        })
         Write-NewJson (Join-Path $script:evidence 'summary.json') ([ordered]@{ ExecutionGate=$status; Head=$script:initial.Head;
-            SourceFingerprint=$script:initial.Fingerprint; NativeGroups=$script:nativeResults.Count; Commands=$script:steps.Count;
+            SourceFingerprint=$script:initial.Fingerprint; NativeGroups=$script:nativeResults.Count;
+            Phase1RegularFileGroups=$script:fileResults.Count; Phase1LongSoakGroups=$script:soakResults.Count;
+            Commands=$script:steps.Count; Phase1TagAllowedAfterDiffReview=$tagAllowedAfterReview;
             CertifiedProfile=$false; FinalSystemComplete=$false; CommitCreated=$false;
-            Decision='Execution evidence only; final diff/static review is required before a task-scoped atomic commit' })
+            Decision='Execution evidence only; tag phase1-gate-pass is allowed only after PASS plus final scoped diff/static review and an atomic commit' })
         Write-Host "DESKTOP_LEVELS_GATE $status evidence=$script:evidence"
     }
 }

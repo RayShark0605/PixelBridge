@@ -32,6 +32,7 @@ CaptureStatus ValidateCaptureConfig(const CaptureConfig& config, const CaptureBa
     environment.region = config.region;
     environment.contentSize = {static_cast<std::int32_t>(width), static_cast<std::int32_t>(height)};
     environment.backendKind = backendKind;
+    environment.pixelFormat = config.pixelFormat;
     CaptureLayout layout;
     return ValidateLayout(config, environment, layout);
 }
@@ -201,73 +202,108 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
         }
     }
 
-    [[nodiscard]] bool PollSlots(const bool deliver) noexcept
+    void PollSlot(const std::size_t index, const bool deliver) noexcept
     {
-        bool allFree = true;
+        auto& slot = slots[index];
+        const auto completion = backend->Poll(index);
+        SetError(completion.status);
+        if (!completion.complete)
+        {
+            if (std::chrono::steady_clock::now() - slot.submittedAt >= std::chrono::milliseconds(config.gpuTimeoutMilliseconds))
+            {
+                SetError(CaptureStatus::Failure(CaptureError::Timeout, CaptureStage::Completion));
+            }
+            return;
+        }
+        if (slot.state == SlotState::Copying)
+        {
+            slot.metadata.roiCopyTime100ns = completion.roiCopyTime100ns;
+            if (completion.roiCopyTime100ns)
+            {
+                pbprotocol::SaturatingIncrementUnsigned(working.roiCopyTimingSamples);
+                working.roiCopyTimeTotal100ns = pbprotocol::SaturatingAddUnsigned(working.roiCopyTimeTotal100ns, *completion.roiCopyTime100ns);
+                working.roiCopyTimeHighWater100ns = std::max(working.roiCopyTimeHighWater100ns, *completion.roiCopyTime100ns);
+            }
+            else if (completion.roiCopyTimingUnavailable)
+            {
+                pbprotocol::SaturatingIncrementUnsigned(working.roiCopyTimingUnavailable);
+            }
+            // Poll proved the GPU no longer reads this OS capture surface.
+            slot.source.Reset();
+            SetError(FromHresult(inbox->counters->closeError.load(), CaptureStage::Completion));
+            const auto input = inbox->GetSnapshot();
+            if (deliver && working.error && input.error && !input.recreateRequested && !input.stopRequested &&
+                !Expired(slot.metadata.systemRelativeTime100ns, slot.metadata.arrivalQpc100ns) && !Stale(slot.metadata.arrivalOrdinal))
+            {
+                // Slot reuse is not capture ordering: a newer copy in a
+                // low-numbered slot can retire before an older high slot.
+                lastDeliveredOrdinal = slot.metadata.arrivalOrdinal;
+                slot.state = SlotState::Consuming;
+                slot.submittedAt = std::chrono::steady_clock::now();
+                slot.metadata.capabilities = backend->GetCapabilities();
+                const auto status = backend->Consume(*consumer, slot.metadata, index);
+                SetError(status);
+                if (status)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(working.deliveredFrames);
+                }
+                return;
+            }
+        }
+        if (slot.state == SlotState::Consuming)
+        {
+            const auto input = inbox->GetSnapshot();
+            const bool cancelled = !deliver || !working.error || !input.error || input.recreateRequested || input.stopRequested ||
+                                   slot.metadata.captureEpoch != working.captureEpoch;
+            SetError(backend->Complete(*consumer, slot.metadata, index, cancelled));
+        }
+        slot.state = SlotState::Free;
+    }
+
+    void PollSlotsInState(const SlotState expectedState, const bool deliver) noexcept
+    {
+        std::array<std::size_t, maximumRoiTextures> orderedSlots{};
+        std::size_t orderedSlotCount = 0;
         for (std::size_t index = 0; index < config.roiTextureCount; index++)
         {
-            auto& slot = slots[index];
-            if (slot.state == SlotState::Free)
+            if (slots[index].state == expectedState)
             {
-                continue;
+                orderedSlots[orderedSlotCount] = index;
+                orderedSlotCount++;
             }
-            const auto completion = backend->Poll(index);
-            SetError(completion.status);
-            if (!completion.complete)
-            {
-                allFree = false;
-                if (std::chrono::steady_clock::now() - slot.submittedAt >= std::chrono::milliseconds(config.gpuTimeoutMilliseconds))
-                {
-                    SetError(CaptureStatus::Failure(CaptureError::Timeout, CaptureStage::Completion));
-                }
-                continue;
-            }
-            if (slot.state == SlotState::Copying)
-            {
-                slot.metadata.roiCopyTime100ns = completion.roiCopyTime100ns;
-                if (completion.roiCopyTime100ns)
-                {
-                    pbprotocol::SaturatingIncrementUnsigned(working.roiCopyTimingSamples);
-                    working.roiCopyTimeTotal100ns = pbprotocol::SaturatingAddUnsigned(working.roiCopyTimeTotal100ns, *completion.roiCopyTime100ns);
-                    working.roiCopyTimeHighWater100ns = std::max(working.roiCopyTimeHighWater100ns, *completion.roiCopyTime100ns);
-                }
-                else if (completion.roiCopyTimingUnavailable)
-                {
-                    pbprotocol::SaturatingIncrementUnsigned(working.roiCopyTimingUnavailable);
-                }
-                // Poll proved the GPU no longer reads this OS capture surface.
-                slot.source.Reset();
-                SetError(FromHresult(inbox->counters->closeError.load(), CaptureStage::Completion));
-                const auto input = inbox->GetSnapshot();
-                if (deliver && working.error && input.error && !input.recreateRequested && !input.stopRequested &&
-                    !Expired(slot.metadata.systemRelativeTime100ns, slot.metadata.arrivalQpc100ns) && !Stale(slot.metadata.arrivalOrdinal))
-                {
-                    // Slot reuse is not capture ordering: a newer copy in a
-                    // low-numbered slot can retire before an older high slot.
-                    lastDeliveredOrdinal = slot.metadata.arrivalOrdinal;
-                    slot.state = SlotState::Consuming;
-                    slot.submittedAt = std::chrono::steady_clock::now();
-                    slot.metadata.capabilities = backend->GetCapabilities();
-                    const auto status = backend->Consume(*consumer, slot.metadata, index);
-                    SetError(status);
-                    if (status)
-                    {
-                        pbprotocol::SaturatingIncrementUnsigned(working.deliveredFrames);
-                    }
-                    allFree = false;
-                    continue;
-                }
-            }
-            if (slot.state == SlotState::Consuming)
-            {
-                const auto input = inbox->GetSnapshot();
-                const bool cancelled = !deliver || !working.error || !input.error || input.recreateRequested || input.stopRequested ||
-                                       slot.metadata.captureEpoch != working.captureEpoch;
-                SetError(backend->Complete(*consumer, slot.metadata, index, cancelled));
-            }
-            slot.state = SlotState::Free;
         }
-        return allFree;
+        // Immediate-context markers are globally ordered, but ring slot reuse
+        // is not. Retire ready work by capture observation so a newer low slot
+        // cannot publish a result ahead of an older high slot.
+        std::sort(orderedSlots.begin(), orderedSlots.begin() + orderedSlotCount,
+                  [this](const std::size_t left, const std::size_t right)
+        {
+            const auto leftOrdinal = slots[left].metadata.arrivalOrdinal;
+            const auto rightOrdinal = slots[right].metadata.arrivalOrdinal;
+            return leftOrdinal != rightOrdinal ? leftOrdinal < rightOrdinal : left < right;
+        });
+        for (std::size_t orderIndex = 0; orderIndex < orderedSlotCount; orderIndex++)
+        {
+            PollSlot(orderedSlots[orderIndex], deliver);
+        }
+    }
+
+    [[nodiscard]] bool PollSlots(const bool deliver) noexcept
+    {
+        // Callback-driven WGC preserves the original per-slot retirement
+        // order. A copy that becomes Consuming here is deliberately not polled
+        // again until the next owner pass; splitting all Copying work from all
+        // Consuming work changes cross-slot delivery order and can hide the
+        // bounded stale-frame rule exercised below.
+        for (std::size_t index = 0; index < config.roiTextureCount; index++)
+        {
+            if (slots[index].state != SlotState::Free)
+            {
+                PollSlot(index, deliver);
+            }
+        }
+        return std::ranges::all_of(slots.begin(), slots.begin() + config.roiTextureCount,
+                                   [](const Slot& slot) { return slot.state == SlotState::Free; });
     }
 
     void SubmitNewest() noexcept
@@ -535,7 +571,22 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
                 }
                 working.state = backend->WaitingForEnvironment() ? CaptureState::WaitingForEnvironment : CaptureState::Running;
             }
-            static_cast<void>(PollSlots(!backend->WaitingForEnvironment()));
+            const bool deliver = !backend->WaitingForEnvironment();
+            const bool synchronousAcquisition = backend->Kind() == CaptureBackendKind::Dxgi;
+            if (synchronousAcquisition)
+            {
+                // DXGI may have only one outstanding duplication frame. Retire
+                // every OS-backed source copy before acquisition and before a
+                // completed consumer performs CPU demodulation/FEC on this owner.
+                PollSlotsInState(SlotState::Copying, deliver);
+            }
+            else
+            {
+                // WGC has an independent callback producer. Preserve the
+                // consumer-first full-ring retirement that releases slots before
+                // taking the callback queue's newest frame.
+                static_cast<void>(PollSlots(deliver));
+            }
             input = inbox->GetSnapshot();
             if (working.error && !input.stopRequested && !input.recreateRequested &&
                 std::ranges::any_of(slots.begin(), slots.begin() + config.roiTextureCount, [](const Slot& slot) { return slot.state == SlotState::Free; }))
@@ -547,8 +598,22 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
                     SubmitNewest();
                 }
             }
+            if (synchronousAcquisition)
+            {
+                PollSlotsInState(SlotState::Consuming, deliver);
+            }
             Publish();
-            inbox->Wait();
+            if (synchronousAcquisition && !backend->WaitingForEnvironment())
+            {
+                // Active DXGI acquisition performs its own bounded OS wait.
+                // Yield only while GPU slots turn over; do not add a second,
+                // coarse Windows timer wait after AcquireNextFrame.
+                std::this_thread::yield();
+            }
+            else
+            {
+                inbox->Wait();
+            }
         }
         End();
     }

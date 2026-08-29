@@ -45,6 +45,10 @@ struct VisibilitySearch
     RECT parentClient{};
     bool visible = true;
     bool reachedTarget = false;
+    HWND firstOccluder = nullptr;
+    RECT firstOccluderRect{};
+    DWORD firstOccluderProcessId = 0;
+    bool firstOccluderIsChild = false;
 };
 
 BOOL CALLBACK CheckChildOcclusion(const HWND child, const LPARAM parameter)
@@ -68,6 +72,13 @@ BOOL CALLBACK CheckChildOcclusion(const HWND child, const LPARAM parameter)
         IntersectRect(&intersection, &clipped, &search.rectangle))
     {
         search.visible = false;
+        if (search.firstOccluder == nullptr)
+        {
+            search.firstOccluder = child;
+            search.firstOccluderRect = clipped;
+            GetWindowThreadProcessId(child, &search.firstOccluderProcessId);
+            search.firstOccluderIsChild = true;
+        }
         return FALSE;
     }
     return TRUE;
@@ -97,6 +108,12 @@ BOOL CALLBACK CheckOcclusion(const HWND window, const LPARAM parameter)
     if (GetWindowRect(window, &other) && IntersectRect(&intersection, &search.rectangle, &other))
     {
         search.visible = false;
+        if (search.firstOccluder == nullptr)
+        {
+            search.firstOccluder = window;
+            search.firstOccluderRect = other;
+            GetWindowThreadProcessId(window, &search.firstOccluderProcessId);
+        }
     }
     // Children can only cover the part of the fixture their parent's client
     // area reaches; enumerate them only then and hand the child pass the
@@ -240,7 +257,8 @@ int wmain(const int count, const wchar_t* const arguments[])
     const bool observeMode = count == 3 && std::wstring_view(arguments[1]) == L"--window-observe";
     const bool windowMode = count == 3 && std::wstring_view(arguments[1]) == L"--window";
     const bool closeMode = count == 3 && std::wstring_view(arguments[1]) == L"--close";
-    if (!observeMode && !windowMode && !closeMode)
+    const bool resizeMode = count == 5 && std::wstring_view(arguments[1]) == L"--resize";
+    if (!observeMode && !windowMode && !closeMode && !resizeMode)
     {
         return 2;
     }
@@ -260,9 +278,38 @@ int wmain(const int count, const wchar_t* const arguments[])
     {
         return PostMessageW(search.found, WM_CLOSE, 0, 0) ? 0 : 1;
     }
+    if (resizeMode)
+    {
+        DWORD width = 0;
+        DWORD height = 0;
+        if (!Decimal(arguments[3], width) || !Decimal(arguments[4], height) ||
+            width < 64 || height < 64 || width > 16384 || height > 16384 ||
+            width > static_cast<DWORD>(std::numeric_limits<int>::max()) ||
+            height > static_cast<DWORD>(std::numeric_limits<int>::max()))
+        {
+            return 2;
+        }
+        if (!SetWindowPos(search.found, nullptr, 0, 0, static_cast<int>(width), static_cast<int>(height),
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW))
+        {
+            return 1;
+        }
+        RECT client{};
+        if (!GetClientRect(search.found, &client) || client.left != 0 || client.top != 0)
+        {
+            return 1;
+        }
+        const std::int64_t observedWidth = static_cast<std::int64_t>(client.right) - client.left;
+        const std::int64_t observedHeight = static_cast<std::int64_t>(client.bottom) - client.top;
+        std::cout << "{\"found\":true,\"requestedClient\":[" << width << ',' << height
+            << "],\"observedClient\":[" << observedWidth << ',' << observedHeight << "]}\n";
+        return observedWidth == static_cast<std::int64_t>(width) &&
+            observedHeight == static_cast<std::int64_t>(height) ? 0 : 1;
+    }
     // Only fixture mode mutates z-order; observation mode reports the true
     // desktop state without any intervention.
     bool raisedApplied = false;
+    bool fallbackRaised = false;
     if (windowMode)
     {
         if (!SetWindowPos(search.found, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW))
@@ -277,6 +324,16 @@ int wmain(const int count, const wchar_t* const arguments[])
         // whose bits would fake the attribute, so require a live window.
         const LONG_PTR exStyle = GetWindowLongPtrW(search.found, GWL_EXSTYLE);
         raisedApplied = IsWindow(search.found) && exStyle != -1 && (exStyle & WS_EX_TOPMOST) != 0;
+        // Some local window-protection hooks remove WS_EX_TOPMOST even though
+        // SetWindowPos reports success. A non-topmost z-order raise is the
+        // narrow reversible fallback: the subsequent full-rectangle scan still
+        // has to prove that no window is above the fixture before capture may
+        // proceed, and every periodic probe repeats that proof.
+        if (!raisedApplied)
+        {
+            fallbackRaised = SetWindowPos(search.found, HWND_TOP, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW) != FALSE;
+        }
     }
     RECT client{};
     POINT origin{};
@@ -298,9 +355,14 @@ int wmain(const int count, const wchar_t* const arguments[])
         << (windowMode ? "true" : "false");
     if (windowMode)
     {
-        std::cout << ",\"raisedApplied\":" << (raisedApplied ? "true" : "false");
+        std::cout << ",\"raisedApplied\":" << (raisedApplied ? "true" : "false")
+            << ",\"fallbackRaised\":" << (fallbackRaised ? "true" : "false");
     }
     std::cout << ",\"roi\":[" << origin.x << ',' << origin.y << ',' << right << ',' << bottom
-        << "],\"pointerInsideRoi\":" << (pointerInsideRoi ? "true" : "false") << "}\n";
+        << "],\"pointerInsideRoi\":" << (pointerInsideRoi ? "true" : "false") << ",\"occluder\":{\"hwnd\":\""
+        << reinterpret_cast<std::uintptr_t>(visibility.firstOccluder) << "\",\"processId\":" << visibility.firstOccluderProcessId
+        << ",\"child\":" << (visibility.firstOccluderIsChild ? "true" : "false") << ",\"rect\":["
+        << visibility.firstOccluderRect.left << ',' << visibility.firstOccluderRect.top << ',' << visibility.firstOccluderRect.right << ','
+        << visibility.firstOccluderRect.bottom << "]}}\n";
     return visible ? 0 : 4;
 }

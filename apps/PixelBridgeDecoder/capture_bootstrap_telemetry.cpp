@@ -84,6 +84,67 @@ void WriteStatus(std::ostream& stream, const CaptureStatus& status)
     stream << "{\"code\":\"" << GetCaptureErrorName(status.code) << "\",\"stage\":" << static_cast<unsigned int>(status.stage)
            << ",\"native\":" << status.nativeError << '}';
 }
+
+void WriteShapeMargin(std::ostream& stream, const pbmodulation::ShapeChromaMargin& margin)
+{
+    stream << "{\"samples\":" << margin.samples << ",\"bins\":" << pbmodulation::kShapeChromaMetricBins << ",\"quantileResolution\":";
+    WriteNumber(stream, 1.0 / static_cast<double>(pbmodulation::kShapeChromaMetricBins - 1));
+    stream << ",\"min\":";
+    if (margin.samples == 0)
+    {
+        stream << "null,\"P50\":null,\"P01\":null,\"P001\":null}";
+        return;
+    }
+    WriteNumber(stream, margin.minimum);
+    stream << ",\"P50\":";
+    WriteNumber(stream, margin.p50);
+    stream << ",\"P01\":";
+    WriteNumber(stream, margin.p01);
+    stream << ",\"P001\":";
+    WriteNumber(stream, margin.p001);
+    stream << '}';
+}
+
+void WriteShapeChromaObservation(std::ostream& stream, const pbmodulation::ShapeChromaObservation& observation)
+{
+    stream << "{\"erasure\":\"" << pbmodulation::GetShapeChromaErasureName(observation.erasure)
+           << "\",\"bootstrapErasure\":\"" << pbmodulation::GetLocalDesktopErasureName(observation.bootstrap.erasure)
+           << "\",\"profileId\":\"" << pbmodulation::kShapeChromaProfileId << "\",\"dataBytes\":" << observation.dataBytes
+           << ",\"dataWorkUnits\":" << observation.dataWorkUnits << ",\"unreliableShapeTiles\":" << observation.unreliableShapeTiles
+           << ",\"unreliableChromaTiles\":" << observation.unreliableChromaTiles << ",\"pixelError\":\""
+           << pbmodulation::GetLocalDesktopErasureName(observation.pixelError) << "\",\"scaleX\":";
+    WriteNumber(stream, observation.bootstrap.geometry.scaleX);
+    stream << ",\"scaleY\":";
+    WriteNumber(stream, observation.bootstrap.geometry.scaleY);
+    stream << ",\"originX\":";
+    WriteNumber(stream, observation.bootstrap.geometry.originX);
+    stream << ",\"originY\":";
+    WriteNumber(stream, observation.bootstrap.geometry.originY);
+    stream << ",\"markerResidualPixels\":";
+    WriteNumber(stream, observation.bootstrap.geometry.markerResidualPixels);
+    stream << ",\"calibration\":{\"centroids\":[";
+    for (std::size_t state = 0; state < observation.calibration.centroids.size(); state++)
+    {
+        if (state != 0)
+        {
+            stream << ',';
+        }
+        stream << '[';
+        WriteNumber(stream, observation.calibration.centroids[state][0]);
+        stream << ',';
+        WriteNumber(stream, observation.calibration.centroids[state][1]);
+        stream << ']';
+    }
+    stream << "],\"minimumSeparation\":";
+    WriteNumber(stream, observation.calibration.minimumSeparation);
+    stream << ",\"spatialDeviation\":";
+    WriteNumber(stream, observation.calibration.spatialDeviation);
+    stream << "},\"shapeMargin\":";
+    WriteShapeMargin(stream, observation.shapeMargin);
+    stream << ",\"chromaMargin\":";
+    WriteShapeMargin(stream, observation.chromaMargin);
+    stream << '}';
+}
 } // namespace
 
 std::string SerializeBootstrapDiagnosticEvent(const BootstrapDiagnosticEvent& event)
@@ -92,7 +153,8 @@ std::string SerializeBootstrapDiagnosticEvent(const BootstrapDiagnosticEvent& ev
     const auto& visual = event.visual;
     std::ostringstream stream;
     Configure(stream);
-    stream << "{\"event\":\"" << (event.desktopLevels ? "desktop-levels-observation" : "bootstrap-observation")
+    stream << "{\"event\":\"" << (event.desktopLevels ? "desktop-levels-observation" :
+        event.shapeChroma ? "shape-chroma-observation" : "bootstrap-observation")
            << "\",\"backend\":\"" << BackendName(metadata.backend) << "\",\"domain\":";
     WriteDomain(stream, metadata.domain);
     stream << ",\"observation\":\"" << metadata.captureObservation << "\",\"sourceGeneration\":\"" << metadata.sourceGeneration
@@ -187,6 +249,13 @@ std::string SerializeBootstrapDiagnosticEvent(const BootstrapDiagnosticEvent& ev
         stream << ",\"evaluation\":";
         pbdesktoplevels::WriteEvaluationJson(stream, event.levels.evaluation);
     }
+    else if (event.shapeChroma)
+    {
+        stream << ",\"shapeChroma\":";
+        WriteShapeChromaObservation(stream, event.shape.modulation);
+        stream << ",\"evaluation\":";
+        pbdesktoplevels::WriteEvaluationJson(stream, event.shape.evaluation);
+    }
     stream << "}\n";
     return stream.str();
 }
@@ -252,7 +321,7 @@ std::string SerializeCaptureBootstrapSnapshot(const char* eventType, const Captu
         stream << readback.drops[index];
     }
     stream << "],\"workerStopped\":" << readback.workerStopped;
-    if (visual.desktopLevels)
+    if (visual.desktopLevels || visual.shapeChroma)
     {
         stream << ",\"processingReservedBytes\":" << readback.reservation.processingBytes;
     }
@@ -292,6 +361,17 @@ std::string SerializeCaptureBootstrapSnapshot(const char* eventType, const Captu
             stream << '}';
         }
         stream << "]}";
+    }
+    else if (visual.shapeChroma)
+    {
+        stream << ",\"shapeChroma\":{\"unrecognizedBootstrap\":" << visual.unrecognizedBootstrap
+               << ",\"statisticsFailures\":" << visual.statisticsFailures << ",\"candidate\":{\"candidate\":\"shape-chroma\",\"geometryErasures\":"
+               << visual.shape.geometryErasures << ",\"pilotErasures\":" << visual.shape.pilotErasures << ",\"otherErasures\":"
+               << visual.shape.otherErasures << ",\"duplicates\":" << visual.shape.duplicates << ",\"metrics\":";
+        pbdesktoplevels::WriteStatisticsJson(stream, visual.shape.statistics);
+        stream << ",\"chromaMargin\":";
+        WriteShapeMargin(stream, visual.shape.chromaMargin);
+        stream << "}}";
     }
     stream << ",\"linkMetrics\":";
     pbtelemetry::WriteTelemetryJson(stream, visual.telemetry);

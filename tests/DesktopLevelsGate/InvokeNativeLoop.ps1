@@ -5,11 +5,12 @@ param(
     [Parameter(Mandatory)][string]$Decoder,
     [Parameter(Mandatory)][string]$Support,
     [Parameter(Mandatory)][ValidateSet('wgc','dxgi')][string]$Backend,
-    [Parameter(Mandatory)][ValidateSet(2,4)][int]$Tile,
+    [Parameter(Mandatory)][ValidateSet('desktop-levels-2x2','desktop-levels-4x4','shape-chroma')][string]$Candidate,
     [Parameter(Mandatory)][string]$EvidenceRoot
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'NativeLoopPolicy.ps1')
 
 function Write-NewText([string]$Path, [string]$Text)
 {
@@ -39,25 +40,17 @@ function Start-OwnedProcess([string]$Executable, [string[]]$Arguments)
     return @{ Process=$process; Output=$process.StandardOutput.ReadToEndAsync(); Error=$process.StandardError.ReadToEndAsync() }
 }
 
-$runName = "{0}-{1}-{2}x{2}-{3}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'),$Backend,$Tile,([Guid]::NewGuid().ToString('N'))
+$runName = "{0}-{1}-{2}-{3}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'),$Backend,$Candidate,([Guid]::NewGuid().ToString('N'))
 $directory = [IO.Path]::GetFullPath((Join-Path $EvidenceRoot $runName))
 [IO.Directory]::CreateDirectory($directory) | Out-Null
 $sender = $null
 $receiver = $null
-# The release group keeps the full 16-phase certification demand. The ASan
-# group delivers frames slower than the 640 ms sequence cadence, so it keeps
-# a documented baseline demand (end-to-end decode + memory safety) measured
-# over the same full 30-second capture window.
 $nativeModeRaw = $env:PB_DESKTOP_LEVELS_NATIVE_MODE
 $nativeMode = if ($null -ne $nativeModeRaw) { $nativeModeRaw.ToLower() } else { 'release' }
-$minVerifiedFrames = 16
-$minVerifiedPhases = 16
-if ($nativeMode -eq 'asan')
-{
-    $minVerifiedFrames = 8
-    $minVerifiedPhases = 8
-}
-$result = [ordered]@{ Gate='FAIL'; Backend=$Backend; Candidate="desktop-levels-${Tile}x${Tile}"; CaptureSeconds=30; NativeMode=$nativeMode; RequiredVerifiedFrames=$minVerifiedFrames; RequiredVerifiedPhases=$minVerifiedPhases; Evidence=$directory }
+$policy = Get-DesktopLevelsNativeLoopPolicy $nativeMode
+$minVerifiedFrames = $policy.RequiredVerifiedFrames
+$minVerifiedPhases = $policy.RequiredVerifiedPhases
+$result = [ordered]@{ Gate='FAIL'; Backend=$Backend; Candidate=$Candidate; CaptureSeconds=$policy.CaptureSeconds; NativeMode=$nativeMode; RequiredVerifiedFrames=$minVerifiedFrames; RequiredVerifiedPhases=$minVerifiedPhases; Evidence=$directory }
 $commands = [Collections.Generic.List[object]]::new()
 $visibility = [Collections.Generic.List[object]]::new()
 $exitCode = 1
@@ -77,33 +70,42 @@ try
     if ($Backend -eq 'dxgi' -and $environment.pointerInsideRoi) { throw 'Pointer is inside the capture ROI; move it outside the region and re-run the gate' }
     $encoderLog = Join-Path $directory 'encoder.jsonl'
     $decoderLog = Join-Path $directory 'decoder.jsonl'
-    # 50 frames x 640 ms = 32 s, longer than the decoder's 30 s capture window
-    # so the data window stays open for the whole run; every sequence phase
-    # (FrameSequence % 16) is submitted 3-4 times, at least 10.24 s between
-    # same-phase copies, so no single readback stall can eliminate a phase.
-    $encoderArguments = @('--visual',"desktop-levels-${Tile}x${Tile}",'--frames','50','--sequence-interval-ms','640','--telemetry',$encoderLog)
+    # The finite sender lifetime exceeds the receiver's bounded deadline, not
+    # merely its requested capture duration. CPU diagnostic work can make a
+    # nominal 30-second run finish several seconds late. The sender is closed
+    # naturally after receiver shutdown; this keeps a zero exit status and a
+    # complete sender telemetry record. Same-phase copies remain 10.24 s apart.
+    $encoderArguments = @('--visual',$Candidate,'--frames',"$($policy.SenderFrames)",'--sequence-interval-ms',"$($policy.SequenceIntervalMilliseconds)",'--telemetry',$encoderLog)
     $commands.Add(@{Executable=$Encoder;Arguments=$encoderArguments})
     # Finite sender lifetime also bounds cleanup if the parent is terminated.
     $sender = Start-OwnedProcess $Encoder $encoderArguments
     $window = $null
+    $lastWindowText = ''
+    $lastWindowExit = $null
     $windowDeadline = [DateTime]::UtcNow.AddSeconds(8)
     while ([DateTime]::UtcNow -lt $windowDeadline -and -not $sender.Process.HasExited)
     {
         $windowText = (& $Support --window $sender.Process.Id | Out-String)
-        if ($LASTEXITCODE -eq 0)
+        $lastWindowText = $windowText.Trim()
+        $lastWindowExit = $LASTEXITCODE
+        if ($lastWindowExit -eq 0)
         {
             $window = $windowText | ConvertFrom-Json
             if ($window.found -and $window.visible) { break }
         }
         Start-Sleep -Milliseconds 100
     }
-    if ($null -eq $window -or -not $window.visible) { throw 'Test-owned Encoder DataWindow was not fully visible' }
+    if ($null -eq $window -or -not $window.visible)
+    {
+        throw "Test-owned Encoder DataWindow was not fully visible (probeExit=$lastWindowExit; probe=$lastWindowText; encoderExited=$($sender.Process.HasExited))"
+    }
     if (($window.roi -join ',') -ne ($environment.roi -join ',')) { throw 'Encoder physical ROI does not match the validated monitor region' }
     $visibility.Add($window)
-    $decoderArguments = @('--capture-desktop-levels','--backend',$Backend,'--seconds','30','--roi') + @($window.roi | ForEach-Object { [string]$_ }) + @('--telemetry',$decoderLog)
+    $decoderMode = if ($Candidate -eq 'shape-chroma') { '--capture-shape-chroma' } else { '--capture-desktop-levels' }
+    $decoderArguments = @($decoderMode,'--backend',$Backend,'--seconds',"$($policy.CaptureSeconds)",'--roi') + @($window.roi | ForEach-Object { [string]$_ }) + @('--telemetry',$decoderLog)
     $commands.Add(@{Executable=$Decoder;Arguments=$decoderArguments})
     $receiver = Start-OwnedProcess $Decoder $decoderArguments
-    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    $deadline = [DateTime]::UtcNow.AddSeconds($policy.ReceiverDeadlineSeconds)
     while (-not $receiver.Process.HasExited)
     {
         if ([DateTime]::UtcNow -ge $deadline) { throw 'Decoder exceeded bounded capture/init/shutdown duration' }
@@ -117,7 +119,7 @@ try
         Start-Sleep -Milliseconds 400
     }
     $receiver.Process.WaitForExit()
-    if (-not $sender.Process.WaitForExit(18000)) { throw 'Finite Encoder did not finish its 50 submissions' }
+    if (-not $sender.Process.WaitForExit($policy.SenderShutdownMilliseconds)) { throw 'Finite Encoder did not finish its bounded submissions' }
     $result['EncoderExit'] = $sender.Process.ExitCode
     $result['DecoderExit'] = $receiver.Process.ExitCode
     $rows = @(Get-Content -LiteralPath $decoderLog | ForEach-Object { $_ | ConvertFrom-Json })
@@ -128,24 +130,28 @@ try
     if ($final.hdr -or $final.colorSpace -ne 0) { throw 'Final capture output is HDR/unknown instead of SDR' }
     if ($final.readback.processingReservedBytes -ne 16777216) { throw 'Processor reservation was not included in readback accounting' }
     if ($final.visual.diagnosticQueueDrops -ne 0 -or $final.staleDiagnosticEvents -ne 0) { throw 'Observation evidence lost before JSONL serialization' }
-    if ($final.desktopLevels.statisticsFailures -ne 0 -or $final.visual.identityConflicts -ne 0) { throw 'Statistics overflow or profile/identity conflict' }
-    $candidateIndex = if ($Tile -eq 2) { 0 } else { 1 }
-    $candidate = $final.desktopLevels.candidates[$candidateIndex]
-    $metrics = $candidate.metrics
+    $physical = if ($Candidate -eq 'shape-chroma') { $final.shapeChroma } else { $final.desktopLevels }
+    if ($physical.statisticsFailures -ne 0 -or $final.visual.identityConflicts -ne 0) { throw 'Statistics overflow or profile/identity conflict' }
+    $candidateIndex = if ($Candidate -eq 'desktop-levels-2x2') { 0 } elseif ($Candidate -eq 'desktop-levels-4x4') { 1 } else { -1 }
+    $candidateSummary = if ($Candidate -eq 'shape-chroma') { $physical.candidate } else { $physical.candidates[$candidateIndex] }
+    $metrics = $candidateSummary.metrics
     # Keep measured failures and zero-denominator nulls in failed reports too.
     $result['Metrics'] = $metrics
-    $result['GeometryErasures'] = $candidate.geometryErasures
-    $result['PilotErasures'] = $candidate.pilotErasures
-    $result['UnrecognizedBootstrap'] = $final.desktopLevels.unrecognizedBootstrap
-    $result['Duplicates'] = $candidate.duplicates
+    $result['GeometryErasures'] = $candidateSummary.geometryErasures
+    $result['PilotErasures'] = $candidateSummary.pilotErasures
+    $result['UnrecognizedBootstrap'] = $physical.unrecognizedBootstrap
+    $result['Duplicates'] = $candidateSummary.duplicates
     $result['CaptureDrops'] = $final.droppedFrames
     $result['ReadbackDrops'] = $final.readback.drops
     if ($sender.Process.ExitCode -ne 0 -or $receiver.Process.ExitCode -ne 0)
     {
         throw "Native entries failed: encoder=$($sender.Process.ExitCode) decoder=$($receiver.Process.ExitCode)"
     }
-    $other = $final.desktopLevels.candidates[1 - $candidateIndex].metrics
-    if ($other.frames -ne 0) { throw 'A different candidate was silently admitted' }
+    if ($candidateIndex -ge 0)
+    {
+        $other = $physical.candidates[1 - $candidateIndex].metrics
+        if ($other.frames -ne 0) { throw 'A different candidate was silently admitted' }
+    }
     if ($metrics.falseAcceptedCodewords -ne 0) { throw 'CRC-valid non-truth data was observed' }
     $verifiedPhaseCount = 0
     [UInt64]$verifiedPhaseMask = $metrics.verifiedPhases
@@ -163,7 +169,8 @@ try
     [UInt64]$preFailed = 0; [UInt64]$postFailed = 0; [UInt64]$verified = 0
     [UInt64]$phases = 0
     $identities = [Collections.Generic.HashSet[string]]::new()
-    foreach ($row in @($rows | Where-Object event -eq 'desktop-levels-observation'))
+    $observationEvent = if ($Candidate -eq 'shape-chroma') { 'shape-chroma-observation' } else { 'desktop-levels-observation' }
+    foreach ($row in @($rows | Where-Object event -eq $observationEvent))
     {
         if ($row.hdr -or $row.signalEncoding -eq 0) { throw 'Unsupported signal reached an observation during the SDR run' }
         if ($row.disposition -notin @('Accepted','PostFecFailure')) { continue }

@@ -42,7 +42,7 @@ add_test(NAME PBDecoderTelemetryJson
     COMMAND "${CMAKE_COMMAND}" "-DPB_PROBE=$<TARGET_FILE:PBDecoderTelemetryProbe>" -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyTelemetryJson.cmake")
 set_tests_properties(PBDecoderTelemetryJson PROPERTIES LABELS "bootstrap;decoder;telemetry" TIMEOUT 20)
 
-PbAddUnitTest(PBBootstrapDiagnosticTests test_bootstrap_diagnostic.cpp test_desktop_levels_diagnostic.cpp
+PbAddUnitTest(PBBootstrapDiagnosticTests test_bootstrap_diagnostic.cpp test_desktop_levels_diagnostic.cpp test_shape_chroma_diagnostic.cpp
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/bootstrap_diagnostic.cpp"
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp")
 target_link_libraries(PBBootstrapDiagnosticTests PRIVATE PB::PBCaptureNormalize PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol PB::PBTelemetry d3d11 dxgi)
