@@ -14,6 +14,12 @@
 
 没有生成 `docs/P1_5_SUNLOGIN_REALITY_REPORT.md`，因为新实现尚未完成正式双机矩阵、真实 Replay、QoS 恢复验证和同提交 LocalDesktop 回归；把本检查点伪装成最终验收报告会越过证据边界。
 
+### 1.1 2026-08-31 低刷新率后续提交增量
+
+在不修改上述 sealed checkpoint 身份的前提下，后续提交 `9b8e8063a56251040cddb6b01e38c4343779571f`（tree `0da0ea8a9e8a1260b3972098a3efdf87b0c096de`）新增 `PB-RemoteVisual-LF4-X1` CPU/reference 候选：每个 8×8 tile 使用 16 个 balanced Walsh bitmap 之一，承载四个独立 Robust QC-LDPC plane；每帧 coded bytes 从 2025 增至 8100，Transport payload ceiling 从 1314 B 增至 5256 B。locator 直接支持连续 0.5..2.0 axis-aligned scale；一个被前帧替换的完整 freshness region 已在测试中被置为四平面 soft erasure，并通过共享 QC-LDPC/Transport truth boundary 恢复。
+
+同时，当前已公开的 `RemoteVisual Resilient 8x8 Luma` 运行时被强制限制为 1..5 logical FPS；`0` 和 `>5` 均拒绝。LF4 仍未暴露到 GUI，也未接入 D3D11 production demod，因此本增量不改变 `RemoteVisualSmokePass=NotEvaluated` 或 `CertifiedRemoteVisualProfile=false`。完整路线和证据边界见 `REMOTE_VISUAL_LOW_FPS_TECHNICAL_ROUTE.md`。
+
 ## 2. 已取得的真实基线证据
 
 ### 2.1 修改前 LocalDesktop reference

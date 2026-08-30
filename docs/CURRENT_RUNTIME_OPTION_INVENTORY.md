@@ -19,10 +19,11 @@ Status: implementation inventory for the first Windows GUI. This document record
 | Compression level | Advanced, enabled only when compression is on | `pbcompression::CompressionSettings::compressionLevel` | Range 1..22 for the pinned zstd baseline. It is local preparation tuning and is not a wire field. |
 | Visual Profile: Direct-Level 2x2 | Enabled, Experimental | `pbmodulation::kDesktopLevels2ProfileId`, `EncodeDesktopLevelsFrame` | Current Phase-1 physical file Gate path. Fixed 1920 x 1080, strict 1:1 physical pixels. |
 | Visual Profile: Shape+Chroma | Enabled, Experimental | `pbmodulation::kShapeChromaProfileId`, `EncodeShapeChromaFrame` | Current experimental A/B Gate path. Not a Certified Profile. |
+| Visual Profile: RemoteVisual Resilient 8x8 Luma | Enabled, Experimental | `pbmodulation::kRemoteVisualProfileId`, `EncodeRemoteVisualFrame` | Current one-bit/tile production experiment. It remains strict 1920×1080/1:1 on the D3D11 receive path and is not the new LF4 profile. |
 | Outer FEC | Read-only automatic | `pbouterfec::ChooseOuterFecMode`, `DirectRepeatEncoder`, `WirehairV2Encoder` | DirectRepeat is selected for the existing tiny-segment threshold; Wirehair V2 is selected otherwise. The UI cannot construct an illegal override. |
 | Inner FEC | Read-only | `pbinnerfec::kInnerFecProfileIdRobust`, `EncodeQcLdpcCodeword` | Fixed robust DVB-S2 Short QC-LDPC profile. No override is exposed. |
 | Target monitor | Enabled | `pbrenderd3d::DataWindowConfig::clientOrigin` after application-layer Win32 monitor enumeration | Selects the existing D3D11 Data Window. A fixed 1920 x 1080 client canvas is centered in the monitor work area when it fits, otherwise centered in the physical monitor; Qt never paints the payload. |
-| Frame hold / Present candidate | Not exposed | current `PBRenderD3D::DataWindow` timing and flip-model contract | There is no safely supported arbitrary hold override in the current Data Window public API. |
+| Logical Visual FPS / stable dwell | Advanced | application scheduler; `DataWindow` continues presenting the latest immutable texture | Local profiles allow 0 (presentation-driven) or 1..240. RemoteVisual requires 1..5, defaults to 2 (500 ms), and rejects both 0 and >5. Repeated Present does not create new logical data. |
 
 ## Decoder options with real bindings
 
@@ -53,11 +54,13 @@ They never change CRC, FEC, digest, descriptor, or final-publish acceptance.
 
 ## Hidden future capabilities
 
+- `PB-RemoteVisual-LF4-X1` now has an experimental CPU/reference encoder, scale-aware decoder, four-codeword QC-LDPC/Transport truth path and adversarial scale/stale-region tests. It is intentionally hidden from the product enum/GUI until simulator, D3D11 and real two-machine Gates pass; see `REMOTE_VISUAL_LOW_FPS_TECHNICAL_ROUTE.md`.
+
 - Offline MP4/NVENC generation and playback are hidden; Phase 4 is not implemented.
 - `PBRealCaptureReplay` remains an existing bounded library/Gate artifact, but this first GUI has no truthful live record/replay controller binding; no replay button or fake setting is exposed.
 - Direct-Level 4x4 is hidden from the file-transfer GUI. A physical-layer candidate exists, but it is not in the Phase-1 full-file Gate matrix.
 - Multi-Segment files and arbitrary-size files are hidden/rejected.
 - Receiver-to-Sender feedback, sender-side receiver progress, transfer-completion ETA, and automatic sender completion do not exist.
 - Certified Profile labels are not shown. Both selectable current paths remain explicitly Experimental.
-- Automatic capture-backend fallback, arbitrary resize/resampling, RemoteVisual magic thresholds, adaptive profile switching, and protocol-state persistence are not available.
+- Automatic capture-backend fallback, production arbitrary resize/resampling, adaptive profile switching, and protocol-state persistence are not available. LF4 CPU reference accepts bounded continuous scale 0.5..2.0, but this is not yet a production GPU capability.
 - Application-generated Control records must fit the current fixed Control window. A completed fragmented Control record is rejected fail-closed because this product path has no separate application binding for it.
