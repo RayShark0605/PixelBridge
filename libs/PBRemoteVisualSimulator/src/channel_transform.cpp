@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <ranges>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -161,6 +162,55 @@ struct ValidationResult
     }
     output = result.Value();
     return true;
+}
+
+[[nodiscard]] bool TryAccumulateWork(const std::uint64_t perImageWork, const bool appliesToReference,
+    std::uint64_t& totalWork, const ChannelTransformPolicy& policy) noexcept
+{
+    std::uint64_t transformWork = perImageWork;
+    if (appliesToReference && !TryAddWithin(transformWork, perImageWork, policy.maximumWorkUnits, transformWork))
+    {
+        return false;
+    }
+    return TryAddWithin(totalWork, transformWork, policy.maximumWorkUnits, totalWork);
+}
+
+[[nodiscard]] bool CanAllocateImageTransform(const BgraImage& current, const std::optional<BgraImage>& reference,
+    const std::uint64_t outputBytes, const bool transformsReference,
+    const ChannelTransformPolicy& policy) noexcept
+{
+    std::uint64_t currentAndReferenceBytes = current.pixels.size();
+    if (reference && !TryAddWithin(currentAndReferenceBytes, reference->pixels.size(),
+        policy.maximumResidentBytes, currentAndReferenceBytes))
+    {
+        return false;
+    }
+    std::uint64_t currentAllocationPeak = 0;
+    if (!TryAddWithin(currentAndReferenceBytes, outputBytes, policy.maximumResidentBytes, currentAllocationPeak))
+    {
+        return false;
+    }
+    if (!reference || !transformsReference)
+    {
+        return true;
+    }
+    std::uint64_t newCurrentAndOldReference = 0;
+    if (!TryAddWithin(outputBytes, reference->pixels.size(), policy.maximumResidentBytes,
+        newCurrentAndOldReference))
+    {
+        return false;
+    }
+    std::uint64_t referenceAllocationPeak = 0;
+    return TryAddWithin(newCurrentAndOldReference, outputBytes, policy.maximumResidentBytes,
+        referenceAllocationPeak);
+}
+
+[[nodiscard]] bool IsRectangleValid(const std::uint32_t imageWidth, const std::uint32_t imageHeight,
+    const std::uint32_t x, const std::uint32_t y, const std::uint32_t width,
+    const std::uint32_t height) noexcept
+{
+    return width > 0 && height > 0 && x < imageWidth && y < imageHeight &&
+        width <= imageWidth - x && height <= imageHeight - y;
 }
 
 [[nodiscard]] ChannelTransformErrorCode ValidateResample(const ResampleTransform& transform,
@@ -391,6 +441,244 @@ void ApplyBlockReplacement(BgraImage& current, const BgraImage& reference,
     }
 }
 
+[[nodiscard]] ChannelTransformErrorCode ValidateKernel(const Kernel3x3Transform& transform,
+    const BgraImage& image, const ChannelTransformPolicy& policy, std::uint64_t& workUnits) noexcept
+{
+    if ((transform.kernel != FixedKernel3x3::BoxBlur && transform.kernel != FixedKernel3x3::GaussianBlur &&
+        transform.kernel != FixedKernel3x3::Sharpen) || transform.passes == 0 ||
+        transform.passes > kMaximumKernelPasses)
+    {
+        return ChannelTransformErrorCode::InvalidParameter;
+    }
+    const auto pixelsResult = pbprotocol::CheckedMultiplyUint64(image.width, image.height);
+    const auto samplesResult = pixelsResult ? pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), 9) : pixelsResult;
+    const auto workResult = samplesResult ?
+        pbprotocol::CheckedMultiplyUint64(samplesResult.Value(), transform.passes) : samplesResult;
+    if (!workResult || workResult.Value() > policy.maximumWorkUnits)
+    {
+        return ChannelTransformErrorCode::WorkLimitExceeded;
+    }
+    workUnits = workResult.Value();
+    return ChannelTransformErrorCode::None;
+}
+
+[[nodiscard]] ChannelTransformResult<BgraImage> ApplyKernelPass(const BgraImageView& source,
+    const FixedKernel3x3 kernel)
+{
+    static constexpr std::array<int, 9> kBoxWeights{1, 1, 1, 1, 1, 1, 1, 1, 1};
+    static constexpr std::array<int, 9> kGaussianWeights{1, 2, 1, 2, 4, 2, 1, 2, 1};
+    static constexpr std::array<int, 9> kSharpenWeights{0, -1, 0, -1, 5, -1, 0, -1, 0};
+    const std::array<int, 9>* weights = &kGaussianWeights;
+    int divisor = 16;
+    if (kernel == FixedKernel3x3::BoxBlur)
+    {
+        weights = &kBoxWeights;
+        divisor = 9;
+    }
+    else if (kernel == FixedKernel3x3::Sharpen)
+    {
+        weights = &kSharpenWeights;
+        divisor = 1;
+    }
+    try
+    {
+        BgraImage output;
+        output.width = source.width;
+        output.height = source.height;
+        output.rowPitch = static_cast<std::size_t>(source.width) * 4;
+        output.pixels.resize(output.rowPitch * output.height);
+        for (std::uint32_t y = 0; y < source.height; y++)
+        {
+            for (std::uint32_t x = 0; x < source.width; x++)
+            {
+                std::byte* destination = output.pixels.data() + static_cast<std::size_t>(y) * output.rowPitch +
+                    static_cast<std::size_t>(x) * 4;
+                for (std::size_t channel = 0; channel < 3; channel++)
+                {
+                    int sum = 0;
+                    std::size_t weightIndex = 0;
+                    for (std::int32_t offsetY = -1; offsetY <= 1; offsetY++)
+                    {
+                        const std::uint32_t sourceY = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+                            static_cast<std::int64_t>(y) + offsetY, 0, source.height - 1ULL));
+                        const std::byte* row = source.pixels.data() + static_cast<std::size_t>(sourceY) * source.rowPitch;
+                        for (std::int32_t offsetX = -1; offsetX <= 1; offsetX++)
+                        {
+                            const std::uint32_t sourceX = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+                                static_cast<std::int64_t>(x) + offsetX, 0, source.width - 1ULL));
+                            sum += std::to_integer<int>(row[static_cast<std::size_t>(sourceX) * 4 + channel]) *
+                                (*weights)[weightIndex];
+                            weightIndex++;
+                        }
+                    }
+                    const int rounded = divisor == 1 ? sum : (sum + divisor / 2) / divisor;
+                    destination[channel] = static_cast<std::byte>(static_cast<unsigned char>(std::clamp(rounded, 0, 255)));
+                }
+                destination[3] = source.pixels[static_cast<std::size_t>(y) * source.rowPitch +
+                    static_cast<std::size_t>(x) * 4 + 3];
+            }
+        }
+        return ChannelTransformResult<BgraImage>::Success(std::move(output));
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ChannelTransformResult<BgraImage>::Failure(ChannelTransformErrorCode::AllocationFailure);
+    }
+    catch (const std::length_error&)
+    {
+        return ChannelTransformResult<BgraImage>::Failure(ChannelTransformErrorCode::AllocationFailure);
+    }
+}
+
+[[nodiscard]] ChannelTransformErrorCode ValidateColorTransfer(const ColorTransferTransform& transform) noexcept
+{
+    if (!std::isfinite(transform.gain) || !std::isfinite(transform.bias) || !std::isfinite(transform.gamma) ||
+        transform.gain < 0 || transform.gain > 4 || transform.bias < -255 || transform.bias > 255 ||
+        transform.gamma < 0.25 || transform.gamma > 4)
+    {
+        return ChannelTransformErrorCode::InvalidParameter;
+    }
+    return ChannelTransformErrorCode::None;
+}
+
+void ApplyColorTransfer(BgraImage& image, const ColorTransferTransform& transform) noexcept
+{
+    for (std::uint32_t y = 0; y < image.height; y++)
+    {
+        std::byte* row = image.pixels.data() + static_cast<std::size_t>(y) * image.rowPitch;
+        for (std::uint32_t x = 0; x < image.width; x++)
+        {
+            std::byte* pixel = row + static_cast<std::size_t>(x) * 4;
+            for (std::size_t channel = 0; channel < 3; channel++)
+            {
+                const double adjusted = std::clamp((std::to_integer<unsigned char>(pixel[channel]) * transform.gain +
+                    transform.bias) / 255.0, 0.0, 1.0);
+                pixel[channel] = RoundedByte(std::pow(adjusted, transform.gamma) * 255.0);
+            }
+        }
+    }
+}
+
+[[nodiscard]] int RoundSignedDivision(const int numerator, const int denominator) noexcept
+{
+    return numerator >= 0 ? (numerator + denominator / 2) / denominator :
+        (numerator - denominator / 2) / denominator;
+}
+
+void ApplyChroma420(BgraImage& image) noexcept
+{
+    for (std::uint32_t blockY = 0; blockY < image.height; blockY += 2)
+    {
+        for (std::uint32_t blockX = 0; blockX < image.width; blockX += 2)
+        {
+            std::array<int, 4> luma{};
+            std::array<std::byte*, 4> pixels{};
+            std::size_t count = 0;
+            int blueDeltaSum = 0;
+            int redDeltaSum = 0;
+            for (std::uint32_t localY = 0; localY < 2 && blockY + localY < image.height; localY++)
+            {
+                for (std::uint32_t localX = 0; localX < 2 && blockX + localX < image.width; localX++)
+                {
+                    std::byte* pixel = image.pixels.data() + static_cast<std::size_t>(blockY + localY) * image.rowPitch +
+                        static_cast<std::size_t>(blockX + localX) * 4;
+                    const int blue = std::to_integer<int>(pixel[0]);
+                    const int green = std::to_integer<int>(pixel[1]);
+                    const int red = std::to_integer<int>(pixel[2]);
+                    luma[count] = (54 * red + 183 * green + 19 * blue + 128) / 256;
+                    blueDeltaSum += blue - luma[count];
+                    redDeltaSum += red - luma[count];
+                    pixels[count] = pixel;
+                    count++;
+                }
+            }
+            const int blueDelta = RoundSignedDivision(blueDeltaSum, static_cast<int>(count));
+            const int redDelta = RoundSignedDivision(redDeltaSum, static_cast<int>(count));
+            for (std::size_t index = 0; index < count; index++)
+            {
+                const int red = std::clamp(luma[index] + redDelta, 0, 255);
+                const int blue = std::clamp(luma[index] + blueDelta, 0, 255);
+                const int green = std::clamp(RoundSignedDivision(256 * luma[index] - 54 * red - 19 * blue, 183), 0, 255);
+                pixels[index][0] = static_cast<std::byte>(static_cast<unsigned char>(blue));
+                pixels[index][1] = static_cast<std::byte>(static_cast<unsigned char>(green));
+                pixels[index][2] = static_cast<std::byte>(static_cast<unsigned char>(red));
+            }
+        }
+    }
+}
+
+[[nodiscard]] ChannelTransformResult<BgraImage> ApplyCrop(const BgraImageView& source,
+    const CropTransform& transform)
+{
+    try
+    {
+        BgraImage output;
+        output.width = transform.width;
+        output.height = transform.height;
+        output.rowPitch = static_cast<std::size_t>(transform.width) * 4;
+        output.pixels.resize(output.rowPitch * output.height);
+        for (std::uint32_t row = 0; row < transform.height; row++)
+        {
+            const std::size_t sourceOffset = static_cast<std::size_t>(transform.y + row) * source.rowPitch +
+                static_cast<std::size_t>(transform.x) * 4;
+            std::memcpy(output.pixels.data() + static_cast<std::size_t>(row) * output.rowPitch,
+                source.pixels.data() + sourceOffset, output.rowPitch);
+        }
+        return ChannelTransformResult<BgraImage>::Success(std::move(output));
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ChannelTransformResult<BgraImage>::Failure(ChannelTransformErrorCode::AllocationFailure);
+    }
+    catch (const std::length_error&)
+    {
+        return ChannelTransformResult<BgraImage>::Failure(ChannelTransformErrorCode::AllocationFailure);
+    }
+}
+
+void ApplySolidOverlay(BgraImage& image, const SolidOverlayTransform& transform) noexcept
+{
+    const unsigned int opacity = transform.opacity;
+    const unsigned int inverseOpacity = 255U - opacity;
+    for (std::uint32_t row = 0; row < transform.height; row++)
+    {
+        std::byte* outputRow = image.pixels.data() + static_cast<std::size_t>(transform.y + row) * image.rowPitch +
+            static_cast<std::size_t>(transform.x) * 4;
+        for (std::uint32_t column = 0; column < transform.width; column++)
+        {
+            std::byte* pixel = outputRow + static_cast<std::size_t>(column) * 4;
+            for (std::size_t channel = 0; channel < 4; channel++)
+            {
+                const unsigned int blended = std::to_integer<unsigned int>(pixel[channel]) * inverseOpacity +
+                    std::to_integer<unsigned int>(transform.bgra[channel]) * opacity;
+                pixel[channel] = static_cast<std::byte>(static_cast<unsigned char>((blended + 127U) / 255U));
+            }
+        }
+    }
+}
+
+void ApplyReferenceBlend(BgraImage& current, const BgraImage& reference,
+    const ReferenceBlendTransform& transform) noexcept
+{
+    const unsigned int referenceWeight = transform.referenceWeight;
+    const unsigned int currentWeight = 255U - referenceWeight;
+    for (std::uint32_t row = 0; row < current.height; row++)
+    {
+        std::byte* currentRow = current.pixels.data() + static_cast<std::size_t>(row) * current.rowPitch;
+        const std::byte* referenceRow = reference.pixels.data() + static_cast<std::size_t>(row) * reference.rowPitch;
+        for (std::uint32_t column = 0; column < current.width; column++)
+        {
+            for (std::size_t channel = 0; channel < 4; channel++)
+            {
+                const std::size_t offset = static_cast<std::size_t>(column) * 4 + channel;
+                const unsigned int blended = std::to_integer<unsigned int>(currentRow[offset]) * currentWeight +
+                    std::to_integer<unsigned int>(referenceRow[offset]) * referenceWeight;
+                currentRow[offset] = static_cast<std::byte>(static_cast<unsigned char>((blended + 127U) / 255U));
+            }
+        }
+    }
+}
+
 void AppendUnsigned(std::string& output, const std::uint64_t value)
 {
     std::array<char, 32> buffer{};
@@ -427,6 +715,70 @@ void AppendDigest(std::string& output, const std::array<std::byte, kChannelDiges
     output.push_back('"');
 }
 
+void AppendBgra(std::string& output, const std::array<std::byte, 4>& bgra)
+{
+    output.push_back('[');
+    for (std::size_t channel = 0; channel < bgra.size(); channel++)
+    {
+        if (channel != 0)
+        {
+            output.push_back(',');
+        }
+        AppendUnsigned(output, std::to_integer<unsigned char>(bgra[channel]));
+    }
+    output.push_back(']');
+}
+
+[[nodiscard]] const char* GetTransformKind(const ChannelTransform& transform) noexcept
+{
+    return std::visit([](const auto& typedTransform) -> const char*
+    {
+        static_cast<void>(typedTransform);
+        using TransformType = std::decay_t<decltype(typedTransform)>;
+        if constexpr (std::is_same_v<TransformType, ResampleTransform>)
+        {
+            return "resample";
+        }
+        else if constexpr (std::is_same_v<TransformType, BlockReplacementTransform>)
+        {
+            return "block-replacement";
+        }
+        else if constexpr (std::is_same_v<TransformType, Kernel3x3Transform>)
+        {
+            return "kernel-3x3";
+        }
+        else if constexpr (std::is_same_v<TransformType, ColorTransferTransform>)
+        {
+            return "color-transfer";
+        }
+        else if constexpr (std::is_same_v<TransformType, ChromaSubsample420Transform>)
+        {
+            return "chroma-420";
+        }
+        else if constexpr (std::is_same_v<TransformType, CropTransform>)
+        {
+            return "crop";
+        }
+        else if constexpr (std::is_same_v<TransformType, SolidOverlayTransform>)
+        {
+            return "solid-overlay";
+        }
+        else
+        {
+            return "reference-blend";
+        }
+    }, transform);
+}
+
+[[nodiscard]] bool RequiresManifestV2(const std::span<const ChannelTransform> transforms) noexcept
+{
+    return std::ranges::any_of(transforms, [](const ChannelTransform& transform)
+    {
+        return !std::holds_alternative<ResampleTransform>(transform) &&
+            !std::holds_alternative<BlockReplacementTransform>(transform);
+    });
+}
+
 void AppendTransformParameters(std::string& output, const ChannelTransform& transform)
 {
     std::visit([&output](const auto& typedTransform)
@@ -448,18 +800,12 @@ void AppendTransformParameters(std::string& output, const ChannelTransform& tran
             AppendBinary64(output, typedTransform.originX);
             output.append(",\"originYBinary64\":");
             AppendBinary64(output, typedTransform.originY);
-            output.append(",\"borderBgra\":[");
-            for (std::size_t channel = 0; channel < typedTransform.borderBgra.size(); channel++)
-            {
-                if (channel != 0)
-                {
-                    output.push_back(',');
-                }
-                AppendUnsigned(output, std::to_integer<unsigned char>(typedTransform.borderBgra[channel]));
-            }
-            output.append("]}");
+            output.append(",\"borderBgra\":");
+            AppendBgra(output, typedTransform.borderBgra);
+            output.push_back('}');
         }
-        else
+        else if constexpr (std::is_same_v<TransformType, BlockReplacementTransform> ||
+            std::is_same_v<TransformType, CropTransform>)
         {
             output.append("{\"x\":");
             AppendUnsigned(output, typedTransform.x);
@@ -471,6 +817,62 @@ void AppendTransformParameters(std::string& output, const ChannelTransform& tran
             AppendUnsigned(output, typedTransform.height);
             output.push_back('}');
         }
+        else if constexpr (std::is_same_v<TransformType, Kernel3x3Transform>)
+        {
+            output.append("{\"kernel\":\"");
+            if (typedTransform.kernel == FixedKernel3x3::BoxBlur)
+            {
+                output.append("box-blur");
+            }
+            else if (typedTransform.kernel == FixedKernel3x3::GaussianBlur)
+            {
+                output.append("gaussian-blur");
+            }
+            else
+            {
+                output.append("sharpen");
+            }
+            output.append("\",\"passes\":");
+            AppendUnsigned(output, typedTransform.passes);
+            output.push_back('}');
+        }
+        else if constexpr (std::is_same_v<TransformType, ColorTransferTransform>)
+        {
+            output.append("{\"gainBinary64\":");
+            AppendBinary64(output, typedTransform.gain);
+            output.append(",\"biasBinary64\":");
+            AppendBinary64(output, typedTransform.bias);
+            output.append(",\"gammaBinary64\":");
+            AppendBinary64(output, typedTransform.gamma);
+            output.push_back('}');
+        }
+        else if constexpr (std::is_same_v<TransformType, ChromaSubsample420Transform>)
+        {
+            static_cast<void>(typedTransform);
+            output.append("{\"matrix\":\"bt709-integer\",\"siting\":\"centered-2x2\"}");
+        }
+        else if constexpr (std::is_same_v<TransformType, SolidOverlayTransform>)
+        {
+            output.append("{\"x\":");
+            AppendUnsigned(output, typedTransform.x);
+            output.append(",\"y\":");
+            AppendUnsigned(output, typedTransform.y);
+            output.append(",\"width\":");
+            AppendUnsigned(output, typedTransform.width);
+            output.append(",\"height\":");
+            AppendUnsigned(output, typedTransform.height);
+            output.append(",\"bgra\":");
+            AppendBgra(output, typedTransform.bgra);
+            output.append(",\"opacity\":");
+            AppendUnsigned(output, typedTransform.opacity);
+            output.push_back('}');
+        }
+        else
+        {
+            output.append("{\"referenceWeight\":");
+            AppendUnsigned(output, typedTransform.referenceWeight);
+            output.push_back('}');
+        }
     }, transform);
 }
 
@@ -479,9 +881,10 @@ void AppendTransformParameters(std::string& output, const ChannelTransform& tran
     std::string output;
     output.reserve(768 + execution.records.size() * 640);
     output.append("{\"schema\":\"");
-    output.append(kChannelManifestSchema);
+    output.append(execution.manifestVersion == kChannelManifestVersionV2 ? kChannelManifestSchemaV2 :
+        kChannelManifestSchema);
     output.append("\",\"version\":");
-    AppendUnsigned(output, kChannelManifestVersion);
+    AppendUnsigned(output, execution.manifestVersion);
     output.append(",\"seedHex\":");
     AppendUint64HexString(output, execution.seed);
     output.append(",\"source\":{\"format\":\"bgra8\",\"width\":");
@@ -510,7 +913,7 @@ void AppendTransformParameters(std::string& output, const ChannelTransform& tran
         output.append("{\"index\":");
         AppendUnsigned(output, record.index);
         output.append(",\"kind\":\"");
-        output.append(std::holds_alternative<ResampleTransform>(record.transform) ? "resample" : "block-replacement");
+        output.append(GetTransformKind(record.transform));
         output.append("\",\"input\":{\"width\":");
         AppendUnsigned(output, record.inputWidth);
         output.append(",\"height\":");
@@ -602,6 +1005,8 @@ ChannelTransformResult<ChannelTransformExecution> ExecuteChannelTransformPlan(co
         currentReference = std::move(referenceResult).Value();
     }
     ChannelTransformExecution execution;
+    execution.manifestVersion = RequiresManifestV2(plan.transforms) ? kChannelManifestVersionV2 :
+        kChannelManifestVersion;
     execution.seed = plan.seed;
     execution.sourceWidth = source.width;
     execution.sourceHeight = source.height;
@@ -648,41 +1053,15 @@ ChannelTransformResult<ChannelTransformExecution> ExecuteChannelTransformPlan(co
             {
                 return ChannelTransformResult<ChannelTransformExecution>::Failure(validation, transformIndex);
             }
-            std::uint64_t transformWorkUnits = workUnits;
-            if (currentReference && !TryAddWithin(transformWorkUnits, workUnits, policy.maximumWorkUnits, transformWorkUnits))
+            if (!TryAccumulateWork(workUnits, currentReference.has_value(), totalWorkUnits, policy))
             {
                 return ChannelTransformResult<ChannelTransformExecution>::Failure(
                     ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
             }
-            if (!TryAddWithin(totalWorkUnits, transformWorkUnits, policy.maximumWorkUnits, totalWorkUnits))
-            {
-                return ChannelTransformResult<ChannelTransformExecution>::Failure(
-                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
-            }
-            std::uint64_t currentAndReferenceBytes = current.pixels.size();
-            if (currentReference && !TryAddWithin(currentAndReferenceBytes, currentReference->pixels.size(),
-                policy.maximumResidentBytes, currentAndReferenceBytes))
+            if (!CanAllocateImageTransform(current, currentReference, outputBytes, currentReference.has_value(), policy))
             {
                 return ChannelTransformResult<ChannelTransformExecution>::Failure(
                     ChannelTransformErrorCode::ByteLimitExceeded, transformIndex);
-            }
-            std::uint64_t allocationPeak = 0;
-            if (!TryAddWithin(currentAndReferenceBytes, outputBytes, policy.maximumResidentBytes, allocationPeak))
-            {
-                return ChannelTransformResult<ChannelTransformExecution>::Failure(
-                    ChannelTransformErrorCode::ByteLimitExceeded, transformIndex);
-            }
-            if (currentReference)
-            {
-                std::uint64_t referenceAllocationPeak = 0;
-                std::uint64_t newCurrentAndOldReference = 0;
-                if (!TryAddWithin(outputBytes, currentReference->pixels.size(), policy.maximumResidentBytes,
-                    newCurrentAndOldReference) || !TryAddWithin(newCurrentAndOldReference, outputBytes,
-                    policy.maximumResidentBytes, referenceAllocationPeak))
-                {
-                    return ChannelTransformResult<ChannelTransformExecution>::Failure(
-                        ChannelTransformErrorCode::ByteLimitExceeded, transformIndex);
-                }
             }
             auto transformedResult = ApplyResample(current.View(), *resample, outputBytes);
             if (!transformedResult)
@@ -717,6 +1096,161 @@ ChannelTransformResult<ChannelTransformExecution> ExecuteChannelTransformPlan(co
                     ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
             }
             ApplyBlockReplacement(current, *currentReference, *block);
+        }
+        else if (const auto* kernel = std::get_if<Kernel3x3Transform>(&transform))
+        {
+            std::uint64_t workUnits = 0;
+            const ChannelTransformErrorCode validation = ValidateKernel(*kernel, current, policy, workUnits);
+            if (validation != ChannelTransformErrorCode::None)
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(validation, transformIndex);
+            }
+            if (!TryAccumulateWork(workUnits, currentReference.has_value(), totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            if (!CanAllocateImageTransform(current, currentReference, current.pixels.size(),
+                currentReference.has_value(), policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::ByteLimitExceeded, transformIndex);
+            }
+            for (std::uint32_t pass = 0; pass < kernel->passes; pass++)
+            {
+                auto filtered = ApplyKernelPass(current.View(), kernel->kernel);
+                if (!filtered)
+                {
+                    return ChannelTransformResult<ChannelTransformExecution>::Failure(filtered.Error().code,
+                        transformIndex);
+                }
+                current = std::move(filtered).Value();
+                if (currentReference)
+                {
+                    auto filteredReference = ApplyKernelPass(currentReference->View(), kernel->kernel);
+                    if (!filteredReference)
+                    {
+                        return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                            filteredReference.Error().code, transformIndex);
+                    }
+                    currentReference = std::move(filteredReference).Value();
+                }
+            }
+        }
+        else if (const auto* color = std::get_if<ColorTransferTransform>(&transform))
+        {
+            const ChannelTransformErrorCode validation = ValidateColorTransfer(*color);
+            if (validation != ChannelTransformErrorCode::None)
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(validation, transformIndex);
+            }
+            const auto pixelsResult = pbprotocol::CheckedMultiplyUint64(current.width, current.height);
+            const auto workResult = pixelsResult ? pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), 3) : pixelsResult;
+            if (!workResult || !TryAccumulateWork(workResult.Value(), currentReference.has_value(), totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            ApplyColorTransfer(current, *color);
+            if (currentReference)
+            {
+                ApplyColorTransfer(*currentReference, *color);
+            }
+        }
+        else if (std::holds_alternative<ChromaSubsample420Transform>(transform))
+        {
+            const auto pixelsResult = pbprotocol::CheckedMultiplyUint64(current.width, current.height);
+            const auto workResult = pixelsResult ? pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), 8) : pixelsResult;
+            if (!workResult || !TryAccumulateWork(workResult.Value(), currentReference.has_value(), totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            ApplyChroma420(current);
+            if (currentReference)
+            {
+                ApplyChroma420(*currentReference);
+            }
+        }
+        else if (const auto* crop = std::get_if<CropTransform>(&transform))
+        {
+            if (!IsRectangleValid(current.width, current.height, crop->x, crop->y, crop->width, crop->height))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::RectangleOutOfBounds, transformIndex);
+            }
+            const auto pixelsResult = pbprotocol::CheckedMultiplyUint64(crop->width, crop->height);
+            const auto bytesResult = pixelsResult ? pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), 4) : pixelsResult;
+            if (!bytesResult || !TryAccumulateWork(pixelsResult.Value(), currentReference.has_value(),
+                totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            if (!CanAllocateImageTransform(current, currentReference, bytesResult.Value(),
+                currentReference.has_value(), policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::ByteLimitExceeded, transformIndex);
+            }
+            auto cropped = ApplyCrop(current.View(), *crop);
+            if (!cropped)
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(cropped.Error().code,
+                    transformIndex);
+            }
+            current = std::move(cropped).Value();
+            if (currentReference)
+            {
+                auto croppedReference = ApplyCrop(currentReference->View(), *crop);
+                if (!croppedReference)
+                {
+                    return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                        croppedReference.Error().code, transformIndex);
+                }
+                currentReference = std::move(croppedReference).Value();
+            }
+        }
+        else if (const auto* overlay = std::get_if<SolidOverlayTransform>(&transform))
+        {
+            if (!IsRectangleValid(current.width, current.height, overlay->x, overlay->y,
+                overlay->width, overlay->height))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::RectangleOutOfBounds, transformIndex);
+            }
+            const auto workResult = pbprotocol::CheckedMultiplyUint64(overlay->width, overlay->height);
+            if (!workResult || !TryAccumulateWork(workResult.Value(), currentReference.has_value(),
+                totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            ApplySolidOverlay(current, *overlay);
+            if (currentReference)
+            {
+                ApplySolidOverlay(*currentReference, *overlay);
+            }
+        }
+        else if (const auto* blend = std::get_if<ReferenceBlendTransform>(&transform))
+        {
+            if (!currentReference)
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::MissingReference, transformIndex);
+            }
+            if (current.width != currentReference->width || current.height != currentReference->height)
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::ReferenceGeometryMismatch, transformIndex);
+            }
+            const auto workResult = pbprotocol::CheckedMultiplyUint64(current.width, current.height);
+            if (!workResult || !TryAccumulateWork(workResult.Value(), false, totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            ApplyReferenceBlend(current, *currentReference, *blend);
         }
         else
         {

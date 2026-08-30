@@ -15,6 +15,8 @@ namespace pbremotevisualsimulator
 
 inline constexpr char kChannelManifestSchema[] = "PixelBridge.RemoteVisualChannelManifest.1";
 inline constexpr std::uint32_t kChannelManifestVersion = 1;
+inline constexpr char kChannelManifestSchemaV2[] = "PixelBridge.RemoteVisualChannelManifest.2";
+inline constexpr std::uint32_t kChannelManifestVersionV2 = 2;
 inline constexpr std::size_t kChannelDigestBytes = 32;
 inline constexpr std::size_t kNoTransformIndex = static_cast<std::size_t>(-1);
 inline constexpr std::uint32_t kMaximumChannelDimension = 8192;
@@ -24,6 +26,7 @@ inline constexpr std::uint64_t kMaximumChannelWorkUnits = 256ULL * 1024 * 1024;
 inline constexpr std::size_t kMaximumChannelTransforms = 64;
 inline constexpr double kMinimumChannelScale = 0.125;
 inline constexpr double kMaximumChannelScale = 4.0;
+inline constexpr std::uint32_t kMaximumKernelPasses = 8;
 
 enum class ChannelTransformErrorCode : std::uint8_t
 {
@@ -169,7 +172,70 @@ struct BlockReplacementTransform
     bool operator==(const BlockReplacementTransform&) const = default;
 };
 
-using ChannelTransform = std::variant<ResampleTransform, BlockReplacementTransform>;
+enum class FixedKernel3x3 : std::uint8_t
+{
+    BoxBlur,
+    GaussianBlur,
+    Sharpen
+};
+
+struct Kernel3x3Transform
+{
+    FixedKernel3x3 kernel = FixedKernel3x3::GaussianBlur;
+    std::uint32_t passes = 1;
+
+    bool operator==(const Kernel3x3Transform&) const = default;
+};
+
+struct ColorTransferTransform
+{
+    // For each B/G/R channel: pow(clamp((value*gain+bias)/255), gamma)*255.
+    // Alpha is preserved. Binary64 parameter bits are written to the manifest.
+    double gain = 1;
+    double bias = 0;
+    double gamma = 1;
+
+    bool operator==(const ColorTransferTransform&) const = default;
+};
+
+struct ChromaSubsample420Transform
+{
+    bool operator==(const ChromaSubsample420Transform&) const = default;
+};
+
+struct CropTransform
+{
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+
+    bool operator==(const CropTransform&) const = default;
+};
+
+struct SolidOverlayTransform
+{
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::array<std::byte, 4> bgra{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}};
+    std::uint8_t opacity = 255;
+
+    bool operator==(const SolidOverlayTransform&) const = default;
+};
+
+struct ReferenceBlendTransform
+{
+    // 0 keeps current; 255 selects reference. Alpha follows the same blend.
+    std::uint8_t referenceWeight = 128;
+
+    bool operator==(const ReferenceBlendTransform&) const = default;
+};
+
+using ChannelTransform = std::variant<ResampleTransform, BlockReplacementTransform, Kernel3x3Transform,
+    ColorTransferTransform, ChromaSubsample420Transform, CropTransform, SolidOverlayTransform,
+    ReferenceBlendTransform>;
 
 struct ChannelTransformPlan
 {
@@ -207,6 +273,7 @@ struct ChannelTransformRecord
 
 struct ChannelTransformExecution
 {
+    std::uint32_t manifestVersion = kChannelManifestVersion;
     std::uint64_t seed = 0;
     std::uint32_t sourceWidth = 0;
     std::uint32_t sourceHeight = 0;
