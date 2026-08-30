@@ -335,7 +335,7 @@ private:
         logicalFpsSpin_->setSpecialValueText(QStringLiteral("Presentation-driven"));
         logicalFpsSpin_->setSuffix(QStringLiteral(" fps"));
         logicalFpsSpin_->setToolTip(QStringLiteral(
-            "限制完整逻辑 raster 的更新频率，使远程视频编码器获得稳定驻留时间；RemoteVisual 默认 2 fps（500 ms），建议用 1/2/5 fps 做 A/B；0 保持历史行为。"));
+            "限制完整逻辑 raster 的更新频率，使远程视频编码器获得稳定驻留时间；RemoteVisual 强制 1..5 fps，默认 2 fps（500 ms），0 仅保留给 LocalDesktop。"));
         controlRepetitionsSpin_ = new QSpinBox();
         controlRepetitionsSpin_->setRange(1, 64);
         controlRepetitionsSpin_->setValue(4);
@@ -524,11 +524,13 @@ private:
         const auto profile = static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt());
         if (profile == pbapp::VisualProfile::RemoteVisualResilient)
         {
+            logicalFpsSpin_->setRange(1, 5);
             logicalFpsSpin_->setValue(2);
             controlRepetitionsSpin_->setValue(12);
         }
         else
         {
+            logicalFpsSpin_->setRange(0, 240);
             logicalFpsSpin_->setValue(0);
             controlRepetitionsSpin_->setValue(4);
         }

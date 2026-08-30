@@ -62,6 +62,7 @@ inline constexpr std::size_t codewordBytes = 2025;
 inline constexpr std::uint32_t minimumControlRepetitions = 1;
 inline constexpr std::uint32_t maximumControlRepetitions = 64;
 inline constexpr std::uint32_t maximumLogicalVisualFps = 240;
+inline constexpr std::uint32_t maximumRemoteVisualLogicalFps = 5;
 inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
 inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
 inline constexpr std::uint32_t captureResultQueueCapacity = 128;
@@ -2916,6 +2917,11 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
         config.controlRepetitions > maximumControlRepetitions)
     {
         return RuntimeStatus::Failure("Logical Visual FPS 必须为 0 或 1..240，Control repetitions 必须为 1..64");
+    }
+    if (config.visualProfile == VisualProfile::RemoteVisualResilient &&
+        (config.logicalVisualFps == 0 || config.logicalVisualFps > maximumRemoteVisualLogicalFps))
+    {
+        return RuntimeStatus::Failure("RemoteVisual Logical Visual FPS 必须为 1..5；0 会恢复高频 presentation-driven 更新，已禁止");
     }
     try
     {
