@@ -2,6 +2,7 @@
 
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/reference_raster.h"
+#include "pbmodulation/remote_visual.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbprotocol/checked_integer.h"
 #include "pbprotocol/control_fragment_codec.h"
@@ -82,6 +83,11 @@ bool ResolveBinding(const std::uint64_t visualProfileId, pbmodulation::LocalDesk
     if (pbmodulation::GetDesktopLevelsProfile(visualProfileId) != nullptr)
     {
         output = {visualProfileId, pbmodulation::kDesktopLevelsLayoutVersion};
+        return true;
+    }
+    if (visualProfileId == pbmodulation::kRemoteVisualProfileId)
+    {
+        output = {visualProfileId, pbmodulation::kRemoteVisualLayoutVersion};
         return true;
     }
     return false;
@@ -852,18 +858,30 @@ CaptureStatus CaptureDemodulator::Completed(const ScreenCaptureFrameMetadata& me
     }
 
     CaptureDemodulatorResult result;
-    result.kind = CaptureDemodulatorResultKind::Transport;
+    const bool remoteControl = demodulation.acceptedRemoteControlBlockCount == 1;
+    result.kind = remoteControl ? CaptureDemodulatorResultKind::ControlRecord :
+        CaptureDemodulatorResultKind::Transport;
     result.metadata = metadata;
     result.bootstrapRecord = bootstrap.canonical44;
     result.bootstrap = bootstrap;
     result.demodulation = demodulation;
+    if (remoteControl)
+    {
+        result.controlByteCount = demodulation.acceptedRemoteControlBlocks[0].byteCount;
+        std::copy_n(demodulation.acceptedRemoteControlBlocks[0].bytes.begin(), result.controlByteCount,
+            result.controlBytes.begin());
+    }
     state.PushResult(result);
     {
         const std::lock_guard lock(state.mutex);
         pbprotocol::SaturatingIncrementUnsigned(state.snapshot.completedFrames);
         state.snapshot.acceptedTransportBlocks = pbprotocol::SaturatingAddUnsigned(state.snapshot.acceptedTransportBlocks,
             static_cast<std::uint64_t>(demodulation.acceptedTransportBlockCount));
-        if (demodulation.evaluation.IsVerified())
+        if (remoteControl)
+        {
+            pbprotocol::SaturatingIncrementUnsigned(state.snapshot.controlFrames);
+        }
+        else if (demodulation.evaluation.IsVerified())
         {
             pbprotocol::SaturatingIncrementUnsigned(state.snapshot.verifiedFrames);
         }

@@ -3,6 +3,7 @@
 #include "encoder_application_controller.h"
 
 #include "monitor_catalog.h"
+#include "remote_visual_metadata_preset_qt.h"
 #include "run_report.h"
 #include "pbcore/build_info.h"
 
@@ -12,6 +13,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -27,7 +29,6 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSaveFile>
-#include <QScreen>
 #include <QSettings>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -85,23 +86,41 @@ namespace
         .arg(bytesPerSecond * 8.0 / 1000000.0, 0, 'f', 2);
 }
 
-void PlaceOnRightmostScreen(QWidget& window)
+[[nodiscard]] bool PlaceOnExperimentMonitor(QWidget& window, const std::wstring_view deviceName) noexcept
 {
-    const QList<QScreen*> screens = QApplication::screens();
-    if (screens.isEmpty())
+    std::vector<pbapp::MonitorInfo> monitors;
+    if (!pbapp::EnumerateMonitors(monitors))
     {
-        return;
+        return false;
     }
-    QScreen* const target = *std::max_element(screens.begin(), screens.end(), [](const QScreen* left,
-        const QScreen* right)
+    const auto match = std::find_if(monitors.begin(), monitors.end(), [deviceName](const pbapp::MonitorInfo& monitor)
     {
-        return left->geometry().left() < right->geometry().left();
+        return monitor.deviceName == deviceName;
     });
-    const QRect available = target->availableGeometry();
-    const int maximumWidth = (std::max)(1, available.width() - 48);
-    const int maximumHeight = (std::max)(1, available.height() - 48);
-    window.resize((std::min)(window.width(), maximumWidth), (std::min)(window.height(), maximumHeight));
-    window.move(available.left() + 24, available.top() + 24);
+    if (match == monitors.end())
+    {
+        return false;
+    }
+    window.setAttribute(Qt::WA_ShowWithoutActivating);
+    const HWND windowHandle = reinterpret_cast<HWND>(window.winId());
+    RECT current{};
+    const std::int64_t availableWidth = static_cast<std::int64_t>(match->workRect.right) - match->workRect.left;
+    const std::int64_t availableHeight = static_cast<std::int64_t>(match->workRect.bottom) - match->workRect.top;
+    if (windowHandle == nullptr || GetWindowRect(windowHandle, &current) == FALSE ||
+        availableWidth <= 48 || availableHeight <= 48)
+    {
+        return false;
+    }
+    const std::int64_t currentWidth = static_cast<std::int64_t>(current.right) - current.left;
+    const std::int64_t currentHeight = static_cast<std::int64_t>(current.bottom) - current.top;
+    if (currentWidth <= 0 || currentHeight <= 0)
+    {
+        return false;
+    }
+    const int width = static_cast<int>((std::min)(currentWidth, availableWidth - 48));
+    const int height = static_cast<int>((std::min)(currentHeight, availableHeight - 48));
+    return SetWindowPos(windowHandle, nullptr, match->workRect.left + 24, match->workRect.top + 24,
+        width, height, SWP_NOACTIVATE | SWP_NOZORDER) != FALSE;
 }
 
 [[nodiscard]] QString StateColor(const pbapp::EncoderState state)
@@ -226,7 +245,10 @@ private:
             static_cast<int>(pbapp::VisualProfile::DirectLevels2x2));
         profileCombo_->addItem(QStringLiteral("Shape+Chroma · Experimental"),
             static_cast<int>(pbapp::VisualProfile::ShapeChroma));
-        profileCombo_->setToolTip(QStringLiteral("两项均为当前 Phase-1 文件 Gate 路径，不是 Certified Profile。"));
+        profileCombo_->addItem(QStringLiteral("RemoteVisual Resilient 8x8 Luma · Experimental"),
+            static_cast<int>(pbapp::VisualProfile::RemoteVisualResilient));
+        profileCombo_->setToolTip(QStringLiteral(
+            "RemoteVisual X2 使用独立 8x8 二值亮度、中央采样、128x128 区域新鲜度标签、同帧软擦除和稳定驻留；面向远控编码器的块损坏/局部刷新，不修改 Direct/Shape。"));
         outerFecLabel_ = new QLabel(QStringLiteral("Automatic: DirectRepeat or Wirehair V2"));
         outerFecLabel_->setToolTip(QStringLiteral("由已编码 Segment 大小和现有 ChooseOuterFecMode 决定；不提供非法 override。"));
         auto* const innerFecLabel = new QLabel(QStringLiteral("Robust DVB-S2 Short QC-LDPC (fixed)"));
@@ -307,18 +329,62 @@ private:
         compressionLevel_->setRange(1, 22);
         compressionLevel_->setValue(3);
         compressionLevel_->setToolTip(QStringLiteral("现有 zstd local tuning，范围 1..22；不写入 wire。"));
+        logicalFpsSpin_ = new QSpinBox();
+        logicalFpsSpin_->setRange(0, 240);
+        logicalFpsSpin_->setValue(0);
+        logicalFpsSpin_->setSpecialValueText(QStringLiteral("Presentation-driven"));
+        logicalFpsSpin_->setSuffix(QStringLiteral(" fps"));
+        logicalFpsSpin_->setToolTip(QStringLiteral(
+            "限制完整逻辑 raster 的更新频率，使远程视频编码器获得稳定驻留时间；RemoteVisual 默认 2 fps（500 ms），建议用 1/2/5 fps 做 A/B；0 保持历史行为。"));
+        controlRepetitionsSpin_ = new QSpinBox();
+        controlRepetitionsSpin_->setRange(1, 64);
+        controlRepetitionsSpin_->setValue(4);
+        controlRepetitionsSpin_->setToolTip(QStringLiteral(
+            "每个 Carousel 中 Session/Manifest/Segment Control 各自的重复次数；不改变 Control wire。"));
         channelCombo_ = new QComboBox();
-        channelCombo_->addItems({QStringLiteral("LocalDesktop"), QStringLiteral("Sunlogin RemoteVisual"),
+        channelCombo_->addItems({QStringLiteral("LocalDesktop"), QStringLiteral("RemoteVisual (provider-agnostic)"),
             QStringLiteral("Other")});
+        remoteProviderEdit_ = new QLineEdit();
+        remoteProviderEdit_->setMaxLength(128);
+        remoteProviderEdit_->setPlaceholderText(QStringLiteral("当前远控软件名称；仅 metadata，不选择阈值"));
         networkNoteEdit_ = new QLineEdit();
         networkNoteEdit_->setPlaceholderText(QStringLiteral("仅 run metadata；不影响 CRC/FEC/digest acceptance"));
+        runIdEdit_ = new QLineEdit();
+        runIdEdit_->setMaxLength(32);
+        runIdEdit_->setPlaceholderText(QStringLiteral("可选：两端共享的 32 字符 lowercase hex RunId"));
+        metadataPresetPathEdit_ = new QLineEdit();
+        metadataPresetPathEdit_->setReadOnly(true);
+        metadataPresetPathEdit_->setPlaceholderText(QStringLiteral("可选：两端共享的 PixelBridge.RemoteVisualRunMetadata.1 JSON"));
+        chooseMetadataPresetButton_ = new QPushButton(QStringLiteral("选择 Metadata…"));
+        clearMetadataPresetButton_ = new QPushButton(QStringLiteral("清除"));
         advancedLayout->addWidget(new QLabel(QStringLiteral("Compression level")), 0, 0);
         advancedLayout->addWidget(compressionLevel_, 0, 1);
         advancedLayout->addWidget(new QLabel(QStringLiteral("ChannelType")), 0, 2);
         advancedLayout->addWidget(channelCombo_, 0, 3);
-        advancedLayout->addWidget(new QLabel(QStringLiteral("Network note")), 1, 0);
-        advancedLayout->addWidget(networkNoteEdit_, 1, 1, 1, 3);
-        advancedLayout->addWidget(telemetryLabel_, 2, 0, 1, 4);
+        advancedLayout->addWidget(new QLabel(QStringLiteral("Logical Visual FPS")), 1, 0);
+        advancedLayout->addWidget(logicalFpsSpin_, 1, 1);
+        advancedLayout->addWidget(new QLabel(QStringLiteral("Control repetitions")), 1, 2);
+        advancedLayout->addWidget(controlRepetitionsSpin_, 1, 3);
+        advancedLayout->addWidget(new QLabel(QStringLiteral("Shared RunId")), 2, 0);
+        advancedLayout->addWidget(runIdEdit_, 2, 1, 1, 3);
+        advancedLayout->addWidget(new QLabel(QStringLiteral("Network note")), 3, 0);
+        advancedLayout->addWidget(networkNoteEdit_, 3, 1, 1, 3);
+        advancedLayout->addWidget(new QLabel(QStringLiteral("Remote provider")), 4, 0);
+        advancedLayout->addWidget(remoteProviderEdit_, 4, 1, 1, 3);
+        advancedLayout->addWidget(new QLabel(QStringLiteral("Metadata preset")), 5, 0);
+        advancedLayout->addWidget(metadataPresetPathEdit_, 5, 1);
+        advancedLayout->addWidget(chooseMetadataPresetButton_, 5, 2);
+        advancedLayout->addWidget(clearMetadataPresetButton_, 5, 3);
+        advancedLayout->addWidget(telemetryLabel_, 6, 0, 1, 4);
+        connect(profileCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &EncoderWindow::ApplyProfileDefaults);
+        connect(runIdEdit_, &QLineEdit::textChanged, this, &EncoderWindow::UpdateActionButtons);
+        connect(channelCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &EncoderWindow::UpdateActionButtons);
+        connect(remoteProviderEdit_, &QLineEdit::textChanged, this, &EncoderWindow::UpdateActionButtons);
+        connect(metadataPresetPathEdit_, &QLineEdit::textChanged, this, &EncoderWindow::UpdateActionButtons);
+        connect(chooseMetadataPresetButton_, &QPushButton::clicked, this, &EncoderWindow::ChooseMetadataPreset);
+        connect(clearMetadataPresetButton_, &QPushButton::clicked, metadataPresetPathEdit_, &QLineEdit::clear);
         root->addWidget(advancedGroup_);
 
         auto* const diagnosticsGroup = new QGroupBox(QStringLiteral("Log / Diagnostics"));
@@ -381,6 +447,92 @@ private:
             sourcePathEdit_->setText(path);
             UpdateFileDetails();
         }
+    }
+
+    void ChooseMetadataPreset()
+    {
+        const QString initial = metadataPresetPathEdit_->text().isEmpty() ?
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) : metadataPresetPathEdit_->text();
+        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("选择 RemoteVisual metadata preset"),
+            initial, QStringLiteral("PixelBridge RemoteVisual metadata (*.json)"));
+        if (!path.isEmpty())
+        {
+            metadataPresetPathEdit_->setText(QDir::toNativeSeparators(path));
+        }
+    }
+
+    [[nodiscard]] bool BuildRemoteMetadata(const pbapp::MonitorInfo& monitor,
+        pbapp::RemoteRunMetadata& output, QString& errorMessage) const
+    {
+        pbapp::RemoteRunMetadata candidate;
+        candidate.channelType = channelCombo_->currentIndex() == 0 ? pbapp::ChannelType::LocalDesktop :
+            channelCombo_->currentIndex() == 1 ? pbapp::ChannelType::RemoteVisual : pbapp::ChannelType::Other;
+        const QString presetPath = metadataPresetPathEdit_->text().trimmed();
+        if (!presetPath.isEmpty())
+        {
+            if (candidate.channelType != pbapp::ChannelType::RemoteVisual)
+            {
+                errorMessage = QStringLiteral("RemoteVisual metadata preset 只能用于 RemoteVisual channel");
+                return false;
+            }
+            if (!pbapp::LoadRemoteVisualMetadataPreset(presetPath, candidate, errorMessage))
+            {
+                return false;
+            }
+        }
+        const QString provider = remoteProviderEdit_->text().trimmed();
+        if (candidate.channelType == pbapp::ChannelType::RemoteVisual)
+        {
+            if (!provider.isEmpty())
+            {
+                const std::string providerUtf8 = provider.toUtf8().toStdString();
+                if (!candidate.remoteProvider.empty() && candidate.remoteProvider != providerUtf8)
+                {
+                    errorMessage = QStringLiteral("Remote provider 与 metadata preset 不一致");
+                    return false;
+                }
+                candidate.remoteProvider = providerUtf8;
+            }
+            if (candidate.remoteProvider.empty())
+            {
+                errorMessage = QStringLiteral("RemoteVisual 必须提供 provider 或有效 metadata preset");
+                return false;
+            }
+        }
+        else
+        {
+            candidate.remoteProvider.clear();
+        }
+        const QString networkNote = networkNoteEdit_->text();
+        if (!networkNote.isEmpty())
+        {
+            candidate.notes = networkNote.toUtf8().toStdString();
+            candidate.networkProvenance = pbapp::MetadataProvenance::Manual;
+        }
+        candidate.experimentMonitorIdentity = monitor.deviceName.empty() ? "" :
+            QString::fromWCharArray(monitor.deviceName.c_str()).toUtf8().toStdString();
+        candidate.computerBDisplayResolution = std::to_string(monitor.physicalRect.right - monitor.physicalRect.left) +
+            "x" + std::to_string(monitor.physicalRect.bottom - monitor.physicalRect.top);
+        candidate.computerBRefreshRate = static_cast<double>(monitor.refreshRate);
+        output = std::move(candidate);
+        errorMessage.clear();
+        return true;
+    }
+
+    void ApplyProfileDefaults(const int)
+    {
+        const auto profile = static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt());
+        if (profile == pbapp::VisualProfile::RemoteVisualResilient)
+        {
+            logicalFpsSpin_->setValue(2);
+            controlRepetitionsSpin_->setValue(12);
+        }
+        else
+        {
+            logicalFpsSpin_->setValue(0);
+            controlRepetitionsSpin_->setValue(4);
+        }
+        UpdateActionButtons();
     }
 
     void UpdateFileDetails()
@@ -496,12 +648,29 @@ private:
         config.compressionEnabled = compressionCheck_->isChecked();
         config.compressionLevel = compressionLevel_->value();
         config.visualProfile = static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt());
+        config.logicalVisualFps = static_cast<std::uint32_t>(logicalFpsSpin_->value());
+        config.controlRepetitions = static_cast<std::uint32_t>(controlRepetitionsSpin_->value());
         const pbapp::MonitorInfo& monitor = monitors_[static_cast<std::size_t>(monitorIndex)];
         config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{monitor.phase1CanvasOrigin.x,
             monitor.phase1CanvasOrigin.y};
-        config.remoteMetadata.channelType = channelCombo_->currentIndex() == 0 ? pbapp::ChannelType::LocalDesktop :
-            channelCombo_->currentIndex() == 1 ? pbapp::ChannelType::SunloginRemoteVisual : pbapp::ChannelType::Other;
-        config.remoteMetadata.networkNote = networkNoteEdit_->text().toUtf8().toStdString();
+        QString metadataError;
+        if (!BuildRemoteMetadata(monitor, config.remoteMetadata, metadataError))
+        {
+            QMessageBox::warning(this, QStringLiteral("无法开始广播"), metadataError);
+            return;
+        }
+        config.runId = runIdEdit_->text().toLatin1().toStdString();
+        if (!config.remoteMetadata.runId.empty())
+        {
+            if (!config.runId.empty() && config.runId != config.remoteMetadata.runId)
+            {
+                QMessageBox::warning(this, QStringLiteral("无法开始广播"),
+                    QStringLiteral("Shared RunId 与 metadata preset 不一致"));
+                return;
+            }
+            config.runId = config.remoteMetadata.runId;
+        }
+        config.remoteMetadata.runId = config.runId;
         SetControlsEnabled(false);
         const QString error = controller_.Start(config);
         if (!error.isEmpty())
@@ -550,7 +719,9 @@ private:
             .arg(snapshot.candidateContractSatisfied ? QStringLiteral("PASS") : QStringLiteral("warming/unavailable"))
             .arg(snapshot.generatedVisualFramesPerSecond, 0, 'f', 2)
             .arg(snapshot.sourceStable ? QStringLiteral("true") : QStringLiteral("false"))
-            .arg(FromUtf8(snapshot.wholeFileDigestHex)));
+            .arg(FromUtf8(snapshot.wholeFileDigestHex)) +
+            QStringLiteral(" · LogicalFPS=%1 · ControlRepetitions=%2")
+                .arg(snapshot.configuredLogicalVisualFps).arg(snapshot.configuredControlRepetitions));
         if (snapshot.state != lastLoggedState_ || (!snapshot.errorDetail.empty() && snapshot.errorDetail != lastError_))
         {
             AppendLog(QStringLiteral("%1 — %2%3")
@@ -583,10 +754,17 @@ private:
         compressionCheck_->setEnabled(enabled);
         compressionLevel_->setEnabled(enabled && compressionCheck_->isChecked());
         profileCombo_->setEnabled(enabled);
+        logicalFpsSpin_->setEnabled(enabled);
+        controlRepetitionsSpin_->setEnabled(enabled);
         monitorCombo_->setEnabled(enabled);
         refreshMonitorButton_->setEnabled(enabled);
         channelCombo_->setEnabled(enabled);
+        remoteProviderEdit_->setEnabled(enabled);
+        metadataPresetPathEdit_->setEnabled(enabled);
+        chooseMetadataPresetButton_->setEnabled(enabled);
+        clearMetadataPresetButton_->setEnabled(enabled && !metadataPresetPathEdit_->text().isEmpty());
         networkNoteEdit_->setEnabled(enabled);
+        runIdEdit_->setEnabled(enabled);
     }
 
     void UpdateActionButtons()
@@ -594,6 +772,10 @@ private:
         pbapp::EncoderConfig config;
         config.sourcePath = sourcePathEdit_->text().toStdWString();
         config.compressionLevel = compressionLevel_->value();
+        config.visualProfile = static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt());
+        config.logicalVisualFps = static_cast<std::uint32_t>(logicalFpsSpin_->value());
+        config.controlRepetitions = static_cast<std::uint32_t>(controlRepetitionsSpin_->value());
+        config.runId = runIdEdit_->text().toLatin1().toStdString();
         const int monitorIndex = monitorCombo_->currentIndex();
         bool monitorEligible = false;
         if (monitorIndex >= 0 && static_cast<std::size_t>(monitorIndex) < monitors_.size())
@@ -606,7 +788,18 @@ private:
                     monitor.phase1CanvasOrigin.y};
             }
         }
-        const bool valid = monitorEligible && static_cast<bool>(pbapp::ValidateEncoderConfig(config));
+        QString metadataError;
+        const bool metadataValid = monitorEligible && BuildRemoteMetadata(
+            monitors_[static_cast<std::size_t>(monitorIndex)], config.remoteMetadata, metadataError);
+        const bool runIdMatches = config.remoteMetadata.runId.empty() || config.runId.empty() ||
+            config.remoteMetadata.runId == config.runId;
+        if (config.runId.empty() && !config.remoteMetadata.runId.empty())
+        {
+            config.runId = config.remoteMetadata.runId;
+        }
+        config.remoteMetadata.runId = config.runId;
+        const bool valid = monitorEligible && metadataValid && runIdMatches &&
+            static_cast<bool>(pbapp::ValidateEncoderConfig(config));
         const bool active = controller_.IsActive();
         startButton_->setEnabled(valid && !active);
         stopButton_->setEnabled(active);
@@ -660,6 +853,8 @@ private:
     QLabel* validationLabel_ = nullptr;
     QCheckBox* compressionCheck_ = nullptr;
     QSpinBox* compressionLevel_ = nullptr;
+    QSpinBox* logicalFpsSpin_ = nullptr;
+    QSpinBox* controlRepetitionsSpin_ = nullptr;
     QComboBox* profileCombo_ = nullptr;
     QLabel* outerFecLabel_ = nullptr;
     QComboBox* monitorCombo_ = nullptr;
@@ -679,7 +874,12 @@ private:
     QGroupBox* advancedGroup_ = nullptr;
     QLabel* telemetryLabel_ = nullptr;
     QComboBox* channelCombo_ = nullptr;
+    QLineEdit* remoteProviderEdit_ = nullptr;
+    QLineEdit* metadataPresetPathEdit_ = nullptr;
+    QPushButton* chooseMetadataPresetButton_ = nullptr;
+    QPushButton* clearMetadataPresetButton_ = nullptr;
     QLineEdit* networkNoteEdit_ = nullptr;
+    QLineEdit* runIdEdit_ = nullptr;
     QPlainTextEdit* logEdit_ = nullptr;
     std::vector<pbapp::MonitorInfo> monitors_;
     QString preferredMonitorDevice_;
@@ -693,7 +893,7 @@ private:
 int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
 {
     const bool smoke = argumentCount == 2 && std::wstring_view(arguments[1]) == L"--gui-smoke";
-    const bool integrationSmoke = argumentCount == 2 &&
+    const bool integrationSmoke = argumentCount == 3 &&
         std::wstring_view(arguments[1]) == L"--gui-integration-smoke";
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     int guiArgumentCount = 1;
@@ -704,11 +904,14 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
     QCoreApplication::setOrganizationDomain(QStringLiteral("pixelbridge.local"));
     QCoreApplication::setApplicationName(QStringLiteral("PixelBridgeEncoder"));
     EncoderWindow window;
-    if (smoke || integrationSmoke)
+    if (integrationSmoke && !PlaceOnExperimentMonitor(window, arguments[2]))
     {
-        PlaceOnRightmostScreen(window);
+        return 2;
     }
-    window.show();
+    if (!smoke)
+    {
+        window.show();
+    }
     if (smoke)
     {
         QTimer::singleShot(350, &application, &QCoreApplication::quit);

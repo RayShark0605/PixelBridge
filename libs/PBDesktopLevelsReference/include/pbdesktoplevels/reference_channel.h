@@ -1,6 +1,8 @@
 #pragma once
 
 #include "pbmodulation/desktop_levels.h"
+#include "pbmodulation/reference_visual_profile.h"
+#include "pbmodulation/remote_visual.h"
 #include "pbmodulation/shape_chroma.h"
 
 #include <array>
@@ -47,6 +49,7 @@ struct FrameEvaluation
     std::uint32_t identityFailures = 0;
     std::uint32_t falseAcceptedCodewords = 0;
     std::uint32_t acceptedTransportBlocks = 0;
+    std::uint32_t acceptedRemoteControlBlocks = 0;
     // Actual iterative passes; a received soft-decision codeword with an
     // initially zero syndrome needs zero passes, but still undergoes CRC/truth.
     std::uint32_t iterationsTotal = 0;
@@ -69,12 +72,31 @@ struct ShapeChromaReferenceObservation
     FrameEvaluation evaluation;
 };
 
+struct RemoteVisualReferenceObservation
+{
+    pbmodulation::RemoteVisualObservation modulation;
+    FrameEvaluation evaluation;
+};
+
 struct AcceptedTransportBlock
 {
     std::uint32_t slot = 0;
     std::uint32_t byteCount = 0;
     std::array<std::byte, kInfoBytes> bytes{};
     bool operator==(const AcceptedTransportBlock&) const = default;
+};
+
+enum class AcceptedRemoteControlKind : std::uint8_t
+{
+    Record
+};
+
+struct AcceptedRemoteControlBlock
+{
+    AcceptedRemoteControlKind kind = AcceptedRemoteControlKind::Record;
+    std::uint32_t byteCount = 0;
+    std::array<std::byte, pbmodulation::kReferenceControlWindowBytes> bytes{};
+    bool operator==(const AcceptedRemoteControlBlock&) const = default;
 };
 
 enum class EvaluationMode : std::uint8_t
@@ -99,6 +121,8 @@ public:
                                              const pbmodulation::DesktopLevelsDecodePolicy& policy = {}) noexcept;
     [[nodiscard]] ShapeChromaReferenceObservation DecodeShapeChroma(const pbmodulation::LumaView& view,
         const pbmodulation::ShapeChromaDecodePolicy& policy = {}) noexcept;
+    [[nodiscard]] RemoteVisualReferenceObservation DecodeRemoteVisual(const pbmodulation::LumaView& view,
+        const pbmodulation::RemoteVisualDecodePolicy& policy = {}) noexcept;
     // Shared post-demod pipeline, also useful for independent channel tests.
     // No expected payload is accepted as an argument.
     // DiagnosticTruth additionally compares against the deterministic Gate
@@ -112,10 +136,15 @@ public:
     [[nodiscard]] std::span<const std::uint64_t> GetMarginHistogram() const noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetShapeMarginHistogram() const noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetChromaMarginHistogram() const noexcept;
+    [[nodiscard]] std::span<const std::uint64_t> GetRemoteVisualMarginHistogram() const noexcept;
     // Exact serialized Transport blocks that passed FEC, canonical padding,
     // CRC and identity in the most recent evaluation. Invalid after the next
     // Decode/Evaluate call or move.
     [[nodiscard]] std::span<const AcceptedTransportBlock> GetAcceptedTransportBlocks() const noexcept;
+    // RemoteVisual-only physical carrier. The returned bytes are the original
+    // PB-Control record/fragment after the unchanged Robust QC-LDPC and its
+    // existing CRC/SessionTag checks; no alternate control-plane parser exists.
+    [[nodiscard]] std::span<const AcceptedRemoteControlBlock> GetAcceptedRemoteControlBlocks() const noexcept;
 private:
     struct Implementation;
     std::unique_ptr<Implementation> implementation_;

@@ -270,17 +270,18 @@ CarouselSnapshot CarouselCounter::GetSnapshot() const noexcept
 }
 
 VisualIdentityDisposition VisualIdentityTracker::Observe(const std::uint64_t sequence, const std::uint64_t captureEpoch,
-    const std::int64_t timestamp100ns) noexcept
+    const std::int64_t timestamp100ns, const std::optional<std::uint64_t> streamIdentity) noexcept
 {
     if (captureEpoch == 0 || timestamp100ns < 0)
     {
         return VisualIdentityDisposition::Invalid;
     }
-    if (!hasBaseline_ || captureEpoch != lastCaptureEpoch_)
+    if (!hasBaseline_ || captureEpoch != lastCaptureEpoch_ || streamIdentity != lastStreamIdentity_)
     {
         hasBaseline_ = true;
         maximumSequence_ = sequence;
         lastCaptureEpoch_ = captureEpoch;
+        lastStreamIdentity_ = streamIdentity;
         lastTimestamp100ns_ = timestamp100ns;
         if (uniqueFrames_ != (std::numeric_limits<std::uint64_t>::max)())
         {
@@ -349,6 +350,184 @@ VisualIdentitySnapshot VisualIdentityTracker::GetSnapshot() const noexcept
             static_cast<double>(intervalTime100ns_);
     }
     return snapshot;
+}
+
+void ChannelStallTracker::StartInterval(StallIntervalSnapshot& interval, const std::uint64_t startedMilliseconds,
+    std::uint64_t& storedStartedMilliseconds) noexcept
+{
+    if (interval.active)
+    {
+        return;
+    }
+    interval.active = true;
+    interval.currentMilliseconds = 0;
+    if (interval.count != (std::numeric_limits<std::uint64_t>::max)())
+    {
+        interval.count++;
+    }
+    storedStartedMilliseconds = startedMilliseconds;
+}
+
+void ChannelStallTracker::EndInterval(StallIntervalSnapshot& interval, const std::uint64_t endedMilliseconds,
+    std::uint64_t& startedMilliseconds) noexcept
+{
+    if (!interval.active)
+    {
+        return;
+    }
+    const std::uint64_t duration = endedMilliseconds >= startedMilliseconds ? endedMilliseconds - startedMilliseconds : 0;
+    interval.totalMilliseconds = duration > (std::numeric_limits<std::uint64_t>::max)() - interval.totalMilliseconds ?
+        (std::numeric_limits<std::uint64_t>::max)() : interval.totalMilliseconds + duration;
+    interval.maximumMilliseconds = std::max(interval.maximumMilliseconds, duration);
+    interval.currentMilliseconds = 0;
+    interval.active = false;
+    startedMilliseconds = endedMilliseconds;
+}
+
+void ChannelStallTracker::Observe(const std::uint64_t monotonicMilliseconds,
+    const std::uint64_t captureObservations, const std::uint64_t legalVisualObservations) noexcept
+{
+    if (!initialized_)
+    {
+        ResetDomain(monotonicMilliseconds, captureObservations, legalVisualObservations);
+        return;
+    }
+    if (monotonicMilliseconds < lastObservationMilliseconds_)
+    {
+        return;
+    }
+    constexpr std::uint64_t stallThresholdMilliseconds = 1000;
+    const bool captureChanged = captureObservations != lastCaptureObservations_;
+    const bool visualChanged = legalVisualObservations != lastLegalVisualObservations_;
+    if (captureChanged)
+    {
+        EndInterval(snapshot_.capture, monotonicMilliseconds, captureStallStartedMilliseconds_);
+        lastCaptureChangeMilliseconds_ = monotonicMilliseconds;
+        lastCaptureObservations_ = captureObservations;
+    }
+    else if (!snapshot_.capture.active && monotonicMilliseconds - lastCaptureChangeMilliseconds_ >= stallThresholdMilliseconds)
+    {
+        StartInterval(snapshot_.capture, lastCaptureChangeMilliseconds_, captureStallStartedMilliseconds_);
+    }
+
+    if (visualChanged)
+    {
+        EndInterval(snapshot_.visual, monotonicMilliseconds, visualStallStartedMilliseconds_);
+        lastVisualChangeMilliseconds_ = monotonicMilliseconds;
+        lastLegalVisualObservations_ = legalVisualObservations;
+    }
+    else if (captureChanged && !snapshot_.visual.active &&
+        monotonicMilliseconds - lastVisualChangeMilliseconds_ >= stallThresholdMilliseconds)
+    {
+        StartInterval(snapshot_.visual, lastVisualChangeMilliseconds_, visualStallStartedMilliseconds_);
+    }
+    else if (snapshot_.capture.active)
+    {
+        // Once capture loss reaches the one-second classification threshold,
+        // the last capture observation is the authoritative end of a visual
+        // stall. Do not charge the capture-loss detection window to both
+        // categories.
+        EndInterval(snapshot_.visual, lastCaptureChangeMilliseconds_, visualStallStartedMilliseconds_);
+    }
+
+    if (snapshot_.capture.active)
+    {
+        snapshot_.capture.currentMilliseconds = monotonicMilliseconds - captureStallStartedMilliseconds_;
+    }
+    if (snapshot_.visual.active)
+    {
+        snapshot_.visual.currentMilliseconds = monotonicMilliseconds - visualStallStartedMilliseconds_;
+    }
+    lastObservationMilliseconds_ = monotonicMilliseconds;
+}
+
+void ChannelStallTracker::ResetDomain(const std::uint64_t monotonicMilliseconds,
+    const std::uint64_t captureObservations, const std::uint64_t legalVisualObservations) noexcept
+{
+    if (initialized_ && monotonicMilliseconds >= lastObservationMilliseconds_)
+    {
+        EndInterval(snapshot_.capture, monotonicMilliseconds, captureStallStartedMilliseconds_);
+        EndInterval(snapshot_.visual, monotonicMilliseconds, visualStallStartedMilliseconds_);
+    }
+    lastObservationMilliseconds_ = monotonicMilliseconds;
+    lastCaptureChangeMilliseconds_ = monotonicMilliseconds;
+    lastVisualChangeMilliseconds_ = monotonicMilliseconds;
+    lastCaptureObservations_ = captureObservations;
+    lastLegalVisualObservations_ = legalVisualObservations;
+    initialized_ = true;
+}
+
+void ChannelStallTracker::Finish(const std::uint64_t monotonicMilliseconds) noexcept
+{
+    if (!initialized_ || monotonicMilliseconds < lastObservationMilliseconds_)
+    {
+        return;
+    }
+    EndInterval(snapshot_.capture, monotonicMilliseconds, captureStallStartedMilliseconds_);
+    EndInterval(snapshot_.visual, monotonicMilliseconds, visualStallStartedMilliseconds_);
+    lastObservationMilliseconds_ = monotonicMilliseconds;
+}
+
+ChannelStallSnapshot ChannelStallTracker::GetSnapshot() const noexcept
+{
+    return snapshot_;
+}
+
+void RemoteDuplicateRefinementGate::StartSequence(const std::uint64_t captureEpoch,
+    const std::uint64_t frameSequence) noexcept
+{
+    if (captureEpoch == 0)
+    {
+        return;
+    }
+    currentCaptureEpoch_ = captureEpoch;
+    currentFrameSequence_ = frameSequence;
+    snapshot_.currentSequenceAdmitted = false;
+    hasCurrentSequence_ = true;
+}
+
+bool RemoteDuplicateRefinementGate::ShouldAttemptDuplicate(const std::uint64_t captureEpoch,
+    const std::uint64_t frameSequence, const bool hasAcceptedCarrier) noexcept
+{
+    if (!hasCurrentSequence_ || captureEpoch != currentCaptureEpoch_ || frameSequence != currentFrameSequence_ ||
+        snapshot_.currentSequenceAdmitted)
+    {
+        return false;
+    }
+    if (snapshot_.attempts != (std::numeric_limits<std::uint64_t>::max)())
+    {
+        snapshot_.attempts++;
+    }
+    return hasAcceptedCarrier;
+}
+
+bool RemoteDuplicateRefinementGate::MarkAdmission(const std::uint64_t captureEpoch,
+    const std::uint64_t frameSequence, const bool duplicateRefinement) noexcept
+{
+    if (!hasCurrentSequence_ || captureEpoch != currentCaptureEpoch_ || frameSequence != currentFrameSequence_ ||
+        snapshot_.currentSequenceAdmitted)
+    {
+        return false;
+    }
+    snapshot_.currentSequenceAdmitted = true;
+    if (duplicateRefinement && snapshot_.recoveries != (std::numeric_limits<std::uint64_t>::max)())
+    {
+        snapshot_.recoveries++;
+    }
+    return true;
+}
+
+void RemoteDuplicateRefinementGate::ResetEpoch() noexcept
+{
+    currentCaptureEpoch_ = 0;
+    currentFrameSequence_ = 0;
+    snapshot_.currentSequenceAdmitted = false;
+    hasCurrentSequence_ = false;
+}
+
+RemoteDuplicateRefinementSnapshot RemoteDuplicateRefinementGate::GetSnapshot() const noexcept
+{
+    return snapshot_;
 }
 
 bool DecoderProgressTracker::BindDescriptor(const std::uint64_t totalRawBytes,
@@ -495,6 +674,7 @@ const char* GetVisualProfileName(const VisualProfile profile) noexcept
     {
     case VisualProfile::DirectLevels2x2: return "Direct-Level 2x2 (Experimental)";
     case VisualProfile::ShapeChroma: return "Shape+Chroma (Experimental)";
+    case VisualProfile::RemoteVisualResilient: return "RemoteVisual Resilient 8x8 Luma (Experimental)";
     }
     return "Unknown";
 }
@@ -525,6 +705,18 @@ const char* GetOuterFecModeName(const pbprotocol::OuterFecMode mode) noexcept
     {
     case pbprotocol::OuterFecMode::DirectRepeat: return "DirectRepeat";
     case pbprotocol::OuterFecMode::WirehairV2: return "Wirehair V2";
+    }
+    return "Unknown";
+}
+
+const char* GetMetadataProvenanceName(const MetadataProvenance provenance) noexcept
+{
+    switch (provenance)
+    {
+    case MetadataProvenance::NotProvided: return "NotProvided";
+    case MetadataProvenance::Manual: return "Manual";
+    case MetadataProvenance::PixelBridgeObserved: return "PixelBridgeObserved";
+    case MetadataProvenance::RemoteUiVisible: return "RemoteUiVisible";
     }
     return "Unknown";
 }

@@ -121,6 +121,10 @@ public:
     // validated bound profile is never zero-filled, so a zero-filled result
     // identifies an empty (moved-from) decoder.
     [[nodiscard]] pbprotocol::WirehairV2SerializedProfile GetBoundSerializedProfile() const noexcept;
+    // Telemetry/admission introspection only. This is the number of distinct
+    // equation IDs retained in the bounded fingerprint table and returns zero
+    // for an empty decoder.
+    [[nodiscard]] std::uint64_t GetAcceptedBlockCount() const noexcept;
 
 private:
     friend class test::DecoderTestAccess;

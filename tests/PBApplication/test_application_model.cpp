@@ -156,15 +156,119 @@ TEST_CASE("Visual identity establishes a fresh FrameSequence baseline for every 
     REQUIRE(identity.Observe(104, 1, 20000000) == pbapp::VisualIdentityDisposition::Unique);
     REQUIRE(identity.Observe(0, 2, 30000000) == pbapp::VisualIdentityDisposition::Unique);
     REQUIRE(identity.Observe(1, 2, 40000000) == pbapp::VisualIdentityDisposition::Unique);
+    REQUIRE(identity.Observe(0, 2, 40000001, 42) == pbapp::VisualIdentityDisposition::Unique);
+    REQUIRE(identity.Observe(0, 2, 40000002, 42) == pbapp::VisualIdentityDisposition::Duplicate);
     REQUIRE(identity.Observe(2, 0, 50000000) == pbapp::VisualIdentityDisposition::Invalid);
 
     const pbapp::VisualIdentitySnapshot snapshot = identity.GetSnapshot();
-    REQUIRE(snapshot.uniqueFrames == 5);
-    REQUIRE(snapshot.duplicateFrames == 1);
+    REQUIRE(snapshot.uniqueFrames == 6);
+    REQUIRE(snapshot.duplicateFrames == 2);
     REQUIRE(snapshot.reorderedFrames == 1);
     REQUIRE(snapshot.gapEvents == 1);
     REQUIRE(snapshot.skippedSequences == 2);
     REQUIRE(snapshot.framesPerSecond == 1.0);
+}
+
+TEST_CASE("Channel stall telemetry distinguishes capture loss from continued duplicate visuals",
+    "[application][stall][remote-visual]")
+{
+    pbapp::ChannelStallTracker stalls;
+    stalls.Observe(0, 0, 0);
+    stalls.Observe(500, 1, 0);
+    stalls.Observe(999, 2, 0);
+    REQUIRE(stalls.GetSnapshot().visual.count == 0);
+    stalls.Observe(1000, 3, 0);
+    auto snapshot = stalls.GetSnapshot();
+    REQUIRE(snapshot.visual.count == 1);
+    REQUIRE(snapshot.visual.active);
+    REQUIRE(snapshot.visual.currentMilliseconds == 1000);
+    REQUIRE_FALSE(snapshot.capture.active);
+
+    stalls.Observe(1500, 4, 1);
+    snapshot = stalls.GetSnapshot();
+    REQUIRE_FALSE(snapshot.visual.active);
+    REQUIRE(snapshot.visual.totalMilliseconds == 1500);
+    REQUIRE(snapshot.visual.maximumMilliseconds == 1500);
+
+    stalls.Observe(2499, 4, 1);
+    REQUIRE_FALSE(stalls.GetSnapshot().capture.active);
+    stalls.Observe(2500, 4, 1);
+    snapshot = stalls.GetSnapshot();
+    REQUIRE(snapshot.capture.count == 1);
+    REQUIRE(snapshot.capture.active);
+    REQUIRE(snapshot.capture.currentMilliseconds == 1000);
+    REQUIRE_FALSE(snapshot.visual.active);
+    stalls.Finish(3000);
+    snapshot = stalls.GetSnapshot();
+    REQUIRE_FALSE(snapshot.capture.active);
+    REQUIRE(snapshot.capture.totalMilliseconds == 1500);
+    REQUIRE(snapshot.capture.maximumMilliseconds == 1500);
+}
+
+TEST_CASE("Channel stall domain reset closes active intervals without discarding cumulative evidence",
+    "[application][stall][capture-epoch]")
+{
+    pbapp::ChannelStallTracker stalls;
+    stalls.Observe(100, 10, 5);
+    stalls.Observe(1100, 10, 5);
+    REQUIRE(stalls.GetSnapshot().capture.active);
+    stalls.ResetDomain(1600, 0, 5);
+    auto snapshot = stalls.GetSnapshot();
+    REQUIRE_FALSE(snapshot.capture.active);
+    REQUIRE(snapshot.capture.count == 1);
+    REQUIRE(snapshot.capture.totalMilliseconds == 1500);
+    stalls.Observe(2600, 0, 5);
+    snapshot = stalls.GetSnapshot();
+    REQUIRE(snapshot.capture.active);
+    REQUIRE(snapshot.capture.count == 2);
+}
+
+TEST_CASE("Capture loss closes an active visual stall at the last capture observation",
+    "[application][stall][remote-visual][classification]")
+{
+    pbapp::ChannelStallTracker stalls;
+    stalls.Observe(0, 0, 0);
+    stalls.Observe(1000, 1, 0);
+    auto snapshot = stalls.GetSnapshot();
+    REQUIRE(snapshot.visual.active);
+    REQUIRE(snapshot.visual.currentMilliseconds == 1000);
+
+    stalls.Observe(1999, 1, 0);
+    REQUIRE_FALSE(stalls.GetSnapshot().capture.active);
+    stalls.Observe(2000, 1, 0);
+    snapshot = stalls.GetSnapshot();
+    REQUIRE(snapshot.capture.active);
+    REQUIRE(snapshot.capture.currentMilliseconds == 1000);
+    REQUIRE_FALSE(snapshot.visual.active);
+    REQUIRE(snapshot.visual.totalMilliseconds == 1000);
+    REQUIRE(snapshot.visual.maximumMilliseconds == 1000);
+}
+
+TEST_CASE("Remote duplicate refinement retries only an unadmitted current identity and never combines frames",
+    "[application][remote-visual][duplicate][admission]")
+{
+    pbapp::RemoteDuplicateRefinementGate gate;
+    gate.StartSequence(1, 100);
+    REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 100, false));
+    REQUIRE(gate.GetSnapshot().attempts == 1);
+    REQUIRE(gate.ShouldAttemptDuplicate(1, 100, true));
+    REQUIRE(gate.GetSnapshot().attempts == 2);
+    REQUIRE(gate.MarkAdmission(1, 100, true));
+    auto snapshot = gate.GetSnapshot();
+    REQUIRE(snapshot.currentSequenceAdmitted);
+    REQUIRE(snapshot.recoveries == 1);
+    REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 100, true));
+    REQUIRE_FALSE(gate.MarkAdmission(1, 100, true));
+    REQUIRE(gate.GetSnapshot().recoveries == 1);
+
+    gate.StartSequence(1, 101);
+    REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 100, true));
+    REQUIRE(gate.MarkAdmission(1, 101, false));
+    REQUIRE(gate.GetSnapshot().recoveries == 1);
+    gate.ResetEpoch();
+    REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 101, true));
+    gate.StartSequence(2, 0);
+    REQUIRE(gate.ShouldAttemptDuplicate(2, 0, true));
 }
 
 TEST_CASE("Invalid runtime enum values remain fail-visible in diagnostics", "[application][enum][diagnostics]")
@@ -174,6 +278,7 @@ TEST_CASE("Invalid runtime enum values remain fail-visible in diagnostics", "[ap
     REQUIRE(std::string_view(pbapp::GetCompressionCodecName(
         static_cast<pbprotocol::CompressionCodec>(0xff))) == "Unknown");
     REQUIRE(std::string_view(pbapp::GetOuterFecModeName(static_cast<pbprotocol::OuterFecMode>(0xff))) == "Unknown");
+    REQUIRE(std::string_view(pbapp::GetMetadataProvenanceName(static_cast<pbapp::MetadataProvenance>(0xff))) == "Unknown");
 }
 
 TEST_CASE("Window close defers exactly one stop while active and accepts after terminal state",

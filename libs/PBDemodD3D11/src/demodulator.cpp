@@ -2,6 +2,7 @@
 
 #include "demod_shader_source.h"
 #include "pbmodulation/desktop_levels.h"
+#include "pbmodulation/remote_visual.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbinterleave/tile_permutation.h"
 #include "pbprotocol/bootstrap_control_codec.h"
@@ -43,7 +44,7 @@ inline constexpr std::uint32_t calibrationBytes = calibrationEntries * sizeof(fl
 
 enum class ProfileMode : std::uint32_t
 {
-    DesktopLevels2 = 1, DesktopLevels4 = 2, ShapeChroma = 3
+    DesktopLevels2 = 1, DesktopLevels4 = 2, ShapeChroma = 3, RemoteVisual = 4
 };
 
 struct Binding
@@ -55,9 +56,12 @@ struct Binding
     std::uint32_t rowTiles = 0;
     std::uint32_t dataBytes = 0;
     std::uint32_t metricCount = 0;
+    std::uint32_t codedMetricCount = 0;
     std::uint32_t codewords = 0;
     std::uint32_t paddingBytes = 0;
     std::uint32_t interleavePhase = 0;
+    std::uint64_t sessionTag = 0;
+    std::uint64_t frameSequence = 0;
 };
 
 struct alignas(16) FrameConstants
@@ -134,6 +138,8 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
     Binding binding;
     binding.profileId = parsed.Value().visualProfileId;
     binding.interleavePhase = static_cast<std::uint32_t>(parsed.Value().frameSequence % 16);
+    binding.sessionTag = parsed.Value().sessionTag.value;
+    binding.frameSequence = parsed.Value().frameSequence;
     if (binding.profileId == pbmodulation::kShapeChromaProfileId &&
         parsed.Value().visualLayoutVersion == pbmodulation::kShapeChromaLayoutVersion)
     {
@@ -143,8 +149,22 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
         binding.rowTiles = 432;
         binding.dataBytes = pbmodulation::kShapeChromaDataBytes;
         binding.metricCount = static_cast<std::uint32_t>(pbmodulation::kShapeChromaMaximumBits);
+        binding.codedMetricCount = binding.metricCount;
         binding.codewords = pbmodulation::kShapeChromaCodewords;
         binding.paddingBytes = pbmodulation::kShapeChromaPaddingBytes;
+    }
+    else if (binding.profileId == pbmodulation::kRemoteVisualProfileId &&
+        parsed.Value().visualLayoutVersion == pbmodulation::kRemoteVisualLayoutVersion)
+    {
+        binding.mode = ProfileMode::RemoteVisual;
+        binding.tilePixels = pbmodulation::kRemoteVisualTilePixels;
+        binding.tileCount = pbmodulation::kRemoteVisualTileCount;
+        binding.rowTiles = 0;
+        binding.dataBytes = pbmodulation::kRemoteVisualDataBytes;
+        binding.metricCount = pbmodulation::kRemoteVisualTileCount;
+        binding.codedMetricCount = pbmodulation::kRemoteVisualCodedBits;
+        binding.codewords = pbmodulation::kRemoteVisualCodewords;
+        binding.paddingBytes = pbmodulation::kRemoteVisualPaddingBytes;
     }
     else
     {
@@ -159,10 +179,13 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
         binding.rowTiles = 1728 / profile->tilePixels;
         binding.dataBytes = profile->dataBytes;
         binding.metricCount = profile->dataBytes * 8;
+        binding.codedMetricCount = binding.metricCount;
         binding.codewords = profile->codewords;
         binding.paddingBytes = profile->paddingBytes;
     }
-    if (binding.metricCount > maximumMetricCount || binding.codewords > pbdesktoplevels::kMaximumCodewords ||
+    if (binding.metricCount > maximumMetricCount || binding.codedMetricCount == 0 ||
+        binding.codedMetricCount > binding.metricCount || binding.codedMetricCount != binding.dataBytes * 8 ||
+        binding.codewords > pbdesktoplevels::kMaximumCodewords ||
         binding.codewords * pbdesktoplevels::kCodewordBytes + binding.paddingBytes != binding.dataBytes)
     {
         return DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding);
@@ -263,6 +286,36 @@ DemodStatus ValidateCalibration(const ProfileMode mode,
         }
         return minimumSeparation < 16 ? DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration) : DemodStatus{};
     }
+    if (mode == ProfileMode::RemoteVisual)
+    {
+        std::array<double, 2> centroids{};
+        for (std::size_t pilot = 0; pilot < calibrationPilotCount; pilot++)
+        {
+            for (std::size_t endpoint = 0; endpoint < 2; endpoint++)
+            {
+                const std::size_t level = endpoint == 0 ? 0 : 3;
+                const auto& entry = calibration[pilot * calibrationStateCount + level];
+                if (entry[1] > 576 || entry[2] != 0 || entry[3] != 0)
+                {
+                    return DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration);
+                }
+                centroids[endpoint] += entry[0] / calibrationPilotCount;
+            }
+        }
+        for (std::size_t endpoint = 0; endpoint < 2; endpoint++)
+        {
+            const std::size_t level = endpoint == 0 ? 0 : 3;
+            for (std::size_t pilot = 0; pilot < calibrationPilotCount; pilot++)
+            {
+                if (std::abs(static_cast<double>(calibration[pilot * calibrationStateCount + level][0]) - centroids[endpoint]) > 24)
+                {
+                    return DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration);
+                }
+            }
+        }
+        return centroids[1] - centroids[0] < 96 ?
+            DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration) : DemodStatus{};
+    }
     std::array<double, calibrationStateCount> centroids{};
     for (std::size_t pilot = 0; pilot < calibrationPilotCount; pilot++)
     {
@@ -328,6 +381,7 @@ struct Demodulator::Implementation
     ComPtr<ID3D11ComputeShader> calibrateLevels;
     ComPtr<ID3D11ComputeShader> demodShapeChroma;
     ComPtr<ID3D11ComputeShader> demodDesktopLevels;
+    ComPtr<ID3D11ComputeShader> demodRemoteVisual;
     std::array<Slot, maximumSlots> slots;
     std::uint32_t slotCount = 0;
     DWORD ownerThread = 0;
@@ -506,11 +560,12 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
         {
             return status;
         }
-        const std::array<std::pair<const char*, ComPtr<ID3D11ComputeShader>*>, 4> shaders{{
+        const std::array<std::pair<const char*, ComPtr<ID3D11ComputeShader>*>, 5> shaders{{
             {"CalibrateChromaCS", std::addressof(state->calibrateChroma)},
             {"CalibrateLevelsCS", std::addressof(state->calibrateLevels)},
             {"DemodShapeChromaCS", std::addressof(state->demodShapeChroma)},
-            {"DemodDesktopLevelsCS", std::addressof(state->demodDesktopLevels)}}};
+            {"DemodDesktopLevelsCS", std::addressof(state->demodDesktopLevels)},
+            {"DemodRemoteVisualCS", std::addressof(state->demodRemoteVisual)}}};
         for (const auto& entry : shaders)
         {
             status = CompileShader(device, entry.first, *entry.second);
@@ -662,7 +717,7 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
         return ClassifyNativeFailure(state, createSrv, DemodStage::Resource, DemodError::NativeFailure);
     }
     const FrameConstants constants{static_cast<std::uint32_t>(binding.mode), binding.tilePixels, binding.tileCount,
-        binding.rowTiles, binding.interleavePhase, binding.metricCount, 0, 0};
+        binding.rowTiles, binding.interleavePhase, binding.metricCount, binding.codedMetricCount, 0};
     context->Begin(slot.timestampDisjoint.Get());
     context->End(slot.timestampStart.Get());
     context->UpdateSubresource(slot.constants.Get(), 0, nullptr, &constants, 0, 0);
@@ -681,7 +736,9 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     context->CSSetShaderResources(0, 2, demodInputs);
     ID3D11UnorderedAccessView* demodOutputs[]{nullptr, slot.metricsUav.Get()};
     context->CSSetUnorderedAccessViews(0, 2, demodOutputs, nullptr);
-    context->CSSetShader(binding.mode == ProfileMode::ShapeChroma ? state.demodShapeChroma.Get() : state.demodDesktopLevels.Get(), nullptr, 0);
+    ID3D11ComputeShader* const demodShader = binding.mode == ProfileMode::ShapeChroma ? state.demodShapeChroma.Get() :
+        binding.mode == ProfileMode::RemoteVisual ? state.demodRemoteVisual.Get() : state.demodDesktopLevels.Get();
+    context->CSSetShader(demodShader, nullptr, 0);
     context->Dispatch((binding.tileCount + 63) / 64, 1, 1);
     context->CSSetUnorderedAccessViews(0, 2, noOutputs, nullptr);
     ID3D11ShaderResourceView* noInputs[]{nullptr, nullptr};
@@ -730,6 +787,10 @@ DemodStatus Demodulator::SubmitUnbound(const ScreenCaptureFrame& frame, ID3D11De
     if (expectedVisualProfileId == pbmodulation::kShapeChromaProfileId)
     {
         placeholder.visualLayoutVersion = pbmodulation::kShapeChromaLayoutVersion;
+    }
+    else if (expectedVisualProfileId == pbmodulation::kRemoteVisualProfileId)
+    {
+        placeholder.visualLayoutVersion = pbmodulation::kRemoteVisualLayoutVersion;
     }
     else if (pbmodulation::GetDesktopLevelsProfile(expectedVisualProfileId) != nullptr)
     {
@@ -844,7 +905,8 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
         status = ParseBinding(suppliedBootstrapRecord, evaluationBinding);
         if (!status || evaluationBinding.profileId != slot.binding.profileId || evaluationBinding.mode != slot.binding.mode ||
             evaluationBinding.tilePixels != slot.binding.tilePixels || evaluationBinding.tileCount != slot.binding.tileCount ||
-            evaluationBinding.dataBytes != slot.binding.dataBytes || evaluationBinding.metricCount != slot.binding.metricCount)
+            evaluationBinding.dataBytes != slot.binding.dataBytes || evaluationBinding.metricCount != slot.binding.metricCount ||
+            evaluationBinding.codedMetricCount != slot.binding.codedMetricCount)
         {
             RetireSlot(state, slot, true);
             return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding,
@@ -901,19 +963,37 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
         RetireSlot(state, slot, true);
         return {DemodStatus::Failure(DemodError::NonFiniteMetric, DemodStage::Readback), true};
     }
-    if (unboundCall)
+    pbmodulation::RemoteVisualMetricResolution remoteResolution;
+    if (slot.binding.mode == ProfileMode::RemoteVisual)
     {
-        const auto* const permutation = pbinterleave::GetDesktopLevelsPermutation(slot.binding.tilePixels);
+        remoteResolution = pbmodulation::ResolveRemoteVisualPhysicalMetrics(metrics,
+            evaluationBinding.sessionTag, evaluationBinding.frameSequence,
+            std::span(state.logicalMetrics).first(evaluationBinding.codedMetricCount));
+        if (!remoteResolution.valid)
+        {
+            RetireSlot(state, slot, true);
+            return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding), true};
+        }
+        metrics = std::span(state.logicalMetrics).first(evaluationBinding.codedMetricCount);
+    }
+    else if (unboundCall)
+    {
         const std::uint32_t metricsPerTile = slot.binding.metricCount / slot.binding.tileCount;
-        if (permutation == nullptr || metricsPerTile == 0 || metricsPerTile * slot.binding.tileCount != slot.binding.metricCount)
+        const auto ToLogical = [&](const std::uint32_t physical, const std::uint64_t sequence)
+        {
+            const auto* const permutation = pbinterleave::GetDesktopLevelsPermutation(slot.binding.tilePixels);
+            return permutation == nullptr ? slot.binding.tileCount : permutation->ToLogical(physical, sequence);
+        };
+        if (metricsPerTile == 0 || metricsPerTile * slot.binding.tileCount != slot.binding.metricCount ||
+            ToLogical(0, 0) >= slot.binding.tileCount)
         {
             RetireSlot(state, slot, true);
             return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding), true};
         }
         for (std::uint32_t physical = 0; physical < slot.binding.tileCount; physical++)
         {
-            const std::uint32_t phaseZeroLogical = permutation->ToLogical(physical, 0);
-            const std::uint32_t actualLogical = permutation->ToLogical(physical, evaluationBinding.interleavePhase);
+            const std::uint32_t phaseZeroLogical = ToLogical(physical, 0);
+            const std::uint32_t actualLogical = ToLogical(physical, evaluationBinding.interleavePhase);
             for (std::uint32_t metric = 0; metric < metricsPerTile; metric++)
             {
                 state.logicalMetrics[static_cast<std::size_t>(actualLogical) * metricsPerTile + metric] =
@@ -925,7 +1005,25 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
     std::fill_n(state.hard.begin(), slot.binding.dataBytes, std::byte{0});
     const std::size_t firstHardBit = state.evaluationMode == pbdesktoplevels::EvaluationMode::Transport ?
         static_cast<std::size_t>(slot.binding.codewords) * pbdesktoplevels::kCodewordBits : 0;
-    for (std::size_t bit = firstHardBit; bit < metrics.size(); bit++)
+    const auto evaluationMetrics = metrics.first(evaluationBinding.codedMetricCount);
+    const bool remoteMetricSummaryAvailable = slot.binding.mode == ProfileMode::RemoteVisual;
+    std::uint32_t remoteZeroMagnitudeMetrics = 0;
+    double remoteMinimumAbsoluteMetric = (std::numeric_limits<double>::max)();
+    double remoteAbsoluteMetricSum = 0;
+    if (remoteMetricSummaryAvailable)
+    {
+        for (const float metric : evaluationMetrics)
+        {
+            const double magnitude = std::abs(static_cast<double>(metric));
+            if (magnitude == 0)
+            {
+                remoteZeroMagnitudeMetrics++;
+            }
+            remoteMinimumAbsoluteMetric = std::min(remoteMinimumAbsoluteMetric, magnitude);
+            remoteAbsoluteMetricSum += magnitude;
+        }
+    }
+    for (std::size_t bit = firstHardBit; bit < evaluationMetrics.size(); bit++)
     {
         if (metrics[bit] < 0)
         {
@@ -941,11 +1039,26 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
     result.metricReadbackBytes = metricBytes + calibrationBytes;
     result.gpuTime100ns = gpuTime100ns;
     result.gpuTimingValid = gpuTimingValid;
+    result.remoteMetricSummaryAvailable = remoteMetricSummaryAvailable;
+    result.remoteMetricSamples = remoteMetricSummaryAvailable ? evaluationBinding.codedMetricCount : 0;
+    result.remoteZeroMagnitudeMetrics = remoteZeroMagnitudeMetrics;
+    result.remoteMinimumAbsoluteMetric = remoteMetricSummaryAvailable && !evaluationMetrics.empty() ?
+        remoteMinimumAbsoluteMetric : 0;
+    result.remoteMeanAbsoluteMetric = remoteMetricSummaryAvailable && !evaluationMetrics.empty() ?
+        remoteAbsoluteMetricSum / static_cast<double>(evaluationMetrics.size()) : 0;
+    result.remoteFreshnessRegions = remoteResolution.freshnessRegions;
+    result.remoteStaleRegions = remoteResolution.staleRegions;
+    result.remoteFreshnessTagMismatches = remoteResolution.freshnessTagMismatches;
+    result.remoteFreshnessTagErasures = remoteResolution.freshnessTagErasures;
+    result.remoteFreshnessErasedDataMetrics = remoteResolution.erasedDataMetrics;
     result.evaluation = state.evaluator.EvaluateCodewords(evaluationBootstrap,
-        std::span(state.hard).first(evaluationBinding.dataBytes), metrics, state.evaluationMode);
+        std::span(state.hard).first(evaluationBinding.dataBytes), evaluationMetrics, state.evaluationMode);
     const auto accepted = state.evaluator.GetAcceptedTransportBlocks();
     result.acceptedTransportBlockCount = static_cast<std::uint32_t>(accepted.size());
     std::copy(accepted.begin(), accepted.end(), result.acceptedTransportBlocks.begin());
+    const auto acceptedControl = state.evaluator.GetAcceptedRemoteControlBlocks();
+    result.acceptedRemoteControlBlockCount = static_cast<std::uint32_t>(acceptedControl.size());
+    std::copy(acceptedControl.begin(), acceptedControl.end(), result.acceptedRemoteControlBlocks.begin());
     {
         const std::lock_guard lock(state.snapshotMutex);
         pbprotocol::SaturatingIncrementUnsigned(state.snapshot.completedFrames);

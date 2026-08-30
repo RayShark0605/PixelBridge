@@ -69,12 +69,27 @@ struct DemodFrameResult
     pbdesktoplevels::FrameEvaluation evaluation;
     std::array<pbdesktoplevels::AcceptedTransportBlock, pbdesktoplevels::kMaximumCodewords> acceptedTransportBlocks{};
     std::uint32_t acceptedTransportBlockCount = 0;
+    std::array<pbdesktoplevels::AcceptedRemoteControlBlock, 1> acceptedRemoteControlBlocks{};
+    std::uint32_t acceptedRemoteControlBlockCount = 0;
     std::uint64_t metricReadbackBytes = 0;
     // Timestamp scope: constants/upload, calibration dispatch, data dispatch,
     // and metric/calibration copies into staging. This is GPU execution time,
     // not CPU submission time or the upstream ROI-copy duration.
     std::uint64_t gpuTime100ns = 0;
     bool gpuTimingValid = false;
+    // RemoteVisual metric/freshness diagnostics. The resolver can replace all
+    // data metrics from a stale region with zero before the unchanged FEC
+    // gate; these counters only report that fail-closed erasure decision.
+    bool remoteMetricSummaryAvailable = false;
+    std::uint32_t remoteMetricSamples = 0;
+    std::uint32_t remoteZeroMagnitudeMetrics = 0;
+    double remoteMinimumAbsoluteMetric = 0;
+    double remoteMeanAbsoluteMetric = 0;
+    std::uint32_t remoteFreshnessRegions = 0;
+    std::uint32_t remoteStaleRegions = 0;
+    std::uint32_t remoteFreshnessTagMismatches = 0;
+    std::uint32_t remoteFreshnessTagErasures = 0;
+    std::uint32_t remoteFreshnessErasedDataMetrics = 0;
 };
 
 struct DemodPollResult

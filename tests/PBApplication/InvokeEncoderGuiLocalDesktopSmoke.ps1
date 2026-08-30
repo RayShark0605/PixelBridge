@@ -348,7 +348,7 @@ $evidence = [ordered]@{
 $failure = $null
 try
 {
-    $encoderProcess = Start-Process -FilePath $encoder -ArgumentList '--gui-integration-smoke' `
+    $encoderProcess = Start-Process -FilePath $encoder -ArgumentList @('--gui-integration-smoke', $MonitorDeviceName) `
         -WorkingDirectory (Split-Path -Parent $encoder) -WindowStyle Minimized -PassThru
     $qtWindow = Wait-Until {
         $candidate = [PixelBridgeGuiSmokeNative]::FindWindow($encoderProcess.Id, 'PixelBridge Encoder')

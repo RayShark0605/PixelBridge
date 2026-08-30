@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pbmodulation/desktop_levels.h"
+#include "pbmodulation/remote_visual.h"
 #include "pbmodulation/shape_chroma.h"
 
 #include <array>
@@ -11,7 +12,7 @@
 namespace pbmodulation::detail
 {
 
-enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma };
+enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, RemoteVisual };
 
 [[nodiscard]] inline bool MatchesLocalDesktopBinding(const std::uint64_t profileId, const std::uint8_t layout, const LocalDesktopBinding binding) noexcept
 {
@@ -20,6 +21,7 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma };
     case LocalDesktopBinding::BootstrapOnly: return profileId == kLocalDesktopVisualProfileId && layout == kLocalDesktopLayoutVersion;
     case LocalDesktopBinding::DesktopLevels: return layout == kDesktopLevelsLayoutVersion && GetDesktopLevelsProfile(profileId) != nullptr;
     case LocalDesktopBinding::ShapeChroma: return profileId == kShapeChromaProfileId && layout == kShapeChromaLayoutVersion;
+    case LocalDesktopBinding::RemoteVisual: return profileId == kRemoteVisualProfileId && layout == kRemoteVisualLayoutVersion;
     }
     return false;
 }
@@ -30,6 +32,7 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma };
     case LocalDesktopBinding::BootstrapOnly: return kLocalDesktopLayoutVersion;
     case LocalDesktopBinding::DesktopLevels: return kDesktopLevelsLayoutVersion;
     case LocalDesktopBinding::ShapeChroma: return kShapeChromaLayoutVersion;
+    case LocalDesktopBinding::RemoteVisual: return kRemoteVisualLayoutVersion;
     }
     return 0;
 }

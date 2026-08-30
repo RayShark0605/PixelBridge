@@ -141,7 +141,8 @@ bool ValidDatasetClass(const ReplayDatasetClass value) noexcept
     case ReplayDatasetClass::LocalDesktopDegraded:
     case ReplayDatasetClass::LocalVideoCertifiedPlayer:
     case ReplayDatasetClass::LocalVideoGenericPlayer:
-    case ReplayDatasetClass::FailureCases: return true;
+    case ReplayDatasetClass::FailureCases:
+    case ReplayDatasetClass::RemoteVisual: return true;
     }
     return false;
 }

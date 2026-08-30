@@ -24,6 +24,9 @@ static const uint ChromaLabels[4] = {0, 1, 3, 2};
 static const uint LevelLabels[4] = {0, 1, 3, 2};
 static const uint2 PilotOrigins[4] = {uint2(736, 16), uint2(1696, 16), uint2(96, 1000), uint2(1056, 1000)};
 static const uint BandHeights[7] = {64, 128, 188, 128, 188, 128, 64};
+static const uint RemoteTileSampleInset = 2;
+static const uint RemoteCalibrationSampleInset = 4;
+static const float RemoteMaximumTileVariance = 4096.0;
 
 float3 LoadBgr(uint2 position)
 {
@@ -55,7 +58,8 @@ uint ToLogical(uint physical)
     [unroll]
     for (uint multiplierBit = 0; multiplierBit < 15; multiplierBit++)
     {
-        if ((29825 & (1u << multiplierBit)) != 0)
+        const uint inverse = 29825;
+        if ((inverse & (1u << multiplierBit)) != 0)
         {
             result = result >= TileCount - value ? result - (TileCount - value) : result + value;
         }
@@ -64,7 +68,31 @@ uint ToLogical(uint physical)
     return result;
 }
 
-uint2 TileOrigin(uint physical)
+uint2 RemoteTileOrigin(uint physical)
+{
+    static const uint RemoteBandY[7] = {96, 160, 288, 476, 608, 792, 920};
+    static const uint RemoteBandHeights[7] = {64, 128, 184, 128, 184, 128, 64};
+    uint2 origin = uint2(0, 0);
+    for (uint remoteBand = 0; remoteBand < 7; remoteBand++)
+    {
+        const bool hasTiming = (remoteBand & 1) != 0;
+        const uint tilesPerRow = hasTiming ? 168 : 216;
+        const uint count = tilesPerRow * (RemoteBandHeights[remoteBand] / 8);
+        if (physical < count)
+        {
+            const uint row = physical / tilesPerRow;
+            const uint column = physical % tilesPerRow;
+            const uint x = hasTiming ? (column < 84 ? 224 + column * 8 : 1024 + (column - 84) * 8) :
+                96 + column * 8;
+            origin = uint2(x, RemoteBandY[remoteBand] + row * 8);
+            break;
+        }
+        physical -= count;
+    }
+    return origin;
+}
+
+uint2 DesktopTileOrigin(uint physical)
 {
     uint y = 96;
     for (uint band = 0; band < 7; band++)
@@ -86,6 +114,56 @@ uint2 TileOrigin(uint physical)
         y += BandHeights[band];
     }
     return uint2(0, 0);
+}
+
+uint2 TileOrigin(uint physical)
+{
+    return Mode == 4 ? RemoteTileOrigin(physical) : DesktopTileOrigin(physical);
+}
+
+[numthreads(64, 1, 1)]
+void DemodRemoteVisualCS(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint physical = dispatchThreadId.x;
+    if (physical >= TileCount)
+    {
+        return;
+    }
+    const uint2 origin = TileOrigin(physical);
+    float sum = 0.0;
+    float squares = 0.0;
+    bool clipped = false;
+    [loop]
+    for (uint row = RemoteTileSampleInset; row < 8 - RemoteTileSampleInset; row++)
+    {
+        [loop]
+        for (uint column = RemoteTileSampleInset; column < 8 - RemoteTileSampleInset; column++)
+        {
+            const float3 sample = LoadBgr(origin + uint2(column, row));
+            const float value = Luma(sample);
+            sum += value;
+            squares += value * value;
+            clipped = clipped || IsClipped(sample);
+        }
+    }
+    const float count = (8.0 - 2.0 * RemoteTileSampleInset) * (8.0 - 2.0 * RemoteTileSampleInset);
+    const float mean = sum / count;
+    const float variance = max(0.0, squares / count - mean * mean);
+    float zeroCentroid = 0.0;
+    float oneCentroid = 0.0;
+    [unroll]
+    for (uint pilot = 0; pilot < 4; pilot++)
+    {
+        zeroCentroid += Calibration[pilot * 4].x / 4.0;
+        oneCentroid += Calibration[pilot * 4 + 3].x / 4.0;
+    }
+    const float gap = oneCentroid - zeroCentroid;
+    const float gapSquared = gap * gap;
+    const float zeroDifference = mean - zeroCentroid;
+    const float oneDifference = mean - oneCentroid;
+    const bool unreliable = clipped || gap <= 0.0 || variance > RemoteMaximumTileVariance;
+    MetricOutput[physical] = unreliable ? 0.0 :
+        (oneDifference * oneDifference - zeroDifference * zeroDifference) / gapSquared;
 }
 
 [numthreads(16, 1, 1)]
@@ -133,11 +211,12 @@ void CalibrateLevelsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     float sum = 0.0;
     float squares = 0.0;
     uint clipped = 0;
+    const uint sampleInset = Mode == 4 ? RemoteCalibrationSampleInset : 0;
     [loop]
-    for (uint row = 0; row < 64; row++)
+    for (uint row = sampleInset; row < 64 - sampleInset; row++)
     {
         [loop]
-        for (uint column = 0; column < 32; column++)
+        for (uint column = sampleInset; column < 32 - sampleInset; column++)
         {
             const float3 sample = LoadBgr(PilotOrigins[pilot] + uint2(level * 32 + column, row));
             const float value = Luma(sample);
@@ -146,7 +225,7 @@ void CalibrateLevelsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             clipped += IsClipped(sample) ? 1 : 0;
         }
     }
-    const float count = 2048.0;
+    const float count = (64.0 - 2.0 * sampleInset) * (32.0 - 2.0 * sampleInset);
     const float mean = sum / count;
     CalibrationOutput[entry] = float4(mean, max(0.0, squares / count - mean * mean), (float)clipped, 0.0);
 }

@@ -41,9 +41,13 @@ constexpr DiagnosticBinding desktop4Binding{pbmodulation::kDesktopLevels4Profile
 constexpr DiagnosticBinding shapeChromaBinding{pbmodulation::kShapeChromaProfileId, pbmodulation::kShapeChromaLayoutVersion,
     pbmodulation::kShapeChromaDataBytes, pbmodulation::kShapeChromaCodewords, pbmodulation::kShapeChromaPaddingBytes,
     "PB-ShapeChroma-1-Data"};
+constexpr DiagnosticBinding remoteVisualBinding{pbmodulation::kRemoteVisualProfileId, pbmodulation::kRemoteVisualLayoutVersion,
+    pbmodulation::kRemoteVisualDataBytes, pbmodulation::kRemoteVisualCodewords, pbmodulation::kRemoteVisualPaddingBytes,
+    "PB-RemoteVisual-X2-Data"};
 static_assert(desktop2Binding.codewords * kCodewordBytes + desktop2Binding.paddingBytes == desktop2Binding.dataBytes);
 static_assert(desktop4Binding.codewords * kCodewordBytes + desktop4Binding.paddingBytes == desktop4Binding.dataBytes);
 static_assert(shapeChromaBinding.codewords * kCodewordBytes + shapeChromaBinding.paddingBytes == shapeChromaBinding.dataBytes);
+static_assert(remoteVisualBinding.codewords * kCodewordBytes + remoteVisualBinding.paddingBytes == remoteVisualBinding.dataBytes);
 
 bool Overlap(const std::span<const std::byte> first, const std::span<const std::byte> second) noexcept
 {
@@ -82,8 +86,12 @@ const DiagnosticBinding* ParseBinding(const std::span<const std::byte> bytes, pb
     {
         return &desktop4Binding;
     }
-    return record.visualProfileId == shapeChromaBinding.profileId && record.visualLayoutVersion == shapeChromaBinding.layoutVersion ?
-        &shapeChromaBinding : nullptr;
+    if (record.visualProfileId == shapeChromaBinding.profileId && record.visualLayoutVersion == shapeChromaBinding.layoutVersion)
+    {
+        return &shapeChromaBinding;
+    }
+    return record.visualProfileId == remoteVisualBinding.profileId && record.visualLayoutVersion == remoteVisualBinding.layoutVersion ?
+        &remoteVisualBinding : nullptr;
 }
 
 void GeneratePayload(const std::string_view domain, const std::span<const std::byte> bootstrapRecord, const std::uint32_t slot,
@@ -130,6 +138,56 @@ bool GenerateInto(const std::span<const std::byte> bootstrapRecord, const pbprot
     }
     std::fill(data.begin() + profile.codewords * kCodewordBytes, data.end(), std::byte{0});
     return true;
+}
+
+enum class RemoteControlExtractResult : std::uint8_t
+{
+    Invalid,
+    Accepted,
+    IdentityMismatch
+};
+
+RemoteControlExtractResult ExtractRemoteControl(const std::span<const std::byte> information,
+    const pbprotocol::SessionTag bootstrapSessionTag,
+    AcceptedRemoteControlBlock& output) noexcept
+{
+    if (information.size() != kInfoBytes || information.data() == nullptr ||
+        !std::ranges::all_of(information.subspan(pbmodulation::kReferenceControlWindowBytes),
+            [](const std::byte value) { return value == std::byte{0}; }))
+    {
+        return RemoteControlExtractResult::Invalid;
+    }
+    const auto window = information.first(pbmodulation::kReferenceControlWindowBytes);
+    AcceptedRemoteControlBlock accepted;
+    std::uint32_t acceptedCandidates = 0;
+    bool identityMismatch = false;
+    for (std::size_t byteCount = 1; byteCount <= window.size(); byteCount++)
+    {
+        if (!std::ranges::all_of(window.subspan(byteCount), [](const std::byte value) { return value == std::byte{0}; }))
+        {
+            continue;
+        }
+        const auto candidate = window.first(byteCount);
+        const auto record = pbprotocol::ParseControlRecord(candidate);
+        if (record && record.Value().sessionTag == bootstrapSessionTag)
+        {
+            accepted.kind = AcceptedRemoteControlKind::Record;
+            accepted.byteCount = static_cast<std::uint32_t>(byteCount);
+            acceptedCandidates++;
+        }
+        else if (record)
+        {
+            identityMismatch = true;
+        }
+    }
+    if (acceptedCandidates != 1)
+    {
+        return acceptedCandidates == 0 && identityMismatch ? RemoteControlExtractResult::IdentityMismatch :
+            RemoteControlExtractResult::Invalid;
+    }
+    std::copy_n(window.begin(), accepted.byteCount, accepted.bytes.begin());
+    output = accepted;
+    return RemoteControlExtractResult::Accepted;
 }
 
 void WriteNumber(std::ostream& output, const double value)
@@ -254,6 +312,7 @@ struct ReferenceChannel::Implementation
 {
     pbmodulation::DesktopLevelsWorkspace modulation;
     pbmodulation::ShapeChromaWorkspace shapeChroma;
+    pbmodulation::RemoteVisualWorkspace remoteVisual;
     pbinnerfec::QcLdpcDecoder decoder;
     std::array<std::byte, pbmodulation::kDesktopLevelsMaximumDataBytes> hard{};
     std::array<float, pbmodulation::kDesktopLevelsMaximumBits> soft{};
@@ -263,8 +322,11 @@ struct ReferenceChannel::Implementation
     std::array<std::int16_t, kCodewordBits> llr{};
     std::array<AcceptedTransportBlock, kMaximumCodewords> accepted{};
     std::size_t acceptedCount = 0;
+    std::array<AcceptedRemoteControlBlock, 1> acceptedRemoteControl{};
+    std::size_t acceptedRemoteControlCount = 0;
     bool histogramValid = false;
     bool shapeHistogramValid = false;
+    bool remoteVisualHistogramValid = false;
 };
 
 ReferenceChannel::ReferenceChannel() noexcept = default;
@@ -278,14 +340,16 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
     // application state. Reject before allocation, including tiny budgets.
     if (maximumBytes < kProcessingReservationBytes ||
         sizeof(Implementation) + pbmodulation::DesktopLevelsWorkspace::RequiredBytes() + pbmodulation::ShapeChromaWorkspace::RequiredBytes() +
+            pbmodulation::RemoteVisualWorkspace::RequiredBytes() +
             2 * 1024 * 1024 > kProcessingReservationBytes)
     {
         return ModulationResult<ReferenceChannel>::Failure(ModulationErrorCode::InvalidInput, 0);
     }
     auto modulation = pbmodulation::DesktopLevelsWorkspace::Create(kProcessingReservationBytes);
     auto shapeChroma = pbmodulation::ShapeChromaWorkspace::Create(kProcessingReservationBytes);
+    auto remoteVisual = pbmodulation::RemoteVisualWorkspace::Create(kProcessingReservationBytes);
     auto decoder = pbinnerfec::QcLdpcDecoder::Create(pbinnerfec::kInnerFecProfileIdRobust);
-    if (!modulation || !shapeChroma || !decoder)
+    if (!modulation || !shapeChroma || !remoteVisual || !decoder)
     {
         return ModulationResult<ReferenceChannel>::Failure(ModulationErrorCode::MemoryAllocationFailure, 0);
     }
@@ -297,6 +361,7 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
     }
     result.implementation_->modulation = std::move(modulation).Value();
     result.implementation_->shapeChroma = std::move(shapeChroma).Value();
+    result.implementation_->remoteVisual = std::move(remoteVisual).Value();
     result.implementation_->decoder = std::move(decoder).Value();
     return ModulationResult<ReferenceChannel>::Success(std::move(result));
 }
@@ -312,7 +377,9 @@ ReferenceObservation ReferenceChannel::Decode(const pbmodulation::LumaView& view
     auto& state = *implementation_;
     state.histogramValid = false;
     state.shapeHistogramValid = false;
+    state.remoteVisualHistogramValid = false;
     state.acceptedCount = 0;
+    state.acceptedRemoteControlCount = 0;
     result.modulation = pbmodulation::DecodeDesktopLevelsFrame(view, state.modulation, state.hard, state.soft, policy);
     if (result.modulation.IsAccepted())
     {
@@ -335,7 +402,9 @@ ShapeChromaReferenceObservation ReferenceChannel::DecodeShapeChroma(const pbmodu
     auto& state = *implementation_;
     state.histogramValid = false;
     state.shapeHistogramValid = false;
+    state.remoteVisualHistogramValid = false;
     state.acceptedCount = 0;
+    state.acceptedRemoteControlCount = 0;
     result.modulation = pbmodulation::DecodeShapeChromaFrame(view, state.shapeChroma, state.hard, state.soft, policy);
     if (result.modulation.IsAccepted())
     {
@@ -343,6 +412,32 @@ ShapeChromaReferenceObservation ReferenceChannel::DecodeShapeChroma(const pbmodu
             std::span(state.hard).first(result.modulation.dataBytes),
             std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
         state.shapeHistogramValid = result.evaluation.evaluated;
+    }
+    return result;
+}
+
+RemoteVisualReferenceObservation ReferenceChannel::DecodeRemoteVisual(const pbmodulation::LumaView& view,
+    const pbmodulation::RemoteVisualDecodePolicy& policy) noexcept
+{
+    RemoteVisualReferenceObservation result;
+    if (!implementation_)
+    {
+        result.modulation.erasure = pbmodulation::RemoteVisualErasure::WorkspaceUnavailable;
+        return result;
+    }
+    auto& state = *implementation_;
+    state.histogramValid = false;
+    state.shapeHistogramValid = false;
+    state.remoteVisualHistogramValid = false;
+    state.acceptedCount = 0;
+    state.acceptedRemoteControlCount = 0;
+    result.modulation = pbmodulation::DecodeRemoteVisualFrame(view, state.remoteVisual, state.hard, state.soft, policy);
+    if (result.modulation.IsAccepted())
+    {
+        result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44,
+            std::span(state.hard).first(result.modulation.dataBytes),
+            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
+        state.remoteVisualHistogramValid = result.evaluation.evaluated;
     }
     return result;
 }
@@ -358,7 +453,9 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
     auto& state = *implementation_;
     state.histogramValid = false;
     state.shapeHistogramValid = false;
+    state.remoteVisualHistogramValid = false;
     state.acceptedCount = 0;
+    state.acceptedRemoteControlCount = 0;
     pbprotocol::BootstrapRecord record;
     const auto* const profile = ParseBinding(bootstrapRecord, record);
     if ((mode != EvaluationMode::DiagnosticTruth && mode != EvaluationMode::Transport) || profile == nullptr ||
@@ -394,6 +491,7 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
                 if (!std::isfinite(metric))
                 {
                     state.acceptedCount = 0;
+                    state.acceptedRemoteControlCount = 0;
                     return {};
                 }
                 value |= static_cast<unsigned>(metric <= negativeDecisionThreshold) << bit;
@@ -423,6 +521,23 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
         const auto block = pbprotocol::ExtractTransportBlockFromInfoBlock(recovered.first(kInfoBytes));
         if (!block)
         {
+            AcceptedRemoteControlBlock control;
+            const RemoteControlExtractResult controlResult = mode == EvaluationMode::Transport &&
+                profile->profileId == remoteVisualBinding.profileId ?
+                ExtractRemoteControl(recovered.first(kInfoBytes), record.sessionTag, control) :
+                RemoteControlExtractResult::Invalid;
+            if (controlResult == RemoteControlExtractResult::Accepted)
+            {
+                state.crcValid[slot] = true;
+                state.acceptedRemoteControl[state.acceptedRemoteControlCount++] = control;
+                result.acceptedRemoteControlBlocks++;
+                continue;
+            }
+            if (controlResult == RemoteControlExtractResult::IdentityMismatch)
+            {
+                result.identityFailures++;
+                continue;
+            }
             result.crcFailures++;
             continue;
         }
@@ -457,6 +572,7 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
     if (!std::ranges::all_of(softMetrics.subspan(codedBytes * 8), [](const float metric) { return std::isfinite(metric); }))
     {
         state.acceptedCount = 0;
+        state.acceptedRemoteControlCount = 0;
         return {};
     }
     if (mode == EvaluationMode::DiagnosticTruth)
@@ -510,10 +626,22 @@ std::span<const std::uint64_t> ReferenceChannel::GetChromaMarginHistogram() cons
         std::span<const std::uint64_t>{};
 }
 
+std::span<const std::uint64_t> ReferenceChannel::GetRemoteVisualMarginHistogram() const noexcept
+{
+    return implementation_ && implementation_->remoteVisualHistogramValid ?
+        implementation_->remoteVisual.GetMarginHistogram() : std::span<const std::uint64_t>{};
+}
+
 std::span<const AcceptedTransportBlock> ReferenceChannel::GetAcceptedTransportBlocks() const noexcept
 {
     return implementation_ ? std::span<const AcceptedTransportBlock>(implementation_->accepted).first(implementation_->acceptedCount) :
         std::span<const AcceptedTransportBlock>{};
+}
+
+std::span<const AcceptedRemoteControlBlock> ReferenceChannel::GetAcceptedRemoteControlBlocks() const noexcept
+{
+    return implementation_ ? std::span<const AcceptedRemoteControlBlock>(implementation_->acceptedRemoteControl)
+        .first(implementation_->acceptedRemoteControlCount) : std::span<const AcceptedRemoteControlBlock>{};
 }
 
 bool ReferenceStatistics::Add(const FrameEvaluation& evaluation, const std::uint64_t sequence,

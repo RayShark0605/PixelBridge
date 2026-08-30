@@ -70,11 +70,26 @@ void WriteOptionalNumber(std::ostream& stream, const std::optional<ValueType>& v
     }
 }
 
+void WriteOptionalRect(std::ostream& stream, const std::optional<MetadataPhysicalRect>& rectangle)
+{
+    if (!rectangle)
+    {
+        stream << "null";
+        return;
+    }
+    stream << "{\"left\":" << rectangle->left << ",\"top\":" << rectangle->top
+           << ",\"right\":" << rectangle->right << ",\"bottom\":" << rectangle->bottom << '}';
+}
+
 void WriteRemoteMetadata(std::ostream& stream, const RemoteRunMetadata& metadata)
 {
-    stream << "{\"channelType\":";
+    stream << "{\"schema\":\"PixelBridge.RemoteVisualRunMetadata.1\",\"runId\":";
+    WriteEscaped(stream, metadata.runId);
+    stream << ",\"channelType\":";
     WriteEscaped(stream, metadata.channelType == ChannelType::LocalDesktop ? "LocalDesktop" :
-        metadata.channelType == ChannelType::SunloginRemoteVisual ? "Sunlogin RemoteVisual" : "Other");
+        metadata.channelType == ChannelType::RemoteVisual ? "RemoteVisual" : "Other");
+    stream << ",\"remoteProvider\":";
+    WriteEscaped(stream, metadata.remoteProvider);
     stream << ",\"remoteProviderVersion\":";
     WriteEscaped(stream, metadata.providerVersion);
     stream << ",\"remoteMode\":";
@@ -86,22 +101,54 @@ void WriteRemoteMetadata(std::ostream& stream, const RemoteRunMetadata& metadata
     stream << ",\"chromaMode\":";
     WriteEscaped(stream, metadata.chromaMode == ChromaMode::Chroma444 ? "4:4:4" :
         metadata.chromaMode == ChromaMode::Chroma420 ? "4:2:0" : "Unknown");
+    stream << ",\"computerBDisplayResolution\":";
+    WriteEscaped(stream, metadata.computerBDisplayResolution);
+    stream << ",\"computerBRefreshRate\":";
+    WriteOptionalNumber(stream, metadata.computerBRefreshRate);
+    stream << ",\"computerADisplayResolution\":";
+    WriteEscaped(stream, metadata.computerADisplayResolution);
+    stream << ",\"computerARefreshRate\":";
+    WriteOptionalNumber(stream, metadata.computerARefreshRate);
     stream << ",\"remoteResolution\":";
     WriteEscaped(stream, metadata.remoteResolution);
-    stream << ",\"remoteWindowScale\":";
-    WriteEscaped(stream, metadata.remoteWindowScale);
-    stream << ",\"networkNote\":";
-    WriteEscaped(stream, metadata.networkNote);
+    stream << ",\"remoteWindowPhysicalRect\":";
+    WriteOptionalRect(stream, metadata.remoteWindowPhysicalRect);
+    stream << ",\"selectedRoiPhysicalRect\":";
+    WriteOptionalRect(stream, metadata.selectedRoiPhysicalRect);
+    stream << ",\"estimatedScaleX\":";
+    WriteOptionalNumber(stream, metadata.estimatedScaleX);
+    stream << ",\"estimatedScaleY\":";
+    WriteOptionalNumber(stream, metadata.estimatedScaleY);
+    stream << ",\"letterboxStatus\":";
+    WriteEscaped(stream, metadata.letterboxStatus);
+    stream << ",\"cropStatus\":";
+    WriteEscaped(stream, metadata.cropStatus);
+    stream << ",\"geometryStatus\":";
+    WriteEscaped(stream, metadata.geometryStatus);
+    stream << ",\"networkType\":";
+    WriteEscaped(stream, metadata.networkType);
     stream << ",\"observedBandwidthMbps\":";
     WriteOptionalNumber(stream, metadata.observedBandwidthMbps);
     stream << ",\"observedLatencyMilliseconds\":";
     WriteOptionalNumber(stream, metadata.observedLatencyMilliseconds);
+    stream << ",\"protectedMonitorIdentity\":";
+    WriteEscaped(stream, metadata.protectedMonitorIdentity);
+    stream << ",\"experimentMonitorIdentity\":";
+    WriteEscaped(stream, metadata.experimentMonitorIdentity);
+    stream << ",\"remoteUiProvenance\":";
+    WriteEscaped(stream, GetMetadataProvenanceName(metadata.remoteUiProvenance));
+    stream << ",\"geometryProvenance\":";
+    WriteEscaped(stream, GetMetadataProvenanceName(metadata.geometryProvenance));
+    stream << ",\"networkProvenance\":";
+    WriteEscaped(stream, GetMetadataProvenanceName(metadata.networkProvenance));
+    stream << ",\"notes\":";
+    WriteEscaped(stream, metadata.notes);
     stream << '}';
 }
 
 void WriteContext(std::ostream& stream, const RunReportContext& context)
 {
-    stream << "\"schema\":\"PixelBridge.RunReport.1\",\"applicationName\":";
+    stream << "\"schema\":\"PixelBridge.RunReport.2\",\"applicationName\":";
     WriteEscaped(stream, context.applicationName);
     stream << ",\"applicationVersion\":";
     WriteEscaped(stream, context.applicationVersion);
@@ -112,6 +159,15 @@ void WriteContext(std::ostream& stream, const RunReportContext& context)
 }
 
 } // namespace
+
+std::string BuildRemoteVisualRunMetadataJson(const RemoteRunMetadata& metadata)
+{
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::boolalpha << std::setprecision(17);
+    WriteRemoteMetadata(stream, metadata);
+    return stream.str();
+}
 
 std::string BuildEncoderRunReportJson(const RunReportContext& context,
     const EncoderSnapshot& snapshot)
@@ -161,7 +217,9 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     WriteNumber(stream, snapshot.generatedVisualFramesPerSecond);
     stream << ",\"generatedPayloadBytesPerSecond\":";
     WriteNumber(stream, snapshot.generatedPayloadBytesPerSecond);
-    stream << ",\"pendingFrames\":" << snapshot.pendingFrames
+    stream << ",\"configuredLogicalVisualFps\":" << snapshot.configuredLogicalVisualFps
+           << ",\"configuredControlRepetitions\":" << snapshot.configuredControlRepetitions
+           << ",\"pendingFrames\":" << snapshot.pendingFrames
            << ",\"pendingHighWater\":" << snapshot.pendingHighWater
            << ",\"submittedFrames\":" << snapshot.submittedFrames
            << ",\"replacedPendingFrames\":" << snapshot.replacedPendingFrames
@@ -169,6 +227,30 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
            << ",\"sourceStable\":" << snapshot.sourceStable
            << ",\"wholeFileDigest\":";
     WriteEscaped(stream, snapshot.wholeFileDigestHex);
+    stream << ",\"processCpuAveragePercent\":";
+    WriteOptionalNumber(stream, snapshot.processCpuAveragePercent);
+    stream << ",\"processCpuPeakPercent\":";
+    WriteOptionalNumber(stream, snapshot.processCpuPeakPercent);
+    stream << ",\"processCpuEquivalentCores\":";
+    WriteOptionalNumber(stream, snapshot.processCpuEquivalentCores);
+    stream << ",\"processCpuUnavailableReason\":";
+    WriteEscaped(stream, snapshot.processCpuAveragePercent ? "" : snapshot.processCpuUnavailableReason);
+    stream << ",\"processGpuEngineAveragePercent\":";
+    WriteOptionalNumber(stream, snapshot.processGpuEngineAveragePercent);
+    stream << ",\"processGpuEnginePeakPercent\":";
+    WriteOptionalNumber(stream, snapshot.processGpuEnginePeakPercent);
+    stream << ",\"processGpuUnavailableReason\":";
+    WriteEscaped(stream, snapshot.processGpuEngineAveragePercent || snapshot.processGpuEnginePeakPercent ?
+        "" : snapshot.processGpuUnavailableReason);
+    stream << ",\"evidence\":{\"journalEnabled\":" << snapshot.journalEnabled
+           << ",\"valid\":" << snapshot.evidenceValid
+           << ",\"journalTruncated\":" << snapshot.journalTruncated
+           << ",\"journalFinished\":" << snapshot.journalFinished
+           << ",\"journalSamples\":" << snapshot.journalSamples
+           << ",\"journalBytes\":" << snapshot.journalBytes
+           << ",\"invalidReason\":";
+    WriteEscaped(stream, snapshot.evidenceInvalidReason);
+    stream << '}';
     stream << ",\"receiverProgress\":null,\"receiverEta\":null,\"verifiedGoodput\":null"
            << ",\"remoteMetadata\":";
     WriteRemoteMetadata(stream, snapshot.remoteMetadata);
@@ -252,8 +334,18 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     stream << ",\"captureEpoch\":" << snapshot.captureEpoch
            << ",\"captureEpochResets\":" << snapshot.captureEpochResets
            << ",\"captureArrivedFrames\":" << snapshot.captureArrivedFrames
+           << ",\"captureCopiedFrames\":" << snapshot.captureCopiedFrames
            << ",\"captureDeliveredFrames\":" << snapshot.captureDeliveredFrames
            << ",\"captureDroppedFrames\":" << snapshot.captureDroppedFrames
+           << ",\"captureAcquireTimeouts\":" << snapshot.captureAcquireTimeouts
+           << ",\"capturePointerOnlyFrames\":" << snapshot.capturePointerOnlyFrames
+           << ",\"captureAccumulatedFrames\":" << snapshot.captureAccumulatedFrames
+           << ",\"captureAccessLostEvents\":" << snapshot.captureAccessLostEvents
+           << ",\"captureExpiredFrames\":" << snapshot.captureExpiredFrames
+           << ",\"captureStaleFrames\":" << snapshot.captureStaleFrames
+           << ",\"captureCursorErasures\":" << snapshot.captureCursorErasures
+           << ",\"captureFrameAgeHighWater100ns\":" << snapshot.captureFrameAgeHighWater100ns
+           << ",\"captureReadbackDropEvents\":" << snapshot.captureReadbackDropEvents
            << ",\"captureRecreates\":" << snapshot.captureRecreates
            << ",\"captureDeviceRecoveries\":" << snapshot.captureDeviceRecoveries
            << ",\"telemetryCapturedFrames\":" << snapshot.telemetryCapturedFrames
@@ -263,8 +355,13 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     WriteOptionalNumber(stream, snapshot.captureFps);
     stream << ",\"uniqueVisualFps\":";
     WriteOptionalNumber(stream, snapshot.uniqueVisualFps);
-    stream << ",\"uniqueVisualFpsBasis\":\"collision-resistant admitted ROI pixel digest\""
-           << ",\"frameSequenceGapEvents\":" << snapshot.frameSequenceGapEvents
+    stream << ",\"uniqueVisualFpsBasis\":\"distinct legal (CaptureEpoch,SessionTag,FrameSequence)\""
+           << ",\"roiPixelDigestUniqueVisualFps\":";
+    WriteOptionalNumber(stream, snapshot.roiPixelDigestUniqueVisualFps);
+    stream << ",\"roiPixelDigestAvailability\":";
+    WriteEscaped(stream, snapshot.fingerprintedFrames == 0 ?
+        "Unavailable: production D3D11 fast path has no full-ROI CPU pixel digest" : "Available");
+    stream << ",\"frameSequenceGapEvents\":" << snapshot.frameSequenceGapEvents
            << ",\"skippedFrameSequences\":" << snapshot.skippedFrameSequences
            << ",\"duplicateFrameSequences\":" << snapshot.duplicateFrameSequences
            << ",\"reorderedFrameSequences\":" << snapshot.reorderedFrameSequences
@@ -281,13 +378,125 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"evaluatedDataFrames\":" << snapshot.evaluatedDataFrames
            << ",\"postFecFailedFrames\":" << snapshot.postFecFailedFrames
            << ",\"acceptedTransportBlocks\":" << snapshot.acceptedTransportBlocks
+           << ",\"outerAdmission\":{\"uniqueSymbols\":" << snapshot.outerUniqueSymbols
+           << ",\"identicalDuplicateSymbols\":" << snapshot.outerIdenticalDuplicateSymbols
+           << ",\"recoveryAlreadyReadySymbols\":" << snapshot.outerRecoveryAlreadyReadySymbols
+           << ",\"alreadyCompletedSymbols\":" << snapshot.outerAlreadyCompletedSymbols
+           << ",\"recoveryReadyEvents\":" << snapshot.outerRecoveryReadyEvents
+           << ",\"resourceRejections\":" << snapshot.outerResourceRejections
+           << ",\"conflictRejections\":" << snapshot.outerConflictRejections << '}'
            << ",\"comparedCodedBits\":" << snapshot.comparedCodedBits
            << ",\"erroneousCodedBits\":" << snapshot.erroneousCodedBits
            << ",\"fecFailures\":" << snapshot.fecFailures
            << ",\"crcFailures\":" << snapshot.crcFailures
            << ",\"identityFailures\":" << snapshot.identityFailures
-           << ",\"falseAcceptedCodewords\":" << snapshot.falseAcceptedCodewords
-           << ",\"preFecBerEstimate\":";
+           << ",\"falseAcceptedCodewords\":";
+    if (snapshot.falseAcceptedCodewordsAvailable)
+    {
+        stream << snapshot.falseAcceptedCodewords;
+    }
+    else
+    {
+        stream << "null";
+    }
+    stream << ",\"falseAcceptedCodewordsUnavailableReason\":";
+    WriteEscaped(stream, snapshot.falseAcceptedCodewordsAvailable ? "" : snapshot.falseAcceptedCodewordsUnavailableReason);
+    stream << ",\"endToEndUniqueFrameSequences\":" << snapshot.endToEndUniqueFrameSequences
+           << ",\"endToEndUniqueVisualFps\":";
+    WriteOptionalNumber(stream, snapshot.endToEndUniqueVisualFps);
+    stream << ",\"remoteDuplicateRefinementAttempts\":" << snapshot.remoteDuplicateRefinementAttempts
+           << ",\"remoteDuplicateRefinementRecoveries\":" << snapshot.remoteDuplicateRefinementRecoveries
+           << ",\"remoteMetricTelemetry\":{\"frames\":" << snapshot.remoteMetricFrames
+           << ",\"samples\":" << snapshot.remoteMetricSamples
+           << ",\"zeroMagnitudeMetrics\":" << snapshot.remoteZeroMagnitudeMetrics
+           << ",\"zeroMagnitudeRate\":";
+    WriteOptionalNumber(stream, snapshot.remoteZeroMagnitudeMetricRate);
+    stream << ",\"minimumAbsoluteMetric\":";
+    WriteOptionalNumber(stream, snapshot.remoteMinimumAbsoluteMetric);
+    stream << ",\"meanAbsoluteMetric\":";
+    WriteOptionalNumber(stream, snapshot.remoteMeanAbsoluteMetric);
+    stream << ",\"verifiedFrames\":" << snapshot.remoteVerifiedMetricFrames
+           << ",\"rejectedFrames\":" << snapshot.remoteRejectedMetricFrames
+           << ",\"verifiedMeanAbsoluteMetric\":";
+    WriteOptionalNumber(stream, snapshot.remoteVerifiedMeanAbsoluteMetric);
+    stream << ",\"rejectedMeanAbsoluteMetric\":";
+    WriteOptionalNumber(stream, snapshot.remoteRejectedMeanAbsoluteMetric);
+    stream << ",\"rejectedZeroMagnitudeRate\":";
+    WriteOptionalNumber(stream, snapshot.remoteRejectedZeroMagnitudeMetricRate);
+    stream << ",\"freshnessRegions\":" << snapshot.remoteFreshnessRegions
+           << ",\"staleRegions\":" << snapshot.remoteStaleRegions
+           << ",\"staleRegionRate\":";
+    WriteOptionalNumber(stream, snapshot.remoteStaleRegionRate);
+    stream << ",\"framesWithStaleRegions\":" << snapshot.remoteFramesWithStaleRegions
+           << ",\"freshnessTagMismatches\":" << snapshot.remoteFreshnessTagMismatches
+           << ",\"freshnessTagErasures\":" << snapshot.remoteFreshnessTagErasures
+           << ",\"freshnessErasedDataMetrics\":" << snapshot.remoteFreshnessErasedDataMetrics;
+    stream << ",\"highConfidenceWrongCodewords\":null"
+           << ",\"highConfidenceWrongUnavailableReason\":";
+    WriteEscaped(stream, "Production receive has no independent per-codeword truth oracle; use failed-frame confidence jointly with sealed Replay evidence");
+    stream << ",\"unavailableReason\":";
+    WriteEscaped(stream, snapshot.remoteMetricFrames == 0 ?
+        "No RemoteVisual metric-bearing frame was demodulated" : "");
+    stream << '}'
+           << ",\"captureStall\":{\"count\":" << snapshot.captureStallCount
+           << ",\"totalMilliseconds\":" << snapshot.captureStallTotalMilliseconds
+           << ",\"maximumMilliseconds\":" << snapshot.captureStallMaximumMilliseconds
+           << ",\"active\":" << snapshot.captureStallActive << '}'
+           << ",\"visualStall\":{\"count\":" << snapshot.visualStallCount
+           << ",\"totalMilliseconds\":" << snapshot.visualStallTotalMilliseconds
+           << ",\"maximumMilliseconds\":" << snapshot.visualStallMaximumMilliseconds
+           << ",\"active\":" << snapshot.visualStallActive << '}'
+           << ",\"processCpuAveragePercent\":";
+    WriteOptionalNumber(stream, snapshot.processCpuAveragePercent);
+    stream << ",\"processCpuPeakPercent\":";
+    WriteOptionalNumber(stream, snapshot.processCpuPeakPercent);
+    stream << ",\"processCpuEquivalentCores\":";
+    WriteOptionalNumber(stream, snapshot.processCpuEquivalentCores);
+    stream << ",\"processCpuUnavailableReason\":";
+    WriteEscaped(stream, snapshot.processCpuAveragePercent ? "" : snapshot.processCpuUnavailableReason);
+    stream << ",\"processGpuEngineAveragePercent\":";
+    WriteOptionalNumber(stream, snapshot.processGpuEngineAveragePercent);
+    stream << ",\"processGpuEnginePeakPercent\":";
+    WriteOptionalNumber(stream, snapshot.processGpuEnginePeakPercent);
+    stream << ",\"processGpuUnavailableReason\":";
+    WriteEscaped(stream, snapshot.processGpuEngineAveragePercent || snapshot.processGpuEnginePeakPercent ?
+        "" : snapshot.processGpuUnavailableReason);
+    stream << ",\"evidence\":{\"journalEnabled\":" << snapshot.journalEnabled
+           << ",\"valid\":" << snapshot.evidenceValid
+           << ",\"journalTruncated\":" << snapshot.journalTruncated
+           << ",\"journalFinished\":" << snapshot.journalFinished
+           << ",\"journalSamples\":" << snapshot.journalSamples
+           << ",\"journalBytes\":" << snapshot.journalBytes
+           << ",\"invalidReason\":";
+    WriteEscaped(stream, snapshot.evidenceInvalidReason);
+    stream << '}';
+    stream << ",\"monitorSafety\":{\"preflightPassed\":" << snapshot.monitorSafetyPreflightPassed
+           << ",\"revalidationCount\":" << snapshot.monitorSafetyRevalidationCount
+           << ",\"status\":";
+    WriteEscaped(stream, snapshot.monitorSafetyStatus);
+    stream << '}';
+    stream << ",\"replay\":{\"enabled\":" << snapshot.replayEnabled
+           << ",\"diagnosticOnly\":" << snapshot.replayDiagnosticOnly
+           << ",\"captureOnly\":" << snapshot.replayCaptureOnly
+           << ",\"offlineMode\":" << snapshot.replayOfflineMode
+           << ",\"evidenceValid\":" << snapshot.replayEvidenceValid
+           << ",\"finalized\":" << snapshot.replayFinalized
+           << ",\"writtenFrames\":" << snapshot.replayWrittenFrames
+           << ",\"droppedFrames\":" << snapshot.replayDroppedFrames
+           << ",\"writtenDemodObservations\":" << snapshot.replayWrittenDemodObservations
+           << ",\"droppedDemodObservations\":" << snapshot.replayDroppedDemodObservations
+           << ",\"queueHighWater\":" << snapshot.replayQueueHighWater
+           << ",\"fileBytes\":" << snapshot.replayFileBytes
+           << ",\"offlineCaptureFrames\":" << snapshot.replayOfflineCaptureFrames
+           << ",\"offlineDemodResults\":" << snapshot.replayOfflineDemodResults
+           << ",\"offlineObservationComparisons\":" << snapshot.replayOfflineObservationComparisons
+           << ",\"offlineObservationMismatches\":" << snapshot.replayOfflineObservationMismatches
+           << ",\"path\":";
+    WriteEscaped(stream, snapshot.replayPath);
+    stream << ",\"error\":";
+    WriteEscaped(stream, snapshot.replayError);
+    stream << '}';
+    stream << ",\"preFecBerEstimate\":";
     WriteOptionalNumber(stream, snapshot.preFecBerEstimate);
     stream << ",\"fecFrameErrorRate\":";
     WriteOptionalNumber(stream, snapshot.fecFrameErrorRate);

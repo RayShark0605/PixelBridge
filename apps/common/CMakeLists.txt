@@ -4,13 +4,17 @@ add_library(PB::PBApplication ALIAS PBApplication)
 target_sources(PBApplication
     PRIVATE
         application_model.cpp
+        evidence_journal.cpp
         local_desktop_runtime.cpp
         monitor_catalog.cpp
+        remote_visual_replay_recorder.cpp
         run_report.cpp
     PUBLIC
         application_model.h
+        evidence_journal.h
         local_desktop_runtime.h
         monitor_catalog.h
+        remote_visual_replay_recorder.h
         run_report.h)
 
 target_include_directories(PBApplication PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -36,7 +40,9 @@ target_link_libraries(PBApplication
         PB::PBPresentTiming
         PB::PBTelemetry)
 
-target_link_libraries(PBApplication PRIVATE Shcore)
+target_link_libraries(PBApplication PUBLIC PB::PBRealCaptureReplay)
+
+target_link_libraries(PBApplication PRIVATE Shcore d3d11 dxgi)
 
 target_compile_features(PBApplication PUBLIC cxx_std_20)
 target_compile_definitions(PBApplication PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

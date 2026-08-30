@@ -36,7 +36,8 @@ int main()
         }
 #endif
 #ifdef PB_ENABLE_APPLICATION_RUNTIME
-        if (std::wstring_view(arguments[1]) == L"--headless-receive")
+        if (std::wstring_view(arguments[1]) == L"--headless-receive" ||
+            std::wstring_view(arguments[1]) == L"--headless-replay")
         {
             return RunDecoderRuntimeCommand(argumentCount, arguments);
         }

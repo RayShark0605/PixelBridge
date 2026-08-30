@@ -27,7 +27,8 @@ enum class ReplayDatasetClass : std::uint32_t
     LocalDesktopDegraded = 2,
     LocalVideoCertifiedPlayer = 3,
     LocalVideoGenericPlayer = 4,
-    FailureCases = 5
+    FailureCases = 5,
+    RemoteVisual = 6
 };
 
 enum class ReplayError : std::uint8_t
@@ -52,7 +53,8 @@ enum class ReplayError : std::uint8_t
 
 enum class ReplayStage : std::uint8_t
 {
-    None, Configuration, Open, Header, FrameHeader, FramePayload, Footer, Checksum, Flush, Publish, Read
+    None, Configuration, Open, Header, FrameHeader, FramePayload, Footer, Checksum, Flush, Publish, Read,
+    Metadata, RecordHeader, RecordPayload
 };
 
 struct ReplayStatus
