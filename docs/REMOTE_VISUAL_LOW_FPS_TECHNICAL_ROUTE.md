@@ -437,8 +437,8 @@ logical FPS <= 5
 | 02 | 失真样本分析与 RemoteVisual 数据集入口 | PARTIAL | ★★☆☆☆ | ★★★★★ | bounded analyzer、真实 receiver-only Replay corpus |
 | 03 | LF4 profile identity、codebook 与容量真值 | DONE | ★★★☆☆ | ★★★★★ | `9b8e806`、codebook/bijection tests |
 | 04 | CPU 连续尺度 demod、freshness erasure、四 codeword 真值链 | DONE | ★★★★☆ | ★★★★★ | scale/stale/QC-LDPC/Transport tests |
-| 05 | Provider-generic deterministic channel transform API | NEXT | ★★★★☆ | ★★★★★ | 独立 transforms、seed manifest、resource bounds |
-| 06 | 信道 impairment 矩阵与 adversarial corpus | PENDING | ★★★★☆ | ★★★★★ | resize/blur/codec/temporal/crop/conflict matrix |
+| 05 | Provider-generic deterministic channel transform API | DONE | ★★★★☆ | ★★★★★ | 独立 transforms、seed manifest、resource bounds |
+| 06 | 信道 impairment 矩阵与 adversarial corpus | NEXT | ★★★★☆ | ★★★★★ | resize/blur/codec/temporal/crop/conflict matrix |
 | 07 | Soft metric 标定、阈值选择与 false-confidence Gate | PENDING | ★★★★★ | ★★★★★ | train/holdout split、BER/FER/false accept curves |
 | 08 | LF4 Golden/manifest 冻结与兼容性声明 | PENDING | ★★★☆☆ | ★★★★★ | canonical raster/hash/accepted-block manifest |
 | 09 | LF4 D3D11 Encoder raster/immutable texture 接入 | PENDING | ★★★★☆ | ★★★★☆ | CPU raster parity、stable dwell/present evidence |
@@ -499,16 +499,16 @@ logical FPS <= 5
 
 ### 11.7 Step 05：Provider-generic deterministic channel transform API
 
-- **状态**：`NEXT`；**难度**：★★★★☆；**重要性**：★★★★★。
-- **目标**：建立唯一的离线信道变换层，把 production LF4 raster 经过可组合、可 seed、可审计的 resize/blur/block/temporal/color 失真后送回 production CPU decoder。
+- **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **目标**：建立唯一的离线信道变换层，先把 production LF4 raster 经过可组合、可 seed、可审计的 resize/block-replacement 送回 production CPU decoder，并为 Step 06 的 blur/temporal/color transforms 提供同一扩展入口。
 - **实施要点**：新模块只实现 channel transforms 和 manifest，不复制 Bootstrap/Demod/FEC/Receiver；每个 transform 明确输入格式、边界、seed、参数和输出 hash；使用 checked arithmetic 和 bounded allocation。
 - **注意事项**：一次实验只改变一个变量；transform 顺序必须进入 manifest；不能把 decoder 预期值注入解码；simulator 成功不是 field success。
 - **验收证据**：identity transform bit-exact；相同 seed/manifest 输出 hash 一致；invalid dimension/kernel/range/overflow/oversize 拒绝且不部分写出。
-- **完成出口**：API、单元测试、manifest schema 和最小 resize/block-replacement pipeline 进入独立提交。
+- **完成出口**：`PBRemoteVisualSimulator` API、单元测试、`PixelBridge.RemoteVisualChannelManifest.1` schema 和最小 resize/block-replacement pipeline 已进入独立提交；规范见 `REMOTE_VISUAL_CHANNEL_MANIFEST.md`。
 
 ### 11.8 Step 06：信道 impairment 矩阵与 adversarial corpus
 
-- **状态**：`PENDING`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **状态**：`NEXT`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：用可重复 corpus 覆盖真实远控可能产生的空间、颜色、时序和 parser/identity 失真。
 - **实施要点**：逐项 sweep area/bilinear/bicubic、fractional scale/phase、blur/ringing、gamma/contrast、4:2:0/4:4:4、limited/full range、block replacement、alpha mix、crop/letterbox/overlay、duplicate/drop/reorder/epoch。
 - **注意事项**：H.264/HEVC 应保存实际 bitstream 参数并用 inspector 验证；crop/letterbox 不得被 simulator 隐式纠正；valid CRC + wrong identity 必须单独测试。

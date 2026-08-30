@@ -183,6 +183,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             -fsanitize=fuzzer-no-link
             -fno-sanitize-recover=undefined
             -fsanitize=address,undefined)
+    target_compile_options(PBRemoteVisualSimulator
+        PRIVATE
+            -fno-omit-frame-pointer
+            -fno-sanitize-recover=undefined
+            -fsanitize=address,undefined)
     target_compile_options(PBCompression
         PRIVATE
             -fno-omit-frame-pointer
@@ -324,6 +329,7 @@ elseif(MSVC)
     # C5072: ASan requires debug info for useful reports; /WX would otherwise
     # turn the warning into a hard error on non-RelWithDebInfo configurations.
     target_compile_options(PBProtocol PRIVATE /Zi /fsanitize=address)
+    target_compile_options(PBRemoteVisualSimulator PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBCompression PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBOuterFec PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBModulation PRIVATE /Zi /fsanitize=address)
@@ -350,6 +356,7 @@ elseif(MSVC)
     # disabled in this dedicated build tree.
     foreach(pbMsvcAsanTarget IN ITEMS
             PBProtocol
+            PBRemoteVisualSimulator
             PBCompression
             PBOuterFec
             PBModulation
