@@ -114,3 +114,17 @@ y = originY + scaleY * v
 - production decoder 的 Bootstrap、geometry、metric、FEC、Transport 和 Receiver disposition。
 
 相同 input/reference active pixels、plan、seed 和实现 revision 必须产生 byte-identical output、canonical manifest 和 digest。Simulator PASS 只证明离线信道模型，不等于 RemoteVisual field PASS 或 Certified profile。
+
+## 6. 一键信道矩阵
+
+构建 tools 后可在无窗口、无 capture、无外部输入的环境运行：
+
+```powershell
+PBRemoteVisualChannelMatrix.exe --output <new-json-file>
+```
+
+省略 `--output` 时 canonical JSON 写到 stdout。文件模式先写 `<new-json-file>.partial`，flush 后 no-overwrite rename；目标或 partial 已存在时拒绝，不覆盖既有证据。成功输出 schema 为 `PixelBridge.RemoteVisualChannelMatrix.1`，顶层 `payloadBlake3` 对精确 canonical payload JSON 做 BLAKE3-256；每个 case 嵌入本规范的 channel manifest、manifest/output hash、Bootstrap geometry、LF4 metric/stale counters、完整 FEC/CRC/identity/Transport evaluation 和 false-accept 计数。
+
+默认矩阵固定 14 个单变量或单 transform-class case。当前 reference 结果为：11 个 `Verified`；sharpen、非法 crop 和 temporal blend 各得到 `ErasureNoFalseAccept`；`falseAcceptedCodewords=0`。不确定的 impairment 只预期 `NoFalseAcceptance`，避免把当前成功率写成 magic acceptance 阈值；identity、已由独立回归证明的兼容变换和明确 fail-closed case 才使用精确 expected classification。CLI 只有在完整生成、truth boundary 无 false acceptance 且全部 expectation 匹配时返回 0。
+
+矩阵仍是 deterministic codec proxy corpus，不包含真实 H.264/HEVC bitstream。实际 codec case 必须另存 encoder/container 参数并由 bitstream inspector 验证；不能用本矩阵的 4:2:0 proxy 结果替代 RemoteVisual field 结论。

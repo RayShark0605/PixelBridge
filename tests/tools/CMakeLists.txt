@@ -31,7 +31,18 @@ target_include_directories(PBFrameInspectorTests
     PRIVATE
         "${PROJECT_SOURCE_DIR}/tests/PBModulation")
 
-# CLI exit-code contracts for the two tool executables. The positive input
+PbAddUnitTest(PBRemoteVisualChannelMatrixTests
+    test_remote_visual_channel_matrix.cpp)
+target_link_libraries(PBRemoteVisualChannelMatrixTests
+    PRIVATE
+        PBRemoteVisualChannelMatrixCore
+        PB::PBRemoteVisualSimulator)
+PbInstrumentPresentationTest(PBRemoteVisualChannelMatrixTests)
+set_tests_properties(PBRemoteVisualChannelMatrixTests PROPERTIES
+    LABELS "tools;remote-visual;simulator;matrix;truth"
+    TIMEOUT 300)
+
+# CLI exit-code contracts for the tool executables. The positive input
 # is the committed golden bootstrap record (exit 0); the parse-failure input
 # is the committed bootstrap-control corpus negative sample (exit 1); a
 # missing file is a usage/IO error (exit 2). The frame-inspector hostile
@@ -66,6 +77,29 @@ if(TARGET PBProtocolDump)
             -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
     set_tests_properties(PBProtocolDumpExit.UsageError PROPERTIES
         LABELS "tools;exit-codes"
+        TIMEOUT 30)
+endif()
+
+if(TARGET PBRemoteVisualChannelMatrix)
+    add_test(
+        NAME PBRemoteVisualChannelMatrixIntegration
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_MATRIX_TOOL=$<TARGET_FILE:PBRemoteVisualChannelMatrix>
+            -DPB_WORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/remote-visual-channel-matrix-integration
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyRemoteVisualChannelMatrix.cmake")
+    set_tests_properties(PBRemoteVisualChannelMatrixIntegration PROPERTIES
+        LABELS "tools;remote-visual;simulator;matrix;truth;file-safety"
+        TIMEOUT 120)
+
+    add_test(
+        NAME PBRemoteVisualChannelMatrixExit.UsageError
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBRemoteVisualChannelMatrix>
+            -DPB_EXPECTED_EXIT=2
+            -DPB_TEST_ARGS_ENCODED=--output
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBRemoteVisualChannelMatrixExit.UsageError PROPERTIES
+        LABELS "tools;remote-visual;exit-codes"
         TIMEOUT 30)
 endif()
 
