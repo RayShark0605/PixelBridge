@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory)][string]$Support,
     [Parameter(Mandatory)][ValidateSet('wgc','dxgi')][string]$Backend,
     [Parameter(Mandatory)][ValidateSet('desktop-levels-2x2','desktop-levels-4x4','shape-chroma')][string]$Candidate,
-    [Parameter(Mandatory)][string]$EvidenceRoot
+    [Parameter(Mandatory)][string]$EvidenceRoot,
+    [Parameter(Mandatory)][int]$MonitorOriginX,
+    [Parameter(Mandatory)][int]$MonitorOriginY
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -50,18 +52,22 @@ $nativeMode = if ($null -ne $nativeModeRaw) { $nativeModeRaw.ToLower() } else { 
 $policy = Get-DesktopLevelsNativeLoopPolicy $nativeMode
 $minVerifiedFrames = $policy.RequiredVerifiedFrames
 $minVerifiedPhases = $policy.RequiredVerifiedPhases
-$result = [ordered]@{ Gate='FAIL'; Backend=$Backend; Candidate=$Candidate; CaptureSeconds=$policy.CaptureSeconds; NativeMode=$nativeMode; RequiredVerifiedFrames=$minVerifiedFrames; RequiredVerifiedPhases=$minVerifiedPhases; Evidence=$directory }
+$result = [ordered]@{ Gate='FAIL'; Backend=$Backend; Candidate=$Candidate; CaptureSeconds=$policy.CaptureSeconds; NativeMode=$nativeMode; RequiredVerifiedFrames=$minVerifiedFrames; RequiredVerifiedPhases=$minVerifiedPhases; MonitorOrigin=@($MonitorOriginX,$MonitorOriginY); Evidence=$directory }
 $commands = [Collections.Generic.List[object]]::new()
 $visibility = [Collections.Generic.List[object]]::new()
 $exitCode = 1
 try
 {
-    $environmentText = (& $Support --environment | Out-String)
+    $environmentArguments = @('--environment',[string]$MonitorOriginX,[string]$MonitorOriginY)
+    $environmentText = (& $Support @environmentArguments | Out-String)
     $environmentExit = $LASTEXITCODE
+    $commands.Add(@{Executable=$Support;Arguments=$environmentArguments;ExitCode=$environmentExit})
     Write-NewText (Join-Path $directory 'environment.json') $environmentText
     if ($environmentExit -ne 0) { throw 'Real SDR / complete 1920x1080 physical desktop precondition failed (not skipped)' }
     $environment = $environmentText | ConvertFrom-Json
     if (-not $environment.SDR -or $environment.hdr) { throw 'Signal is not SDR' }
+    $expectedRoi = @([Int64]$MonitorOriginX,[Int64]$MonitorOriginY,([Int64]$MonitorOriginX + 1920),([Int64]$MonitorOriginY + 1080))
+    if ((@($environment.roi) -join ',') -cne ($expectedRoi -join ',')) { throw 'Environment probe did not preserve the explicit physical test origin' }
     # Both backends deliver cursor-free pixels (WGC disables cursor capture;
     # DXGI duplication excludes the pointer from frames). The pointer-in-ROI
     # guard is still a conservative fail-closed environment contract: an
@@ -75,7 +81,8 @@ try
     # nominal 30-second run finish several seconds late. The sender is closed
     # naturally after receiver shutdown; this keeps a zero exit status and a
     # complete sender telemetry record. Same-phase copies remain 10.24 s apart.
-    $encoderArguments = @('--visual',$Candidate,'--frames',"$($policy.SenderFrames)",'--sequence-interval-ms',"$($policy.SequenceIntervalMilliseconds)",'--telemetry',$encoderLog)
+    $encoderArguments = @('--visual',$Candidate,'--origin',[string]$MonitorOriginX,[string]$MonitorOriginY,
+        '--frames',"$($policy.SenderFrames)",'--sequence-interval-ms',"$($policy.SequenceIntervalMilliseconds)",'--telemetry',$encoderLog)
     $commands.Add(@{Executable=$Encoder;Arguments=$encoderArguments})
     # Finite sender lifetime also bounds cleanup if the parent is terminated.
     $sender = Start-OwnedProcess $Encoder $encoderArguments

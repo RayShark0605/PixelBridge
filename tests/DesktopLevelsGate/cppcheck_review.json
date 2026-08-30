@@ -1,15 +1,24 @@
 {
   "Cppcheck": "2.21.0",
-  "BaselineHead": "a9fb5e6dc546e9b2959990f32a2156f75cda559e",
+  "BaselineHead": "80699813b595bcf6db64047b50d31056872e33e1",
   "Rule": "Exact reviewed existing diagnostics only: no blanket suppression; changed file hashes or new diagnostics fail the Gate.",
   "Entries": [
     {
+      "File": "apps/common/application_model.h",
+      "Line": 365,
+      "Id": "returnByReference",
+      "Severity": "performance",
+      "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
+      "SourceSHA256": "D7829D74E74F40562B6AE8425B6DCC70E76CC53DC7C5D7294B4A89E9B425D9F0",
+      "Assessment": "Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
+    },
+    {
       "File": "apps/PixelBridgeDecoder/capture_bootstrap_cli.cpp",
-      "Line": 193,
+      "Line": 194,
       "Id": "nullPointer",
       "Severity": "warning",
       "Message": "Possible null pointer dereference: readback",
-      "SourceSHA256": "CD21748EF70B94C27D238E43F021D41689E7AA65488CF93CB637A5054D37A4C4",
+      "SourceSHA256": "A41027C98FADB9916E64DC7773EB53500A9A564CED7C90660613465060633DDA",
       "Assessment": "False positive: Require throws on failed DiagnosticCpuReadback::Create; successful factory publishes a non-null candidate only after starting the worker. Every failure preserves output. Existing allocation/error-path and real worker tests exercise this contract."
     },
     {
@@ -18,7 +27,7 @@
       "Id": "duplicateExpressionTernary",
       "Severity": "style",
       "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "6FEF364DCD59CB66D3A23F69840B7D943B32DAC6C5B099BA1B0C12A2E76A8735",
+      "SourceSHA256": "549EB5278749FF4BC1F87140711CD97257005F4D0038C918FAAB8B9127684220",
       "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
     },
     {
@@ -27,16 +36,16 @@
       "Id": "duplicateExpressionTernary",
       "Severity": "style",
       "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "6FEF364DCD59CB66D3A23F69840B7D943B32DAC6C5B099BA1B0C12A2E76A8735",
+      "SourceSHA256": "549EB5278749FF4BC1F87140711CD97257005F4D0038C918FAAB8B9127684220",
       "Assessment": "Legacy and LocalDesktop canvas constants currently both equal 1920x1080; keep explicit old/new binding rather than collapsing distinct protocol constants."
     },
     {
       "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
-      "Line": 234,
+      "Line": 238,
       "Id": "duplicateExpressionTernary",
       "Severity": "style",
       "Message": "Same expression in both branches of ternary operator.",
-      "SourceSHA256": "6FEF364DCD59CB66D3A23F69840B7D943B32DAC6C5B099BA1B0C12A2E76A8735",
+      "SourceSHA256": "549EB5278749FF4BC1F87140711CD97257005F4D0038C918FAAB8B9127684220",
       "Assessment": "GetSnapshot calls are separated by window Stop, so stoppedSample and finalSample can differ. The analyzer does not model backend thread state; keep failure telemetry selection."
     },
     {
@@ -104,11 +113,11 @@
     },
     {
       "File": "libs/PBDemodD3D11/src/capture_demodulator.cpp",
-      "Line": 848,
+      "Line": 885,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbdemodd3d11::CaptureDemodulator::TakeResult' can be const.",
-      "SourceSHA256": "96A65CC9B618B917A0B4564DFE1E305DBC4570C488B33F1332F0AFE9781A5B0F",
+      "SourceSHA256": "BC1D248B347A7AB43EB39B68E4D407FECEBEA1B8B0F706C48821B597850590AF",
       "Assessment": "False positive from shallow unique_ptr analysis: TakeResult advances the bounded ring head, decrements queued state, increments resultsTaken, and writes the caller output. A const queue consumer would misstate thread-safety and ownership."
     },
     {

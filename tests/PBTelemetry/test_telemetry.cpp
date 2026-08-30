@@ -141,6 +141,13 @@ TEST_CASE("PBTelemetry rejects cross-epoch, reordered and malformed samples with
     malformed.erroneousCodedBits = malformed.comparedCodedBits + 1;
     REQUIRE(telemetry.RecordFec({domain, 1, malformed}).code == pbtelemetry::TelemetryError::InvalidSample);
     malformed = Evaluation(true);
+    malformed.comparedCodedBits = 0;
+    malformed.erroneousCodedBits = 1;
+    REQUIRE(telemetry.RecordFec({domain, 1, malformed}).code == pbtelemetry::TelemetryError::InvalidSample);
+    malformed = Evaluation(true);
+    malformed.comparedCodedBits--;
+    REQUIRE(telemetry.RecordFec({domain, 1, malformed}).code == pbtelemetry::TelemetryError::InvalidSample);
+    malformed = Evaluation(true);
     malformed.acceptedTransportBlocks--;
     REQUIRE(telemetry.RecordFec({domain, 1, malformed}).code == pbtelemetry::TelemetryError::InvalidSample);
     malformed = Evaluation(true);
@@ -169,6 +176,27 @@ TEST_CASE("PBTelemetry rejects cross-epoch, reordered and malformed samples with
     REQUIRE(reset.capturedFrames == 0);
     REQUIRE_FALSE(reset.captureFps);
     REQUIRE_FALSE(reset.presentation);
+}
+
+TEST_CASE("PBTelemetry records production FER while leaving PreFecBER unavailable without sender truth",
+    "[telemetry][fec][coverage]")
+{
+    pbtelemetry::TelemetryAccumulator telemetry;
+    const auto domain = MakeDomain(std::byte{0x62}, 7);
+    REQUIRE(telemetry.BeginCaptureEpoch(domain, 100));
+    REQUIRE(telemetry.RecordCapture({domain, 1, 100}));
+    auto productionEvaluation = Evaluation(false);
+    productionEvaluation.comparedCodedBits = 0;
+    productionEvaluation.erroneousCodedBits = 0;
+    REQUIRE(telemetry.RecordFec({domain, 1, productionEvaluation}));
+
+    const auto snapshot = telemetry.GetSnapshot();
+    REQUIRE(snapshot.fecEvaluatedFrames == 1);
+    REQUIRE(snapshot.fecFrameErrorRate == 1.0);
+    REQUIRE(snapshot.fecCodewordFailureRate == Catch::Approx(0.1));
+    REQUIRE(snapshot.comparedCodedBits == 0);
+    REQUIRE(snapshot.erroneousCodedBits == 0);
+    REQUIRE_FALSE(snapshot.preFecBerEstimate);
 }
 
 TEST_CASE("PBTelemetry saturates hostile counters and withdraws derived rates",

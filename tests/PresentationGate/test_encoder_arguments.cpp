@@ -115,6 +115,11 @@ TEST_CASE("Encoder duplicate malformed missing and mixed help arguments fail wit
                                 {L"--visual", L"local-desktop-bootstrap", L"--frames", L"0"},
                                 {L"--visual", L"local-desktop-bootstrap", L"--frames", L"1", L"--frames", L"2"},
                                 {L"--data-window", L"--frames", L"1", L"--frames", L"2"},
+                                {L"--data-window", L"--origin"},
+                                {L"--data-window", L"--origin", L"0"},
+                                {L"--data-window", L"--origin", L"0", L"0", L"--origin", L"1", L"1"},
+                                {L"--data-window", L"--origin", L"+1", L"0"},
+                                {L"--data-window", L"--origin", L"0", L"2147483648"},
                                 {L"--visual", L"local-desktop-bootstrap", L"--telemetry"},
                                 {L"--visual", L"local-desktop-bootstrap", L"--telemetry", L""},
                                 {L"--visual", L"local-desktop-bootstrap", L"--telemetry", L"first.jsonl", L"--telemetry", L"second.jsonl"},
@@ -127,6 +132,31 @@ TEST_CASE("Encoder duplicate malformed missing and mixed help arguments fail wit
         auto output = Sentinel();
         const auto before = output;
         REQUIRE_FALSE(Parse(arguments, output));
+        CHECK(output == before);
+    }
+}
+
+TEST_CASE("Encoder explicit physical origin accepts the complete signed coordinate range", "[encoder-cli][origin]")
+{
+    DataWindowArguments parsed;
+    REQUIRE(Parse({L"--visual", L"local-desktop-bootstrap", L"--origin", L"2560", L"0"}, parsed));
+    CHECK(parsed.hasClientOrigin);
+    CHECK(parsed.clientOriginX == 2560);
+    CHECK(parsed.clientOriginY == 0);
+
+    REQUIRE(Parse({L"--data-window", L"--origin", L"-2147483648", L"2147483647"}, parsed));
+    CHECK(parsed.clientOriginX == std::numeric_limits<std::int32_t>::min());
+    CHECK(parsed.clientOriginY == std::numeric_limits<std::int32_t>::max());
+
+    for (const auto text : {L"", L"-", L"+0", L" 0", L"0 ", L"1.0", L"2147483648", L"-2147483649",
+                            L"999999999999999999999", L"\uFF10"})
+    {
+        std::int32_t coordinate = 37;
+        CHECK_FALSE(pbencoder::ParseClientCoordinate(text, coordinate));
+        CHECK(coordinate == 37);
+        auto output = Sentinel();
+        const auto before = output;
+        CHECK_FALSE(Parse({L"--data-window", L"--origin", text, L"0"}, output));
         CHECK(output == before);
     }
 }

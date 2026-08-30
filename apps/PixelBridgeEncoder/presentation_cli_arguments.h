@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <string_view>
 
 namespace pbencoder
@@ -28,6 +29,9 @@ struct DataWindowArguments
     std::uint32_t sequenceIntervalMilliseconds = 500;
     const wchar_t* telemetryPath = nullptr;
     PresentationVisual visual = PresentationVisual::ReferenceRaster;
+    bool hasClientOrigin = false;
+    std::int32_t clientOriginX = 0;
+    std::int32_t clientOriginY = 0;
     bool operator==(const DataWindowArguments&) const = default;
 };
 
@@ -86,6 +90,49 @@ struct DataWindowArguments
         return false;
     }
     result = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+// Signed physical desktop coordinates can be negative on monitors left or
+// above the primary output. Output is unchanged on malformed or overflowing
+// input, and a leading plus sign is deliberately not accepted.
+[[nodiscard]] inline bool ParseClientCoordinate(const std::wstring_view text, std::int32_t& result) noexcept
+{
+    if (text.empty())
+    {
+        return false;
+    }
+    const bool negative = text.front() == L'-';
+    const std::wstring_view magnitude = negative ? text.substr(1) : text;
+    if (magnitude.empty())
+    {
+        return false;
+    }
+    const std::uint64_t maximum = negative ? static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) + 1ULL :
+        static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+    std::uint64_t value = 0;
+    for (const wchar_t character : magnitude)
+    {
+        if (character < L'0' || character > L'9')
+        {
+            return false;
+        }
+        const std::uint64_t digit = static_cast<std::uint64_t>(character - L'0');
+        if (value > (maximum - digit) / 10)
+        {
+            return false;
+        }
+        value = value * 10 + digit;
+    }
+    if (negative && value == maximum)
+    {
+        result = std::numeric_limits<std::int32_t>::min();
+    }
+    else
+    {
+        const std::int32_t narrowed = static_cast<std::int32_t>(value);
+        result = negative ? -narrowed : narrowed;
+    }
     return true;
 }
 
@@ -153,6 +200,17 @@ struct DataWindowArguments
                 return false;
             }
             parsed.hasSequenceInterval = true;
+        }
+        else if (argument == L"--origin" && !parsed.hasClientOrigin && index + 2 < argumentCount)
+        {
+            index++;
+            if (!ParseClientCoordinate(arguments[index], parsed.clientOriginX) ||
+                !ParseClientCoordinate(arguments[index + 1], parsed.clientOriginY))
+            {
+                return false;
+            }
+            index++;
+            parsed.hasClientOrigin = true;
         }
         else if (argument == L"--telemetry" && parsed.telemetryPath == nullptr && index + 1 < argumentCount)
         {

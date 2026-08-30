@@ -210,7 +210,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             -fno-omit-frame-pointer
             -fsanitize=address,undefined)
     foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PBScreenRegion PBCaptureNormalize PBScreenCaptureWgc PBScreenCaptureDxgi
-            PBDemodD3D11 PBTelemetry PBRealCaptureReplay PixelBridgeEncoder PixelBridgeDecoder)
+            PBDemodD3D11 PBTelemetry PBRealCaptureReplay PBStorage PBApplication PixelBridgeEncoder PixelBridgeDecoder)
         if(TARGET ${pbPresentationTarget})
             target_compile_options(${pbPresentationTarget} PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
             if(pbPresentationTarget STREQUAL "PixelBridgeEncoder" OR pbPresentationTarget STREQUAL "PixelBridgeDecoder")
@@ -331,7 +331,7 @@ elseif(MSVC)
     target_compile_options(PBInnerFec PRIVATE /Zi /fsanitize=address)
     target_compile_options(PBReceiver PRIVATE /Zi /fsanitize=address)
     foreach(pbPresentationTarget IN ITEMS PBPresentTiming PBRenderD3D PBScreenRegion PBCaptureNormalize PBScreenCaptureWgc PBScreenCaptureDxgi
-            PBDemodD3D11 PBTelemetry PBRealCaptureReplay PixelBridgeEncoder PixelBridgeDecoder)
+            PBDemodD3D11 PBTelemetry PBRealCaptureReplay PBStorage PBApplication PixelBridgeEncoder PixelBridgeDecoder)
         if(TARGET ${pbPresentationTarget})
             target_compile_options(${pbPresentationTarget} PRIVATE /Zi /fsanitize=address)
             target_compile_definitions(${pbPresentationTarget} PRIVATE _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)

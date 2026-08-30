@@ -167,6 +167,46 @@ bool Decimal(const std::wstring_view text, DWORD& output)
     return output != 0;
 }
 
+bool SignedDecimal(const std::wstring_view text, std::int32_t& output)
+{
+    if (text.empty())
+    {
+        return false;
+    }
+    const bool negative = text.front() == L'-';
+    const std::wstring_view magnitude = negative ? text.substr(1) : text;
+    if (magnitude.empty())
+    {
+        return false;
+    }
+    const std::uint64_t maximum = negative ? static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) + 1ULL :
+        static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+    std::uint64_t value = 0;
+    for (const wchar_t character : magnitude)
+    {
+        if (character < L'0' || character > L'9')
+        {
+            return false;
+        }
+        const std::uint64_t digit = static_cast<std::uint64_t>(character - L'0');
+        if (value > (maximum - digit) / 10)
+        {
+            return false;
+        }
+        value = value * 10 + digit;
+    }
+    if (negative && value == maximum)
+    {
+        output = std::numeric_limits<std::int32_t>::min();
+    }
+    else
+    {
+        const std::int32_t narrowed = static_cast<std::int32_t>(value);
+        output = negative ? -narrowed : narrowed;
+    }
+    return true;
+}
+
 // Conservative fail-closed cursor probe: for any cursor shape the bitmap lies
 // within [hotspot - (size - 1), hotspot + size), so that box is used; any
 // overlap with the region means it cannot be treated as cursor-free. Definitive
@@ -199,13 +239,15 @@ bool PointerInsideRectangle(const RECT& rectangle)
         top < static_cast<std::int64_t>(rectangle.bottom) && bottom > static_cast<std::int64_t>(rectangle.top);
 }
 
-int Environment()
+int Environment(const std::int32_t originX, const std::int32_t originY)
 {
-    const auto primary = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    const POINT requestedOrigin{originX, originY};
+    const auto selectedMonitor = MonitorFromPoint(requestedOrigin, MONITOR_DEFAULTTONULL);
     MONITORINFO monitor{};
     monitor.cbSize = sizeof(monitor);
-    if (!primary || !GetMonitorInfoW(primary, &monitor))
+    if (!selectedMonitor || !GetMonitorInfoW(selectedMonitor, &monitor))
     {
+        std::cout << "{\"error\":\"RequestedOriginIsNotOnAnActiveMonitor\",\"origin\":[" << originX << ',' << originY << "]}\n";
         return 1;
     }
     const auto width = static_cast<std::int64_t>(monitor.rcMonitor.right) - monitor.rcMonitor.left;
@@ -215,10 +257,18 @@ int Environment()
         std::cout << "{\"error\":\"InsufficientPhysicalDesktop\",\"width\":" << width << ",\"height\":" << height << "}\n";
         return 1;
     }
-    const auto left = static_cast<LONG>(static_cast<std::int64_t>(monitor.rcMonitor.left) + (width - 1920) / 2);
-    const auto top = static_cast<LONG>(static_cast<std::int64_t>(monitor.rcMonitor.top) + (height - 1080) / 2);
-    // Both additions are bounded by the existing monitor's signed RECT.
-    const RECT rectangle{left, top, static_cast<LONG>(left + 1920), static_cast<LONG>(top + 1080)};
+    const std::int64_t left = originX;
+    const std::int64_t top = originY;
+    const std::int64_t right = left + 1920;
+    const std::int64_t bottom = top + 1080;
+    if (right > std::numeric_limits<LONG>::max() || bottom > std::numeric_limits<LONG>::max() ||
+        left < monitor.rcMonitor.left || top < monitor.rcMonitor.top || right > monitor.rcMonitor.right || bottom > monitor.rcMonitor.bottom)
+    {
+        std::cout << "{\"error\":\"RequestedRoiDoesNotFitSelectedMonitor\",\"requestedRoi\":[" << left << ',' << top << ',' << right << ',' << bottom
+                  << "],\"monitor\":[" << monitor.rcMonitor.left << ',' << monitor.rcMonitor.top << ',' << monitor.rcMonitor.right << ',' << monitor.rcMonitor.bottom << "]}\n";
+        return 1;
+    }
+    const RECT rectangle{static_cast<LONG>(left), static_cast<LONG>(top), static_cast<LONG>(right), static_cast<LONG>(bottom)};
     pbscreenregion::ScreenCaptureRegion region;
     if (!pbscreenregion::ResolveScreenCaptureRegion(rectangle, region))
     {
@@ -250,9 +300,15 @@ int wmain(const int count, const wchar_t* const arguments[])
         std::cerr << "PMv2 process manifest is required; no display settings are changed\n";
         return 1;
     }
-    if (count == 2 && std::wstring_view(arguments[1]) == L"--environment")
+    if (count == 4 && std::wstring_view(arguments[1]) == L"--environment")
     {
-        return Environment();
+        std::int32_t originX = 0;
+        std::int32_t originY = 0;
+        if (!SignedDecimal(arguments[2], originX) || !SignedDecimal(arguments[3], originY))
+        {
+            return 2;
+        }
+        return Environment(originX, originY);
     }
     const bool observeMode = count == 3 && std::wstring_view(arguments[1]) == L"--window-observe";
     const bool windowMode = count == 3 && std::wstring_view(arguments[1]) == L"--window";

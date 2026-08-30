@@ -68,6 +68,29 @@ option(PB_BUILD_DESKTOP_LEVELS_GATE
     "Build opt-in real 1:1 SDR DesktopLevels WGC/DXGI application gates (never changes display settings)"
     OFF)
 
+# Native display tests must never silently choose the primary monitor. Keep the
+# requested physical origin empty by default so enabling any displayful capture
+# Gate requires an explicit, reviewable monitor selection.
+set(PB_DESKTOP_TEST_MONITOR_ORIGIN_X "" CACHE STRING
+    "Physical X origin for opt-in native desktop test windows")
+set(PB_DESKTOP_TEST_MONITOR_ORIGIN_Y "" CACHE STRING
+    "Physical Y origin for opt-in native desktop test windows")
+if(PB_BUILD_WGC_GATE OR PB_BUILD_DXGI_GATE OR PB_BUILD_LOCAL_DESKTOP_GATE OR PB_BUILD_DESKTOP_LEVELS_GATE)
+    foreach(pbDesktopTestCoordinate IN ITEMS PB_DESKTOP_TEST_MONITOR_ORIGIN_X PB_DESKTOP_TEST_MONITOR_ORIGIN_Y)
+        if(NOT "${${pbDesktopTestCoordinate}}" MATCHES "^(0|-?[1-9][0-9]*)$")
+            message(FATAL_ERROR
+                "${pbDesktopTestCoordinate} must be an explicit signed 32-bit physical desktop coordinate when a native display Gate is enabled")
+        endif()
+        string(LENGTH "${${pbDesktopTestCoordinate}}" pbDesktopTestCoordinateLength)
+        if(pbDesktopTestCoordinateLength GREATER 11)
+            message(FATAL_ERROR "${pbDesktopTestCoordinate} is outside the signed 32-bit physical desktop coordinate range")
+        endif()
+        if(${${pbDesktopTestCoordinate}} LESS -2147483648 OR ${${pbDesktopTestCoordinate}} GREATER 2147483647)
+            message(FATAL_ERROR "${pbDesktopTestCoordinate} is outside the signed 32-bit physical desktop coordinate range")
+        endif()
+    endforeach()
+endif()
+
 if(PB_BUILD_PHASE0_GATE AND NOT (BUILD_TESTING AND PB_BUILD_TESTS))
     message(FATAL_ERROR
         "PB_BUILD_PHASE0_GATE requires BUILD_TESTING=ON and PB_BUILD_TESTS=ON")
@@ -111,6 +134,8 @@ if(BUILD_TESTING AND PB_BUILD_TESTS)
 endif()
 
 unset(pbBuildAppsDefault)
+unset(pbDesktopTestCoordinate)
+unset(pbDesktopTestCoordinateLength)
 unset(pbBuildTestsDefault)
 unset(pbTopLevelBeforeProject)
 unset(pbTestsFeatureIndex)

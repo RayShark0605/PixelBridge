@@ -1,0 +1,208 @@
+#include "pbstorage/output_file.h"
+
+#include "pbprotocol/blake3_digest.h"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <Windows.h>
+
+#include <array>
+#include <cstddef>
+#include <filesystem>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace
+{
+
+class ScratchDirectory
+{
+public:
+    explicit ScratchDirectory(const wchar_t* name)
+    {
+        path_ = std::filesystem::path(PB_TEST_SCRATCH_ROOT) / name;
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+        error.clear();
+        REQUIRE(std::filesystem::create_directories(path_, error));
+        REQUIRE_FALSE(error);
+    }
+
+    ~ScratchDirectory()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+
+    [[nodiscard]] const std::filesystem::path& GetPath() const noexcept
+    {
+        return path_;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+[[nodiscard]] std::vector<std::byte> MakeBytes(const std::size_t count)
+{
+    std::vector<std::byte> bytes(count);
+    for (std::size_t index = 0; index < count; index++)
+    {
+        bytes[index] = static_cast<std::byte>((index * 37U + 11U) & 0xFFU);
+    }
+    return bytes;
+}
+
+} // namespace
+
+TEST_CASE("PBStorage publishes only an exact whole-file digest", "[storage][publish]")
+{
+    ScratchDirectory scratch(L"publish-success");
+    const std::vector<std::byte> bytes = MakeBytes(4097);
+    const pbprotocol::SessionTag sessionTag{0x123456789ABCDEF0ULL};
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = sessionTag;
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = 8ULL * 1024ULL * 1024ULL;
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::Create(config, output));
+    REQUIRE(output != nullptr);
+    const auto reserved = output->GetSnapshot();
+    REQUIRE(std::filesystem::exists(reserved.partPath));
+    REQUIRE_FALSE(std::filesystem::exists(reserved.finalPath));
+    REQUIRE(output->Write(0, bytes));
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    REQUIRE(output->Publish(digest));
+    const auto published = output->GetSnapshot();
+    REQUIRE(published.published);
+    REQUIRE(published.writtenBytes == bytes.size());
+    REQUIRE(std::filesystem::exists(published.finalPath));
+    REQUIRE_FALSE(std::filesystem::exists(published.partPath));
+    REQUIRE(std::filesystem::file_size(published.finalPath) == bytes.size());
+}
+
+TEST_CASE("PBStorage preserves protocol-valid zero SessionTag identity", "[storage][session-tag]")
+{
+    ScratchDirectory scratch(L"zero-session-tag");
+    const std::vector<std::byte> bytes = MakeBytes(33);
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::Create(config, output));
+    REQUIRE(output != nullptr);
+    REQUIRE(output->GetSnapshot().finalPath.ends_with(L"PixelBridge-0000000000000000.bin"));
+    REQUIRE(output->Write(0, bytes));
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    REQUIRE(output->Publish(digest));
+    REQUIRE(output->GetSnapshot().published);
+}
+
+TEST_CASE("PBStorage digest failure never publishes and destruction removes its part", "[storage][errors]")
+{
+    ScratchDirectory scratch(L"digest-failure");
+    const std::vector<std::byte> bytes = MakeBytes(1024);
+    std::wstring partPath;
+    std::wstring finalPath;
+    {
+        pbstorage::OutputFileConfig config;
+        config.outputDirectory = scratch.GetPath().wstring();
+        config.sessionTag = {7};
+        config.fileBytes = bytes.size();
+        config.maximumFileBytes = bytes.size();
+        std::unique_ptr<pbstorage::OutputFile> output;
+        REQUIRE(pbstorage::OutputFile::Create(config, output));
+        REQUIRE(output->Write(0, bytes));
+        const auto snapshot = output->GetSnapshot();
+        partPath = snapshot.partPath;
+        finalPath = snapshot.finalPath;
+        pbprotocol::WholeFileDigest wrong{};
+        const auto status = output->Publish(wrong);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.code == pbstorage::StorageErrorCode::DigestMismatch);
+        REQUIRE(std::filesystem::exists(partPath));
+        REQUIRE_FALSE(std::filesystem::exists(finalPath));
+    }
+    REQUIRE_FALSE(std::filesystem::exists(partPath));
+    REQUIRE_FALSE(std::filesystem::exists(finalPath));
+}
+
+TEST_CASE("PBStorage fails closed on invalid ranges and existing targets", "[storage][errors]")
+{
+    ScratchDirectory scratch(L"range-and-conflict");
+    const std::vector<std::byte> bytes = MakeBytes(16);
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {9};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::Create(config, output));
+    REQUIRE_FALSE(output->Write(1, bytes));
+    const auto snapshot = output->GetSnapshot();
+    output.reset();
+
+    const HANDLE finalHandle = CreateFileW(snapshot.finalPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(finalHandle != INVALID_HANDLE_VALUE);
+    REQUIRE(CloseHandle(finalHandle));
+    std::unique_ptr<pbstorage::OutputFile> conflict;
+    const auto status = pbstorage::OutputFile::Create(config, conflict);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::TargetExists);
+    REQUIRE(conflict == nullptr);
+}
+
+TEST_CASE("PBStorage accepts only contiguous non-overlapping writes", "[storage][write-order]")
+{
+    ScratchDirectory scratch(L"sequential-writes");
+    const std::vector<std::byte> bytes = MakeBytes(32);
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {11};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::Create(config, output));
+    REQUIRE_FALSE(output->Write(16, std::span(bytes).subspan(16)));
+    REQUIRE(output->GetSnapshot().writtenBytes == 0);
+    REQUIRE(output->Write(0, std::span(bytes).first(16)));
+    REQUIRE_FALSE(output->Write(0, std::span(bytes).first(16)));
+    REQUIRE(output->GetSnapshot().writtenBytes == 16);
+    REQUIRE(output->Write(16, std::span(bytes).subspan(16)));
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    REQUIRE(output->Publish(digest));
+    REQUIRE(output->GetSnapshot().published);
+}
+
+TEST_CASE("PBStorage never deletes a pre-existing part file that it did not create",
+    "[storage][reservation][ownership]")
+{
+    ScratchDirectory scratch(L"part-ownership");
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {13};
+    config.fileBytes = 8;
+    config.maximumFileBytes = 8;
+
+    std::unique_ptr<pbstorage::OutputFile> probe;
+    REQUIRE(pbstorage::OutputFile::Create(config, probe));
+    const std::wstring partPath = probe->GetSnapshot().partPath;
+    probe.reset();
+    const HANDLE foreignPart = CreateFileW(partPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(foreignPart != INVALID_HANDLE_VALUE);
+    REQUIRE(CloseHandle(foreignPart));
+
+    std::unique_ptr<pbstorage::OutputFile> conflict;
+    const pbstorage::StorageStatus status = pbstorage::OutputFile::Create(config, conflict);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::TargetExists);
+    REQUIRE(conflict == nullptr);
+    REQUIRE(std::filesystem::exists(partPath));
+}

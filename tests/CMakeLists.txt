@@ -50,8 +50,13 @@ function(PbAddExactProcessTest testName targetName expectedStdout)
         COMMAND "${CMAKE_COMMAND}"
             "-DPB_TEST_EXECUTABLE=$<TARGET_FILE:${targetName}>"
             "-DPB_EXPECTED_STDOUT=${expectedStdout}"
+            ${ARGN}
             -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/AssertExactProcess.cmake")
 endfunction()
+
+if(TARGET PBApplication)
+    add_subdirectory(PBApplication)
+endif()
 
 add_subdirectory(PBCore)
 add_subdirectory(PBProtocol)
@@ -60,6 +65,9 @@ add_subdirectory(PBInnerFec)
 add_subdirectory(PBModulation)
 add_subdirectory(PBOuterFec)
 add_subdirectory(PBReceiver)
+if(TARGET PBStorage)
+    add_subdirectory(PBStorage)
+endif()
 add_subdirectory(PBPresentTiming)
 PbAddUnitTest(PBEncoderCliTests PresentationGate/test_encoder_arguments.cpp)
 PbInstrumentPresentationTest(PBEncoderCliTests)
@@ -194,8 +202,11 @@ if(TARGET PixelBridgeEncoder)
     PbAddExactProcessTest(
         PixelBridgeEncoderSmoke
         PixelBridgeEncoder
-        "PixelBridgeEncoder ${PROJECT_VERSION} (protocol 1.0)")
+        "PixelBridgeEncoder ${PROJECT_VERSION} (protocol 1.0)"
+        "-DPB_TEST_ARGS_ENCODED=--version")
     if(WIN32)
+        add_test(NAME PixelBridgeEncoderGuiSmoke COMMAND PixelBridgeEncoder --gui-smoke)
+        set_tests_properties(PixelBridgeEncoderGuiSmoke PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE LABELS "application;gui;encoder")
         set(pbEncoderInvalidArguments
             "--unknown"
             "--frames|1"
@@ -208,9 +219,21 @@ if(TARGET PixelBridgeEncoder)
             "--data-window|--data-window"
             "--data-window|--frames|1|--frames|2"
             "--data-window|--telemetry"
+            "--data-window|--origin"
+            "--data-window|--origin|0"
+            "--data-window|--origin|+1|0"
+            "--data-window|--origin|2147483648|0"
+            "--data-window|--origin|0|0|--origin|1|1"
             "--visual"
             "--visual|unknown"
-            "--visual|local-desktop-bootstrap|--visual|local-desktop-bootstrap")
+            "--visual|local-desktop-bootstrap|--visual|local-desktop-bootstrap"
+            "--headless-broadcast"
+            "--headless-broadcast|--source|missing.bin|--origin|0|0|--seconds|0"
+            "--headless-broadcast|--source|missing.bin|--origin|0|0|--compression|invalid"
+            "--headless-broadcast|--source|missing.bin|--origin|2147483648|0"
+            "--headless-broadcast|--source|missing.bin|--origin|-2147483649|0"
+            "--headless-broadcast|--source|missing.bin|--origin|-|0"
+            "--headless-broadcast|--source|missing.bin|--origin|+1|0")
         set(pbEncoderArgumentIndex 0)
         foreach(pbEncoderArguments IN LISTS pbEncoderInvalidArguments)
             add_test(NAME "PixelBridgeEncoderRejectsArguments.${pbEncoderArgumentIndex}"
@@ -231,14 +254,24 @@ if(TARGET PixelBridgeDecoder)
     PbAddExactProcessTest(
         PixelBridgeDecoderSmoke
         PixelBridgeDecoder
-        "PixelBridgeDecoder ${PROJECT_VERSION} (protocol 1.0)")
+        "PixelBridgeDecoder ${PROJECT_VERSION} (protocol 1.0)"
+        "-DPB_TEST_ARGS_ENCODED=--version")
     if(WIN32)
+        add_test(NAME PixelBridgeDecoderGuiSmoke COMMAND PixelBridgeDecoder --gui-smoke)
+        set_tests_properties(PixelBridgeDecoderGuiSmoke PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE LABELS "application;gui;decoder")
         set(pbDecoderInvalidArguments "--unknown" "--select-region|--select-region" "--select-region|extra" "--help|--select-region" "--select-region|--help"
             "--capture-bootstrap" "--capture-bootstrap|--backend" "--capture-bootstrap|--backend|unknown"
             "--capture-bootstrap|--backend|wgc|--seconds|0" "--capture-bootstrap|--backend|dxgi|--seconds|601"
             "--capture-bootstrap|--backend|wgc|--roi|0|0|1" "--capture-bootstrap|--backend|dxgi|--roi|0|0|2147483648|1"
             "--capture-bootstrap|--backend|wgc|--roi|1|0|0|1" "--capture-bootstrap|--backend|wgc|--session-tag|1"
-            "--capture-bootstrap|--backend|wgc|--telemetry")
+            "--capture-bootstrap|--backend|wgc|--telemetry"
+            "--headless-receive"
+            "--headless-receive|--output-dir|missing|--backend|auto|--roi|0|0|1920|1080"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|0|0|1920|1080|--timeout|0"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|0|0|2147483648|1080"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|-2147483649|0|1920|1080"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|-|0|1920|1080"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|+1|0|1920|1080")
         set(pbDecoderArgumentIndex 0)
         foreach(pbDecoderArguments IN LISTS pbDecoderInvalidArguments)
             add_test(NAME "PixelBridgeDecoderRejectsArguments.${pbDecoderArgumentIndex}"

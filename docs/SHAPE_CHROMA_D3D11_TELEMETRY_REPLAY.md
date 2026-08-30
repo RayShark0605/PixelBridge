@@ -47,12 +47,12 @@ PB-owned ROI texture
 | duplicate/drop/jitter | duplicate 保留原始分子；drop 由 capture owner 显式上报；jitter 是相邻 capture interval 的 population standard deviation |
 | ROI copy time | D3D11 disjoint/start/end timestamp query 覆盖 crop/copy/rotation；unsupported/disjoint 明确记 unavailable，不用 CPU submit/completion 时间替代 |
 | BootstrapSuccessRate / scale / phase | 每次 committed capture 一个 Bootstrap denominator；成功样本保留最近 scale 与 fractional phase |
-| PreFecBER | 独立 admitted FrameSequence 的 erroneous coded bits / compared coded bits |
+| PreFecBER | 独立 admitted FrameSequence 的 erroneous coded bits / compared coded bits；生产 demod 无 sender truth 时只允许严格的 `0/0` coverage-absent 形式并输出 null，不能把它解释为 BER=0；任何非零 denominator 必须覆盖完整 coded frame |
 | FER | post-FEC 未完整验证帧 / FEC evaluated frames；另输出 codeword failure rate，避免混淆分母 |
 | CRC failure / Outer symbols | 原始计数；outer accepted/duplicate/conflict/rejected 由权威 receiver admission 显式上报 |
 | VerifiedEncodedGoodput | 只有 storage/whole-file digest 权威 gate 后调用 `RecordVerifiedEncodedBytes` 才增加；不把 demod/CRC 中间成功算作 verified bytes |
 
-计数溢出时采用 saturating counter 并撤回 derived rate。Decoder Bootstrap 诊断已经把 committed capture、Bootstrap 和去重后的 DesktopLevels FEC 观测接到该聚合器；该诊断模式没有 file receiver，因此 Outer symbol 与 VerifiedEncodedGoodput 在此模式保持零/null。
+计数溢出时采用 saturating counter 并撤回 derived rate。Decoder Bootstrap 诊断已经把 committed capture、Bootstrap 和去重后的 DesktopLevels FEC 观测接到该聚合器；该诊断模式没有 file receiver，因此 Outer symbol 与 VerifiedEncodedGoodput 在此模式保持零/null。Phase 1.5 application runtime 也使用同一聚合器：D3D11 fast path 不做 raw-pixel digest，所以 UniqueVisualFPS 保持 null；FrameSequence cadence 只能作为独立命名的 admission 诊断。只有 WholeFileDigest 和 final publish 完成后才记录 application `VerifiedEncodedGoodput`。
 
 ## 4. PB Real Capture Replay v1
 

@@ -122,10 +122,11 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
         }
         CaptureNormalizeConfig config;
         config.capture.region = region;
-        // ShapeChroma's frozen CPU baseline consumes exact BGRA8 samples. The
-        // signal remains SDR and format-preserving; no HDR tone map/fallback is
-        // introduced. DesktopLevels retains the high-depth diagnostic format.
-        config.capture.pixelFormat = options.shapeChroma ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
+        // LocalDesktop senders emit exact SDR BGRA8 code values. Keep the owned
+        // ROI in that production format for every diagnostic mode: native R10
+        // or FP16 SDR sources use the existing bounded GPU down-conversion,
+        // while HDR remains unsupported and fails before any tone-map/fallback.
+        config.capture.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
         // A diagnostic reference decoder has a finite, explicit CPU-age budget.
         // Capture/crop/rotation remain GPU-only; this reservation includes every
         // ring/scratch/staging/CPU buffer rather than counting only one texture.
@@ -165,7 +166,7 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
         auto nextSnapshot = start;
         std::uint64_t staleDiagnosticEvents = 0;
         bool runtimeFailed = false;
-        const auto emit = [&telemetry](const std::string& line)
+        const auto emitLine = [&telemetry](const std::string& line)
         {
             telemetry.Write(line);
             std::cout << line;
@@ -187,14 +188,14 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
                     pbprotocol::SaturatingIncrementUnsigned(staleDiagnosticEvents);
                     continue;
                 }
-                emit(pbdecoder::SerializeBootstrapDiagnosticEvent(event));
+                emitLine(pbdecoder::SerializeBootstrapDiagnosticEvent(event));
             }
             const auto snapshot = capture.GetSnapshot();
             const auto readbackSnapshot = readback->GetSnapshot();
             const bool failed = pbdecoder::IsTerminalDiagnosticFailure(snapshot, readbackSnapshot);
             if (now >= nextSnapshot || now >= deadline || failed)
             {
-                emit(pbdecoder::SerializeCaptureBootstrapSnapshot("capture-snapshot", snapshot, normalized, readbackSnapshot, processor->GetSnapshot(),
+                emitLine(pbdecoder::SerializeCaptureBootstrapSnapshot("capture-snapshot", snapshot, normalized, readbackSnapshot, processor->GetSnapshot(),
                     staleDiagnosticEvents, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count())));
                 nextSnapshot = now + std::chrono::seconds(1);
             }
@@ -215,11 +216,11 @@ int RunCaptureBootstrapCommand(const int argumentCount, wchar_t* arguments[])
             pbdecoder::BootstrapDiagnosticEvent event;
             for (std::size_t index = 0; index < pbdecoder::BootstrapDiagnosticProcessor::eventCapacity && processor->TakeEvent(event); index++)
             {
-                emit(pbdecoder::SerializeBootstrapDiagnosticEvent(event));
+                emitLine(pbdecoder::SerializeBootstrapDiagnosticEvent(event));
             }
         }
         const auto finalVisual = processor->GetSnapshot();
-        emit(pbdecoder::SerializeCaptureBootstrapSnapshot("capture-final", stopped, capture.GetNormalizationSnapshot(), readback->GetSnapshot(), finalVisual,
+        emitLine(pbdecoder::SerializeCaptureBootstrapSnapshot("capture-final", stopped, capture.GetNormalizationSnapshot(), readback->GetSnapshot(), finalVisual,
             staleDiagnosticEvents, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count())));
         telemetry.Finish();
         pbdiagnostic::FlushDiagnosticOutput(std::cout);
