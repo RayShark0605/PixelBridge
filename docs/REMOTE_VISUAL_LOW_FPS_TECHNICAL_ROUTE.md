@@ -438,7 +438,7 @@ logical FPS <= 5
 | 03 | LF4 profile identity、codebook 与容量真值 | DONE | ★★★☆☆ | ★★★★★ | `9b8e806`、codebook/bijection tests |
 | 04 | CPU 连续尺度 demod、freshness erasure、四 codeword 真值链 | DONE | ★★★★☆ | ★★★★★ | scale/stale/QC-LDPC/Transport tests |
 | 05 | Provider-generic deterministic channel transform API | DONE | ★★★★☆ | ★★★★★ | 独立 transforms、seed manifest、resource bounds |
-| 06 | 信道 impairment 矩阵与 adversarial corpus | NEXT | ★★★★☆ | ★★★★★ | resize/blur/codec/temporal/crop/conflict matrix |
+| 06 | 信道 impairment 矩阵与 adversarial corpus | PARTIAL | ★★★★☆ | ★★★★★ | resize/blur/codec/temporal/crop/conflict matrix |
 | 07 | Soft metric 标定、阈值选择与 false-confidence Gate | PENDING | ★★★★★ | ★★★★★ | train/holdout split、BER/FER/false accept curves |
 | 08 | LF4 Golden/manifest 冻结与兼容性声明 | PENDING | ★★★☆☆ | ★★★★★ | canonical raster/hash/accepted-block manifest |
 | 09 | LF4 D3D11 Encoder raster/immutable texture 接入 | PENDING | ★★★★☆ | ★★★★☆ | CPU raster parity、stable dwell/present evidence |
@@ -508,9 +508,10 @@ logical FPS <= 5
 
 ### 11.8 Step 06：信道 impairment 矩阵与 adversarial corpus
 
-- **状态**：`NEXT`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **状态**：`PARTIAL`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：用可重复 corpus 覆盖真实远控可能产生的空间、颜色、时序和 parser/identity 失真。
 - **实施要点**：逐项 sweep area/bilinear/bicubic、fractional scale/phase、blur/ringing、gamma/contrast、4:2:0/4:4:4、limited/full range、block replacement、alpha mix、crop/letterbox/overlay、duplicate/drop/reorder/epoch。
+- **当前增量**：Manifest v2 已加入固定 3×3 blur/sharpen、gain/bias/gamma、integer 4:2:0 proxy、crop、solid overlay 和 reference blend；production LF4 truth-boundary tests 已覆盖 mild blur、limited range、4:2:0、非法 crop、codec-block overlay 和 whole-frame temporal mix。尚缺一键矩阵工具、bicubic/实际 codec bitstream、sequence duplicate/drop/reorder/epoch corpus，因此保持 `PARTIAL`。
 - **注意事项**：H.264/HEVC 应保存实际 bitstream 参数并用 inspector 验证；crop/letterbox 不得被 simulator 隐式纠正；valid CRC + wrong identity 必须单独测试。
 - **验收证据**：每个 case 的 canonical input/output hash、truth manifest、Bootstrap、BER/FER、stale distribution、accepted Transport、false accept 和 digest 结果。
 - **完成出口**：矩阵可以从空 scratch 一条命令重建，且所有 failure 分类具有唯一、可断言的原因。
