@@ -19,6 +19,7 @@ struct RunReportContext
     const EncoderSnapshot& snapshot);
 [[nodiscard]] std::string BuildDecoderRunReportJson(const RunReportContext& context,
     const DecoderSnapshot& snapshot);
+[[nodiscard]] std::string BuildRemoteVisualRunMetadataJson(const RemoteRunMetadata& metadata);
 [[nodiscard]] std::string BuildEncoderDiagnostics(const EncoderSnapshot& snapshot);
 [[nodiscard]] std::string BuildDecoderDiagnostics(const DecoderSnapshot& snapshot);
 

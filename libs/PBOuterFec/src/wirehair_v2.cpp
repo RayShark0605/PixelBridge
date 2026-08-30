@@ -1270,6 +1270,11 @@ WirehairV2Decoder::GetBoundSerializedProfile() const noexcept
     return implementation_->serializedProfile;
 }
 
+std::uint64_t WirehairV2Decoder::GetAcceptedBlockCount() const noexcept
+{
+    return implementation_ == nullptr ? 0 : implementation_->acceptedBlocks.Size();
+}
+
 OuterFecResult<DecodeDisposition> WirehairV2Decoder::DecodeBlock(
     const std::uint32_t outerBlockId,
     const std::span<const std::byte> payload)

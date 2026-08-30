@@ -1,0 +1,44 @@
+{
+  "schema": "PixelBridge.RemoteVisualGolden.1",
+  "profileIdHex": "ed05c2cc0397572a",
+  "layoutVersion": 6,
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "pixelFormat": "BGRA8"
+  },
+  "physical": {
+    "tilePixels": 8,
+    "physicalTileCount": 21456,
+    "freshnessRegionPixels": "128x128",
+    "eligibleFreshnessRegions": 77,
+    "freshnessTagTiles": 2389,
+    "dataTileCount": 16723,
+    "codedBits": 16200,
+    "dataBytes": 2025,
+    "codewords": 1,
+    "zeroLuma": 32,
+    "oneLuma": 224,
+    "unusedLuma": 128,
+    "interleaveMultiplier": 65537,
+    "interleaveInverse": 10330,
+    "interleavePhaseStep": 104,
+    "interleavePhaseCount": 16
+  },
+  "unchangedContracts": [
+    "PB-Bootstrap-1",
+    "PB-Control-1",
+    "Robust DVB-S2 Short QC-LDPC",
+    "Transport CRC32C",
+    "Outer FEC identity/conflict",
+    "WholeFileDigest",
+    "final publish"
+  ],
+  "vectors": [
+    {
+      "frameSequence": 7,
+      "payloadGenerator": "PB-RemoteVisual-X2-FreshnessTagged-Data",
+      "rasterBlake3": "697cf6d56e6406b6d0c6b210ce6bd548c846ff5c5582b4377eac89982a33d706"
+    }
+  ]
+}

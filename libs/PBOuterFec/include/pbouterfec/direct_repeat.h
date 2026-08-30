@@ -117,6 +117,10 @@ public:
     // count (resume.state records, design doc section 31.3). Returns 0 for an
     // empty (moved-from) decoder.
     [[nodiscard]] std::uint64_t GetBoundBlockCount() const noexcept;
+    // Telemetry/admission introspection only. This is the number of distinct
+    // OuterBlockIds retained by the decoder; it does not change decode or wire
+    // semantics and returns zero for an empty decoder.
+    [[nodiscard]] std::uint64_t GetAcceptedBlockCount() const noexcept;
 
 private:
     friend class test::DecoderTestAccess;

@@ -563,6 +563,16 @@ DecodeBlock(
     return decodeResult;
 }
 
+[[nodiscard]] std::uint64_t GetAcceptedBlockCount(
+    const detail::ActiveDecoderState& activeDecoder) noexcept
+{
+    if (std::holds_alternative<pbouterfec::DirectRepeatDecoder>(activeDecoder.decoderState))
+    {
+        return std::get<pbouterfec::DirectRepeatDecoder>(activeDecoder.decoderState).GetAcceptedBlockCount();
+    }
+    return std::get<pbouterfec::WirehairV2Decoder>(activeDecoder.decoderState).GetAcceptedBlockCount();
+}
+
 [[nodiscard]] pbouterfec::OuterFecResult<std::uint64_t> RecoverSegment(
     detail::ActiveDecoderState& activeDecoder,
     const std::span<std::byte> output)
@@ -597,7 +607,8 @@ DecodeBlock(
         return ReceiverResult<ReceiverDataAdmission>::Success(
             ReceiverDataAdmission{
                 ReceiverDataDisposition::AlreadyCompleted,
-                std::nullopt});
+                std::nullopt,
+                ReceiverOuterSymbolAdmission::AlreadyCompleted});
     }
 
     auto activeDecoderResult = EnsureActiveDecoder(
@@ -620,6 +631,8 @@ DecodeBlock(
 
     detail::ActiveDecoderState& activeDecoder =
         *activeDecoderResult.Value();
+    const std::uint64_t acceptedBlocksBefore = GetAcceptedBlockCount(activeDecoder);
+    const bool recoveryWasReady = activeDecoder.encodedSegmentReady;
     const auto decodeResult = DecodeBlock(activeDecoder, transportBlock);
     if (!decodeResult)
     {
@@ -628,12 +641,18 @@ DecodeBlock(
             descriptor.sessionTag,
             decodeResult.Error());
     }
+    const std::uint64_t acceptedBlocksAfter = GetAcceptedBlockCount(activeDecoder);
+    const ReceiverOuterSymbolAdmission outerAdmission = acceptedBlocksAfter > acceptedBlocksBefore ?
+        ReceiverOuterSymbolAdmission::Unique : recoveryWasReady ?
+            ReceiverOuterSymbolAdmission::RecoveryAlreadyReady :
+            ReceiverOuterSymbolAdmission::IdenticalDuplicate;
     if (decodeResult.Value() == pbouterfec::DecodeDisposition::NeedMore)
     {
         return ReceiverResult<ReceiverDataAdmission>::Success(
             ReceiverDataAdmission{
                 ReceiverDataDisposition::AcceptedNeedMore,
-                std::nullopt});
+                std::nullopt,
+                outerAdmission});
     }
     activeDecoder.encodedSegmentReady = true;
 
@@ -694,7 +713,8 @@ DecodeBlock(
             ReceiverDataDisposition::EncodedSegmentReady,
             ReceiverCompletedSegment(
                 boundSegmentDescriptor,
-                std::move(recoveredBytes))});
+                std::move(recoveredBytes)),
+            outerAdmission});
 }
 
 [[nodiscard]] ReceiverResult<std::optional<ReceiverCompletedSegment>>
@@ -1205,6 +1225,7 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
         if (errorCode == pbprotocol::ProtocolErrorCode::UnknownSession ||
             errorCode == pbprotocol::ProtocolErrorCode::UnknownSegment)
         {
+            const std::uint64_t admittedBefore = implementation_->orphanCache.GetAdmittedBlockCount();
             const pbprotocol::ProtocolStatus orphanStatus =
                 implementation_->orphanCache.Admit(
                     transportBlock.sessionTag,
@@ -1226,10 +1247,14 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
                 CountReturnedResourceFailure(*implementation_, result.Error());
                 return result;
             }
+            const ReceiverOuterSymbolAdmission outerAdmission =
+                implementation_->orphanCache.GetAdmittedBlockCount() > admittedBefore ?
+                    ReceiverOuterSymbolAdmission::Unique : ReceiverOuterSymbolAdmission::IdenticalDuplicate;
             return ReceiverResult<ReceiverDataAdmission>::Success(
                 ReceiverDataAdmission{
                     ReceiverDataDisposition::CachedOrphan,
-                    std::nullopt});
+                    std::nullopt,
+                    outerAdmission});
         }
 
         ReceiverResult<ReceiverDataAdmission> result =
@@ -1246,6 +1271,7 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
         // refusal keeps pre-descriptor blocks cached. Compare/cache this new
         // observation before Drain so a full cache cannot hide a same-ID
         // conflict that arrives exactly when decoder capacity becomes free.
+        const std::uint64_t admittedBefore = implementation_->orphanCache.GetAdmittedBlockCount();
         const pbprotocol::ProtocolStatus orphanStatus =
             implementation_->orphanCache.Admit(
                 transportBlock.sessionTag,
@@ -1272,6 +1298,9 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
             CountReturnedResourceFailure(*implementation_, result.Error());
             return result;
         }
+        const ReceiverOuterSymbolAdmission outerAdmission =
+            implementation_->orphanCache.GetAdmittedBlockCount() > admittedBefore ?
+                ReceiverOuterSymbolAdmission::Unique : ReceiverOuterSymbolAdmission::IdenticalDuplicate;
 
         auto orphanResult = ProcessOrphanBlocks(
             *implementation_,
@@ -1289,12 +1318,14 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
             return ReceiverResult<ReceiverDataAdmission>::Success(
                 ReceiverDataAdmission{
                     ReceiverDataDisposition::EncodedSegmentReady,
-                    std::move(orphanResult).Value()});
+                    std::move(orphanResult).Value(),
+                    outerAdmission});
         }
         return ReceiverResult<ReceiverDataAdmission>::Success(
             ReceiverDataAdmission{
                 ReceiverDataDisposition::AcceptedNeedMore,
-                std::nullopt});
+                std::nullopt,
+                outerAdmission});
     }
 
     auto result = ProcessBoundDataBlock(

@@ -4,6 +4,7 @@
 #include "pbinnerfec/qc_ldpc_codec.h"
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/reference_raster.h"
+#include "pbmodulation/remote_visual.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/transport_block_codec.h"
@@ -14,6 +15,7 @@
 #include <dxgi.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -95,6 +97,16 @@ std::vector<std::byte> MakeTransportData(const std::size_t dataBytes, const std:
         REQUIRE(pbinnerfec::EncodeQcLdpcCodeword(pbinnerfec::kInnerFecProfileIdRobust, information,
             std::span(data).subspan(slot * pbdesktoplevels::kCodewordBytes, pbdesktoplevels::kCodewordBytes)));
     }
+    return data;
+}
+
+std::vector<std::byte> MakeRemoteControlData(const std::span<const std::byte> controlWindow)
+{
+    REQUIRE(controlWindow.size() == pbmodulation::kReferenceControlWindowBytes);
+    std::array<std::byte, pbdesktoplevels::kInfoBytes> information{};
+    std::copy(controlWindow.begin(), controlWindow.end(), information.begin());
+    std::vector<std::byte> data(pbmodulation::kRemoteVisualDataBytes);
+    REQUIRE(pbinnerfec::EncodeQcLdpcCodeword(pbinnerfec::kInnerFecProfileIdRobust, information, data));
     return data;
 }
 
@@ -218,6 +230,10 @@ std::vector<std::byte> EncodeTransportPixels(const std::uint64_t profileId, cons
     {
         REQUIRE(pbmodulation::EncodeShapeChromaFrame(record, data, pixels));
     }
+    else if (profileId == pbmodulation::kRemoteVisualProfileId)
+    {
+        REQUIRE(pbmodulation::EncodeRemoteVisualFrame(record, data, pixels));
+    }
     else
     {
         REQUIRE(pbmodulation::EncodeDesktopLevelsFrame(record, data, pixels));
@@ -238,6 +254,69 @@ void CopyBgraRegion(const std::span<const std::byte> source, const std::span<std
     {
         const std::size_t offset = (static_cast<std::size_t>(top + row) * 1920 + left) * 4;
         std::copy_n(source.begin() + offset, static_cast<std::size_t>(width) * 4, destination.begin() + offset);
+    }
+}
+
+void CorruptBgraBlockPerimeter(const std::span<std::byte> pixels, const pbmodulation::LocalDesktopRegion region,
+    const std::uint32_t inset)
+{
+    REQUIRE(region.x + region.width <= pbmodulation::kLocalDesktopCanvasWidth);
+    REQUIRE(region.y + region.height <= pbmodulation::kLocalDesktopCanvasHeight);
+    REQUIRE(inset * 2 < region.width);
+    REQUIRE(inset * 2 < region.height);
+    for (std::uint32_t row = 0; row < region.height; row++)
+    {
+        for (std::uint32_t column = 0; column < region.width; column++)
+        {
+            if (row >= inset && row < region.height - inset && column >= inset && column < region.width - inset)
+            {
+                continue;
+            }
+            const std::uint8_t level = ((row + column) & 1) == 0 ? 0 : 255;
+            const std::size_t offset = (static_cast<std::size_t>(region.y + row) *
+                pbmodulation::kLocalDesktopCanvasWidth + region.x + column) * 4;
+            pixels[offset] = static_cast<std::byte>(level);
+            pixels[offset + 1] = static_cast<std::byte>(level);
+            pixels[offset + 2] = static_cast<std::byte>(level);
+            pixels[offset + 3] = std::byte{255};
+        }
+    }
+}
+
+void AddLumaNeutralChromaNoise(const std::span<std::byte> pixels, const pbmodulation::LocalDesktopRegion region,
+    const std::uint32_t inset)
+{
+    REQUIRE(region.x + region.width <= pbmodulation::kLocalDesktopCanvasWidth);
+    REQUIRE(region.y + region.height <= pbmodulation::kLocalDesktopCanvasHeight);
+    REQUIRE(inset * 2 < region.width);
+    REQUIRE(inset * 2 < region.height);
+    for (std::uint32_t row = inset; row < region.height - inset; row++)
+    {
+        for (std::uint32_t column = inset; column < region.width - inset; column++)
+        {
+            const std::size_t offset = (static_cast<std::size_t>(region.y + row) *
+                pbmodulation::kLocalDesktopCanvasWidth + region.x + column) * 4;
+            const int level = std::to_integer<std::uint8_t>(pixels[offset + 1]);
+            const int phase = ((row + column) & 1) == 0 ? 1 : -1;
+            pixels[offset] = static_cast<std::byte>(std::clamp(level + phase * 24, 1, 254));
+            pixels[offset + 2] = static_cast<std::byte>(std::clamp(level - phase * 8, 1, 254));
+        }
+    }
+}
+
+void CopyRemoteVisualRegionTiles(const std::span<const std::byte> source, const std::span<std::byte> destination,
+    const std::uint16_t regionId)
+{
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
+    {
+        pbmodulation::RemoteVisualTileMapping mapping;
+        pbmodulation::LocalDesktopRegion region;
+        REQUIRE(pbmodulation::GetRemoteVisualTileMapping(physical, mapping));
+        REQUIRE(pbmodulation::GetRemoteVisualTile(physical, region));
+        if (mapping.regionId == regionId && mapping.role != pbmodulation::RemoteVisualTileRole::Unused)
+        {
+            CopyBgraRegion(source, destination, region.x, region.y, region.width, region.height);
+        }
     }
 }
 
@@ -316,6 +395,20 @@ void RequireSameGpuResult(const OracleResult& oracle, const pbdemodd3d11::DemodF
     REQUIRE(gpu.metadata.pixelFormat == frame.metadata.pixelFormat);
     REQUIRE(gpu.metadata.adapterLuid.LowPart == frame.metadata.adapterLuid.LowPart);
     REQUIRE(gpu.metadata.adapterLuid.HighPart == frame.metadata.adapterLuid.HighPart);
+    if (profileId == pbmodulation::kRemoteVisualProfileId)
+    {
+        REQUIRE(gpu.remoteMetricSummaryAvailable);
+        REQUIRE(gpu.remoteMetricSamples == pbmodulation::kRemoteVisualCodedBits);
+        REQUIRE(gpu.remoteZeroMagnitudeMetrics == 0);
+        REQUIRE(gpu.remoteMinimumAbsoluteMetric > 0.99);
+        REQUIRE(gpu.remoteMeanAbsoluteMetric > 0.99);
+    }
+    else
+    {
+        REQUIRE_FALSE(gpu.remoteMetricSummaryAvailable);
+        REQUIRE(gpu.remoteMetricSamples == 0);
+        REQUIRE(gpu.remoteZeroMagnitudeMetrics == 0);
+    }
     INFO("profileId=" << profileId << " actual padding=" << gpu.evaluation.paddingValid <<
         " fec=" << gpu.evaluation.fecFailures << " crc=" << gpu.evaluation.crcFailures <<
         " identity=" << gpu.evaluation.identityFailures << " accepted=" << gpu.evaluation.acceptedTransportBlocks <<
@@ -329,15 +422,21 @@ void RequireSameGpuResult(const OracleResult& oracle, const pbdemodd3d11::DemodF
     }
 }
 
-OracleResult RunCpuOracle(const bool shapeChroma, const std::span<const std::byte> pixels)
+OracleResult RunCpuOracle(const std::uint64_t profileId, const std::span<const std::byte> pixels)
 {
     auto channelResult = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
     REQUIRE(channelResult);
     auto channel = std::move(channelResult).Value();
     OracleResult result;
-    if (shapeChroma)
+    if (profileId == pbmodulation::kShapeChromaProfileId)
     {
         const auto observation = channel.DecodeShapeChroma(MakeView(pixels));
+        REQUIRE(observation.modulation.IsAccepted());
+        result.evaluation = observation.evaluation;
+    }
+    else if (profileId == pbmodulation::kRemoteVisualProfileId)
+    {
+        const auto observation = channel.DecodeRemoteVisual(MakeView(pixels));
         REQUIRE(observation.modulation.IsAccepted());
         result.evaluation = observation.evaluation;
     }
@@ -354,22 +453,26 @@ OracleResult RunCpuOracle(const bool shapeChroma, const std::span<const std::byt
 
 void RunOracleProfile(D3DEnvironment& environment, pbdemodd3d11::Demodulator& demodulator,
     const std::uint64_t profileId, const std::uint8_t layoutVersion, const std::uint64_t sequence,
-    const std::uint64_t sessionTag, const std::size_t dataBytes, const bool shapeChroma,
+    const std::uint64_t sessionTag, const std::size_t dataBytes,
     const pbcapturenormalize::ScreenCaptureDomain& domain, const std::uint64_t observation)
 {
     const auto record = MakeRecord(profileId, layoutVersion, sequence, sessionTag);
     std::vector<std::byte> logicalData(dataBytes);
     REQUIRE(pbdesktoplevels::GenerateDiagnosticData(record, logicalData));
     std::vector<std::byte> pixels(pbmodulation::kLocalDesktopFrameBgraBytes);
-    if (shapeChroma)
+    if (profileId == pbmodulation::kShapeChromaProfileId)
     {
         REQUIRE(pbmodulation::EncodeShapeChromaFrame(record, logicalData, pixels));
+    }
+    else if (profileId == pbmodulation::kRemoteVisualProfileId)
+    {
+        REQUIRE(pbmodulation::EncodeRemoteVisualFrame(record, logicalData, pixels));
     }
     else
     {
         REQUIRE(pbmodulation::EncodeDesktopLevelsFrame(record, logicalData, pixels));
     }
-    const auto oracle = RunCpuOracle(shapeChroma, pixels);
+    const auto oracle = RunCpuOracle(profileId, pixels);
     REQUIRE(oracle.evaluation.IsVerified());
 
     const auto texture = UploadRoiTexture(environment.device.Get(), pixels);
@@ -429,7 +532,10 @@ TEST_CASE("D3D11 compute demod agrees with the CPU oracle on every accepted Tran
 {
     auto environment = CreateWarpEnvironment();
     std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
-    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), {}, demodulator));
+    const auto createStatus = pbdemodd3d11::Demodulator::Create(environment.device.Get(), {}, demodulator);
+    INFO("Create status=" << pbdemodd3d11::GetDemodErrorName(createStatus.code) <<
+        " stage=" << static_cast<unsigned>(createStatus.stage) << " native=" << createStatus.nativeError);
+    REQUIRE(createStatus);
     REQUIRE(demodulator != nullptr);
 
     pbcapturenormalize::ScreenCaptureDomain domain;
@@ -437,18 +543,115 @@ TEST_CASE("D3D11 compute demod agrees with the CPU oracle on every accepted Tran
     domain.captureEpoch = 7;
     RunOracleProfile(environment, *demodulator, pbmodulation::kShapeChromaProfileId,
         pbmodulation::kShapeChromaLayoutVersion, 7, 0x1020304050607080ULL, pbmodulation::kShapeChromaDataBytes,
-        true, domain, 1);
+        domain, 1);
     RunOracleProfile(environment, *demodulator, pbmodulation::kDesktopLevels4ProfileId,
-        pbmodulation::kDesktopLevelsLayoutVersion, 5, 0x1122334455667788ULL, 21672, false, domain, 2);
+        pbmodulation::kDesktopLevelsLayoutVersion, 5, 0x1122334455667788ULL, 21672, domain, 2);
     RunOracleProfile(environment, *demodulator, pbmodulation::kDesktopLevels2ProfileId,
-        pbmodulation::kDesktopLevelsLayoutVersion, 3, 0x8877665544332211ULL, 86688, false, domain, 3);
+        pbmodulation::kDesktopLevelsLayoutVersion, 3, 0x8877665544332211ULL, 86688, domain, 3);
+    RunOracleProfile(environment, *demodulator, pbmodulation::kRemoteVisualProfileId,
+        pbmodulation::kRemoteVisualLayoutVersion, 13, 0xA1B2C3D4E5F60718ULL,
+        pbmodulation::kRemoteVisualDataBytes, domain, 4);
 
     const auto snapshot = demodulator->GetSnapshot();
-    REQUIRE(snapshot.submittedFrames == 6);
-    REQUIRE(snapshot.completedFrames == 6);
+    REQUIRE(snapshot.submittedFrames == 8);
+    REQUIRE(snapshot.completedFrames == 8);
     REQUIRE(snapshot.pendingFrames == 0);
     REQUIRE(snapshot.metricReadbackBytes > 0);
     REQUIRE(snapshot.rawPixelReadbackBytes == 0);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+}
+
+TEST_CASE("RemoteVisual D3D11 demod samples codec-safe block interiors exactly like the CPU oracle",
+    "[demod][d3d11][warp][remote-visual][ringing]")
+{
+    auto environment = CreateWarpEnvironment();
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), {}, demodulator));
+
+    constexpr std::uint64_t sequence = 18;
+    constexpr std::uint64_t sessionTag = 0x6750552D72696E67ULL;
+    const auto record = MakeRecord(pbmodulation::kRemoteVisualProfileId, pbmodulation::kRemoteVisualLayoutVersion,
+        sequence, sessionTag);
+    std::vector<std::byte> logicalData(pbmodulation::kRemoteVisualDataBytes);
+    REQUIRE(pbdesktoplevels::GenerateDiagnosticData(record, logicalData));
+    auto pixels = EncodeTransportPixels(pbmodulation::kRemoteVisualProfileId, record, logicalData);
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
+    {
+        pbmodulation::LocalDesktopRegion region;
+        REQUIRE(pbmodulation::GetRemoteVisualTile(physical, region));
+        CorruptBgraBlockPerimeter(pixels, region, pbmodulation::kRemoteVisualTileSampleInset);
+    }
+    for (const auto ladder : pbmodulation::kRemoteVisualLadders)
+    {
+        for (std::uint32_t level = 0; level < 4; level++)
+        {
+            CorruptBgraBlockPerimeter(pixels, {ladder.x + level * 32, ladder.y, 32, 64},
+                pbmodulation::kRemoteVisualCalibrationSampleInset);
+        }
+    }
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
+    {
+        pbmodulation::LocalDesktopRegion region;
+        REQUIRE(pbmodulation::GetRemoteVisualTile(physical, region));
+        AddLumaNeutralChromaNoise(pixels, region, pbmodulation::kRemoteVisualTileSampleInset);
+    }
+    for (const auto ladder : pbmodulation::kRemoteVisualLadders)
+    {
+        for (std::uint32_t level = 0; level < 4; level++)
+        {
+            AddLumaNeutralChromaNoise(pixels, {ladder.x + level * 32, ladder.y, 32, 64},
+                pbmodulation::kRemoteVisualCalibrationSampleInset);
+        }
+    }
+    const auto oracle = RunCpuOracle(pbmodulation::kRemoteVisualProfileId, pixels);
+    REQUIRE(oracle.evaluation.IsVerified());
+
+    const auto texture = UploadRoiTexture(environment.device.Get(), pixels);
+    pbcapturenormalize::ScreenCaptureDomain domain;
+    domain.sourceId[0] = std::byte{0x6B};
+    domain.captureEpoch = 8;
+    const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, 1);
+    pbdemodd3d11::DemodSubmission submission;
+    REQUIRE(demodulator->Submit(frame, environment.context.Get(), record, submission));
+    const auto gpu = PollUntilReady(*demodulator, environment.context.Get(), submission);
+    RequireSameGpuResult(oracle, gpu, frame, pbmodulation::kRemoteVisualProfileId);
+
+    const auto previousRecord = MakeRecord(pbmodulation::kRemoteVisualProfileId,
+        pbmodulation::kRemoteVisualLayoutVersion, sequence - 1, sessionTag);
+    std::vector<std::byte> previousData(pbmodulation::kRemoteVisualDataBytes);
+    REQUIRE(pbdesktoplevels::GenerateDiagnosticData(previousRecord, previousData));
+    const auto previousPixels = EncodeTransportPixels(pbmodulation::kRemoteVisualProfileId, previousRecord,
+        previousData);
+    auto stalePixels = pixels;
+    std::array<bool, pbmodulation::kRemoteVisualFreshnessRegionCount> selectedRegions{};
+    std::uint32_t selectedRegionCount = 0;
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount && selectedRegionCount < 6; physical++)
+    {
+        pbmodulation::RemoteVisualTileMapping mapping;
+        REQUIRE(pbmodulation::GetRemoteVisualTileMapping(physical, mapping));
+        if (mapping.role == pbmodulation::RemoteVisualTileRole::FreshnessTag && !selectedRegions[mapping.regionId])
+        {
+            selectedRegions[mapping.regionId] = true;
+            selectedRegionCount++;
+            CopyRemoteVisualRegionTiles(previousPixels, stalePixels, mapping.regionId);
+        }
+    }
+    REQUIRE(selectedRegionCount == 6);
+    const auto staleOracle = RunCpuOracle(pbmodulation::kRemoteVisualProfileId, stalePixels);
+    REQUIRE(staleOracle.evaluation.IsVerified());
+    const auto staleTexture = UploadRoiTexture(environment.device.Get(), stalePixels);
+    const auto staleFrame = MakeFrame(staleTexture.Get(), environment.adapterLuid, domain, 2);
+    pbdemodd3d11::DemodSubmission staleSubmission;
+    REQUIRE(demodulator->Submit(staleFrame, environment.context.Get(), record, staleSubmission));
+    const auto staleGpu = PollUntilReady(*demodulator, environment.context.Get(), staleSubmission);
+    RequireSameEvaluation(staleOracle.evaluation, staleGpu.evaluation);
+    REQUIRE(staleGpu.evaluation.IsVerified());
+    REQUIRE(staleGpu.remoteMetricSummaryAvailable);
+    REQUIRE(staleGpu.remoteFreshnessRegions == pbmodulation::kRemoteVisualEligibleFreshnessRegions);
+    REQUIRE(staleGpu.remoteStaleRegions >= 6);
+    REQUIRE(staleGpu.remoteFreshnessTagMismatches > 0);
+    REQUIRE(staleGpu.remoteFreshnessErasedDataMetrics > 0);
+    REQUIRE(staleGpu.remoteZeroMagnitudeMetrics >= staleGpu.remoteFreshnessErasedDataMetrics);
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
@@ -514,7 +717,9 @@ TEST_CASE("Capture demodulator binds fixed Bootstrap and GPU Transport to the sa
     const std::array cases{
         ProfileCase{pbmodulation::kDesktopLevels4ProfileId, pbmodulation::kDesktopLevelsLayoutVersion, 21672, 10},
         ProfileCase{pbmodulation::kShapeChromaProfileId, pbmodulation::kShapeChromaLayoutVersion,
-            pbmodulation::kShapeChromaDataBytes, pbmodulation::kShapeChromaCodewords}};
+            pbmodulation::kShapeChromaDataBytes, pbmodulation::kShapeChromaCodewords},
+        ProfileCase{pbmodulation::kRemoteVisualProfileId, pbmodulation::kRemoteVisualLayoutVersion,
+            pbmodulation::kRemoteVisualDataBytes, pbmodulation::kRemoteVisualCodewords}};
     std::uint64_t domainByte = 0x41;
     for (const auto& profile : cases)
     {
@@ -580,9 +785,19 @@ TEST_CASE("Capture demodulator binds fixed Bootstrap and GPU Transport to the sa
         REQUIRE(controlSize);
         REQUIRE(controlSize.Value() < controlWindow.size());
         REQUIRE(pbprotocol::SerializeControlRecord(controlView, std::span(controlWindow).first(controlSize.Value())));
-        std::array<std::byte, pbmodulation::kReferenceDataRegionBytes> referenceData{};
-        std::vector<std::byte> controlPixels(pbmodulation::kReferenceFrameBgraBytes);
-        REQUIRE(pbmodulation::EncodeReferenceFrame({record, controlWindow, referenceData}, controlPixels));
+        const bool remoteControlCarrier = profile.profileId == pbmodulation::kRemoteVisualProfileId;
+        std::vector<std::byte> controlPixels;
+        if (remoteControlCarrier)
+        {
+            const auto controlData = MakeRemoteControlData(controlWindow);
+            controlPixels = EncodeTransportPixels(profile.profileId, record, controlData);
+        }
+        else
+        {
+            std::array<std::byte, pbmodulation::kReferenceDataRegionBytes> referenceData{};
+            controlPixels.resize(pbmodulation::kReferenceFrameBgraBytes);
+            REQUIRE(pbmodulation::EncodeReferenceFrame({record, controlWindow, referenceData}, controlPixels));
+        }
         const auto controlTexture = UploadRoiTexture(environment.device.Get(), controlPixels);
         auto controlFrame = MakeFrame(controlTexture.Get(), environment.adapterLuid, domain, 2);
         controlFrame.metadata.slotIndex = 0;
@@ -604,12 +819,14 @@ TEST_CASE("Capture demodulator binds fixed Bootstrap and GPU Transport to the sa
         REQUIRE(std::equal(result.controlBytes.begin(), result.controlBytes.begin() + result.controlByteCount,
             controlWindow.begin(), controlWindow.begin() + result.controlByteCount));
         REQUIRE(pbprotocol::ParseControlRecord(std::span(result.controlBytes).first(result.controlByteCount)));
+        REQUIRE(result.demodulation.acceptedRemoteControlBlockCount == (remoteControlCarrier ? 1U : 0U));
+        REQUIRE(result.demodulation.acceptedTransportBlockCount == 0);
         REQUIRE_FALSE(consumer->TakeResult(result));
         auto snapshot = consumer->GetSnapshot();
         REQUIRE(snapshot.active);
         REQUIRE(snapshot.submittedFrames == 2);
         REQUIRE(snapshot.completedFrames == 2);
-        REQUIRE(snapshot.bootstrapAcceptedFrames == 1);
+        REQUIRE(snapshot.bootstrapAcceptedFrames == (remoteControlCarrier ? 2 : 1));
         REQUIRE(snapshot.bootstrapRejectedFrames == 0);
         REQUIRE(snapshot.controlFrames == 1);
         REQUIRE(snapshot.controlFrameFailures == 0);
@@ -618,7 +835,7 @@ TEST_CASE("Capture demodulator binds fixed Bootstrap and GPU Transport to the sa
         REQUIRE(snapshot.bootstrapMapCalls == 2);
         REQUIRE(snapshot.bootstrapReadbackBytes == 2ULL * pbmodulation::kLocalDesktopFrameBgraBytes);
         REQUIRE(snapshot.bootstrapCpuTimingSamples == 2);
-        REQUIRE(snapshot.demodulationCpuTimingSamples == 1);
+        REQUIRE(snapshot.demodulationCpuTimingSamples == (remoteControlCarrier ? 2 : 1));
         REQUIRE(snapshot.cpuTimingUnavailable == 0);
         REQUIRE(snapshot.pendingFrames == 0);
         REQUIRE(snapshot.queuedResults == 0);
@@ -626,13 +843,22 @@ TEST_CASE("Capture demodulator binds fixed Bootstrap and GPU Transport to the sa
         REQUIRE(snapshot.resultQueueDrops == 0);
         REQUIRE(snapshot.demodulator.rawPixelReadbackBytes == 0);
         REQUIRE(snapshot.demodulator.metricReadbackBytes > 0);
-        REQUIRE(snapshot.demodulator.gpuTimingSamples + snapshot.demodulator.gpuTimingUnavailable == 1);
-        REQUIRE(snapshot.demodulator.gpuTimingSamples == (dataGpuTimingValid ? 1 : 0));
-        REQUIRE(snapshot.demodulator.gpuTimingUnavailable == (dataGpuTimingValid ? 0 : 1));
-        if (dataGpuTimingValid)
+        const std::uint64_t expectedDemodulations = remoteControlCarrier ? 2 : 1;
+        REQUIRE(snapshot.demodulator.gpuTimingSamples + snapshot.demodulator.gpuTimingUnavailable == expectedDemodulations);
+        if (!remoteControlCarrier)
         {
-            REQUIRE(snapshot.demodulator.gpuTimeTotal100ns == dataGpuTime100ns);
-            REQUIRE(snapshot.demodulator.gpuTimeHighWater100ns == dataGpuTime100ns);
+            REQUIRE(snapshot.demodulator.gpuTimingSamples == (dataGpuTimingValid ? 1 : 0));
+            REQUIRE(snapshot.demodulator.gpuTimingUnavailable == (dataGpuTimingValid ? 0 : 1));
+            if (dataGpuTimingValid)
+            {
+                REQUIRE(snapshot.demodulator.gpuTimeTotal100ns == dataGpuTime100ns);
+                REQUIRE(snapshot.demodulator.gpuTimeHighWater100ns == dataGpuTime100ns);
+            }
+        }
+        else if (dataGpuTimingValid)
+        {
+            REQUIRE(snapshot.demodulator.gpuTimeTotal100ns >= dataGpuTime100ns);
+            REQUIRE(snapshot.demodulator.gpuTimeHighWater100ns >= dataGpuTime100ns);
         }
         consumer->DomainInvalidated(domain);
         snapshot = consumer->GetSnapshot();

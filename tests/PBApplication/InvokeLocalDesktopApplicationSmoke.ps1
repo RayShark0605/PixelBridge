@@ -178,6 +178,7 @@ foreach ($case in $cases)
     $expectedBackend = if ($case.Backend -ceq 'wgc') { 'WGC' } else { 'DXGI Desktop Duplication' }
     $verifiedEncodedGoodput = [double]$decoderJson.verifiedEncodedGoodputBitsPerSecond
     $captureFps = [double]$decoderJson.captureFps
+    $uniqueVisualFps = [double]$decoderJson.uniqueVisualFps
     $bootstrapSuccessRate = [double]$decoderJson.bootstrapSuccessRate
     $admittedFrameSequenceFps = [double]$decoderJson.admittedFrameSequenceFps
     $minimumBroadcastMilliseconds = [UInt64]$EncoderBroadcastSeconds * 1000
@@ -199,13 +200,15 @@ foreach ($case in $cases)
         [double]::IsNaN($verifiedEncodedGoodput) -or [double]::IsInfinity($verifiedEncodedGoodput) -or
         $verifiedEncodedGoodput -le 0 -or [UInt64]$decoderJson.telemetryCapturedFrames -lt 2 -or
         [double]::IsNaN($captureFps) -or [double]::IsInfinity($captureFps) -or $captureFps -le 0 -or
-        [UInt64]$decoderJson.fingerprintedFrames -ne 0 -or $null -ne $decoderJson.uniqueVisualFps -or
+        [UInt64]$decoderJson.fingerprintedFrames -ne 0 -or $null -ne $decoderJson.roiPixelDigestUniqueVisualFps -or
+        [string]$decoderJson.uniqueVisualFpsBasis -cne 'distinct legal (CaptureEpoch,SessionTag,FrameSequence)' -or
+        [double]::IsNaN($uniqueVisualFps) -or [double]::IsInfinity($uniqueVisualFps) -or $uniqueVisualFps -le 0 -or
         [UInt64]$decoderJson.telemetryBootstrapAttempts -lt 2 -or
         [UInt64]$decoderJson.telemetryBootstrapSuccesses -eq 0 -or
         [double]::IsNaN($bootstrapSuccessRate) -or [double]::IsInfinity($bootstrapSuccessRate) -or
         $bootstrapSuccessRate -le 0 -or $bootstrapSuccessRate -gt 1 -or
         [double]::IsNaN($admittedFrameSequenceFps) -or [double]::IsInfinity($admittedFrameSequenceFps) -or
-        $admittedFrameSequenceFps -le 0)
+        $admittedFrameSequenceFps -le 0 -or [Math]::Abs($uniqueVisualFps - $admittedFrameSequenceFps) -gt 0.000000001)
     {
         throw "Authoritative state or digest mismatch: $($case.Name)"
     }

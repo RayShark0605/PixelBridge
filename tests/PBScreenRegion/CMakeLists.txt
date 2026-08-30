@@ -29,7 +29,8 @@ add_executable(PBScreenRegionDecoderHostProbe
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/bootstrap_diagnostic.cpp"
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp")
 target_link_libraries(PBScreenRegionDecoderHostProbe PRIVATE PB::CompilerSettings PB::PBCore PB::PBProtocol PB::PBScreenRegion
-    PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation PB::PBDesktopLevelsReference PB::PBTelemetry)
+    PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation PB::PBDesktopLevelsReference PB::PBTelemetry
+    PB::PBApplication)
 target_compile_definitions(PBScreenRegionDecoderHostProbe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 if(MSVC)
     target_compile_options(PBScreenRegionDecoderHostProbe PRIVATE /external:anglebrackets /external:W0)

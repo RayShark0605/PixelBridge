@@ -354,7 +354,14 @@ TEST_CASE("ReceiverIngress DirectRepeat orphan flow is authoritative end to end"
         REQUIRE(dataResult);
         REQUIRE(dataResult.Value().disposition ==
             pbreceiver::ReceiverDataDisposition::CachedOrphan);
+        REQUIRE(dataResult.Value().outerSymbolAdmission ==
+            pbreceiver::ReceiverOuterSymbolAdmission::Unique);
     }
+    const auto repeatedOrphan = receiver.ReceiveDataBlock(
+        MakeReceivedBlock(segmentDescriptor.sessionTag, 0, blocks[0]));
+    REQUIRE(repeatedOrphan);
+    REQUIRE(repeatedOrphan.Value().outerSymbolAdmission ==
+        pbreceiver::ReceiverOuterSymbolAdmission::IdenticalDuplicate);
     pbreceiver::ReceiverResourceTelemetrySnapshot telemetry =
         receiver.GetTelemetry();
     REQUIRE(telemetry.orphanCachedBlockCount == 3);
@@ -408,6 +415,8 @@ TEST_CASE("ReceiverIngress DirectRepeat orphan flow is authoritative end to end"
     REQUIRE(repeatedBlockResult);
     REQUIRE(repeatedBlockResult.Value().disposition ==
         pbreceiver::ReceiverDataDisposition::AlreadyCompleted);
+    REQUIRE(repeatedBlockResult.Value().outerSymbolAdmission ==
+        pbreceiver::ReceiverOuterSymbolAdmission::AlreadyCompleted);
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
 
     const auto removeResult = receiver.RemoveSession(sessionDescriptor.sessionId);
@@ -1207,6 +1216,15 @@ TEST_CASE("ReceiverIngress enforces one receiver-wide decoder quota without fall
     REQUIRE(firstNeedMore);
     REQUIRE(firstNeedMore.Value().disposition ==
         pbreceiver::ReceiverDataDisposition::AcceptedNeedMore);
+    REQUIRE(firstNeedMore.Value().outerSymbolAdmission ==
+        pbreceiver::ReceiverOuterSymbolAdmission::Unique);
+    const auto firstDuplicate = receiver.ReceiveDataBlock(
+        MakeReceivedBlock(firstDescriptor.sessionTag, 0, firstBlocks[0]));
+    REQUIRE(firstDuplicate);
+    REQUIRE(firstDuplicate.Value().disposition ==
+        pbreceiver::ReceiverDataDisposition::AcceptedNeedMore);
+    REQUIRE(firstDuplicate.Value().outerSymbolAdmission ==
+        pbreceiver::ReceiverOuterSymbolAdmission::IdenticalDuplicate);
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
 
     // Binding the descriptor attempts lazy creation because an orphan exists.

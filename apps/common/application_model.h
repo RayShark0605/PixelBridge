@@ -21,7 +21,8 @@ inline constexpr std::uint32_t phase1CanvasHeight = 1080;
 enum class VisualProfile : std::uint8_t
 {
     DirectLevels2x2,
-    ShapeChroma
+    ShapeChroma,
+    RemoteVisualResilient
 };
 
 enum class CaptureBackend : std::uint8_t
@@ -66,7 +67,7 @@ enum class TransitionResult : std::uint8_t
 enum class ChannelType : std::uint8_t
 {
     LocalDesktop,
-    SunloginRemoteVisual,
+    RemoteVisual,
     Other
 };
 
@@ -75,6 +76,23 @@ enum class ChromaMode : std::uint8_t
     Unknown,
     Chroma444,
     Chroma420
+};
+
+enum class MetadataProvenance : std::uint8_t
+{
+    NotProvided,
+    Manual,
+    PixelBridgeObserved,
+    RemoteUiVisible
+};
+
+struct MetadataPhysicalRect
+{
+    std::int32_t left = 0;
+    std::int32_t top = 0;
+    std::int32_t right = 0;
+    std::int32_t bottom = 0;
+    bool operator==(const MetadataPhysicalRect&) const = default;
 };
 
 struct RuntimeCapabilities
@@ -92,20 +110,40 @@ enum class WindowCloseAction : std::uint8_t
     Defer
 };
 
-struct RemoteRunMetadata
+struct RemoteVisualRunMetadata
 {
+    std::string runId;
     ChannelType channelType = ChannelType::LocalDesktop;
+    std::string remoteProvider;
     std::string providerVersion;
     std::string remoteMode;
     std::optional<double> targetFps;
     std::optional<double> observedFps;
     ChromaMode chromaMode = ChromaMode::Unknown;
+    std::string computerBDisplayResolution;
+    std::optional<double> computerBRefreshRate;
+    std::string computerADisplayResolution;
+    std::optional<double> computerARefreshRate;
     std::string remoteResolution;
-    std::string remoteWindowScale;
-    std::string networkNote;
+    std::optional<MetadataPhysicalRect> remoteWindowPhysicalRect;
+    std::optional<MetadataPhysicalRect> selectedRoiPhysicalRect;
+    std::optional<double> estimatedScaleX;
+    std::optional<double> estimatedScaleY;
+    std::string letterboxStatus;
+    std::string cropStatus;
+    std::string geometryStatus;
+    std::string networkType;
     std::optional<double> observedBandwidthMbps;
     std::optional<double> observedLatencyMilliseconds;
+    std::string protectedMonitorIdentity;
+    std::string experimentMonitorIdentity;
+    MetadataProvenance remoteUiProvenance = MetadataProvenance::NotProvided;
+    MetadataProvenance geometryProvenance = MetadataProvenance::NotProvided;
+    MetadataProvenance networkProvenance = MetadataProvenance::NotProvided;
+    std::string notes;
 };
+
+using RemoteRunMetadata = RemoteVisualRunMetadata;
 
 struct EncoderSnapshot
 {
@@ -136,6 +174,8 @@ struct EncoderSnapshot
     std::optional<double> presentCallFps;
     double generatedVisualFramesPerSecond = 0;
     double generatedPayloadBytesPerSecond = 0;
+    std::uint32_t configuredLogicalVisualFps = 0;
+    std::uint32_t configuredControlRepetitions = 4;
     std::uint64_t submittedFrames = 0;
     std::uint64_t replacedPendingFrames = 0;
     std::uint32_t pendingFrames = 0;
@@ -146,6 +186,20 @@ struct EncoderSnapshot
     std::int32_t dataWindowTop = 0;
     std::uint32_t dataWindowWidth = phase1CanvasWidth;
     std::uint32_t dataWindowHeight = phase1CanvasHeight;
+    std::optional<double> processCpuAveragePercent;
+    std::optional<double> processCpuPeakPercent;
+    std::optional<double> processCpuEquivalentCores;
+    std::string processCpuUnavailableReason;
+    std::optional<double> processGpuEngineAveragePercent;
+    std::optional<double> processGpuEnginePeakPercent;
+    std::string processGpuUnavailableReason = "PID-scoped GPU Engine counter not sampled";
+    bool journalEnabled = false;
+    bool evidenceValid = true;
+    bool journalTruncated = false;
+    bool journalFinished = false;
+    std::uint64_t journalSamples = 0;
+    std::uint64_t journalBytes = 0;
+    std::string evidenceInvalidReason;
     std::string statusMessage;
     std::string errorDetail;
     RemoteRunMetadata remoteMetadata;
@@ -182,14 +236,25 @@ struct DecoderSnapshot
     std::uint64_t captureEpoch = 0;
     std::uint64_t captureEpochResets = 0;
     std::uint64_t captureArrivedFrames = 0;
+    std::uint64_t captureCopiedFrames = 0;
     std::uint64_t captureDeliveredFrames = 0;
     std::uint64_t captureDroppedFrames = 0;
+    std::uint64_t captureAcquireTimeouts = 0;
+    std::uint64_t capturePointerOnlyFrames = 0;
+    std::uint64_t captureAccumulatedFrames = 0;
+    std::uint64_t captureAccessLostEvents = 0;
+    std::uint64_t captureExpiredFrames = 0;
+    std::uint64_t captureStaleFrames = 0;
+    std::uint64_t captureCursorErasures = 0;
+    std::uint64_t captureFrameAgeHighWater100ns = 0;
+    std::uint64_t captureReadbackDropEvents = 0;
     std::uint64_t captureRecreates = 0;
     std::uint32_t captureDeviceRecoveries = 0;
     std::uint64_t telemetryCapturedFrames = 0;
     std::uint64_t telemetryDroppedFrames = 0;
     std::uint64_t fingerprintedFrames = 0;
     std::optional<double> captureFps;
+    std::optional<double> roiPixelDigestUniqueVisualFps;
     std::optional<double> uniqueVisualFps;
     std::uint64_t frameSequenceGapEvents = 0;
     std::uint64_t skippedFrameSequences = 0;
@@ -214,6 +279,80 @@ struct DecoderSnapshot
     std::uint64_t crcFailures = 0;
     std::uint64_t identityFailures = 0;
     std::uint64_t falseAcceptedCodewords = 0;
+    bool falseAcceptedCodewordsAvailable = false;
+    std::string falseAcceptedCodewordsUnavailableReason = "Production receive has no independent truth oracle";
+    std::uint64_t endToEndUniqueFrameSequences = 0;
+    std::optional<double> endToEndUniqueVisualFps;
+    std::uint64_t remoteDuplicateRefinementAttempts = 0;
+    std::uint64_t remoteDuplicateRefinementRecoveries = 0;
+    std::uint64_t remoteMetricFrames = 0;
+    std::uint64_t remoteMetricSamples = 0;
+    std::uint64_t remoteZeroMagnitudeMetrics = 0;
+    std::optional<double> remoteZeroMagnitudeMetricRate;
+    std::optional<double> remoteMinimumAbsoluteMetric;
+    std::optional<double> remoteMeanAbsoluteMetric;
+    std::uint64_t remoteVerifiedMetricFrames = 0;
+    std::uint64_t remoteRejectedMetricFrames = 0;
+    std::optional<double> remoteVerifiedMeanAbsoluteMetric;
+    std::optional<double> remoteRejectedMeanAbsoluteMetric;
+    std::optional<double> remoteRejectedZeroMagnitudeMetricRate;
+    std::uint64_t remoteFreshnessRegions = 0;
+    std::uint64_t remoteStaleRegions = 0;
+    std::optional<double> remoteStaleRegionRate;
+    std::uint64_t remoteFramesWithStaleRegions = 0;
+    std::uint64_t remoteFreshnessTagMismatches = 0;
+    std::uint64_t remoteFreshnessTagErasures = 0;
+    std::uint64_t remoteFreshnessErasedDataMetrics = 0;
+    std::uint64_t outerUniqueSymbols = 0;
+    std::uint64_t outerIdenticalDuplicateSymbols = 0;
+    std::uint64_t outerRecoveryAlreadyReadySymbols = 0;
+    std::uint64_t outerAlreadyCompletedSymbols = 0;
+    std::uint64_t outerRecoveryReadyEvents = 0;
+    std::uint64_t outerResourceRejections = 0;
+    std::uint64_t outerConflictRejections = 0;
+    std::uint64_t captureStallCount = 0;
+    std::uint64_t captureStallTotalMilliseconds = 0;
+    std::uint64_t captureStallMaximumMilliseconds = 0;
+    bool captureStallActive = false;
+    std::uint64_t visualStallCount = 0;
+    std::uint64_t visualStallTotalMilliseconds = 0;
+    std::uint64_t visualStallMaximumMilliseconds = 0;
+    bool visualStallActive = false;
+    std::optional<double> processCpuAveragePercent;
+    std::optional<double> processCpuPeakPercent;
+    std::optional<double> processCpuEquivalentCores;
+    std::string processCpuUnavailableReason;
+    std::optional<double> processGpuEngineAveragePercent;
+    std::optional<double> processGpuEnginePeakPercent;
+    std::string processGpuUnavailableReason = "PID-scoped GPU Engine counter not sampled";
+    bool journalEnabled = false;
+    bool evidenceValid = true;
+    bool journalTruncated = false;
+    bool journalFinished = false;
+    std::uint64_t journalSamples = 0;
+    std::uint64_t journalBytes = 0;
+    std::string evidenceInvalidReason;
+    bool monitorSafetyPreflightPassed = false;
+    std::uint64_t monitorSafetyRevalidationCount = 0;
+    std::string monitorSafetyStatus;
+    bool replayEnabled = false;
+    bool replayDiagnosticOnly = false;
+    bool replayCaptureOnly = false;
+    bool replayOfflineMode = false;
+    bool replayEvidenceValid = true;
+    bool replayFinalized = false;
+    std::uint64_t replayWrittenFrames = 0;
+    std::uint64_t replayDroppedFrames = 0;
+    std::uint64_t replayWrittenDemodObservations = 0;
+    std::uint64_t replayDroppedDemodObservations = 0;
+    std::uint32_t replayQueueHighWater = 0;
+    std::uint64_t replayFileBytes = 0;
+    std::uint64_t replayOfflineCaptureFrames = 0;
+    std::uint64_t replayOfflineDemodResults = 0;
+    std::uint64_t replayOfflineObservationComparisons = 0;
+    std::uint64_t replayOfflineObservationMismatches = 0;
+    std::string replayPath;
+    std::string replayError;
     std::uint32_t frameLeaseHighWater = 0;
     std::uint32_t demodPendingHighWater = 0;
     std::uint32_t resultQueueHighWater = 0;
@@ -319,6 +458,21 @@ struct VisualIdentitySnapshot
     std::optional<double> framesPerSecond;
 };
 
+struct StallIntervalSnapshot
+{
+    std::uint64_t count = 0;
+    std::uint64_t totalMilliseconds = 0;
+    std::uint64_t maximumMilliseconds = 0;
+    std::uint64_t currentMilliseconds = 0;
+    bool active = false;
+};
+
+struct ChannelStallSnapshot
+{
+    StallIntervalSnapshot capture;
+    StallIntervalSnapshot visual;
+};
+
 enum class VisualIdentityDisposition : std::uint8_t
 {
     Invalid,
@@ -327,14 +481,15 @@ enum class VisualIdentityDisposition : std::uint8_t
     Reordered
 };
 
-// FrameSequence is authoritative only inside one CaptureEpoch. A new epoch
-// establishes a fresh sequence baseline while the diagnostic counters remain
-// cumulative for the current application run.
+// FrameSequence is authoritative only inside one CaptureEpoch and one observed
+// visual-stream identity (normally Bootstrap SessionTag). A new epoch or stream
+// identity establishes a fresh sequence baseline while diagnostic counters
+// remain cumulative for the current application run.
 class VisualIdentityTracker
 {
 public:
     [[nodiscard]] VisualIdentityDisposition Observe(std::uint64_t sequence, std::uint64_t captureEpoch,
-        std::int64_t timestamp100ns) noexcept;
+        std::int64_t timestamp100ns, std::optional<std::uint64_t> streamIdentity = std::nullopt) noexcept;
     [[nodiscard]] VisualIdentitySnapshot GetSnapshot() const noexcept;
 
 private:
@@ -348,7 +503,67 @@ private:
     std::uint64_t skippedSequences_ = 0;
     std::uint64_t intervalCount_ = 0;
     std::uint64_t intervalTime100ns_ = 0;
+    std::optional<std::uint64_t> lastStreamIdentity_;
     bool hasBaseline_ = false;
+};
+
+// Telemetry only. A capture stall begins after one second without any new
+// capture observation. A visual stall begins after one second of continued
+// capture observations without a new legal FrameSequence. Neither state is an
+// admission or acceptance input.
+class ChannelStallTracker
+{
+public:
+    void Observe(std::uint64_t monotonicMilliseconds, std::uint64_t captureObservations,
+        std::uint64_t legalVisualObservations) noexcept;
+    void ResetDomain(std::uint64_t monotonicMilliseconds, std::uint64_t captureObservations,
+        std::uint64_t legalVisualObservations) noexcept;
+    void Finish(std::uint64_t monotonicMilliseconds) noexcept;
+    [[nodiscard]] ChannelStallSnapshot GetSnapshot() const noexcept;
+
+private:
+    static void StartInterval(StallIntervalSnapshot& interval, std::uint64_t startedMilliseconds,
+        std::uint64_t& storedStartedMilliseconds) noexcept;
+    static void EndInterval(StallIntervalSnapshot& interval, std::uint64_t endedMilliseconds,
+        std::uint64_t& startedMilliseconds) noexcept;
+    std::uint64_t lastObservationMilliseconds_ = 0;
+    std::uint64_t lastCaptureChangeMilliseconds_ = 0;
+    std::uint64_t lastVisualChangeMilliseconds_ = 0;
+    std::uint64_t captureStallStartedMilliseconds_ = 0;
+    std::uint64_t visualStallStartedMilliseconds_ = 0;
+    std::uint64_t lastCaptureObservations_ = 0;
+    std::uint64_t lastLegalVisualObservations_ = 0;
+    ChannelStallSnapshot snapshot_;
+    bool initialized_ = false;
+};
+
+struct RemoteDuplicateRefinementSnapshot
+{
+    std::uint64_t attempts = 0;
+    std::uint64_t recoveries = 0;
+    bool currentSequenceAdmitted = false;
+};
+
+// Remote codecs can progressively refine repeated presentations of one
+// FrameSequence. A later duplicate may be admitted only when the first capture
+// of that same identity produced no valid carrier. Successful admission makes
+// the identity terminal; no frame data is combined across observations.
+class RemoteDuplicateRefinementGate
+{
+public:
+    void StartSequence(std::uint64_t captureEpoch, std::uint64_t frameSequence) noexcept;
+    [[nodiscard]] bool ShouldAttemptDuplicate(std::uint64_t captureEpoch, std::uint64_t frameSequence,
+        bool hasAcceptedCarrier) noexcept;
+    [[nodiscard]] bool MarkAdmission(std::uint64_t captureEpoch, std::uint64_t frameSequence,
+        bool duplicateRefinement) noexcept;
+    void ResetEpoch() noexcept;
+    [[nodiscard]] RemoteDuplicateRefinementSnapshot GetSnapshot() const noexcept;
+
+private:
+    std::uint64_t currentCaptureEpoch_ = 0;
+    std::uint64_t currentFrameSequence_ = 0;
+    RemoteDuplicateRefinementSnapshot snapshot_;
+    bool hasCurrentSequence_ = false;
 };
 
 // Uses verified raw-byte mutations only. Capture frames, symbols, sender rate,
@@ -407,6 +622,7 @@ private:
 [[nodiscard]] const char* GetCaptureBackendName(CaptureBackend backend) noexcept;
 [[nodiscard]] const char* GetCompressionCodecName(pbprotocol::CompressionCodec codec) noexcept;
 [[nodiscard]] const char* GetOuterFecModeName(pbprotocol::OuterFecMode mode) noexcept;
+[[nodiscard]] const char* GetMetadataProvenanceName(MetadataProvenance provenance) noexcept;
 [[nodiscard]] RuntimeCapabilities GetRuntimeCapabilities() noexcept;
 [[nodiscard]] bool IsEncoderStateActive(EncoderState state) noexcept;
 [[nodiscard]] bool IsDecoderStateActive(DecoderState state) noexcept;

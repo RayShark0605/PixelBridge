@@ -13,6 +13,8 @@ if(WIN32)
         capture_bootstrap_cli.cpp bootstrap_diagnostic.cpp capture_bootstrap_telemetry.cpp
         decoder_runtime_cli.cpp
         decoder_application_controller.cpp decoder_application_controller.h decoder_gui.cpp decoder_gui.h
+        "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.cpp"
+        "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.h"
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
     target_link_libraries(PixelBridgeDecoder PRIVATE PB::PBScreenRegion PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation PB::PBDesktopLevelsReference PB::PBTelemetry
         PB::PBApplication Qt${QT_VERSION_MAJOR}::Widgets)

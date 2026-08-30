@@ -625,6 +625,11 @@ std::uint64_t DirectRepeatDecoder::GetBoundBlockCount() const noexcept
     return implementation_->blockCount;
 }
 
+std::uint64_t DirectRepeatDecoder::GetAcceptedBlockCount() const noexcept
+{
+    return implementation_ == nullptr ? 0 : implementation_->receivedBlockCount;
+}
+
 OuterFecResult<DecodeDisposition> DirectRepeatDecoder::DecodeBlock(
     const std::uint32_t outerBlockId,
     const std::uint32_t payloadBytes,

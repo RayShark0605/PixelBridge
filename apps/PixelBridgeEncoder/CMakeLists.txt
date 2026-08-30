@@ -10,6 +10,8 @@ target_link_libraries(PixelBridgeEncoder
 if(WIN32)
     target_sources(PixelBridgeEncoder PRIVATE presentation_cli.cpp encoder_runtime_cli.cpp encoder_application_controller.cpp
         encoder_application_controller.h encoder_gui.cpp encoder_gui.h
+        "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.cpp"
+        "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.h"
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
     target_link_libraries(PixelBridgeEncoder PRIVATE PB::PBRenderD3D PB::PBModulation PB::PBDesktopLevelsReference
         PB::PBApplication Qt${QT_VERSION_MAJOR}::Widgets)

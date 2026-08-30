@@ -157,6 +157,15 @@ void CheckInitialContract(const DataWindowSnapshot& snapshot, const DataWindowCo
             "physical geometry readback mismatch");
 }
 
+void CheckNoActivateWindow(const HWND handle)
+{
+    Require(handle != nullptr && IsWindow(handle) != FALSE, "Data Window HWND is unavailable");
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR extendedStyle = GetWindowLongPtrW(handle, GWL_EXSTYLE);
+    Require(extendedStyle != 0 || GetLastError() == ERROR_SUCCESS, "Data Window extended style readback failed");
+    Require((extendedStyle & WS_EX_NOACTIVATE) != 0, "Data Window can activate and steal the user's foreground focus");
+}
+
 void ResizeAndRestore(DataWindow& window, const DataWindowConfig& config, Evidence& evidence)
 {
     const HWND handle = reinterpret_cast<HWND>(DataWindowTestAccess::GetWindowToken(window));
@@ -211,6 +220,7 @@ void CheckNativeSwapChainReplacement(const bool warp, Evidence& evidence)
     const auto initialized = scope.backend->Initialize(config);
     Require(static_cast<bool>(initialized), "replacement fixture initialize: " + Describe(initialized));
     const std::uintptr_t originalWindow = scope.backend->GetWindowToken();
+    CheckNoActivateWindow(reinterpret_cast<HWND>(originalWindow));
     for (unsigned int iteration = 0; iteration < 4; iteration++)
     {
         if (iteration != 0)
@@ -338,6 +348,7 @@ void RunLive(Evidence& evidence)
     config.clientOrigin = GetOrigin(monitors[0], config.width, config.height);
     const auto window = CreateDataWindow(config);
     CheckInitialContract(window->GetSnapshot(), config);
+    CheckNoActivateWindow(reinterpret_cast<HWND>(DataWindowTestAccess::GetWindowToken(*window)));
     const std::size_t pitch = static_cast<std::size_t>(config.width) * 4;
     auto pixels = MakePixelOracle(config.width, config.height, pitch, 9);
     std::uint64_t sequence = 0;

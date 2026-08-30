@@ -18,6 +18,7 @@ target_sources(PBModulation
         src/desktop_levels_internal.h
         src/shape_chroma.cpp
         src/shape_chroma_internal.h
+        src/remote_visual.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
@@ -29,7 +30,8 @@ target_sources(PBModulation
             include/pbmodulation/local_desktop_bootstrap.h
             include/pbmodulation/local_desktop_decode.h
             include/pbmodulation/desktop_levels.h
-            include/pbmodulation/shape_chroma.h)
+            include/pbmodulation/shape_chroma.h
+            include/pbmodulation/remote_visual.h)
 
 target_include_directories(PBModulation
     PUBLIC

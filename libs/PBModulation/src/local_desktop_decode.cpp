@@ -1080,6 +1080,11 @@ LocalDesktopObservation detail::DecodeLocalDesktopFixedCanvasScaffold(const Luma
         {
             result.erasure = Erasure::InvalidGeometry;
         }
+        else if (binding == LocalDesktopBinding::RemoteVisual &&
+            ValidateRemoteVisualGeometry(result.geometry) != RemoteVisualErasure::None)
+        {
+            result.erasure = Erasure::InvalidGeometry;
+        }
     }
     if (!result.IsAccepted())
     {
@@ -1109,6 +1114,10 @@ LocalDesktopObservation DecodeLocalDesktopFixedCanvasBootstrap(const LumaView& v
     else if (binding == LocalDesktopBootstrapBinding{kShapeChromaProfileId, kShapeChromaLayoutVersion})
     {
         family = detail::LocalDesktopBinding::ShapeChroma;
+    }
+    else if (binding == LocalDesktopBootstrapBinding{kRemoteVisualProfileId, kRemoteVisualLayoutVersion})
+    {
+        family = detail::LocalDesktopBinding::RemoteVisual;
     }
     else
     {

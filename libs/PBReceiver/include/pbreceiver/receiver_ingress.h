@@ -90,11 +90,23 @@ enum class ReceiverDataDisposition : std::uint8_t
     EncodedSegmentReady
 };
 
+enum class ReceiverOuterSymbolAdmission : std::uint8_t
+{
+    NotApplicable,
+    Unique,
+    IdenticalDuplicate,
+    RecoveryAlreadyReady,
+    AlreadyCompleted
+};
+
 struct ReceiverDataAdmission
 {
     ReceiverDataDisposition disposition =
         ReceiverDataDisposition::AcceptedNeedMore;
     std::optional<ReceiverCompletedSegment> completedSegment;
+    // Non-wire admission telemetry. Unique is emitted only when the bounded
+    // orphan cache or bound Outer decoder retained a new OuterBlockId.
+    ReceiverOuterSymbolAdmission outerSymbolAdmission = ReceiverOuterSymbolAdmission::NotApplicable;
 };
 
 struct ReceiverControlAdmission

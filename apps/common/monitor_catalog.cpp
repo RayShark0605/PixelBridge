@@ -1,8 +1,10 @@
 #include "monitor_catalog.h"
 
 #include <ShellScalingApi.h>
+#include <wrl/client.h>
 
 #include <array>
+#include <cwchar>
 #include <new>
 
 namespace pbapp
@@ -18,6 +20,58 @@ struct EnumerationContext
     std::size_t count = 0;
     MonitorCatalogStatus status;
 };
+
+bool GetDxgiOutputIdentity(const wchar_t* deviceName, DXGI_MODE_ROTATION& rotation, LUID& adapterLuid) noexcept
+{
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+    {
+        return false;
+    }
+    for (UINT adapterIndex = 0;; adapterIndex++)
+    {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        const HRESULT adapterResult = factory->EnumAdapters1(adapterIndex, &adapter);
+        if (adapterResult == DXGI_ERROR_NOT_FOUND)
+        {
+            break;
+        }
+        if (FAILED(adapterResult))
+        {
+            return false;
+        }
+        DXGI_ADAPTER_DESC1 adapterDescription{};
+        if (FAILED(adapter->GetDesc1(&adapterDescription)))
+        {
+            return false;
+        }
+        for (UINT outputIndex = 0;; outputIndex++)
+        {
+            Microsoft::WRL::ComPtr<IDXGIOutput> output;
+            const HRESULT outputResult = adapter->EnumOutputs(outputIndex, &output);
+            if (outputResult == DXGI_ERROR_NOT_FOUND)
+            {
+                break;
+            }
+            if (FAILED(outputResult))
+            {
+                return false;
+            }
+            DXGI_OUTPUT_DESC outputDescription{};
+            if (FAILED(output->GetDesc(&outputDescription)))
+            {
+                return false;
+            }
+            if (std::wcscmp(outputDescription.DeviceName, deviceName) == 0)
+            {
+                rotation = outputDescription.Rotation;
+                adapterLuid = adapterDescription.AdapterLuid;
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 BOOL CALLBACK EnumerateMonitor(const HMONITOR monitor, HDC, LPRECT,
     const LPARAM parameter) noexcept
@@ -59,6 +113,14 @@ BOOL CALLBACK EnumerateMonitor(const HMONITOR monitor, HDC, LPRECT,
             static_cast<std::int32_t>(modeResult == FALSE ? GetLastError() : ERROR_INVALID_DATA)};
         return FALSE;
     }
+    DXGI_MODE_ROTATION rotation = DXGI_MODE_ROTATION_UNSPECIFIED;
+    LUID adapterLuid{};
+    if (!GetDxgiOutputIdentity(monitorInfo.szDevice, rotation, adapterLuid) ||
+        rotation < DXGI_MODE_ROTATION_IDENTITY || rotation > DXGI_MODE_ROTATION_ROTATE270)
+    {
+        context.status = {MonitorCatalogError::MetadataUnavailable, ERROR_NOT_FOUND};
+        return FALSE;
+    }
     MonitorInfo& candidate = context.monitors[context.count];
     candidate.monitor = monitor;
     try
@@ -75,6 +137,8 @@ BOOL CALLBACK EnumerateMonitor(const HMONITOR monitor, HDC, LPRECT,
     candidate.dpiX = dpiX;
     candidate.dpiY = dpiY;
     candidate.refreshRate = mode.dmDisplayFrequency;
+    candidate.rotation = rotation;
+    candidate.adapterLuid = adapterLuid;
     candidate.primary = (monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0;
     const std::optional<POINT> phase1CanvasOrigin = GetPhase1CanvasOrigin(candidate.physicalRect,
         candidate.workRect);
@@ -158,6 +222,140 @@ MonitorCatalogStatus EnumerateMonitors(std::vector<MonitorInfo>& output) noexcep
         return {MonitorCatalogError::OutOfMemory, ERROR_NOT_ENOUGH_MEMORY};
     }
     return {};
+}
+
+bool RectContains(const RECT& container, const RECT& target) noexcept
+{
+    const bool validContainer = container.right > container.left && container.bottom > container.top;
+    const bool validTarget = target.right > target.left && target.bottom > target.top;
+    return validContainer && validTarget && target.left >= container.left && target.top >= container.top &&
+        target.right <= container.right && target.bottom <= container.bottom;
+}
+
+bool RectIntersects(const RECT& left, const RECT& right) noexcept
+{
+    if (left.right <= left.left || left.bottom <= left.top || right.right <= right.left || right.bottom <= right.top)
+    {
+        return false;
+    }
+    return left.left < right.right && right.left < left.right && left.top < right.bottom && right.top < left.bottom;
+}
+
+bool SameMonitorIdentity(const MonitorInfo& left, const MonitorInfo& right) noexcept
+{
+    return left.monitor == right.monitor && left.deviceName == right.deviceName &&
+        EqualRect(&left.physicalRect, &right.physicalRect) != FALSE &&
+        left.dpiX == right.dpiX && left.dpiY == right.dpiY && left.refreshRate == right.refreshRate &&
+        left.rotation == right.rotation && left.adapterLuid.HighPart == right.adapterLuid.HighPart &&
+        left.adapterLuid.LowPart == right.adapterLuid.LowPart && left.primary == right.primary;
+}
+
+MonitorSafetyStatus ValidateMonitorSafetyTarget(const MonitorSafetySelection& selection,
+    const RECT& target, const HMONITOR targetMonitor) noexcept
+{
+    const MonitorInfo& protectedMonitor = selection.protectedMonitor;
+    const MonitorInfo& experimentMonitor = selection.experimentMonitor;
+    if (protectedMonitor.monitor == nullptr || experimentMonitor.monitor == nullptr ||
+        protectedMonitor.deviceName.empty() || experimentMonitor.deviceName.empty() ||
+        !RectContains(protectedMonitor.physicalRect, protectedMonitor.physicalRect) ||
+        !RectContains(experimentMonitor.physicalRect, experimentMonitor.physicalRect))
+    {
+        return {MonitorSafetyError::InvalidSelection, {}};
+    }
+    if (protectedMonitor.monitor == experimentMonitor.monitor || protectedMonitor.deviceName == experimentMonitor.deviceName ||
+        RectIntersects(protectedMonitor.physicalRect, experimentMonitor.physicalRect))
+    {
+        return {MonitorSafetyError::SameMonitor, {}};
+    }
+    if (!RectContains(experimentMonitor.physicalRect, target))
+    {
+        return {MonitorSafetyError::TargetOutsideExperimentMonitor, {}};
+    }
+    if (RectIntersects(protectedMonitor.physicalRect, target))
+    {
+        return {MonitorSafetyError::TargetIntersectsProtectedMonitor, {}};
+    }
+    if (targetMonitor != nullptr && targetMonitor != experimentMonitor.monitor)
+    {
+        return {MonitorSafetyError::TargetMonitorMismatch, {}};
+    }
+    return {};
+}
+
+MonitorSafetyStatus ResolveMonitorSafetySelection(const std::wstring_view protectedDeviceName,
+    const std::wstring_view experimentDeviceName, MonitorSafetySelection& output) noexcept
+{
+    if (protectedDeviceName.empty() || experimentDeviceName.empty() || protectedDeviceName == experimentDeviceName)
+    {
+        return {MonitorSafetyError::InvalidSelection, {}};
+    }
+    std::vector<MonitorInfo> monitors;
+    const MonitorCatalogStatus catalog = EnumerateMonitors(monitors);
+    if (!catalog)
+    {
+        return {MonitorSafetyError::CatalogFailure, catalog};
+    }
+    const auto Find = [&](const std::wstring_view deviceName) -> const MonitorInfo*
+    {
+        for (const MonitorInfo& monitor : monitors)
+        {
+            if (monitor.deviceName == deviceName)
+            {
+                return &monitor;
+            }
+        }
+        return nullptr;
+    };
+    const MonitorInfo* const protectedMonitor = Find(protectedDeviceName);
+    const MonitorInfo* const experimentMonitor = Find(experimentDeviceName);
+    if (protectedMonitor == nullptr || experimentMonitor == nullptr)
+    {
+        return {MonitorSafetyError::InvalidSelection, {}};
+    }
+    MonitorSafetySelection candidate{*protectedMonitor, *experimentMonitor};
+    const MonitorSafetyStatus safety = ValidateMonitorSafetyTarget(candidate, experimentMonitor->physicalRect,
+        experimentMonitor->monitor);
+    if (!safety)
+    {
+        return safety;
+    }
+    output = std::move(candidate);
+    return {};
+}
+
+MonitorSafetyStatus RevalidateMonitorSafetySelection(const MonitorSafetySelection& selection) noexcept
+{
+    std::vector<MonitorInfo> monitors;
+    const MonitorCatalogStatus catalog = EnumerateMonitors(monitors);
+    if (!catalog)
+    {
+        return {MonitorSafetyError::CatalogFailure, catalog};
+    }
+    bool protectedMatched = false;
+    bool experimentMatched = false;
+    for (const MonitorInfo& monitor : monitors)
+    {
+        protectedMatched = protectedMatched || SameMonitorIdentity(selection.protectedMonitor, monitor);
+        experimentMatched = experimentMatched || SameMonitorIdentity(selection.experimentMonitor, monitor);
+    }
+    return protectedMatched && experimentMatched ? MonitorSafetyStatus{} :
+        MonitorSafetyStatus{MonitorSafetyError::TopologyChanged, {}};
+}
+
+const char* GetMonitorSafetyErrorName(const MonitorSafetyError error) noexcept
+{
+    switch (error)
+    {
+    case MonitorSafetyError::None: return "None";
+    case MonitorSafetyError::InvalidSelection: return "InvalidSelection";
+    case MonitorSafetyError::SameMonitor: return "SameMonitor";
+    case MonitorSafetyError::TargetOutsideExperimentMonitor: return "TargetOutsideExperimentMonitor";
+    case MonitorSafetyError::TargetIntersectsProtectedMonitor: return "TargetIntersectsProtectedMonitor";
+    case MonitorSafetyError::TargetMonitorMismatch: return "TargetMonitorMismatch";
+    case MonitorSafetyError::TopologyChanged: return "TopologyChanged";
+    case MonitorSafetyError::CatalogFailure: return "CatalogFailure";
+    }
+    return "Unknown";
 }
 
 } // namespace pbapp
