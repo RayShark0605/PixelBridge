@@ -5802,6 +5802,37 @@ Gate：
 
 ---
 
+## Phase 1.6：RemoteVisual ≤5 Hz 独立里程碑
+
+RemoteVisual 不得继续沿用 LocalDesktop 的 60 unique FPS 假设。完整逻辑 raster 的更新率固定为 1..5 Hz；`0` 所代表的 presentation-driven 更新对 RemoteVisual fail closed。重复 Present 只延长同一 raster 的驻留时间，不生成新 Transport block 或 Fountain equation。
+
+首个 CPU/reference 候选为 `PB-RemoteVisual-LF4-X1`：
+
+- 独立 profile/layout；复用现有四角 locator、双 Bootstrap、timing、freshness region、Transport、Robust QC-LDPC、Outer FEC、Receiver 和 WholeFileDigest；
+- 每个 8×8 tile 使用 4×4 balanced Walsh bitmap，2×2 pixels/chip，16 symbols/4 bits；不依赖字体、Unicode、色度或连续角度；
+- 16 个模板各有 8 high/8 low chips，pairwise Hamming distance ≥8；
+- 四个 plane 分别映射到四个未改变的 16,200-bit Robust codeword；每帧 8,100 coded bytes、5,256 bytes Transport payload ceiling；
+- locator 输出连续 axis-aligned origin/scale，CPU 候选范围每轴 0.5..2.0，不做整帧 resize；
+- 任一 freshness tag 不一致或低置信时，整个 128×128 region 的四个 plane 置 zero soft metric，禁止跨 FrameSequence 拼接；
+- 当前 production D3D11 strict-1:1 path 不得静默解释该新 layout；先通过 CPU/simulator/replay Gate，再实现直接 texture sampling 的 GPU path。
+
+1/2/5 Hz 的理论 Transport ceiling 分别为 5,256 / 10,512 / 26,280 B/s；这不是 `VerifiedEncodedGoodput`。Control、Carousel、Outer FEC、重复/丢帧和最终 digest 的开销必须单独计量。完整研究、实现状态与 Gate 见 `docs/REMOTE_VISUAL_LOW_FPS_TECHNICAL_ROUTE.md`。
+
+Gate：
+
+```text
+logical visual FPS <= 5 and nonzero
++ independent scale/filter fixtures from 0.5..2.0 recover exact coded bytes
++ stale codec regions become soft erasures, never high-confidence mixed-frame bits
++ shared QC-LDPC/Transport/Receiver truth boundary remains unchanged
++ real two-machine replay reproduces final size/SHA-256/digest
++ no ProtectedMonitor intersection or native display-setting mutation
+```
+
+该里程碑通过前，LF4 只能标记为 Experimental；不能由 CPU 合成、static build 或 WARP 结果推导真实远控 field certification。
+
+---
+
 ## Phase 2：Signal Profile、Interleave、Soft Demod 与 FEC/调度 Gate
 
 实现：
@@ -6314,6 +6345,20 @@ PixelBridge 的核心技术价值集中在：
 ---
 
 # 46. 主要参考资料
+
+## RemoteVisual 低刷新率 / 二维码与视觉码
+
+- Microsoft Remote Desktop graphics encoding: https://learn.microsoft.com/en-us/azure/virtual-desktop/graphics-encoding
+- MS-RDPEGFX: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/31c6e2b1-335b-4a75-9454-bb2309958c21
+- QR Code finder/version/module guidance:
+  - https://www.qrcode.com/en/about/index.html
+  - https://www.qrcode.com/en/about/version.html/index.html
+  - https://www.qrcode.com/en/howto/cell.html/index.html
+- AprilTag: https://april.eecs.umich.edu/pdfs/olson2011a.pdf
+- JAB Code: https://github.com/jabcode/jabcode
+- Microsoft High Capacity Color Barcode: https://www.microsoft.com/en-us/research/project/high-capacity-color-barcodes-hccb/
+- PixNet: https://people.csail.mit.edu/nabeel/pixnet-mobicom10.pdf
+- RDCode: https://mashuai-ms.github.io/pubs/mobicom2014.pdf
 
 ## libcimbar
 
