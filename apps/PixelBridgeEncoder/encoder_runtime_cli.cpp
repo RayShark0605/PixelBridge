@@ -330,6 +330,10 @@ struct Options
         {
             options.controlRepetitions = 12;
         }
+        if (options.logicalVisualFps == 0 || options.logicalVisualFps > 5)
+        {
+            return false;
+        }
     }
     if ((options.remoteChannel && options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
         (!options.remoteChannel && !options.remoteMetadataPath.empty()))
@@ -401,7 +405,7 @@ struct Options
 void Usage()
 {
     std::cerr << "usage: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote "
-                 "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on --origin X Y --seconds 1..600 [--logical-fps 0..240] "
+                 "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on --origin X Y --seconds 1..600 [--logical-fps 0..240; remote=1..5] "
                  "[--control-repetitions 1..64] [--run-id 32_LOWERCASE_HEX] "
                  "[--compression-level 1..22] [--journal NEW_PATH] [--report NEW_PATH]\n";
 }

@@ -44,10 +44,16 @@ constexpr DiagnosticBinding shapeChromaBinding{pbmodulation::kShapeChromaProfile
 constexpr DiagnosticBinding remoteVisualBinding{pbmodulation::kRemoteVisualProfileId, pbmodulation::kRemoteVisualLayoutVersion,
     pbmodulation::kRemoteVisualDataBytes, pbmodulation::kRemoteVisualCodewords, pbmodulation::kRemoteVisualPaddingBytes,
     "PB-RemoteVisual-X2-Data"};
+constexpr DiagnosticBinding remoteVisualLowFpsBinding{pbmodulation::kRemoteVisualLowFpsProfileId,
+    pbmodulation::kRemoteVisualLowFpsLayoutVersion, pbmodulation::kRemoteVisualLowFpsDataBytes,
+    pbmodulation::kRemoteVisualLowFpsCodewords, pbmodulation::kRemoteVisualLowFpsPaddingBytes,
+    "PB-RemoteVisual-LF4-X1-Data"};
 static_assert(desktop2Binding.codewords * kCodewordBytes + desktop2Binding.paddingBytes == desktop2Binding.dataBytes);
 static_assert(desktop4Binding.codewords * kCodewordBytes + desktop4Binding.paddingBytes == desktop4Binding.dataBytes);
 static_assert(shapeChromaBinding.codewords * kCodewordBytes + shapeChromaBinding.paddingBytes == shapeChromaBinding.dataBytes);
 static_assert(remoteVisualBinding.codewords * kCodewordBytes + remoteVisualBinding.paddingBytes == remoteVisualBinding.dataBytes);
+static_assert(remoteVisualLowFpsBinding.codewords * kCodewordBytes + remoteVisualLowFpsBinding.paddingBytes ==
+    remoteVisualLowFpsBinding.dataBytes);
 
 bool Overlap(const std::span<const std::byte> first, const std::span<const std::byte> second) noexcept
 {
@@ -90,8 +96,12 @@ const DiagnosticBinding* ParseBinding(const std::span<const std::byte> bytes, pb
     {
         return &shapeChromaBinding;
     }
-    return record.visualProfileId == remoteVisualBinding.profileId && record.visualLayoutVersion == remoteVisualBinding.layoutVersion ?
-        &remoteVisualBinding : nullptr;
+    if (record.visualProfileId == remoteVisualBinding.profileId && record.visualLayoutVersion == remoteVisualBinding.layoutVersion)
+    {
+        return &remoteVisualBinding;
+    }
+    return record.visualProfileId == remoteVisualLowFpsBinding.profileId &&
+        record.visualLayoutVersion == remoteVisualLowFpsBinding.layoutVersion ? &remoteVisualLowFpsBinding : nullptr;
 }
 
 void GeneratePayload(const std::string_view domain, const std::span<const std::byte> bootstrapRecord, const std::uint32_t slot,
@@ -313,6 +323,7 @@ struct ReferenceChannel::Implementation
     pbmodulation::DesktopLevelsWorkspace modulation;
     pbmodulation::ShapeChromaWorkspace shapeChroma;
     pbmodulation::RemoteVisualWorkspace remoteVisual;
+    pbmodulation::RemoteVisualLowFpsWorkspace remoteVisualLowFps;
     pbinnerfec::QcLdpcDecoder decoder;
     std::array<std::byte, pbmodulation::kDesktopLevelsMaximumDataBytes> hard{};
     std::array<float, pbmodulation::kDesktopLevelsMaximumBits> soft{};
@@ -322,11 +333,12 @@ struct ReferenceChannel::Implementation
     std::array<std::int16_t, kCodewordBits> llr{};
     std::array<AcceptedTransportBlock, kMaximumCodewords> accepted{};
     std::size_t acceptedCount = 0;
-    std::array<AcceptedRemoteControlBlock, 1> acceptedRemoteControl{};
+    std::array<AcceptedRemoteControlBlock, kMaximumCodewords> acceptedRemoteControl{};
     std::size_t acceptedRemoteControlCount = 0;
     bool histogramValid = false;
     bool shapeHistogramValid = false;
     bool remoteVisualHistogramValid = false;
+    bool remoteVisualLowFpsHistogramValid = false;
 };
 
 ReferenceChannel::ReferenceChannel() noexcept = default;
@@ -341,6 +353,7 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
     if (maximumBytes < kProcessingReservationBytes ||
         sizeof(Implementation) + pbmodulation::DesktopLevelsWorkspace::RequiredBytes() + pbmodulation::ShapeChromaWorkspace::RequiredBytes() +
             pbmodulation::RemoteVisualWorkspace::RequiredBytes() +
+            pbmodulation::RemoteVisualLowFpsWorkspace::RequiredBytes() +
             2 * 1024 * 1024 > kProcessingReservationBytes)
     {
         return ModulationResult<ReferenceChannel>::Failure(ModulationErrorCode::InvalidInput, 0);
@@ -348,8 +361,9 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
     auto modulation = pbmodulation::DesktopLevelsWorkspace::Create(kProcessingReservationBytes);
     auto shapeChroma = pbmodulation::ShapeChromaWorkspace::Create(kProcessingReservationBytes);
     auto remoteVisual = pbmodulation::RemoteVisualWorkspace::Create(kProcessingReservationBytes);
+    auto remoteVisualLowFps = pbmodulation::RemoteVisualLowFpsWorkspace::Create(kProcessingReservationBytes);
     auto decoder = pbinnerfec::QcLdpcDecoder::Create(pbinnerfec::kInnerFecProfileIdRobust);
-    if (!modulation || !shapeChroma || !remoteVisual || !decoder)
+    if (!modulation || !shapeChroma || !remoteVisual || !remoteVisualLowFps || !decoder)
     {
         return ModulationResult<ReferenceChannel>::Failure(ModulationErrorCode::MemoryAllocationFailure, 0);
     }
@@ -362,6 +376,7 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
     result.implementation_->modulation = std::move(modulation).Value();
     result.implementation_->shapeChroma = std::move(shapeChroma).Value();
     result.implementation_->remoteVisual = std::move(remoteVisual).Value();
+    result.implementation_->remoteVisualLowFps = std::move(remoteVisualLowFps).Value();
     result.implementation_->decoder = std::move(decoder).Value();
     return ModulationResult<ReferenceChannel>::Success(std::move(result));
 }
@@ -378,6 +393,7 @@ ReferenceObservation ReferenceChannel::Decode(const pbmodulation::LumaView& view
     state.histogramValid = false;
     state.shapeHistogramValid = false;
     state.remoteVisualHistogramValid = false;
+    state.remoteVisualLowFpsHistogramValid = false;
     state.acceptedCount = 0;
     state.acceptedRemoteControlCount = 0;
     result.modulation = pbmodulation::DecodeDesktopLevelsFrame(view, state.modulation, state.hard, state.soft, policy);
@@ -403,6 +419,7 @@ ShapeChromaReferenceObservation ReferenceChannel::DecodeShapeChroma(const pbmodu
     state.histogramValid = false;
     state.shapeHistogramValid = false;
     state.remoteVisualHistogramValid = false;
+    state.remoteVisualLowFpsHistogramValid = false;
     state.acceptedCount = 0;
     state.acceptedRemoteControlCount = 0;
     result.modulation = pbmodulation::DecodeShapeChromaFrame(view, state.shapeChroma, state.hard, state.soft, policy);
@@ -429,6 +446,7 @@ RemoteVisualReferenceObservation ReferenceChannel::DecodeRemoteVisual(const pbmo
     state.histogramValid = false;
     state.shapeHistogramValid = false;
     state.remoteVisualHistogramValid = false;
+    state.remoteVisualLowFpsHistogramValid = false;
     state.acceptedCount = 0;
     state.acceptedRemoteControlCount = 0;
     result.modulation = pbmodulation::DecodeRemoteVisualFrame(view, state.remoteVisual, state.hard, state.soft, policy);
@@ -438,6 +456,34 @@ RemoteVisualReferenceObservation ReferenceChannel::DecodeRemoteVisual(const pbmo
             std::span(state.hard).first(result.modulation.dataBytes),
             std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
         state.remoteVisualHistogramValid = result.evaluation.evaluated;
+    }
+    return result;
+}
+
+RemoteVisualLowFpsReferenceObservation ReferenceChannel::DecodeRemoteVisualLowFps(const pbmodulation::LumaView& view,
+    const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy) noexcept
+{
+    RemoteVisualLowFpsReferenceObservation result;
+    if (!implementation_)
+    {
+        result.modulation.erasure = pbmodulation::RemoteVisualLowFpsErasure::WorkspaceUnavailable;
+        return result;
+    }
+    auto& state = *implementation_;
+    state.histogramValid = false;
+    state.shapeHistogramValid = false;
+    state.remoteVisualHistogramValid = false;
+    state.remoteVisualLowFpsHistogramValid = false;
+    state.acceptedCount = 0;
+    state.acceptedRemoteControlCount = 0;
+    result.modulation = pbmodulation::DecodeRemoteVisualLowFpsFrame(view, state.remoteVisualLowFps,
+        state.hard, state.soft, policy);
+    if (result.modulation.IsAccepted())
+    {
+        result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44,
+            std::span(state.hard).first(result.modulation.dataBytes),
+            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
+        state.remoteVisualLowFpsHistogramValid = result.evaluation.evaluated;
     }
     return result;
 }
@@ -454,6 +500,7 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
     state.histogramValid = false;
     state.shapeHistogramValid = false;
     state.remoteVisualHistogramValid = false;
+    state.remoteVisualLowFpsHistogramValid = false;
     state.acceptedCount = 0;
     state.acceptedRemoteControlCount = 0;
     pbprotocol::BootstrapRecord record;
@@ -522,8 +569,9 @@ FrameEvaluation ReferenceChannel::EvaluateCodewords(const std::span<const std::b
         if (!block)
         {
             AcceptedRemoteControlBlock control;
-            const RemoteControlExtractResult controlResult = mode == EvaluationMode::Transport &&
-                profile->profileId == remoteVisualBinding.profileId ?
+            const bool remoteVisualCarrier = profile->profileId == remoteVisualBinding.profileId ||
+                profile->profileId == remoteVisualLowFpsBinding.profileId;
+            const RemoteControlExtractResult controlResult = mode == EvaluationMode::Transport && remoteVisualCarrier ?
                 ExtractRemoteControl(recovered.first(kInfoBytes), record.sessionTag, control) :
                 RemoteControlExtractResult::Invalid;
             if (controlResult == RemoteControlExtractResult::Accepted)
@@ -630,6 +678,12 @@ std::span<const std::uint64_t> ReferenceChannel::GetRemoteVisualMarginHistogram(
 {
     return implementation_ && implementation_->remoteVisualHistogramValid ?
         implementation_->remoteVisual.GetMarginHistogram() : std::span<const std::uint64_t>{};
+}
+
+std::span<const std::uint64_t> ReferenceChannel::GetRemoteVisualLowFpsMarginHistogram() const noexcept
+{
+    return implementation_ && implementation_->remoteVisualLowFpsHistogramValid ?
+        implementation_->remoteVisualLowFps.GetMarginHistogram() : std::span<const std::uint64_t>{};
 }
 
 std::span<const AcceptedTransportBlock> ReferenceChannel::GetAcceptedTransportBlocks() const noexcept

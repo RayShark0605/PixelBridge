@@ -29,9 +29,9 @@ struct EncoderConfig
     std::optional<pbrenderd3d::PhysicalPoint> monitorClientOrigin;
     std::string runId;
     RemoteRunMetadata remoteMetadata;
-    // Zero preserves the historical presentation-driven cadence. Nonzero is
-    // the maximum logical-raster update rate and therefore establishes a
-    // minimum stable dwell interval; it never changes the encoded bytes.
+    // Zero preserves the historical presentation-driven cadence for local
+    // profiles only. RemoteVisual requires 1..5 and therefore establishes at
+    // least 200 ms stable dwell; it never changes the encoded bytes.
     std::uint32_t logicalVisualFps = 0;
     std::uint32_t controlRepetitions = 4;
 };

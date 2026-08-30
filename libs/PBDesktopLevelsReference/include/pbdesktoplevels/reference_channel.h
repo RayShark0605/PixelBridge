@@ -3,6 +3,7 @@
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/reference_visual_profile.h"
 #include "pbmodulation/remote_visual.h"
+#include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
 
 #include <array>
@@ -78,6 +79,12 @@ struct RemoteVisualReferenceObservation
     FrameEvaluation evaluation;
 };
 
+struct RemoteVisualLowFpsReferenceObservation
+{
+    pbmodulation::RemoteVisualLowFpsObservation modulation;
+    FrameEvaluation evaluation;
+};
+
 struct AcceptedTransportBlock
 {
     std::uint32_t slot = 0;
@@ -123,6 +130,8 @@ public:
         const pbmodulation::ShapeChromaDecodePolicy& policy = {}) noexcept;
     [[nodiscard]] RemoteVisualReferenceObservation DecodeRemoteVisual(const pbmodulation::LumaView& view,
         const pbmodulation::RemoteVisualDecodePolicy& policy = {}) noexcept;
+    [[nodiscard]] RemoteVisualLowFpsReferenceObservation DecodeRemoteVisualLowFps(const pbmodulation::LumaView& view,
+        const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy = {}) noexcept;
     // Shared post-demod pipeline, also useful for independent channel tests.
     // No expected payload is accepted as an argument.
     // DiagnosticTruth additionally compares against the deterministic Gate
@@ -137,6 +146,7 @@ public:
     [[nodiscard]] std::span<const std::uint64_t> GetShapeMarginHistogram() const noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetChromaMarginHistogram() const noexcept;
     [[nodiscard]] std::span<const std::uint64_t> GetRemoteVisualMarginHistogram() const noexcept;
+    [[nodiscard]] std::span<const std::uint64_t> GetRemoteVisualLowFpsMarginHistogram() const noexcept;
     // Exact serialized Transport blocks that passed FEC, canonical padding,
     // CRC and identity in the most recent evaluation. Invalid after the next
     // Decode/Evaluate call or move.
