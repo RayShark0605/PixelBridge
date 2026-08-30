@@ -594,6 +594,12 @@ TEST_CASE("Capture demodulator binds fixed Bootstrap and GPU Transport to the sa
         REQUIRE(result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::ControlRecord);
         REQUIRE(result.metadata.captureObservation == 2);
         REQUIRE(result.bootstrapRecord == record);
+        REQUIRE(result.bootstrap.IsAccepted());
+        REQUIRE(result.bootstrap.canonical44 == record);
+        REQUIRE(result.bootstrap.geometry.originX == 0.0);
+        REQUIRE(result.bootstrap.geometry.originY == 0.0);
+        REQUIRE(result.bootstrap.geometry.scaleX == 1.0);
+        REQUIRE(result.bootstrap.geometry.scaleY == 1.0);
         REQUIRE(result.controlByteCount == controlSize.Value());
         REQUIRE(std::equal(result.controlBytes.begin(), result.controlBytes.begin() + result.controlByteCount,
             controlWindow.begin(), controlWindow.begin() + result.controlByteCount));
@@ -696,9 +702,14 @@ TEST_CASE("Capture demodulator bounds result backlog and erases wrong-session to
     auto tornPixels = firstPixels;
     CopyBgraRegion(secondPixels, tornPixels, 1216, 1000, 608, 64);
     Deliver(4, tornPixels);
+    REQUIRE(consumer->TakeResult(result));
+    REQUIRE(result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly);
+    REQUIRE(result.metadata.captureObservation == 4);
+    REQUIRE_FALSE(result.bootstrap.IsAccepted());
     REQUIRE_FALSE(consumer->TakeResult(result));
     snapshot = consumer->GetSnapshot();
     REQUIRE(snapshot.bootstrapRejectedFrames == 1);
+    REQUIRE(snapshot.completedFrames == 4);
     REQUIRE(snapshot.postFecFailedFrames == 1);
     REQUIRE(snapshot.acceptedTransportBlocks == 20);
 

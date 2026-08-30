@@ -225,14 +225,17 @@ TelemetryStatus TelemetryAccumulator::RecordFec(const FecSample& sample) noexcep
         return domainStatus;
     }
     const auto& evaluation = sample.evaluation;
+    const bool preFecCoverageUnavailable = evaluation.comparedCodedBits == 0 && evaluation.erroneousCodedBits == 0;
+    const bool completePreFecCoverage = evaluation.comparedCodedBits ==
+        static_cast<std::uint64_t>(evaluation.codewords) * pbdesktoplevels::kCodewordBits &&
+        evaluation.erroneousCodedBits <= evaluation.comparedCodedBits;
     if (sample.captureObservation == 0 || sample.captureObservation > lastCaptureObservation_ ||
         sample.captureObservation <= lastFecObservation_)
     {
         return TelemetryStatus::Failure(TelemetryError::ObservationOrder);
     }
     if (!evaluation.evaluated || evaluation.codewords == 0 || evaluation.codewords > pbdesktoplevels::kMaximumCodewords ||
-        evaluation.comparedCodedBits != static_cast<std::uint64_t>(evaluation.codewords) * pbdesktoplevels::kCodewordBits ||
-        evaluation.erroneousCodedBits > evaluation.comparedCodedBits || evaluation.fecFailures > evaluation.codewords ||
+        (!preFecCoverageUnavailable && !completePreFecCoverage) || evaluation.fecFailures > evaluation.codewords ||
         evaluation.crcFailures > evaluation.codewords || evaluation.identityFailures > evaluation.codewords ||
         static_cast<std::uint64_t>(evaluation.fecFailures) + evaluation.crcFailures > evaluation.codewords ||
         evaluation.falseAcceptedCodewords > evaluation.codewords - evaluation.fecFailures - evaluation.crcFailures ||

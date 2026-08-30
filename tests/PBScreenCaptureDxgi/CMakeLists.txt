@@ -11,7 +11,9 @@ if(PB_BUILD_DXGI_GATE)
     target_link_libraries(PBDxgiNativeTests PRIVATE PB::PBScreenCaptureDxgi PB::PBRenderD3D d3d11 dxgi)
     target_include_directories(PBDxgiNativeTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBScreenCaptureDxgi/src"
         "${PROJECT_SOURCE_DIR}/libs/PBCaptureNormalize/src" "${PROJECT_SOURCE_DIR}/libs/PBRenderD3D/src")
-    target_compile_definitions(PBDxgiNativeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    target_compile_definitions(PBDxgiNativeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+        PB_TEST_MONITOR_ORIGIN_X=${PB_DESKTOP_TEST_MONITOR_ORIGIN_X}
+        PB_TEST_MONITOR_ORIGIN_Y=${PB_DESKTOP_TEST_MONITOR_ORIGIN_Y})
     PbInstrumentPresentationTest(PBDxgiNativeTests)
     set_tests_properties(PBDxgiNativeTests PROPERTIES LABELS "dxgi;dxgi-native" TIMEOUT 120 RUN_SERIAL TRUE RESOURCE_LOCK PixelBridgeDesktop)
 endif()

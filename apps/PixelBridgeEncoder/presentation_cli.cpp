@@ -28,8 +28,8 @@ namespace
 
 void Usage()
 {
-    std::cout << "Usage: PixelBridgeEncoder --data-window [--visual local-desktop-bootstrap|desktop-levels-2x2|desktop-levels-4x4|shape-chroma] [--frames N] [--telemetry NEW_FILE.jsonl]\n"
-              << "       PixelBridgeEncoder --visual local-desktop-bootstrap [--frames N] [--telemetry NEW_FILE.jsonl]\n"
+    std::cout << "Usage: PixelBridgeEncoder --data-window [--visual local-desktop-bootstrap|desktop-levels-2x2|desktop-levels-4x4|shape-chroma] [--origin X Y] [--frames N] [--telemetry NEW_FILE.jsonl]\n"
+              << "       PixelBridgeEncoder --visual local-desktop-bootstrap [--origin X Y] [--frames N] [--telemetry NEW_FILE.jsonl]\n"
               << "N bounds accepted CPU frame submissions (1..1000000), not displayed frames.\n"
               << "Without --frames, press Escape in the data window to stop.\n"
               << "Default --data-window remains PB-ReferenceRaster-1. The explicit visual selects experimental SDR Bootstrap only.\n"
@@ -101,6 +101,10 @@ int RunDataWindowCommand(const int argumentCount, wchar_t* arguments[])
         pbrenderd3d::DataWindowConfig windowConfig;
         windowConfig.width = canvasWidth;
         windowConfig.height = canvasHeight;
+        if (options.hasClientOrigin)
+        {
+            windowConfig.clientOrigin = pbrenderd3d::PhysicalPoint{options.clientOriginX, options.clientOriginY};
+        }
         auto created = pbrenderd3d::DataWindow::Create(windowConfig);
         if (!created)
         {

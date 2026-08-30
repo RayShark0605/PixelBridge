@@ -7,8 +7,8 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 | 路径 | 用途 |
 | --- | --- |
-| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | Encoder 支持 `--data-window` 呈现诊断入口；无参横幅保留，Qt 6 UI 后续接入 |
-| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver` | 核心静态库（禁止依赖 Qt） |
+| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder`、`apps/common` | 正式 Qt Widgets GUI、Qt-free application runtime/state/report 层，以及保留的显式诊断 CLI |
+| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver`、`libs/PBStorage` | 核心静态库（禁止依赖 Qt）；PBStorage 负责 `.part`、WholeFileDigest 与 final publish |
 | `libs/PBPresentTiming`、`libs/PBRenderD3D` | 有界 DXGI observation 计时与独立原生 D3D11 数据窗口；不依赖 Qt |
 | `libs/PBScreenRegion`、`libs/PBScreenCaptureWgc` | 物理像素选区、Windows Graphics Capture 与 GPU 退休保护的 ROI texture ring；不依赖 Qt |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
@@ -37,8 +37,9 @@ manager 和 active decoder 表。未知 Segment 的逻辑 Data Block 只能进�
 或以明确 quota 状态被拒绝；在 Segment capability 绑定前不会创建 DirectRepeat/Wirehair
 decoder、segment-sized buffer、zstd context 或 output reservation。这里的
 `ReceivedTransportBlock` 表示上游已完成 Inner-FEC/Transport-CRC 检查的内存内值，**不是**
-正式 Transport wire schema。正式 Transport parser、PBStorage/free-space 检查、`.part`
-创建/发布和 Decoder capture/application 链路仍未实现。
+正式 Transport wire schema。Phase 1.5 application runtime 已通过现有 Transport parser、
+PBReceiver 与 PBStorage 接入 `.part` 创建、WholeFileDigest 和 final publish，并接通
+WGC/DXGI -> CaptureNormalize -> D3D11 demod；这不把 provisional descriptor 提升为正式 v1 wire。
 
 ## Target 与依赖边界
 
@@ -61,6 +62,49 @@ decoder、segment-sized buffer、zstd context 或 output reservation。这里的
 - CUDA 选项只与真实 CUDA target 同时引入，默认关闭；显式启用后缺失依赖必须配置失败，不允许静默 fallback。
 
 CMake 在配置期审计核心 target 的 Qt 依赖、公共 `src/` 路径和公共编译选项泄漏。未来模块必须继续满足这些门禁。
+
+## Windows Qt GUI（Phase 1.5）
+
+Release 构建后的以下程序无参数启动正式 GUI：
+
+```powershell
+.\build\apps\PixelBridgeEncoder\Release\PixelBridgeEncoder.exe
+.\build\apps\PixelBridgeDecoder\Release\PixelBridgeDecoder.exe
+```
+
+GUI 是薄 presentation/controller 层，真实传输链仍为现有 Session/Segment、
+Compression、Outer/Inner FEC、D3D11 Data Window、WGC/DXGI、CaptureNormalize、
+D3D11 demod、ReceiverIngress、PBTelemetry 和 PBStorage。Qt 不进入 `libs/`，也不合成数据像素或发布文件。
+
+当前产品边界为 Instant LocalDesktop、单 Segment、1 byte..8 MiB、固定 1920×1080
+physical-pixel ROI，以及 Direct-Level 2x2 / Shape+Chroma 两个明确标为 Experimental 的路径。
+原文件名和 Visual Profile 尚未写入 provisional wire，因此 Decoder 需要人工选择同一 profile，
+并安全发布为 `PixelBridge-<SessionTag>.bin`。完整 Runtime Option Inventory、控件绑定、
+状态机、进度定义和限制见 [`docs/GUI_PHASE1_5.md`](docs/GUI_PHASE1_5.md) 与
+[`docs/CURRENT_RUNTIME_OPTION_INVENTORY.md`](docs/CURRENT_RUNTIME_OPTION_INVENTORY.md)。
+
+关键语义始终是 **Encoder broadcasts; Decoder converges**：Encoder 完成一轮 Carousel
+后继续广播，直到用户点击“停止广播”；它没有接收端恢复百分比或完成 ETA。Decoder 的
+进度严格为 `verifiedRawBytes / OriginalFileSize`，当前单 Segment 路径以已验证 Segment
+粒度推进；只有 WholeFileDigest PASS 且 PBStorage final publish 成功才显示 Completed。
+
+Decoder 主吞吐是 digest/publish-gated `VerifiedEncodedGoodput`；用于 ETA 的 verified raw EMA
+单独命名。生产 D3D11 fast path 不做 raw-pixel readback/digest，因此 `UniqueVisualFPS` 严格显示
+为不可用；FrameSequence cadence 与 duplicate/reordered/gap/skipped 只作为独立 admission 诊断，
+不会冒充像素唯一帧率。
+
+为可复现物理桌面 smoke 保留了调用同一 application runtime 的有界自动化入口；它们不建立
+任何 payload IPC：
+
+```powershell
+PixelBridgeEncoder.exe --headless-broadcast --source input.bin --profile direct `
+  --compression off --origin 0 0 --seconds 30 --report encoder.json
+PixelBridgeDecoder.exe --headless-receive --output-dir output --backend wgc `
+  --profile direct --roi 0 0 1920 1080 --timeout 60 --report decoder.json
+```
+
+`--version` 输出确定性版本横幅；旧 `--data-window`、`--select-region` 和 capture diagnostics
+仍保持显式参数入口。`--gui-smoke` 仅用于 CTest 的窗口构造/事件循环/部署检查。
 
 ## 独立 D3D11 Data Window
 
@@ -101,8 +145,9 @@ GPU 使用后才 Close frame，consumer 工作另有退休标记。积压丢旧�
 
 cursor、Borderless 和 MinUpdateInterval 按真实 interface/权限探测；不把优化 setter 成功
 当作实际 FPS 或无边框保证。默认 BGRA，HDR 需显式使用 FP16；不静默做色调映射。
-这是 backend 和 normalization 接入边界，尚未接入 Decoder 解调/文件恢复，也不宣称
-LocalDesktop 性能认证。API、资源边界、验证命令与限制见
+Phase 1.5 GUI application runtime 已将该 backend/normalization 边界接到现有 D3D11 demod、
+ReceiverIngress 与 PBStorage；这仍不自动构成 Certified Profile 或任意硬件/RemoteVisual
+性能认证。API、资源边界、验证命令与限制见
 [`docs/PBScreenCaptureWgc.md`](docs/PBScreenCaptureWgc.md)。
 真实桌面测试由 `PB_BUILD_WGC_GATE=ON` 显式启用；默认测试仅模型/COM mock/WARP，
 不弹出捕获窗口或改动显示设置。
@@ -196,10 +241,14 @@ recovered bytes 仍必须经过设计书要求的 Segment、解压与 whole-file
 
 ## 构建（MSVC x64）
 
-依赖：Visual Studio 2022（C++ 工作负载）、CMake >= 3.24、vcpkg（本机 `D:\vcpkg`）。
+依赖：Visual Studio 2022（C++ 工作负载）、CMake >= 3.24、vcpkg（本机 `D:\vcpkg`），
+以及 Qt Widgets。当前验证 Qt 6.10.1 与 Qt 5.14.2；正式构建通过 `PB_QT_ROOT` 指向
+包含 `lib/cmake/Qt6` 或 `lib/cmake/Qt5` 的 Qt host prefix。
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DPB_QT_ROOT=D:/Qt6.10.1/6.10.1/msvc2022_64
 cmake --build build --config Release --parallel
 ctest --test-dir build --build-config Release --output-on-failure
 ```
@@ -242,6 +291,7 @@ ctest --test-dir build-tests --build-config Release --output-on-failure
 | 选项 | 默认值 | 子图 |
 | --- | --- | --- |
 | `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
+| `PB_QT_ROOT` | 空（由 CMake 常规搜索）；构建 Windows apps 时必须可发现 Qt | Qt 5/6 host prefix |
 | `PB_BUILD_TOOLS` | `OFF` | `tools/` |
 | `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBProtocolBootstrapControlStructuredSelfTest`、`PBProtocolOrphanResourceFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
 | `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |

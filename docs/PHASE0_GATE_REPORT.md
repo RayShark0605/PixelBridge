@@ -167,7 +167,8 @@ H02 为3 cases/46 assertions；Release/ASan 完整 default build 后分别45/45�
 # 原子提交后的 clean HEAD；工具已存在，不安装 LLVM。
 $finalCommit = (git rev-parse HEAD).Trim()
 & .\tests\Phase0Gate\InvokeFinalGate.ps1 -ExpectedCommit $finalCommit `
-    -VcpkgRoot D:\vcpkg -CppcheckExecutable <installed-cppcheck.exe> -Parallel 4
+    -VcpkgRoot D:\vcpkg -QtRoot D:\Qt6.10.1\6.10.1\msvc2022_64 `
+    -CppcheckExecutable <installed-cppcheck.exe> -Parallel 4
 ```
 
 驱动每次新建独立证据/构建树，不复用旧日志；default target 在 CTest 前。执行全部 applicable

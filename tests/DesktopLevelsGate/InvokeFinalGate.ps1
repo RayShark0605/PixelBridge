@@ -3,8 +3,11 @@
 param(
     [string]$SourceRoot = (Join-Path $PSScriptRoot '../..'),
     [string]$VcpkgRoot = 'D:/vcpkg',
+    [Parameter(Mandatory)][string]$QtRoot,
     [Parameter(Mandatory)][string]$PythonExecutable,
     [Parameter(Mandatory)][string]$CppcheckExecutable,
+    [Parameter(Mandatory)][int]$MonitorOriginX,
+    [Parameter(Mandatory)][int]$MonitorOriginY,
     [ValidateRange(1,16)][int]$Parallel = 4,
     [ValidateRange(300,1680)][UInt32]$Phase1SoakSeconds = 300
 )
@@ -15,6 +18,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'GateJson.ps1')
 $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $VcpkgRoot = (Resolve-Path -LiteralPath $VcpkgRoot).Path
+$QtRoot = (Resolve-Path -LiteralPath $QtRoot).Path
 $PythonExecutable = (Get-Command $PythonExecutable -ErrorAction Stop).Source
 $CppcheckExecutable = (Get-Command $CppcheckExecutable -ErrorAction Stop).Source
 $cmake = (Get-Command cmake -ErrorAction Stop).Source
@@ -189,11 +193,20 @@ function Register-Build([string]$Root, [bool]$Asan)
     if ($cache -notmatch "(?m)^PB_BUILD_FUZZERS:BOOL=$fuzz\r?$" -or
         $cache -notmatch '(?m)^CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\r?$' -or
         $cache -notmatch '(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\r?$') { throw 'Incorrect declared compiler/sanitizer configuration' }
+    $expectedOriginX = [regex]::Escape([string]$MonitorOriginX)
+    $expectedOriginY = [regex]::Escape([string]$MonitorOriginY)
+    if ($cache -notmatch "(?m)^PB_DESKTOP_TEST_MONITOR_ORIGIN_X:STRING=$expectedOriginX\r?$" -or
+        $cache -notmatch "(?m)^PB_DESKTOP_TEST_MONITOR_ORIGIN_Y:STRING=$expectedOriginY\r?$")
+    {
+        throw 'Configured native test monitor origin differs from the requested physical desktop origin'
+    }
     foreach ($project in @('libs/PBModulation/PBModulation','libs/PBDesktopLevelsReference/PBDesktopLevelsReference',
         'libs/PBInnerFec/PBInnerFec','libs/PBCaptureNormalize/PBCaptureNormalize','libs/PBDemodD3D11/PBDemodD3D11',
-        'libs/PBTelemetry/PBTelemetry','libs/PBRealCaptureReplay/PBRealCaptureReplay','apps/PixelBridgeEncoder/PixelBridgeEncoder',
+        'libs/PBTelemetry/PBTelemetry','libs/PBRealCaptureReplay/PBRealCaptureReplay','libs/PBStorage/PBStorage',
+        'apps/common/PBApplication','apps/PixelBridgeEncoder/PixelBridgeEncoder',
         'apps/PixelBridgeDecoder/PixelBridgeDecoder','tests/PBModulation/PBDesktopLevelsTests','tests/PBModulation/PBShapeChromaTests',
         'tests/PBDemodD3D11/PBDemodD3D11Tests','tests/PBTelemetry/PBTelemetryTests','tests/PBRealCaptureReplay/PBRealCaptureReplayTests',
+        'tests/PBApplication/PBApplicationTests','tests/PBApplication/PBQSettingsTests','tests/PBStorage/PBStorageTests',
         'tests/DesktopLevelsGate/PBPhase1FileGate','tests/DesktopLevelsGate/PBDesktopLevelsNativeSupport',
         'tests/DesktopLevelsGate/PBPhase1FileGateArgumentsTests'))
     {
@@ -247,10 +260,12 @@ try
     $null = Invoke-Gate 'old-bootstrap-oracle' $PythonExecutable @('tests/PBModulation/generate_local_desktop_golden.py','--check')
     $null = Invoke-Gate 'desktop-levels-oracle' $PythonExecutable @('tests/PBModulation/generate_desktop_levels_golden.py','--check')
     $common = @('-S',$SourceRoot,'-G','Visual Studio 17 2022','-A','x64',"-DCMAKE_TOOLCHAIN_FILE=$VcpkgRoot/scripts/buildsystems/vcpkg.cmake",
+        "-DPB_QT_ROOT=$QtRoot",
         '-DVCPKG_TARGET_TRIPLET=x64-windows','-DBUILD_TESTING=ON','-DPB_BUILD_TESTS=ON','-DPB_BUILD_APPS=ON','-DPB_BUILD_TOOLS=ON',
         '-DPB_BUILD_DESKTOP_LEVELS_GATE=ON','-DPB_BUILD_LOCAL_DESKTOP_GATE=ON','-DPB_BUILD_WGC_GATE=ON','-DPB_BUILD_DXGI_GATE=ON',
         '-DPB_BUILD_PHASE0_GATE=ON','-DPB_TREAT_WARNINGS_AS_ERRORS=ON','-DPB_BUILD_BENCHMARKS=OFF',
-        '-DPB_BUILD_PRESENTATION_GATE=OFF','-DPB_BUILD_SCREEN_REGION_GATE=OFF')
+        '-DPB_BUILD_PRESENTATION_GATE=OFF','-DPB_BUILD_SCREEN_REGION_GATE=OFF',
+        "-DPB_DESKTOP_TEST_MONITOR_ORIGIN_X=$MonitorOriginX","-DPB_DESKTOP_TEST_MONITOR_ORIGIN_Y=$MonitorOriginY")
     foreach ($flavor in @('release','asan'))
     {
         $build = Join-Path $SourceRoot "build-desktop-levels-$flavor"
@@ -349,7 +364,8 @@ try
                         '-GateExecutable',(Join-Path $build 'tests/DesktopLevelsGate/Release/PBPhase1FileGate.exe'),
                         '-Support',(Join-Path $build 'tests/DesktopLevelsGate/Release/PBDesktopLevelsNativeSupport.exe'),
                         '-Backend',$backend,'-Profile',$profile,'-EvidenceRoot',$soakRoot,
-                        '-NativeMode','release','-SoakSeconds',"$Phase1SoakSeconds") ([int]$Phase1SoakSeconds + 180)
+                        '-NativeMode','release','-MonitorOriginX',"$MonitorOriginX",'-MonitorOriginY',"$MonitorOriginY",
+                        '-SoakSeconds',"$Phase1SoakSeconds") ([int]$Phase1SoakSeconds + 180)
                 }
             }
             $soakReports = @(Get-ChildItem -LiteralPath $soakRoot -Recurse -File -Filter phase1-file-report.json)
@@ -385,16 +401,28 @@ try
     }
     $staticProjects = @('libs/PBInterleave/PBInterleave','libs/PBModulation/PBModulation','libs/PBDesktopLevelsReference/PBDesktopLevelsReference',
         'libs/PBCaptureNormalize/PBCaptureNormalize','libs/PBDemodD3D11/PBDemodD3D11','libs/PBTelemetry/PBTelemetry',
-        'libs/PBRealCaptureReplay/PBRealCaptureReplay','apps/PixelBridgeEncoder/PixelBridgeEncoder','apps/PixelBridgeDecoder/PixelBridgeDecoder',
+        'libs/PBRealCaptureReplay/PBRealCaptureReplay','libs/PBStorage/PBStorage','apps/common/PBApplication',
+        'apps/PixelBridgeEncoder/PixelBridgeEncoder','apps/PixelBridgeDecoder/PixelBridgeDecoder',
         'tests/DesktopLevelsGate/PBPhase1FileGate','tests/DesktopLevelsGate/PBDesktopLevelsNativeSupport',
         'tools/PBDesktopLevelsBaseline','fuzz/PBDesktopLevelsMutation')
     foreach ($project in $staticProjects)
     {
         $build = if ($project.StartsWith('fuzz/')) { 'build-desktop-levels-asan' } else { 'build-desktop-levels-release' }
         $name = ($project -split '/')[-1]
-        $checked = Invoke-Gate "cppcheck-$name" $CppcheckExecutable @("--project=$(Join-Path $SourceRoot "$build/$project.vcxproj")",
+        $projectFile = Join-Path $SourceRoot "$build/$project.vcxproj"
+        $cppcheckArguments = @("--project=$projectFile",'--project-configuration=Release|x64',
             '--language=c++','--std=c++20','--platform=win64','--check-level=exhaustive','--inconclusive',
-            '--enable=warning,style,performance,portability','--suppress=missingIncludeSystem','--xml','--xml-version=2','--error-exitcode=2') -AllowedExitCodes @(0,2)
+            '--enable=warning,style,performance,portability','--suppress=missingIncludeSystem','--xml','--xml-version=2','--error-exitcode=2')
+        if ($project.StartsWith('apps/'))
+        {
+            $cppcheckArguments += @('-Dslots=','-Dsignals=public','-DQ_OBJECT=','-Demit=')
+            $autogenDirectory = Join-Path (Split-Path -Parent $projectFile) "${name}_autogen"
+            if (Test-Path -LiteralPath $autogenDirectory)
+            {
+                $cppcheckArguments += "-i$autogenDirectory"
+            }
+        }
+        $checked = Invoke-Gate "cppcheck-$name" $CppcheckExecutable $cppcheckArguments -AllowedExitCodes @(0,2)
         Assert-CppcheckReview $checked
     }
     Assert-Identity
@@ -474,6 +502,7 @@ finally
             PhysicalLayerBaselines=$profileBaselines
             PrimaryErrorModes=$primaryErrorModes
             LongSoakRuns=@($script:soakResults)
+            MonitorOrigin=@($MonitorOriginX,$MonitorOriginY)
             Phase2Required=@(
                 'Move fixed Bootstrap/Control extraction off the full 1920x1080 CPU readback path while preserving same-frame retirement proof',
                 'Replace the literal experimental ShapeChroma A/B codebook with measured profile selection and a separately reviewed certified wire/profile baseline',
@@ -488,6 +517,7 @@ finally
             SourceFingerprint=$script:initial.Fingerprint; NativeGroups=$script:nativeResults.Count;
             Phase1RegularFileGroups=$script:fileResults.Count; Phase1LongSoakGroups=$script:soakResults.Count;
             Commands=$script:steps.Count; Phase1TagAllowedAfterDiffReview=$tagAllowedAfterReview;
+            MonitorOrigin=@($MonitorOriginX,$MonitorOriginY);
             CertifiedProfile=$false; FinalSystemComplete=$false; CommitCreated=$false;
             Decision='Execution evidence only; tag phase1-gate-pass is allowed only after PASS plus final scoped diff/static review and an atomic commit' })
         Write-Host "DESKTOP_LEVELS_GATE $status evidence=$script:evidence"

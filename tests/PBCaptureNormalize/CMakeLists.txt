@@ -60,7 +60,9 @@ if(PB_BUILD_LOCAL_DESKTOP_GATE OR PB_BUILD_DESKTOP_LEVELS_GATE)
     target_link_libraries(PBLocalDesktopNativeTests PRIVATE PB::PBRenderD3D PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation PB::PBDesktopLevelsReference PB::PBProtocol PB::PBTelemetry d3d11 dxgi)
     target_include_directories(PBLocalDesktopNativeTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBCaptureNormalize/src")
     target_compile_definitions(PBLocalDesktopNativeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
-        PB_LOCAL_DESKTOP_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/local-desktop-bootstrap")
+        PB_LOCAL_DESKTOP_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/local-desktop-bootstrap"
+        PB_TEST_MONITOR_ORIGIN_X=${PB_DESKTOP_TEST_MONITOR_ORIGIN_X}
+        PB_TEST_MONITOR_ORIGIN_Y=${PB_DESKTOP_TEST_MONITOR_ORIGIN_Y})
     PbInstrumentPresentationTest(PBLocalDesktopNativeTests)
     set_tests_properties(PBLocalDesktopNativeTests PROPERTIES LABELS "bootstrap;capture-native;local-desktop-native" TIMEOUT 120 RUN_SERIAL TRUE RESOURCE_LOCK PixelBridgeDesktop)
     if(PB_BUILD_DESKTOP_LEVELS_GATE)
@@ -71,6 +73,8 @@ if(PB_BUILD_LOCAL_DESKTOP_GATE OR PB_BUILD_DESKTOP_LEVELS_GATE)
         add_test(NAME PBLocalDesktopEncoderEntry
             COMMAND "${CMAKE_COMMAND}" "-DPB_ENCODER=$<TARGET_FILE:PixelBridgeEncoder>"
                 "-DPB_EVIDENCE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/native-evidence"
+                "-DPB_MONITOR_ORIGIN_X=${PB_DESKTOP_TEST_MONITOR_ORIGIN_X}"
+                "-DPB_MONITOR_ORIGIN_Y=${PB_DESKTOP_TEST_MONITOR_ORIGIN_Y}"
                 -P "${PROJECT_SOURCE_DIR}/tests/PresentationGate/VerifyEncoderLocalDesktopEntry.cmake")
         set_tests_properties(PBLocalDesktopEncoderEntry PROPERTIES LABELS "bootstrap;encoder;local-desktop-native" TIMEOUT 120 RUN_SERIAL TRUE RESOURCE_LOCK PixelBridgeDesktop)
     endif()

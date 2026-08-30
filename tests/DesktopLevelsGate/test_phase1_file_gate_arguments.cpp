@@ -26,17 +26,24 @@ TEST_CASE("Phase1 file sender arguments are explicit and bounded", "[phase1][fil
 {
     phase1gate::Arguments parsed;
     REQUIRE(Parse({L"gate", L"--sender", L"--profile", L"desktop-levels-2x2", L"--source-new",
-        L"source.bin", L"--telemetry-new", L"sender.jsonl", L"--maximum-sender-seconds", L"300"}, parsed));
+        L"source.bin", L"--origin", L"2560", L"0", L"--telemetry-new", L"sender.jsonl", L"--maximum-sender-seconds", L"300"}, parsed));
     CHECK(parsed.mode == phase1gate::ProcessMode::Sender);
     CHECK(parsed.profile == phase1gate::PhysicalProfile::DesktopLevels2);
     CHECK(parsed.sourcePath == L"source.bin");
+    CHECK(parsed.clientOrigin == std::array<std::int32_t, 2>{2560, 0});
     CHECK(parsed.maximumSenderSeconds == 300);
     CHECK_FALSE(Parse({L"gate", L"--sender", L"--profile", L"shape-chroma", L"--source-new",
-        L"source.bin", L"--telemetry-new", L"sender.jsonl", L"--backend", L"wgc"}, parsed));
+        L"source.bin", L"--origin", L"2560", L"0", L"--telemetry-new", L"sender.jsonl", L"--backend", L"wgc"}, parsed));
     CHECK_FALSE(Parse({L"gate", L"--sender", L"--profile", L"shape-chroma", L"--source-new",
-        L"source.bin", L"--source-new", L"other.bin", L"--telemetry-new", L"sender.jsonl"}, parsed));
+        L"source.bin", L"--source-new", L"other.bin", L"--origin", L"2560", L"0", L"--telemetry-new", L"sender.jsonl"}, parsed));
     CHECK_FALSE(Parse({L"gate", L"--sender", L"--profile", L"shape-chroma", L"--source-new",
-        L"source.bin", L"--telemetry-new", L"sender.jsonl", L"--maximum-sender-seconds", L"3601"}, parsed));
+        L"source.bin", L"--origin", L"2560", L"0", L"--telemetry-new", L"sender.jsonl", L"--maximum-sender-seconds", L"3601"}, parsed));
+    CHECK_FALSE(Parse({L"gate", L"--sender", L"--profile", L"shape-chroma", L"--source-new",
+        L"source.bin", L"--telemetry-new", L"sender.jsonl"}, parsed));
+    CHECK_FALSE(Parse({L"gate", L"--sender", L"--profile", L"shape-chroma", L"--source-new",
+        L"source.bin", L"--origin", L"2560", L"0", L"--origin", L"0", L"0", L"--telemetry-new", L"sender.jsonl"}, parsed));
+    CHECK_FALSE(Parse({L"gate", L"--sender", L"--profile", L"shape-chroma", L"--source-new",
+        L"source.bin", L"--origin", L"2147483648", L"0", L"--telemetry-new", L"sender.jsonl"}, parsed));
 }
 
 TEST_CASE("Phase1 file receiver requires an exact signed physical 1080p ROI", "[phase1][file-gate][arguments][roi]")
@@ -65,6 +72,9 @@ TEST_CASE("Phase1 file receiver requires an exact signed physical 1080p ROI", "[
     CHECK_FALSE(Parse({L"gate", L"--receiver", L"--profile", L"shape-chroma", L"--backend", L"wgc",
         L"--roi", L"0", L"0", L"1920", L"1080", L"--output-new", L"output.bin",
         L"--telemetry-new", L"receiver.jsonl", L"--soak-seconds", L"299"}, parsed));
+    CHECK_FALSE(Parse({L"gate", L"--receiver", L"--profile", L"shape-chroma", L"--backend", L"wgc",
+        L"--roi", L"0", L"0", L"1920", L"1080", L"--origin", L"2560", L"0", L"--output-new", L"output.bin",
+        L"--telemetry-new", L"receiver.jsonl"}, parsed));
 }
 
 TEST_CASE("Phase1 numeric parsing rejects overflow and preserves output", "[phase1][file-gate][arguments][bounds]")

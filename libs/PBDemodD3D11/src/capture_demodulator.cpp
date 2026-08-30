@@ -23,6 +23,17 @@ namespace pbdemodd3d11
 namespace
 {
 
+pbmodulation::LocalDesktopObservation MakeReferenceBootstrapObservation(
+    const std::array<std::byte, pbprotocol::kBootstrapRecordBytes>& canonicalRecord) noexcept
+{
+    pbmodulation::LocalDesktopObservation observation;
+    observation.erasure = pbmodulation::LocalDesktopErasureReason::None;
+    observation.canonical44 = canonicalRecord;
+    observation.geometry.scaleX = 1.0;
+    observation.geometry.scaleY = 1.0;
+    return observation;
+}
+
 using Microsoft::WRL::ComPtr;
 using pbcapturenormalize::CaptureError;
 using pbcapturenormalize::CaptureStage;
@@ -729,8 +740,18 @@ CaptureStatus CaptureDemodulator::Completed(const ScreenCaptureFrameMetadata& me
                     CaptureDemodulatorResultKind::ControlRecord : CaptureDemodulatorResultKind::ControlFragment;
                 result.metadata = metadata;
                 result.bootstrapRecord = state.referenceBootstrap;
+                result.bootstrap = MakeReferenceBootstrapObservation(state.referenceBootstrap);
                 result.controlByteCount = extractedControl.byteCount;
                 std::copy_n(state.referenceControl.begin(), result.controlByteCount, result.controlBytes.begin());
+                state.PushResult(result);
+            }
+            else
+            {
+                CaptureDemodulatorResult result;
+                result.kind = CaptureDemodulatorResultKind::TelemetryOnly;
+                result.metadata = metadata;
+                result.bootstrapRecord = state.referenceBootstrap;
+                result.bootstrap = MakeReferenceBootstrapObservation(state.referenceBootstrap);
                 state.PushResult(result);
             }
             {
@@ -752,7 +773,13 @@ CaptureStatus CaptureDemodulator::Completed(const ScreenCaptureFrameMetadata& me
             {
                 pbprotocol::SaturatingIncrementUnsigned(state.snapshot.bootstrapErasures[erasureIndex]);
             }
+            pbprotocol::SaturatingIncrementUnsigned(state.snapshot.completedFrames);
         }
+        CaptureDemodulatorResult result;
+        result.kind = CaptureDemodulatorResultKind::TelemetryOnly;
+        result.metadata = metadata;
+        result.bootstrap = bootstrap;
+        state.PushResult(result);
         return FromDemodStatus(retired, CaptureStage::Completion);
     }
 
@@ -807,6 +834,16 @@ CaptureStatus CaptureDemodulator::Completed(const ScreenCaptureFrameMetadata& me
             poll.status.code == DemodError::CalibrationFailure;
         if (visualErasure)
         {
+            CaptureDemodulatorResult result;
+            result.kind = CaptureDemodulatorResultKind::TelemetryOnly;
+            result.metadata = metadata;
+            result.bootstrapRecord = bootstrap.canonical44;
+            result.bootstrap = bootstrap;
+            state.PushResult(result);
+            {
+                const std::lock_guard lock(state.mutex);
+                pbprotocol::SaturatingIncrementUnsigned(state.snapshot.completedFrames);
+            }
             return {};
         }
         const auto failure = FromDemodStatus(poll.status, CaptureStage::Completion);

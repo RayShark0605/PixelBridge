@@ -128,14 +128,15 @@ WGC 与 DXGI 共用同一个 CaptureRuntime、ROI ring 和 consumer contract，�
 
 Release 最终 Gate 还对 WGC/DXGI × Direct-Level 2×2/ShapeChroma 四组各执行 300 秒 publication 后 soak。每秒采样两个 test-owned 进程；publication 后 30 秒 warmup，比较随后 30 秒与最后 30 秒的 private bytes/handle median，并检查 warmup 后 high-water。median private 增长上限 32 MiB、high-water 增量 64 MiB、median handle 增长 4、high-water 增量 16；任一窗口少于 20 个样本或 post-warmup 少于 200 个样本均失败。该阈值是泄漏 Gate，不是性能预算。
 
-快速单组重放示例（ROI 由脚本从当前物理环境读取，输出 create-only）：
+快速单组重放示例（显式物理原点必须落在目标单屏内；脚本只在该原点验证并使用 1920×1080 ROI，不回退到主屏；输出 create-only）：
 
 ```powershell
 pwsh -NoProfile -File tests\DesktopLevelsGate\InvokePhase1FileLoop.ps1 `
   -GateExecutable build-desktop-levels-release\tests\DesktopLevelsGate\Release\PBPhase1FileGate.exe `
   -Support build-desktop-levels-release\tests\DesktopLevelsGate\Release\PBDesktopLevelsNativeSupport.exe `
   -Backend wgc -Profile desktop-levels-2x2 `
-  -EvidenceRoot build-desktop-levels-release\tests\DesktopLevelsGate\Release\phase1-file-evidence
+  -EvidenceRoot build-desktop-levels-release\tests\DesktopLevelsGate\Release\phase1-file-evidence `
+  -NativeMode release -MonitorOriginX 2880 -MonitorOriginY 156
 ```
 
 `-SoakSeconds` 只能是 0 或 300..1680，防止把几秒运行命名为 long soak。脚本只关闭/resize 自己创建的窗口和进程；任何外部遮挡、非 SDR、ROI 不完整或 DXGI pointer guard 失败都会保留 evidence 并返回失败。
@@ -152,13 +153,15 @@ CPU 测试覆盖全部 tiles/16 permutations、人工 distances/midpoints 及邻
 
 ```powershell
 pwsh -NoProfile -File tests\DesktopLevelsGate\InvokeFinalGate.ps1 `
+  -QtRoot D:\Qt6.10.1\6.10.1\msvc2022_64 `
   -PythonExecutable D:\Python3.12.9\python.exe `
-  -CppcheckExecutable <本机cppcheck.exe的完整路径> -Parallel 4
+  -CppcheckExecutable <本机cppcheck.exe的完整路径> `
+  -MonitorOriginX 2880 -MonitorOriginY 156 -Parallel 4
 ```
 
 脚本分别配置/完整构建 `build-desktop-levels-release`、`build-desktop-levels-asan`，执行相关及全量 CTest、旧/新 Golden oracle、离线 baseline、ASan mutation/corpus 与 cppcheck。全量 CTest 包含每个配置下 **WGC × DXGI × 2×2/4×4/ShapeChroma** 的六个 30 秒真实诊断入口，以及 **WGC × DXGI × Direct-Level 2×2/ShapeChroma** 的四个真实文件闭环；Release 快速矩阵全部通过后，最终脚本再串行执行四个 300 秒 Release soak。Release 诊断要求至少 16 个完整验证帧且覆盖全部 16 phases；ASan 配置逐帧解码慢于 640 ms sequence 节奏，保持同一 30 秒窗口下的文档化 baseline 要求（至少 8 个完整验证帧、至少 8 个不同 phase）。诊断发送端以 80 帧 × 640 ms（约 51.2 s，长于 receiver 的 45 s 有界 deadline 与启动余量）提交，并在 receiver 完成后自然跑完，以保留成功退出状态和完整 sender telemetry。每个 phase 有多个副本，同 phase 副本间隔至少 10.24 s，单次 readback 停顿不能消灭任一 phase。任何错误接受、原始 JSONL 与汇总分母不一致、文件/digest/恢复/soak/timing/样本不足或捕获契约失败均为失败。真实缩小显示案例还要求 Bootstrap 能读、Data 明确 scale erasure；无法完整显示的放大案例由 CPU 矩阵承担。Gate 在启动前 fail-closed 检查系统稳定性：存在待重启标志（`PendingFileRenameOperations`、WindowsUpdate 或 CBS `RebootRequired`）或系统启动不足 600 s 即拒绝启动，避免计划内系统重启（如 Windows Update）在长时 native 采集中途杀死进程树并使证据不完整；若运行期间仍发生重启，Gate 以明确的 fatal error 终止并保留证据，不产出部分 PASS。
 
-所有 native 测试共享 `PixelBridgeDesktop` resource lock。只定位/管理测试自有 DataWindow，不自动改变 HDR、分辨率、DPI、显示模式、光标或其他应用窗口。必须有真实 SDR、完整物理画布和 cursor-excluded capture contract，前提失败是失败，不 skip、不降门槛。帧龄 gate 以 backend 声明时间与 inbox 入队时 QPC 实测 arrival 中最早的有效值为准：声明早于自身 arrival 的超前时间戳（WGC SystemRelativeTime 实测可超前数毫秒）被 arrival 取代，两者均无效则拒绝该帧，不猜测帧龄。Gate 仅在 DXGI 捕获路径对 pointerInsideRoi 施加 fail-closed 环境检查（WGC 以 `IsCursorCaptureEnabled(false)` 显式禁用光标捕获，帧不受指针位置影响；DXGI 路径实测交付无指针像素，仍按保守契约拒绝指针位于 ROI 内的运行，防止操作员活动污染 30 s 证据），并披露 TopmostRaisedApplied。
+所有 native 测试共享 `PixelBridgeDesktop` resource lock。启用任一 WGC/DXGI/LocalDesktop/DesktopLevels native Gate 时，CMake 必须显式设置 `PB_DESKTOP_TEST_MONITOR_ORIGIN_X/Y`；原生小夹具、Encoder 入口和完整文件 Gate 都使用同一物理原点。目标原点不属于活动显示器、1920×1080 ROI 跨屏/越界或运行时窗口坐标与请求不一致都会失败，绝不使用 `MONITOR_DEFAULTTOPRIMARY` 或自动主屏回退。只定位/管理测试自有 DataWindow，不自动改变 HDR、分辨率、DPI、显示模式、光标或其他应用窗口。必须有真实 SDR、完整物理画布和 cursor-excluded capture contract，前提失败是失败，不 skip、不降门槛。帧龄 gate 以 backend 声明时间与 inbox 入队时 QPC 实测 arrival 中最早的有效值为准：声明早于自身 arrival 的超前时间戳（WGC SystemRelativeTime 实测可超前数毫秒）被 arrival 取代，两者均无效则拒绝该帧，不猜测帧龄。Gate 仅在 DXGI 捕获路径对 pointerInsideRoi 施加 fail-closed 环境检查（WGC 以 `IsCursorCaptureEnabled(false)` 显式禁用光标捕获，帧不受指针位置影响；DXGI 路径实测交付无指针像素，仍按保守契约拒绝指针位于 ROI 内的运行，防止操作员活动污染 30 s 证据），并披露 TopmostRaisedApplied。
 
 证据放在忽略的 `build-desktop-levels-evidence/` 及两个 build tree 内：源 HEAD、完整 tracked/untracked 源文件 fingerprint（允许提交前工作区，但 Gate 期间不得变化）、编译配置/依赖、命令及 stdout/stderr、JUnit、原始 JSONL、显示/ROI 可见性、resize、逐秒资源样本、WholeFileDigest/SHA-256、两物理层 VerifiedEncodedGoodput/FER/GPU/CPU cost、主要错误模式、四组 long soak 和测试二进制 SHA256。Gate 不自动 commit；`phase1-comparison.json` 只有在 12 个诊断组、8 个 Release/ASan 快速文件组和 4 个 Release long-soak 组全部 PASS 后才给出 `TagAllowedAfterDiffReview=true`。仍须无未解决 Critical/High、完成最终 scoped diff/static review 和原子 commit，才可创建非 amend 的 `phase1-gate-pass` tag。`ExecutionGate=PASS` 仍不等于 Certified Profile 或最终系统完成。
 

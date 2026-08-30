@@ -187,6 +187,7 @@ struct Fixture
     {
         windowConfig.width = 384;
         windowConfig.height = 256;
+        windowConfig.clientOrigin = pbrenderd3d::PhysicalPoint{PB_TEST_MONITOR_ORIGIN_X, PB_TEST_MONITOR_ORIGIN_Y};
         auto created = pbrenderd3d::DataWindow::Create(windowConfig);
         REQUIRE(created);
         window = std::move(created).Value();

@@ -1,0 +1,63 @@
+# PixelBridge Phase 1.5 Current Runtime Option Inventory
+
+Status: implementation inventory for the first Windows GUI. This document records only options that are reachable through the current worktree's real public bindings, layered on pre-GUI baseline HEAD `80699813b595bcf6db64047b50d31056872e33e1`. The frozen annotated `phase1-gate-pass` tag object remains `fde56c4c4e7124e8ffe29a0dcb619f8236781ebb` and still peels to that same baseline commit. This is not a profile certification statement.
+
+## Product boundary used by the GUI
+
+- Instant LocalDesktop only: the Encoder broadcasts visual frames until the user stops it; the Decoder converges independently.
+- One Segment per Session, with a source size of 1 byte through 8 MiB. The current production multi-Segment scheduler does not exist, so larger and empty files are rejected rather than truncated or silently rerouted.
+- Fixed 1920 x 1080 physical-pixel Data Window and ROI. Scaling, resampling, and multi-monitor ROI are rejected.
+- The wire currently does not carry the original file name or Visual Profile. The Decoder therefore requires the user to select the same profile and publishes a safe generated name, `PixelBridge-<SessionTag>.bin`.
+- The current descriptor wire is Phase-0 provisional. The GUI does not change it and does not add GUI metadata to protocol records.
+
+## Encoder options with real bindings
+
+| UI option | Availability | Public binding | Runtime effect and constraints |
+| --- | --- | --- | --- |
+| Source file | Enabled | application controller opens the source with Win32 bounded file I/O; protocol descriptors use `pbprotocol::SessionDescriptor`, `SegmentDescriptor`, and `FinalManifest` | The controller holds the source handle for the Session, verifies identity/size/last-write stability periodically and at stop, and rejects files outside 1 byte..8 MiB. |
+| Segment compression | Enabled, default off | off: `pbcompression::EncodedSegment` with `CompressionCodec::Raw`; on: `pbcompression::CompressSegment` | On uses the existing zstd frame and RAW fallback rule. Off is byte-identical RAW. No new wire codec is introduced. |
+| Compression level | Advanced, enabled only when compression is on | `pbcompression::CompressionSettings::compressionLevel` | Range 1..22 for the pinned zstd baseline. It is local preparation tuning and is not a wire field. |
+| Visual Profile: Direct-Level 2x2 | Enabled, Experimental | `pbmodulation::kDesktopLevels2ProfileId`, `EncodeDesktopLevelsFrame` | Current Phase-1 physical file Gate path. Fixed 1920 x 1080, strict 1:1 physical pixels. |
+| Visual Profile: Shape+Chroma | Enabled, Experimental | `pbmodulation::kShapeChromaProfileId`, `EncodeShapeChromaFrame` | Current experimental A/B Gate path. Not a Certified Profile. |
+| Outer FEC | Read-only automatic | `pbouterfec::ChooseOuterFecMode`, `DirectRepeatEncoder`, `WirehairV2Encoder` | DirectRepeat is selected for the existing tiny-segment threshold; Wirehair V2 is selected otherwise. The UI cannot construct an illegal override. |
+| Inner FEC | Read-only | `pbinnerfec::kInnerFecProfileIdRobust`, `EncodeQcLdpcCodeword` | Fixed robust DVB-S2 Short QC-LDPC profile. No override is exposed. |
+| Target monitor | Enabled | `pbrenderd3d::DataWindowConfig::clientOrigin` after application-layer Win32 monitor enumeration | Selects the existing D3D11 Data Window. A fixed 1920 x 1080 client canvas is centered in the monitor work area when it fits, otherwise centered in the physical monitor; Qt never paints the payload. |
+| Frame hold / Present candidate | Not exposed | current `PBRenderD3D::DataWindow` timing and flip-model contract | There is no safely supported arbitrary hold override in the current Data Window public API. |
+
+## Decoder options with real bindings
+
+| UI option | Availability | Public binding | Runtime effect and constraints |
+| --- | --- | --- | --- |
+| Output directory | Enabled | `PBStorage` bounded `.part` reservation and same-directory write-through final publish | UI never assembles or renames the file. Existing targets and `.part` files are not overwritten. |
+| Capture backend: WGC | Enabled | `pbscreencapturewgc::WgcCapture::CreateNormalized` | Explicit backend; no silent fallback. Requested and actual values remain WGC. |
+| Capture backend: DXGI Desktop Duplication | Enabled | `pbscreencapturedxgi::DxgiCapture::Create` | Explicit backend; no silent fallback. Requested and actual values remain DXGI. |
+| Capture backend: Auto | Not exposed | none | No public, proven WGC-to-DXGI policy currently exists. |
+| ROI selector | Enabled | `pbscreenregion::SelectScreenCaptureRegion` | Native PMv2 selector returns a physical-pixel rectangle on one monitor. |
+| Use entire monitor | Enabled after an ROI/monitor is known | `pbscreenregion::ResolveScreenCaptureRegion` with `monitorPhysicalRect` | Still requires exactly 1920 x 1080 for the current profile and fails closed otherwise. |
+| Clear/reselect ROI | Enabled | controller-local preference plus the two Region APIs above | Clearing stops admission; it does not create a default or scaled ROI. |
+| Visual Profile | Enabled, Experimental | `pbdemodd3d11::CaptureDemodulatorConfig::visualProfileId` | Must match the Encoder because the provisional wire does not bind the profile. Mismatch is an erasure/failure, not auto-detection. |
+| Capture age/queue/ring budgets | Read-only current defaults | `CaptureNormalizeConfig`, `CaptureDemodulatorConfig` | Fixed bounded production values are shown in Advanced telemetry; arbitrary overrides are not exposed. |
+| PBTelemetry | Read-only live/report output | `pbtelemetry::TelemetryAccumulator` fed by bounded `CaptureDemodulatorResult` events | Capture/Bootstrap are recorded for accepted and erasure frames; FEC is FrameSequence-deduplicated; VerifiedEncodedGoodput is added only after WholeFileDigest and final publish. PreFecBER and UniqueVisualFPS remain unavailable when their required truth/pixel-digest coverage is absent. |
+| FrameSequence cadence | Read-only diagnostic | application `VisualIdentityTracker` | Reports admitted FrameSequence FPS plus duplicate/reordered/gap/skipped counters. It is intentionally not named or used as pixel `UniqueVisualFPS`. |
+| Resume | Not exposed | receiver core has resume primitives, but the current GUI product path has no authoritative end-to-end resume/storage binding | QSettings never stores protocol or decoder state. |
+
+## Local preferences and run metadata
+
+The following are application-only and have no protocol or acceptance effect:
+
+- window geometry, last input/output directory, compression checkbox, selected explicit backend, selected monitor device name, and Advanced expansion through `QSettings`;
+- `ChannelType`, remote provider version/mode, target/observed FPS, chroma mode, remote resolution/window scale, network note, observed bandwidth, and latency;
+- `RunId` used to correlate independently exported Encoder and Decoder JSON reports.
+
+They never change CRC, FEC, digest, descriptor, or final-publish acceptance.
+
+## Hidden future capabilities
+
+- Offline MP4/NVENC generation and playback are hidden; Phase 4 is not implemented.
+- `PBRealCaptureReplay` remains an existing bounded library/Gate artifact, but this first GUI has no truthful live record/replay controller binding; no replay button or fake setting is exposed.
+- Direct-Level 4x4 is hidden from the file-transfer GUI. A physical-layer candidate exists, but it is not in the Phase-1 full-file Gate matrix.
+- Multi-Segment files and arbitrary-size files are hidden/rejected.
+- Receiver-to-Sender feedback, sender-side receiver progress, transfer-completion ETA, and automatic sender completion do not exist.
+- Certified Profile labels are not shown. Both selectable current paths remain explicitly Experimental.
+- Automatic capture-backend fallback, arbitrary resize/resampling, RemoteVisual magic thresholds, adaptive profile switching, and protocol-state persistence are not available.
+- Application-generated Control records must fit the current fixed Control window. A completed fragmented Control record is rejected fail-closed because this product path has no separate application binding for it.

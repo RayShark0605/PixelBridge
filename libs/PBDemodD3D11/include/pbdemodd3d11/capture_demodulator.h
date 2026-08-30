@@ -19,7 +19,7 @@ inline constexpr std::size_t localDesktopErasureCount =
 
 enum class CaptureDemodulatorResultKind : std::uint8_t
 {
-    Transport, ControlRecord, ControlFragment
+    Transport, ControlRecord, ControlFragment, TelemetryOnly
 };
 
 struct CaptureDemodulatorResult
@@ -104,8 +104,10 @@ struct CaptureDemodulatorSnapshot
 // Same-frame LocalDesktop Bootstrap plus D3D11 metric/FEC consumer. Submit
 // queues a bounded staging copy and GPU demodulation on the capture owner;
 // Completed maps only after the capture runtime's later retirement marker.
-// Results enter a fixed ring and carry only Transport blocks that passed
-// QC-LDPC, canonical framing/CRC, and Bootstrap SessionTag validation.
+// Results enter a fixed ring. Every non-cancelled, non-terminal completed frame
+// contributes a bounded observation: TelemetryOnly reports a Bootstrap erasure
+// or a frame without protocol payload, while Transport carries only blocks that
+// passed QC-LDPC, canonical framing/CRC, and Bootstrap SessionTag validation.
 class CaptureDemodulator final : public pbcapturenormalize::ScreenCaptureConsumer
 {
 public:

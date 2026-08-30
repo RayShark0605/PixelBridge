@@ -51,7 +51,8 @@ foreach(backend IN ITEMS wgc dxgi)
             "${CMAKE_CURRENT_SOURCE_DIR}/InvokePhase1FileLoop.ps1"
             -GateExecutable "$<TARGET_FILE:PBPhase1FileGate>" -Support "$<TARGET_FILE:PBDesktopLevelsNativeSupport>"
             -Backend "${backend}" -Profile "${profile}" -EvidenceRoot "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/phase1-file-evidence"
-            -NativeMode "${phase1FileGateNativeMode}")
+            -NativeMode "${phase1FileGateNativeMode}"
+            -MonitorOriginX "${PB_DESKTOP_TEST_MONITOR_ORIGIN_X}" -MonitorOriginY "${PB_DESKTOP_TEST_MONITOR_ORIGIN_Y}")
         set_tests_properties(${fileGateName} PROPERTIES
             LABELS "phase1;physical-layer;file-gate;whole-file-digest;desktop-levels-native;capture-native"
             TIMEOUT 140 RUN_SERIAL TRUE RESOURCE_LOCK PixelBridgeDesktop)
@@ -77,7 +78,8 @@ foreach(backend IN ITEMS wgc dxgi)
             "${CMAKE_CURRENT_SOURCE_DIR}/InvokeNativeLoop.ps1"
             -Encoder "$<TARGET_FILE:PixelBridgeEncoder>" -Decoder "$<TARGET_FILE:PixelBridgeDecoder>"
             -Support "$<TARGET_FILE:PBDesktopLevelsNativeSupport>" -Backend "${backend}" -Candidate "${candidate}"
-            -EvidenceRoot "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/evidence")
+            -EvidenceRoot "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/evidence"
+            -MonitorOriginX "${PB_DESKTOP_TEST_MONITOR_ORIGIN_X}" -MonitorOriginY "${PB_DESKTOP_TEST_MONITOR_ORIGIN_Y}")
         set_tests_properties(${gateName} PROPERTIES LABELS "physical-layer;desktop-levels;shape-chroma;desktop-levels-native;capture-native"
             TIMEOUT 100 RUN_SERIAL TRUE RESOURCE_LOCK PixelBridgeDesktop)
     endforeach()

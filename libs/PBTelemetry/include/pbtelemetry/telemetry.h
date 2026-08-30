@@ -136,6 +136,9 @@ public:
     [[nodiscard]] TelemetryStatus RecordBootstrap(const BootstrapSample& sample) noexcept;
     // The caller must apply FrameSequence/admission deduplication first. One
     // independently admitted visual frame contributes at most one sample.
+    // Production demodulation without sender truth uses compared/erroneous
+    // coded bits 0/0: FER remains covered while PreFecBER stays unavailable.
+    // Any nonzero comparison must cover the complete coded frame.
     [[nodiscard]] TelemetryStatus RecordFec(const FecSample& sample) noexcept;
     void RecordOuterSymbol(OuterSymbolDisposition disposition) noexcept;
     // Call only after the authoritative receiver/storage digest gate has

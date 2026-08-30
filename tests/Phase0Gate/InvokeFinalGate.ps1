@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedCommit,
     [string]$SourceRoot = (Join-Path $PSScriptRoot '../..'),
     [string]$VcpkgRoot = 'D:/vcpkg',
+    [Parameter(Mandatory = $true)][string]$QtRoot,
     [Parameter(Mandatory = $true)][string]$CppcheckExecutable,
     [ValidateRange(1, 16)][int]$Parallel = 4
 )
@@ -12,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $VcpkgRoot = (Resolve-Path -LiteralPath $VcpkgRoot).Path
+$QtRoot = (Resolve-Path -LiteralPath $QtRoot).Path
 $CppcheckExecutable = (Get-Command $CppcheckExecutable -ErrorAction Stop).Source
 $cmake = (Get-Command cmake -ErrorAction Stop).Source
 $ctest = (Get-Command ctest -ErrorAction Stop).Source
@@ -264,6 +266,7 @@ try
 
     $common = @('-S', $SourceRoot, '-G', 'Visual Studio 17 2022', '-A', 'x64',
         "-DCMAKE_TOOLCHAIN_FILE=$VcpkgRoot/scripts/buildsystems/vcpkg.cmake", '-DBUILD_TESTING=ON',
+        "-DPB_QT_ROOT=$QtRoot",
         '-DPB_BUILD_TESTS=ON', '-DPB_BUILD_APPS=ON', '-DPB_BUILD_TOOLS=ON', '-DPB_BUILD_PHASE0_GATE=ON',
         '-DPB_TREAT_WARNINGS_AS_ERRORS=ON', '-DPB_BUILD_BENCHMARKS=OFF')
     $testResults = [ordered]@{}

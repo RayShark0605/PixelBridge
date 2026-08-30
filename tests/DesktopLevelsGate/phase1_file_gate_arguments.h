@@ -37,11 +37,13 @@ struct Arguments
     std::wstring outputPath;
     std::wstring telemetryPath;
     std::array<std::int32_t, 4> physicalRoi{};
+    std::array<std::int32_t, 2> clientOrigin{};
     std::uint32_t timeoutSeconds = 90;
     std::uint32_t maximumSenderSeconds = 120;
     std::uint32_t restartAfterUniqueFrames = 30;
     std::uint32_t soakSeconds = 0;
     bool hasRoi = false;
+    bool hasClientOrigin = false;
     bool showHelp = false;
 };
 
@@ -182,6 +184,18 @@ struct Arguments
             }
             parsed.hasRoi = true;
         }
+        else if (argument == L"--origin" && !parsed.hasClientOrigin && index + 2 < argumentCount)
+        {
+            for (std::size_t coordinate = 0; coordinate < parsed.clientOrigin.size(); coordinate++)
+            {
+                index++;
+                if (!ParseInt32(arguments[index], parsed.clientOrigin[coordinate]))
+                {
+                    return false;
+                }
+            }
+            parsed.hasClientOrigin = true;
+        }
         else if (argument == L"--timeout-seconds" && !hasTimeout && index + 1 < argumentCount)
         {
             std::uint64_t value = 0;
@@ -233,12 +247,12 @@ struct Arguments
     }
     if (parsed.mode == ProcessMode::Sender)
     {
-        if (!hasSource || hasBackend || hasOutput || parsed.hasRoi || hasTimeout || hasRestart || hasSoak)
+        if (!hasSource || !parsed.hasClientOrigin || hasBackend || hasOutput || parsed.hasRoi || hasTimeout || hasRestart || hasSoak)
         {
             return false;
         }
     }
-    else if (!hasBackend || !hasOutput || !parsed.hasRoi || hasSource || hasMaximumSender)
+    else if (!hasBackend || !hasOutput || !parsed.hasRoi || hasSource || parsed.hasClientOrigin || hasMaximumSender)
     {
         return false;
     }

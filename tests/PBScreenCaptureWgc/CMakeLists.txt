@@ -41,7 +41,9 @@ if(PB_BUILD_WGC_GATE)
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
     target_link_libraries(PBWgcNativeTests PRIVATE PB::PBScreenCaptureWgc PB::PBRenderD3D d3d11 dxgi)
     target_include_directories(PBWgcNativeTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBScreenCaptureWgc/src" "${PROJECT_SOURCE_DIR}/libs/PBRenderD3D/src")
-    target_compile_definitions(PBWgcNativeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    target_compile_definitions(PBWgcNativeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+        PB_TEST_MONITOR_ORIGIN_X=${PB_DESKTOP_TEST_MONITOR_ORIGIN_X}
+        PB_TEST_MONITOR_ORIGIN_Y=${PB_DESKTOP_TEST_MONITOR_ORIGIN_Y})
     PbInstrumentPresentationTest(PBWgcNativeTests)
     set_tests_properties(PBWgcNativeTests PROPERTIES LABELS "wgc;wgc-native" TIMEOUT 120 RUN_SERIAL TRUE RESOURCE_LOCK PixelBridgeDesktop)
 endif()

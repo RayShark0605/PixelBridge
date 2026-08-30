@@ -7,6 +7,8 @@ param(
     [Parameter(Mandatory)][ValidateSet('desktop-levels-2x2','shape-chroma')][string]$Profile,
     [Parameter(Mandatory)][string]$EvidenceRoot,
     [Parameter(Mandatory)][ValidateSet('release','asan')][string]$NativeMode,
+    [Parameter(Mandatory)][int]$MonitorOriginX,
+    [Parameter(Mandatory)][int]$MonitorOriginY,
     [UInt32]$SoakSeconds = 0
 )
 $ErrorActionPreference = 'Stop'
@@ -171,6 +173,7 @@ $result = [ordered]@{
     NativeMode=$NativeMode
     PerformanceCertification=[bool]$policy.PerformanceCertification
     RequestedSoakSeconds=$SoakSeconds
+    MonitorOrigin=@($MonitorOriginX,$MonitorOriginY)
     Evidence=$directory
 }
 $exitCode = 1
@@ -178,9 +181,10 @@ $resizeApplied = $false
 $visibilityMaintained = $true
 try
 {
-    $environmentText = (& $Support --environment 2>&1 | Out-String).Trim()
+    $environmentArguments = @('--environment',[string]$MonitorOriginX,[string]$MonitorOriginY)
+    $environmentText = (& $Support @environmentArguments 2>&1 | Out-String).Trim()
     $environmentExit = $LASTEXITCODE
-    $commands.Add([ordered]@{ Executable=$Support; Arguments=@('--environment'); ExitCode=$environmentExit })
+    $commands.Add([ordered]@{ Executable=$Support; Arguments=$environmentArguments; ExitCode=$environmentExit })
     Write-NewText (Join-Path $directory 'environment.json') $environmentText
     if ($environmentExit -ne 0)
     {
@@ -190,6 +194,11 @@ try
     if (-not [bool]$environment.SDR -or [bool]$environment.hdr -or @($environment.roi).Count -ne 4)
     {
         throw 'The physical capture environment is not complete SDR 1920x1080'
+    }
+    $expectedRoi = @([Int64]$MonitorOriginX,[Int64]$MonitorOriginY,([Int64]$MonitorOriginX + 1920),([Int64]$MonitorOriginY + 1080))
+    if ((@($environment.roi) -join ',') -cne ($expectedRoi -join ','))
+    {
+        throw 'Environment probe did not preserve the explicit physical test origin'
     }
     if ($Backend -eq 'dxgi' -and [bool]$environment.pointerInsideRoi)
     {
@@ -227,7 +236,8 @@ try
         throw 'Physical file Receiver did not enter Running state before the bounded startup deadline'
     }
 
-    $senderArguments = @('--sender','--profile',$Profile,'--source-new',$sourcePath,'--telemetry-new',$senderTelemetry,
+    $senderArguments = @('--sender','--profile',$Profile,'--source-new',$sourcePath,
+        '--origin',[string]$MonitorOriginX,[string]$MonitorOriginY,'--telemetry-new',$senderTelemetry,
         '--maximum-sender-seconds',[string]$policy.SenderMaximumSeconds)
     $commands.Add([ordered]@{ Executable=$GateExecutable; Arguments=$senderArguments })
     $sender = Start-OwnedProcess $GateExecutable $senderArguments $directory

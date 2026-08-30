@@ -759,6 +759,7 @@ int RunSender(const phase1gate::Arguments& options)
     pbrenderd3d::DataWindowConfig windowConfig;
     windowConfig.width = pbmodulation::kLocalDesktopCanvasWidth;
     windowConfig.height = pbmodulation::kLocalDesktopCanvasHeight;
+    windowConfig.clientOrigin = pbrenderd3d::PhysicalPoint{options.clientOrigin[0], options.clientOrigin[1]};
     auto created = pbrenderd3d::DataWindow::Create(windowConfig);
     RequireResult(created, "DataWindow creation failed");
     std::unique_ptr<pbrenderd3d::DataWindow> window = std::move(created).Value();
@@ -956,6 +957,10 @@ public:
 
     void Process(const pbdemodd3d11::CaptureDemodulatorResult& result)
     {
+        if (result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly)
+        {
+            return;
+        }
         const auto parsedBootstrap = pbprotocol::ParseBootstrapRecord(result.bootstrapRecord);
         RequireResult(parsedBootstrap, "CaptureDemodulator published an invalid Bootstrap");
         const pbprotocol::BootstrapRecord& bootstrap = parsedBootstrap.Value();
@@ -1803,7 +1808,7 @@ int RunReceiver(const phase1gate::Arguments& options)
 void Usage()
 {
     std::cout << "Usage:\n"
-              << "  PBPhase1FileGate --sender --profile desktop-levels-2x2|shape-chroma --source-new FILE --telemetry-new FILE [--maximum-sender-seconds N]\n"
+              << "  PBPhase1FileGate --sender --profile desktop-levels-2x2|shape-chroma --source-new FILE --origin X Y --telemetry-new FILE [--maximum-sender-seconds N]\n"
               << "  PBPhase1FileGate --receiver --profile desktop-levels-2x2|shape-chroma --backend wgc|dxgi --roi L T R B --output-new FILE --telemetry-new FILE\n"
               << "                   [--timeout-seconds N] [--restart-after-unique N] [--soak-seconds N]\n";
 }
