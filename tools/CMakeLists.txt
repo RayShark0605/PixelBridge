@@ -52,3 +52,27 @@ target_link_libraries(PBFrameInspector
 
 add_executable(PBDesktopLevelsBaseline PBDesktopLevelsBaseline/main.cpp)
 target_link_libraries(PBDesktopLevelsBaseline PRIVATE PB::CompilerSettings PB::PBDesktopLevelsReference PB::PBProtocol)
+
+# PBRemoteVisualChannelMatrix: deterministic, headless LF4 channel corpus.
+# The core is linked by tests so the exact JSON and truth-boundary
+# classifications can be verified without launching a process or a window.
+add_library(PBRemoteVisualChannelMatrixCore STATIC
+    PBRemoteVisualChannelMatrix/channel_matrix_core.cpp)
+target_link_libraries(PBRemoteVisualChannelMatrixCore
+    PUBLIC
+        PB::PBDesktopLevelsReference
+        PB::PBModulation
+        PB::PBProtocol
+        PB::PBRemoteVisualSimulator
+    PRIVATE
+        PB::CompilerSettings)
+target_include_directories(PBRemoteVisualChannelMatrixCore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/PBRemoteVisualChannelMatrix)
+
+add_executable(PBRemoteVisualChannelMatrix
+    PBRemoteVisualChannelMatrix/main.cpp)
+target_link_libraries(PBRemoteVisualChannelMatrix
+    PRIVATE
+        PB::CompilerSettings
+        PBRemoteVisualChannelMatrixCore)

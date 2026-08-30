@@ -511,10 +511,10 @@ logical FPS <= 5
 - **状态**：`PARTIAL`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：用可重复 corpus 覆盖真实远控可能产生的空间、颜色、时序和 parser/identity 失真。
 - **实施要点**：逐项 sweep area/bilinear/bicubic、fractional scale/phase、blur/ringing、gamma/contrast、4:2:0/4:4:4、limited/full range、block replacement、alpha mix、crop/letterbox/overlay、duplicate/drop/reorder/epoch。
-- **当前增量**：Manifest v2 已加入固定 3×3 blur/sharpen、gain/bias/gamma、integer 4:2:0 proxy、crop、solid overlay 和 reference blend；production LF4 truth-boundary tests 已覆盖 mild blur、limited range、4:2:0、非法 crop、codec-block overlay 和 whole-frame temporal mix。尚缺一键矩阵工具、bicubic/实际 codec bitstream、sequence duplicate/drop/reorder/epoch corpus，因此保持 `PARTIAL`。
+- **当前增量**：Manifest v2 已加入固定 3×3 blur/sharpen、gain/bias/gamma、integer 4:2:0 proxy、crop、solid overlay 和 reference blend；`PBRemoteVisualChannelMatrix` 现在可用一条 headless 命令生成带 payload BLAKE3 的 canonical JSON，并让每个 case 重新进入 production LF4 + QC-LDPC + Transport truth boundary。当前 14-case 固定矩阵得到 11 个 `Verified`、3 个 `ErasureNoFalseAccept`、0 false accepted codeword、0 expectation mismatch；覆盖 identity、area upscale、bilinear fractional phase、0.75 letterbox、三种固定 kernel、limited range、gamma、4:2:0 proxy、crop、overlay、stale block replacement 和 temporal blend。尚缺 bicubic/实际 codec bitstream、sequence duplicate/drop/reorder/epoch corpus，因此保持 `PARTIAL`。
 - **注意事项**：H.264/HEVC 应保存实际 bitstream 参数并用 inspector 验证；crop/letterbox 不得被 simulator 隐式纠正；valid CRC + wrong identity 必须单独测试。
 - **验收证据**：每个 case 的 canonical input/output hash、truth manifest、Bootstrap、BER/FER、stale distribution、accepted Transport、false accept 和 digest 结果。
-- **完成出口**：矩阵可以从空 scratch 一条命令重建，且所有 failure 分类具有唯一、可断言的原因。
+- **完成出口**：矩阵可以从空 scratch 一条命令重建，且所有 failure 分类具有唯一、可断言的原因；实际 codec 与 sequence corpus 补齐前不得把本步骤改为 `DONE`。
 
 ### 11.9 Step 07：Soft metric 标定与 false-confidence Gate
 
