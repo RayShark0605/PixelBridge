@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-08-31 持续实施路线；CPU/reference 基线已提交为 `9b8e8063a56251040cddb6b01e38c4343779571f`，不是 Certified Profile，也不是双机 field certification。**
+状态：**2026-08-31 持续实施路线；Step 01..06 已完成到可重复的 CPU/reference、数据集入口、deterministic transform、实际 codec 和 temporal/identity corpus，Step 06 implementation commit 为 `f6e4769e8d6339acd0b274c09173199fd8aaf6b4`。不是 Certified Profile，也不是双机 field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -434,11 +434,11 @@ logical FPS <= 5
 | # | 步骤 | 状态 | 难度 | 重要性 | 主要完成证据 |
 | ---: | --- | --- | --- | --- | --- |
 | 01 | 冻结基线、tag 与证据边界 | DONE | ★★☆☆☆ | ★★★★★ | tag identity、pre-change LocalDesktop/RemoteVisual evidence |
-| 02 | 失真样本分析与 RemoteVisual 数据集入口 | PARTIAL | ★★☆☆☆ | ★★★★★ | bounded analyzer、真实 receiver-only Replay corpus |
+| 02 | 失真样本分析与 RemoteVisual 数据集入口 | DONE | ★★☆☆☆ | ★★★★★ | bounded analyzer、双 hash dataset index、Replay v2 field Gate 明确后移 |
 | 03 | LF4 profile identity、codebook 与容量真值 | DONE | ★★★☆☆ | ★★★★★ | `9b8e806`、codebook/bijection tests |
 | 04 | CPU 连续尺度 demod、freshness erasure、四 codeword 真值链 | DONE | ★★★★☆ | ★★★★★ | scale/stale/QC-LDPC/Transport tests |
 | 05 | Provider-generic deterministic channel transform API | DONE | ★★★★☆ | ★★★★★ | 独立 transforms、seed manifest、resource bounds |
-| 06 | 信道 impairment 矩阵与 adversarial corpus | PARTIAL | ★★★★☆ | ★★★★★ | resize/blur/codec/temporal/crop/conflict matrix |
+| 06 | 信道 impairment 矩阵与 adversarial corpus | DONE | ★★★★☆ | ★★★★★ | 15-case transforms、5 actual codecs、11-event temporal/identity corpus |
 | 07 | Soft metric 标定、阈值选择与 false-confidence Gate | PENDING | ★★★★★ | ★★★★★ | train/holdout split、BER/FER/false accept curves |
 | 08 | LF4 Golden/manifest 冻结与兼容性声明 | PENDING | ★★★☆☆ | ★★★★★ | canonical raster/hash/accepted-block manifest |
 | 09 | LF4 D3D11 Encoder raster/immutable texture 接入 | PENDING | ★★★★☆ | ★★★★☆ | CPU raster parity、stable dwell/present evidence |
@@ -472,12 +472,13 @@ logical FPS <= 5
 
 ### 11.4 Step 02：失真样本分析与数据集入口
 
-- **状态**：`PARTIAL`；**难度**：★★☆☆☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★☆☆☆；**重要性**：★★★★★。
 - **目标**：把截图、真实 ROI frame sequence 和 metadata 转为可重复、可校验、最小隐私范围的数据源。
-- **实施要点**：使用 `analyze_remote_capture.py` 做 bounded/read-only 初筛；用 Replay v2 保存 selected ROI、CaptureEpoch、timestamp、format、live observation；为每个 dataset 生成 SHA-256/BLAKE3/size/index。
+- **实施要点**：使用 `analyze_remote_capture.py` 做 bounded/read-only 初筛；`seal_remote_visual_dataset.py` 对显式 artifact root 下的 screenshot/Replay v2 生成 create-only SHA-256+BLAKE3+size+analysis index，拒绝 path escape、symlink/junction、重复 JSON key、非有限数值、变化中的输入和 protected-monitor pixels。Replay v2 仍由现有 writer 保存 selected ROI、CaptureEpoch、timestamp、format、live observation，并且必须先经 `ReplayV2Reader`/offline decoder 才能成为语义证据。
 - **注意事项**：edge detector 只是诊断候选，不能改变 acceptance；不得保存左屏或 ROI 外像素；输入在分析期间变化必须拒绝；不能根据 provider 名称选择阈值。
-- **验收证据**：analyzer 的 deterministic/resource tests；至少 Direct/Shape/LF4 各一组真实 receiver-only Replay；corrupt/truncated/oversize corpus fail closed。
-- **完成出口**：同一 replay 在两次离线运行中产生相同 Bootstrap、geometry、metric summary、FEC/Transport disposition。
+- **验收证据**：analyzer/sealer deterministic/resource/parser/no-overwrite tests；两张用户提供且明确只含 `ExperimentMonitor` 的真实 Sunlogin Direct/Shape 失真截图被封成同一 byte-identical index；最新 create-only `dataset-index-c.json`/`dataset-index-d.json` 均为 3868 bytes，SHA-256=`C9101EB309FEB09768372D3F6BAC25EDDB929014D1D2A350A9E9680C5B08407C`，`acceptanceInput=false`、`containsProtectedMonitorPixels=false`。
+- **依赖修正**：真实 Direct/Shape/LF4 receiver-only Replay 不能作为 Step 02 的前置完成条件。LF4 live raster/demod 尚在 Step 09..14，Replay live/offline parity 在 Step 15，真实捕获在 Step 20；要求 Step 02 在这些步骤之前持有真实 LF4 Replay 会形成环形依赖。该 field acceptance 没有删除或降级，仍是 Step 15/20 的硬完成出口。
+- **完成出口**：数据集入口、双 hash seal、隐私/路径/resource fail-closed 和现有真实截图 index 可从同一输入重复生成；任何 Replay 只有在后续 Step 15/20 两次离线结果一致后才可计为 field evidence。
 
 ### 11.5 Step 03：LF4 identity、codebook 与容量真值
 
@@ -508,13 +509,13 @@ logical FPS <= 5
 
 ### 11.8 Step 06：信道 impairment 矩阵与 adversarial corpus
 
-- **状态**：`PARTIAL`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：用可重复 corpus 覆盖真实远控可能产生的空间、颜色、时序和 parser/identity 失真。
 - **实施要点**：逐项 sweep area/bilinear/bicubic、fractional scale/phase、blur/ringing、gamma/contrast、4:2:0/4:4:4、limited/full range、block replacement、alpha mix、crop/letterbox/overlay、duplicate/drop/reorder/epoch。
-- **当前增量**：Manifest v2 已加入固定 3×3 blur/sharpen、gain/bias/gamma、integer 4:2:0 proxy、crop、solid overlay 和 reference blend；`PBRemoteVisualChannelMatrix` 现在可用一条 headless 命令生成带 payload BLAKE3 的 canonical JSON，并让每个 case 重新进入 production LF4 + QC-LDPC + Transport truth boundary。当前 14-case 固定矩阵得到 11 个 `Verified`、3 个 `ErasureNoFalseAccept`、0 false accepted codeword、0 expectation mismatch；覆盖 identity、area upscale、bilinear fractional phase、0.75 letterbox、三种固定 kernel、limited range、gamma、4:2:0 proxy、crop、overlay、stale block replacement 和 temporal blend。尚缺 bicubic/实际 codec bitstream、sequence duplicate/drop/reorder/epoch corpus，因此保持 `PARTIAL`。
+- **当前增量**：Manifest v2 已加入固定 3×3 blur/sharpen、gain/bias/gamma、integer 4:2:0 proxy、crop、solid overlay、reference blend 和固定 Q16/Q20 Catmull-Rom bicubic；15-case matrix 得到 12 个 `Verified`、3 个 `ErasureNoFalseAccept`、0 ordinary false candidate、0 expectation mismatch。`PBRemoteVisualCodecProbe` 生成 production LF4 source 并将实际 libx264/libx265 解码帧重新送入 LF4+QC-LDPC+Transport truth boundary；5 个 codec case 共 15 帧得到 1 Verified/14 erasure/0 ordinary false candidate。`PBRemoteVisualTemporalCorpus` 直接复用 production identity/refinement/stall tracker，以 11 events 证明 duplicate/reorder 抑制、gap/epoch、一次性 duplicate refinement 和 valid-CRC wrong-identity 的 0 production admission。
 - **注意事项**：H.264/HEVC 应保存实际 bitstream 参数并用 inspector 验证；crop/letterbox 不得被 simulator 隐式纠正；valid CRC + wrong identity 必须单独测试。
 - **验收证据**：每个 case 的 canonical input/output hash、truth manifest、Bootstrap、BER/FER、stale distribution、accepted Transport、false accept 和 digest 结果。
-- **完成出口**：矩阵可以从空 scratch 一条命令重建，且所有 failure 分类具有唯一、可断言的原因；实际 codec 与 sequence corpus 补齐前不得把本步骤改为 `DONE`。
+- **完成出口**：`build_step06_corpus.py` 可从空 scratch 一条命令重建 transform、actual codec 和 temporal corpus，并交叉核对 source/evaluation report 与实际 BGRA/Gray8 字节。基于 implementation commit `f6e4769` 的两次 create-only rebuild `20260831-f6e4769-step06-final-a`/`-b` 共有 30 个相对文件，其路径、size、SHA-256 完全相同（包含 FFmpeg/FFprobe version/build configuration）；root `SHA256SUMS.txt` SHA-256=`307D207A85944D343568FA07FAFC6550527C871DB5AB417246FDFE3F95BF99DC`。所有普通 impairment/codec case 均满足 truth boundary 且无 false acceptance；wrong-identity case 的四个 CRC-valid nontruth candidate 全部被 identity gate 拒绝，accepted Transport=0。完整规范与结果见 `REMOTE_VISUAL_STEP06_CORPUS.md`。
 
 ### 11.9 Step 07：Soft metric 标定与 false-confidence Gate
 
