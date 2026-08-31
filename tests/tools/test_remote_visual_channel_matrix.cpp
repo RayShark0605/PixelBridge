@@ -39,7 +39,7 @@ TEST_CASE("RemoteVisual channel matrix is deterministic and preserves the produc
     REQUIRE(first.payloadBlake3 == second.payloadBlake3);
     REQUIRE(first.truthBoundaryValid);
     REQUIRE(first.expectationsMatched);
-    REQUIRE(first.cases.size() == 14);
+    REQUIRE(first.cases.size() == 15);
     REQUIRE(first.canonicalJson.starts_with("{\"schema\":\"PixelBridge.RemoteVisualChannelMatrix.1\""));
     REQUIRE(first.canonicalJson.ends_with("\n"));
     REQUIRE(first.canonicalJson.find("\"payloadBlake3\":\"" +

@@ -465,7 +465,7 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
         const auto currentRasterBlake3 = HashBytes(currentRaster);
         const auto staleBlock = FindStaleRegionTransform();
         std::vector<ChannelMatrixCaseEvidence> cases;
-        cases.reserve(14);
+        cases.reserve(15);
 
         const auto AddCase = [&](const std::string_view name, const std::string_view impairmentClass,
             const std::string_view expected, const std::initializer_list<pbremotevisualsimulator::ChannelTransform> transforms,
@@ -524,6 +524,10 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
         AddCase("bilinear-fractional-phase", "geometry-filter-phase", "NoFalseAcceptance",
             {pbremotevisualsimulator::ResampleTransform{1932, 1092, 1.0, 1.0, 6.25, 6.5,
                 pbremotevisualsimulator::ResampleFilter::Bilinear,
+                {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}}}}, false);
+        AddCase("bicubic-fractional-scale", "geometry-filter-scale", "NoFalseAcceptance",
+            {pbremotevisualsimulator::ResampleTransform{1770, 1000, 0.9, 0.9, 21.25, 14.5,
+                pbremotevisualsimulator::ResampleFilter::Bicubic,
                 {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}}}}, false);
         AddCase("letterbox-075", "geometry-letterbox", "NoFalseAcceptance",
             {pbremotevisualsimulator::ResampleTransform{1600, 900, 0.75, 0.75, 80.0, 45.0,

@@ -111,7 +111,8 @@ add_subdirectory(golden)
 if(PB_BUILD_PHASE0_GATE)
     add_subdirectory(Phase0Gate)
 endif()
-if(TARGET PBProtocolDumpCore AND TARGET PBFrameInspectorCore AND TARGET PBRemoteVisualChannelMatrixCore)
+if(TARGET PBProtocolDumpCore AND TARGET PBFrameInspectorCore AND TARGET PBRemoteVisualChannelMatrixCore AND
+    TARGET PBRemoteVisualCodecProbeCore)
     add_subdirectory(tools)
 endif()
 add_subdirectory(CMake)
@@ -152,6 +153,8 @@ if(MSVC AND TARGET PBProtocol)
             PBProtocolDump
             PBFrameInspector
             PBRemoteVisualChannelMatrix
+            PBRemoteVisualCodecProbe
+            PBRemoteVisualTemporalCorpus
             PBVectorGen)
         # add_custom_command(TARGET ...) must live in the directory that
         # created the target, so a single all-of-ALL copy target created in

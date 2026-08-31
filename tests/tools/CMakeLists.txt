@@ -42,6 +42,36 @@ set_tests_properties(PBRemoteVisualChannelMatrixTests PROPERTIES
     LABELS "tools;remote-visual;simulator;matrix;truth"
     TIMEOUT 300)
 
+PbAddUnitTest(PBRemoteVisualCodecProbeTests
+    test_remote_visual_codec_probe.cpp)
+target_link_libraries(PBRemoteVisualCodecProbeTests
+    PRIVATE
+        PBRemoteVisualCodecProbeCore)
+PbInstrumentPresentationTest(PBRemoteVisualCodecProbeTests)
+set_tests_properties(PBRemoteVisualCodecProbeTests PROPERTIES
+    LABELS "tools;remote-visual;codec;fec;transport;resource"
+    TIMEOUT 300)
+
+if(TARGET PBRemoteVisualTemporalCorpusCore)
+    PbAddUnitTest(PBRemoteVisualTemporalCorpusTests
+        test_remote_visual_temporal_corpus.cpp)
+    target_link_libraries(PBRemoteVisualTemporalCorpusTests
+        PRIVATE
+            PBRemoteVisualTemporalCorpusCore)
+    PbInstrumentPresentationTest(PBRemoteVisualTemporalCorpusTests)
+    set_tests_properties(PBRemoteVisualTemporalCorpusTests PROPERTIES
+        LABELS "tools;remote-visual;temporal;identity;fec;transport"
+        TIMEOUT 300)
+
+    add_test(NAME PBRemoteVisualTemporalCorpusIntegration
+        COMMAND ${CMAKE_COMMAND}
+            "-DPB_TEMPORAL_CORPUS_EXE=$<TARGET_FILE:PBRemoteVisualTemporalCorpus>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyRemoteVisualTemporalCorpus.cmake")
+    set_tests_properties(PBRemoteVisualTemporalCorpusIntegration PROPERTIES
+        LABELS "tools;remote-visual;temporal;identity;integration"
+        TIMEOUT 300)
+endif()
+
 # CLI exit-code contracts for the tool executables. The positive input
 # is the committed golden bootstrap record (exit 0); the parse-failure input
 # is the committed bootstrap-control corpus negative sample (exit 1); a

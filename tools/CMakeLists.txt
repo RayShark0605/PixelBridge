@@ -76,3 +76,50 @@ target_link_libraries(PBRemoteVisualChannelMatrix
     PRIVATE
         PB::CompilerSettings
         PBRemoteVisualChannelMatrixCore)
+
+# PBRemoteVisualCodecProbe exports a deterministic production LF4 sequence and
+# evaluates decoded Gray8 frames through the existing FEC/Transport boundary.
+# External codec orchestration remains in a separate evidence script.
+add_library(PBRemoteVisualCodecProbeCore STATIC
+    PBRemoteVisualCodecProbe/codec_probe_core.cpp)
+target_link_libraries(PBRemoteVisualCodecProbeCore
+    PUBLIC
+        PB::PBDesktopLevelsReference
+        PB::PBModulation
+        PB::PBProtocol
+    PRIVATE
+        PB::CompilerSettings)
+target_include_directories(PBRemoteVisualCodecProbeCore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/PBRemoteVisualCodecProbe)
+
+add_executable(PBRemoteVisualCodecProbe
+    PBRemoteVisualCodecProbe/main.cpp)
+target_link_libraries(PBRemoteVisualCodecProbe
+    PRIVATE
+        PB::CompilerSettings
+        PBRemoteVisualCodecProbeCore)
+
+# The temporal corpus intentionally reuses the production application identity,
+# duplicate-refinement and stall trackers. It is available only when the app
+# model is built; the tool itself is headless and starts no capture or window.
+if(TARGET PBApplication)
+    add_library(PBRemoteVisualTemporalCorpusCore STATIC
+        PBRemoteVisualTemporalCorpus/temporal_corpus_core.cpp)
+    target_link_libraries(PBRemoteVisualTemporalCorpusCore
+        PUBLIC
+            PB::PBApplication
+            PBRemoteVisualCodecProbeCore
+        PRIVATE
+            PB::CompilerSettings)
+    target_include_directories(PBRemoteVisualTemporalCorpusCore
+        PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/PBRemoteVisualTemporalCorpus)
+
+    add_executable(PBRemoteVisualTemporalCorpus
+        PBRemoteVisualTemporalCorpus/main.cpp)
+    target_link_libraries(PBRemoteVisualTemporalCorpus
+        PRIVATE
+            PB::CompilerSettings
+            PBRemoteVisualTemporalCorpusCore)
+endif()

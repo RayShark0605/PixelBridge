@@ -145,7 +145,8 @@ struct BgraImage
 enum class ResampleFilter : std::uint8_t
 {
     Bilinear,
-    Area
+    Area,
+    Bicubic
 };
 
 struct ResampleTransform

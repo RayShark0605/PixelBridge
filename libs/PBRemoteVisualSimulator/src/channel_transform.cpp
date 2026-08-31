@@ -218,7 +218,8 @@ struct ValidationResult
 {
     if (transform.outputWidth == 0 || transform.outputHeight == 0 || !std::isfinite(transform.scaleX) ||
         !std::isfinite(transform.scaleY) || !std::isfinite(transform.originX) || !std::isfinite(transform.originY) ||
-        (transform.filter != ResampleFilter::Area && transform.filter != ResampleFilter::Bilinear) ||
+        (transform.filter != ResampleFilter::Area && transform.filter != ResampleFilter::Bilinear &&
+            transform.filter != ResampleFilter::Bicubic) ||
         transform.scaleX < policy.minimumScale || transform.scaleX > policy.maximumScale ||
         transform.scaleY < policy.minimumScale || transform.scaleY > policy.maximumScale)
     {
@@ -243,10 +244,12 @@ struct ValidationResult
     {
         return ChannelTransformErrorCode::ByteLimitExceeded;
     }
-    const std::uint64_t sampleColumns = transform.filter == ResampleFilter::Bilinear ? 2ULL :
-        static_cast<std::uint64_t>(std::ceil(1.0 / transform.scaleX)) + 1ULL;
-    const std::uint64_t sampleRows = transform.filter == ResampleFilter::Bilinear ? 2ULL :
-        static_cast<std::uint64_t>(std::ceil(1.0 / transform.scaleY)) + 1ULL;
+    const std::uint64_t sampleColumns = transform.filter == ResampleFilter::Bicubic ? 4ULL :
+        (transform.filter == ResampleFilter::Bilinear ? 2ULL :
+            static_cast<std::uint64_t>(std::ceil(1.0 / transform.scaleX)) + 1ULL);
+    const std::uint64_t sampleRows = transform.filter == ResampleFilter::Bicubic ? 4ULL :
+        (transform.filter == ResampleFilter::Bilinear ? 2ULL :
+            static_cast<std::uint64_t>(std::ceil(1.0 / transform.scaleY)) + 1ULL);
     const auto samplesResult = pbprotocol::CheckedMultiplyUint64(sampleColumns, sampleRows);
     const auto workResult = samplesResult ?
         pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), samplesResult.Value()) : samplesResult;
@@ -299,6 +302,88 @@ void SampleBilinear(const BgraImageView& source, const ResampleTransform& transf
         const double bottomValue = std::to_integer<unsigned char>(row1[static_cast<std::size_t>(x0) * 4 + channel]) * (1.0 - fractionX) +
             std::to_integer<unsigned char>(row1[static_cast<std::size_t>(x1) * 4 + channel]) * fractionX;
         destination[channel] = RoundedByte(topValue * (1.0 - fractionY) + bottomValue * fractionY);
+    }
+}
+
+[[nodiscard]] std::int64_t RoundSignedDivision(const std::int64_t numerator,
+    const std::int64_t denominator) noexcept
+{
+    if (numerator >= 0)
+    {
+        return (numerator + denominator / 2) / denominator;
+    }
+    return -((-numerator + denominator / 2) / denominator);
+}
+
+[[nodiscard]] std::array<std::int64_t, 4> MakeCatmullRomWeights(const double fraction,
+    std::int64_t& base) noexcept
+{
+    // Quantizing the fractional phase to Q16 makes the cubic kernel and its
+    // output byte-exact across standard-library implementations. The four
+    // Catmull-Rom weights use a=-1/2 and are returned in Q20; the final weight
+    // absorbs rounding residue so their sum is exactly one.
+    constexpr std::int64_t phaseScale = 1LL << 16;
+    constexpr std::int64_t weightScale = 1LL << 20;
+    constexpr std::int64_t weightDivisor = 1LL << 29;
+    std::int64_t phase = std::llround(std::clamp(fraction, 0.0, 1.0) * static_cast<double>(phaseScale));
+    if (phase == phaseScale)
+    {
+        base++;
+        phase = 0;
+    }
+    const std::int64_t phaseSquared = phase * phase;
+    const std::int64_t phaseCubed = phaseSquared * phase;
+    const std::int64_t scaleSquared = phaseScale * phaseScale;
+    const std::int64_t scaleCubed = scaleSquared * phaseScale;
+    std::array<std::int64_t, 4> weights{};
+    weights[0] = RoundSignedDivision(-phase * scaleSquared + 2 * phaseSquared * phaseScale - phaseCubed,
+        weightDivisor);
+    weights[1] = RoundSignedDivision(2 * scaleCubed - 5 * phaseSquared * phaseScale + 3 * phaseCubed,
+        weightDivisor);
+    weights[2] = RoundSignedDivision(phase * scaleSquared + 4 * phaseSquared * phaseScale - 3 * phaseCubed,
+        weightDivisor);
+    weights[3] = weightScale - weights[0] - weights[1] - weights[2];
+    return weights;
+}
+
+void SampleBicubic(const BgraImageView& source, const ResampleTransform& transform,
+    const std::uint32_t outputX, const std::uint32_t outputY, std::byte* destination) noexcept
+{
+    const double logicalEdgeX = (static_cast<double>(outputX) + 0.5 - transform.originX) / transform.scaleX;
+    const double logicalEdgeY = (static_cast<double>(outputY) + 0.5 - transform.originY) / transform.scaleY;
+    if (logicalEdgeX < 0 || logicalEdgeX >= source.width || logicalEdgeY < 0 || logicalEdgeY >= source.height)
+    {
+        WriteBorder(destination, transform.borderBgra);
+        return;
+    }
+    const double sourceCenterX = logicalEdgeX - 0.5;
+    const double sourceCenterY = logicalEdgeY - 0.5;
+    std::int64_t baseX = static_cast<std::int64_t>(std::floor(sourceCenterX));
+    std::int64_t baseY = static_cast<std::int64_t>(std::floor(sourceCenterY));
+    const auto weightsX = MakeCatmullRomWeights(sourceCenterX - static_cast<double>(baseX), baseX);
+    const auto weightsY = MakeCatmullRomWeights(sourceCenterY - static_cast<double>(baseY), baseY);
+    constexpr std::int64_t weightScale = 1LL << 20;
+    constexpr std::int64_t combinedScale = weightScale * weightScale;
+    for (std::size_t channel = 0; channel < 4; channel++)
+    {
+        std::int64_t verticalSum = 0;
+        for (std::size_t rowIndex = 0; rowIndex < 4; rowIndex++)
+        {
+            const std::int64_t sourceY = std::clamp<std::int64_t>(baseY + static_cast<std::int64_t>(rowIndex) - 1,
+                0, source.height - 1ULL);
+            const std::byte* row = source.pixels.data() + static_cast<std::size_t>(sourceY) * source.rowPitch;
+            std::int64_t horizontalSum = 0;
+            for (std::size_t columnIndex = 0; columnIndex < 4; columnIndex++)
+            {
+                const std::int64_t sourceX = std::clamp<std::int64_t>(baseX +
+                    static_cast<std::int64_t>(columnIndex) - 1, 0, source.width - 1ULL);
+                horizontalSum += std::to_integer<unsigned char>(row[static_cast<std::size_t>(sourceX) * 4 + channel]) *
+                    weightsX[columnIndex];
+            }
+            verticalSum += horizontalSum * weightsY[rowIndex];
+        }
+        const std::int64_t value = std::clamp<std::int64_t>(RoundSignedDivision(verticalSum, combinedScale), 0, 255);
+        destination[channel] = static_cast<std::byte>(static_cast<unsigned char>(value));
     }
 }
 
@@ -390,9 +475,13 @@ void SampleArea(const BgraImageView& source, const ResampleTransform& transform,
                 {
                     SampleBilinear(source, transform, outputX, outputY, destination);
                 }
-                else
+                else if (transform.filter == ResampleFilter::Area)
                 {
                     SampleArea(source, transform, outputX, outputY, destination);
+                }
+                else
+                {
+                    SampleBicubic(source, transform, outputX, outputY, destination);
                 }
             }
         }
@@ -774,6 +863,10 @@ void AppendBgra(std::string& output, const std::array<std::byte, 4>& bgra)
 {
     return std::ranges::any_of(transforms, [](const ChannelTransform& transform)
     {
+        if (const auto* resample = std::get_if<ResampleTransform>(&transform))
+        {
+            return resample->filter == ResampleFilter::Bicubic;
+        }
         return !std::holds_alternative<ResampleTransform>(transform) &&
             !std::holds_alternative<BlockReplacementTransform>(transform);
     });
@@ -787,7 +880,18 @@ void AppendTransformParameters(std::string& output, const ChannelTransform& tran
         if constexpr (std::is_same_v<TransformType, ResampleTransform>)
         {
             output.append("{\"filter\":\"");
-            output.append(typedTransform.filter == ResampleFilter::Area ? "area" : "bilinear");
+            if (typedTransform.filter == ResampleFilter::Area)
+            {
+                output.append("area");
+            }
+            else if (typedTransform.filter == ResampleFilter::Bilinear)
+            {
+                output.append("bilinear");
+            }
+            else
+            {
+                output.append("bicubic-catmull-rom-q16");
+            }
             output.append("\",\"outputWidth\":");
             AppendUnsigned(output, typedTransform.outputWidth);
             output.append(",\"outputHeight\":");
