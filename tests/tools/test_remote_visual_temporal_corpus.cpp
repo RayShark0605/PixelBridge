@@ -30,7 +30,7 @@ TEST_CASE("RemoteVisual temporal corpus is deterministic and enforces production
     REQUIRE(first.productionAdmissionSafe);
     REQUIRE(first.expectationsMatched);
     REQUIRE(first.canonicalJson.starts_with(
-        "{\"schema\":\"PixelBridge.RemoteVisualTemporalCorpus.1\",\"version\":1,"));
+        "{\"schema\":\"PixelBridge.RemoteVisualTemporalCorpus.2\",\"version\":2,"));
     REQUIRE(first.canonicalJson.ends_with("\n"));
     REQUIRE(first.canonicalJson.find("\"name\":\"duplicate-gap-reorder-epoch\"") != std::string::npos);
     REQUIRE(first.canonicalJson.find("\"name\":\"duplicate-refinement-after-erasure\"") != std::string::npos);

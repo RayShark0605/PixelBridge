@@ -46,7 +46,7 @@ def make_probe(case: dict[str, object]) -> dict[str, object]:
             "media_type": "video",
             "key_frame": 1 if case["intraOnly"] or index == 0 else 0,
             "pict_type": "I" if case["intraOnly"] or index == 0 else "P",
-            "color_range": "tv",
+            "color_range": case["colorRange"],
             "color_space": "bt709",
             "color_transfer": "bt709",
             "color_primaries": "bt709",
@@ -55,11 +55,11 @@ def make_probe(case: dict[str, object]) -> dict[str, object]:
         "streams": [{
             "codec_type": "video",
             "codec_name": case["codec"],
-            "pix_fmt": case["pixelFormat"],
+            "pix_fmt": case.get("inspectedPixelFormat", case["pixelFormat"]),
             "width": SOURCE_WIDTH,
             "height": SOURCE_HEIGHT,
             "color_space": "bt709",
-            "color_range": "tv",
+            "color_range": case["colorRange"],
             "color_transfer": "bt709",
             "color_primaries": "bt709",
             "profile": "fixture",
@@ -97,7 +97,7 @@ class BuildCodecCorpusTests(unittest.TestCase):
         for case in CASES:
             inspection = validate_probe(make_probe(case), case)
             self.assertEqual(inspection["codecName"], case["codec"])
-            self.assertEqual(inspection["pixelFormat"], case["pixelFormat"])
+            self.assertEqual(inspection["pixelFormat"], case.get("inspectedPixelFormat", case["pixelFormat"]))
             self.assertEqual(inspection["frameCount"], SOURCE_FRAMES)
             self.assertEqual(inspection["packetCount"], SOURCE_FRAMES)
 
@@ -183,35 +183,75 @@ class BuildCodecCorpusTests(unittest.TestCase):
                 {"slot": slot, "byteCount": 36, "blake3": blake3.blake3(f"block-{slot}".encode()).hexdigest()}
                 for slot in range(4)
             ] if index == 0 else []
+            accepted = 4 if index == 0 else 0
+            failures = 0 if index == 0 else 4
+            diagnostic_evaluation = {
+                "evaluated": True,
+                "paddingValid": True,
+                "codewords": 4,
+                "fecFailures": failures,
+                "crcFailures": 0,
+                "identityFailures": 0,
+                "falseAcceptedCodewords": 0,
+                "acceptedTransportBlocks": accepted,
+                "acceptedRemoteControlBlocks": 0,
+                "iterationsTotal": 0,
+                "iterationsMaximum": 0,
+                "comparedCodedBits": 64800,
+                "erroneousCodedBits": 0,
+            }
+            production_evaluation = dict(diagnostic_evaluation)
+            production_evaluation["comparedCodedBits"] = 0
             frames.append({
                 "index": index,
                 "classification": classification,
-                "evaluation": {
-                    "acceptedTransportBlocks": 4 if index == 0 else 0,
-                    "falseAcceptedCodewords": 0,
-                },
-                "acceptedBlocks": accepted_blocks,
+                "diagnosticFalseCandidates": 0,
+                "falseAcceptedCodewords": 0,
+                "diagnosticTruthEvaluation": diagnostic_evaluation,
+                "productionTransportEvaluation": production_evaluation,
+                "productionAcceptedBlocks": accepted_blocks,
             })
         evaluation_report = {"payload": {
             "frames": frames,
+            "receiverEvidence": {
+                "configuredSegments": 3,
+                "inputTransportBlocks": 4,
+                "parsedTransportBlocks": 4,
+                "uniqueOuterSymbols": 4,
+                "identicalDuplicateOuterSymbols": 0,
+                "recoveryReadyOuterSymbols": 0,
+                "alreadyCompletedOuterSymbols": 0,
+                "receiverRejections": 0,
+                "outerConflictRejections": 0,
+                "resourcePolicyRejections": 0,
+                "verifiedSegments": 1,
+                "verifiedRawBytes": 5256,
+                "finalizationPrepared": False,
+                "wholeFileDigestDisposition": "NotReady",
+                "expectedWholeFileBlake3": "1" * 64,
+                "observedWholeFileBlake3": None,
+                "safe": True,
+            },
             "summary": {
                 "frameCount": 3,
                 "verifiedFrames": 1,
                 "erasureFrames": 1,
                 "rejectedFrames": 1,
-                "acceptedTransportBlocks": 4,
+                "diagnosticAcceptedTransportBlocks": 4,
+                "productionAcceptedTransportBlocks": 4,
                 "falseAcceptedCodewords": 0,
+                "diagnosticFalseCandidates": 0,
                 "truthBoundaryValid": True,
                 "allFramesVerified": False,
             },
         }}
         self.assertEqual(validate_evaluation_report(evaluation_report, "fixture")["verifiedFrames"], 1)
-        evaluation_report["payload"]["summary"]["acceptedTransportBlocks"] = 5
+        evaluation_report["payload"]["summary"]["productionAcceptedTransportBlocks"] = 5
         with self.assertRaisesRegex(CorpusError, "summary consistency"):
             validate_evaluation_report(evaluation_report, "fixture")
 
-        evaluation_report["payload"]["summary"]["acceptedTransportBlocks"] = 4
-        evaluation_report["payload"]["frames"][0]["acceptedBlocks"][0]["byteCount"] = \
+        evaluation_report["payload"]["summary"]["productionAcceptedTransportBlocks"] = 4
+        evaluation_report["payload"]["frames"][0]["productionAcceptedBlocks"][0]["byteCount"] = \
             MAX_TRANSPORT_BLOCK_BYTES + 1
         with self.assertRaisesRegex(CorpusError, "violates bounds"):
             validate_evaluation_report(evaluation_report, "fixture")

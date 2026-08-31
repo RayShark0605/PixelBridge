@@ -461,7 +461,7 @@ RemoteVisualReferenceObservation ReferenceChannel::DecodeRemoteVisual(const pbmo
 }
 
 RemoteVisualLowFpsReferenceObservation ReferenceChannel::DecodeRemoteVisualLowFps(const pbmodulation::LumaView& view,
-    const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy) noexcept
+    const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy, const EvaluationMode mode) noexcept
 {
     RemoteVisualLowFpsReferenceObservation result;
     if (!implementation_)
@@ -482,7 +482,7 @@ RemoteVisualLowFpsReferenceObservation ReferenceChannel::DecodeRemoteVisualLowFp
     {
         result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44,
             std::span(state.hard).first(result.modulation.dataBytes),
-            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
+            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8), mode);
         state.remoteVisualLowFpsHistogramValid = result.evaluation.evaluated;
     }
     return result;

@@ -13,6 +13,7 @@ from typing import Any
 import blake3
 
 from build_codec_corpus import (
+    CASES,
     MAX_JSON_BYTES,
     SOURCE_FRAMES,
     CorpusError,
@@ -25,13 +26,39 @@ from build_codec_corpus import (
     sha256_file,
     tool_identity,
     validate_canonical_report,
+    validate_frame_evaluation,
+    validate_receiver_evidence,
     write_new,
 )
 
 
-SCHEMA = "PixelBridge.RemoteVisualStep06Corpus.1"
-MATRIX_SCHEMA = "PixelBridge.RemoteVisualChannelMatrix.1"
-TEMPORAL_SCHEMA = "PixelBridge.RemoteVisualTemporalCorpus.1"
+SCHEMA = "PixelBridge.RemoteVisualStep06Corpus.2"
+MATRIX_SCHEMA = "PixelBridge.RemoteVisualChannelMatrix.2"
+TEMPORAL_SCHEMA = "PixelBridge.RemoteVisualTemporalCorpus.2"
+EXPECTED_MATRIX_CASE_NAMES = (
+    "identity",
+    "full-range-444-identity",
+    "area-upscale",
+    "bilinear-fractional-phase",
+    "bicubic-fractional-scale",
+    "letterbox-075",
+    "box-blur-1",
+    "gaussian-blur-1",
+    "sharpen-1",
+    "limited-range",
+    "gamma-115",
+    "chroma-420",
+    "illegal-crop-8px",
+    "codec-block-overlay",
+    "alpha-overlay-128",
+    "reference-block-8x8",
+    "reference-block-16x16",
+    "reference-block-64x64",
+    "bootstrap-a-mismatch",
+    "freshness-low-confidence",
+    "stale-region-replacement",
+    "temporal-blend-96",
+)
 
 
 def require_nonnegative_integer(value: Any, label: str) -> int:
@@ -47,27 +74,46 @@ def validate_matrix(report: dict[str, Any]) -> dict[str, Any]:
         raise CorpusError("channel matrix cases and summary must have their canonical container types")
     classifications = {"Verified": 0, "ErasureNoFalseAccept": 0, "RejectedNoFalseAccept": 0}
     false_accepted_codewords = 0
+    diagnostic_false_candidates = 0
     observed_names: set[str] = set()
     for index, case in enumerate(cases):
         if not isinstance(case, dict) or case.get("index") != index or not isinstance(case.get("name"), str) or \
                 not case["name"] or case["name"] in observed_names or case.get("classification") not in classifications or \
-                case.get("expectationMatched") is not True or not isinstance(case.get("evaluation"), dict):
+                case.get("expectationMatched") is not True:
             raise CorpusError(f"channel matrix case {index} is malformed or did not match its expectation")
         observed_names.add(case["name"])
         classifications[case["classification"]] += 1
-        false_accepted_codewords += require_nonnegative_integer(
-            case["evaluation"].get("falseAcceptedCodewords"), f"matrix case {index} falseAcceptedCodewords")
-    if require_nonnegative_integer(summary.get("caseCount"), "matrix caseCount") != 15 or \
-            require_nonnegative_integer(summary.get("verifiedCases"), "matrix verifiedCases") != 12 or \
-            require_nonnegative_integer(summary.get("erasureCases"), "matrix erasureCases") != 3 or \
-            require_nonnegative_integer(summary.get("rejectedCases"), "matrix rejectedCases") != 0 or \
+        diagnostic_accepted, diagnostic_false = validate_frame_evaluation(
+            case.get("diagnosticTruthEvaluation"), f"matrix case {index} diagnostic", True, True)
+        production_accepted, production_unavailable_false = validate_frame_evaluation(
+            case.get("productionTransportEvaluation"), f"matrix case {index} production", False, True)
+        case_diagnostic_false = require_nonnegative_integer(case.get("diagnosticFalseCandidates"),
+                                                            f"matrix case {index} diagnosticFalseCandidates")
+        case_false_accepted = require_nonnegative_integer(case.get("falseAcceptedCodewords"),
+                                                          f"matrix case {index} falseAcceptedCodewords")
+        if production_unavailable_false != 0 or case_diagnostic_false != diagnostic_false or \
+                case_false_accepted != 0 or (case["classification"] == "Verified" and
+                                             (diagnostic_accepted != 4 or production_accepted != 4)):
+            raise CorpusError(f"channel matrix case {index} confuses diagnostic and production acceptance")
+        validate_receiver_evidence(case.get("receiverEvidence"), f"matrix case {index} receiverEvidence",
+                                   1, production_accepted)
+        false_accepted_codewords += case_false_accepted
+        diagnostic_false_candidates += case_diagnostic_false
+    if tuple(case["name"] for case in cases) != EXPECTED_MATRIX_CASE_NAMES or \
+            require_nonnegative_integer(summary.get("caseCount"), "matrix caseCount") != len(EXPECTED_MATRIX_CASE_NAMES) or \
+            require_nonnegative_integer(summary.get("verifiedCases"), "matrix verifiedCases") != \
+            classifications["Verified"] or \
+            require_nonnegative_integer(summary.get("erasureCases"), "matrix erasureCases") != \
+            classifications["ErasureNoFalseAccept"] or \
+            require_nonnegative_integer(summary.get("rejectedCases"), "matrix rejectedCases") != \
+            classifications["RejectedNoFalseAccept"] or \
             require_nonnegative_integer(summary.get("falseAcceptedCodewords"),
                                         "matrix falseAcceptedCodewords") != 0 or \
+            require_nonnegative_integer(summary.get("diagnosticFalseCandidates"),
+                                        "matrix diagnosticFalseCandidates") != diagnostic_false_candidates or \
             require_nonnegative_integer(summary.get("expectationMismatches"),
                                         "matrix expectationMismatches") != 0 or \
-            len(cases) != summary["caseCount"] or classifications["Verified"] != summary["verifiedCases"] or \
-            classifications["ErasureNoFalseAccept"] != summary["erasureCases"] or \
-            classifications["RejectedNoFalseAccept"] != summary["rejectedCases"] or \
+            len(cases) != summary["caseCount"] or \
             false_accepted_codewords != summary["falseAcceptedCodewords"] or \
             summary.get("truthBoundaryValid") is not True or summary.get("expectationsMatched") is not True:
         raise CorpusError("channel matrix summary does not satisfy the Step 06 truth boundary")
@@ -102,6 +148,9 @@ def validate_temporal(report: dict[str, Any]) -> dict[str, Any]:
                                                            "temporal admittedTransportBlocks")
             diagnostic_candidates += require_nonnegative_integer(event.get("diagnosticNonTruthCodewords"),
                                                                   "temporal diagnosticNonTruthCodewords")
+            if require_nonnegative_integer(event.get("productionFalseAcceptedCodewords"),
+                                           "temporal productionFalseAcceptedCodewords") != 0:
+                raise CorpusError("temporal corpus contains a production false-accepted codeword")
             suppressed_duplicates += event["disposition"] == "Duplicate" and not event["admissionAttempted"]
             suppressed_reordered += event["disposition"] == "Reordered" and not event["admissionAttempted"]
     if set(stalls) != {"capture", "visual"} or any(not isinstance(stalls.get(name), dict) for name in stalls):
@@ -153,14 +202,14 @@ def build_step06_corpus(matrix_exe: Path, temporal_exe: Path, codec_probe: Path,
 
     matrix_bytes = normalize_cli_json(
         run_bounded([str(tools["channel-matrix"])], maximum_stdout_bytes=MAX_JSON_BYTES), "channel matrix")
-    matrix = validate_canonical_report(matrix_bytes, MATRIX_SCHEMA, "channel matrix")
+    matrix = validate_canonical_report(matrix_bytes, MATRIX_SCHEMA, "channel matrix", expected_version=2)
     matrix_summary = validate_matrix(matrix)
     matrix_path = output_dir / "channel-matrix.json"
     write_new(matrix_path, matrix_bytes)
 
     temporal_bytes = normalize_cli_json(
         run_bounded([str(tools["temporal-corpus"])], maximum_stdout_bytes=MAX_JSON_BYTES), "temporal corpus")
-    temporal = validate_canonical_report(temporal_bytes, TEMPORAL_SCHEMA, "temporal corpus")
+    temporal = validate_canonical_report(temporal_bytes, TEMPORAL_SCHEMA, "temporal corpus", expected_version=2)
     temporal_summary = validate_temporal(temporal)
     temporal_path = output_dir / "temporal-corpus.json"
     write_new(temporal_path, temporal_bytes)
@@ -168,12 +217,15 @@ def build_step06_corpus(matrix_exe: Path, temporal_exe: Path, codec_probe: Path,
     codec_dir = output_dir / "actual-codec-corpus"
     codec = build_corpus(tools["codec-probe"], tools["ffmpeg"], tools["ffprobe"], codec_dir)
     codec_cases = codec.get("cases")
-    if not isinstance(codec_cases, list) or len(codec_cases) != 5:
+    if not isinstance(codec_cases, list) or len(codec_cases) != len(CASES):
         raise CorpusError("actual codec corpus has an unexpected case count")
     codec_false_accepted = 0
     codec_verified_frames = 0
     codec_erasure_frames = 0
     codec_rejected_frames = 0
+    codec_outer_unique = 0
+    codec_digest_pass = 0
+    codec_digest_not_ready = 0
     for case in codec_cases:
         if not isinstance(case, dict) or not isinstance(case.get("evaluationSummary"), dict):
             raise CorpusError("actual codec corpus contains a malformed case summary")
@@ -185,6 +237,14 @@ def build_step06_corpus(matrix_exe: Path, temporal_exe: Path, codec_probe: Path,
         codec_verified_frames += require_nonnegative_integer(summary.get("verifiedFrames"), "verifiedFrames")
         codec_erasure_frames += require_nonnegative_integer(summary.get("erasureFrames"), "erasureFrames")
         codec_rejected_frames += require_nonnegative_integer(summary.get("rejectedFrames"), "rejectedFrames")
+        receiver_evidence = case.get("receiverEvidence")
+        if not isinstance(receiver_evidence, dict):
+            raise CorpusError("actual codec corpus is missing Receiver/Outer evidence")
+        codec_outer_unique += require_nonnegative_integer(receiver_evidence.get("uniqueOuterSymbols"),
+                                                          "codec uniqueOuterSymbols")
+        digest_disposition = receiver_evidence.get("wholeFileDigestDisposition")
+        codec_digest_pass += digest_disposition == "Pass"
+        codec_digest_not_ready += digest_disposition == "NotReady"
     if codec_false_accepted != 0:
         raise CorpusError("actual codec corpus produced nonzero false-accepted codewords")
     if codec_verified_frames + codec_erasure_frames + codec_rejected_frames != len(codec_cases) * SOURCE_FRAMES:
@@ -215,6 +275,9 @@ def build_step06_corpus(matrix_exe: Path, temporal_exe: Path, codec_probe: Path,
             "actualCodecErasureFrames": codec_erasure_frames,
             "actualCodecRejectedFrames": codec_rejected_frames,
             "actualCodecFalseAcceptedCodewords": codec_false_accepted,
+            "actualCodecOuterUniqueSymbols": codec_outer_unique,
+            "actualCodecDigestPassCases": codec_digest_pass,
+            "actualCodecDigestNotReadyCases": codec_digest_not_ready,
             "productionAdmissionSafe": True,
             "expectationsMatched": True,
         },
@@ -228,7 +291,7 @@ def build_step06_corpus(matrix_exe: Path, temporal_exe: Path, codec_probe: Path,
     payload_bytes = canonical_json(payload).rstrip(b"\n")
     index = {
         "schema": SCHEMA,
-        "version": 1,
+        "version": 2,
         "payloadBlake3": blake3.blake3(payload_bytes).hexdigest(),
         "payload": payload,
     }

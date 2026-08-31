@@ -1,5 +1,7 @@
 #pragma once
 
+#include "receiver_evidence.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,8 +13,9 @@ namespace pbremotevisualcodecprobe
 {
 
 inline constexpr char kCodecSourceSchema[] = "PixelBridge.RemoteVisualCodecSource.1";
-inline constexpr char kCodecEvaluationSchema[] = "PixelBridge.RemoteVisualCodecFrameEvaluation.1";
-inline constexpr std::uint32_t kCodecProbeVersion = 1;
+inline constexpr char kCodecEvaluationSchema[] = "PixelBridge.RemoteVisualCodecFrameEvaluation.2";
+inline constexpr std::uint32_t kCodecSourceVersion = 1;
+inline constexpr std::uint32_t kCodecEvaluationVersion = 2;
 inline constexpr std::uint32_t kSourceWidth = 1920;
 inline constexpr std::uint32_t kSourceHeight = 1080;
 inline constexpr std::uint32_t kSourceFrameCount = 3;
@@ -34,16 +37,25 @@ struct CodecFrameSummary
     bool bootstrapAccepted = false;
     std::uint64_t sessionTag = 0;
     std::uint64_t frameSequence = 0;
+    // Production Transport admission and diagnostic truth scoring are kept
+    // separate. Production does not infer SegmentOrdinal from FrameSequence.
     std::uint32_t acceptedTransportBlocks = 0;
     std::uint32_t fecFailures = 0;
     std::uint32_t crcFailures = 0;
     std::uint32_t identityFailures = 0;
+    std::uint32_t diagnosticAcceptedTransportBlocks = 0;
+    std::uint32_t diagnosticIdentityFailures = 0;
+    std::uint32_t diagnosticFalseCandidates = 0;
+    // Sender-truth mismatch among blocks accepted by the production Transport
+    // boundary. This is distinct from CRC-valid diagnostic candidates that
+    // production rejects on SessionTag identity.
     std::uint32_t falseAcceptedCodewords = 0;
 };
 
 struct CodecSequenceEvaluation
 {
     std::vector<CodecFrameSummary> frames;
+    pbremotevisualreceiverevidence::ReceiverEvidenceSummary receiverEvidence;
     bool truthBoundaryValid = false;
     bool allFramesVerified = false;
     std::string canonicalJson;
@@ -70,9 +82,13 @@ enum class CodecAdversarialFrameKind : std::uint8_t
     std::vector<std::byte>& output, std::string& error);
 
 // Evaluates one to 16 tightly packed 1920x1080 Gray8 frames through the
-// production LF4 demod, QC-LDPC and Transport truth boundary. Expected data is
-// never accepted as an argument. A failure returns no partial evaluation.
+// production LF4 demod, QC-LDPC and Transport boundary. The optional ordinal
+// identifies the first sender-truth fixture Segment for post-admission corpus
+// scoring only; production acceptance never infers it from FrameSequence.
+// Expected payload bytes are never accepted as an argument. A failure returns
+// no partial evaluation.
 [[nodiscard]] bool EvaluateGray8Sequence(std::span<const std::byte> frames,
-    CodecSequenceEvaluation& output, std::string& error);
+    CodecSequenceEvaluation& output, std::string& error,
+    std::uint64_t firstExpectedSegmentOrdinal = 0);
 
 } // namespace pbremotevisualcodecprobe

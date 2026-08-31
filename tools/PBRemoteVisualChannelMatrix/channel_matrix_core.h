@@ -1,5 +1,7 @@
 #pragma once
 
+#include "receiver_evidence.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -9,8 +11,8 @@
 namespace pbremotevisualmatrix
 {
 
-inline constexpr char kChannelMatrixSchema[] = "PixelBridge.RemoteVisualChannelMatrix.1";
-inline constexpr std::uint32_t kChannelMatrixVersion = 1;
+inline constexpr char kChannelMatrixSchema[] = "PixelBridge.RemoteVisualChannelMatrix.2";
+inline constexpr std::uint32_t kChannelMatrixVersion = 2;
 inline constexpr std::size_t kChannelMatrixDigestBytes = 32;
 
 enum class ChannelMatrixClassification : std::uint8_t
@@ -31,9 +33,12 @@ struct ChannelMatrixCaseSummary
     bool expectationMatched = false;
     bool modulationAccepted = false;
     bool evaluationVerified = false;
+    std::uint32_t diagnosticFalseCandidates = 0;
     std::uint32_t falseAcceptedCodewords = 0;
     std::uint32_t acceptedTransportBlocks = 0;
     std::uint32_t staleRegions = 0;
+    std::uint32_t freshnessTagErasures = 0;
+    pbremotevisualreceiverevidence::ReceiverEvidenceSummary receiverEvidence;
     std::string erasure;
     std::string manifestBlake3;
     std::string outputBlake3;

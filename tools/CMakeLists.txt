@@ -53,6 +53,22 @@ target_link_libraries(PBFrameInspector
 add_executable(PBDesktopLevelsBaseline PBDesktopLevelsBaseline/main.cpp)
 target_link_libraries(PBDesktopLevelsBaseline PRIVATE PB::CompilerSettings PB::PBDesktopLevelsReference PB::PBProtocol)
 
+# Shared headless evidence bridge. It feeds production-accepted LF4 Transport
+# blocks through the existing bounded Receiver/Outer/segment/digest contracts;
+# it owns no alternate protocol, FEC, or file-recovery implementation.
+add_library(PBRemoteVisualReceiverEvidenceCore STATIC
+    PBRemoteVisualReceiverEvidence/receiver_evidence.cpp)
+target_link_libraries(PBRemoteVisualReceiverEvidenceCore
+    PUBLIC
+        PB::PBDesktopLevelsReference
+        PB::PBProtocol
+        PB::PBReceiver
+    PRIVATE
+        PB::CompilerSettings)
+target_include_directories(PBRemoteVisualReceiverEvidenceCore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/PBRemoteVisualReceiverEvidence)
+
 # PBRemoteVisualChannelMatrix: deterministic, headless LF4 channel corpus.
 # The core is linked by tests so the exact JSON and truth-boundary
 # classifications can be verified without launching a process or a window.
@@ -64,6 +80,7 @@ target_link_libraries(PBRemoteVisualChannelMatrixCore
         PB::PBModulation
         PB::PBProtocol
         PB::PBRemoteVisualSimulator
+        PBRemoteVisualReceiverEvidenceCore
     PRIVATE
         PB::CompilerSettings)
 target_include_directories(PBRemoteVisualChannelMatrixCore
@@ -87,6 +104,7 @@ target_link_libraries(PBRemoteVisualCodecProbeCore
         PB::PBDesktopLevelsReference
         PB::PBModulation
         PB::PBProtocol
+        PBRemoteVisualReceiverEvidenceCore
     PRIVATE
         PB::CompilerSettings)
 target_include_directories(PBRemoteVisualCodecProbeCore

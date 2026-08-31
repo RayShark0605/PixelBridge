@@ -8,8 +8,8 @@
 namespace pbremotevisualtemporalcorpus
 {
 
-inline constexpr char kTemporalCorpusSchema[] = "PixelBridge.RemoteVisualTemporalCorpus.1";
-inline constexpr std::uint32_t kTemporalCorpusVersion = 1;
+inline constexpr char kTemporalCorpusSchema[] = "PixelBridge.RemoteVisualTemporalCorpus.2";
+inline constexpr std::uint32_t kTemporalCorpusVersion = 2;
 inline constexpr std::size_t kTemporalCorpusDigestBytes = 32;
 
 struct TemporalCorpusReport
