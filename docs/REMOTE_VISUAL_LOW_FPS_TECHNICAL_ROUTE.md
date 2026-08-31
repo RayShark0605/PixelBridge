@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-08-31 持续实施路线；Step 01..06 已完成到可重复的 CPU/reference、数据集入口、deterministic transform、实际 codec 和 temporal/identity corpus，Step 06 implementation commit 为 `f6e4769e8d6339acd0b274c09173199fd8aaf6b4`。不是 Certified Profile，也不是双机 field certification。**
+状态：**2026-08-31 持续实施路线；Step 01、03..06 已完成，Step 02 因真实 receiver-only Replay 尚不存在而保持 `PARTIAL`。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是双机 field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -434,11 +434,11 @@ logical FPS <= 5
 | # | 步骤 | 状态 | 难度 | 重要性 | 主要完成证据 |
 | ---: | --- | --- | --- | --- | --- |
 | 01 | 冻结基线、tag 与证据边界 | DONE | ★★☆☆☆ | ★★★★★ | tag identity、pre-change LocalDesktop/RemoteVisual evidence |
-| 02 | 失真样本分析与 RemoteVisual 数据集入口 | DONE | ★★☆☆☆ | ★★★★★ | bounded analyzer、双 hash dataset index、Replay v2 field Gate 明确后移 |
+| 02 | 失真样本分析与 RemoteVisual 数据集入口 | PARTIAL | ★★☆☆☆ | ★★★★★ | bounded analyzer、双 hash screenshot index 已有；真实 receiver-only Replay 缺失 |
 | 03 | LF4 profile identity、codebook 与容量真值 | DONE | ★★★☆☆ | ★★★★★ | `9b8e806`、codebook/bijection tests |
 | 04 | CPU 连续尺度 demod、freshness erasure、四 codeword 真值链 | DONE | ★★★★☆ | ★★★★★ | scale/stale/QC-LDPC/Transport tests |
 | 05 | Provider-generic deterministic channel transform API | DONE | ★★★★☆ | ★★★★★ | 独立 transforms、seed manifest、resource bounds |
-| 06 | 信道 impairment 矩阵与 adversarial corpus | DONE | ★★★★☆ | ★★★★★ | 15-case transforms、5 actual codecs、11-event temporal/identity corpus |
+| 06 | 信道 impairment 矩阵与 adversarial corpus | DONE | ★★★★☆ | ★★★★★ | 22-case transforms、6 actual codecs、11-event temporal/identity、Receiver/Outer/digest truth |
 | 07 | Soft metric 标定、阈值选择与 false-confidence Gate | PENDING | ★★★★★ | ★★★★★ | train/holdout split、BER/FER/false accept curves |
 | 08 | LF4 Golden/manifest 冻结与兼容性声明 | PENDING | ★★★☆☆ | ★★★★★ | canonical raster/hash/accepted-block manifest |
 | 09 | LF4 D3D11 Encoder raster/immutable texture 接入 | PENDING | ★★★★☆ | ★★★★☆ | CPU raster parity、stable dwell/present evidence |
@@ -463,7 +463,7 @@ logical FPS <= 5
 
 ### 11.3 Step 01：冻结基线、tag 与证据边界
 
-- **状态**：`DONE`；**难度**：★★☆☆☆；**重要性**：★★★★★。
+- **状态**：`PARTIAL`；**难度**：★★☆☆☆；**重要性**：★★★★★。
 - **目标**：保证低帧率路线不会追溯重定义历史 Phase-1 Gate，并保留修改前 LocalDesktop 和真实 RemoteVisual 失败证据。
 - **实施要点**：记录 base commit、annotated tag object、peeled commit、source hash、显示器物理矩形和两轮 raw baseline；大体积证据只放在 `build-p1_5-evidence`。
 - **注意事项**：历史 tag 不 amend/move/recreate；旧报告不能用新测试回填；用户原有 `docs/PHASE1_GATE_REPORT.md` 不自动暂存。
@@ -476,9 +476,9 @@ logical FPS <= 5
 - **目标**：把截图、真实 ROI frame sequence 和 metadata 转为可重复、可校验、最小隐私范围的数据源。
 - **实施要点**：使用 `analyze_remote_capture.py` 做 bounded/read-only 初筛；`seal_remote_visual_dataset.py` 对显式 artifact root 下的 screenshot/Replay v2 生成 create-only SHA-256+BLAKE3+size+analysis index，拒绝 path escape、symlink/junction、重复 JSON key、非有限数值、变化中的输入和 protected-monitor pixels。Replay v2 仍由现有 writer 保存 selected ROI、CaptureEpoch、timestamp、format、live observation，并且必须先经 `ReplayV2Reader`/offline decoder 才能成为语义证据。
 - **注意事项**：edge detector 只是诊断候选，不能改变 acceptance；不得保存左屏或 ROI 外像素；输入在分析期间变化必须拒绝；不能根据 provider 名称选择阈值。
-- **验收证据**：analyzer/sealer deterministic/resource/parser/no-overwrite tests；两张用户提供且明确只含 `ExperimentMonitor` 的真实 Sunlogin Direct/Shape 失真截图被封成同一 byte-identical index；最新 create-only `dataset-index-c.json`/`dataset-index-d.json` 均为 3868 bytes，SHA-256=`C9101EB309FEB09768372D3F6BAC25EDDB929014D1D2A350A9E9680C5B08407C`，`acceptanceInput=false`、`containsProtectedMonitorPixels=false`。
-- **依赖修正**：真实 Direct/Shape/LF4 receiver-only Replay 不能作为 Step 02 的前置完成条件。LF4 live raster/demod 尚在 Step 09..14，Replay live/offline parity 在 Step 15，真实捕获在 Step 20；要求 Step 02 在这些步骤之前持有真实 LF4 Replay 会形成环形依赖。该 field acceptance 没有删除或降级，仍是 Step 15/20 的硬完成出口。
-- **完成出口**：数据集入口、双 hash seal、隐私/路径/resource fail-closed 和现有真实截图 index 可从同一输入重复生成；任何 Replay 只有在后续 Step 15/20 两次离线结果一致后才可计为 field evidence。
+- **已有证据**：analyzer/sealer deterministic/resource/parser/no-overwrite tests；两张用户提供且明确只含 `ExperimentMonitor` 的真实 Sunlogin Direct/Shape 失真截图被封成同一 byte-identical index；最新 create-only `dataset-index-c.json`/`dataset-index-d.json` 均为 3868 bytes，SHA-256=`C9101EB309FEB09768372D3F6BAC25EDDB929014D1D2A350A9E9680C5B08407C`，`acceptanceInput=false`、`containsProtectedMonitorPixels=false`、`replayV2Count=0`。
+- **未满足的验收证据**：原路线要求 Direct/Shape/LF4 各至少一组真实 receiver-only Replay，并且同一 Replay 两次离线运行产生相同 Bootstrap、geometry、metric、FEC/Transport disposition。当前只有静态截图，不能替代 ROI frame sequence 或 Replay v2。因此该步骤不能标记为 `DONE`；Step 15/20 同样继续把真实 Replay 作为硬出口，而不是追溯删除这一要求。
+- **完成出口**：补齐上述三类真实 Replay；先通过 `ReplayV2Reader` 的 bounds/checksum/format 验证，再用同一 production offline decoder 各运行两次并得到逐字段一致的分类。届时才允许把 Step 02 从 `PARTIAL` 改为 `DONE`。
 
 ### 11.5 Step 03：LF4 identity、codebook 与容量真值
 
@@ -512,10 +512,10 @@ logical FPS <= 5
 - **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：用可重复 corpus 覆盖真实远控可能产生的空间、颜色、时序和 parser/identity 失真。
 - **实施要点**：逐项 sweep area/bilinear/bicubic、fractional scale/phase、blur/ringing、gamma/contrast、4:2:0/4:4:4、limited/full range、block replacement、alpha mix、crop/letterbox/overlay、duplicate/drop/reorder/epoch。
-- **当前增量**：Manifest v2 已加入固定 3×3 blur/sharpen、gain/bias/gamma、integer 4:2:0 proxy、crop、solid overlay、reference blend 和固定 Q16/Q20 Catmull-Rom bicubic；15-case matrix 得到 12 个 `Verified`、3 个 `ErasureNoFalseAccept`、0 ordinary false candidate、0 expectation mismatch。`PBRemoteVisualCodecProbe` 生成 production LF4 source 并将实际 libx264/libx265 解码帧重新送入 LF4+QC-LDPC+Transport truth boundary；5 个 codec case 共 15 帧得到 1 Verified/14 erasure/0 ordinary false candidate。`PBRemoteVisualTemporalCorpus` 直接复用 production identity/refinement/stall tracker，以 11 events 证明 duplicate/reorder 抑制、gap/epoch、一次性 duplicate refinement 和 valid-CRC wrong-identity 的 0 production admission。
+- **当前增量**：Manifest v2 已加入固定 3×3 blur/sharpen、gain/bias/gamma、integer 4:2:0 proxy、crop、solid/alpha overlay、reference blend、8/16/64 block replacement、Bootstrap mismatch、freshness low-confidence 和固定 Q16/Q20 Catmull-Rom bicubic；22-case matrix 得到 18 个 `Verified`、4 个 `ErasureNoFalseAccept`、0 production false acceptance、0 expectation mismatch。每个 case 同时运行 `DiagnosticTruth` 与不接触 sender expected bytes 的 `Transport` 模式；production-accepted blocks 再进入现有 `ReceiverIngress`/DirectRepeat Outer/segment verify/finalization。18 个完整 case 均得到 4 unique Outer symbols、synthetic one-segment WholeFileDigest PASS，4 个 erasure case 保持 `NotReady`，没有 publish 声明。`PBRemoteVisualCodecProbe` 的 6 个 H.264/HEVC case 覆盖 4:2:0 limited、4:4:4 limited/full range；18 帧仅 1 帧 Verified、17 帧 erasure、4 unique Outer symbols、6/6 case WholeFileDigest `NotReady`、0 production false acceptance。`PBRemoteVisualTemporalCorpus` 以 11 events 证明 duplicate/reorder 抑制、gap/epoch、一次性 duplicate refinement，以及不同 SessionTag 的 CRC-valid adversarial codeword 在 production Transport identity 上 0 admission；FrameSequence 与 SegmentOrdinal 不被错误绑定。
 - **注意事项**：H.264/HEVC 应保存实际 bitstream 参数并用 inspector 验证；crop/letterbox 不得被 simulator 隐式纠正；valid CRC + wrong identity 必须单独测试。
 - **验收证据**：每个 case 的 canonical input/output hash、truth manifest、Bootstrap、BER/FER、stale distribution、accepted Transport、false accept 和 digest 结果。
-- **完成出口**：`build_step06_corpus.py` 可从空 scratch 一条命令重建 transform、actual codec 和 temporal corpus，并交叉核对 source/evaluation report 与实际 BGRA/Gray8 字节。基于 implementation commit `f6e4769` 的两次 create-only rebuild `20260831-f6e4769-step06-final-a`/`-b` 共有 30 个相对文件，其路径、size、SHA-256 完全相同（包含 FFmpeg/FFprobe version/build configuration）；root `SHA256SUMS.txt` SHA-256=`307D207A85944D343568FA07FAFC6550527C871DB5AB417246FDFE3F95BF99DC`。所有普通 impairment/codec case 均满足 truth boundary 且无 false acceptance；wrong-identity case 的四个 CRC-valid nontruth candidate 全部被 identity gate 拒绝，accepted Transport=0。完整规范与结果见 `REMOTE_VISUAL_STEP06_CORPUS.md`。
+- **完成出口**：`build_step06_corpus.py` 可从空 scratch 一条命令重建 transform、actual codec 和 temporal corpus，并交叉核对 source/evaluation report 与实际 BGRA/Gray8 字节。implementation commit `1936c020cb2c017b9ce3064267f497d15f94d66d` 的两次 create-only rebuild `20260831-step06-production-truth-v2-a`/`-b` 各含 34 个相对文件，路径、size、SHA-256 全部一致；root `SHA256SUMS.txt` SHA-256=`2e3d269fe5b921aacea45b53441fe5b0d46e9563dc810547d6aaf142798e70a0`，`step06-corpus-index.json` SHA-256=`100b061fb275256c00f37642791cfafcd677d00c88b66f8ccfeecb69fa84d4aa`。完整规范与结果见 `REMOTE_VISUAL_STEP06_CORPUS.md`。
 
 ### 11.9 Step 07：Soft metric 标定与 false-confidence Gate
 
@@ -719,3 +719,20 @@ ctest --test-dir build-gui-qt5 -C Release --output-on-failure `
 提交 `9b8e8063a56251040cddb6b01e38c4343779571f` 前只运行不会创建/移动 native 窗口的 build、CPU/reference tests 和截图文件分析；没有启动 Encoder/Decoder GUI，没有执行 capture/selector/native display Gate，未触碰左侧屏幕内容。验证覆盖 Qt5 相关 7/7 CTest、MSVC ASan 2/2、Qt6 相关 3/3、Python analyzer 3/3，以及 32/32 独立 Golden fixture 重生成。
 
 机器可读验证摘要保存在 `build-p1_5-evidence/remote-low-fps/validation-summary.json`。该文件是提交前工作树快照，因此其中的 `workingTreeUncommitted=true` 是历史采集状态；其实现内容已经由上述 commit/tree 固化，但 `certified=false`、未运行 native/capture field Gate 和不能替代最终 sealed evidence 的边界保持不变。
+
+## 13. Step 06 production-truth hardening 验证补记
+
+提交 `1936c020cb2c017b9ce3064267f497d15f94d66d`（tree `a0f0fb2717ee2712ecc76bc52f037076c7ee2219`）把离线 corpus 的证据终点从“diagnostic codeword 看起来正确”延伸到 production Transport admission、现有 `ReceiverIngress`、DirectRepeat Outer、segment digest 与 WholeFileDigest disposition，同时明确分离两种事实：
+
+- `DiagnosticTruth` 可以使用 deterministic sender fixture 计算 coded-bit BER 和危险候选，但不能冒充 production admission；
+- `Transport` 模式只按 Bootstrap SessionTag、padding、FEC、CRC 与 Transport identity 接受，不把 `FrameSequence` 错误映射为 `SegmentOrdinal`；
+- 只有 production 已接受的 block 才进入 Receiver/Outer；之后再用固定 sender fixture 做 post-admission mismatch scoring；
+- actual codec corpus 未完整恢复 3-segment fixture 时 WholeFileDigest 必须保持 `NotReady`，不能写成 PASS、warning 或 publish。
+
+本次 fresh headless 验证为 Release CTest `143/143`、MSVC ASan/RelWithDebInfo CTest `278/278`、RemoteVisual evidence Python `16/16`、`PBRemoteVisualReport` Python `20/20`、LocalDesktop Golden `32 files PASS`、DesktopLevels Golden `100 files / 32 frames PASS`。两次 Step 06 create-only rebuild 各 34 个文件逐字节一致。机器可读摘要保存在：
+
+```text
+build-p1_5-evidence/20260831-step06-production-truth-v2-validation-1936c02.json
+```
+
+该摘要为 1905 bytes，SHA-256=`376f0a93563ede824912b213e02c52ebe90d5e33b4918ad52a23dcd08c4bce80`。本轮没有启动 Encoder/Decoder GUI、capture、ROI selector 或 display API，没有读取或保存左屏像素，也没有输入自动化。真实 Direct/Shape/LF4 receiver-only Replay 仍缺失，因此 Step 02 继续是明确 blocker；这里的离线证据不能转写为 `RemoteVisualSmokePass`。
