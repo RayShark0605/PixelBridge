@@ -1,18 +1,40 @@
 # PixelBridge RemoteVisual Step 06 Impairment Corpus
 
-状态：**Step 06 离线 impairment/adversarial corpus 已实现并可从空目录一条命令重建；implementation commit 为 `f6e4769e8d6339acd0b274c09173199fd8aaf6b4`。这不是双机 field PASS，也不是 Certified RemoteVisual Profile。**
+状态：**Step 06 离线 impairment/adversarial corpus 已完成 production-truth hardening；implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`，tree 为 `a0f0fb2717ee2712ecc76bc52f037076c7ee2219`。这不是双机 field PASS，不是 `RemoteVisualSmokePass`，也不是 Certified RemoteVisual Profile。**
 
 ## 1. 结论与证据边界
 
-本步骤把此前仅有的 deterministic proxy matrix 扩展为三条互相独立、最终汇总到同一个 seal 的证据链：
+本步骤把用户截图中出现的非整数缩放、letterbox、局部陈旧块、块预测污染、灰度/色度退化和 temporal blend 转为四条可重复的离线证据链：
 
-1. **空间/颜色/块更新 transform matrix**：15 个 case，包含 area、bilinear、固定 Q16 Catmull-Rom bicubic、fractional scale/phase、blur/ringing、gamma/range、4:2:0 proxy、crop/letterbox/overlay、block replacement 和 temporal blend。
-2. **实际 codec bitstream corpus**：5 个真实 libx264/libx265 Matroska bitstream；ffprobe 对 codec、pixel format、BT.709 limited range、几何、帧/packet 和 keyframe 进行核验；解码 Gray8 再进入 production LF4→QC-LDPC→Transport diagnostic truth boundary。
-3. **sequence/identity corpus**：直接复用 production `VisualIdentityTracker`、`RemoteDuplicateRefinementGate` 和 `ChannelStallTracker`，覆盖 duplicate、gap、reorder、CaptureEpoch、erasure 后 duplicate refinement，以及 CRC 有效但 identity 错误的 Transport。
+1. **空间/颜色/块更新 transform matrix**：22 个 case，覆盖 area/bilinear/bicubic、fractional scale/phase、blur/sharpen、range/gamma、4:2:0 proxy、crop/letterbox、solid/alpha overlay、8/16/64 block replacement、Bootstrap mismatch、freshness low-confidence、stale replacement 和 temporal blend。
+2. **实际 codec bitstream corpus**：6 个真实 libx264/libx265 Matroska bitstream，覆盖 H.264/HEVC、4:2:0、4:4:4、limited/full range、intra/inter 和不同 CRF；FFprobe 核验实际 codec、pixel format、BT.709 range、几何、frame/packet 和 keyframe。
+3. **sequence/identity corpus**：11 个 event 直接复用 production `VisualIdentityTracker`、`RemoteDuplicateRefinementGate` 和 `ChannelStallTracker`，覆盖 duplicate、gap、reorder、CaptureEpoch、erasure 后 duplicate refinement、capture/visual stall，以及 CRC-valid conflicting SessionTag。
+4. **Receiver/Outer/digest truth**：production `Transport` 模式接受的 block 才能进入现有 `ReceiverIngress`、DirectRepeat Outer、segment verify、commit 与 finalization。工具没有复制协议/FEC/Receiver，也不声明 `PBStorage` final publish。
 
-三个入口都不启动窗口、capture 或 display API，不读取桌面，不接收 expected payload 作为 decoder 输入，不改变 frozen wire/FEC/CRC/digest。所有输出只属于离线实验与回归证据。
+所有入口均为 headless：不启动窗口、capture、WGC/DXGI 或 display API，不读取桌面，不接收 expected payload 作为 demod/FEC 输入，不改变 frozen wire/FEC/CRC/digest。固定 sender fixture 只用于生成普通 Control/Segment 描述和 **post-admission** truth scoring。
 
-## 2. 一键重建
+真实 Direct/Shape/LF4 receiver-only Replay 仍不存在；数据集索引明确为 `replayV2Count=0`。因此路线 Step 02 保持 `PARTIAL`，本 corpus 不能替代 Step 15/20 的 field Replay Gate。
+
+## 2. Schema 与 truth boundary
+
+本轮版本化输出为：
+
+- `PixelBridge.RemoteVisualChannelMatrix.2`；
+- `PixelBridge.RemoteVisualCodecFrameEvaluation.2`；
+- `PixelBridge.RemoteVisualCodecCorpus.2`；
+- `PixelBridge.RemoteVisualTemporalCorpus.2`；
+- `PixelBridge.RemoteVisualStep06Corpus.2`。
+
+每帧并行执行两个互不混淆的评估模式：
+
+- `DiagnosticTruth`：允许 reference channel 使用 deterministic sender fixture 统计 coded-bit denominator、BER 和 CRC-valid nontruth candidate；
+- `Transport`：只执行 production FEC/padding/CRC/Bootstrap SessionTag/Transport admission，不具有 sender expected bytes，也不把 `FrameSequence` 推导成 `SegmentOrdinal`。
+
+两种模式必须产生完全一致的 Bootstrap 与 modulation observation；只允许 evaluation disposition 不同。production 已接受的 block 之后才与显式 source Segment fixture 比较。如果字节、slot、OuterBlockId、SegmentOrdinal 或 SessionTag 不符，计为 production false acceptance 并使 corpus 失败。
+
+固定 evidence SessionId 为 tool-only deterministic fixture，不进入 production sender，也不改变任何 VisualProfile/Wire contract。它派生的 SessionTag 为 `5751a0fe3cc27908`。
+
+## 3. 一键重建
 
 在 Release tools 已构建、FFmpeg/FFprobe 路径显式给出的前提下，从一个尚不存在的 output directory 运行：
 
@@ -27,110 +49,165 @@ D:\Python3.12.9\python.exe `
   --output-dir <new-output-directory>
 ```
 
-输出包含：
+输出包括：
 
 - `channel-matrix.json`；
 - `temporal-corpus.json`；
-- `actual-codec-corpus/` 下的 source、5 个 bitstream、Gray8、ffprobe、evaluation 和嵌套 seal；
+- `actual-codec-corpus/` 下的 source、6 个 bitstream、Gray8、ffprobe、evaluation 和嵌套 seal；
 - `step06-corpus-index.json`；
 - 根级 `SHA256SUMS.txt`。
 
-脚本严格校验 duplicate JSON member、非有限数值、schema/version、canonical member order、payload BLAKE3、固定 summary contract、source/evaluation report 与实际 BGRA/Gray8 字节的逐序列及逐帧 BLAKE3 绑定、唯一视频流及 frame/packet inspector contract、工具运行前后 SHA-256 identity、进程 timeout、stdout/stderr/file size 和 create-only output。它不会自动发现 provider，也不会按 provider 或机器选择 threshold。
+脚本拒绝 existing output directory、duplicate JSON member、非有限数值、非 canonical member order、schema/version mismatch、payload BLAKE3 mismatch、source/evaluation 与实际 BGRA/Gray8 字节不一致、工具运行中变化、进程 timeout、超限 stdout/stderr/file、错误 frame/packet/range/pixel-format 和 partial publication。所有输出 create-only；失败清理未发布的 partial artifact。
 
-## 3. Bicubic 精确定义
+## 4. 22-case deterministic matrix
 
-`PBRemoteVisualSimulator` 的新增 filter 名称为 `bicubic-catmull-rom-q16`，只要出现该 filter，整份 channel manifest 使用 v2。数学定义见 `REMOTE_VISUAL_CHANNEL_MANIFEST.md`；关键不变量是：
+按 canonical 顺序固定为：
 
-- Catmull-Rom `a=-1/2`；
-- fractional phase Q16；
-- kernel weights Q20 且权重和严格为 `1<<20`；
-- 4×4 / 16 taps per output pixel；
-- signed half-away rounding；
-- extent 外使用显式 border，extent 内 edge-clamp；
-- identity transform 仍逐字节保持 active BGRA；
-- area/bilinear v1 manifest 和数学语义不变。
+1. `identity`
+2. `full-range-444-identity`
+3. `area-upscale`
+4. `bilinear-fractional-phase`
+5. `bicubic-fractional-scale`
+6. `letterbox-075`
+7. `box-blur-1`
+8. `gaussian-blur-1`
+9. `sharpen-1`
+10. `limited-range`
+11. `gamma-115`
+12. `chroma-420`
+13. `illegal-crop-8px`
+14. `codec-block-overlay`
+15. `alpha-overlay-128`
+16. `reference-block-8x8`
+17. `reference-block-16x16`
+18. `reference-block-64x64`
+19. `bootstrap-a-mismatch`
+20. `freshness-low-confidence`
+21. `stale-region-replacement`
+22. `temporal-blend-96`
 
-单元测试使用硬编码 1-D truth vector `[0,10,42,93,163,214,245,255]`，并覆盖 B/G/R/alpha、identity、manifest v2 和 16-tap work limit。
+权威 summary：
 
-## 4. 实际 codec corpus
+| 指标 | 结果 |
+| --- | ---: |
+| case count | 22 |
+| `Verified` | 18 |
+| `ErasureNoFalseAccept` | 4 |
+| production false accepted codewords | 0 |
+| expectation mismatch | 0 |
+| 完整 case 的 Receiver unique Outer symbols | 每 case 4 |
+| 完整 case 的 synthetic one-segment WholeFileDigest | 18 × PASS |
+| erasure case 的 WholeFileDigest | 4 × `NotReady` |
+| Receiver/Outer conflict/resource rejection | 0 |
 
-固定 source 是 3 个 production LF4 BGRA frame：1920×1080、2 FPS、FrameSequence 900..902、同一固定 SessionTag。每个 bitstream 都显式关闭音频/字幕/data、metadata、非确定线程行为与 B-frame，并固定 BT.709 limited-range metadata。FFprobe inspector 证明实际产生的 codec/pixel format，而不是信任命令行意图。
+4 个 erasure case 为 `sharpen-1`、`illegal-crop-8px`、`bootstrap-a-mismatch` 和 `temporal-blend-96`。`freshness-low-confidence` 至少擦除一个 freshness tag，但 QC-LDPC 仍恢复 4/4 Transport，证明“局部低置信置零”可以恢复而不是硬判错。
 
-本轮固定结果：
+`full-range-444-identity` 是无色度损失的 matrix control；实际 4:4:4 limited/full encode/decode 证据由下一节的 codec corpus 提供，不能把 identity control 单独解释成 codec 生存率。
 
-| case | inspector | keyframes | Verified | Erasure | accepted Transport | diagnostic nontruth |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `h264-420-crf18-intra` | H.264 / yuv420p | 3 | 1/3 | 2/3 | 4 | 0 |
-| `h264-420-crf35-inter` | H.264 / yuv420p | 1 | 0/3 | 3/3 | 0 | 0 |
-| `h264-444-crf28-inter` | H.264 / yuv444p | 1 | 0/3 | 3/3 | 0 | 0 |
-| `hevc-420-crf28-inter` | HEVC / yuv420p | 1 | 0/3 | 3/3 | 0 | 0 |
-| `hevc-420-crf40-inter` | HEVC / yuv420p | 1 | 0/3 | 3/3 | 0 | 0 |
+## 5. 实际 codec corpus
 
-结果说明当前 LF4 reference raster 对真实有损编码仍很敏感；即使 `h264-444-crf28-inter` 也没有完整恢复一帧。它是强烈的 **Signal-layer blocker 输入**，但不能外推为向日葵必然失败：这里没有远控自己的缩放、块更新、码控、帧丢弃或后处理，也没有 field calibration。
+固定 source 是 3 个 production LF4 BGRA frame：1920×1080、2 FPS、FrameSequence 0..2、同一 evidence SessionTag。每个 bitstream 都显式关闭音频/字幕/data、metadata、B-frame 和不确定线程行为，并固定 BT.709 metadata；full-range H.264 同时要求 encoder `range=full`，inspector 必须看到 `pc/jpeg` 与 `yuvj444p`。
 
-所有 15 个实际 codec frame 都遵守 production truth boundary；普通 codec corpus 的 `falseAcceptedCodewords=0`。唯一成功帧产生 4 个完整 Transport block，其余 14 帧为 erasure，无部分 publish 或伪 success。
+| case | inspector | range | keyframes | Verified | Erasure | production Transport | Outer unique | WholeFileDigest |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `h264-420-crf18-intra` | H.264 / yuv420p | limited | 3 | 1/3 | 2/3 | 4 | 4 | `NotReady` |
+| `h264-420-crf35-inter` | H.264 / yuv420p | limited | 1 | 0/3 | 3/3 | 0 | 0 | `NotReady` |
+| `h264-444-crf28-inter` | H.264 / yuv444p | limited | 1 | 0/3 | 3/3 | 0 | 0 | `NotReady` |
+| `h264-444-full-crf28-inter` | H.264 / yuvj444p | full | 1 | 0/3 | 3/3 | 0 | 0 | `NotReady` |
+| `hevc-420-crf28-inter` | HEVC / yuv420p | limited | 1 | 0/3 | 3/3 | 0 | 0 | `NotReady` |
+| `hevc-420-crf40-inter` | HEVC / yuv420p | limited | 1 | 0/3 | 3/3 | 0 | 0 | `NotReady` |
 
-## 5. Temporal / identity adversarial corpus
+总计 18 帧中仅 1 帧 `Verified`，17 帧为 erasure，0 帧为 production false acceptance。唯一成功帧使一个 Segment 的 4 个 DirectRepeat symbols 完成并通过 segment digest；其余两个 Segment 未完成，因此 6/6 case 的整文件 disposition 都必须是 `NotReady`。没有 WholeFileDigest PASS、没有 final publish、没有 soft success。
+
+这个结果是明确的 **Signal-layer blocker**：当前 LF4 default 对真实有损 codec 仍过于敏感，即使 4:4:4 full range 也未获得完整帧恢复。它不能外推成特定远控产品必然失败，但足以阻止在没有真实 Replay/标定前宣称 current profile 可用。后续输入应进入 Step 07 的 metric/reliability Gate，而不是在 P1.5 放宽 CRC、FEC 或 digest。
+
+## 6. Temporal / identity adversarial corpus
 
 固定 11-event corpus 的权威 summary：
 
 | 项目 | 结果 |
 | --- | ---: |
-| Transport blocks passed by visual-identity gate（按 CaptureEpoch 独立计数） | 16 |
+| Transport blocks passed by visual-identity/refinement gate | 16 |
 | suppressed duplicate events | 3 |
 | suppressed reordered events | 1 |
 | gap events / skipped sequences | 1 / 1 |
 | CaptureEpoch reset | 新 epoch 建立新 visual baseline |
 | erasure 后 duplicate refinement | 1 次恢复，成功后后续 duplicate 被抑制 |
-| wrong-identity accepted Transport blocks | 0 |
+| wrong-identity production Transport | 0 |
 | wrong-identity diagnostic nontruth candidates | 4 |
 | capture stall | 1 次 / 1400 ms |
 | visual stall | 1 次 / 1300 ms |
 
-“diagnostic nontruth candidate=4”不是生产 Receiver 的四次误接收。该 adversarial frame 内有四个 CRC 有效的 Transport codeword，但其 Session/Frame/slot identity 与 Bootstrap truth 不一致；production identity gate 将四个全部拒绝，因此 accepted Transport 为 0。Reference truth oracle 有意把所有 CRC-valid nontruth codeword 计入危险候选，以保证此 case 不会被错误写成普通 `falseAcceptedCodewords=0`。
+wrong-identity fixture 使用不同 SessionTag，而不是把不同 `FrameSequence` 错误解释成 production Transport identity。四个 codeword 均能通过 FEC/CRC，因此 DiagnosticTruth 将它们计为 4 个危险 candidate；production `Transport` 模式按 Bootstrap SessionTag 全部拒绝，accepted Transport=0。`FrameSequence` 只用于 visual cadence/epoch identity，`SegmentOrdinal` 只来自 Transport header，两者没有新增 wire mapping。
 
-## 6. 本轮可重复证据
+## 7. 可重复证据与 seal
 
-最终两次独立 create-only rebuild：
+两次独立 create-only rebuild：
 
 ```text
-build-p1_5-evidence/20260831-f6e4769-step06-final-a
-build-p1_5-evidence/20260831-f6e4769-step06-final-b
+build-p1_5-evidence/20260831-step06-production-truth-v2-a
+build-p1_5-evidence/20260831-step06-production-truth-v2-b
 ```
 
-两目录相对路径集合、size 和 SHA-256 共 30 个文件逐项一致；FFmpeg/FFprobe `-version`/build configuration 也进入 artifact seal。目录名中的 `f6e4769` 对应上文 implementation commit；`-a` 目录的关键 seal：
+两目录各 34 个文件；相对路径集合、size 和全部文件 SHA-256 逐项一致。复现清单：
+
+```text
+build-p1_5-evidence/20260831-step06-production-truth-v2-reproducibility.json
+```
+
+该清单 SHA-256=`438b21430403a2db9853aef2d860109d6a41cb5c39f317a93cbc3c7b82559052`，并记录：
+
+- `allRelativeFilesByteIdentical=true`；
+- `rootSha256SumsA/B=2e3d269fe5b921aacea45b53441fe5b0d46e9563dc810547d6aaf142798e70a0`；
+- `step06IndexA/B=100b061fb275256c00f37642791cfafcd677d00c88b66f8ccfeecb69fa84d4aa`。
+
+A 目录关键 seal：
 
 | artifact | bytes | SHA-256 |
 | --- | ---: | --- |
-| `channel-matrix.json` | 36186 | `0BF260614D78EC4A43A188E20FD77677AD584A3403C4D651C29E987E5032E13C` |
-| `temporal-corpus.json` | 6007 | `ABC7F35333A8B08C02061B4BDC7219C2D3B41F52969A96972D9ED0D7B39FFF7B` |
-| `actual-codec-corpus/codec-corpus-manifest.json` | 14378 | `02357FCD8FC4E58BA7688ABF08DB094C49F4C71034C78BAE98767683E00A274E` |
-| `step06-corpus-index.json` | 2079 | `A73A5DD2BE75E8158E55DDC20ABFF9B0DBCB7A3E782FB118D0FFDF4044A0BF47` |
-| `SHA256SUMS.txt` | 3311 | `307D207A85944D343568FA07FAFC6550527C871DB5AB417246FDFE3F95BF99DC` |
+| `channel-matrix.json` | 74551 | `9a1fefb83d9fd93d8abf35d2a4d7a27e9629135fd96d13f9bddd163d27d986d6` |
+| `temporal-corpus.json` | 6369 | `e242cf908ebb203252fd6e26c14fcd362475ddf4c7914b70fef31db58600c5f5` |
+| `actual-codec-corpus/codec-corpus-manifest.json` | 21071 | `f7bc481f96e5ccd05063d6b72e13bddce7c5c200269deeaf0eeb4ca81be3d6ea` |
+| `step06-corpus-index.json` | 2179 | `100b061fb275256c00f37642791cfafcd677d00c88b66f8ccfeecb69fa84d4aa` |
+| `SHA256SUMS.txt` | 3813 | `2e3d269fe5b921aacea45b53441fe5b0d46e9563dc810547d6aaf142798e70a0` |
 
-汇总为：15 个 transform cases（12 Verified / 3 erasure）、5 个 actual codec cases（1/15 frame Verified / 14 erasure / 0 rejected）、11 个 temporal events、0 普通 codec false candidate、0 wrong-identity production admission、所有 expectation matched。
+三个 PixelBridge tool 的当前 Release EXE SHA-256 与 index 中 identity 完全一致：
 
-## 7. 验证记录
+- `PBRemoteVisualChannelMatrix.exe`: `67511d93aff3d1d2fe3d1c205b918e559ca6cefb8cf0776bd203972a028742f1`；
+- `PBRemoteVisualCodecProbe.exe`: `1403829971ed650d15fb3b936fc963ac0978720bb164db5c914527fa366b2df0`；
+- `PBRemoteVisualTemporalCorpus.exe`: `99ec012444988fb810fff80e15e6cf839b542280d34717f4410353842726d052`。
 
-下列验证均针对与 implementation commit 完全一致的实现文件；大体积 build/test 输出保留在 `build-p1_5-evidence/`，未提交到 Git：
+## 8. 验证与独立审查
 
-- fresh headless Release build：`20260831-step06-headless-release-final`，完整 CTest **142/142 PASS**；
-- fresh headless MSVC ASan/fuzz build：`20260831-step06-headless-asan-final`，完整 CTest **277/277 PASS**；
-- fresh apps-off/tools-only configure/build：`20260831-step06-tools-clean-final`，相关 CTest **10/10 PASS**，并证明 application-only probe 不再污染 tools-only build boundary；
-- `D:\Python3.12.9\python.exe -B` evidence tests：**16/16 PASS**；
-- 独立 Golden checks：LocalDesktop **32 files PASS**，DesktopLevels **100 files / 32 frames PASS**；
+针对与 implementation commit 内容一致的 headless build：
+
+- Release build 后完整 CTest：**143/143 PASS**；`LastTest.log` 246213 bytes，SHA-256=`6148a0d824795e811e5c388312c78fabc6acdf9c697c5e0011989bf8b0e84e34`；
+- MSVC ASan/RelWithDebInfo build 后完整 CTest：**278/278 PASS**；`LastTest.log` 379162 bytes，SHA-256=`de7b4d4530002fa7caf7ed8945380a7cb3e1ae14ba9ab7611e60ebcc383754ea`；
+- `D:\Python3.12.9\python.exe` RemoteVisual evidence tests：**16/16 PASS**；
 - `PBRemoteVisualReport` Python regression：**20/20 PASS**；
-- Step 06 corpus 从两个空目录独立重建并完成 30/30 文件 identity comparison；
-- diff 的 bounds/lifetime/queue/file-publication/identity/false-accept 审查未发现未解决的 Critical/High。
+- 独立 Golden checks：LocalDesktop **32 files PASS**；DesktopLevels **100 files / 32 frames PASS**；
+- `git diff --check` 无 whitespace error；frozen protocol/modulation/FEC/Golden/CRC/digest 文件无变更；
+- bounds/overflow、Receiver/Outer conflict、resource rejection、digest state、diagnostic/production identity、canonical JSON、create-only publication 和 shutdown-independent headless scope 审查：**0 open Critical / 0 open High**。
 
-上述 build 明确关闭 presentation/screen-region/WGC/DXGI/LocalDesktop/DesktopLevels 原生交互 Gate；本步骤没有运行桌面 capture 或真实双机接收实验。
+机器可读摘要：
 
-## 8. 不宣称的内容
+```text
+build-p1_5-evidence/20260831-step06-production-truth-v2-validation-1936c02.json
+```
 
-- 不是 LF4 production D3D11 Encoder/Demod 完成；
-- 不是真实向日葵 LF4 Replay；
-- 不是完整文件 WholeFileDigest/publish；
-- 不是 RemoteVisualSmokePass；
-- `CertifiedRemoteVisualProfile=false`。
+其大小 1905 bytes，SHA-256=`376f0a93563ede824912b213e02c52ebe90d5e33b4918ad52a23dcd08c4bce80`。
 
-这些边界分别保留给路线 Step 09..20 和后续 field Gate；不得用本 corpus 的离线成功或失败替代。
+本轮没有启动 Encoder/Decoder GUI、capture、selector 或 native display Gate，没有操作鼠标键盘，没有读取或保存左侧屏幕像素。`phase1-gate-pass` annotated tag object 和 peeled commit 均未改变。
+
+## 9. 不宣称的内容与后续 blocker
+
+本步骤不证明：
+
+- LF4 production D3D11 Encoder/Demod 已完成；
+- 真实向日葵 LF4 Replay 或端到端恢复；
+- PBStorage final publish 或 external file SHA-256；
+- QoS 恢复后收敛、LocalDesktop 最终 performance regression、6 小时 soak；
+- `RemoteVisualSmokePass=true`；
+- `CertifiedRemoteVisualProfile=true`。
+
+当前结论是：Step 06 离线 corpus 和 production truth boundary 已完整可重建；Step 02 因 `replayV2Count=0` 保持 `PARTIAL`；actual codec 结果将当前方案分类为 **C. Signal-layer blocker**，同时真实链路仍可能附加 **D. Temporal/channel blocker**，大文件/late-join 仍是 **E. Scheduler blocker**。这些边界必须由后续真实 Replay、Step 07 metric Gate、Step 15/20 field pilot 与最终 LocalDesktop regression 关闭。
