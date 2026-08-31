@@ -17,6 +17,7 @@ v2 是严格的 schema 升级；只要 plan 中出现以下任一种新 transfor
 - `crop`：显式裁剪矩形；
 - `solid-overlay`：显式矩形、BGRA 和 opacity；
 - `reference-blend`：current/reference 的全帧确定性时间混合。
+- `resample` 的 `bicubic-catmull-rom-q16` filter：固定 Q16 phase、Q20 Catmull-Rom（a=-1/2）权重和 signed half-away rounding；area/bilinear 仍保持 v1 字节语义。
 
 只含 v1 transforms 的 plan 继续生成 byte-compatible v1 manifest；v2 不追溯改变已经提交的 v1 identity、resample 或 block-replacement 语义。
 
@@ -77,6 +78,7 @@ y = originY + scaleY * v
 
 ### 4.2 v2 impairment 数学
 
+- `bicubic-catmull-rom-q16` 使用 output-center 反投影和 edge-clamp 4×4 support。fractional phase 先以 `llround(fraction*65536)` 固定为 Q16；四个 Catmull-Rom 权重以 Q20 signed integer 表示，最后一个权重吸收舍入余数以保证权重和严格为 `1<<20`；横纵组合以 Q40 累加，最后做 signed half-away division、clamp 到 `[0,255]`。logical extent 外整像素使用 `borderBgra`。精确 identity 仍走 bit-exact fast path。每个输出像素按 16 个 source sample 计入 work policy。
 - `kernel-3x3` 使用 edge-clamp。Box 权重全 1/divisor 9；Gaussian 权重为 `[1,2,1;2,4,2;1,2,1]`/16；Sharpen 为 `[0,-1,0;-1,5,-1;0,-1,0]`。B/G/R 独立计算并 clamp，alpha 使用中心像素原值。
 - `color-transfer` 对每个 B/G/R channel 执行 `pow(clamp((value*gain+bias)/255), gamma)*255`，alpha 不变。硬范围为 gain 0..4、bias -255..255、gamma 0.25..4。
 - `chroma-420` 先用整数权重 `(54R+183G+19B+128)/256` 计算逐像素 luma，再对 centered 2×2 block 平均 `B-Y` 和 `R-Y`，随后以共享 chroma 重建；奇数边缘只平均存在的像素，alpha 不变。这是可重复的 codec proxy，不宣称等同任一具体 H.264/HEVC 实现。
@@ -125,6 +127,6 @@ PBRemoteVisualChannelMatrix.exe --output <new-json-file>
 
 省略 `--output` 时 canonical JSON 写到 stdout。文件模式先写 `<new-json-file>.partial`，flush 后 no-overwrite rename；目标或 partial 已存在时拒绝，不覆盖既有证据。成功输出 schema 为 `PixelBridge.RemoteVisualChannelMatrix.1`，顶层 `payloadBlake3` 对精确 canonical payload JSON 做 BLAKE3-256；每个 case 嵌入本规范的 channel manifest、manifest/output hash、Bootstrap geometry、LF4 metric/stale counters、完整 FEC/CRC/identity/Transport evaluation 和 false-accept 计数。
 
-默认矩阵固定 14 个单变量或单 transform-class case。当前 reference 结果为：11 个 `Verified`；sharpen、非法 crop 和 temporal blend 各得到 `ErasureNoFalseAccept`；`falseAcceptedCodewords=0`。不确定的 impairment 只预期 `NoFalseAcceptance`，避免把当前成功率写成 magic acceptance 阈值；identity、已由独立回归证明的兼容变换和明确 fail-closed case 才使用精确 expected classification。CLI 只有在完整生成、truth boundary 无 false acceptance 且全部 expectation 匹配时返回 0。
+默认矩阵固定 15 个单变量或单 transform-class case，其中新增真实 Q16 Catmull-Rom bicubic fractional-scale case。当前 reference 结果为：12 个 `Verified`；sharpen、非法 crop 和 temporal blend 各得到 `ErasureNoFalseAccept`；`falseAcceptedCodewords=0`。不确定的 impairment 只预期 `NoFalseAcceptance`，避免把当前成功率写成 magic acceptance 阈值；identity、已由独立回归证明的兼容变换和明确 fail-closed case 才使用精确 expected classification。CLI 只有在完整生成、truth boundary 无 false acceptance 且全部 expectation 匹配时返回 0。
 
-矩阵仍是 deterministic codec proxy corpus，不包含真实 H.264/HEVC bitstream。实际 codec case 必须另存 encoder/container 参数并由 bitstream inspector 验证；不能用本矩阵的 4:2:0 proxy 结果替代 RemoteVisual field 结论。
+矩阵本身仍是 deterministic codec proxy corpus。实际 H.264/HEVC bitstream、ffprobe inspection、temporal/identity corpus 和一键总索引由 `build_step06_corpus.py` 生成；精确边界与本轮结果见 `REMOTE_VISUAL_STEP06_CORPUS.md`。实际 codec 结果仍不能替代 RemoteVisual field 结论。
