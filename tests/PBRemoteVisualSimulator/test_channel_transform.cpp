@@ -242,6 +242,87 @@ TEST_CASE("RemoteVisual channel transform order, seed and per-step hashes are de
     REQUIRE(differentSeedResult.Value().manifestBlake3 != first.manifestBlake3);
 }
 
+TEST_CASE("RemoteVisual bicubic resampling uses the fixed Catmull-Rom Q16 contract",
+    "[remote-visual][simulator][resample][bicubic][determinism]")
+{
+    PaddedImage source;
+    source.width = 4;
+    source.height = 1;
+    source.rowPitch = 16;
+    source.pixels.resize(16);
+    const std::array<unsigned char, 4> sourceValues{0, 64, 192, 255};
+    for (std::size_t index = 0; index < sourceValues.size(); index++)
+    {
+        source.pixels[index * 4] = static_cast<std::byte>(sourceValues[index]);
+        source.pixels[index * 4 + 1] = static_cast<std::byte>(sourceValues[index]);
+        source.pixels[index * 4 + 2] = static_cast<std::byte>(sourceValues[index]);
+        source.pixels[index * 4 + 3] = std::byte{255};
+    }
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> transforms{
+        pbremotevisualsimulator::ResampleTransform{8, 1, 2, 1, 0, 0,
+            pbremotevisualsimulator::ResampleFilter::Bicubic,
+            {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}}}};
+    const auto result = pbremotevisualsimulator::ExecuteChannelTransformPlan(source.View(), std::nullopt,
+        {0xB1C0B1C0, transforms});
+    REQUIRE(result);
+    const std::array<unsigned char, 8> expectedValues{0, 10, 42, 93, 163, 214, 245, 255};
+    for (std::size_t index = 0; index < expectedValues.size(); index++)
+    {
+        REQUIRE(result.Value().output.pixels[index * 4] == static_cast<std::byte>(expectedValues[index]));
+        REQUIRE(result.Value().output.pixels[index * 4 + 1] == static_cast<std::byte>(expectedValues[index]));
+        REQUIRE(result.Value().output.pixels[index * 4 + 2] == static_cast<std::byte>(expectedValues[index]));
+        REQUIRE(result.Value().output.pixels[index * 4 + 3] == std::byte{255});
+    }
+
+    PaddedImage verticalSource;
+    verticalSource.width = 1;
+    verticalSource.height = 4;
+    verticalSource.rowPitch = 4;
+    verticalSource.pixels.resize(16);
+    for (std::size_t index = 0; index < sourceValues.size(); index++)
+    {
+        verticalSource.pixels[index * 4] = static_cast<std::byte>(sourceValues[index]);
+        verticalSource.pixels[index * 4 + 1] = static_cast<std::byte>(sourceValues[index]);
+        verticalSource.pixels[index * 4 + 2] = static_cast<std::byte>(sourceValues[index]);
+        verticalSource.pixels[index * 4 + 3] = std::byte{255};
+    }
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> verticalTransform{
+        pbremotevisualsimulator::ResampleTransform{1, 8, 1, 2, 0, 0,
+            pbremotevisualsimulator::ResampleFilter::Bicubic,
+            {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}}}};
+    const auto verticalResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(verticalSource.View(),
+        std::nullopt, {0xB1C0B1C2, verticalTransform});
+    REQUIRE(verticalResult);
+    for (std::size_t index = 0; index < expectedValues.size(); index++)
+    {
+        REQUIRE(verticalResult.Value().output.pixels[index * 4] == static_cast<std::byte>(expectedValues[index]));
+        REQUIRE(verticalResult.Value().output.pixels[index * 4 + 3] == std::byte{255});
+    }
+
+    const std::array<std::byte, 4> borderBgra{std::byte{7}, std::byte{8}, std::byte{9}, std::byte{10}};
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> borderedTransform{
+        pbremotevisualsimulator::ResampleTransform{10, 1, 2, 1, 1, 0,
+            pbremotevisualsimulator::ResampleFilter::Bicubic, borderBgra}};
+    const auto borderedResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(source.View(), std::nullopt,
+        {0xB1C0B1C3, borderedTransform});
+    REQUIRE(borderedResult);
+    REQUIRE(std::equal(borderBgra.begin(), borderBgra.end(), borderedResult.Value().output.pixels.begin()));
+    REQUIRE(std::equal(borderBgra.begin(), borderBgra.end(), borderedResult.Value().output.pixels.end() - 4));
+    REQUIRE(result.Value().manifestVersion == pbremotevisualsimulator::kChannelManifestVersionV2);
+    REQUIRE(result.Value().canonicalManifestJson.find("\"filter\":\"bicubic-catmull-rom-q16\"") !=
+        std::string::npos);
+
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> identity{
+        pbremotevisualsimulator::ResampleTransform{4, 1, 1, 1, 0, 0,
+            pbremotevisualsimulator::ResampleFilter::Bicubic,
+            {std::byte{9}, std::byte{9}, std::byte{9}, std::byte{255}}}};
+    const auto identityResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(source.View(), std::nullopt,
+        {0xB1C0B1C1, identity});
+    REQUIRE(identityResult);
+    REQUIRE(identityResult.Value().output.pixels == source.pixels);
+    REQUIRE(identityResult.Value().manifestVersion == pbremotevisualsimulator::kChannelManifestVersionV2);
+}
+
 TEST_CASE("RemoteVisual fixed spatial color and temporal impairments share one deterministic manifest pipeline",
     "[remote-visual][simulator][impairment][determinism]")
 {
@@ -409,6 +490,10 @@ TEST_CASE("RemoteVisual channel transforms reject malformed geometry and resourc
     pbremotevisualsimulator::ChannelTransformPolicy workPolicy;
     workPolicy.maximumWorkUnits = 1;
     RequireTransformError(pbremotevisualsimulator::ResampleTransform{8, 8, 1, 1, 0, 0},
+        pbremotevisualsimulator::ChannelTransformErrorCode::WorkLimitExceeded, std::nullopt, workPolicy);
+    workPolicy.maximumWorkUnits = 1023;
+    RequireTransformError(pbremotevisualsimulator::ResampleTransform{8, 8, 1, 1, 0, 0,
+        pbremotevisualsimulator::ResampleFilter::Bicubic},
         pbremotevisualsimulator::ChannelTransformErrorCode::WorkLimitExceeded, std::nullopt, workPolicy);
     pbremotevisualsimulator::ChannelTransformPolicy bytePolicy;
     bytePolicy.maximumResidentBytes = 511;

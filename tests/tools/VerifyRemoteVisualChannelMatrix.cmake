@@ -31,7 +31,7 @@ string(JSON pbMatrixCaseCount GET "${pbMatrixJson}" payload summary caseCount)
 string(JSON pbMatrixFalseAccepted GET "${pbMatrixJson}" payload summary falseAcceptedCodewords)
 string(JSON pbMatrixTruthBoundary GET "${pbMatrixJson}" payload summary truthBoundaryValid)
 string(JSON pbMatrixExpectations GET "${pbMatrixJson}" payload summary expectationsMatched)
-if(NOT pbMatrixCaseCount EQUAL 14 OR NOT pbMatrixFalseAccepted EQUAL 0 OR
+if(NOT pbMatrixCaseCount EQUAL 15 OR NOT pbMatrixFalseAccepted EQUAL 0 OR
     NOT pbMatrixTruthBoundary OR NOT pbMatrixExpectations)
     message(FATAL_ERROR
         "unexpected matrix summary: cases=${pbMatrixCaseCount} falseAccepted=${pbMatrixFalseAccepted} "
