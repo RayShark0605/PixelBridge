@@ -42,6 +42,16 @@ set_tests_properties(PBRemoteVisualChannelMatrixTests PROPERTIES
     LABELS "tools;remote-visual;simulator;matrix;truth"
     TIMEOUT 300)
 
+PbAddUnitTest(PBRemoteVisualReceiverEvidenceTests
+    test_remote_visual_receiver_evidence.cpp)
+target_link_libraries(PBRemoteVisualReceiverEvidenceTests
+    PRIVATE
+        PBRemoteVisualReceiverEvidenceCore)
+PbInstrumentPresentationTest(PBRemoteVisualReceiverEvidenceTests)
+set_tests_properties(PBRemoteVisualReceiverEvidenceTests PROPERTIES
+    LABELS "tools;remote-visual;receiver;outer;digest;resource"
+    TIMEOUT 300)
+
 PbAddUnitTest(PBRemoteVisualCodecProbeTests
     test_remote_visual_codec_probe.cpp)
 target_link_libraries(PBRemoteVisualCodecProbeTests

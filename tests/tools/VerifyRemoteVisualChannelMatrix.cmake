@@ -24,14 +24,14 @@ endif()
 
 file(READ "${pbMatrixOutput}" pbMatrixJson)
 string(JSON pbMatrixSchema ERROR_VARIABLE pbMatrixJsonError GET "${pbMatrixJson}" schema)
-if(pbMatrixJsonError OR NOT pbMatrixSchema STREQUAL "PixelBridge.RemoteVisualChannelMatrix.1")
+if(pbMatrixJsonError OR NOT pbMatrixSchema STREQUAL "PixelBridge.RemoteVisualChannelMatrix.2")
     message(FATAL_ERROR "unexpected matrix schema: ${pbMatrixJsonError} ${pbMatrixSchema}")
 endif()
 string(JSON pbMatrixCaseCount GET "${pbMatrixJson}" payload summary caseCount)
 string(JSON pbMatrixFalseAccepted GET "${pbMatrixJson}" payload summary falseAcceptedCodewords)
 string(JSON pbMatrixTruthBoundary GET "${pbMatrixJson}" payload summary truthBoundaryValid)
 string(JSON pbMatrixExpectations GET "${pbMatrixJson}" payload summary expectationsMatched)
-if(NOT pbMatrixCaseCount EQUAL 15 OR NOT pbMatrixFalseAccepted EQUAL 0 OR
+if(NOT pbMatrixCaseCount EQUAL 22 OR NOT pbMatrixFalseAccepted EQUAL 0 OR
     NOT pbMatrixTruthBoundary OR NOT pbMatrixExpectations)
     message(FATAL_ERROR
         "unexpected matrix summary: cases=${pbMatrixCaseCount} falseAccepted=${pbMatrixFalseAccepted} "

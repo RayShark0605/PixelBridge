@@ -45,8 +45,8 @@ TEST_CASE("RemoteVisual codec probe source sequence is deterministic and product
         pbremotevisualcodecprobe::kSourceFrameCount);
     REQUIRE(first.canonicalManifestJson.starts_with(
         "{\"schema\":\"PixelBridge.RemoteVisualCodecSource.1\",\"version\":1,"));
-    REQUIRE(first.canonicalManifestJson.find("\"frameSequence\":900") != std::string::npos);
-    REQUIRE(first.canonicalManifestJson.find("\"frameSequence\":902") != std::string::npos);
+    REQUIRE(first.canonicalManifestJson.find("\"frameSequence\":0") != std::string::npos);
+    REQUIRE(first.canonicalManifestJson.find("\"frameSequence\":2") != std::string::npos);
 }
 
 TEST_CASE("RemoteVisual codec probe evaluates Gray8 sequences through the production truth boundary",
@@ -70,11 +70,30 @@ TEST_CASE("RemoteVisual codec probe evaluates Gray8 sequences through the produc
         REQUIRE(frame.index == index);
         REQUIRE(frame.classification == "Verified");
         REQUIRE(frame.bootstrapAccepted);
-        REQUIRE(frame.frameSequence == 900 + index);
+        REQUIRE(frame.frameSequence == index);
         REQUIRE(frame.acceptedTransportBlocks == 4);
+        REQUIRE(frame.diagnosticAcceptedTransportBlocks == 4);
+        REQUIRE(frame.identityFailures == 0);
+        REQUIRE(frame.diagnosticIdentityFailures == 0);
+        REQUIRE(frame.diagnosticFalseCandidates == 0);
         REQUIRE(frame.falseAcceptedCodewords == 0);
     }
-    REQUIRE(first.canonicalJson.find("\"acceptedTransportBlocks\":12") != std::string::npos);
+    REQUIRE(first.receiverEvidence.IsSafe());
+    REQUIRE(first.receiverEvidence.inputTransportBlocks == 12);
+    REQUIRE(first.receiverEvidence.uniqueOuterSymbols == 12);
+    REQUIRE(first.receiverEvidence.verifiedSegments == 3);
+    REQUIRE(first.receiverEvidence.verifiedRawBytes ==
+        3 * pbremotevisualreceiverevidence::kReceiverEvidenceSegmentBytes);
+    REQUIRE(first.receiverEvidence.finalizationPrepared);
+    REQUIRE(first.receiverEvidence.wholeFileDigestDisposition ==
+        pbremotevisualreceiverevidence::WholeFileDigestDisposition::Pass);
+    REQUIRE(first.receiverEvidence.observedWholeFileBlake3 == first.receiverEvidence.expectedWholeFileBlake3);
+    REQUIRE(first.canonicalJson.starts_with(
+        "{\"schema\":\"PixelBridge.RemoteVisualCodecFrameEvaluation.2\",\"version\":2,"));
+    REQUIRE(first.canonicalJson.find("\"diagnosticAcceptedTransportBlocks\":12") != std::string::npos);
+    REQUIRE(first.canonicalJson.find("\"productionAcceptedTransportBlocks\":12") != std::string::npos);
+    REQUIRE(first.canonicalJson.find("\"diagnosticTruthEvaluation\":") != std::string::npos);
+    REQUIRE(first.canonicalJson.find("\"productionTransportEvaluation\":") != std::string::npos);
     REQUIRE(first.canonicalJson.find("\"falseAcceptedCodewords\":0") != std::string::npos);
 }
 
@@ -98,6 +117,19 @@ TEST_CASE("RemoteVisual codec probe rejects malformed sequences and fails closed
     pbremotevisualcodecprobe::CodecSourceSequence source;
     REQUIRE(pbremotevisualcodecprobe::BuildCanonicalSourceSequence(source, error));
     std::vector<std::byte> gray = ConvertBgraToGray(source);
+    const auto thirdFrame = std::span(gray).subspan(2 * pbremotevisualcodecprobe::kGrayFrameBytes,
+        pbremotevisualcodecprobe::kGrayFrameBytes);
+    pbremotevisualcodecprobe::CodecSequenceEvaluation thirdFrameEvaluation;
+    REQUIRE(pbremotevisualcodecprobe::EvaluateGray8Sequence(thirdFrame, thirdFrameEvaluation, error, 2));
+    REQUIRE(thirdFrameEvaluation.truthBoundaryValid);
+    REQUIRE(thirdFrameEvaluation.frames[0].falseAcceptedCodewords == 0);
+    REQUIRE(thirdFrameEvaluation.receiverEvidence.configuredSegments == 3);
+    REQUIRE(thirdFrameEvaluation.receiverEvidence.uniqueOuterSymbols == 4);
+    REQUIRE(thirdFrameEvaluation.receiverEvidence.wholeFileDigestDisposition ==
+        pbremotevisualreceiverevidence::WholeFileDigestDisposition::NotReady);
+    REQUIRE_FALSE(pbremotevisualcodecprobe::EvaluateGray8Sequence(thirdFrame, untouched, error,
+        pbremotevisualreceiverevidence::kMaximumReceiverEvidenceSegments));
+    REQUIRE(untouched.canonicalJson == "sentinel");
     std::fill_n(gray.begin() + static_cast<std::ptrdiff_t>(pbremotevisualcodecprobe::kGrayFrameBytes),
         pbremotevisualcodecprobe::kGrayFrameBytes, std::byte{128});
     pbremotevisualcodecprobe::CodecSequenceEvaluation evaluation;
@@ -109,6 +141,11 @@ TEST_CASE("RemoteVisual codec probe rejects malformed sequences and fails closed
     REQUIRE(evaluation.frames[1].acceptedTransportBlocks == 0);
     REQUIRE(evaluation.frames[1].falseAcceptedCodewords == 0);
     REQUIRE(evaluation.frames[2].classification == "Verified");
+    REQUIRE(evaluation.receiverEvidence.IsSafe());
+    REQUIRE(evaluation.receiverEvidence.uniqueOuterSymbols == 8);
+    REQUIRE(evaluation.receiverEvidence.verifiedSegments == 2);
+    REQUIRE(evaluation.receiverEvidence.wholeFileDigestDisposition ==
+        pbremotevisualreceiverevidence::WholeFileDigestDisposition::NotReady);
 }
 
 TEST_CASE("RemoteVisual codec probe distinguishes FEC erasure from valid-CRC wrong identity",
@@ -132,6 +169,9 @@ TEST_CASE("RemoteVisual codec probe distinguishes FEC erasure from valid-CRC wro
     REQUIRE(erasureEvaluation.frames[0].identityFailures == 0);
     REQUIRE(erasureEvaluation.frames[0].acceptedTransportBlocks == 0);
     REQUIRE(erasureEvaluation.frames[0].falseAcceptedCodewords == 0);
+    REQUIRE(erasureEvaluation.receiverEvidence.IsSafe());
+    REQUIRE(erasureEvaluation.receiverEvidence.wholeFileDigestDisposition ==
+        pbremotevisualreceiverevidence::WholeFileDigestDisposition::NotReady);
 
     std::vector<std::byte> wrongIdentity;
     REQUIRE(pbremotevisualcodecprobe::BuildAdversarialGrayFrame(
@@ -139,7 +179,7 @@ TEST_CASE("RemoteVisual codec probe distinguishes FEC erasure from valid-CRC wro
     REQUIRE(wrongIdentity.size() == pbremotevisualcodecprobe::kGrayFrameBytes);
     pbremotevisualcodecprobe::CodecSequenceEvaluation identityEvaluation;
     REQUIRE(pbremotevisualcodecprobe::EvaluateGray8Sequence(wrongIdentity, identityEvaluation, error));
-    REQUIRE_FALSE(identityEvaluation.truthBoundaryValid);
+    REQUIRE(identityEvaluation.truthBoundaryValid);
     REQUIRE_FALSE(identityEvaluation.allFramesVerified);
     REQUIRE(identityEvaluation.frames.size() == 1);
     CAPTURE(identityEvaluation.frames[0].classification, identityEvaluation.frames[0].fecFailures,
@@ -149,8 +189,14 @@ TEST_CASE("RemoteVisual codec probe distinguishes FEC erasure from valid-CRC wro
     REQUIRE(identityEvaluation.frames[0].fecFailures == 0);
     REQUIRE(identityEvaluation.frames[0].crcFailures == 0);
     REQUIRE(identityEvaluation.frames[0].identityFailures == 4);
+    REQUIRE(identityEvaluation.frames[0].diagnosticIdentityFailures == 4);
     REQUIRE(identityEvaluation.frames[0].acceptedTransportBlocks == 0);
-    REQUIRE(identityEvaluation.frames[0].falseAcceptedCodewords == 4);
+    REQUIRE(identityEvaluation.frames[0].diagnosticAcceptedTransportBlocks == 0);
+    REQUIRE(identityEvaluation.frames[0].diagnosticFalseCandidates == 4);
+    REQUIRE(identityEvaluation.frames[0].falseAcceptedCodewords == 0);
+    REQUIRE(identityEvaluation.frames[0].classification == "RejectedNoFalseAccept");
+    REQUIRE(identityEvaluation.receiverEvidence.IsSafe());
+    REQUIRE(identityEvaluation.receiverEvidence.receiverRejections == 0);
     REQUIRE(identityEvaluation.canonicalJson.find("\"identityFailures\":4") != std::string::npos);
 
     std::vector<std::byte> unchanged{std::byte{0x5A}};

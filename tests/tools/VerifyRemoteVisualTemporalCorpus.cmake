@@ -20,7 +20,7 @@ string(JSON pbTemporalWrongIdentity GET "${pbTemporalJson}" payload summary wron
 string(JSON pbTemporalCandidates GET "${pbTemporalJson}" payload summary wrongIdentityDiagnosticCandidates)
 string(JSON pbTemporalSafe GET "${pbTemporalJson}" payload summary productionAdmissionSafe)
 string(JSON pbTemporalExpectations GET "${pbTemporalJson}" payload summary expectationsMatched)
-if(NOT pbTemporalSchema STREQUAL "PixelBridge.RemoteVisualTemporalCorpus.1" OR
+if(NOT pbTemporalSchema STREQUAL "PixelBridge.RemoteVisualTemporalCorpus.2" OR
     NOT pbTemporalEvents EQUAL 11 OR NOT pbTemporalDuplicates EQUAL 3 OR
     NOT pbTemporalReordered EQUAL 1 OR NOT pbTemporalWrongIdentity EQUAL 0 OR
     NOT pbTemporalCandidates EQUAL 4 OR NOT pbTemporalSafe OR NOT pbTemporalExpectations)

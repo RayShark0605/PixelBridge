@@ -5,7 +5,9 @@
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbremotevisualsimulator/channel_transform.h"
+#include "receiver_evidence.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <charconv>
@@ -27,9 +29,8 @@ namespace pbremotevisualmatrix
 namespace
 {
 
-constexpr std::uint64_t kSessionTag = 0x42A17C9E5D8036BFULL;
-constexpr std::uint64_t kPreviousFrameSequence = 700;
-constexpr std::uint64_t kCurrentFrameSequence = 701;
+constexpr std::uint64_t kPreviousFrameSequence = 1;
+constexpr std::uint64_t kCurrentFrameSequence = 0;
 constexpr std::uint64_t kMatrixSeed = 0x504252564D415452ULL;
 
 struct ChannelMatrixCaseEvidence
@@ -41,7 +42,9 @@ struct ChannelMatrixCaseEvidence
     std::uint32_t outputHeight = 0;
     std::size_t outputRowPitch = 0;
     std::string canonicalManifestJson;
-    pbdesktoplevels::RemoteVisualLowFpsReferenceObservation observation;
+    pbdesktoplevels::RemoteVisualLowFpsReferenceObservation diagnosticObservation;
+    pbdesktoplevels::RemoteVisualLowFpsReferenceObservation productionObservation;
+    pbremotevisualreceiverevidence::ReceiverEvidenceSummary receiverEvidence;
 };
 
 void AppendUnsigned(std::string& output, const std::uint64_t value)
@@ -121,16 +124,11 @@ std::array<std::byte, pbprotocol::kDigestBytes> HashString(const std::string_vie
 
 std::array<std::byte, pbprotocol::kBootstrapRecordBytes> MakeBootstrapRecord(const std::uint64_t frameSequence)
 {
-    pbprotocol::BootstrapRecord record;
-    record.protocolVersion = pbprotocol::GetProtocolVersion();
-    record.visualLayoutVersion = pbmodulation::kRemoteVisualLowFpsLayoutVersion;
-    record.visualProfileId = pbmodulation::kRemoteVisualLowFpsProfileId;
-    record.sessionTag.value = kSessionTag;
-    record.frameSequence = frameSequence;
     std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bytes{};
-    if (!pbprotocol::SerializeBootstrapRecord(record, bytes))
+    std::string error;
+    if (!pbremotevisualreceiverevidence::MakeReceiverEvidenceBootstrapRecord(frameSequence, bytes, error))
     {
-        throw std::runtime_error("Bootstrap serialization failed");
+        throw std::runtime_error(error);
     }
     return bytes;
 }
@@ -163,6 +161,57 @@ pbremotevisualsimulator::BgraImageView MakeRasterView(const std::vector<std::byt
         static_cast<std::size_t>(pbmodulation::kLocalDesktopCanvasWidth) * 4};
 }
 
+pbremotevisualsimulator::BlockReplacementTransform FindDifferingDataBlockTransform(
+    const std::span<const std::byte> previousRaster, const std::span<const std::byte> currentRaster,
+    const std::uint32_t blockSize)
+{
+    const std::size_t rowPitch = static_cast<std::size_t>(pbmodulation::kLocalDesktopCanvasWidth) * 4;
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
+    {
+        pbmodulation::RemoteVisualTileMapping mapping;
+        pbmodulation::LocalDesktopRegion region;
+        if (!pbmodulation::GetRemoteVisualTileMapping(physical, mapping) ||
+            !pbmodulation::GetRemoteVisualTile(physical, region) ||
+            mapping.role != pbmodulation::RemoteVisualTileRole::Data ||
+            region.x + blockSize > pbmodulation::kLocalDesktopCanvasWidth ||
+            region.y + blockSize > pbmodulation::kLocalDesktopCanvasHeight)
+        {
+            continue;
+        }
+        bool differs = false;
+        for (std::uint32_t row = 0; row < region.height && !differs; row++)
+        {
+            const std::size_t offset = static_cast<std::size_t>(region.y + row) * rowPitch +
+                static_cast<std::size_t>(region.x) * 4;
+            differs = !std::equal(previousRaster.begin() + static_cast<std::ptrdiff_t>(offset),
+                previousRaster.begin() + static_cast<std::ptrdiff_t>(offset + region.width * 4),
+                currentRaster.begin() + static_cast<std::ptrdiff_t>(offset));
+        }
+        if (differs)
+        {
+            return {region.x, region.y, blockSize, blockSize};
+        }
+    }
+    throw std::runtime_error("no differing data tile was found for block replacement");
+}
+
+pbremotevisualsimulator::SolidOverlayTransform FindFreshnessErasureTransform()
+{
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
+    {
+        pbmodulation::RemoteVisualTileMapping mapping;
+        pbmodulation::LocalDesktopRegion region;
+        if (pbmodulation::GetRemoteVisualTileMapping(physical, mapping) &&
+            pbmodulation::GetRemoteVisualTile(physical, region) &&
+            mapping.role == pbmodulation::RemoteVisualTileRole::FreshnessTag)
+        {
+            return {region.x, region.y, region.width, region.height,
+                {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}, 255};
+        }
+    }
+    throw std::runtime_error("no freshness tile was found for low-confidence coverage");
+}
+
 pbremotevisualsimulator::BlockReplacementTransform FindStaleRegionTransform()
 {
     for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
@@ -175,8 +224,9 @@ pbremotevisualsimulator::BlockReplacementTransform FindStaleRegionTransform()
         }
         bool previousBit = false;
         bool currentBit = false;
-        if (!pbmodulation::GetRemoteVisualFreshnessBit(kSessionTag, kPreviousFrameSequence, physical, previousBit) ||
-            !pbmodulation::GetRemoteVisualFreshnessBit(kSessionTag, kCurrentFrameSequence, physical, currentBit))
+        const std::uint64_t sessionTag = pbremotevisualreceiverevidence::GetReceiverEvidenceSessionTag().value;
+        if (!pbmodulation::GetRemoteVisualFreshnessBit(sessionTag, kPreviousFrameSequence, physical, previousBit) ||
+            !pbmodulation::GetRemoteVisualFreshnessBit(sessionTag, kCurrentFrameSequence, physical, currentBit))
         {
             throw std::runtime_error("freshness mapping failed");
         }
@@ -190,17 +240,21 @@ pbremotevisualsimulator::BlockReplacementTransform FindStaleRegionTransform()
     throw std::runtime_error("no deterministic stale region was found");
 }
 
-ChannelMatrixClassification Classify(const pbdesktoplevels::RemoteVisualLowFpsReferenceObservation& observation) noexcept
+ChannelMatrixClassification Classify(
+    const pbdesktoplevels::RemoteVisualLowFpsReferenceObservation& diagnosticObservation,
+    const pbdesktoplevels::RemoteVisualLowFpsReferenceObservation& productionObservation,
+    const std::uint32_t productionFalseAcceptedCodewords) noexcept
 {
-    if (observation.evaluation.falseAcceptedCodewords != 0)
+    if (productionFalseAcceptedCodewords != 0)
     {
         return ChannelMatrixClassification::FalseAcceptance;
     }
-    if (observation.evaluation.IsVerified())
+    if (diagnosticObservation.evaluation.IsVerified() &&
+        productionObservation.evaluation.acceptedTransportBlocks == 4)
     {
         return ChannelMatrixClassification::Verified;
     }
-    if (observation.modulation.IsAccepted())
+    if (diagnosticObservation.modulation.IsAccepted())
     {
         return ChannelMatrixClassification::RejectedNoFalseAccept;
     }
@@ -245,6 +299,54 @@ void AppendEvaluation(std::string& output, const pbdesktoplevels::FrameEvaluatio
     AppendUnsigned(output, evaluation.comparedCodedBits);
     output.append(",\"erroneousCodedBits\":");
     AppendUnsigned(output, evaluation.erroneousCodedBits);
+    output.push_back('}');
+}
+
+void AppendReceiverEvidence(std::string& output,
+    const pbremotevisualreceiverevidence::ReceiverEvidenceSummary& evidence)
+{
+    output.append("{\"configuredSegments\":");
+    AppendUnsigned(output, evidence.configuredSegments);
+    output.append(",\"inputTransportBlocks\":");
+    AppendUnsigned(output, evidence.inputTransportBlocks);
+    output.append(",\"parsedTransportBlocks\":");
+    AppendUnsigned(output, evidence.parsedTransportBlocks);
+    output.append(",\"uniqueOuterSymbols\":");
+    AppendUnsigned(output, evidence.uniqueOuterSymbols);
+    output.append(",\"identicalDuplicateOuterSymbols\":");
+    AppendUnsigned(output, evidence.identicalDuplicateOuterSymbols);
+    output.append(",\"recoveryReadyOuterSymbols\":");
+    AppendUnsigned(output, evidence.recoveryReadyOuterSymbols);
+    output.append(",\"alreadyCompletedOuterSymbols\":");
+    AppendUnsigned(output, evidence.alreadyCompletedOuterSymbols);
+    output.append(",\"receiverRejections\":");
+    AppendUnsigned(output, evidence.receiverRejections);
+    output.append(",\"outerConflictRejections\":");
+    AppendUnsigned(output, evidence.outerConflictRejections);
+    output.append(",\"resourcePolicyRejections\":");
+    AppendUnsigned(output, evidence.resourcePolicyRejections);
+    output.append(",\"verifiedSegments\":");
+    AppendUnsigned(output, evidence.verifiedSegments);
+    output.append(",\"verifiedRawBytes\":");
+    AppendUnsigned(output, evidence.verifiedRawBytes);
+    output.append(",\"finalizationPrepared\":");
+    AppendBoolean(output, evidence.finalizationPrepared);
+    output.append(",\"wholeFileDigestDisposition\":");
+    AppendJsonString(output,
+        pbremotevisualreceiverevidence::GetWholeFileDigestDispositionName(evidence.wholeFileDigestDisposition));
+    output.append(",\"expectedWholeFileBlake3\":");
+    AppendJsonString(output, evidence.expectedWholeFileBlake3);
+    output.append(",\"observedWholeFileBlake3\":");
+    if (evidence.observedWholeFileBlake3.empty())
+    {
+        output.append("null");
+    }
+    else
+    {
+        AppendJsonString(output, evidence.observedWholeFileBlake3);
+    }
+    output.append(",\"safe\":");
+    AppendBoolean(output, evidence.IsSafe());
     output.push_back('}');
 }
 
@@ -316,6 +418,7 @@ std::string SerializePayload(const std::array<std::byte, pbprotocol::kDigestByte
     std::uint64_t erasureCases = 0;
     std::uint64_t rejectedCases = 0;
     std::uint64_t falseAcceptedCodewords = 0;
+    std::uint64_t diagnosticFalseCandidates = 0;
     std::uint64_t expectationMismatches = 0;
     for (const ChannelMatrixCaseEvidence& evidence : cases)
     {
@@ -332,6 +435,7 @@ std::string SerializePayload(const std::array<std::byte, pbprotocol::kDigestByte
             rejectedCases++;
         }
         falseAcceptedCodewords += evidence.summary.falseAcceptedCodewords;
+        diagnosticFalseCandidates += evidence.summary.diagnosticFalseCandidates;
         if (!evidence.summary.expectationMatched)
         {
             expectationMismatches++;
@@ -345,7 +449,7 @@ std::string SerializePayload(const std::array<std::byte, pbprotocol::kDigestByte
     output.append(",\"layoutVersion\":");
     AppendUnsigned(output, pbmodulation::kRemoteVisualLowFpsLayoutVersion);
     output.append(",\"sessionTag\":");
-    AppendUint64HexString(output, kSessionTag);
+    AppendUint64HexString(output, pbremotevisualreceiverevidence::GetReceiverEvidenceSessionTag().value);
     output.append(",\"previousFrameSequence\":");
     AppendUnsigned(output, kPreviousFrameSequence);
     output.append(",\"currentFrameSequence\":");
@@ -396,6 +500,10 @@ std::string SerializePayload(const std::array<std::byte, pbprotocol::kDigestByte
         AppendJsonString(output, evidence.summary.manifestBlake3);
         output.append(",\"outputBlake3\":");
         AppendJsonString(output, evidence.summary.outputBlake3);
+        output.append(",\"diagnosticFalseCandidates\":");
+        AppendUnsigned(output, evidence.summary.diagnosticFalseCandidates);
+        output.append(",\"falseAcceptedCodewords\":");
+        AppendUnsigned(output, evidence.summary.falseAcceptedCodewords);
         output.append(",\"outputGeometry\":{\"width\":");
         AppendUnsigned(output, evidence.outputWidth);
         output.append(",\"height\":");
@@ -405,9 +513,13 @@ std::string SerializePayload(const std::array<std::byte, pbprotocol::kDigestByte
         output.append("},\"channelManifest\":");
         output.append(evidence.canonicalManifestJson);
         output.append(",\"modulation\":");
-        AppendModulation(output, evidence.observation.modulation);
-        output.append(",\"evaluation\":");
-        AppendEvaluation(output, evidence.observation.evaluation);
+        AppendModulation(output, evidence.diagnosticObservation.modulation);
+        output.append(",\"diagnosticTruthEvaluation\":");
+        AppendEvaluation(output, evidence.diagnosticObservation.evaluation);
+        output.append(",\"productionTransportEvaluation\":");
+        AppendEvaluation(output, evidence.productionObservation.evaluation);
+        output.append(",\"receiverEvidence\":");
+        AppendReceiverEvidence(output, evidence.receiverEvidence);
         output.push_back('}');
     }
     output.append("],\"summary\":{\"caseCount\":");
@@ -420,6 +532,8 @@ std::string SerializePayload(const std::array<std::byte, pbprotocol::kDigestByte
     AppendUnsigned(output, rejectedCases);
     output.append(",\"falseAcceptedCodewords\":");
     AppendUnsigned(output, falseAcceptedCodewords);
+    output.append(",\"diagnosticFalseCandidates\":");
+    AppendUnsigned(output, diagnosticFalseCandidates);
     output.append(",\"expectationMismatches\":");
     AppendUnsigned(output, expectationMismatches);
     output.append(",\"truthBoundaryValid\":");
@@ -464,8 +578,12 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
         const auto previousRasterBlake3 = HashBytes(previousRaster);
         const auto currentRasterBlake3 = HashBytes(currentRaster);
         const auto staleBlock = FindStaleRegionTransform();
+        const auto replacement8 = FindDifferingDataBlockTransform(previousRaster, currentRaster, 8);
+        const auto replacement16 = FindDifferingDataBlockTransform(previousRaster, currentRaster, 16);
+        const auto replacement64 = FindDifferingDataBlockTransform(previousRaster, currentRaster, 64);
+        const auto freshnessErasure = FindFreshnessErasureTransform();
         std::vector<ChannelMatrixCaseEvidence> cases;
-        cases.reserve(15);
+        cases.reserve(22);
 
         const auto AddCase = [&](const std::string_view name, const std::string_view impairmentClass,
             const std::string_view expected, const std::initializer_list<pbremotevisualsimulator::ChannelTransform> transforms,
@@ -483,27 +601,58 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
                     pbremotevisualsimulator::GetChannelTransformErrorName(executionResult.Error().code));
             }
             auto execution = std::move(executionResult).Value();
-            auto channelResult = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
-            if (!channelResult)
+            auto diagnosticChannelResult = pbdesktoplevels::ReferenceChannel::Create(
+                pbdesktoplevels::kProcessingReservationBytes);
+            auto productionChannelResult = pbdesktoplevels::ReferenceChannel::Create(
+                pbdesktoplevels::kProcessingReservationBytes);
+            if (!diagnosticChannelResult || !productionChannelResult)
             {
                 throw std::runtime_error("reference channel allocation failed");
             }
-            auto channel = std::move(channelResult).Value();
+            auto diagnosticChannel = std::move(diagnosticChannelResult).Value();
+            auto productionChannel = std::move(productionChannelResult).Value();
             const pbmodulation::LumaView view{execution.output.pixels, execution.output.width, execution.output.height,
                 execution.output.rowPitch, pbmodulation::LumaPixelFormat::Bgra8};
-            const auto observation = channel.DecodeRemoteVisualLowFps(view);
+            const auto diagnosticObservation = diagnosticChannel.DecodeRemoteVisualLowFps(view, {},
+                pbdesktoplevels::EvaluationMode::DiagnosticTruth);
+            const auto productionObservation = productionChannel.DecodeRemoteVisualLowFps(view, {},
+                pbdesktoplevels::EvaluationMode::Transport);
+            if (diagnosticObservation.modulation.erasure != productionObservation.modulation.erasure ||
+                diagnosticObservation.modulation.dataBytes != productionObservation.modulation.dataBytes ||
+                diagnosticObservation.modulation.staleRegions != productionObservation.modulation.staleRegions ||
+                diagnosticObservation.modulation.erasedDataMetrics != productionObservation.modulation.erasedDataMetrics ||
+                diagnosticObservation.modulation.bootstrap.canonical44 !=
+                    productionObservation.modulation.bootstrap.canonical44)
+            {
+                throw std::runtime_error("diagnostic and production matrix observations diverged");
+            }
+            pbremotevisualreceiverevidence::ReceiverEvidenceSummary receiverEvidence;
+            std::string receiverError;
+            if (!pbremotevisualreceiverevidence::EvaluateReceiverEvidence(1,
+                    productionChannel.GetAcceptedTransportBlocks(), receiverEvidence, receiverError))
+            {
+                throw std::runtime_error("Receiver evidence failed: " + receiverError);
+            }
             ChannelMatrixCaseEvidence evidence;
+            const std::uint32_t productionFalseAcceptedCodewords =
+                pbremotevisualreceiverevidence::CountProductionTruthMismatches(
+                    kCurrentFrameSequence, productionChannel.GetAcceptedTransportBlocks());
             evidence.summary.name = name;
             evidence.summary.impairmentClass = impairmentClass;
             evidence.summary.expected = expected;
-            evidence.summary.classification = Classify(observation);
+            evidence.summary.classification = Classify(diagnosticObservation, productionObservation,
+                productionFalseAcceptedCodewords);
             evidence.summary.expectationMatched = MatchesExpectation(expected, evidence.summary.classification);
-            evidence.summary.modulationAccepted = observation.modulation.IsAccepted();
-            evidence.summary.evaluationVerified = observation.evaluation.IsVerified();
-            evidence.summary.falseAcceptedCodewords = observation.evaluation.falseAcceptedCodewords;
-            evidence.summary.acceptedTransportBlocks = observation.evaluation.acceptedTransportBlocks;
-            evidence.summary.staleRegions = observation.modulation.staleRegions;
-            evidence.summary.erasure = pbmodulation::GetRemoteVisualLowFpsErasureName(observation.modulation.erasure);
+            evidence.summary.modulationAccepted = diagnosticObservation.modulation.IsAccepted();
+            evidence.summary.evaluationVerified = diagnosticObservation.evaluation.IsVerified();
+            evidence.summary.diagnosticFalseCandidates = diagnosticObservation.evaluation.falseAcceptedCodewords;
+            evidence.summary.falseAcceptedCodewords = productionFalseAcceptedCodewords;
+            evidence.summary.acceptedTransportBlocks = productionObservation.evaluation.acceptedTransportBlocks;
+            evidence.summary.staleRegions = diagnosticObservation.modulation.staleRegions;
+            evidence.summary.freshnessTagErasures = diagnosticObservation.modulation.freshnessTagErasures;
+            evidence.summary.erasure = pbmodulation::GetRemoteVisualLowFpsErasureName(
+                diagnosticObservation.modulation.erasure);
+            evidence.summary.receiverEvidence = receiverEvidence;
             evidence.summary.manifestBlake3 = pbremotevisualsimulator::ChannelDigestToHex(execution.manifestBlake3);
             evidence.summary.outputBlake3 = pbremotevisualsimulator::ChannelDigestToHex(execution.outputBlake3);
             evidence.seed = seed;
@@ -512,11 +661,15 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
             evidence.outputHeight = execution.output.height;
             evidence.outputRowPitch = execution.output.rowPitch;
             evidence.canonicalManifestJson = std::move(execution.canonicalManifestJson);
-            evidence.observation = observation;
+            evidence.diagnosticObservation = diagnosticObservation;
+            evidence.productionObservation = productionObservation;
+            evidence.receiverEvidence = std::move(receiverEvidence);
             cases.push_back(std::move(evidence));
         };
 
         AddCase("identity", "identity", "Verified", {}, false);
+        AddCase("full-range-444-identity", "color-range-chroma-444", "Verified",
+            {pbremotevisualsimulator::ColorTransferTransform{1.0, 0.0, 1.0}}, false);
         AddCase("area-upscale", "geometry-scale", "NoFalseAcceptance",
             {pbremotevisualsimulator::ResampleTransform{2442, 1384, 1.259375, 1.2592592592592593, 11.25, 13.5,
                 pbremotevisualsimulator::ResampleFilter::Area,
@@ -551,6 +704,16 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
         AddCase("codec-block-overlay", "spatial-overlay", "Verified",
             {pbremotevisualsimulator::SolidOverlayTransform{96 + 4 * 128, 96 + 3 * 128, 128, 128,
                 {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}, 255}}, false);
+        AddCase("alpha-overlay-128", "spatial-alpha-mix", "NoFalseAcceptance",
+            {pbremotevisualsimulator::SolidOverlayTransform{96 + 5 * 128, 96 + 2 * 128, 128, 128,
+                {std::byte{48}, std::byte{192}, std::byte{224}, std::byte{255}}, 128}}, false);
+        AddCase("reference-block-8x8", "temporal-block-replacement", "NoFalseAcceptance", {replacement8}, true);
+        AddCase("reference-block-16x16", "temporal-block-replacement", "NoFalseAcceptance", {replacement16}, true);
+        AddCase("reference-block-64x64", "temporal-block-replacement", "NoFalseAcceptance", {replacement64}, true);
+        AddCase("bootstrap-a-mismatch", "bootstrap-mismatch", "ErasureNoFalseAccept",
+            {pbremotevisualsimulator::BlockReplacementTransform{96, 16, 608, 64}}, true);
+        AddCase("freshness-low-confidence", "freshness-low-confidence", "NoFalseAcceptance",
+            {freshnessErasure}, false);
         AddCase("stale-region-replacement", "temporal-block-replacement", "Verified", {staleBlock}, true);
         AddCase("temporal-blend-96", "temporal-blend", "ErasureNoFalseAccept",
             {pbremotevisualsimulator::ReferenceBlendTransform{96}}, true);
@@ -562,8 +725,14 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
         for (const ChannelMatrixCaseEvidence& evidence : cases)
         {
             report.cases.push_back(evidence.summary);
+            const bool digestDispositionConsistent = evidence.summary.acceptedTransportBlocks == 4 ?
+                evidence.summary.receiverEvidence.wholeFileDigestDisposition ==
+                    pbremotevisualreceiverevidence::WholeFileDigestDisposition::Pass :
+                evidence.summary.receiverEvidence.wholeFileDigestDisposition ==
+                    pbremotevisualreceiverevidence::WholeFileDigestDisposition::NotReady;
             report.truthBoundaryValid = report.truthBoundaryValid && evidence.summary.falseAcceptedCodewords == 0 &&
-                evidence.summary.classification != ChannelMatrixClassification::ExecutionFailure;
+                evidence.summary.classification != ChannelMatrixClassification::ExecutionFailure &&
+                evidence.summary.receiverEvidence.IsSafe() && digestDispositionConsistent;
             report.expectationsMatched = report.expectationsMatched && evidence.summary.expectationMatched;
         }
         const std::string payload = SerializePayload(previousRasterBlake3, currentRasterBlake3, cases,

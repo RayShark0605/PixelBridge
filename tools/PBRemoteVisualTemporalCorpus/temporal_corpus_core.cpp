@@ -26,6 +26,7 @@ struct TemporalEventInput
 {
     std::string_view name;
     std::span<const std::byte> frame;
+    std::uint64_t expectedSegmentOrdinal = 0;
     std::uint64_t captureEpoch = 0;
     std::int64_t timestamp100ns = 0;
     pbapp::VisualIdentityDisposition expectedDisposition = pbapp::VisualIdentityDisposition::Invalid;
@@ -164,11 +165,13 @@ std::vector<std::byte> ConvertNeutralBgraSequenceToGray(
     return gray;
 }
 
-pbremotevisualcodecprobe::CodecFrameSummary EvaluateFrame(const std::span<const std::byte> frame)
+pbremotevisualcodecprobe::CodecFrameSummary EvaluateFrame(const std::span<const std::byte> frame,
+    const std::uint64_t expectedSegmentOrdinal)
 {
     pbremotevisualcodecprobe::CodecSequenceEvaluation evaluation;
     std::string error;
-    if (!pbremotevisualcodecprobe::EvaluateGray8Sequence(frame, evaluation, error) || evaluation.frames.size() != 1)
+    if (!pbremotevisualcodecprobe::EvaluateGray8Sequence(frame, evaluation, error, expectedSegmentOrdinal) ||
+        evaluation.frames.size() != 1)
     {
         throw std::runtime_error("temporal frame evaluation failed: " + error);
     }
@@ -194,7 +197,7 @@ TemporalScenarioEvidence RunTemporalScenario(const std::string_view name,
         event.name = input.name;
         event.captureEpoch = input.captureEpoch;
         event.timestamp100ns = input.timestamp100ns;
-        event.frame = EvaluateFrame(input.frame);
+        event.frame = EvaluateFrame(input.frame, input.expectedSegmentOrdinal);
         event.sessionTag = event.frame.sessionTag;
         event.frameSequence = event.frame.frameSequence;
         event.disposition = identity.Observe(event.frameSequence, input.captureEpoch, input.timestamp100ns,
@@ -287,6 +290,8 @@ void AppendScenario(std::string& output, const TemporalScenarioEvidence& scenari
         output.append(",\"identityFailures\":");
         AppendUnsigned(output, event.frame.identityFailures);
         output.append(",\"diagnosticNonTruthCodewords\":");
+        AppendUnsigned(output, event.frame.diagnosticFalseCandidates);
+        output.append(",\"productionFalseAcceptedCodewords\":");
         AppendUnsigned(output, event.frame.falseAcceptedCodewords);
         output.append(",\"acceptedCarrier\":");
         AppendBoolean(output, event.acceptedCarrier);
@@ -418,29 +423,29 @@ bool BuildDefaultTemporalCorpus(TemporalCorpusReport& output, std::string& error
         }
 
         const std::array orderInputs{
-            TemporalEventInput{"unique-900", CleanFrame(0), 1, 0,
+            TemporalEventInput{"unique-0", CleanFrame(0), 0, 1, 0,
                 pbapp::VisualIdentityDisposition::Unique, true, false, 4},
-            TemporalEventInput{"duplicate-900", CleanFrame(0), 1, 1000000,
+            TemporalEventInput{"duplicate-0", CleanFrame(0), 0, 1, 1000000,
                 pbapp::VisualIdentityDisposition::Duplicate, false, false, 0},
-            TemporalEventInput{"gap-to-902", CleanFrame(2), 1, 2000000,
+            TemporalEventInput{"gap-to-2", CleanFrame(2), 2, 1, 2000000,
                 pbapp::VisualIdentityDisposition::Unique, true, false, 4},
-            TemporalEventInput{"reordered-901", CleanFrame(1), 1, 3000000,
+            TemporalEventInput{"reordered-1", CleanFrame(1), 1, 1, 3000000,
                 pbapp::VisualIdentityDisposition::Reordered, false, false, 0},
-            TemporalEventInput{"epoch-reset-901", CleanFrame(1), 2, 4000000,
+            TemporalEventInput{"epoch-reset-1", CleanFrame(1), 1, 2, 4000000,
                 pbapp::VisualIdentityDisposition::Unique, true, false, 4},
-            TemporalEventInput{"epoch-duplicate-901", CleanFrame(1), 2, 5000000,
+            TemporalEventInput{"epoch-duplicate-1", CleanFrame(1), 1, 2, 5000000,
                 pbapp::VisualIdentityDisposition::Duplicate, false, false, 0},
-            TemporalEventInput{"invalid-zero-epoch", CleanFrame(2), 0, 6000000,
+            TemporalEventInput{"invalid-zero-epoch", CleanFrame(2), 2, 0, 6000000,
                 pbapp::VisualIdentityDisposition::Invalid, false, false, 0}};
         const std::array refinementInputs{
-            TemporalEventInput{"unique-erasure-900", transportErasure, 7, 0,
+            TemporalEventInput{"unique-erasure-0", transportErasure, 0, 7, 0,
                 pbapp::VisualIdentityDisposition::Unique, true, false, 0},
-            TemporalEventInput{"duplicate-clean-refinement-900", CleanFrame(0), 7, 1000000,
+            TemporalEventInput{"duplicate-clean-refinement-0", CleanFrame(0), 0, 7, 1000000,
                 pbapp::VisualIdentityDisposition::Duplicate, true, true, 4},
-            TemporalEventInput{"duplicate-after-admission-900", CleanFrame(0), 7, 2000000,
+            TemporalEventInput{"duplicate-after-admission-0", CleanFrame(0), 0, 7, 2000000,
                 pbapp::VisualIdentityDisposition::Duplicate, false, false, 0}};
         const std::array wrongIdentityInputs{
-            TemporalEventInput{"valid-crc-wrong-identity", wrongIdentity, 9, 0,
+            TemporalEventInput{"valid-crc-wrong-identity", wrongIdentity, 0, 9, 0,
                 pbapp::VisualIdentityDisposition::Unique, true, false, 0}};
         std::array scenarios{
             RunTemporalScenario("duplicate-gap-reorder-epoch", orderInputs),
@@ -488,7 +493,7 @@ bool BuildDefaultTemporalCorpus(TemporalCorpusReport& output, std::string& error
         }
         report.duplicateRefinementRecoveries = static_cast<std::uint32_t>(scenarios[1].refinement.recoveries);
         report.wrongIdentityAcceptedTransportBlocks = scenarios[2].events[0].frame.acceptedTransportBlocks;
-        report.wrongIdentityDiagnosticCandidates = scenarios[2].events[0].frame.falseAcceptedCodewords;
+        report.wrongIdentityDiagnosticCandidates = scenarios[2].events[0].frame.diagnosticFalseCandidates;
         report.productionAdmissionSafe = report.suppressedDuplicateEvents == 3 &&
             report.suppressedReorderedEvents == 1 && report.duplicateRefinementRecoveries == 1 &&
             report.wrongIdentityAcceptedTransportBlocks == 0 && scenarios[2].events[0].admittedBlocks == 0 &&

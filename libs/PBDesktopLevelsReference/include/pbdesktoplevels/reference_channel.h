@@ -131,7 +131,8 @@ public:
     [[nodiscard]] RemoteVisualReferenceObservation DecodeRemoteVisual(const pbmodulation::LumaView& view,
         const pbmodulation::RemoteVisualDecodePolicy& policy = {}) noexcept;
     [[nodiscard]] RemoteVisualLowFpsReferenceObservation DecodeRemoteVisualLowFps(const pbmodulation::LumaView& view,
-        const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy = {}) noexcept;
+        const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy = {},
+        EvaluationMode mode = EvaluationMode::DiagnosticTruth) noexcept;
     // Shared post-demod pipeline, also useful for independent channel tests.
     // No expected payload is accepted as an argument.
     // DiagnosticTruth additionally compares against the deterministic Gate

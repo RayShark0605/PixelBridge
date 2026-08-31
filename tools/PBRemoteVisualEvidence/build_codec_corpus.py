@@ -25,9 +25,9 @@ from typing import Any, Iterable
 import blake3
 
 
-SCHEMA = "PixelBridge.RemoteVisualCodecCorpus.1"
+SCHEMA = "PixelBridge.RemoteVisualCodecCorpus.2"
 SOURCE_REPORT_SCHEMA = "PixelBridge.RemoteVisualCodecSource.1"
-EVALUATION_REPORT_SCHEMA = "PixelBridge.RemoteVisualCodecFrameEvaluation.1"
+EVALUATION_REPORT_SCHEMA = "PixelBridge.RemoteVisualCodecFrameEvaluation.2"
 MAX_DIAGNOSTIC_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_BITSTREAM_BYTES = 256 * 1024 * 1024
@@ -37,12 +37,13 @@ SOURCE_WIDTH = 1920
 SOURCE_HEIGHT = 1080
 SOURCE_FPS = 2
 SOURCE_FRAMES = 3
-SOURCE_FIRST_FRAME_SEQUENCE = 900
+SOURCE_FIRST_FRAME_SEQUENCE = 0
 SOURCE_PROFILE = "PB-RemoteVisual-LF4-X1"
 SOURCE_PROFILE_ID = "504252564c463431"
 SOURCE_LAYOUT_VERSION = 7
-SOURCE_SESSION_TAG = "a24c70e19b35d86f"
+SOURCE_SESSION_TAG = "5751a0fe3cc27908"
 MAX_TRANSPORT_BLOCK_BYTES = 65571
+RECEIVER_SEGMENT_BYTES = 4 * 1314
 
 
 CASES: tuple[dict[str, Any], ...] = (
@@ -53,6 +54,7 @@ CASES: tuple[dict[str, Any], ...] = (
         "pixelFormat": "yuv420p",
         "crf": 18,
         "intraOnly": True,
+        "colorRange": "tv",
     },
     {
         "name": "h264-420-crf35-inter",
@@ -61,6 +63,7 @@ CASES: tuple[dict[str, Any], ...] = (
         "pixelFormat": "yuv420p",
         "crf": 35,
         "intraOnly": False,
+        "colorRange": "tv",
     },
     {
         "name": "h264-444-crf28-inter",
@@ -69,6 +72,17 @@ CASES: tuple[dict[str, Any], ...] = (
         "pixelFormat": "yuv444p",
         "crf": 28,
         "intraOnly": False,
+        "colorRange": "tv",
+    },
+    {
+        "name": "h264-444-full-crf28-inter",
+        "codec": "h264",
+        "encoder": "libx264",
+        "pixelFormat": "yuv444p",
+        "inspectedPixelFormat": "yuvj444p",
+        "crf": 28,
+        "intraOnly": False,
+        "colorRange": "pc",
     },
     {
         "name": "hevc-420-crf28-inter",
@@ -77,6 +91,7 @@ CASES: tuple[dict[str, Any], ...] = (
         "pixelFormat": "yuv420p",
         "crf": 28,
         "intraOnly": False,
+        "colorRange": "tv",
     },
     {
         "name": "hevc-420-crf40-inter",
@@ -85,6 +100,7 @@ CASES: tuple[dict[str, Any], ...] = (
         "pixelFormat": "yuv420p",
         "crf": 40,
         "intraOnly": False,
+        "colorRange": "tv",
     },
 )
 
@@ -288,14 +304,16 @@ def normalize_text_output(contents: bytes, label: str) -> bytes:
 
 
 def codec_arguments(ffmpeg: Path, source: Path, output: Path, case: dict[str, Any]) -> list[str]:
+    color_range = case["colorRange"]
+    encoder_range = "full" if color_range == "pc" else "limited"
     common = [
         str(ffmpeg), "-hide_banner", "-loglevel", "warning", "-nostdin", "-n",
         "-f", "rawvideo", "-pixel_format", "bgra", "-video_size", f"{SOURCE_WIDTH}x{SOURCE_HEIGHT}",
         "-framerate", str(SOURCE_FPS), "-i", str(source), "-frames:v", str(SOURCE_FRAMES),
         "-an", "-sn", "-dn", "-map_metadata", "-1", "-threads", "1",
-        "-vf", f"scale=in_range=pc:out_range=tv:in_color_matrix=bt709:out_color_matrix=bt709,format={case['pixelFormat']}",
+        "-vf", f"scale=in_range=pc:out_range={color_range}:in_color_matrix=bt709:out_color_matrix=bt709,format={case['pixelFormat']}",
         "-c:v", case["encoder"], "-pix_fmt", case["pixelFormat"], "-crf", str(case["crf"]),
-        "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+        "-color_range", color_range, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
         "-fflags", "+bitexact", "-flags:v", "+bitexact", "-fs", str(MAX_BITSTREAM_BYTES),
     ]
     if case["encoder"] == "libx264":
@@ -303,7 +321,7 @@ def codec_arguments(ffmpeg: Path, source: Path, output: Path, case: dict[str, An
         x264 = (
             f"keyint={keyint}:min-keyint={keyint}:scenecut=0:bframes=0:threads=1:sync-lookahead=0:"
             "rc-lookahead=0:aq-mode=0:psy=0:mbtree=0:colorprim=bt709:transfer=bt709:"
-            "colormatrix=bt709:range=limited"
+            f"colormatrix=bt709:range={encoder_range}"
         )
         common.extend(["-x264-params", x264])
         if case["pixelFormat"] == "yuv444p":
@@ -313,7 +331,7 @@ def codec_arguments(ffmpeg: Path, source: Path, output: Path, case: dict[str, An
         x265 = (
             f"keyint={keyint}:min-keyint={keyint}:scenecut=0:bframes=0:pools=none:frame-threads=1:"
             "lookahead-threads=1:wpp=0:pmode=0:pme=0:aq-mode=0:psy-rd=0:psy-rdoq=0:"
-            "rc-lookahead=0:colorprim=1:transfer=1:colormatrix=1:range=limited:log-level=error"
+            f"rc-lookahead=0:colorprim=1:transfer=1:colormatrix=1:range={encoder_range}:log-level=error"
         )
         common.extend(["-x265-params", x265])
     common.append(str(output))
@@ -384,12 +402,14 @@ def validate_probe(probe: dict[str, Any], case: dict[str, Any]) -> dict[str, Any
     stream = streams[0]
     if stream.get("codec_name") != case["codec"]:
         raise CorpusError(f"{case['name']} codec mismatch: {stream.get('codec_name')}")
-    if stream.get("pix_fmt") != case["pixelFormat"]:
+    expected_pixel_format = case.get("inspectedPixelFormat", case["pixelFormat"])
+    if stream.get("pix_fmt") != expected_pixel_format:
         raise CorpusError(f"{case['name']} pixel format mismatch: {stream.get('pix_fmt')}")
     if require_nonnegative_integer(stream.get("width"), f"{case['name']} stream width") != SOURCE_WIDTH or \
             require_nonnegative_integer(stream.get("height"), f"{case['name']} stream height") != SOURCE_HEIGHT:
         raise CorpusError(f"{case['name']} geometry mismatch")
-    if stream.get("color_space") != "bt709" or stream.get("color_range") not in ("tv", "mpeg"):
+    expected_ranges = ("pc", "jpeg") if case["colorRange"] == "pc" else ("tv", "mpeg")
+    if stream.get("color_space") != "bt709" or stream.get("color_range") not in expected_ranges:
         raise CorpusError(f"{case['name']} color metadata mismatch")
     all_frames, all_packets = extract_probe_frames_and_packets(probe)
     if any(frame.get("media_type") != "video" for frame in all_frames) or \
@@ -399,7 +419,7 @@ def validate_probe(probe: dict[str, Any], case: dict[str, Any]) -> dict[str, Any
     packets = [packet for packet in all_packets if packet.get("codec_type") == "video"]
     if len(frames) != SOURCE_FRAMES or len(packets) != SOURCE_FRAMES:
         raise CorpusError(f"{case['name']} frame/packet count mismatch: {len(frames)}/{len(packets)}")
-    if any(frame.get("color_range") not in ("tv", "mpeg") or frame.get("color_space") != "bt709" or
+    if any(frame.get("color_range") not in expected_ranges or frame.get("color_space") != "bt709" or
            frame.get("color_transfer") != "bt709" or frame.get("color_primaries") != "bt709"
            for frame in frames):
         raise CorpusError(f"{case['name']} per-frame color metadata mismatch")
@@ -441,12 +461,13 @@ def parse_json_bytes(contents: bytes, label: str) -> dict[str, Any]:
     return value
 
 
-def validate_canonical_report(contents: bytes, schema: str, label: str) -> dict[str, Any]:
+def validate_canonical_report(contents: bytes, schema: str, label: str, expected_version: int = 1) -> dict[str, Any]:
     report = parse_json_bytes(contents, label)
     if list(report) != ["schema", "version", "payloadBlake3", "payload"]:
         raise CorpusError(f"{label} has a noncanonical top-level member order")
     version = report.get("version")
-    if report.get("schema") != schema or not isinstance(version, int) or isinstance(version, bool) or version != 1 or \
+    if report.get("schema") != schema or not isinstance(version, int) or isinstance(version, bool) or \
+            version != expected_version or \
             not isinstance(report.get("payload"), dict):
         raise CorpusError(f"{label} schema/version/payload mismatch")
     canonical_report = (json.dumps(report, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -539,6 +560,77 @@ def validate_evaluation_input(report: dict[str, Any], decoded_path: Path, case_n
             raise CorpusError(f"{case_name} evaluation frame {index} does not bind the decoded Gray8 bytes")
 
 
+def validate_frame_evaluation(value: Any, label: str, diagnostic: bool,
+                              allow_unevaluated: bool = False) -> tuple[int, int]:
+    expected_keys = ["evaluated", "paddingValid", "codewords", "fecFailures", "crcFailures",
+                     "identityFailures", "falseAcceptedCodewords", "acceptedTransportBlocks",
+                     "acceptedRemoteControlBlocks", "iterationsTotal", "iterationsMaximum",
+                     "comparedCodedBits", "erroneousCodedBits"]
+    if not isinstance(value, dict) or list(value) != expected_keys or not isinstance(value.get("evaluated"), bool) or \
+            not isinstance(value.get("paddingValid"), bool):
+        raise CorpusError(f"{label} has a malformed evaluation object")
+    integers = {key: require_nonnegative_integer(value.get(key), f"{label} {key}")
+                for key in expected_keys[2:]}
+    if value["evaluated"] is False:
+        if not allow_unevaluated or value["paddingValid"] is not False or any(integers.values()):
+            raise CorpusError(f"{label} has an invalid unevaluated state")
+        return 0, 0
+    codewords = integers["codewords"]
+    accepted = integers["acceptedTransportBlocks"]
+    false_accepted = integers["falseAcceptedCodewords"]
+    terminal = accepted + integers["acceptedRemoteControlBlocks"] + integers["fecFailures"] + \
+        integers["crcFailures"] + integers["identityFailures"]
+    if codewords != 4 or accepted > codewords or terminal != codewords or \
+            integers["erroneousCodedBits"] > integers["comparedCodedBits"]:
+        raise CorpusError(f"{label} violates the LF4 terminal-accounting contract")
+    if diagnostic:
+        if integers["comparedCodedBits"] != 64800:
+            raise CorpusError(f"{label} lacks the diagnostic coded-bit truth denominator")
+    elif false_accepted != 0 or integers["comparedCodedBits"] != 0 or integers["erroneousCodedBits"] != 0:
+        raise CorpusError(f"{label} confuses unavailable production truth scoring with diagnostic zero")
+    return accepted, false_accepted
+
+
+def validate_receiver_evidence(value: Any, label: str, expected_segments: int,
+                               expected_input_blocks: int) -> dict[str, Any]:
+    expected_keys = ["configuredSegments", "inputTransportBlocks", "parsedTransportBlocks",
+                     "uniqueOuterSymbols", "identicalDuplicateOuterSymbols", "recoveryReadyOuterSymbols",
+                     "alreadyCompletedOuterSymbols", "receiverRejections", "outerConflictRejections",
+                     "resourcePolicyRejections", "verifiedSegments", "verifiedRawBytes",
+                     "finalizationPrepared", "wholeFileDigestDisposition", "expectedWholeFileBlake3",
+                     "observedWholeFileBlake3", "safe"]
+    if not isinstance(value, dict) or list(value) != expected_keys:
+        raise CorpusError(f"{label} has a malformed Receiver evidence object")
+    integers = {key: require_nonnegative_integer(value.get(key), f"{label} {key}")
+                for key in expected_keys[:12]}
+    configured_segments = integers["configuredSegments"]
+    input_blocks = integers["inputTransportBlocks"]
+    parsed_blocks = integers["parsedTransportBlocks"]
+    unique_outer = integers["uniqueOuterSymbols"]
+    duplicate_outer = integers["identicalDuplicateOuterSymbols"]
+    recovery_ready = integers["recoveryReadyOuterSymbols"]
+    already_completed = integers["alreadyCompletedOuterSymbols"]
+    verified_segments = integers["verifiedSegments"]
+    verified_raw_bytes = integers["verifiedRawBytes"]
+    expected_digest = require_lowercase_digest(value.get("expectedWholeFileBlake3"),
+                                               f"{label} expectedWholeFileBlake3")
+    observed_digest = value.get("observedWholeFileBlake3")
+    if configured_segments != expected_segments or input_blocks != expected_input_blocks or \
+            parsed_blocks != input_blocks or unique_outer + duplicate_outer + recovery_ready + already_completed != input_blocks or \
+            integers["receiverRejections"] != 0 or integers["outerConflictRejections"] != 0 or \
+            integers["resourcePolicyRejections"] != 0 or verified_segments > configured_segments or \
+            verified_raw_bytes != verified_segments * RECEIVER_SEGMENT_BYTES or value.get("safe") is not True:
+        raise CorpusError(f"{label} violates Receiver/Outer accounting or safety")
+    if verified_segments == configured_segments:
+        if value.get("finalizationPrepared") is not True or value.get("wholeFileDigestDisposition") != "Pass" or \
+                require_lowercase_digest(observed_digest, f"{label} observedWholeFileBlake3") != expected_digest:
+            raise CorpusError(f"{label} did not reproduce its completed WholeFileDigest")
+    elif value.get("finalizationPrepared") is not False or value.get("wholeFileDigestDisposition") != "NotReady" or \
+            observed_digest is not None:
+        raise CorpusError(f"{label} claims a digest before all Segments were verified")
+    return value
+
+
 def validate_evaluation_report(report: dict[str, Any], case_name: str) -> dict[str, Any]:
     payload = report["payload"]
     frames = payload.get("frames")
@@ -546,25 +638,36 @@ def validate_evaluation_report(report: dict[str, Any], case_name: str) -> dict[s
     if not isinstance(frames, list) or len(frames) != SOURCE_FRAMES or not isinstance(summary, dict):
         raise CorpusError(f"{case_name} evaluation has a malformed frame list or summary")
     classifications = {"Verified": 0, "ErasureNoFalseAccept": 0, "RejectedNoFalseAccept": 0}
-    accepted_transport_blocks = 0
+    diagnostic_accepted_transport_blocks = 0
+    production_accepted_transport_blocks = 0
     false_accepted_codewords = 0
+    diagnostic_false_candidates = 0
     for index, frame in enumerate(frames):
         if not isinstance(frame, dict) or require_nonnegative_integer(frame.get("index"),
                 f"{case_name} frame index") != index or frame.get("classification") not in classifications:
             raise CorpusError(f"{case_name} evaluation frame {index} is malformed")
         classification = frame["classification"]
         classifications[classification] += 1
-        evaluation = frame.get("evaluation")
-        if not isinstance(evaluation, dict):
-            raise CorpusError(f"{case_name} evaluation frame {index} has no metric summary")
-        accepted = require_nonnegative_integer(evaluation.get("acceptedTransportBlocks"),
-                                               f"{case_name} frame acceptedTransportBlocks")
-        false_accepted = require_nonnegative_integer(evaluation.get("falseAcceptedCodewords"),
-                                                     f"{case_name} frame falseAcceptedCodewords")
-        if accepted > 4:
-            raise CorpusError(f"{case_name} evaluation frame {index} exceeds the LF4 Transport slot count")
-        accepted_blocks = frame.get("acceptedBlocks")
-        if not isinstance(accepted_blocks, list) or len(accepted_blocks) != accepted:
+        diagnostic_evaluation = frame.get("diagnosticTruthEvaluation")
+        production_evaluation = frame.get("productionTransportEvaluation")
+        diagnostic_accepted, false_accepted = validate_frame_evaluation(
+            diagnostic_evaluation, f"{case_name} frame {index} diagnostic", True, True)
+        production_accepted, production_false_accepted = validate_frame_evaluation(
+            production_evaluation, f"{case_name} frame {index} production", False, True)
+        if production_false_accepted != 0:
+            raise CorpusError(f"{case_name} evaluation frame {index} reports impossible production truth scoring")
+        if diagnostic_evaluation["evaluated"] is not production_evaluation["evaluated"] or \
+                (diagnostic_evaluation["evaluated"] is False and classification != "ErasureNoFalseAccept") or \
+                (classification == "Verified" and (diagnostic_accepted != 4 or production_accepted != 4)):
+            raise CorpusError(f"{case_name} frame {index} evaluation state contradicts its classification")
+        accepted_blocks = frame.get("productionAcceptedBlocks")
+        frame_diagnostic_candidates = require_nonnegative_integer(frame.get("diagnosticFalseCandidates"),
+                                                                  f"{case_name} diagnosticFalseCandidates")
+        frame_false_accepted = require_nonnegative_integer(frame.get("falseAcceptedCodewords"),
+                                                           f"{case_name} falseAcceptedCodewords")
+        if frame_diagnostic_candidates != false_accepted or frame_false_accepted != 0:
+            raise CorpusError(f"{case_name} frame {index} confuses diagnostic candidates with production acceptance")
+        if not isinstance(accepted_blocks, list) or len(accepted_blocks) != production_accepted:
             raise CorpusError(f"{case_name} evaluation frame {index} accepted-block evidence is inconsistent")
         observed_slots: set[int] = set()
         for block_index, block in enumerate(accepted_blocks):
@@ -577,22 +680,34 @@ def validate_evaluation_report(report: dict[str, Any], case_name: str) -> dict[s
             if slot >= 4 or slot in observed_slots or not 1 <= byte_count <= MAX_TRANSPORT_BLOCK_BYTES:
                 raise CorpusError(f"{case_name} frame {index} accepted block {block_index} violates bounds or identity")
             observed_slots.add(slot)
-        accepted_transport_blocks += accepted
-        false_accepted_codewords += false_accepted
+        diagnostic_accepted_transport_blocks += diagnostic_accepted
+        production_accepted_transport_blocks += production_accepted
+        diagnostic_false_candidates += frame_diagnostic_candidates
+        false_accepted_codewords += frame_false_accepted
+
+    validate_receiver_evidence(payload.get("receiverEvidence"), f"{case_name} receiverEvidence",
+                               SOURCE_FRAMES, production_accepted_transport_blocks)
 
     frame_count = require_nonnegative_integer(summary.get("frameCount"), f"{case_name} frameCount")
     verified_frames = require_nonnegative_integer(summary.get("verifiedFrames"), f"{case_name} verifiedFrames")
     erasure_frames = require_nonnegative_integer(summary.get("erasureFrames"), f"{case_name} erasureFrames")
     rejected_frames = require_nonnegative_integer(summary.get("rejectedFrames"), f"{case_name} rejectedFrames")
-    summary_accepted = require_nonnegative_integer(summary.get("acceptedTransportBlocks"),
-                                                   f"{case_name} acceptedTransportBlocks")
+    summary_diagnostic_accepted = require_nonnegative_integer(summary.get("diagnosticAcceptedTransportBlocks"),
+                                                              f"{case_name} diagnosticAcceptedTransportBlocks")
+    summary_production_accepted = require_nonnegative_integer(summary.get("productionAcceptedTransportBlocks"),
+                                                              f"{case_name} productionAcceptedTransportBlocks")
     summary_false_accepted = require_nonnegative_integer(summary.get("falseAcceptedCodewords"),
                                                          f"{case_name} falseAcceptedCodewords")
+    summary_diagnostic_candidates = require_nonnegative_integer(summary.get("diagnosticFalseCandidates"),
+                                                                f"{case_name} diagnosticFalseCandidates")
     if frame_count != SOURCE_FRAMES or verified_frames != classifications["Verified"] or \
             erasure_frames != classifications["ErasureNoFalseAccept"] or \
             rejected_frames != classifications["RejectedNoFalseAccept"] or \
             verified_frames + erasure_frames + rejected_frames != frame_count or \
-            summary_accepted != accepted_transport_blocks or summary_false_accepted != false_accepted_codewords or \
+            summary_diagnostic_accepted != diagnostic_accepted_transport_blocks or \
+            summary_production_accepted != production_accepted_transport_blocks or \
+            summary_diagnostic_candidates != diagnostic_false_candidates or \
+            summary_false_accepted != false_accepted_codewords or \
             summary_false_accepted != 0 or summary.get("truthBoundaryValid") is not True or \
             summary.get("allFramesVerified") is not (verified_frames == frame_count):
         raise CorpusError(f"{case_name} failed the production truth boundary or summary consistency check")
@@ -678,7 +793,7 @@ def build_corpus(codec_probe: Path, ffmpeg: Path, ffprobe: Path, output_dir: Pat
             run_bounded(evaluation_arguments, maximum_stdout_bytes=MAX_JSON_BYTES),
             f"{case['name']} evaluation")
         evaluation = validate_canonical_report(evaluation_bytes, EVALUATION_REPORT_SCHEMA,
-                                               f"{case['name']} evaluation")
+                                               f"{case['name']} evaluation", expected_version=2)
         validate_evaluation_input(evaluation, decoded_path, case["name"])
         summary = validate_evaluation_report(evaluation, case["name"])
         evaluation_path = case_dir / "evaluation.json"
@@ -689,14 +804,17 @@ def build_corpus(codec_probe: Path, ffmpeg: Path, ffprobe: Path, output_dir: Pat
             "codec": case["codec"],
             "encoder": case["encoder"],
             "pixelFormat": case["pixelFormat"],
+            "inspectedPixelFormat": case.get("inspectedPixelFormat", case["pixelFormat"]),
             "crf": case["crf"],
             "intraOnly": case["intraOnly"],
+            "colorRange": case["colorRange"],
             "encodeCommand": normalized_command(encode, tools, output_dir),
             "decodeCommand": normalized_command(decode, tools, output_dir),
             "probeCommand": normalized_command(probe, tools, output_dir),
             "evaluationCommand": normalized_command(evaluation_arguments, tools, output_dir),
             "inspection": inspection,
             "evaluationSummary": summary,
+            "receiverEvidence": evaluation["payload"]["receiverEvidence"],
             "artifacts": {
                 "bitstream": artifact(bitstream_path, output_dir),
                 "decoded": artifact(decoded_path, output_dir),
@@ -710,7 +828,7 @@ def build_corpus(codec_probe: Path, ffmpeg: Path, ffprobe: Path, output_dir: Pat
         raise CorpusError("one or more tool executables changed during corpus generation")
     manifest = {
         "schema": SCHEMA,
-        "version": 1,
+        "version": 2,
         "source": {
             "width": SOURCE_WIDTH,
             "height": SOURCE_HEIGHT,
