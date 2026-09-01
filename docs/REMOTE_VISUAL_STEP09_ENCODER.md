@@ -178,3 +178,15 @@ WARP、ASan、Qt build-tree 与 GPU source readback 分别验证不同边界；�
 Step 10 必须实现 LF4 D3D11 scaled Walsh demod shader：直接从 PB-owned capture texture 按连续 `(originX, originY, scaleX, scaleY)` 采样，输出固定 64,800 soft metrics 与 freshness summary，只回读 compact results，不做 ROI-sized GPU→CPU→GPU round trip。它还必须覆盖 exact/scale/blur/stale、NaN/out-of-bounds、epoch stale completion 与 bounded slot/ring。
 
 Step 11 才能在 CPU、WARP 与实际 hardware adapter 之间比较同一 corpus 的 Bootstrap/FEC disposition/accepted Transport bytes；Step 12 以后才闭合 WGC/DXGI lease、CaptureEpoch 与 geometry。LF4 的 GUI/CLI exposure 和 production Decoder admission 仍需等后续 Gate，不因 Step 09 完成而提前启用。
+
+## 10. Step 09 关闭后的动态 field-pilot 补充
+
+本文件前述“GPU source readback 不是 capture”仍是 Step 09 原始 Gate 的准确边界。Step 09 关闭后，项目另行完成了一轮 evidence-only 动态 Windows RDP pilot：Computer B 的 presenter 调用同一个 production `EncoderRuntime`，经 AweSun 到 Computer A 右屏 WGC diagnostic capture-only Replay，再由 CPU Inspector 离线解码两次。
+
+正式 120 秒 Replay 写入 1026 帧，另有 59 帧由 10 Hz pre-readback policy 有意采样掉，capture/readback/Replay drop 和 epoch reset 全为 0；两次 Inspector JSON byte-identical，接受 1428 个完整 Control copy 与 1496 个 Transport block，FEC/CRC/identity failure 全为 0。完整报告见：
+
+```text
+docs/REMOTE_VISUAL_STEP09_DYNAMIC_RDP_PILOT.md
+```
+
+这份后置证据证明了真实 remote-provider/capture survival，但仍是 receiver-only diagnostic Replay，不改变本文件的 compatibility/exposure 决策，也不使 Step 10、product Decoder、Outer/file recovery、WholeFileDigest、VerifiedEncodedGoodput、Step 20 或 Certified Profile 提前完成。
