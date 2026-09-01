@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual Step 07 Soft-Metric Calibration Gate
 
-状态：**Step 07 的 CPU/reference soft-metric 标定与 false-confidence Gate 已完成。Gate 选择 `lf4-default/PiecewiseLookup` 作为 Step 08 待冻结候选，但没有修改 production default、VisualProfile、LayoutVersion、FEC、CRC、Receiver admission 或文件发布语义。这不是 LF4 production deployment、双机 field PASS、`RemoteVisualSmokePass` 或 Certified RemoteVisual Profile。**
+状态：**Step 07 的 CPU/reference soft-metric 标定与 false-confidence Gate 已完成。Gate 选择的 `lf4-default/PiecewiseLookup` 已由 Step 08 冻结为 Golden candidate，但没有修改 production default、VisualProfile、LayoutVersion、FEC、CRC、Receiver admission 或文件发布语义。这不是 LF4 production deployment、双机 field PASS、`RemoteVisualSmokePass` 或 Certified RemoteVisual Profile。**
 
 ## 1. 目标与结论
 
@@ -173,7 +173,7 @@ build-p1_5-evidence/20260901-step07-calibration-final-h
 
 Step 07 没有关闭以下边界：
 
-- Step 08 尚未把 selected metric quantization/model、LF4 raster/mapping/codebook/Bootstrap/accepted Transport 结果冻结为 drift-detecting Golden；
+- Step 08 已把 selected metric quantization/model、LF4 raster/mapping/codebook/Bootstrap/accepted Transport 结果冻结为 drift-detecting Golden；它仍是 candidate，不是 production default；
 - selected model 尚未接入 production Decoder fast path；
 - LF4 D3D11 Encoder/Demod、连续 capture、QoS/late join、真实文件 Outer/WholeFileDigest/final publish 尚未完成；
 - 当前真实 External 只有一组 Windows Remote Desktop、画质与 chroma mode 为 Unknown；这满足路线要求的“至少一组真实 replay”，不构成 provider matrix；
