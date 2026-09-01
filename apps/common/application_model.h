@@ -360,6 +360,9 @@ struct DecoderSnapshot
     bool replayFinalized = false;
     std::uint64_t replayWrittenFrames = 0;
     std::uint64_t replayDroppedFrames = 0;
+    std::uint64_t replaySampledOutFrames = 0;
+    std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
+    std::uint64_t replaySamplingInterval100ns = 0;
     std::uint64_t replayWrittenDemodObservations = 0;
     std::uint64_t replayDroppedDemodObservations = 0;
     std::uint32_t replayQueueHighWater = 0;

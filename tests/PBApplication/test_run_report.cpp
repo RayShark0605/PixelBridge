@@ -187,6 +187,9 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     snapshot.replayDiagnosticOnly = true;
     snapshot.replayCaptureOnly = true;
     snapshot.replayOfflineMode = true;
+    snapshot.replaySampledOutFrames = 37;
+    snapshot.replayMaximumCaptureFramesPerSecond = 10;
+    snapshot.replaySamplingInterval100ns = 1000000;
     snapshot.replayOfflineCaptureFrames = 9;
     snapshot.replayOfflineDemodResults = 9;
     snapshot.replayOfflineObservationComparisons = 8;
@@ -255,6 +258,9 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     REQUIRE(json.find("\"admittedFrameSequenceFps\":59.5") != std::string::npos);
     REQUIRE(json.find("\"offlineMode\":true") != std::string::npos);
     REQUIRE(json.find("\"captureOnly\":true") != std::string::npos);
+    REQUIRE(json.find("\"sampledOutFrames\":37") != std::string::npos);
+    REQUIRE(json.find("\"maximumCaptureFramesPerSecond\":10") != std::string::npos);
+    REQUIRE(json.find("\"samplingInterval100ns\":1000000") != std::string::npos);
     REQUIRE(json.find("\"offlineCaptureFrames\":9") != std::string::npos);
     REQUIRE(json.find("\"offlineDemodResults\":9") != std::string::npos);
     REQUIRE(json.find("\"offlineObservationComparisons\":8") != std::string::npos);
@@ -270,6 +276,7 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     REQUIRE(journalRecord.find("\"outerConflictRejections\":5") != std::string::npos);
     REQUIRE(journalRecord.find("\"replayCaptureOnly\":true") != std::string::npos);
     REQUIRE(journalRecord.find("\"replayWrittenFrames\":0") != std::string::npos);
+    REQUIRE(journalRecord.find("\"replaySampledOutFrames\":37") != std::string::npos);
 }
 
 TEST_CASE("Run evidence journal is exclusive cadence-bounded and records terminal evidence without a queue",

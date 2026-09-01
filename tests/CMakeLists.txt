@@ -277,7 +277,9 @@ if(TARGET PixelBridgeDecoder)
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|0|0|2147483648|1080"
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|-2147483649|0|1920|1080"
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|-|0|1920|1080"
-            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|+1|0|1920|1080")
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|+1|0|1920|1080"
+            "--headless-receive|--replay-sample-fps" "--headless-receive|--replay-sample-fps|0"
+            "--headless-receive|--replay-sample-fps|61")
         set(pbDecoderArgumentIndex 0)
         foreach(pbDecoderArguments IN LISTS pbDecoderInvalidArguments)
             add_test(NAME "PixelBridgeDecoderRejectsArguments.${pbDecoderArgumentIndex}"

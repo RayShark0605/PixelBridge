@@ -497,6 +497,9 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"finalized\":" << snapshot.replayFinalized
            << ",\"writtenFrames\":" << snapshot.replayWrittenFrames
            << ",\"droppedFrames\":" << snapshot.replayDroppedFrames
+           << ",\"sampledOutFrames\":" << snapshot.replaySampledOutFrames
+           << ",\"maximumCaptureFramesPerSecond\":" << snapshot.replayMaximumCaptureFramesPerSecond
+           << ",\"samplingInterval100ns\":" << snapshot.replaySamplingInterval100ns
            << ",\"writtenDemodObservations\":" << snapshot.replayWrittenDemodObservations
            << ",\"droppedDemodObservations\":" << snapshot.replayDroppedDemodObservations
            << ",\"queueHighWater\":" << snapshot.replayQueueHighWater

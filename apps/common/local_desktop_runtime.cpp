@@ -64,6 +64,8 @@ inline constexpr std::uint32_t minimumControlRepetitions = 1;
 inline constexpr std::uint32_t maximumControlRepetitions = 64;
 inline constexpr std::uint32_t maximumLogicalVisualFps = 240;
 inline constexpr std::uint32_t maximumRemoteVisualLogicalFps = 5;
+inline constexpr std::uint32_t maximumReplayCaptureFramesPerSecond = 60;
+inline constexpr std::uint64_t timeUnitsPerSecond100ns = 10000000ULL;
 inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
 inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
 inline constexpr std::uint32_t captureResultQueueCapacity = 128;
@@ -82,6 +84,12 @@ static_assert(pbmodulation::kRemoteVisualLowFpsDataBytes ==
     return visualProfileId == pbmodulation::kDesktopLevels2ProfileId ||
         visualProfileId == pbmodulation::kShapeChromaProfileId ||
         visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId;
+}
+
+[[nodiscard]] std::uint64_t CalculateReplaySamplingInterval100ns(const std::uint32_t maximumFramesPerSecond) noexcept
+{
+    return maximumFramesPerSecond == 0 ? 0 :
+        (timeUnitsPerSecond100ns + maximumFramesPerSecond - 1) / maximumFramesPerSecond;
 }
 
 class RuntimeFailure final : public std::runtime_error
@@ -1517,13 +1525,20 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
     Require(static_cast<bool>(recorderStatus), "Replay recorder creation failed: " +
         DescribeCaptureStatus(recorderStatus));
 
-    const auto captureConfig = MakeCaptureConfig(config);
+    auto captureConfig = MakeCaptureConfig(config);
+    const std::uint64_t samplingInterval100ns = CalculateReplaySamplingInterval100ns(
+        config.replayMaximumCaptureFramesPerSecond);
+    if (samplingInterval100ns != 0 && config.captureBackend == CaptureBackend::Wgc)
+    {
+        captureConfig.capture.minUpdateInterval100ns = static_cast<std::int64_t>(samplingInterval100ns);
+    }
     pbcapturenormalize::DiagnosticReadbackConfig readbackConfig;
     readbackConfig.maximumRoiSize = {static_cast<std::int32_t>(roiWidth), static_cast<std::int32_t>(roiHeight)};
     readbackConfig.stagingTextureCount = captureConfig.capture.roiTextureCount;
     readbackConfig.maximumFrameAgeMilliseconds = 250;
     readbackConfig.maximumReadbackBytes = 256ULL * mebibyte;
     readbackConfig.processingReservedBytes = replayRecorder->ProcessingReservedBytes();
+    readbackConfig.minimumSubmissionInterval100ns = samplingInterval100ns;
     std::shared_ptr<pbcapturenormalize::DiagnosticCpuReadback> replayReadback;
     const auto readbackStatus = pbcapturenormalize::DiagnosticCpuReadback::Create(
         readbackConfig, replayRecorder, replayReadback);
@@ -1584,6 +1599,7 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
             }
             ApplyCaptureComponentSnapshot(captureSnapshot, value);
             value.captureReadbackDropEvents = readbackSnapshot.dropEvents;
+            value.replaySampledOutFrames = readbackSnapshot.sampledOutFrames;
             value.captureFps = elapsedMilliseconds == 0 ? std::optional<double>{} :
                 std::optional<double>{static_cast<double>(captureSnapshot.deliveredFrames) * 1000.0 /
                     static_cast<double>(elapsedMilliseconds)};
@@ -1631,6 +1647,7 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
         value.replayDroppedFrames = pbprotocol::SaturatingAddUnsigned(value.replayDroppedFrames,
             finalReadbackSnapshot.dropEvents);
         value.captureReadbackDropEvents = finalReadbackSnapshot.dropEvents;
+        value.replaySampledOutFrames = finalReadbackSnapshot.sampledOutFrames;
         const ChannelStallSnapshot finalStalls = captureOnlyStalls.GetSnapshot();
         value.captureStallCount = finalStalls.capture.count;
         value.captureStallTotalMilliseconds = finalStalls.capture.totalMilliseconds;
@@ -3119,6 +3136,12 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
         return RuntimeStatus::Failure("输出目录路径无效");
     }
     const bool offlineReplay = !config.replayInputPath.empty();
+    if (config.replayMaximumCaptureFramesPerSecond > maximumReplayCaptureFramesPerSecond ||
+        (config.replayMaximumCaptureFramesPerSecond != 0 && !config.diagnosticCaptureOnly))
+    {
+        return RuntimeStatus::Failure(
+            "Replay time sampler 仅允许 diagnostic capture-only，且必须处于 1..60 FPS 的显式上限内");
+    }
     if (config.replayEvidenceVisualProfileId &&
         (!config.diagnosticCaptureOnly || !IsReplayEvidenceVisualProfileId(*config.replayEvidenceVisualProfileId)))
     {
@@ -3799,6 +3822,9 @@ RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
     initial.replayDiagnosticOnly = initial.replayEnabled;
     initial.replayCaptureOnly = config.diagnosticCaptureOnly;
     initial.replayOfflineMode = offlineReplay;
+    initial.replayMaximumCaptureFramesPerSecond = config.replayMaximumCaptureFramesPerSecond;
+    initial.replaySamplingInterval100ns = CalculateReplaySamplingInterval100ns(
+        config.replayMaximumCaptureFramesPerSecond);
     const std::wstring& replayPath = offlineReplay ? config.replayInputPath : config.replayOutputPath;
     initial.replayPath = replayPath.empty() ? "" : Utf8FromWide(replayPath);
     try

@@ -141,6 +141,7 @@ struct CpuState
         }
         snapshot.resetPending = true;
         lastCommittedObservation = 0;
+        lastSubmittedSampleTime100ns.reset();
         ClearQueuedLocked(snapshot.stopRequested ? DiagnosticReadbackDropReason::Stopping : DiagnosticReadbackDropReason::InactiveDomain);
     }
 
@@ -330,6 +331,7 @@ struct CpuState
     std::size_t queuedIndex = noCpuBuffer;
     std::uint64_t revision = 0;
     std::uint64_t lastCommittedObservation = 0;
+    std::optional<std::int64_t> lastSubmittedSampleTime100ns;
     DiagnosticReadbackSnapshot snapshot;
 };
 
@@ -393,7 +395,8 @@ CaptureStatus CalculateDiagnosticReadbackBudget(const DiagnosticReadbackConfig& 
 {
     if (config.maximumRoiSize.width <= 0 || config.maximumRoiSize.height <= 0 || config.maximumRoiSize.width > 16384 || config.maximumRoiSize.height > 16384 ||
         config.stagingTextureCount < 2 || config.stagingTextureCount > detail::maximumRoiTextures || config.maximumFrameAgeMilliseconds == 0 ||
-        config.maximumFrameAgeMilliseconds > 60000 || config.maximumReadbackBytes == 0 || config.maximumReadbackBytes == std::numeric_limits<std::uint64_t>::max())
+        config.maximumFrameAgeMilliseconds > 60000 || config.maximumReadbackBytes == 0 || config.maximumReadbackBytes == std::numeric_limits<std::uint64_t>::max() ||
+        config.minimumSubmissionInterval100ns > diagnosticReadbackMaximumSamplingInterval100ns)
     {
         return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Configuration);
     }
@@ -723,6 +726,19 @@ CaptureStatus DiagnosticCpuReadback::Submit(const ScreenCaptureFrame& frame, ID3
     {
         return {};
     }
+    const std::int64_t sampleTime100ns = ResolveEffectiveCaptureTime100ns(
+        frame.metadata.timestamp.monotonic100ns, frame.metadata.timestamp.arrivalQpc100ns);
+    if (cpu->config.minimumSubmissionInterval100ns != 0 && cpu->lastSubmittedSampleTime100ns)
+    {
+        if (sampleTime100ns <= *cpu->lastSubmittedSampleTime100ns ||
+            static_cast<std::uint64_t>(sampleTime100ns - *cpu->lastSubmittedSampleTime100ns) <
+                cpu->config.minimumSubmissionInterval100ns)
+        {
+            pbprotocol::SaturatingIncrementUnsigned(cpu->snapshot.sampledOutFrames);
+            return {};
+        }
+    }
+    cpu->lastSubmittedSampleTime100ns = sampleTime100ns;
     slot.phase = StagingPhase::Copied;
     // Record the lease before the first GPU command. Even a caller-side marker
     // failure must later cancel this exact token without mapping or slot reuse.
