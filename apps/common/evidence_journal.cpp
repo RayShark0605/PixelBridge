@@ -269,8 +269,17 @@ std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
     WriteOptionalFinite(stream, snapshot.presentCallFps);
     stream << ",\"generatedVisualFps\":" << snapshot.generatedVisualFramesPerSecond <<
         ",\"generatedPayloadBytesPerSecond\":" << snapshot.generatedPayloadBytesPerSecond <<
+        ",\"configuredLogicalDwellMs\":";
+    WriteOptionalFinite(stream, snapshot.configuredLogicalDwellMilliseconds);
+    stream << ",\"minimumObservedLogicalDwellMs\":";
+    WriteOptionalFinite(stream, snapshot.minimumObservedLogicalDwellMilliseconds);
+    stream << ",\"logicalDwellViolationCount\":" << snapshot.logicalDwellViolationCount <<
+        ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements <<
+        ",\"repeatedPresentCalls\":" << snapshot.repeatedPresentCalls <<
+        ",\"invalidatedActiveFrames\":" << snapshot.invalidatedActiveFrames <<
         ",\"pendingFrames\":" << snapshot.pendingFrames << ",\"pendingHwm\":" << snapshot.pendingHighWater <<
-        ",\"processCpuAveragePercent\":";
+        ",\"activeFrame\":" << (snapshot.activeFrame ? "true" : "false") <<
+        ",\"activeFrameSequence\":" << snapshot.activeFrameSequence << ",\"processCpuAveragePercent\":";
     WriteOptionalFinite(stream, snapshot.processCpuAveragePercent);
     stream << '}';
     return stream.str();

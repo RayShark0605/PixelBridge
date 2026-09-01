@@ -9,6 +9,7 @@
 
 #include <Windows.h>
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -142,11 +143,40 @@ TEST_CASE("Encoder validation accepts only inventory profiles with an explicit m
     config.controlRepetitions = 0;
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
     config.controlRepetitions = 12;
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
     config.runId = "0123456789ABCDEF0123456789ABCDEF";
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
     config.runId.clear();
     config.visualProfile = static_cast<pbapp::VisualProfile>(255);
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("Production RemoteVisual sender builds LF4 four-codeword carousels past an external completion marker",
+    "[application][encoder][remote-visual][lf4][carousel]")
+{
+    const std::array<std::byte, 1> source{std::byte{0x5A}};
+    pbapp::EncoderCarouselProbeSnapshot probe;
+    REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(source, 1, 2, probe));
+    REQUIRE(probe.visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId);
+    REQUIRE(probe.layoutVersion == pbmodulation::kRemoteVisualLowFpsLayoutVersion);
+    REQUIRE(probe.codedDataBytes == pbmodulation::kRemoteVisualLowFpsDataBytes);
+    REQUIRE(probe.codewords == pbmodulation::kRemoteVisualLowFpsCodewords);
+    REQUIRE(probe.cycleFrameCount == 4);
+    REQUIRE(probe.completedCarouselCycles == 2);
+    REQUIRE(probe.framesBuilt == 9);
+    REQUIRE(probe.controlFrames == 7);
+    REQUIRE(probe.dataFrames == 2);
+    REQUIRE(probe.acceptedRemoteControlCopies == 28);
+    REQUIRE(probe.acceptedTransportBlocks == 8);
+    REQUIRE(probe.framesBuiltAfterExternalCompletionMarker == 1);
+
+    pbapp::EncoderCarouselProbeSnapshot unchanged;
+    unchanged.framesBuilt = 91;
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel({}, 1, 2, unchanged));
+    REQUIRE(unchanged.framesBuilt == 91);
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(source, 0, 2, unchanged));
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(source, 1, 0, unchanged));
 }
 
 TEST_CASE("Decoder validation rejects invalid output directory ROI scaling and rotation", "[application][validation][roi]")
@@ -170,6 +200,9 @@ TEST_CASE("Decoder validation rejects invalid output directory ROI scaling and r
     config.visualProfile = pbapp::VisualProfile::RemoteVisualResilient;
     config.runId = "fedcba9876543210fedcba9876543210";
     REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualResilient;
     config.runId = "short";
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
     config.runId.clear();

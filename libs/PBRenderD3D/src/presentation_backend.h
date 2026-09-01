@@ -40,11 +40,15 @@ struct BackendDiagnostics
     std::uint64_t swapChainGeneration = 0;
     std::uint64_t bufferGeneration = 0;
     std::uint64_t verifiedUploads = 0;
+    std::uint64_t immutableSourceCreations = 0;
+    std::uint64_t sourceCopiesToBackBuffer = 0;
     std::uint64_t debugErrors = 0;
     std::uint64_t framePermits = 0;
     std::uint64_t presentCalls = 0;
     std::uint64_t liveGraphicsObjects = 0;
     std::uint64_t liveOwnedHandles = 0;
+    std::array<std::byte, 32> lastSourceReadbackBlake3{};
+    bool sourceReadbackBlake3Valid = false;
     bool warp = false;
 };
 

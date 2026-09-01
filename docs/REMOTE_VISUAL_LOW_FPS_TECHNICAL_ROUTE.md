@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-09-01 持续实施路线；Step 01..08 已全部完成。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 选择的 `lf4-default/PiecewiseLookup` 已在 Step 08 与 LF4 raster/mapping/codebook/Bootstrap/4 个 accepted Transport 一起冻结为独立可重建 Golden，但仍未修改 production default 或 admission。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
+状态：**2026-09-01 持续实施路线；Step 01..09 已全部完成。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 选择的 `lf4-default/PiecewiseLookup` 已在 Step 08 与 LF4 raster/mapping/codebook/Bootstrap/4 个 accepted Transport 一起冻结为独立可重建 Golden；Step 09 已把 LF4 四-codeword raster 接入隐藏的 production Encoder candidate，并以 immutable D3D11 source、1..5 Hz 完整替换和显示许可驱动的重复 Present 关闭发送端 Gate。LF4 仍未接入 GUI/CLI 或 production Decoder admission。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -26,7 +26,7 @@
    - 只有 field replay 证明色度或更密 shape 在特定链路可稳定保留时，才另建 `LF5/LF6` 新 profile；不能在同一 Session 中改变 codebook；
    - GPU production path 必须直接在 PB-owned D3D11 texture 上按连续几何采样，不允许为了赶进度加入隐式 GPU→CPU→GPU fast-path round trip。
 
-当前实现有意保持为 **CPU reference / simulator Gate 路径**，尚未加入 Encoder GUI profile 列表，也未接入当前严格 1920×1080 的 D3D11 production demod。这样可以先把物理符号、缩放、freshness、FEC 和 Transport 真值链证明清楚，再决定 GPU 接口；不会平行创造第二套协议或错误宣称生产可用。当前 CPU/reference 实现提交为 `9b8e8063a56251040cddb6b01e38c4343779571f`，对应 tree `0da0ea8a9e8a1260b3972098a3efdf87b0c096de`。
+当前实现包含两条严格分离的边界：CPU reference/simulator 继续提供 scale/freshness/FEC/Transport 真值；Step 09 的 production Encoder-only candidate 负责完整 LF4 raster、immutable D3D11 source replacement 和 repeat Present。LF4 仍未加入 GUI/CLI profile 列表，也未接入 production D3D11 demod；既有 `RemoteVisualResilient` wire identity、GUI token 与 Decoder 路径保持不变。这样可以在不平行创造第二套协议、不偷换旧 token 的前提下先关闭发送端，再由 Step 10/11 关闭 GPU 解调与 truth parity。
 
 ---
 
@@ -310,13 +310,15 @@ File
 - `tools/PBRemoteVisualEvidence/analyze_remote_capture.py`
   - 用户截图只读 JSON 证据分析。
 
-### 9.2 当前明确未完成
+### 9.2 Step 01 当时明确未完成的项目
 
-- LF4 尚未进入 `VisualProfile` product enum/GUI，避免未经 Gate 就冒充 production profile；
+本小节保留初始 CPU/reference implementation checkpoint 的历史边界；当前权威状态以第 11 节步骤表和第 15～18 节完成证据为准。
+
+- LF4 当时尚未进入 `VisualProfile` product enum/GUI；Step 09 后只新增了 enum 尾部的隐藏 Encoder-only candidate，GUI/CLI 仍未暴露且 Decoder validation 仍拒绝；
 - D3D11 scaled Walsh demod shader 未实现；当前 production RemoteVisual shader 仍是旧 1-bit strict-1:1 path；
-- 未运行真实远控双机、WGC/DXGI 或右侧屏幕 native field Gate；
+- 当时未运行真实远控双机、WGC/DXGI 或右侧屏幕 native field Gate；Step 02 后已有一组 Windows Remote Desktop receiver-only Replay，Step 09 后已有右屏 D3D11 sender native Gate，但仍没有 LF4 live production Decoder field Gate；
 - 未证明 1/2/5 Hz 的真实 `VerifiedEncodedGoodput`；
-- 未建立 LF4 Golden PNG/manifest 冻结，因此 ID/layout 仍是 experimental checkpoint，不是 wire certification；
+- 当时未建立 LF4 Golden；Step 08 已冻结独立 manifest/raster/accepted Transport compatibility Gate，但仍不是 Certified Profile；
 - 未证明 perspective/rotation/crop；当前明确拒绝。
 
 ---
@@ -439,9 +441,9 @@ logical FPS <= 5
 | 04 | CPU 连续尺度 demod、freshness erasure、四 codeword 真值链 | DONE | ★★★★☆ | ★★★★★ | scale/stale/QC-LDPC/Transport tests |
 | 05 | Provider-generic deterministic channel transform API | DONE | ★★★★☆ | ★★★★★ | 独立 transforms、seed manifest、resource bounds |
 | 06 | 信道 impairment 矩阵与 adversarial corpus | DONE | ★★★★☆ | ★★★★★ | 22-case transforms、6 actual codecs、11-event temporal/identity、Receiver/Outer/digest truth |
-| 07 | Soft metric 标定、阈值选择与 false-confidence Gate | PENDING | ★★★★★ | ★★★★★ | train/holdout split、BER/FER/false accept curves |
-| 08 | LF4 Golden/manifest 冻结与兼容性声明 | PENDING | ★★★☆☆ | ★★★★★ | canonical raster/hash/accepted-block manifest |
-| 09 | LF4 D3D11 Encoder raster/immutable texture 接入 | PENDING | ★★★★☆ | ★★★★☆ | CPU raster parity、stable dwell/present evidence |
+| 07 | Soft metric 标定、阈值选择与 false-confidence Gate | DONE | ★★★★★ | ★★★★★ | Validation-only selection、Holdout/External 改善、0 false accepted Transport/control/output |
+| 08 | LF4 Golden/manifest 冻结与兼容性声明 | DONE | ★★★☆☆ | ★★★★★ | 独立 generator/check、canonical raster/hash、4 个 accepted-block manifest |
+| 09 | LF4 D3D11 Encoder raster/immutable texture 接入 | DONE | ★★★★☆ | ★★★★☆ | CPU/GPU source BLAKE3、WARP/hardware immutable/repeat Gate、production carousel/dwell Gate |
 | 10 | LF4 D3D11 scaled Walsh demod shader | PENDING | ★★★★★ | ★★★★★ | bounded metrics/freshness GPU output、无 ROI readback |
 | 11 | CPU/WARP/hardware GPU truth parity | PENDING | ★★★★☆ | ★★★★★ | accepted Transport equivalence、adapter matrix |
 | 12 | CaptureNormalize、geometry、epoch 与 D3D lifetime 收口 | PENDING | ★★★★★ | ★★★★★ | WGC/DXGI epoch/recreate/stale-drain tests |
@@ -540,12 +542,12 @@ logical FPS <= 5
 
 ### 11.11 Step 09：LF4 D3D11 Encoder raster 与 immutable texture
 
-- **状态**：`PENDING`；**难度**：★★★★☆；**重要性**：★★★★☆。
+- **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★☆。
 - **目标**：让 production Encoder 生成完整 LF4 raster 并以 1..5 Hz 替换 PB-owned texture，同时持续 Present 同一稳定 raster。
 - **实施要点**：把四 codeword 的 raster generation 接入现有 scheduler；完整生成后一次性提交；重复 Present 不增加 FrameSequence/OuterBlockId；记录 dwell、generated/present FPS。
 - **注意事项**：禁止逐 tile 更新可见纹理；pending replacement 可以丢弃未呈现候选但不能 torn；Encoder 不显示 receiver progress/ETA；0 和 >5 fail closed。
 - **验收证据**：CPU canonical raster 与 GPU-present source hash/diagnostic readback 对齐；logical updates≤5；Present 可保持显示刷新率；窗口 no-activate/right-monitor containment。
-- **完成出口**：Encoder 在 headless/native test 中持续广播多个 Carousel cycles，Decoder 完成后 Encoder 仍在运行。
+- **完成出口**：已关闭。production `SenderFrameBuilder` 的 LF4 hidden candidate 在 headless truth probe 中跨 2 个完整 Carousel cycle 生成 9 帧，7 个 Control frame 的四个 Robust copy 与 2 个 Data frame 的 8 个 Transport 全部通过 production admission；native `EncoderRuntime` 同样完成 2 个 cycle 后，在一个不传入 runtime 的 test-local Decoder completion marker 之后继续生成并呈现第 9 帧，最后只因显式 stop 停止。WARP 与 RTX 5090 D 均证明 Step 08 canonical CPU raster BLAKE3 等于 GPU immutable source diagnostic readback，repeat Present 不推进 FrameSequence。完整命令、hash、计数与限制见 `REMOTE_VISUAL_STEP09_ENCODER.md` 和第 18 节。
 
 ### 11.12 Step 10：LF4 D3D11 scaled Walsh demod shader
 
@@ -972,4 +974,70 @@ build-p1_5-evidence/20260901-step08-lf4-raster-final-e.pbrw
 | MSVC ASan `ALL_BUILD` / 无界面 CTest | PASS / 290/290 PASS，442.75 s |
 | PBModulation cppcheck 2.21.0 | 10/10 translation units；34 项均精确匹配既有 review ledger，0 new/unreviewed finding |
 
-无界面 CTest 排除了 `Native|GuiSmoke`；Qt build-tree 一致性、CPU 和 ASan 不是 hardware GPU 或 field certification。Step 09 下一步必须实现 LF4 D3D11 Encoder raster/immutable texture，并在 CPU canonical raster 与 GPU-present source diagnostic readback 之间建立实际一致性证据。
+无界面 CTest 排除了 `Native|GuiSmoke`；Qt build-tree 一致性、CPU 和 ASan 不是 hardware GPU 或 field certification。本节固定的 canonical raster 与 hash 随后成为 Step 09 immutable D3D11 source/readback Gate 的输入；Step 09 完成证据见下一节。
+
+---
+
+## 18. Step 09 LF4 D3D11 Encoder / immutable source 完成证据
+
+完整 compatibility/exposure 边界、状态机、D3D11 lifecycle、命令、逐文件 hash 与限制见 `REMOTE_VISUAL_STEP09_ENCODER.md`。
+
+### 18.1 Hidden production-code sender candidate
+
+- `VisualProfile::RemoteVisualLowFps` 追加在 enum 尾部，只允许内部 Encoder Gate；Qt profile combo 与 CLI 均不提供该值，Decoder validation 明确拒绝。
+- 既有 `RemoteVisualResilient` 仍绑定原 profile ID/layout/raster/Decoder；没有把旧 `remote` token 静默改成 LF4。
+- LF4 Control 把同一份完整 Robust QC-LDPC codeword 复制到四个 slot；Data 继续生成四个独立 Transport codeword；二者都通过 production `EncodeRemoteVisualLowFpsFrame` 生成完整 raster。
+- production builder probe 使用 1-byte source、`controlRepetitions=1`，跨 2 个完整 cycle 共生成 9 帧：7 个 Control frame 的 28 个 copy 全部逐字节等于 PB-Control-1，2 个 Data frame 的 8 个 Transport 全部通过 FEC/CRC/identity；一个不传给 builder 的外部 completion marker 后仍生成 1 帧。
+
+### 18.2 Immutable source 与 repeat Present
+
+- `repeatActiveFrame` 默认 false，仅隐藏 LF4 candidate 启用；完整 pending raster 的容量固定为 1。
+- 新 logical frame 建立 `D3D11_USAGE_IMMUTABLE` BGRA source，在 staging readback 逐 row/pitch 验证后才替换 active；每次 `Present` 都完整 `CopyResource` 到 flip-discard back buffer。
+- 没有 pending 时，frame-latency permit 重复呈现同一 active source，不推进 `FrameSequence`/Carousel/Outer ID；epoch/mode/size/device/failure 会使 active identity 失效，shutdown 清零并释放资源。
+- 开发过程中 `BindFlags=0` 的 immutable texture 在运行时返回 `E_INVALIDARG`；修复为显式 `D3D11_BIND_SHADER_RESOURCE`。首次 DXGI `statistics-disjoint` 由 sequence 16 warm-up 吸收并验证旧 source 失效，canonical sequence 17 在新 epoch 重交，未用 fallback 掩盖失败。提交前 strengthened cleanup Gate 又发现 Stopped backend 的 wake event 仍保留到 destructor；现在 owner thread 离开全部 wait 后由 `Shutdown` 显式关闭，partial initialization 与正常 WARP/hardware/LF4 shutdown 均要求 graphics/owned handles/HWND 为零。
+
+Step 08 canonical raw BGRA BLAKE3 在 WARP 与 RTX 5090 D hardware source staging readback 中均 exact：
+
+```text
+28b09b66520b87f9cd9407b516530ad1225f84d390cc2b94d18d6e1b8d5e9bc4
+```
+
+| backend | canonical seq 17 | replacement seq 18 | evidence |
+| --- | --- | --- | --- |
+| WARP | sources=2，repeat=24，present calls=26 | sources=3，repeat=35，present calls=38 | `gate.txt` SHA-256=`c1915ac2cfe6252cc00a87fa25ab0dd57b515c28fc771d75d598fbcc3dac1d38`；JSONL=`03901b91450748adc21aeade271377c17ea7485b5bc8e58d2c24332f0535bdc3` |
+| RTX 5090 D hardware | sources=2，repeat=24，present calls=26 | sources=3，repeat=35，present calls=38 | `gate.txt` SHA-256=`07ab026a8103428554f5d7a93a252b20e72328397febc10d1f0698c2cf326d01`；JSONL=`d487329b96f0201886c3fd04aa6ca58dfa6d00f74a9f9017a789c0d34d22c27d` |
+
+两类 Gate 都选择最右 `\\.\DISPLAY2`，实际 output 2560×1440@180 Hz，1920×1080 client origin `(2880,180)`；窗口 no-activate，没有发送鼠标/键盘输入或改变显示设置。WARP snapshot 的 adapter description 是关联 output 的名称，`softwareRasterizer=true` 才是 backend authority。
+
+### 18.3 Production EncoderRuntime cadence / independence
+
+- logical interval 使用 steady-clock duration 的向上取整；dwell 以成功提交间隔计数，5 Hz 配置为 200 ms，任何更短 observation 都增加 violation。
+- generated logical FPS 使用 `(N-1)/(last-first)`，不把启动时第一帧错误计为一个已过去 interval；present-call FPS 单独记录 repeat display cadence。
+- 真实 `EncoderRuntime` 到 frame 8 时完成 2 个 4-frame cycle；test-local marker 不传入 runtime，随后继续到 frame 9；最终只由显式 Stop 结束。
+- frame 8 的 generated FPS=4.973131591、configured/min dwell=200/200.0132 ms、violations=0、sources/repeats=8/68；frame 9 为 4.973155837 fps、sources/repeats=9/79；停止后 pending=0、active=false。
+- broadcasting/after-marker/stopped report SHA-256 分别为 `849c714ea99c33548d8288845173bfdc47cf3a44bde90d9e3644863eb7236133`、`7c42ecb106658b92ba06a03467e8759b5d631c77e8511a63213b928ec29fca8c`、`64af2bf0d9f00b7395b3097692f522f6cd68c86f6a16ca7f30d4b32043a5648b`；`gate.txt` 为 `19cd4bad562e16aaafc03a9ae70250c8be7837f6579856896b9f4a99decaad34`。
+- Encoder report 的 receiver progress、ETA 与 VerifiedEncodedGoodput 仍为 null/不存在；marker 不是 actual Decoder completion。
+
+最终 create-only evidence：
+
+```text
+build-p1_5-evidence/20260901-step09-final-warp-d/lf4-encoder-warp-57364-718624121037
+build-p1_5-evidence/20260901-step09-final-hardware-d/lf4-encoder-hardware-46976-718627462559
+build-p1_5-evidence/20260901-step09-final-production-d/lf4-production-encoder-59608-718636392197
+```
+
+### 18.4 提交前验证与 truth boundary
+
+| 验证 | 结果 |
+| --- | --- |
+| Release `PBApplicationTests` + `PBRenderD3DTests` | 2/2 PASS，6.23 s |
+| Release `ALL_BUILD` / 无窗口全量 CTest | PASS / 155/155 PASS，237.54 s |
+| WARP / RTX 5090 D immutable-source native Gate | 2/2 PASS；CPU/GPU source BLAKE3 exact；完整 repeat-copy lifecycle 与 Stop 后 graphics/handles/HWND=0 PASS |
+| 既有 WARP/hardware presentation Gate | PASS；partial initialization、swap-chain replacement、flip/latency matrix 与 strengthened handle cleanup contract 通过 |
+| production EncoderRuntime native Gate | PASS；2 cycle、marker 后继续、explicit bounded stop |
+| MSVC ASan/RelWithDebInfo `ALL_BUILD` / 无窗口全量 CTest | PASS / 290/290 PASS，488.73 s |
+| Qt 5.14.2 / Qt 6.10.1 `PBApplicationTests` | 各 1/1 PASS，5.54/5.50 s；两套 Encoder target build PASS |
+| cppcheck 2.21.0 | PBRenderD3D/PBPresentationGate 零发现；application/GUI 仅 exact-reviewed baseline，零 new/unreviewed finding |
+| `git diff --check` | PASS |
+
+GPU source readback 不是 capture；WARP 不是 hardware；source-to-back-buffer hash 不是 remote-provider survival。Step 09 没有 LF4 live production Decoder、scaled GPU demod、CaptureEpoch/lease 闭环、Outer/file convergence、WholeFileDigest/final publish、provider matrix、VerifiedEncodedGoodput 或 Certified Profile 结论。Step 10 下一步实现 scaled Walsh D3D11 demod shader，并要求 compact metrics 经现有 FEC/Transport 得到与 CPU reference 相同的 accepted blocks。

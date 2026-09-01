@@ -714,16 +714,21 @@ private:
         outerFecLabel_->setText(!sessionKnown ? QStringLiteral("Automatic: DirectRepeat or Wirehair V2") :
             QString::fromLatin1(pbapp::GetOuterFecModeName(snapshot.outerFecMode)));
         telemetryLabel_->setText(QStringLiteral(
-            "PresentationEpoch=%1 · submitted=%2 · replacedPending=%3 · queue=%4/HWM %5 · contract=%6 · "
-            "GeneratedVisual=%7 fps · SourceStable=%8 · Digest=%9")
+            "PresentationEpoch=%1 · submitted=%2 · replacedPending=%3 · sourceReplace/repeatPresent=%4/%5 · "
+            "queue=%6/HWM %7 · active=%8(seq %9) · contract=%10 · GeneratedVisual=%11 fps · SourceStable=%12 · Digest=%13")
             .arg(snapshot.presentationEpoch).arg(snapshot.submittedFrames).arg(snapshot.replacedPendingFrames)
+            .arg(snapshot.sourceTextureReplacements).arg(snapshot.repeatedPresentCalls)
             .arg(snapshot.pendingFrames).arg(snapshot.pendingHighWater)
+            .arg(snapshot.activeFrame ? QStringLiteral("true") : QStringLiteral("false")).arg(snapshot.activeFrameSequence)
             .arg(snapshot.candidateContractSatisfied ? QStringLiteral("PASS") : QStringLiteral("warming/unavailable"))
             .arg(snapshot.generatedVisualFramesPerSecond, 0, 'f', 2)
             .arg(snapshot.sourceStable ? QStringLiteral("true") : QStringLiteral("false"))
             .arg(FromUtf8(snapshot.wholeFileDigestHex)) +
-            QStringLiteral(" · LogicalFPS=%1 · ControlRepetitions=%2")
-                .arg(snapshot.configuredLogicalVisualFps).arg(snapshot.configuredControlRepetitions));
+            QStringLiteral(" · LogicalFPS=%1 · configured/min dwell=%2/%3 ms · dwellViolations=%4 · ControlRepetitions=%5")
+                .arg(snapshot.configuredLogicalVisualFps)
+                .arg(snapshot.configuredLogicalDwellMilliseconds ? QString::number(*snapshot.configuredLogicalDwellMilliseconds, 'f', 3) : QStringLiteral("—"))
+                .arg(snapshot.minimumObservedLogicalDwellMilliseconds ? QString::number(*snapshot.minimumObservedLogicalDwellMilliseconds, 'f', 3) : QStringLiteral("—"))
+                .arg(snapshot.logicalDwellViolationCount).arg(snapshot.configuredControlRepetitions));
         if (snapshot.state != lastLoggedState_ || (!snapshot.errorDetail.empty() && snapshot.errorDetail != lastError_))
         {
             AppendLog(QStringLiteral("%1 — %2%3")

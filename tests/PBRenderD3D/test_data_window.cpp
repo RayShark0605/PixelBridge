@@ -391,12 +391,106 @@ TEST_CASE("The first render needs a frame permit and ordinary wakeups cannot for
         {
             return fixture.window->GetSnapshot().totalPresentCalls == 1;
         }));
+    fixture.Permit();
+    std::this_thread::sleep_for(20ms);
+    REQUIRE(fixture.window->GetSnapshot().totalPresentCalls == 1);
     fixture.window->Stop();
     REQUIRE(fixture.control->consumedPermits == 1);
     REQUIRE(fixture.control->uploads == 1);
     REQUIRE(fixture.control->wrongOwnerCalls == 0);
     REQUIRE(fixture.control->owner != std::this_thread::get_id());
     REQUIRE(fixture.control->shutdowns == 1);
+}
+
+TEST_CASE("Repeat mode presents one complete active source without advancing its identity")
+{
+    Fixture fixture;
+    fixture.config.repeatActiveFrame = true;
+    fixture.Start();
+    REQUIRE(static_cast<bool>(fixture.Submit(17)));
+    fixture.Permit();
+    fixture.Permit();
+    fixture.Permit();
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            return fixture.window->GetSnapshot().totalPresentCalls == 3;
+        }));
+    const auto repeated = fixture.window->GetSnapshot();
+    REQUIRE(repeated.sourceTextureReplacements == 1);
+    REQUIRE(repeated.repeatedPresentCalls == 2);
+    REQUIRE(repeated.activeFrame);
+    REQUIRE(repeated.activeFrameSequence == 17);
+    REQUIRE(repeated.activeFramePresentationEpoch == repeated.timing.presentationEpoch);
+    REQUIRE(repeated.timing.lastPresent.has_value());
+    REQUIRE(repeated.timing.lastPresent->frameSequence == 17);
+    REQUIRE(fixture.control->uploads == 1);
+    REQUIRE(fixture.control->presents == 3);
+
+    std::fill(fixture.pixels.begin(), fixture.pixels.end(), std::byte{0x39});
+    REQUIRE(static_cast<bool>(fixture.Submit(18)));
+    fixture.Permit();
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            return fixture.window->GetSnapshot().totalPresentCalls == 4;
+        }));
+    const auto replaced = fixture.window->GetSnapshot();
+    REQUIRE(replaced.sourceTextureReplacements == 2);
+    REQUIRE(replaced.repeatedPresentCalls == 2);
+    REQUIRE(replaced.activeFrameSequence == 18);
+    REQUIRE(fixture.control->uploads == 2);
+    REQUIRE(std::ranges::all_of(fixture.control->uploadedPixels, [](const std::byte value)
+    {
+        return value == std::byte{0x39};
+    }));
+    fixture.window->Stop();
+    REQUIRE_FALSE(fixture.window->GetSnapshot().activeFrame);
+}
+
+TEST_CASE("Repeat mode invalidates the active source at an epoch boundary")
+{
+    Fixture fixture;
+    fixture.config.repeatActiveFrame = true;
+    fixture.Start();
+    REQUIRE(static_cast<bool>(fixture.Submit(41)));
+    fixture.Permit();
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            return fixture.window->GetSnapshot().totalPresentCalls == 1;
+        }));
+    const auto before = fixture.window->GetSnapshot();
+    fixture.Change(
+        [](FakeControl& state)
+        {
+            state.environment.modeChangeSerial++;
+        });
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            const auto snapshot = fixture.window->GetSnapshot();
+            return snapshot.timing.presentationEpoch > before.timing.presentationEpoch && !snapshot.activeFrame;
+        }));
+    fixture.Permit();
+    std::this_thread::sleep_for(20ms);
+    const auto invalidated = fixture.window->GetSnapshot();
+    REQUIRE(invalidated.totalPresentCalls == 1);
+    REQUIRE(invalidated.invalidatedActiveFrames == 1);
+    REQUIRE(invalidated.sourceTextureReplacements == 1);
+
+    REQUIRE(static_cast<bool>(fixture.Submit(42)));
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            return fixture.window->GetSnapshot().totalPresentCalls == 2;
+        }));
+    const auto restored = fixture.window->GetSnapshot();
+    REQUIRE(restored.activeFrame);
+    REQUIRE(restored.activeFrameSequence == 42);
+    REQUIRE(restored.sourceTextureReplacements == 2);
+    REQUIRE(fixture.control->uploads == 2);
+    fixture.window->Stop();
 }
 
 TEST_CASE("The latest pending frame is owned, bounded, row-pitch aware and failure immutable")

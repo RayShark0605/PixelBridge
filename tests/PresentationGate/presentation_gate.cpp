@@ -1,11 +1,19 @@
 #include "gate_support.h"
+#include "local_desktop_runtime.h"
 #include "pbmodulation/reference_raster.h"
+#include "pbmodulation/remote_visual_low_fps.h"
+#include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/session_random.h"
+#include "run_report.h"
 
 #include <array>
 #include <algorithm>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
+#include <sstream>
 #include <string_view>
 
 namespace presentationgate
@@ -143,6 +151,112 @@ void PresentAndVerify(DataWindow& window, const DataWindowConfig& config, const 
 namespace
 {
 
+std::vector<std::byte> ReadLf4Golden(const char* const name, const std::size_t expectedBytes)
+{
+    const std::filesystem::path path = std::filesystem::path(PB_REMOTE_VISUAL_LF4_GOLDEN_DIR) / name;
+    std::error_code error;
+    const std::uintmax_t fileBytes = std::filesystem::file_size(path, error);
+    Require(!error && fileBytes == expectedBytes, "LF4 Golden has an unexpected size: " + path.string());
+    std::ifstream input(path, std::ios::binary);
+    input.exceptions(std::ios::badbit);
+    std::vector<std::byte> bytes(expectedBytes);
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    Require(input.gcount() == static_cast<std::streamsize>(bytes.size()) && input.peek() == std::char_traits<char>::eof(),
+        "LF4 Golden read was incomplete or has trailing bytes: " + path.string());
+    return bytes;
+}
+
+std::string DigestHex(const std::array<std::byte, pbprotocol::kDigestBytes>& digest)
+{
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (const std::byte value : digest)
+    {
+        output << std::setw(2) << std::to_integer<unsigned int>(value);
+    }
+    return output.str();
+}
+
+void WriteCreateOnly(const std::filesystem::path& path, const std::span<const std::byte> bytes)
+{
+    Require(bytes.size() <= (std::numeric_limits<DWORD>::max)(), "create-only evidence exceeds the bounded Win32 write size");
+    Handle file(CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+    Require(file.Get() != INVALID_HANDLE_VALUE, "create-only evidence path already exists or cannot be created: " + path.string());
+    DWORD written = 0;
+    Require(WriteFile(file.Get(), bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) != FALSE &&
+        written == static_cast<DWORD>(bytes.size()),
+        "create-only evidence write was incomplete: " + path.string());
+    Require(FlushFileBuffers(file.Get()) != FALSE, "create-only evidence flush failed: " + path.string());
+}
+
+void WriteCreateOnly(const std::filesystem::path& path, const std::string& text)
+{
+    WriteCreateOnly(path, std::as_bytes(std::span(text)));
+}
+
+std::string GetUtcTimestamp()
+{
+    SYSTEMTIME time{};
+    GetSystemTime(&time);
+    std::ostringstream output;
+    output << std::setfill('0') << std::setw(4) << time.wYear << '-' << std::setw(2) << time.wMonth << '-' <<
+        std::setw(2) << time.wDay << 'T' << std::setw(2) << time.wHour << ':' << std::setw(2) << time.wMinute << ':' <<
+        std::setw(2) << time.wSecond << 'Z';
+    return output.str();
+}
+
+bool CurrentProcessOwnsForegroundWindow() noexcept
+{
+    const HWND foreground = GetForegroundWindow();
+    if (foreground == nullptr)
+    {
+        return false;
+    }
+    DWORD processId = 0;
+    static_cast<void>(GetWindowThreadProcessId(foreground, &processId));
+    return processId == GetCurrentProcessId();
+}
+
+template <typename Predicate>
+pbapp::EncoderSnapshot WaitForEncoder(pbapp::EncoderRuntime& runtime, Predicate predicate, const char* const description,
+    const std::chrono::milliseconds timeout = std::chrono::seconds(20))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    pbapp::EncoderSnapshot lastSnapshot;
+    do
+    {
+        const auto snapshot = runtime.GetSnapshot();
+        lastSnapshot = snapshot;
+        Require(snapshot.state != pbapp::EncoderState::Failed,
+            std::string(description) + " failed: " + snapshot.errorDetail);
+        if (predicate(snapshot))
+        {
+            return snapshot;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw std::runtime_error(std::string("timeout: ") + description + " state=" +
+        pbapp::GetEncoderStateName(lastSnapshot.state) + " frameSequence=" + std::to_string(lastSnapshot.frameSequence) +
+        " cycleCount=" + std::to_string(lastSnapshot.cycleCount) + " sourceReplacements=" +
+        std::to_string(lastSnapshot.sourceTextureReplacements) + " repeatedPresents=" +
+        std::to_string(lastSnapshot.repeatedPresentCalls) + " status=" + lastSnapshot.statusMessage);
+}
+
+const Monitor& GetRightmostCanonicalMonitor(const std::vector<Monitor>& monitors)
+{
+    Require(monitors.size() >= 2, "BLOCKED: LF4 right-monitor containment requires two active monitors");
+    const auto rightmost = std::max_element(monitors.begin(), monitors.end(), [](const Monitor& left, const Monitor& right)
+    {
+        return left.info.rcMonitor.left < right.info.rcMonitor.left;
+    });
+    Require(rightmost != monitors.end(), "BLOCKED: rightmost monitor selection failed");
+    const std::int64_t width = static_cast<std::int64_t>(rightmost->info.rcMonitor.right) - rightmost->info.rcMonitor.left;
+    const std::int64_t height = static_cast<std::int64_t>(rightmost->info.rcMonitor.bottom) - rightmost->info.rcMonitor.top;
+    Require(width >= pbmodulation::kLocalDesktopCanvasWidth && height >= pbmodulation::kLocalDesktopCanvasHeight,
+        "BLOCKED: rightmost monitor cannot contain the canonical LF4 canvas");
+    return *rightmost;
+}
+
 void CheckInitialContract(const DataWindowSnapshot& snapshot, const DataWindowConfig& config)
 {
     Require(snapshot.candidateContractSatisfied && snapshot.state == WindowState::Running, "candidate contract not satisfied");
@@ -276,8 +390,9 @@ void RunGpu(const bool warp, Evidence& evidence)
             const auto result = DataWindowTestAccess::Create(config, MakeNativeBackend(options));
             Require(!result && result.Error().stage == stage && result.Error().nativeError == static_cast<std::int32_t>(E_FAIL),
                     "initialization failure injection was not reached: " + Describe(result.Error()));
-            Require(cleanup.liveGraphicsObjects == 0 && cleanup.liveOwnedHandles == 1, "partial native initialization leaked resources");
-            evidence.Note(std::string("cleanup-stage=") + GetPresentationStageName(stage) + " PASS; wake handle remains owned until backend destructor");
+            Require(cleanup.liveGraphicsObjects == 0 && cleanup.liveOwnedHandles == 0, "partial native initialization leaked resources");
+            evidence.Note(std::string("cleanup-stage=") + GetPresentationStageName(stage) +
+                " PASS; graphics objects and owned handles released by Shutdown");
         }
     }
     for (const auto effect : {FlipEffect::Discard, FlipEffect::Sequential})
@@ -307,7 +422,7 @@ void RunGpu(const bool warp, Evidence& evidence)
             Require(IsWindow(originalWindow) != FALSE, "test HWND was not alive before Stop");
             window->Stop();
             window->Stop();
-            Require(cleanup.liveGraphicsObjects == 0 && cleanup.liveOwnedHandles == 1, "native shutdown retained GPU resources");
+            Require(cleanup.liveGraphicsObjects == 0 && cleanup.liveOwnedHandles == 0, "native shutdown retained GPU resources or handles");
             Require(IsWindow(originalWindow) == FALSE && DataWindowTestAccess::GetWindowToken(*window) == 0, "HWND outlived owner shutdown");
             evidence.Note("GPU oracle PASS: warp=" + std::to_string(warp) + " effect=" + std::to_string(static_cast<unsigned int>(effect)) +
                           " latency=" + std::to_string(latency));
@@ -338,6 +453,198 @@ void RunGpu(const bool warp, Evidence& evidence)
     Require(DataWindowTestAccess::GetDiagnostics(*window).verifiedUploads >= 2, "canonical raster GPU verification missing");
     window->Stop();
     evidence.Note("canonical BGRA GPU byte verification PASS; no capture/physical-link claim");
+}
+
+void RunLf4Encoder(const bool warp, Evidence& evidence)
+{
+    const auto monitors = GetMonitors();
+    const Monitor& monitor = GetRightmostCanonicalMonitor(monitors);
+    DataWindowConfig config;
+    config.width = pbmodulation::kLocalDesktopCanvasWidth;
+    config.height = pbmodulation::kLocalDesktopCanvasHeight;
+    config.repeatActiveFrame = true;
+    config.clientOrigin = GetOrigin(monitor, config.width, config.height);
+    const auto window = CreateDataWindow(config, {warp, true, true});
+    CheckInitialContract(window->GetSnapshot(), config);
+    const HWND handle = reinterpret_cast<HWND>(DataWindowTestAccess::GetWindowToken(*window));
+    CheckNoActivateWindow(handle);
+    Require(GetForegroundWindow() != handle, "LF4 Data Window stole foreground activation");
+    const auto bootstrap = ReadLf4Golden("lf4-bootstrap.bin", pbprotocol::kBootstrapRecordBytes);
+    const auto codedData = ReadLf4Golden("lf4-coded-data.bin", pbmodulation::kRemoteVisualLowFpsDataBytes);
+    const auto digestPinBytes = ReadLf4Golden("lf4-raster.blake3", 65);
+    Require(digestPinBytes.back() == std::byte{'\n'} &&
+        std::ranges::all_of(std::span(digestPinBytes).first(64), [](const std::byte value)
+        {
+            const char character = static_cast<char>(std::to_integer<unsigned char>(value));
+            return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+        }), "LF4 raster digest pin is not canonical lowercase hex plus newline");
+    const std::string digestPin(reinterpret_cast<const char*>(digestPinBytes.data()), 64);
+    std::vector<std::byte> pixels(pbmodulation::kLocalDesktopFrameBgraBytes);
+    Require(static_cast<bool>(pbmodulation::EncodeRemoteVisualLowFpsFrame(bootstrap, codedData, pixels)),
+        "canonical LF4 raster generation failed");
+    const auto cpuDigest = pbprotocol::ComputeBlake3Digest(pixels);
+    Require(DigestHex(cpuDigest) == digestPin, "canonical LF4 CPU raster digest drifted from Step 08");
+
+    const auto parsed = pbprotocol::ParseBootstrapRecord(bootstrap);
+    Require(static_cast<bool>(parsed), "LF4 Golden Bootstrap parse failed");
+    auto warmupRecord = parsed.Value();
+    warmupRecord.frameSequence = 16;
+    std::array<std::byte, pbprotocol::kBootstrapRecordBytes> warmupBootstrap{};
+    Require(static_cast<bool>(pbprotocol::SerializeBootstrapRecord(warmupRecord, warmupBootstrap)), "warm-up LF4 Bootstrap serialization failed");
+    std::vector<std::byte> warmupPixels(pbmodulation::kLocalDesktopFrameBgraBytes);
+    Require(static_cast<bool>(pbmodulation::EncodeRemoteVisualLowFpsFrame(warmupBootstrap, codedData, warmupPixels)),
+        "warm-up LF4 raster generation failed");
+    const auto initial = window->GetSnapshot();
+    Require(static_cast<bool>(window->SubmitFrame({warmupPixels, config.width, config.height, static_cast<std::size_t>(config.width) * 4,
+        16, initial.timing.presentationEpoch})), "warm-up LF4 submit failed");
+    const auto warmup = WaitFor(*window, [&initial](const DataWindowSnapshot& snapshot)
+    {
+        return !snapshot.inFlightFrame && (snapshot.invalidatedActiveFrames > initial.invalidatedActiveFrames ||
+            (snapshot.activeFrame && snapshot.totalSuccessfulPresents >= initial.totalSuccessfulPresents + 8));
+    }, "LF4 initial DXGI timing epoch warm-up", std::chrono::seconds(20));
+    evidence.Record("lf4-timing-warmup", warmup);
+
+    Require(static_cast<bool>(window->SubmitFrame({pixels, config.width, config.height, static_cast<std::size_t>(config.width) * 4,
+        17, warmup.timing.presentationEpoch})), "canonical LF4 submit failed");
+    const std::uint64_t canonicalSourceReplacement = warmup.sourceTextureReplacements + 1;
+    const auto repeated = WaitFor(*window, [&warmup, canonicalSourceReplacement](const DataWindowSnapshot& snapshot)
+    {
+        return snapshot.totalSuccessfulPresents >= warmup.totalSuccessfulPresents + 24 &&
+            snapshot.sourceTextureReplacements == canonicalSourceReplacement &&
+            snapshot.repeatedPresentCalls >= warmup.repeatedPresentCalls + 23 && !snapshot.inFlightFrame;
+    }, "LF4 immutable source repeated Presents", std::chrono::seconds(20));
+    Require(repeated.activeFrame && repeated.activeFrameSequence == 17 &&
+        repeated.activeFramePresentationEpoch == repeated.timing.presentationEpoch,
+        "LF4 repeated Present changed active source identity");
+    Require(repeated.submittedFrames == 2 && repeated.replacedPendingFrames == 0,
+        "LF4 repeat path synthesized or replaced a logical frame");
+    BackendDiagnostics diagnostics = DataWindowTestAccess::GetDiagnostics(*window);
+    Require(diagnostics.verifiedUploads == canonicalSourceReplacement && diagnostics.immutableSourceCreations == canonicalSourceReplacement &&
+        diagnostics.sourceReadbackBlake3Valid && diagnostics.lastSourceReadbackBlake3 == cpuDigest,
+        "LF4 immutable source GPU readback does not match the Step 08 CPU raster");
+    Require(diagnostics.sourceCopiesToBackBuffer == diagnostics.presentCalls &&
+        diagnostics.presentCalls == repeated.totalPresentCalls,
+        "LF4 Present did not redraw the complete immutable source for every flip");
+    Require(GetForegroundWindow() != handle, "LF4 repeated Present activated the Data Window");
+    evidence.Record("lf4-step08-source-repeated", repeated);
+    evidence.Note("LF4 Step08 CPU/GPU source BLAKE3=" + digestPin + " PASS; immutableSources=" +
+        std::to_string(diagnostics.immutableSourceCreations) + " repeatedPresents=" + std::to_string(repeated.repeatedPresentCalls));
+
+    auto nextRecord = parsed.Value();
+    nextRecord.frameSequence = 18;
+    std::array<std::byte, pbprotocol::kBootstrapRecordBytes> nextBootstrap{};
+    Require(static_cast<bool>(pbprotocol::SerializeBootstrapRecord(nextRecord, nextBootstrap)), "next LF4 Bootstrap serialization failed");
+    Require(static_cast<bool>(pbmodulation::EncodeRemoteVisualLowFpsFrame(nextBootstrap, codedData, pixels)),
+        "next complete LF4 raster generation failed");
+    const auto beforeReplacement = window->GetSnapshot();
+    Require(static_cast<bool>(window->SubmitFrame({pixels, config.width, config.height, static_cast<std::size_t>(config.width) * 4,
+        18, beforeReplacement.timing.presentationEpoch})), "next LF4 complete source submit failed");
+    const auto replaced = WaitFor(*window, [&repeated, canonicalSourceReplacement](const DataWindowSnapshot& snapshot)
+    {
+        return snapshot.sourceTextureReplacements == canonicalSourceReplacement + 1 && snapshot.activeFrameSequence == 18 &&
+            snapshot.totalSuccessfulPresents >= repeated.totalSuccessfulPresents + 12 && !snapshot.inFlightFrame;
+    }, "LF4 complete source replacement", std::chrono::seconds(20));
+    Require(replaced.repeatedPresentCalls >= repeated.repeatedPresentCalls + 11 && replaced.submittedFrames == 3,
+        "LF4 replacement did not retain the new stable raster across repeated Presents");
+    diagnostics = DataWindowTestAccess::GetDiagnostics(*window);
+    Require(diagnostics.verifiedUploads == canonicalSourceReplacement + 1 &&
+        diagnostics.immutableSourceCreations == canonicalSourceReplacement + 1 &&
+        diagnostics.sourceCopiesToBackBuffer == diagnostics.presentCalls && diagnostics.debugErrors == 0,
+        "LF4 replacement lifecycle/readback/debug verification incomplete");
+    Require(GetForegroundWindow() != handle, "LF4 replacement activated the Data Window");
+    evidence.Record("lf4-next-source-repeated", replaced);
+    window->Stop();
+    const auto stoppedDiagnostics = DataWindowTestAccess::GetDiagnostics(*window);
+    Require(stoppedDiagnostics.liveGraphicsObjects == 0 && stoppedDiagnostics.liveOwnedHandles == 0 &&
+        IsWindow(handle) == FALSE,
+        "LF4 native gate leaked its HWND, D3D11 resources, or owned handles");
+    evidence.Note(std::string("LF4 native immutable/repeat gate PASS; backend=") + (warp ? "WARP" : "hardware") +
+        " rightMonitor=" + Utf8(monitor.info.szDevice));
+}
+
+void RunLf4ProductionEncoder(Evidence& evidence)
+{
+    constexpr std::uint32_t maximumLf4LogicalFps = 5;
+    const auto monitors = GetMonitors();
+    const Monitor& monitor = GetRightmostCanonicalMonitor(monitors);
+    const std::filesystem::path sourcePath = evidence.Directory() / "lf4-production-source.bin";
+    const std::array sourceBytes{std::byte{0x53}};
+    WriteCreateOnly(sourcePath, sourceBytes);
+
+    pbapp::EncoderConfig config;
+    config.sourcePath = sourcePath.wstring();
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    config.monitorClientOrigin = GetOrigin(monitor, pbapp::phase1CanvasWidth, pbapp::phase1CanvasHeight);
+    config.logicalVisualFps = maximumLf4LogicalFps;
+    config.controlRepetitions = 1;
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "Step09NativeGate";
+    pbapp::EncoderRuntime runtime;
+    const auto started = runtime.Start(config);
+    Require(static_cast<bool>(started), "production LF4 EncoderRuntime Start failed: " + started.message);
+    const auto broadcasting = WaitForEncoder(runtime, [](const pbapp::EncoderSnapshot& snapshot)
+    {
+        return snapshot.state == pbapp::EncoderState::Broadcasting && snapshot.cycleCount >= 2 &&
+            snapshot.cycleFrameCount != 0 && snapshot.frameSequence >= static_cast<std::uint64_t>(snapshot.cycleFrameCount) * 2 &&
+            snapshot.submittedFrames >= snapshot.frameSequence && snapshot.sourceTextureReplacements >= snapshot.frameSequence &&
+            snapshot.pendingFrames == 0 && snapshot.activeFrame;
+    }, "production LF4 EncoderRuntime two Carousel cycles", std::chrono::seconds(30));
+    Require(broadcasting.visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId &&
+        broadcasting.visualLayoutVersion == pbmodulation::kRemoteVisualLowFpsLayoutVersion &&
+        broadcasting.codedDataBytesPerFrame == pbmodulation::kRemoteVisualLowFpsDataBytes &&
+        broadcasting.codewordsPerFrame == pbmodulation::kRemoteVisualLowFpsCodewords,
+        "production LF4 EncoderRuntime did not bind the frozen Step08 wire profile");
+    Require(broadcasting.configuredLogicalVisualFps == maximumLf4LogicalFps &&
+        broadcasting.configuredLogicalDwellMilliseconds &&
+        *broadcasting.configuredLogicalDwellMilliseconds == 200.0 &&
+        broadcasting.minimumObservedLogicalDwellMilliseconds &&
+        *broadcasting.minimumObservedLogicalDwellMilliseconds >= *broadcasting.configuredLogicalDwellMilliseconds &&
+        broadcasting.logicalDwellViolationCount == 0 && broadcasting.generatedVisualFramesPerSecond > 0 &&
+        broadcasting.generatedVisualFramesPerSecond <= maximumLf4LogicalFps,
+        "production LF4 EncoderRuntime violated the configured 5 Hz logical dwell");
+    Require(broadcasting.dataWindowLeft == config.monitorClientOrigin->x &&
+        broadcasting.dataWindowTop == config.monitorClientOrigin->y &&
+        broadcasting.dataWindowWidth == pbapp::phase1CanvasWidth &&
+        broadcasting.dataWindowHeight == pbapp::phase1CanvasHeight &&
+        broadcasting.candidateContractSatisfied,
+        "production LF4 EncoderRuntime did not retain the right-monitor physical Data Window contract");
+    Require(broadcasting.repeatedPresentCalls > broadcasting.sourceTextureReplacements &&
+        broadcasting.statusMessage.find("receiver completion is visible only on Decoder") != std::string::npos,
+        "production LF4 EncoderRuntime did not preserve independent continuous sender broadcast semantics");
+    Require(!CurrentProcessOwnsForegroundWindow(), "production LF4 EncoderRuntime stole foreground activation");
+
+    const pbapp::RunReportContext reportContext{"PBPresentationGate", "Step09", "worktree-precommit", GetUtcTimestamp()};
+    WriteCreateOnly(evidence.Directory() / "encoder-broadcasting-report.json",
+        pbapp::BuildEncoderRunReportJson(reportContext, broadcasting) + "\n");
+    const std::uint64_t externalCompletionMarkerFrame = broadcasting.frameSequence;
+    evidence.Note("Production LF4 reached two Carousel cycles at frameSequence=" +
+        std::to_string(externalCompletionMarkerFrame) + "; test-local decoder completion marker was not passed to EncoderRuntime");
+
+    const auto continued = WaitForEncoder(runtime, [externalCompletionMarkerFrame](const pbapp::EncoderSnapshot& snapshot)
+    {
+        return snapshot.state == pbapp::EncoderState::Broadcasting && snapshot.frameSequence > externalCompletionMarkerFrame &&
+            snapshot.submittedFrames >= snapshot.frameSequence && snapshot.sourceTextureReplacements >= snapshot.frameSequence &&
+            snapshot.pendingFrames == 0 && snapshot.activeFrame;
+    }, "production LF4 continuation after external completion marker");
+    Require(continued.logicalDwellViolationCount == 0 && continued.cycleCount >= broadcasting.cycleCount &&
+        continued.repeatedPresentCalls > broadcasting.repeatedPresentCalls && !CurrentProcessOwnsForegroundWindow(),
+        "production LF4 EncoderRuntime did not continue stable broadcasting after the external completion observation");
+    WriteCreateOnly(evidence.Directory() / "encoder-after-marker-report.json",
+        pbapp::BuildEncoderRunReportJson(reportContext, continued) + "\n");
+
+    runtime.RequestStop();
+    runtime.Stop();
+    const auto stopped = runtime.GetSnapshot();
+    Require(stopped.state == pbapp::EncoderState::Stopped && stopped.runEndedUnixMilliseconds &&
+        stopped.sourceStable && stopped.pendingFrames == 0 && !stopped.activeFrame && stopped.errorDetail.empty() &&
+        stopped.statusMessage.find("no sender-side receiver completion was inferred") != std::string::npos,
+        "production LF4 EncoderRuntime did not complete explicit bounded shutdown");
+    WriteCreateOnly(evidence.Directory() / "encoder-stopped-report.json",
+        pbapp::BuildEncoderRunReportJson(reportContext, stopped) + "\n");
+    evidence.Note("Production LF4 EncoderRuntime native gate PASS; cycles=" + std::to_string(stopped.cycleCount) +
+        " frames=" + std::to_string(stopped.frameSequence) + " sourceReplacements=" +
+        std::to_string(stopped.sourceTextureReplacements) + " repeatedPresents=" +
+        std::to_string(stopped.repeatedPresentCalls) + " rightMonitor=" + Utf8(monitor.info.szDevice));
 }
 
 void RunLive(Evidence& evidence)
@@ -464,9 +771,13 @@ int wmain(const int argumentCount, wchar_t* arguments[])
         {
             return RunModeChild(argumentCount, arguments);
         }
-        Require(argumentCount == 3, "usage: PBPresentationGate --gpu-warp|--gpu-hardware|--live|--mode-supervisor EVIDENCE_ROOT");
+        Require(argumentCount == 3,
+            "usage: PBPresentationGate --gpu-warp|--gpu-hardware|--lf4-encoder-warp|--lf4-encoder-hardware|--lf4-production-encoder|--live|--mode-supervisor EVIDENCE_ROOT");
         const std::wstring_view mode(arguments[1]);
-        Require(mode == L"--gpu-warp" || mode == L"--gpu-hardware" || mode == L"--live" || mode == L"--mode-supervisor", "invalid gate mode argument");
+        Require(mode == L"--gpu-warp" || mode == L"--gpu-hardware" || mode == L"--lf4-encoder-warp" ||
+            mode == L"--lf4-encoder-hardware" || mode == L"--lf4-production-encoder" || mode == L"--live" ||
+            mode == L"--mode-supervisor",
+            "invalid gate mode argument");
         const std::filesystem::path root(arguments[2]);
         const std::string name = Utf8(mode.substr(2));
         Evidence evidence(root, name);
@@ -475,6 +786,14 @@ int wmain(const int argumentCount, wchar_t* arguments[])
             if (mode == L"--gpu-warp" || mode == L"--gpu-hardware")
             {
                 RunGpu(mode == L"--gpu-warp", evidence);
+            }
+            else if (mode == L"--lf4-encoder-warp" || mode == L"--lf4-encoder-hardware")
+            {
+                RunLf4Encoder(mode == L"--lf4-encoder-warp", evidence);
+            }
+            else if (mode == L"--lf4-production-encoder")
+            {
+                RunLf4ProductionEncoder(evidence);
             }
             else if (mode == L"--live")
             {

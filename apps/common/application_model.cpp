@@ -675,6 +675,7 @@ const char* GetVisualProfileName(const VisualProfile profile) noexcept
     case VisualProfile::DirectLevels2x2: return "Direct-Level 2x2 (Experimental)";
     case VisualProfile::ShapeChroma: return "Shape+Chroma (Experimental)";
     case VisualProfile::RemoteVisualResilient: return "RemoteVisual Resilient 8x8 Luma (Experimental)";
+    case VisualProfile::RemoteVisualLowFps: return "PB-RemoteVisual-LF4-X1 (Hidden Encoder Candidate)";
     }
     return "Unknown";
 }
