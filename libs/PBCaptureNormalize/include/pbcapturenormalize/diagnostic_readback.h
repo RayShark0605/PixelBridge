@@ -18,6 +18,7 @@ struct DiagnosticReadbackTestAccess;
 }
 
 inline constexpr std::uint32_t diagnosticCpuBufferCount = 3;
+inline constexpr std::uint64_t diagnosticReadbackMaximumSamplingInterval100ns = 600ULL * 10000000ULL;
 
 struct DiagnosticReadbackConfig
 {
@@ -26,6 +27,9 @@ struct DiagnosticReadbackConfig
     std::uint32_t maximumFrameAgeMilliseconds = 250;
     std::uint64_t maximumReadbackBytes = 256ull * 1024 * 1024;
     std::uint64_t processingReservedBytes = 0;
+    // Zero records every admitted frame. A positive interval intentionally
+    // samples before CopyResource, GPU readback, CPU copying, and processing.
+    std::uint64_t minimumSubmissionInterval100ns = 0;
 };
 
 struct DiagnosticReadbackBudget
@@ -96,6 +100,8 @@ struct DiagnosticReadbackSnapshot
     std::uint64_t invalidations = 0;
     std::uint64_t processorResets = 0;
     std::uint64_t submittedCopies = 0;
+    // Intentional time sampling is evidence policy, not a capture/readback drop.
+    std::uint64_t sampledOutFrames = 0;
     std::uint64_t mappedFrames = 0;
     std::uint64_t readbackBytes = 0;
     std::uint64_t mapCalls = 0;

@@ -235,6 +235,9 @@ TEST_CASE("Decoder offline Replay v2 validation is bounded and independent from 
     config.replayMaximumCaptureFrames = 1;
     config.replayMaximumFileBytes = 16ULL * 1024 * 1024;
     REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 10;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 0;
 
     config.replayOutputPath = (scratch.Path() / L"output.pbrv2").wstring();
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
@@ -327,6 +330,13 @@ TEST_CASE("Incompatible RemoteVisual ROI is admitted only for explicit bounded r
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
     config.replayOutputPath = (scratch.Path() / L"scaled-remote.pbrv2").wstring();
     REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 10;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 60;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 61;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 10;
 
     config.replayEvidenceVisualProfileId = pbmodulation::kDesktopLevels2ProfileId;
     REQUIRE(pbapp::ValidateDecoderConfig(config));

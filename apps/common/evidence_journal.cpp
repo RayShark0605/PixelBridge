@@ -335,6 +335,7 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"replayCaptureOnly\":" << (snapshot.replayCaptureOnly ? "true" : "false") <<
         ",\"replayWrittenFrames\":" << snapshot.replayWrittenFrames <<
         ",\"replayDroppedFrames\":" << snapshot.replayDroppedFrames <<
+        ",\"replaySampledOutFrames\":" << snapshot.replaySampledOutFrames <<
         ",\"wholeFileDigestPass\":" << (snapshot.wholeFileDigestVerified ? "true" : "false") <<
         ",\"finalPublishPass\":" << (snapshot.finalPublishSucceeded ? "true" : "false") <<
         ",\"processCpuAveragePercent\":";

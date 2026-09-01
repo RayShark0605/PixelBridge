@@ -50,29 +50,29 @@
     },
     {
       "File": "apps/common/application_model.h",
-      "Line": 539,
+      "Line": 542,
       "Id": "returnByReference",
       "Severity": "performance",
       "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
-      "SourceSHA256": "E606EF53D0E63DFD31AB14E52A0FD015FF2A270B921EF33A76417B4737A84FC0",
+      "SourceSHA256": "0124897FDEC2B289D836BC168CF4140B47FE4889AD62A0E5DCA5239F89E7698C",
       "Assessment": "Re-confirmed against the Step 09 Encoder telemetry revision; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
     },
     {
       "File": "apps/common/application_model.h",
-      "Line": 577,
+      "Line": 580,
       "Id": "returnByReference",
       "Severity": "performance",
       "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
-      "SourceSHA256": "E606EF53D0E63DFD31AB14E52A0FD015FF2A270B921EF33A76417B4737A84FC0",
+      "SourceSHA256": "0124897FDEC2B289D836BC168CF4140B47FE4889AD62A0E5DCA5239F89E7698C",
       "Assessment": "Re-confirmed against the Step 09 Encoder telemetry revision; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
     },
     {
       "File": "apps/common/application_model.h",
-      "Line": 597,
+      "Line": 600,
       "Id": "returnByReference",
       "Severity": "performance",
       "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
-      "SourceSHA256": "E606EF53D0E63DFD31AB14E52A0FD015FF2A270B921EF33A76417B4737A84FC0",
+      "SourceSHA256": "0124897FDEC2B289D836BC168CF4140B47FE4889AD62A0E5DCA5239F89E7698C",
       "Assessment": "Re-confirmed against the Step 09 Encoder telemetry revision; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
     },
     {
@@ -81,7 +81,7 @@
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbapp::RunEvidenceJournal::Append' can be const.",
-      "SourceSHA256": "3D531320310C162C69B8A56FF9C5002710DB9EAE7B9647EEFDA39FC24227A93D",
+      "SourceSHA256": "E636B69AEE3978005FBA6681D95F87227D1E590BCF4CBDB757037DC8069FB66D",
       "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. Append appends a framed record through *implementation_, updates snapshot_ bytesWritten/samples and flips valid/truncated on failure; the cadence, byte-cap and malformed-record tests in tests/PBApplication/test_run_report.cpp rely on those transitions."
     },
     {
@@ -90,7 +90,7 @@
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbapp::RunEvidenceJournal::Finish' can be const.",
-      "SourceSHA256": "3D531320310C162C69B8A56FF9C5002710DB9EAE7B9647EEFDA39FC24227A93D",
+      "SourceSHA256": "E636B69AEE3978005FBA6681D95F87227D1E590BCF4CBDB757037DC8069FB66D",
       "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. Finish flushes and closes the journal handle through *implementation_ and sets snapshot_ finished/truncated/bytesWritten; the duration-cap and close-failure tests in tests/PBApplication/test_run_report.cpp rely on it."
     },
     {
@@ -131,47 +131,47 @@
     },
     {
       "File": "libs/PBCaptureNormalize/include/pbcapturenormalize/diagnostic_readback.h",
-      "Line": 134,
+      "Line": 140,
       "Id": "funcArgNamesDifferentUnnamed",
       "Severity": "style",
       "Message": "Function 'Erased' argument 1 names different: declaration 'erasure' definition '<unnamed>'.",
-      "SourceSHA256": "8D9D7020581CFBD63FE1ECF311162FA72ECF3AB871D8CD84ED3CF7DA7282A28E",
+      "SourceSHA256": "1355D3ADA1E87B3B8BB8AFE56C05EA1F15B347454FCEF40DA3E7478CB58A0E5D",
       "Assessment": "Pre-existing intentionally unused callback parameter; ABI and ownership unchanged."
     },
     {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 233,
+      "Line": 234,
       "Id": "knownConditionTrueFalse",
       "Severity": "style",
       "Message": "Condition 'revision==resetRevision' is always true",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "SourceSHA256": "C7D7B0FDA9958C5F41726201C31D6575B911718E292F78A8BBBA037936D4F011",
       "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
     },
     {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 233,
+      "Line": 234,
       "Id": "knownConditionTrueFalse",
       "Severity": "style",
       "Message": "Condition 'activeDomain==resetDomain' is always true",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "SourceSHA256": "C7D7B0FDA9958C5F41726201C31D6575B911718E292F78A8BBBA037936D4F011",
       "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
     },
     {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 597,
+      "Line": 600,
       "Id": "redundantAssignment",
       "Severity": "style",
       "Message": "Variable 'replacement' is reassigned a value before the old one has been used.",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "SourceSHA256": "C7D7B0FDA9958C5F41726201C31D6575B911718E292F78A8BBBA037936D4F011",
       "Assessment": "replacement={} deliberately releases moved old-generation COM objects outside the CPU mutex before allocating new staging resources. Removing it breaks lifetime/reservation ordering."
     },
     {
       "File": "libs/PBCaptureNormalize/src/diagnostic_readback.cpp",
-      "Line": 923,
+      "Line": 939,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbcapturenormalize::DiagnosticCpuReadback::RequestStop' can be const.",
-      "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
+      "SourceSHA256": "C7D7B0FDA9958C5F41726201C31D6575B911718E292F78A8BBBA037936D4F011",
       "Assessment": "Actor RequestStop mutates shared CPU state under its mutex; shallow const suggestion is not a correctness defect."
     },
     {

@@ -455,7 +455,7 @@ TEST_CASE("Diagnostic readback budgets fixed CPU and worst-format staging before
     const auto limited = CalculateDiagnosticReadbackBudget(config, budget);
     REQUIRE(limited.code == CaptureError::ResourceLimit);
     REQUIRE(budget == sentinel);
-    for (std::uint32_t mutation = 0; mutation < 10; mutation++)
+    for (std::uint32_t mutation = 0; mutation < 11; mutation++)
     {
         CAPTURE(mutation);
         config = MakeConfig();
@@ -471,6 +471,7 @@ TEST_CASE("Diagnostic readback budgets fixed CPU and worst-format staging before
         case 7: config.maximumFrameAgeMilliseconds = 60001; break;
         case 8: config.maximumReadbackBytes = 0; break;
         case 9: config.maximumReadbackBytes = std::numeric_limits<std::uint64_t>::max(); break;
+        case 10: config.minimumSubmissionInterval100ns = diagnosticReadbackMaximumSamplingInterval100ns + 1; break;
         }
         REQUIRE(CalculateDiagnosticReadbackBudget(config, budget).code == CaptureError::InvalidConfiguration);
         REQUIRE(budget == sentinel);
@@ -532,6 +533,67 @@ TEST_CASE("Diagnostic readback maps the completed last frame with real pitch and
     }
     REQUIRE(readback->GetSnapshot().readbackBytes == 240);
     REQUIRE(readback->GetSnapshot().invalidations == 3);
+    REQUIRE(readback->Stop());
+    graphics.CheckDebug();
+}
+
+TEST_CASE("Diagnostic readback time sampler skips before GPU copy and resets at a new capture domain")
+{
+    Graphics graphics;
+    const auto control = std::make_shared<ProcessorControl>();
+    auto config = MakeConfig();
+    config.minimumSubmissionInterval100ns = 1000000;
+    const auto readback = MakeReadback(control, config);
+    const auto environment = MakeEnvironment(DXGI_FORMAT_B8G8R8A8_UNORM);
+    const auto firstDomain = MakeDomain(41, 1);
+    REQUIRE(readback->DomainStarted(firstDomain, environment, graphics.device.Get()));
+
+    const std::int64_t baseTime100ns = Now100ns() - 2000000;
+    auto first = MakeFrame(graphics, environment, firstDomain, 1, 0, 1, 17);
+    first.frame.metadata.timestamp.monotonic100ns = baseTime100ns;
+    first.frame.metadata.timestamp.rawValue = baseTime100ns;
+    Deliver(graphics, *readback, first);
+    REQUIRE(WaitFor([&] { return readback->GetSnapshot().committedFrames == 1; }));
+
+    auto sampledOut = MakeFrame(graphics, environment, firstDomain, 2, 1, 1, 73);
+    sampledOut.frame.metadata.timestamp.monotonic100ns = baseTime100ns + 999999;
+    sampledOut.frame.metadata.timestamp.rawValue = sampledOut.frame.metadata.timestamp.monotonic100ns;
+    REQUIRE(readback->Submit(sampledOut.frame, graphics.context.Get()));
+    const auto sampledSnapshot = readback->GetSnapshot();
+    REQUIRE(sampledSnapshot.submittedCopies == 1);
+    REQUIRE(sampledSnapshot.sampledOutFrames == 1);
+    REQUIRE(sampledSnapshot.pendingStagingFrames == 1);
+    auto* const forbiddenContext = reinterpret_cast<ID3D11DeviceContext*>(std::uintptr_t{1});
+    REQUIRE(readback->Completed(sampledOut.frame.metadata, forbiddenContext, false));
+    REQUIRE(readback->GetSnapshot().pendingStagingFrames == 0);
+
+    auto boundary = MakeFrame(graphics, environment, firstDomain, 3, 2, 1, 193);
+    boundary.frame.metadata.timestamp.monotonic100ns = baseTime100ns + 1000000;
+    boundary.frame.metadata.timestamp.rawValue = boundary.frame.metadata.timestamp.monotonic100ns;
+    Deliver(graphics, *readback, boundary);
+    REQUIRE(WaitFor([&] { return readback->GetSnapshot().committedFrames == 2; }));
+
+    readback->DomainInvalidated(firstDomain);
+    REQUIRE(WaitFor([&] { return !readback->GetSnapshot().resetPending; }));
+    const auto secondDomain = MakeDomain(42, 1);
+    REQUIRE(readback->DomainStarted(secondDomain, environment, graphics.device.Get()));
+    auto firstInNewDomain = MakeFrame(graphics, environment, secondDomain, 1, 0, 1, 211);
+    firstInNewDomain.frame.metadata.timestamp.monotonic100ns = baseTime100ns + 1000001;
+    firstInNewDomain.frame.metadata.timestamp.rawValue = firstInNewDomain.frame.metadata.timestamp.monotonic100ns;
+    Deliver(graphics, *readback, firstInNewDomain);
+    REQUIRE(WaitFor([&] { return readback->GetSnapshot().committedFrames == 3; }));
+
+    const auto finalSnapshot = readback->GetSnapshot();
+    REQUIRE(finalSnapshot.submittedCopies == 3);
+    REQUIRE(finalSnapshot.sampledOutFrames == 1);
+    REQUIRE(finalSnapshot.dropEvents == 0);
+    const auto observations = control->Get();
+    REQUIRE(observations.analyzes == 3);
+    REQUIRE(observations.commits == 3);
+    RequireResult(observations.committed[0], first);
+    RequireResult(observations.committed[1], boundary);
+    RequireResult(observations.committed[2], firstInNewDomain);
+    RequireCleanProcessor(observations);
     REQUIRE(readback->Stop());
     graphics.CheckDebug();
 }

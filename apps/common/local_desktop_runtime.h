@@ -61,6 +61,9 @@ struct DecoderConfig
     std::wstring replayInputPath;
     std::uint32_t replayMaximumCaptureFrames = 256;
     std::uint64_t replayMaximumFileBytes = 2ULL * 1024 * 1024 * 1024;
+    // Diagnostic capture-only policy. Zero records every capture delivery;
+    // 1..60 applies an authoritative pre-readback time sampler.
+    std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
 };
 
 struct RuntimeStatus

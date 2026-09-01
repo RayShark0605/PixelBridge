@@ -48,6 +48,7 @@ struct Options
     std::uint32_t timeoutSeconds = 120;
     std::uint32_t replayMaximumFrames = 256;
     std::uint32_t replayMaximumMebibytes = 2048;
+    std::uint32_t replayMaximumFramesPerSecond = 0;
     std::optional<std::uint64_t> replayEvidenceVisualProfileId;
     bool hasRoi = false;
     bool remoteChannel = false;
@@ -249,6 +250,15 @@ struct Options
                 return false;
             }
         }
+        else if (option == L"--replay-sample-fps")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || !ParseUnsigned(value, options.replayMaximumFramesPerSecond) ||
+                options.replayMaximumFramesPerSecond == 0 || options.replayMaximumFramesPerSecond > 60)
+            {
+                return false;
+            }
+        }
         else if (option == L"--backend")
         {
             const wchar_t* const value = nextArgument();
@@ -392,7 +402,7 @@ struct Options
             options.profile != pbapp::VisualProfile::RemoteVisualResilient ||
             (options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
             !options.protectedMonitorDeviceName.empty() || !options.experimentMonitorDeviceName.empty() ||
-            options.diagnosticCaptureOnly || options.replayEvidenceVisualProfileId)
+            options.diagnosticCaptureOnly || options.replayEvidenceVisualProfileId || options.replayMaximumFramesPerSecond != 0)
         {
             return false;
         }
@@ -408,7 +418,8 @@ struct Options
             options.profile != pbapp::VisualProfile::RemoteVisualResilient)) ||
         (options.diagnosticCaptureOnly && (options.replayOutputPath.empty() || !options.remoteChannel ||
             options.profile != pbapp::VisualProfile::RemoteVisualResilient)) ||
-        (options.replayEvidenceVisualProfileId && !options.diagnosticCaptureOnly))
+        (options.replayEvidenceVisualProfileId && !options.diagnosticCaptureOnly) ||
+        (options.replayMaximumFramesPerSecond != 0 && !options.diagnosticCaptureOnly))
     {
         return false;
     }
@@ -484,7 +495,7 @@ void Usage()
                  "--profile direct|shape|remote --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..600 "
                  "[--protected-monitor DEVICE --experiment-monitor DEVICE] "
                  "[--replay-output NEW_PATH --diagnostic-capture-only --replay-evidence-profile direct|shape|lf4 "
-                 "--replay-frames 1..2048 --replay-max-mib 16..16384] "
+                 "--replay-frames 1..2048 --replay-max-mib 16..16384 --replay-sample-fps 1..60] "
                  "[--run-id 32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH]\n";
     std::cerr << "       PixelBridgeDecoder --headless-replay --replay-input PATH --output-dir DIR "
                  "[--remote-provider NAME] [--remote-metadata PATH] [--profile remote] [--timeout 1..600] "
@@ -524,6 +535,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.replayEvidenceVisualProfileId = options.replayEvidenceVisualProfileId;
     config.replayMaximumCaptureFrames = options.replayMaximumFrames;
     config.replayMaximumFileBytes = static_cast<std::uint64_t>(options.replayMaximumMebibytes) * 1024ULL * 1024ULL;
+    config.replayMaximumCaptureFramesPerSecond = options.replayMaximumFramesPerSecond;
     if (!options.remoteMetadataPath.empty())
     {
         QString errorMessage;
