@@ -74,6 +74,18 @@ set_tests_properties(PBRemoteVisualReplayInspectorTests PROPERTIES
     LABELS "tools;remote-visual;replay;receiver-only;transport;determinism"
     TIMEOUT 300)
 
+PbAddUnitTest(PBRemoteVisualMetricCalibrationTests
+    test_remote_visual_metric_calibration.cpp)
+target_link_libraries(PBRemoteVisualMetricCalibrationTests
+    PRIVATE
+        PBRemoteVisualMetricCalibrationCore
+        PB::PBModulation
+        PB::PBProtocol)
+PbInstrumentPresentationTest(PBRemoteVisualMetricCalibrationTests)
+set_tests_properties(PBRemoteVisualMetricCalibrationTests PROPERTIES
+    LABELS "tools;remote-visual;calibration;holdout;truth;transport"
+    TIMEOUT 300)
+
 if(TARGET PBRemoteVisualTemporalCorpusCore)
     PbAddUnitTest(PBRemoteVisualTemporalCorpusTests
         test_remote_visual_temporal_corpus.cpp)

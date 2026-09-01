@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-09-01 持续实施路线；Step 01..06 已全部完成，Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
+状态：**2026-09-01 持续实施路线；Step 01..07 已全部完成。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 已选择 `lf4-default/PiecewiseLookup` 作为仅供 Step 08 冻结的 soft-metric candidate，未修改 production default 或 admission。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -522,12 +522,12 @@ logical FPS <= 5
 
 ### 11.9 Step 07：Soft metric 标定与 false-confidence Gate
 
-- **状态**：`PENDING`；**难度**：★★★★★；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★★；**重要性**：★★★★★。
 - **目标**：避免“高置信错误”穿过 FEC，选择可泛化而非针对单个 provider 的 metric scale、erasure 和 symbol-margin policy。
 - **实施要点**：按 dataset/run 分离 train、validation、holdout；统计 bit-conditioned metric、reliability diagram、BER/FER、CRC/identity、symbol residual/margin；阈值只来自跨 dataset 结果。
 - **注意事项**：不能用 holdout 调参；没有 truth coverage 时 falseAcceptedCodewords 必须为 unavailable；CRC failure 不能当 soft success；阈值变更需要新 profile/layout 或明确 local tuning 边界。
 - **验收证据**：ROC/reliability/FER curves、parameter manifest、holdout external results、0 false accepted Transport/control/output。
-- **完成出口**：选定参数在 holdout 与至少一组真实 replay 上优于当前 LF4 default，且没有引入 acceptance 放宽。
+- **完成出口**：已关闭。24 项 policy/model candidate 只用 Validation 选择 `lf4-default/PiecewiseLookup`；Holdout 与一组 Step 02 真实 RDP Replay 的 log loss/ECE 均严格优于 `lf4-default/Raw`，hard BER/FER/FEC/accepted Transport 无回退，false accepted Transport/control/output 均为 0，且 production default/admission 未变。两次最终 create-only seal 的 `metric-calibration.json` 逐字节一致，SHA-256=`c17f17844c0b44cf029bb31ecbfc127139fa886588c941c2a3a0f34bf541acf8`。完整边界与复现命令见 `REMOTE_VISUAL_STEP07_CALIBRATION.md` 和第 16 节。
 
 ### 11.10 Step 08：LF4 Golden/manifest 冻结
 
@@ -863,3 +863,61 @@ CTest 脚本用例的参数只有在对应构建目录重新 configure 之后才
 提交前最后一次定向重建后，Release `PBRemoteVisualReplayInspector.exe` SHA-256=`a59bf320fc0bc6fbe7b53d6b4b466943494ac1e2808b8701d7a2cfbb4b2a7e61`。该最终可执行文件对三份真实 Replay 再各执行两次 create-only 分类，输出 SHA-256 仍与第 15.2 节分别记录的 Direct/Shape/LF4 hash 完全一致。
 
 以上 CTest 明确排除会创建窗口或读取屏幕的 `Native|GuiSmoke` 用例；它们不是对第 15.1/15.2 节 RDP 实机证据的替代，而是对相同读取器、解调、Transport authority、错误路径和封口工具的回归闭环。
+
+## 16. Step 07 Soft metric 标定与 false-confidence Gate 完成证据
+
+本节是第 15 节真实 LF4 Replay 之上的新闭环。完整 schema、候选矩阵、复现命令、结果表和限制见 `REMOTE_VISUAL_STEP07_CALIBRATION.md`。
+
+### 16.1 实现与不可越过的 truth boundary
+
+- 新增 `PBRemoteVisualMetricCalibrationCore`、`PBRemoteVisualMetricCalibration` 与测试。pipeline 直接复用 production LF4 解调、QC-LDPC、canonical padding、Transport CRC 和 Session identity；sender fixture 只在 modulation/production admission 之后用于 exact byte truth scoring，不进入解调或 FEC。
+- 输入固定为 25 个互异 dataset/run group、44 帧、6 个 policy 共 264 个 observation：Train/Validation/Holdout 各 8 group/12 帧，External 为 Step 02 的 1 个真实 RDP group/8 帧。完整 dataset/run 是最小 split unit，同一 group 跨 split、policy frame coverage 不一致或 truth 不完整都会 fail closed。
+- Step 02 Replay 仍保持 receiver-only 原始语义；Step 07 通过其 sealed dataset/completion/inspection/Replay identity 和独立 sealed Presenter raster 重新建立 External sender oracle。C++ 先用 `ReplayV2Reader` 验证 capture-only Replay，再重建 Presenter raster 并核对 BLAKE3；只有 production 已接受 block 才比较 truth。
+- truth boundary 明确记录 `senderTruthEntersDemodulation=false`、`senderTruthEntersFec=false`、`postAdmissionTruthScoring=true`、`wholeFileOutputEvaluated=false`、accepted/false-accepted output objects 均为 0。没有把 Transport 结果改写成 Receiver/Outer/WholeFileDigest/final publish 结论。
+- 新增 `build_step07_calibration.py`，独立验证 raw C++ payload seal、schema/member/cardinality、24 项 candidate matrix、parameter manifest、ROC/reliability/confidence curves、selection/holdout 隔离、输入 digest/稳定性/resource policy、路径根约束与 create-only publication；路径中的 symlink 和 NTFS junction 逐级拒绝。
+
+### 16.2 选择规则与结果
+
+固定 candidate matrix 为 6 个 admission policy × Raw/GlobalScale/PerSignalScale/PiecewiseLookup 4 个 model。margin 0.04 与 residual 0.90 虽保留在报告中，但显式标记为放宽 default admission、没有 selection 资格；PerSignalScale 不能对未知 provider signal binding 部署。最终只用 Validation 选出 `lf4-default/PiecewiseLookup`，随后才打开 baseline/selected 的 Holdout 与 External：
+
+| split | hard/Transport 结果 | baseline → selected 的 soft-calibration 结果 |
+| --- | --- | --- |
+| Validation | 12 帧、7 erasure、5 verified、20 accepted Transport、0 false accepted；BER 不变 | iterations 50→49；log loss 0.4180466693827719→0.05354665741491579；ECE 0.27831021588882454→0.020988875567698764 |
+| Holdout | 12 帧、7 erasure、3 verified、FER 0.75、BER 0.11609567901234567、12 accepted Transport、8 FEC failure、0 false accepted；全部不变 | log loss 0.43106895732822903→0.1223487155739084；ECE 0.2272827570759902→0.028538512183229617 |
+| External real RDP | 8/8 verified、BER 0、32 accepted Transport、0 FEC/CRC/identity/false accepted；全部不变 | log loss 0.31321503283560503→0.0003354882554752294；ECE 0.2689070269798241→0.00033543198558441223 |
+
+结论只限于 soft confidence 标定改善；本步骤没有提高 Holdout/External 的 hard BER、FER 或恢复帧数。selected policy 仍是 LF4 default，`productionDefaultsChanged=false`、`acceptanceAuthorityChanged=false`、`admissionRelaxed=false`，部署 disposition 为 `CandidateOnlyRequiresStep08Freeze`。
+
+### 16.3 可重复 seal
+
+最终 Gate/validator 收紧后的两次 create-only rebuild `20260901-step07-calibration-final-g`、`-h` 的三个输出文件分别逐字节一致。两次使用 Step 02 的两套独立 seal，并都包含 symlink/junction、完整 curve/model/inventory/denominator、Validation-winner 独立复算和 FEC/CRC/identity/iteration/Brier/ECE 非回退守卫；较早的 `sealed-a/-b/-c` 与 `final-d/-e/-f` 是收紧过程中的开发证据，不作为最终 validator-complete seal：
+
+| artifact | bytes | SHA-256 |
+| --- | ---: | --- |
+| `metric-calibration.json` | 375118 | `c17f17844c0b44cf029bb31ecbfc127139fa886588c941c2a3a0f34bf541acf8` |
+| `step07-calibration-index.json` | 27877 | `d972a5fd30317c186ce0fb59279cd6ab9c7b86bfb748c05bc7e4ca9df444443e` |
+| `SHA256SUMS.txt` | 186 | `2fbca82ab5f0bae957582b681091b3d19ab7215ee8e2c8160575eaafb41e8c9b` |
+
+report 的 outer/core/input payload BLAKE3 分别为 `2fdf2c5dbfbc52d7a73d878243f96ae60b095b6f4456bff73f226a085288287f`、`7a8ff14e09dc5f0b4417349f9ab3053f0e0dac05312be94806e55d40324f619f`、`06eeacf328e8c8855803e346315b67ca366f1aefd2f25c2778e786596b31d139`。Gate 总结为 split isolation/holdout/external improvement 全部 true，selection 未使用 Holdout，false accepted Transport/control/output 全部 0。
+
+### 16.4 提交前验证
+
+| 验证 | 命令或套件 | 结果 |
+| --- | --- | --- |
+| Release 构建 | `cmake --build build-desktop-levels-release --config Release --target ALL_BUILD` | 通过 |
+| Release 定向 CTest | `PBRemoteVisualMetricCalibrationTests` | 1/1 通过 |
+| Release 无界面全量 | `ctest --test-dir build-desktop-levels-release -C Release -E "Native|GuiSmoke" --output-on-failure -j 2` | 155/155 通过，277.87 s |
+| MSVC ASan/RelWithDebInfo 构建 | `cmake --build build-desktop-levels-asan --config RelWithDebInfo --target ALL_BUILD` | 通过 |
+| MSVC ASan 定向 CTest | `PBRemoteVisualMetricCalibrationTests` | 1/1 通过，0.81 s |
+| MSVC ASan 无界面全量 | `ctest --test-dir build-desktop-levels-asan -C RelWithDebInfo -E "Native|GuiSmoke" --output-on-failure -j 2` | 290/290 通过，438.91 s |
+| RemoteVisual evidence Python | `test_analyze_remote_capture.py test_seal_remote_visual_dataset.py test_build_codec_corpus.py test_build_step06_corpus.py test_build_step07_calibration.py` | 27/27 OK |
+| RemoteVisual report Python | `test_pb_remote_visual_report.py` | 20/20 OK |
+| Step 07 工具 cppcheck | 与 Final Gate 相同的 cppcheck 2.21.0 exhaustive/inconclusive/warning/style/performance/portability 参数 | Core、CLI 2/2 零发现；两份 XML SHA-256 均为 `ed984569894251e9d98099b15e48f22767aa126e27ba9480999ee3e4653abee4`，且已纳入 Gate 的 28 项目清单 |
+| C++ create-only 覆盖拒绝 | 用最终 Release CLI 将 `--output` 指向 `final-g/metric-calibration.json` | 按预期退出 1；文件 SHA-256 前后均为 `c17f17844c0b44cf029bb31ecbfc127139fa886588c941c2a3a0f34bf541acf8`；无 `.partial` 遗留 |
+| 最终 seal 重建 | Step 02 两套独立 seal 分别构建 `final-g`/`final-h` | 三个对应文件分别逐字节一致 |
+
+以上 CTest 明确排除会创建窗口或读取屏幕的 `Native|GuiSmoke` 用例；External 结论使用第 15 节已封存的真实 RDP LF4 Replay，而不是把无界面回归冒充新的实机采集。cppcheck 清单中的 28 个 `.vcxproj` 在对应 Release/ASan 构建树中均存在。
+
+### 16.5 后续边界
+
+Step 07 关闭的是 CPU/reference calibration candidate Gate，不是 production deployment。Step 08 必须把 selected metric quantization/model 与现有 LF4 raster/mapping/codebook/Bootstrap/accepted Transport 结果冻结成可独立 `--check` 的 Golden；Step 09/10 以后才实现 D3D11 production raster/demod。当前只有一组 Windows Remote Desktop External，画质/chroma mode 为 Unknown；没有 provider matrix、VerifiedEncodedGoodput、`UniqueVisualFPS`、6 小时 soak、双机文件 WholeFileDigest/final publish 或 Certified Profile 结论。
