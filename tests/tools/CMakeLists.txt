@@ -191,6 +191,58 @@ if(TARGET PBRemoteVisualEvidencePresenter)
         TIMEOUT 30)
 endif()
 
+if(TARGET PBRemoteVisualLf4DynamicPresenter)
+    add_test(
+        NAME PBRemoteVisualLf4DynamicPresenterDescribe
+        COMMAND PBRemoteVisualLf4DynamicPresenter describe)
+    set_tests_properties(PBRemoteVisualLf4DynamicPresenterDescribe PROPERTIES
+        LABELS "tools;remote-visual;evidence;sender;dynamic;production-runtime"
+        PASS_REGULAR_EXPRESSION "PixelBridge.RemoteVisualLf4DynamicPresenter.1.*productionEncoderRuntime.*dynamicCarousel"
+        TIMEOUT 30)
+
+    add_test(NAME PBRemoteVisualLf4DynamicPresenterExit.MissingSource
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBRemoteVisualLf4DynamicPresenter>
+            -DPB_EXPECTED_EXIT=1
+            -DPB_TEST_ARGS_ENCODED=broadcast|--source|missing.bin|--origin|0|0|--seconds|2
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBRemoteVisualLf4DynamicPresenterExit.MissingSource PROPERTIES
+        LABELS "tools;remote-visual;evidence;sender;dynamic;validation"
+        TIMEOUT 30)
+
+    set(pbLf4DynamicPresenterInvalidArguments
+        ""
+        "unknown"
+        "describe|extra"
+        "broadcast"
+        "broadcast|--source|missing.bin|--origin|0|0"
+        "broadcast|--source|missing.bin|--origin|0|0|--seconds|1"
+        "broadcast|--source|missing.bin|--origin|0|0|--seconds|601"
+        "broadcast|--source|missing.bin|--origin|+1|0|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|2147483648|0|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--logical-fps|0"
+        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--logical-fps|6"
+        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--control-repetitions|0"
+        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--control-repetitions|65"
+        "broadcast|--source|missing.bin|--source|other.bin|--origin|0|0|--seconds|2")
+    set(pbLf4DynamicPresenterArgumentIndex 0)
+    foreach(pbLf4DynamicPresenterArguments IN LISTS pbLf4DynamicPresenterInvalidArguments)
+        add_test(NAME "PBRemoteVisualLf4DynamicPresenterExit.Invalid.${pbLf4DynamicPresenterArgumentIndex}"
+            COMMAND "${CMAKE_COMMAND}"
+                -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBRemoteVisualLf4DynamicPresenter>
+                -DPB_EXPECTED_EXIT=2
+                -DPB_TEST_ARGS_ENCODED=${pbLf4DynamicPresenterArguments}
+                -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+        set_tests_properties("PBRemoteVisualLf4DynamicPresenterExit.Invalid.${pbLf4DynamicPresenterArgumentIndex}" PROPERTIES
+            LABELS "tools;remote-visual;evidence;sender;dynamic;exit-codes"
+            TIMEOUT 30)
+        math(EXPR pbLf4DynamicPresenterArgumentIndex "${pbLf4DynamicPresenterArgumentIndex} + 1")
+    endforeach()
+    unset(pbLf4DynamicPresenterInvalidArguments)
+    unset(pbLf4DynamicPresenterArgumentIndex)
+    unset(pbLf4DynamicPresenterArguments)
+endif()
+
 if(TARGET PBFrameInspector)
     set(pbHostileHeaderFile
         "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hostile-16384.pbrw")
