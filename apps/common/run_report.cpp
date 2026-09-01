@@ -190,6 +190,10 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     WriteEscaped(stream, snapshot.sourcePath);
     stream << ",\"fileBytes\":" << snapshot.sourceBytes << ",\"profile\":";
     WriteEscaped(stream, GetVisualProfileName(snapshot.visualProfile));
+    stream << ",\"visualProfileId\":" << snapshot.visualProfileId
+           << ",\"visualLayoutVersion\":" << static_cast<unsigned int>(snapshot.visualLayoutVersion)
+           << ",\"codedDataBytesPerFrame\":" << snapshot.codedDataBytesPerFrame
+           << ",\"codewordsPerFrame\":" << snapshot.codewordsPerFrame;
     stream << ",\"compressionCodec\":";
     WriteEscaped(stream, GetCompressionCodecName(snapshot.compressionCodec));
     stream << ",\"outerFec\":";
@@ -218,11 +222,21 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     stream << ",\"generatedPayloadBytesPerSecond\":";
     WriteNumber(stream, snapshot.generatedPayloadBytesPerSecond);
     stream << ",\"configuredLogicalVisualFps\":" << snapshot.configuredLogicalVisualFps
+           << ",\"configuredLogicalDwellMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.configuredLogicalDwellMilliseconds);
+    stream << ",\"minimumObservedLogicalDwellMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.minimumObservedLogicalDwellMilliseconds);
+    stream << ",\"logicalDwellViolationCount\":" << snapshot.logicalDwellViolationCount
            << ",\"configuredControlRepetitions\":" << snapshot.configuredControlRepetitions
            << ",\"pendingFrames\":" << snapshot.pendingFrames
            << ",\"pendingHighWater\":" << snapshot.pendingHighWater
            << ",\"submittedFrames\":" << snapshot.submittedFrames
            << ",\"replacedPendingFrames\":" << snapshot.replacedPendingFrames
+           << ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements
+           << ",\"repeatedPresentCalls\":" << snapshot.repeatedPresentCalls
+           << ",\"invalidatedActiveFrames\":" << snapshot.invalidatedActiveFrames
+           << ",\"activeFrame\":" << snapshot.activeFrame
+           << ",\"activeFrameSequence\":" << snapshot.activeFrameSequence
            << ",\"candidateContractSatisfied\":" << snapshot.candidateContractSatisfied
            << ",\"sourceStable\":" << snapshot.sourceStable
            << ",\"wholeFileDigest\":";

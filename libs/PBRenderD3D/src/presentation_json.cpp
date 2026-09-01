@@ -83,6 +83,10 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
            << ",\"tearingDisabled\":" << snapshot.contract.tearingDisabled << ",\"latencyWaitable\":" << snapshot.contract.latencyWaitable
            << ",\"perMonitorV2\":" << snapshot.contract.perMonitorV2 << ",\"submittedFrames\":" << snapshot.submittedFrames
            << ",\"replacedPendingFrames\":" << snapshot.replacedPendingFrames << ",\"discardedEpochFrames\":" << snapshot.discardedEpochFrames
+           << ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements << ",\"repeatedPresentCalls\":" << snapshot.repeatedPresentCalls
+           << ",\"invalidatedActiveFrames\":" << snapshot.invalidatedActiveFrames << ",\"activeFrame\":" << snapshot.activeFrame
+           << ",\"activeFrameSequence\":" << snapshot.activeFrameSequence
+           << ",\"activeFramePresentationEpoch\":" << snapshot.activeFramePresentationEpoch
            << ",\"totalPresentCalls\":" << snapshot.totalPresentCalls << ",\"totalSuccessfulPresents\":" << snapshot.totalSuccessfulPresents
            << ",\"pendingFrame\":" << snapshot.pendingFrame << ",\"inFlightFrame\":" << snapshot.inFlightFrame
            << ",\"epochPresentCalls\":" << timing.presentCalls << ",\"epochSuccessfulPresents\":" << timing.successfulPresents

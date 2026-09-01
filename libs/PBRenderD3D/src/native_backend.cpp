@@ -1,4 +1,5 @@
 #include "presentation_backend.h"
+#include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/checked_integer.h"
 
 #include <Windows.h>
@@ -311,7 +312,12 @@ public:
         if (environment.clientWidth == contract_.bufferWidth && environment.clientHeight == contract_.bufferHeight)
         {
             const auto drained = DrainGpu();
-            return drained ? RefreshContract() : drained;
+            if (!drained)
+            {
+                return drained;
+            }
+            sourceTexture_.Reset();
+            return RefreshContract();
         }
         auto status = DrainGpu();
         if (!status)
@@ -319,6 +325,7 @@ public:
             return status;
         }
         context_->ClearState();
+        sourceTexture_.Reset();
         staging_.Reset();
         backBuffer_.Reset();
         context_->Flush();
@@ -343,7 +350,8 @@ public:
         result.liveOwnedHandles = static_cast<std::uint64_t>(wake_.Get() != nullptr) + static_cast<std::uint64_t>(frameLatency_.Get() != nullptr);
         result.liveGraphicsObjects = static_cast<std::uint64_t>(factory_ != nullptr) + static_cast<std::uint64_t>(device_ != nullptr) +
                                      static_cast<std::uint64_t>(context_ != nullptr) + static_cast<std::uint64_t>(swapChain_ != nullptr) +
-                                     static_cast<std::uint64_t>(backBuffer_ != nullptr) + static_cast<std::uint64_t>(staging_ != nullptr) +
+                                     static_cast<std::uint64_t>(backBuffer_ != nullptr) + static_cast<std::uint64_t>(sourceTexture_ != nullptr) +
+                                     static_cast<std::uint64_t>(staging_ != nullptr) +
                                      static_cast<std::uint64_t>(completion_ != nullptr) + static_cast<std::uint64_t>(infoQueue_ != nullptr);
         return result;
     }
@@ -378,15 +386,37 @@ public:
 
     [[nodiscard]] PresentationStatus Upload(const std::span<const std::byte> pixels) noexcept override
     {
-        if (!backBuffer_ || contract_.bufferWidth != config_.width || contract_.bufferHeight != config_.height ||
+        if (!device_ || !context_ || !backBuffer_ || contract_.bufferWidth != config_.width || contract_.bufferHeight != config_.height ||
             pixels.size() != static_cast<std::size_t>(config_.width) * config_.height * 4)
         {
             return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Upload);
         }
-        context_->UpdateSubresource(backBuffer_.Get(), 0, nullptr, pixels.data(), config_.width * 4, 0);
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = config_.width;
+        description.Height = config_.height;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_IMMUTABLE;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA initialData{};
+        initialData.pSysMem = pixels.data();
+        initialData.SysMemPitch = config_.width * 4;
+        ComPtr<ID3D11Texture2D> sourceTexture;
+        const HRESULT created = device_->CreateTexture2D(&description, &initialData, sourceTexture.GetAddressOf());
+        if (FAILED(created))
+        {
+            return DeviceError(created, PresentationStage::Upload);
+        }
+        pbprotocol::SaturatingIncrementUnsigned(diagnostics_.immutableSourceCreations);
         if (options_.verifyUploads)
         {
-            context_->CopyResource(staging_.Get(), backBuffer_.Get());
+            if (!staging_)
+            {
+                return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Readback);
+            }
+            context_->CopyResource(staging_.Get(), sourceTexture.Get());
             const auto drained = DrainGpu();
             if (!drained)
             {
@@ -400,10 +430,12 @@ public:
             }
             const std::size_t rowBytes = static_cast<std::size_t>(config_.width) * 4;
             bool identical = mapped.pData != nullptr && mapped.RowPitch >= rowBytes;
+            pbprotocol::Blake3Hasher hasher;
             for (std::size_t row = 0; identical && row < config_.height; row++)
             {
                 const auto* const gpuRow = static_cast<const std::byte*>(mapped.pData) + row * mapped.RowPitch;
                 identical = std::equal(gpuRow, gpuRow + rowBytes, pixels.data() + row * rowBytes);
+                hasher.Update(std::span(gpuRow, rowBytes));
             }
             context_->Unmap(staging_.Get(), 0);
             if (!identical)
@@ -411,12 +443,27 @@ public:
                 return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Readback);
             }
             pbprotocol::SaturatingIncrementUnsigned(diagnostics_.verifiedUploads);
+            diagnostics_.lastSourceReadbackBlake3 = hasher.Finalize();
+            diagnostics_.sourceReadbackBlake3Valid = true;
         }
-        return CheckDebugLayer();
+        const auto debug = CheckDebugLayer();
+        if (!debug)
+        {
+            return debug;
+        }
+        sourceTexture_ = std::move(sourceTexture);
+        return PresentationStatus::Success();
     }
 
     [[nodiscard]] BackendPresentResult Present() noexcept override
     {
+        if (!context_ || !swapChain_ || !backBuffer_ || !sourceTexture_)
+        {
+            return {PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present),
+                pbpresenttiming::PresentOutcome::Failure, std::nullopt};
+        }
+        context_->CopyResource(backBuffer_.Get(), sourceTexture_.Get());
+        pbprotocol::SaturatingIncrementUnsigned(diagnostics_.sourceCopiesToBackBuffer);
         pbprotocol::SaturatingIncrementUnsigned(diagnostics_.presentCalls);
         const HRESULT result = swapChain_->Present(1, 0);
         if (result == DXGI_STATUS_OCCLUDED)
@@ -496,6 +543,10 @@ public:
             UnregisterClassW(className_.data(), instance_);
             classRegistered_ = false;
         }
+        // The owner thread has left every wait before Shutdown is called.
+        // Retaining the wake event until backend destruction would leave a
+        // stopped DataWindow holding an otherwise unnecessary kernel handle.
+        wake_.Reset();
         if (options_.shutdownDiagnostics != nullptr)
         {
             *options_.shutdownDiagnostics = GetDiagnostics();
@@ -872,6 +923,7 @@ private:
         {
             context_->ClearState();
         }
+        sourceTexture_.Reset();
         staging_.Reset();
         backBuffer_.Reset();
         completion_.Reset();
@@ -912,6 +964,7 @@ private:
     ComPtr<ID3D11DeviceContext> context_;
     ComPtr<IDXGISwapChain2> swapChain_;
     ComPtr<ID3D11Texture2D> backBuffer_;
+    ComPtr<ID3D11Texture2D> sourceTexture_;
     ComPtr<ID3D11Texture2D> staging_;
     ComPtr<ID3D11Query> completion_;
     ComPtr<ID3D11InfoQueue> infoQueue_;

@@ -22,7 +22,10 @@ enum class VisualProfile : std::uint8_t
 {
     DirectLevels2x2,
     ShapeChroma,
-    RemoteVisualResilient
+    RemoteVisualResilient,
+    // Step09 production Encoder candidate. It remains absent from GUI/CLI and
+    // rejected by Decoder validation until the later exposure/demod Gates.
+    RemoteVisualLowFps
 };
 
 enum class CaptureBackend : std::uint8_t
@@ -158,6 +161,10 @@ struct EncoderSnapshot
     std::uint64_t sessionTag = 0;
     std::string wholeFileDigestHex;
     VisualProfile visualProfile = VisualProfile::DirectLevels2x2;
+    std::uint64_t visualProfileId = 0;
+    std::uint8_t visualLayoutVersion = 0;
+    std::uint32_t codedDataBytesPerFrame = 0;
+    std::uint32_t codewordsPerFrame = 0;
     pbprotocol::CompressionCodec compressionCodec = pbprotocol::CompressionCodec::Raw;
     pbprotocol::OuterFecMode outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
     std::uint32_t outerBlockCount = 0;
@@ -172,14 +179,24 @@ struct EncoderSnapshot
     std::uint64_t presentationEpoch = 0;
     std::optional<double> presentedVisualFps;
     std::optional<double> presentCallFps;
+    // Interval-authoritative logical cadence: (N - 1) / (last - first).
+    // The initial submitted frame is not treated as one elapsed interval.
     double generatedVisualFramesPerSecond = 0;
     double generatedPayloadBytesPerSecond = 0;
     std::uint32_t configuredLogicalVisualFps = 0;
+    std::optional<double> configuredLogicalDwellMilliseconds;
+    std::optional<double> minimumObservedLogicalDwellMilliseconds;
+    std::uint64_t logicalDwellViolationCount = 0;
     std::uint32_t configuredControlRepetitions = 4;
     std::uint64_t submittedFrames = 0;
     std::uint64_t replacedPendingFrames = 0;
+    std::uint64_t sourceTextureReplacements = 0;
+    std::uint64_t repeatedPresentCalls = 0;
+    std::uint64_t invalidatedActiveFrames = 0;
     std::uint32_t pendingFrames = 0;
     std::uint32_t pendingHighWater = 0;
+    bool activeFrame = false;
+    std::uint64_t activeFrameSequence = 0;
     bool candidateContractSatisfied = false;
     bool sourceStable = true;
     std::int32_t dataWindowLeft = 0;

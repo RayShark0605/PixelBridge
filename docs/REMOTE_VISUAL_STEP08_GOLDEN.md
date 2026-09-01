@@ -173,12 +173,12 @@ build-p1_5-evidence/20260901-step08-lf4-raster-final-e.pbrw
 
 ## 8. 后续边界
 
-Step 08 关闭后，下一步是 Step 09：实现 LF4 D3D11 Encoder raster 与 immutable PB-owned texture，要求 canonical CPU raster 和 GPU-present source diagnostic readback 对齐，并保持 logical update 1..5 Hz、重复 Present 不推进 FrameSequence。Step 10 才实现 scaled Walsh demod shader；Step 11 才比较 WARP 与可用 hardware adapter 的 production accepted Transport 集合。
+Step 09 随后已实现隐藏的 LF4 production-code Encoder candidate、immutable PB-owned source texture 与 repeat Present；canonical CPU raster 和 WARP/RTX 5090 D source diagnostic readback 已对齐，logical replacement 保持 1..5 Hz 且重复 Present 不推进 FrameSequence。完整证据见 `REMOTE_VISUAL_STEP09_ENCODER.md`。下一步 Step 10 实现 scaled Walsh demod shader；Step 11 再比较 CPU、WARP 与可用 hardware adapter 的 production accepted Transport 集合。
 
 尚未完成：
 
 - Step 07 candidate 接入 production decoder/GPU path；
-- LF4 D3D11 raster、immutable replacement、GPU demod 与 adapter parity；
+- LF4 scaled GPU demod、capture integration 与 CPU/WARP/hardware accepted-Transport parity；
 - continuous capture 的 epoch/lifetime/queue 完整闭环；
 - field provider matrix、`UniqueVisualFPS`、VerifiedEncodedGoodput、6 小时 soak；
 - 真实文件 Outer convergence、WholeFileDigest 与 final publish；

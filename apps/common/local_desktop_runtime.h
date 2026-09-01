@@ -84,6 +84,33 @@ struct RuntimeStatus
 [[nodiscard]] pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSegment(
     std::span<const std::byte> rawBytes, bool compressionEnabled, int compressionLevel);
 
+struct EncoderCarouselProbeSnapshot
+{
+    std::uint64_t framesBuilt = 0;
+    std::uint64_t controlFrames = 0;
+    std::uint64_t dataFrames = 0;
+    std::uint64_t acceptedRemoteControlCopies = 0;
+    std::uint64_t acceptedTransportBlocks = 0;
+    std::uint64_t completedCarouselCycles = 0;
+    std::uint64_t framesBuiltAfterExternalCompletionMarker = 0;
+    std::uint32_t cycleFrameCount = 0;
+    std::uint64_t visualProfileId = 0;
+    std::uint8_t layoutVersion = 0;
+    std::uint32_t codedDataBytes = 0;
+    std::uint32_t codewords = 0;
+};
+
+// Narrow test seam over the production SenderFrameBuilder. The external
+// completion marker is deliberately not passed into the builder: the probe
+// proves that sender carousel progression has no receiver-completion input.
+class EncoderRuntimeTestAccess
+{
+public:
+    [[nodiscard]] static RuntimeStatus ProbeRemoteVisualLowFpsCarousel(std::span<const std::byte> rawBytes,
+        std::uint32_t controlRepetitions, std::uint32_t completedCyclesBeforeMarker,
+        EncoderCarouselProbeSnapshot& output) noexcept;
+};
+
 // Qt-free application controller. Start launches one bounded worker and
 // returns immediately. UI code reads immutable snapshot copies; it never owns
 // DataWindow/FEC resources. Stop is idempotent and joins before destruction.

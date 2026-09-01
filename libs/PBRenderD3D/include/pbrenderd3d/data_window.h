@@ -150,6 +150,11 @@ struct DataWindowConfig
     FlipEffect flipEffect = FlipEffect::Discard;
     std::uint64_t maximumFrameBytes = 64ull * 1024 * 1024;
     std::uint32_t waitTimeoutMilliseconds = 5000;
+    // When enabled, frame-latency permits continue to Present the most recent
+    // complete source raster until another complete submission replaces it.
+    // The repeated Presents retain the same FrameSequence and never reuse a
+    // source across a presentation epoch.
+    bool repeatActiveFrame = false;
     // Physical desktop coordinates, including negative monitor origins.
     // Unspecified: center the client on the primary monitor.
     std::optional<PhysicalPoint> clientOrigin;
@@ -227,6 +232,9 @@ struct DataWindowSnapshot
     std::uint64_t submittedFrames = 0;
     std::uint64_t replacedPendingFrames = 0;
     std::uint64_t discardedEpochFrames = 0;
+    std::uint64_t sourceTextureReplacements = 0;
+    std::uint64_t repeatedPresentCalls = 0;
+    std::uint64_t invalidatedActiveFrames = 0;
     std::uint64_t totalPresentCalls = 0;
     std::uint64_t totalSuccessfulPresents = 0;
     std::uint64_t swapChainGeneration = 0;
@@ -234,6 +242,9 @@ struct DataWindowSnapshot
     std::int32_t lastPresentIdNativeStatus = 0;
     bool pendingFrame = false;
     bool inFlightFrame = false;
+    bool activeFrame = false;
+    std::uint64_t activeFrameSequence = 0;
+    std::uint64_t activeFramePresentationEpoch = 0;
     bool candidateContractSatisfied = false;
     // True only for the explicitly injected software GPU correctness backend;
     // the production Create path never silently selects WARP.
@@ -246,7 +257,7 @@ struct DataWindowSnapshot
 [[nodiscard]] const char* GetPresentationStageName(PresentationStage stage) noexcept;
 // Writes one bounded diagnostic object, never pixels or protocol payload.
 // File ownership, retention and stream error handling belong to the caller.
-void WriteDataWindowSnapshotJson(std::ostream& output, const DataWindowSnapshot& snapshot);
+void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnapshot& snapshot);
 
 class DataWindowTestAccess;
 

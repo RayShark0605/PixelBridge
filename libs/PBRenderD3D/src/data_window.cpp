@@ -140,6 +140,17 @@ struct DataWindow::Implementation
         }
     }
 
+    void InvalidateActiveLocked() noexcept
+    {
+        if (snapshot.activeFrame)
+        {
+            pbprotocol::SaturatingIncrementUnsigned(snapshot.invalidatedActiveFrames);
+            snapshot.activeFrame = false;
+            snapshot.activeFrameSequence = 0;
+            snapshot.activeFramePresentationEpoch = 0;
+        }
+    }
+
     void PublishBackendLocked() noexcept
     {
         snapshot.contract = backend->GetContract();
@@ -164,6 +175,7 @@ struct DataWindow::Implementation
         snapshot.candidateContractSatisfied = false;
         timing.SetFailed();
         DiscardPendingLocked();
+        InvalidateActiveLocked();
     }
 
     void Fail(const PresentationStatus error) noexcept
@@ -175,6 +187,7 @@ struct DataWindow::Implementation
     [[nodiscard]] bool BeginEpochLocked(const pbpresenttiming::EpochReason reason) noexcept
     {
         DiscardPendingLocked();
+        InvalidateActiveLocked();
         if (!timing.BeginEpoch(reason, backend->NowQpc()))
         {
             FailLocked(PresentationStatus::Failure(PresentationErrorCode::InternalError, PresentationStage::Statistics));
@@ -269,6 +282,7 @@ struct DataWindow::Implementation
         if (updated.presentationEpoch != previousEpoch)
         {
             DiscardPendingLocked();
+            InvalidateActiveLocked();
         }
         if (updated.state == pbpresenttiming::TimingState::Failed)
         {
@@ -276,12 +290,14 @@ struct DataWindow::Implementation
         }
     }
 
-    [[nodiscard]] bool PresentPending(bool& framePermit) noexcept
+    [[nodiscard]] bool PresentAvailable(bool& framePermit) noexcept
     {
         std::uint64_t sequence = 0;
+        bool replacesSource = false;
         {
             const std::lock_guard lock(stateMutex);
-            if (snapshot.state != WindowState::Running || !snapshot.pendingFrame || !framePermit)
+            const bool canRepeat = config.repeatActiveFrame && snapshot.activeFrame;
+            if (snapshot.state != WindowState::Running || (!snapshot.pendingFrame && !canRepeat) || !framePermit)
             {
                 return true;
             }
@@ -290,22 +306,34 @@ struct DataWindow::Implementation
                 FailLocked(PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Environment));
                 return false;
             }
-            activePixels.swap(pendingPixels);
-            sequence = pendingSequence;
-            snapshot.pendingFrame = false;
+            if (snapshot.pendingFrame)
+            {
+                activePixels.swap(pendingPixels);
+                sequence = pendingSequence;
+                snapshot.pendingFrame = false;
+                replacesSource = true;
+            }
+            else
+            {
+                sequence = snapshot.activeFrameSequence;
+            }
             snapshot.inFlightFrame = true;
         }
-        const auto upload = backend->Upload(activePixels);
-        if (!upload)
+        if (replacesSource)
         {
-            if (!stopRequested.load())
+            const auto upload = backend->Upload(activePixels);
+            if (!upload)
             {
-                Fail(upload);
+                if (!stopRequested.load())
+                {
+                    Fail(upload);
+                }
+                return false;
             }
-            return false;
         }
-        // Upload/readback can pump messages or take time. Re-check the live
-        // environment before issuing Present with a potentially stale raster.
+        // Upload/readback and repeated Present preparation can pump messages or
+        // take time. Re-check the live environment before issuing Present with
+        // a potentially stale raster.
         const std::uint64_t beforeEpoch = GetSnapshot().timing.presentationEpoch;
         if (!RefreshEnvironment(framePermit))
         {
@@ -314,8 +342,19 @@ struct DataWindow::Implementation
         if (!framePermit || GetSnapshot().timing.presentationEpoch != beforeEpoch || stopRequested.load())
         {
             const std::lock_guard lock(stateMutex);
-            pbprotocol::SaturatingIncrementUnsigned(snapshot.discardedEpochFrames);
+            if (replacesSource)
+            {
+                pbprotocol::SaturatingIncrementUnsigned(snapshot.discardedEpochFrames);
+            }
             return true;
+        }
+        if (replacesSource)
+        {
+            const std::lock_guard lock(stateMutex);
+            snapshot.activeFrame = true;
+            snapshot.activeFrameSequence = sequence;
+            snapshot.activeFramePresentationEpoch = beforeEpoch;
+            pbprotocol::SaturatingIncrementUnsigned(snapshot.sourceTextureReplacements);
         }
         const std::int64_t beginQpc = backend->NowQpc();
         const auto result = backend->Present();
@@ -324,6 +363,10 @@ struct DataWindow::Implementation
         {
             const std::lock_guard lock(stateMutex);
             pbprotocol::SaturatingIncrementUnsigned(snapshot.totalPresentCalls);
+            if (!replacesSource)
+            {
+                pbprotocol::SaturatingIncrementUnsigned(snapshot.repeatedPresentCalls);
+            }
             snapshot.lastPresentIdNativeStatus = result.presentIdNativeStatus;
             if (result.outcome == pbpresenttiming::PresentOutcome::Success)
             {
@@ -334,6 +377,7 @@ struct DataWindow::Implementation
             if (previousEpoch != timing.GetSnapshot(endQpc).presentationEpoch)
             {
                 DiscardPendingLocked();
+                InvalidateActiveLocked();
             }
             PublishBackendLocked();
             if (!result.error)
@@ -374,7 +418,7 @@ struct DataWindow::Implementation
                     break;
                 }
                 running = snapshot.state == WindowState::Running;
-                pending = snapshot.pendingFrame;
+                pending = snapshot.pendingFrame || (config.repeatActiveFrame && snapshot.activeFrame);
                 if (!pending && !idleNotified)
                 {
                     timing.BreakCadence();
@@ -385,7 +429,7 @@ struct DataWindow::Implementation
             {
                 idleNotified = false;
                 waitingSince.reset();
-                const bool presented = PresentPending(framePermit);
+                const bool presented = PresentAvailable(framePermit);
                 {
                     const std::lock_guard lock(stateMutex);
                     snapshot.inFlightFrame = false;
@@ -513,6 +557,9 @@ struct DataWindow::Implementation
             snapshot.candidateContractSatisfied = false;
             snapshot.inFlightFrame = false;
             DiscardPendingLocked();
+            snapshot.activeFrame = false;
+            snapshot.activeFrameSequence = 0;
+            snapshot.activeFramePresentationEpoch = 0;
             initialized = true;
         }
         initializedCondition.notify_all();

@@ -74,6 +74,8 @@ inline constexpr std::uint64_t maximumRoiResidentBytes = 128ULL * mebibyte;
 static_assert(pbdesktoplevels::kPayloadBytes == outerBlockBytes);
 static_assert(pbdesktoplevels::kInfoBytes == informationBytes);
 static_assert(pbdesktoplevels::kCodewordBytes == codewordBytes);
+static_assert(pbmodulation::kRemoteVisualLowFpsDataBytes ==
+    pbmodulation::kRemoteVisualLowFpsCodewords * codewordBytes);
 
 [[nodiscard]] bool IsReplayEvidenceVisualProfileId(const std::uint64_t visualProfileId) noexcept
 {
@@ -619,6 +621,11 @@ struct ProfileBinding
         return {profile, pbmodulation::kRemoteVisualProfileId, pbmodulation::kRemoteVisualLayoutVersion,
             pbmodulation::kRemoteVisualDataBytes, pbmodulation::kRemoteVisualCodewords};
     }
+    if (profile == VisualProfile::RemoteVisualLowFps)
+    {
+        return {profile, pbmodulation::kRemoteVisualLowFpsProfileId, pbmodulation::kRemoteVisualLowFpsLayoutVersion,
+            pbmodulation::kRemoteVisualLowFpsDataBytes, pbmodulation::kRemoteVisualLowFpsCodewords};
+    }
     const auto* const direct = pbmodulation::GetDesktopLevelsProfile(pbmodulation::kDesktopLevels2ProfileId);
     Require(direct != nullptr, "Direct-Level 2x2 profile is unavailable");
     return {profile, direct->visualProfileId, pbmodulation::kDesktopLevelsLayoutVersion,
@@ -794,6 +801,25 @@ public:
             const std::vector<std::byte>& control = kind == FrameKind::SessionControl ?
                 description_.sessionControl : kind == FrameKind::ManifestControl ?
                 description_.manifestControl : description_.segmentControl;
+            if (profile_.profile == VisualProfile::RemoteVisualLowFps)
+            {
+                Require(control.size() <= pbmodulation::kReferenceControlWindowBytes,
+                    "RemoteVisual Control exceeds the bounded physical carrier");
+                std::fill(information_.begin(), information_.end(), std::byte{0});
+                std::copy(control.begin(), control.end(), information_.begin());
+                const auto firstCodeword = std::span(data_).first(codewordBytes);
+                RequireResult(pbinnerfec::EncodeQcLdpcCodeword(pbinnerfec::kInnerFecProfileIdRobust, information_, firstCodeword),
+                    "RemoteVisual Control inner FEC generation failed");
+                for (std::uint32_t slot = 1; slot < profile_.codewords; slot++)
+                {
+                    std::copy(firstCodeword.begin(), firstCodeword.end(),
+                        data_.begin() + static_cast<std::size_t>(slot) * codewordBytes);
+                }
+                RequireResult(pbmodulation::EncodeRemoteVisualLowFpsFrame(bootstrap, data_, pixels_),
+                    "RemoteVisual LF4 Control raster generation failed");
+                generatedPayloadBytesInFrame_ = 0;
+                return pixels_;
+            }
             if (profile_.profile == VisualProfile::RemoteVisualResilient)
             {
                 Require(control.size() <= pbmodulation::kReferenceControlWindowBytes,
@@ -818,6 +844,8 @@ public:
         BuildTransportData();
         const auto status = profile_.profile == VisualProfile::ShapeChroma ?
             pbmodulation::EncodeShapeChromaFrame(bootstrap, data_, pixels_) :
+            profile_.profile == VisualProfile::RemoteVisualLowFps ?
+            pbmodulation::EncodeRemoteVisualLowFpsFrame(bootstrap, data_, pixels_) :
             profile_.profile == VisualProfile::RemoteVisualResilient ?
             pbmodulation::EncodeRemoteVisualFrame(bootstrap, data_, pixels_) :
             pbmodulation::EncodeDesktopLevelsFrame(bootstrap, data_, pixels_);
@@ -942,6 +970,23 @@ private:
         snapshot.contract.noMsaa && snapshot.contract.alphaIgnored && snapshot.contract.scalingNone &&
         snapshot.contract.tearingDisabled && snapshot.contract.latencyWaitable && snapshot.contract.perMonitorV2 &&
         !snapshot.softwareRasterizer;
+}
+
+void ApplyEncoderPresentationSnapshot(const pbrenderd3d::DataWindowSnapshot& source, EncoderSnapshot& destination) noexcept
+{
+    destination.presentationEpoch = source.timing.presentationEpoch;
+    destination.presentedVisualFps = source.timing.presentedVisualFps;
+    destination.presentCallFps = source.timing.presentCallFps;
+    destination.submittedFrames = source.submittedFrames;
+    destination.replacedPendingFrames = source.replacedPendingFrames;
+    destination.sourceTextureReplacements = source.sourceTextureReplacements;
+    destination.repeatedPresentCalls = source.repeatedPresentCalls;
+    destination.invalidatedActiveFrames = source.invalidatedActiveFrames;
+    destination.pendingFrames = source.pendingFrame ? 1U : 0U;
+    destination.pendingHighWater = source.pendingFrame ? 1U : destination.pendingHighWater;
+    destination.activeFrame = source.activeFrame;
+    destination.activeFrameSequence = source.activeFrameSequence;
+    destination.candidateContractSatisfied = source.candidateContractSatisfied;
 }
 
 class NativeCaptureSession
@@ -2895,6 +2940,94 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
 
 } // namespace
 
+RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const std::span<const std::byte> rawBytes,
+    const std::uint32_t controlRepetitions, const std::uint32_t completedCyclesBeforeMarker,
+    EncoderCarouselProbeSnapshot& output) noexcept
+{
+    if (rawBytes.empty() || rawBytes.size() > maximumInstantFileBytes ||
+        controlRepetitions < minimumControlRepetitions || controlRepetitions > maximumControlRepetitions ||
+        completedCyclesBeforeMarker == 0 || completedCyclesBeforeMarker > 4)
+    {
+        return RuntimeStatus::Failure("RemoteVisual LF4 carousel probe input is outside its bounded contract");
+    }
+    try
+    {
+        const TransferDescription description = DescribeSource(rawBytes, false, 3);
+        const ProfileBinding profile = GetProfileBinding(VisualProfile::RemoteVisualLowFps);
+        SenderFrameBuilder builder(profile, description, controlRepetitions);
+        const CarouselSnapshot initial = builder.GetCarouselSnapshot();
+        const auto markerFrameCount = pbprotocol::CheckedMultiplyUint64(initial.cycleFrameCount,
+            completedCyclesBeforeMarker);
+        RequireResult(markerFrameCount, "RemoteVisual LF4 carousel probe frame count overflow");
+        const auto totalFrameCount = pbprotocol::CheckedAddUint64(markerFrameCount.Value(), 1);
+        RequireResult(totalFrameCount, "RemoteVisual LF4 carousel probe continuation overflow");
+        auto channelResult = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
+        RequireResult(channelResult, "RemoteVisual LF4 carousel probe channel creation failed");
+        auto channel = std::move(channelResult).Value();
+        EncoderCarouselProbeSnapshot result;
+        result.cycleFrameCount = initial.cycleFrameCount;
+        result.visualProfileId = profile.visualProfileId;
+        result.layoutVersion = profile.layoutVersion;
+        result.codedDataBytes = profile.dataBytes;
+        result.codewords = profile.codewords;
+        for (std::uint64_t frameSequence = 0; frameSequence < totalFrameCount.Value(); frameSequence++)
+        {
+            const FrameKind kind = builder.GetCurrentKind();
+            const auto& pixels = builder.Build(frameSequence);
+            const pbmodulation::LumaView view{pixels, phase1CanvasWidth, phase1CanvasHeight,
+                static_cast<std::size_t>(phase1CanvasWidth) * 4, pbmodulation::LumaPixelFormat::Bgra8};
+            const auto observation = channel.DecodeRemoteVisualLowFps(view, {},
+                pbdesktoplevels::EvaluationMode::Transport);
+            Require(observation.modulation.IsAccepted(), "production LF4 sender raster failed exact CPU demodulation");
+            if (kind == FrameKind::Data)
+            {
+                Require(observation.evaluation.IsVerified() &&
+                    observation.evaluation.acceptedTransportBlocks == profile.codewords &&
+                    observation.evaluation.acceptedRemoteControlBlocks == 0,
+                    "production LF4 sender data raster failed Transport verification");
+                result.dataFrames++;
+                result.acceptedTransportBlocks += observation.evaluation.acceptedTransportBlocks;
+            }
+            else
+            {
+                const std::vector<std::byte>& expected = kind == FrameKind::SessionControl ?
+                    description.sessionControl : kind == FrameKind::ManifestControl ?
+                    description.manifestControl : description.segmentControl;
+                const auto acceptedControls = channel.GetAcceptedRemoteControlBlocks();
+                Require(observation.evaluation.acceptedRemoteControlBlocks == profile.codewords &&
+                    acceptedControls.size() == profile.codewords && observation.evaluation.fecFailures == 0 &&
+                    observation.evaluation.crcFailures == 0 && observation.evaluation.identityFailures == 0,
+                    "production LF4 sender Control raster did not preserve all four Robust copies");
+                for (const auto& accepted : acceptedControls)
+                {
+                    Require(accepted.byteCount == expected.size() &&
+                        std::ranges::equal(expected, std::span(accepted.bytes).first(accepted.byteCount)),
+                        "production LF4 sender Control copy differs from canonical PB-Control-1 bytes");
+                }
+                result.controlFrames++;
+                result.acceptedRemoteControlCopies += acceptedControls.size();
+            }
+            builder.Advance();
+            result.framesBuilt++;
+            if (frameSequence >= markerFrameCount.Value())
+            {
+                result.framesBuiltAfterExternalCompletionMarker++;
+            }
+        }
+        result.completedCarouselCycles = builder.GetCarouselSnapshot().cycleCount;
+        output = result;
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("RemoteVisual LF4 carousel probe failed with an unknown error");
+    }
+}
+
 RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
 {
     if (!IsValidRunId(config.runId))
@@ -2918,7 +3051,8 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
         return RuntimeStatus::Failure("Compression level 必须位于当前支持范围 1..22");
     }
     if ((config.visualProfile != VisualProfile::DirectLevels2x2 && config.visualProfile != VisualProfile::ShapeChroma &&
-         config.visualProfile != VisualProfile::RemoteVisualResilient) || !config.monitorClientOrigin)
+         config.visualProfile != VisualProfile::RemoteVisualResilient &&
+         config.visualProfile != VisualProfile::RemoteVisualLowFps) || !config.monitorClientOrigin)
     {
         return RuntimeStatus::Failure("请选择当前真实存在的 Visual Profile 和目标 monitor");
     }
@@ -2927,7 +3061,8 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("Logical Visual FPS 必须为 0 或 1..240，Control repetitions 必须为 1..64");
     }
-    if (config.visualProfile == VisualProfile::RemoteVisualResilient &&
+    if ((config.visualProfile == VisualProfile::RemoteVisualResilient ||
+         config.visualProfile == VisualProfile::RemoteVisualLowFps) &&
         (config.logicalVisualFps == 0 || config.logicalVisualFps > maximumRemoteVisualLogicalFps))
     {
         return RuntimeStatus::Failure("RemoteVisual Logical Visual FPS 必须为 1..5；0 会恢复高频 presentation-driven 更新，已禁止");
@@ -3191,6 +3326,10 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     initial.statusMessage = "Preparing source, descriptors, compression, and outer FEC";
     initial.remoteMetadata = config.remoteMetadata;
     initial.configuredLogicalVisualFps = config.logicalVisualFps;
+    if (config.logicalVisualFps != 0)
+    {
+        initial.configuredLogicalDwellMilliseconds = 1000.0 / config.logicalVisualFps;
+    }
     initial.configuredControlRepetitions = config.controlRepetitions;
     try
     {
@@ -3325,6 +3464,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.runId = runId;
             value.remoteMetadata.runId = runId;
             value.sourceBytes = source.bytes.size();
+            value.visualProfileId = profile.visualProfileId;
+            value.visualLayoutVersion = profile.layoutVersion;
+            value.codedDataBytesPerFrame = profile.dataBytes;
+            value.codewordsPerFrame = profile.codewords;
             value.sessionIdHex = SessionIdHex(description.session.sessionId);
             value.sessionTag = description.segment.sessionTag.value;
             value.wholeFileDigestHex = DigestHex(description.manifest.wholeFileDigest.bytes);
@@ -3352,6 +3495,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         windowConfig.width = phase1CanvasWidth;
         windowConfig.height = phase1CanvasHeight;
         windowConfig.clientOrigin = config.monitorClientOrigin;
+        windowConfig.repeatActiveFrame = config.visualProfile == VisualProfile::RemoteVisualLowFps;
         auto created = pbrenderd3d::DataWindow::Create(windowConfig);
         if (!created)
         {
@@ -3364,7 +3508,13 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         bool broadcastStarted = false;
         auto nextStabilityCheck = workerStarted;
         const auto logicalFrameInterval = config.logicalVisualFps == 0 ? std::chrono::steady_clock::duration::zero() :
-            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / config.logicalVisualFps));
+            std::chrono::ceil<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / config.logicalVisualFps));
+        const std::optional<double> configuredLogicalDwellMilliseconds = config.logicalVisualFps == 0 ?
+            std::nullopt : std::optional<double>{1000.0 / config.logicalVisualFps};
+        std::optional<std::chrono::steady_clock::time_point> firstLogicalFrameAt;
+        std::optional<std::chrono::steady_clock::time_point> previousLogicalFrameAt;
+        std::optional<double> minimumObservedLogicalDwellMilliseconds;
+        std::uint64_t logicalDwellViolationCount = 0;
         auto nextLogicalFrameAt = workerStarted;
         std::optional<std::chrono::steady_clock::time_point> broadcastStartedAt;
         for (;;)
@@ -3429,6 +3579,22 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     windowSnapshot.timing.presentationEpoch});
                 if (submit)
                 {
+                    if (previousLogicalFrameAt)
+                    {
+                        const double observedDwellMilliseconds =
+                            std::chrono::duration<double, std::milli>(now - *previousLogicalFrameAt).count();
+                        minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds ?
+                            std::min(*minimumObservedLogicalDwellMilliseconds, observedDwellMilliseconds) : observedDwellMilliseconds;
+                        if (configuredLogicalDwellMilliseconds && observedDwellMilliseconds < *configuredLogicalDwellMilliseconds)
+                        {
+                            pbprotocol::SaturatingIncrementUnsigned(logicalDwellViolationCount);
+                        }
+                    }
+                    if (!firstLogicalFrameAt)
+                    {
+                        firstLogicalFrameAt = now;
+                    }
+                    previousLogicalFrameAt = now;
                     const auto nextGeneratedPayloadBytes = pbprotocol::CheckedAddUint64(generatedPayloadBytes,
                         builder.GetGeneratedPayloadBytesInFrame());
                     RequireResult(nextGeneratedPayloadBytes, "generated payload telemetry overflow");
@@ -3443,6 +3609,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     Require(broadcastStartedAt.has_value(), "stable presentation has no broadcast start timestamp");
                     const std::uint64_t broadcastMilliseconds = ElapsedMilliseconds(*broadcastStartedAt);
                     const double elapsedSeconds = static_cast<double>(broadcastMilliseconds) / 1000.0;
+                    const double logicalObservationSeconds = firstLogicalFrameAt ?
+                        std::chrono::duration<double>(now - *firstLogicalFrameAt).count() : 0;
                     snapshot_.Update([&](EncoderSnapshot& value)
                     {
                         if (value.runGeneration != runGeneration)
@@ -3455,18 +3623,15 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                         value.cycleFrameCount = carouselAfter.cycleFrameCount;
                         value.currentOuterBlockId = outerBlockId;
                         value.frameSequence = frameSequence;
-                        value.presentationEpoch = windowSnapshot.timing.presentationEpoch;
-                        value.presentedVisualFps = windowSnapshot.timing.presentedVisualFps;
-                        value.presentCallFps = windowSnapshot.timing.presentCallFps;
-                        value.generatedVisualFramesPerSecond = elapsedSeconds > 0 ?
-                            static_cast<double>(frameSequence) / elapsedSeconds : 0;
+                        ApplyEncoderPresentationSnapshot(windowSnapshot, value);
+                        value.generatedVisualFramesPerSecond = frameSequence > 1 && logicalObservationSeconds > 0 ?
+                            static_cast<double>(frameSequence - 1) / logicalObservationSeconds : 0;
                         value.generatedPayloadBytesPerSecond = elapsedSeconds > 0 ?
                             static_cast<double>(generatedPayloadBytes) / elapsedSeconds : 0;
-                        value.submittedFrames = windowSnapshot.submittedFrames;
-                        value.replacedPendingFrames = windowSnapshot.replacedPendingFrames;
+                        value.minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds;
+                        value.logicalDwellViolationCount = logicalDwellViolationCount;
                         value.pendingFrames = 1;
                         value.pendingHighWater = 1;
-                        value.candidateContractSatisfied = windowSnapshot.candidateContractSatisfied;
                     });
                 }
                 else if (submit.code != pbrenderd3d::PresentationErrorCode::EpochMismatch &&
@@ -3487,14 +3652,9 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                         return;
                     }
                     value.broadcastRuntimeMilliseconds = broadcastMilliseconds;
-                    value.presentationEpoch = windowSnapshot.timing.presentationEpoch;
-                    value.presentedVisualFps = windowSnapshot.timing.presentedVisualFps;
-                    value.presentCallFps = windowSnapshot.timing.presentCallFps;
-                    value.submittedFrames = windowSnapshot.submittedFrames;
-                    value.replacedPendingFrames = windowSnapshot.replacedPendingFrames;
-                    value.pendingFrames = windowSnapshot.pendingFrame ? 1U : 0U;
-                    value.pendingHighWater = windowSnapshot.pendingFrame ? 1U : value.pendingHighWater;
-                    value.candidateContractSatisfied = windowSnapshot.candidateContractSatisfied;
+                    ApplyEncoderPresentationSnapshot(windowSnapshot, value);
+                    value.minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds;
+                    value.logicalDwellViolationCount = logicalDwellViolationCount;
                 });
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
@@ -3519,11 +3679,9 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
             value.broadcastRuntimeMilliseconds = broadcastMilliseconds;
             value.sourceStable = true;
-            value.presentationEpoch = stopped.timing.presentationEpoch;
-            value.presentedVisualFps = stopped.timing.presentedVisualFps;
-            value.presentCallFps = stopped.timing.presentCallFps;
-            value.submittedFrames = stopped.submittedFrames;
-            value.replacedPendingFrames = stopped.replacedPendingFrames;
+            ApplyEncoderPresentationSnapshot(stopped, value);
+            value.minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds;
+            value.logicalDwellViolationCount = logicalDwellViolationCount;
             value.statusMessage = "Broadcast stopped by user; no sender-side receiver completion was inferred";
         });
     }

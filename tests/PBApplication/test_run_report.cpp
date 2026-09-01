@@ -56,8 +56,20 @@ TEST_CASE("Encoder report explicitly omits receiver progress goodput and ETA", "
     snapshot.dataWindowLeft = 2560;
     snapshot.runStartedUnixMilliseconds = 1000;
     snapshot.runEndedUnixMilliseconds = 2000;
+    snapshot.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
     snapshot.generatedVisualFramesPerSecond = (std::numeric_limits<double>::infinity)();
     snapshot.configuredLogicalVisualFps = 5;
+    snapshot.configuredLogicalDwellMilliseconds = 200.0;
+    snapshot.minimumObservedLogicalDwellMilliseconds = 200.25;
+    snapshot.visualProfileId = 0x504252564C463431ULL;
+    snapshot.visualLayoutVersion = 7;
+    snapshot.codedDataBytesPerFrame = 8100;
+    snapshot.codewordsPerFrame = 4;
+    snapshot.sourceTextureReplacements = 19;
+    snapshot.repeatedPresentCalls = 211;
+    snapshot.invalidatedActiveFrames = 3;
+    snapshot.activeFrame = true;
+    snapshot.activeFrameSequence = 18;
     snapshot.configuredControlRepetitions = 12;
     snapshot.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
     snapshot.remoteMetadata.remoteProvider = "TestRemote";
@@ -74,11 +86,31 @@ TEST_CASE("Encoder report explicitly omits receiver progress goodput and ETA", "
     REQUIRE(json.find("\"dataWindow\":{\"left\":2560") != std::string::npos);
     REQUIRE(json.find("\"generatedVisualFramesPerSecond\":null") != std::string::npos);
     REQUIRE(json.find("\"configuredLogicalVisualFps\":5") != std::string::npos);
+    REQUIRE(json.find("\"configuredLogicalDwellMilliseconds\":200") != std::string::npos);
+    REQUIRE(json.find("\"minimumObservedLogicalDwellMilliseconds\":200.25") != std::string::npos);
+    REQUIRE(json.find("\"logicalDwellViolationCount\":0") != std::string::npos);
+    REQUIRE(json.find("\"visualProfileId\":5783275402097472561") != std::string::npos);
+    REQUIRE(json.find("\"visualLayoutVersion\":7") != std::string::npos);
+    REQUIRE(json.find("\"codedDataBytesPerFrame\":8100") != std::string::npos);
+    REQUIRE(json.find("\"codewordsPerFrame\":4") != std::string::npos);
+    REQUIRE(json.find("\"sourceTextureReplacements\":19") != std::string::npos);
+    REQUIRE(json.find("\"repeatedPresentCalls\":211") != std::string::npos);
+    REQUIRE(json.find("\"invalidatedActiveFrames\":3") != std::string::npos);
+    REQUIRE(json.find("\"activeFrame\":true") != std::string::npos);
+    REQUIRE(json.find("\"activeFrameSequence\":18") != std::string::npos);
     REQUIRE(json.find("\"configuredControlRepetitions\":12") != std::string::npos);
     REQUIRE(json.find("\"schema\":\"PixelBridge.RemoteVisualRunMetadata.1\"") != std::string::npos);
     REQUIRE(json.find("\"remoteProvider\":\"TestRemote\"") != std::string::npos);
     REQUIRE(json.find("\"evidence\":{\"journalEnabled\":false,\"valid\":true") != std::string::npos);
     REQUIRE(json.find("transferProgress") == std::string::npos);
+
+    const std::string journalRecord = pbapp::BuildEncoderJournalRecord(1234, snapshot);
+    REQUIRE(journalRecord.find("\"configuredLogicalDwellMs\":200") != std::string::npos);
+    REQUIRE(journalRecord.find("\"minimumObservedLogicalDwellMs\":200.25") != std::string::npos);
+    REQUIRE(journalRecord.find("\"sourceTextureReplacements\":19") != std::string::npos);
+    REQUIRE(journalRecord.find("\"repeatedPresentCalls\":211") != std::string::npos);
+    REQUIRE(journalRecord.find("\"invalidatedActiveFrames\":3") != std::string::npos);
+    REQUIRE(journalRecord.find("\"activeFrameSequence\":18") != std::string::npos);
 }
 
 TEST_CASE("Decoder report preserves verified progress and final acceptance independently", "[application][report][decoder]")

@@ -50,30 +50,30 @@
     },
     {
       "File": "apps/common/application_model.h",
-      "Line": 522,
+      "Line": 539,
       "Id": "returnByReference",
       "Severity": "performance",
       "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
-      "SourceSHA256": "F1FC665CC05526ED92D661223F332DE823772A7175FFAA14659AD7C35A08D8C4",
-      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
+      "SourceSHA256": "E606EF53D0E63DFD31AB14E52A0FD015FF2A270B921EF33A76417B4737A84FC0",
+      "Assessment": "Re-confirmed against the Step 09 Encoder telemetry revision; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
     },
     {
       "File": "apps/common/application_model.h",
-      "Line": 560,
+      "Line": 577,
       "Id": "returnByReference",
       "Severity": "performance",
       "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
-      "SourceSHA256": "F1FC665CC05526ED92D661223F332DE823772A7175FFAA14659AD7C35A08D8C4",
-      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
+      "SourceSHA256": "E606EF53D0E63DFD31AB14E52A0FD015FF2A270B921EF33A76417B4737A84FC0",
+      "Assessment": "Re-confirmed against the Step 09 Encoder telemetry revision; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
     },
     {
       "File": "apps/common/application_model.h",
-      "Line": 580,
+      "Line": 597,
       "Id": "returnByReference",
       "Severity": "performance",
       "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
-      "SourceSHA256": "F1FC665CC05526ED92D661223F332DE823772A7175FFAA14659AD7C35A08D8C4",
-      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
+      "SourceSHA256": "E606EF53D0E63DFD31AB14E52A0FD015FF2A270B921EF33A76417B4737A84FC0",
+      "Assessment": "Re-confirmed against the Step 09 Encoder telemetry revision; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
     },
     {
       "File": "apps/common/evidence_journal.cpp",
@@ -81,7 +81,7 @@
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbapp::RunEvidenceJournal::Append' can be const.",
-      "SourceSHA256": "83452E3442386A3CCB7DFF47282BCC61CCF8F47B5404E5164C644486E19596AC",
+      "SourceSHA256": "3D531320310C162C69B8A56FF9C5002710DB9EAE7B9647EEFDA39FC24227A93D",
       "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. Append appends a framed record through *implementation_, updates snapshot_ bytesWritten/samples and flips valid/truncated on failure; the cadence, byte-cap and malformed-record tests in tests/PBApplication/test_run_report.cpp rely on those transitions."
     },
     {
@@ -90,7 +90,7 @@
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbapp::RunEvidenceJournal::Finish' can be const.",
-      "SourceSHA256": "83452E3442386A3CCB7DFF47282BCC61CCF8F47B5404E5164C644486E19596AC",
+      "SourceSHA256": "3D531320310C162C69B8A56FF9C5002710DB9EAE7B9647EEFDA39FC24227A93D",
       "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. Finish flushes and closes the journal handle through *implementation_ and sets snapshot_ finished/truncated/bytesWritten; the duration-cap and close-failure tests in tests/PBApplication/test_run_report.cpp rely on it."
     },
     {

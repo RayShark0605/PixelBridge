@@ -114,9 +114,11 @@ pbrenderd3d::DataWindowSnapshot WaitFor(pbrenderd3d::DataWindow& window, Predica
                                         const std::chrono::milliseconds timeout = std::chrono::seconds(10))
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    pbrenderd3d::DataWindowSnapshot lastSnapshot;
     do
     {
         const auto snapshot = window.GetSnapshot();
+        lastSnapshot = snapshot;
         Require(snapshot.state != pbrenderd3d::WindowState::Failed, std::string(description) + " " + Describe(snapshot.error));
         Require(snapshot.state != pbrenderd3d::WindowState::Stopped, std::string(description) + " unexpectedly stopped");
         if (predicate(snapshot))
@@ -125,7 +127,17 @@ pbrenderd3d::DataWindowSnapshot WaitFor(pbrenderd3d::DataWindow& window, Predica
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     } while (std::chrono::steady_clock::now() < deadline);
-    throw std::runtime_error(std::string("timeout: ") + description);
+    throw std::runtime_error(std::string("timeout: ") + description + " epoch=" + std::to_string(lastSnapshot.timing.presentationEpoch) +
+        " epochReason=" + pbpresenttiming::GetEpochReasonName(lastSnapshot.timing.epochReason) + " timingState=" +
+        pbpresenttiming::GetTimingStateName(lastSnapshot.timing.state) + " timingIssue=" +
+        pbpresenttiming::GetTimingIssueName(lastSnapshot.timing.issue) +
+        " submitted=" + std::to_string(lastSnapshot.submittedFrames) + " successfulPresents=" +
+        std::to_string(lastSnapshot.totalSuccessfulPresents) + " sourceReplacements=" +
+        std::to_string(lastSnapshot.sourceTextureReplacements) + " repeatedPresents=" +
+        std::to_string(lastSnapshot.repeatedPresentCalls) + " invalidatedActive=" +
+        std::to_string(lastSnapshot.invalidatedActiveFrames) + " active=" + (lastSnapshot.activeFrame ? "true" : "false") +
+        " pending=" + (lastSnapshot.pendingFrame ? "true" : "false") + " inFlight=" +
+        (lastSnapshot.inFlightFrame ? "true" : "false"));
 }
 
 }
