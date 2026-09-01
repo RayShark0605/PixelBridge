@@ -1,5 +1,8 @@
 #include "local_desktop_runtime.h"
 #include "monitor_catalog.h"
+#include "pbmodulation/desktop_levels.h"
+#include "pbmodulation/remote_visual_low_fps.h"
+#include "pbmodulation/shape_chroma.h"
 #include "pbrealcapturereplay/replay_v2.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -291,6 +294,16 @@ TEST_CASE("Incompatible RemoteVisual ROI is admitted only for explicit bounded r
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
     config.replayOutputPath = (scratch.Path() / L"scaled-remote.pbrv2").wstring();
     REQUIRE(pbapp::ValidateDecoderConfig(config));
+
+    config.replayEvidenceVisualProfileId = pbmodulation::kDesktopLevels2ProfileId;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayEvidenceVisualProfileId = pbmodulation::kShapeChromaProfileId;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayEvidenceVisualProfileId = pbmodulation::kRemoteVisualLowFpsProfileId;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayEvidenceVisualProfileId = 0xDEADBEEF12345678ULL;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.replayEvidenceVisualProfileId.reset();
 
     config.visualProfile = pbapp::VisualProfile::DirectLevels2x2;
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));

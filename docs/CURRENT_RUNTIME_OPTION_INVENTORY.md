@@ -24,6 +24,7 @@ Status: implementation inventory for the first Windows GUI. This document record
 | Inner FEC | Read-only | `pbinnerfec::kInnerFecProfileIdRobust`, `EncodeQcLdpcCodeword` | Fixed robust DVB-S2 Short QC-LDPC profile. No override is exposed. |
 | Target monitor | Enabled | `pbrenderd3d::DataWindowConfig::clientOrigin` after application-layer Win32 monitor enumeration | Selects the existing D3D11 Data Window. A fixed 1920 x 1080 client canvas is centered in the monitor work area when it fits, otherwise centered in the physical monitor; Qt never paints the payload. |
 | Logical Visual FPS / stable dwell | Advanced | application scheduler; `DataWindow` continues presenting the latest immutable texture | Local profiles allow 0 (presentation-driven) or 1..240. RemoteVisual requires 1..5, defaults to 2 (500 ms), and rejects both 0 and >5. Repeated Present does not create new logical data. |
+| Frame hold / Present candidate | Not exposed | current `PBRenderD3D::DataWindow` timing and flip-model contract | There is no safely supported arbitrary hold override in the current Data Window public API; a stable logical dwell is produced by the scheduler re-presenting the latest immutable texture. |
 
 ## Decoder options with real bindings
 
@@ -52,15 +53,25 @@ The following are application-only and have no protocol or acceptance effect:
 
 They never change CRC, FEC, digest, descriptor, or final-publish acceptance.
 
+## Evidence-only headless bindings
+
+The following are real public CLI/tool bindings, but are intentionally not GUI product options:
+
+| Binding | Runtime effect and boundary |
+| --- | --- |
+| `PixelBridgeDecoder --headless-receive ... --replay-output NEW_PATH --diagnostic-capture-only --replay-evidence-profile direct\|shape\|lf4` | Records a bounded selected-ROI Replay v2 through the explicitly selected WGC/DXGI backend. The evidence-profile option only writes the raster identity into the capture-only descriptor; it cannot select an LF4 product demodulator and is rejected outside capture-only mode. Bootstrap/demod/FEC/Receiver/publish remain disabled. Output, journal and report are create-only. |
+| `PBRemoteVisualEvidencePresenter describe\|present --profile direct\|shape\|lf4` | Step-02 evidence presenter. It renders one deterministic valid Bootstrap/Transport raster in the existing PMv2 1920×1080 `DataWindow`, verifies exact single-monitor geometry before reporting `READY`, and repeatedly presents the same immutable texture at no more than 5 Hz. It has no file-transfer lifecycle and does not expose LF4 in the GUI/product profile enum. |
+| `PBRemoteVisualReplayInspector --input PATH [--output NEW_PATH]` | Bounded receiver-only Replay v2 semantic inspector. It consumes the complete file with `ReplayV2Reader`, then applies the existing Bootstrap/profile reference decoder/QC-LDPC/padding/Transport CRC/Session identity chain and emits a sealed deterministic per-frame JSON classification. With no sender truth it reports false-accepted codewords as unavailable and never claims Outer/WholeFileDigest/final publish. |
+
 ## Hidden future capabilities
 
 - `PB-RemoteVisual-LF4-X1` now has an experimental CPU/reference encoder, scale-aware decoder, four-codeword QC-LDPC/Transport truth path and adversarial scale/stale-region tests. It is intentionally hidden from the product enum/GUI until simulator, D3D11 and real two-machine Gates pass; see `REMOTE_VISUAL_LOW_FPS_TECHNICAL_ROUTE.md`.
 
 - Offline MP4/NVENC generation and playback are hidden; Phase 4 is not implemented.
-- `PBRealCaptureReplay` remains an existing bounded library/Gate artifact, but this first GUI has no truthful live record/replay controller binding; no replay button or fake setting is exposed.
+- `PBRealCaptureReplay` remains an existing bounded library/Gate artifact. The evidence-only headless capture and inspector bindings above are now real, but this first GUI still has no live record/replay controller binding; no replay button or fake setting is exposed.
 - Direct-Level 4x4 is hidden from the file-transfer GUI. A physical-layer candidate exists, but it is not in the Phase-1 full-file Gate matrix.
 - Multi-Segment files and arbitrary-size files are hidden/rejected.
 - Receiver-to-Sender feedback, sender-side receiver progress, transfer-completion ETA, and automatic sender completion do not exist.
 - Certified Profile labels are not shown. Both selectable current paths remain explicitly Experimental.
-- Automatic capture-backend fallback, production arbitrary resize/resampling, adaptive profile switching, and protocol-state persistence are not available. LF4 CPU reference accepts bounded continuous scale 0.5..2.0, but this is not yet a production GPU capability.
+- Automatic capture-backend fallback, production arbitrary resize/resampling, tunable RemoteVisual policy thresholds, adaptive profile switching, and protocol-state persistence are not available. LF4 CPU reference accepts bounded continuous scale 0.5..2.0, but this is not yet a production GPU capability.
 - Application-generated Control records must fit the current fixed Control window. A completed fragmented Control record is rejected fail-closed because this product path has no separate application binding for it.

@@ -5,6 +5,9 @@
 #include "remote_visual_metadata_preset_qt.h"
 
 #include "pbcore/build_info.h"
+#include "pbmodulation/desktop_levels.h"
+#include "pbmodulation/remote_visual_low_fps.h"
+#include "pbmodulation/shape_chroma.h"
 
 #include <Windows.h>
 
@@ -45,6 +48,7 @@ struct Options
     std::uint32_t timeoutSeconds = 120;
     std::uint32_t replayMaximumFrames = 256;
     std::uint32_t replayMaximumMebibytes = 2048;
+    std::optional<std::uint64_t> replayEvidenceVisualProfileId;
     bool hasRoi = false;
     bool remoteChannel = false;
     bool channelSpecified = false;
@@ -201,6 +205,31 @@ struct Options
         else if (option == L"--diagnostic-capture-only")
         {
             options.diagnosticCaptureOnly = true;
+        }
+        else if (option == L"--replay-evidence-profile")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr)
+            {
+                return false;
+            }
+            const std::wstring_view profile(value);
+            if (profile == L"direct")
+            {
+                options.replayEvidenceVisualProfileId = pbmodulation::kDesktopLevels2ProfileId;
+            }
+            else if (profile == L"shape")
+            {
+                options.replayEvidenceVisualProfileId = pbmodulation::kShapeChromaProfileId;
+            }
+            else if (profile == L"lf4")
+            {
+                options.replayEvidenceVisualProfileId = pbmodulation::kRemoteVisualLowFpsProfileId;
+            }
+            else
+            {
+                return false;
+            }
         }
         else if (option == L"--replay-frames")
         {
@@ -363,7 +392,7 @@ struct Options
             options.profile != pbapp::VisualProfile::RemoteVisualResilient ||
             (options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
             !options.protectedMonitorDeviceName.empty() || !options.experimentMonitorDeviceName.empty() ||
-            options.diagnosticCaptureOnly)
+            options.diagnosticCaptureOnly || options.replayEvidenceVisualProfileId)
         {
             return false;
         }
@@ -378,7 +407,8 @@ struct Options
         (!options.replayOutputPath.empty() && (!options.remoteChannel ||
             options.profile != pbapp::VisualProfile::RemoteVisualResilient)) ||
         (options.diagnosticCaptureOnly && (options.replayOutputPath.empty() || !options.remoteChannel ||
-            options.profile != pbapp::VisualProfile::RemoteVisualResilient)))
+            options.profile != pbapp::VisualProfile::RemoteVisualResilient)) ||
+        (options.replayEvidenceVisualProfileId && !options.diagnosticCaptureOnly))
     {
         return false;
     }
@@ -453,7 +483,8 @@ void Usage()
     std::cerr << "usage: PixelBridgeDecoder --headless-receive --output-dir DIR --backend wgc|dxgi "
                  "--profile direct|shape|remote --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..600 "
                  "[--protected-monitor DEVICE --experiment-monitor DEVICE] "
-                 "[--replay-output NEW_PATH --diagnostic-capture-only --replay-frames 1..2048 --replay-max-mib 16..16384] "
+                 "[--replay-output NEW_PATH --diagnostic-capture-only --replay-evidence-profile direct|shape|lf4 "
+                 "--replay-frames 1..2048 --replay-max-mib 16..16384] "
                  "[--run-id 32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH]\n";
     std::cerr << "       PixelBridgeDecoder --headless-replay --replay-input PATH --output-dir DIR "
                  "[--remote-provider NAME] [--remote-metadata PATH] [--profile remote] [--timeout 1..600] "
@@ -490,6 +521,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.replayOutputPath = options.replayOutputPath;
     config.replayInputPath = options.replayInputPath;
     config.diagnosticCaptureOnly = options.diagnosticCaptureOnly;
+    config.replayEvidenceVisualProfileId = options.replayEvidenceVisualProfileId;
     config.replayMaximumCaptureFrames = options.replayMaximumFrames;
     config.replayMaximumFileBytes = static_cast<std::uint64_t>(options.replayMaximumMebibytes) * 1024ULL * 1024ULL;
     if (!options.remoteMetadataPath.empty())
@@ -643,13 +675,14 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         static_cast<std::uint64_t>(finalElapsedCount);
     if (!options.journalPath.empty() && !journalCreateAttempted)
     {
-        journalCreateAttempted = true;
         journalSnapshot = pbapp::RunEvidenceJournal::Create(std::filesystem::path(options.journalPath), {}, journal);
     }
     if (journal)
     {
-        journalSnapshot = journal->AppendTerminal(finalElapsedMilliseconds,
-            pbapp::BuildDecoderJournalRecord(UnixNowMilliseconds(), snapshot));
+        // Finish() returns the journal's authoritative snapshot, so it already carries any
+        // invalidation or truncation recorded by the terminal append.
+        static_cast<void>(journal->AppendTerminal(finalElapsedMilliseconds,
+            pbapp::BuildDecoderJournalRecord(UnixNowMilliseconds(), snapshot)));
         journalSnapshot = journal->Finish();
     }
     if (!options.journalPath.empty())

@@ -1,17 +1,8 @@
 {
   "Cppcheck": "2.21.0",
-  "BaselineHead": "80699813b595bcf6db64047b50d31056872e33e1",
+  "BaselineHead": "6669cdf26505ec64fbeabe3b02e15c5ca5b566ba",
   "Rule": "Exact reviewed existing diagnostics only: no blanket suppression; changed file hashes or new diagnostics fail the Gate.",
   "Entries": [
-    {
-      "File": "apps/common/application_model.h",
-      "Line": 365,
-      "Id": "returnByReference",
-      "Severity": "performance",
-      "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
-      "SourceSHA256": "D7829D74E74F40562B6AE8425B6DCC70E76CC53DC7C5D7294B4A89E9B425D9F0",
-      "Assessment": "Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
-    },
     {
       "File": "apps/PixelBridgeDecoder/capture_bootstrap_cli.cpp",
       "Line": 194,
@@ -20,6 +11,15 @@
       "Message": "Possible null pointer dereference: readback",
       "SourceSHA256": "A41027C98FADB9916E64DC7773EB53500A9A564CED7C90660613465060633DDA",
       "Assessment": "False positive: Require throws on failed DiagnosticCpuReadback::Create; successful factory publishes a non-null candidate only after starting the worker. Every failure preserves output. Existing allocation/error-path and real worker tests exercise this contract."
+    },
+    {
+      "File": "apps/PixelBridgeDecoder/decoder_gui.cpp",
+      "Line": 222,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::any_of algorithm instead of a raw loop.",
+      "SourceSHA256": "F6BE8D96B232B5EFBDB80B50FE3958608EE6466CFB5589C9FFD85C34280C439E",
+      "Assessment": "Advisory only: the loop is the protected-monitor guard (device-name match AND rectangle intersection) on the ROI selection path. std::any_of would need a lambda capturing the protected device name and the target rectangle; the explicit loop keeps the never-overlap-the-protected-screen rule legible."
     },
     {
       "File": "apps/PixelBridgeEncoder/presentation_cli.cpp",
@@ -49,6 +49,87 @@
       "Assessment": "GetSnapshot calls are separated by window Stop, so stoppedSample and finalSample can differ. The analyzer does not model backend thread state; keep failure telemetry selection."
     },
     {
+      "File": "apps/common/application_model.h",
+      "Line": 522,
+      "Id": "returnByReference",
+      "Severity": "performance",
+      "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
+      "SourceSHA256": "F1FC665CC05526ED92D661223F332DE823772A7175FFAA14659AD7C35A08D8C4",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
+    },
+    {
+      "File": "apps/common/application_model.h",
+      "Line": 560,
+      "Id": "returnByReference",
+      "Severity": "performance",
+      "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
+      "SourceSHA256": "F1FC665CC05526ED92D661223F332DE823772A7175FFAA14659AD7C35A08D8C4",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
+    },
+    {
+      "File": "apps/common/application_model.h",
+      "Line": 580,
+      "Id": "returnByReference",
+      "Severity": "performance",
+      "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
+      "SourceSHA256": "F1FC665CC05526ED92D661223F332DE823772A7175FFAA14659AD7C35A08D8C4",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Deliberate value observation: returning a reference would let callers alias the tracker mutable snapshot across later Bind, Observe, Reset, or stall updates. The small fixed record is copied to preserve point-in-time semantics; progress boundary, stall, and reset tests cover it."
+    },
+    {
+      "File": "apps/common/evidence_journal.cpp",
+      "Line": 160,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbapp::RunEvidenceJournal::Append' can be const.",
+      "SourceSHA256": "83452E3442386A3CCB7DFF47282BCC61CCF8F47B5404E5164C644486E19596AC",
+      "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. Append appends a framed record through *implementation_, updates snapshot_ bytesWritten/samples and flips valid/truncated on failure; the cadence, byte-cap and malformed-record tests in tests/PBApplication/test_run_report.cpp rely on those transitions."
+    },
+    {
+      "File": "apps/common/evidence_journal.cpp",
+      "Line": 222,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbapp::RunEvidenceJournal::Finish' can be const.",
+      "SourceSHA256": "83452E3442386A3CCB7DFF47282BCC61CCF8F47B5404E5164C644486E19596AC",
+      "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. Finish flushes and closes the journal handle through *implementation_ and sets snapshot_ finished/truncated/bytesWritten; the duration-cap and close-failure tests in tests/PBApplication/test_run_report.cpp rely on it."
+    },
+    {
+      "File": "apps/common/monitor_catalog.cpp",
+      "Line": 303,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::find_if algorithm instead of a raw loop.",
+      "SourceSHA256": "AC56A59CFA46D1A9D86B7CC217BFED3464A3E56E6A82AD77D2D76316D0250134",
+      "Assessment": "Advisory only: the raw loop is the catalog lookup that returns a const MonitorInfo* sentinel used by the protected/experiment monitor safety preflight. std::find_if would need an iterator-to-pointer conversion at both uses without improving clarity or safety."
+    },
+    {
+      "File": "apps/common/remote_visual_metadata_preset_qt.cpp",
+      "Line": 450,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::all_of or std::none_of algorithm instead of a raw loop.",
+      "SourceSHA256": "5B119E86D43FB459F51D432E016B4BF45EFBC91885EDFD2A2CA96B9C88B1FBA4",
+      "Assessment": "Advisory only: run-id validation requires exactly 32 lowercase hex characters and the explicit loop short-circuits on the first invalid character right next to the length check that produces the specific rejection reason."
+    },
+    {
+      "File": "apps/common/remote_visual_replay_recorder.cpp",
+      "Line": 419,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbapp::RemoteVisualReplayRecorder::RecordDemodObservation' can be const.",
+      "SourceSHA256": "11A8F74026B7D70FA26CCE9E0836F4BE19B4DBD9FCD3771FE3067DAD0A14E86D",
+      "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. The body takes implementation_->state under state.mutex and appends a demodulation observation or bumps state.droppedDemodObservations; tests/PBApplication/test_remote_visual_replay_recorder.cpp exercises both the bounded queue and the drop counter."
+    },
+    {
+      "File": "apps/common/remote_visual_replay_recorder.cpp",
+      "Line": 454,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbapp::RemoteVisualReplayRecorder::RequestStop' can be const.",
+      "SourceSHA256": "11A8F74026B7D70FA26CCE9E0836F4BE19B4DBD9FCD3771FE3067DAD0A14E86D",
+      "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. RequestStop sets state.stopRequested and notifies the bounded writer condition variable under state.mutex; the shutdown and drain tests cover it."
+    },
+    {
       "File": "libs/PBCaptureNormalize/include/pbcapturenormalize/diagnostic_readback.h",
       "Line": 134,
       "Id": "funcArgNamesDifferentUnnamed",
@@ -62,7 +143,7 @@
       "Line": 233,
       "Id": "knownConditionTrueFalse",
       "Severity": "style",
-      "Message": "Condition 'activeDomain==resetDomain' is always true",
+      "Message": "Condition 'revision==resetRevision' is always true",
       "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
       "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
     },
@@ -71,7 +152,7 @@
       "Line": 233,
       "Id": "knownConditionTrueFalse",
       "Severity": "style",
-      "Message": "Condition 'revision==resetRevision' is always true",
+      "Message": "Condition 'activeDomain==resetDomain' is always true",
       "SourceSHA256": "D9B78106CEB9EE4321625F0EDD5CAB8309FE404D993B6EAF672676B986E7906F",
       "Assessment": "Worker unlocks the CPU mutex around processor Reset; another owner can change revision/domain before relock. Keep both checks; actual WARP stale-domain tests cover this race."
     },
@@ -113,39 +194,39 @@
     },
     {
       "File": "libs/PBDemodD3D11/src/capture_demodulator.cpp",
-      "Line": 885,
+      "Line": 903,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbdemodd3d11::CaptureDemodulator::TakeResult' can be const.",
-      "SourceSHA256": "BC1D248B347A7AB43EB39B68E4D407FECEBEA1B8B0F706C48821B597850590AF",
-      "Assessment": "False positive from shallow unique_ptr analysis: TakeResult advances the bounded ring head, decrements queued state, increments resultsTaken, and writes the caller output. A const queue consumer would misstate thread-safety and ownership."
+      "SourceSHA256": "AB2804E2078EF4D0748967C59ABFD70E6A7560E007F00D1C5815ABE9AA77003A",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. False positive from shallow unique_ptr analysis: TakeResult advances the bounded ring head, decrements queued state, increments resultsTaken, and writes the caller output. A const queue consumer would misstate thread-safety and ownership."
     },
     {
       "File": "libs/PBDemodD3D11/src/demodulator.cpp",
-      "Line": 988,
+      "Line": 1101,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbdemodd3d11::Demodulator::RetireAfterExternalCompletion' can be const.",
-      "SourceSHA256": "1DBF98EA9CC97F65F410614ECD7B1CE0F342C567A51D3C1656262BA77AB226FC",
-      "Assessment": "False positive from shallow unique_ptr analysis: this lifecycle mutator releases a busy slot and capture texture, decrements pending work, and records cancellation after external GPU-retirement proof. It must not be callable through a const demodulator."
+      "SourceSHA256": "2C08D35ABD6F06B4F000CE3DECFAEC54EC8A03094F1B5108C2391C50F4E76B88",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. False positive from shallow unique_ptr analysis: this lifecycle mutator releases a busy slot and capture texture, decrements pending work, and records cancellation after external GPU-retirement proof. It must not be callable through a const demodulator."
     },
     {
       "File": "libs/PBDemodD3D11/src/demodulator.cpp",
-      "Line": 1037,
+      "Line": 1150,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbdemodd3d11::Demodulator::ShutdownAfterExternalCompletion' can be const.",
-      "SourceSHA256": "1DBF98EA9CC97F65F410614ECD7B1CE0F342C567A51D3C1656262BA77AB226FC",
-      "Assessment": "False positive from shallow unique_ptr analysis: this lifecycle mutator sets terminal shutdown state and clears the active capture domain after externally proven retirement. It must not be callable through a const demodulator."
+      "SourceSHA256": "2C08D35ABD6F06B4F000CE3DECFAEC54EC8A03094F1B5108C2391C50F4E76B88",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. False positive from shallow unique_ptr analysis: this lifecycle mutator sets terminal shutdown state and clears the active capture domain after externally proven retirement. It must not be callable through a const demodulator."
     },
     {
       "File": "libs/PBDemodD3D11/src/demodulator.cpp",
-      "Line": 1056,
+      "Line": 1169,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbdemodd3d11::Demodulator::Shutdown' can be const.",
-      "SourceSHA256": "1DBF98EA9CC97F65F410614ECD7B1CE0F342C567A51D3C1656262BA77AB226FC",
-      "Assessment": "False positive from shallow unique_ptr analysis: Shutdown drains GPU queries, retires texture leases, clears slots and changes the terminal lifecycle state. It must remain visibly mutating."
+      "SourceSHA256": "2C08D35ABD6F06B4F000CE3DECFAEC54EC8A03094F1B5108C2391C50F4E76B88",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. False positive from shallow unique_ptr analysis: Shutdown drains GPU queries, retires texture leases, clears slots and changes the terminal lifecycle state. It must remain visibly mutating."
     },
     {
       "File": "libs/PBModulation/src/bootstrap_rs.cpp",
@@ -225,8 +306,8 @@
       "Id": "useStlAlgorithm",
       "Severity": "style",
       "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
-      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+      "SourceSHA256": "2FA0510F14AFEE8597368981619314CB45C7C7138A0027583936163DB2E89DF8",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
     },
     {
       "File": "libs/PBModulation/src/local_desktop_decode.cpp",
@@ -234,8 +315,8 @@
       "Id": "useStlAlgorithm",
       "Severity": "style",
       "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
-      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+      "SourceSHA256": "2FA0510F14AFEE8597368981619314CB45C7C7138A0027583936163DB2E89DF8",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
     },
     {
       "File": "libs/PBModulation/src/local_desktop_decode.cpp",
@@ -243,8 +324,8 @@
       "Id": "useStlAlgorithm",
       "Severity": "style",
       "Message": "Consider using std::find_if algorithm instead of a raw loop.",
-      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+      "SourceSHA256": "2FA0510F14AFEE8597368981619314CB45C7C7138A0027583936163DB2E89DF8",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
     },
     {
       "File": "libs/PBModulation/src/local_desktop_decode.cpp",
@@ -252,8 +333,8 @@
       "Id": "useStlAlgorithm",
       "Severity": "style",
       "Message": "Consider using std::find_if algorithm instead of a raw loop.",
-      "SourceSHA256": "8BB75B01F9EBEA9BC9C11161CB90FC3FF7A6A0BF54B50B2D55FE95998BF1441F",
-      "Assessment": "Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
+      "SourceSHA256": "2FA0510F14AFEE8597368981619314CB45C7C7138A0027583936163DB2E89DF8",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. Pre-existing bounded scalar search/sum loop; replacing it is stylistic and not needed for this profile. No unchecked input-derived bound."
     },
     {
       "File": "libs/PBModulation/src/reference_visual_profile.cpp",
@@ -445,13 +526,85 @@
       "Assessment": "Frozen fixed-size writer has preallocated exact capacity and monotonically increasing offsets; final status plus exact Position invariant and independent Golden verify the complete layout. No attacker-sized write sequence here."
     },
     {
+      "File": "libs/PBModulation/src/remote_visual_low_fps.cpp",
+      "Line": 664,
+      "Id": "useStlAlgorithm",
+      "Severity": "style",
+      "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
+      "SourceSHA256": "BDF1A33E38A1397E7731B6E41C2A3B262DA25BC17117549BFC3FEFE890E1D1E6",
+      "Assessment": "Advisory only: freshness-tag mean over the fixed 16-chip array in the LF4 CPU reference. The explicit loop keeps the normalization next to the DecodeSymbol path it explains, and std::accumulate is only an equivalent spelling here, so rewriting the reference gate would add no correctness value."
+    },
+    {
       "File": "libs/PBRealCaptureReplay/src/replay_file.cpp",
-      "Line": 929,
+      "Line": 930,
       "Id": "functionConst",
       "Severity": "style",
       "Message": "Technically the member function 'pbrealcapturereplay::ReplayWriter::Finalize' can be const.",
-      "SourceSHA256": "057F3F6FA2403773FF39070FA45CFA47323D32A83CE124436AE51989AFD6F436",
-      "Assessment": "False positive from shallow unique_ptr analysis: Finalize writes and flushes the footer, closes the partial file, publishes the final path and changes writer state. It must not be callable through a const writer."
+      "SourceSHA256": "66CD211A38C21D4F344B146F427FD159C66BFF55E5B20ED5398F7EE5F33ED964",
+      "Assessment": "Re-confirmed against the current file revision after the remote-visual transport work changed this file; the finding and its verdict are unchanged. False positive from shallow unique_ptr analysis: Finalize writes and flushes the footer, closes the partial file, publishes the final path and changes writer state. It must not be callable through a const writer."
+    },
+    {
+      "File": "libs/PBRealCaptureReplay/src/replay_v2.cpp",
+      "Line": 946,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbrealcapturereplay::ReplayV2Writer::AppendCapture' can be const.",
+      "SourceSHA256": "C29BC1F4AC174474B42E626E9AD28F5E78EE8D330F5AD732AAF238AF981CC848",
+      "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. AppendCapture writes the record through *implementation_ (stream CRC/digest, fileBytes, captureFrames/records, handle position) and enforces the frame and byte limits; tests/PBRealCaptureReplay/test_replay_v2.cpp covers append, limit-rejection and failure latching."
+    },
+    {
+      "File": "libs/PBRealCaptureReplay/src/replay_v2.cpp",
+      "Line": 1016,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbrealcapturereplay::ReplayV2Writer::AppendDemodObservation' can be const.",
+      "SourceSHA256": "C29BC1F4AC174474B42E626E9AD28F5E78EE8D330F5AD732AAF238AF981CC848",
+      "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. AppendDemodObservation writes a record through *implementation_ and sets capture->hasDemodObservation plus demodObservations/records/fileBytes, which is what makes a second observation for one capture fail closed; tests/PBRealCaptureReplay/test_replay_v2.cpp covers it."
+    },
+    {
+      "File": "libs/PBRealCaptureReplay/src/replay_v2.cpp",
+      "Line": 1056,
+      "Id": "functionConst",
+      "Severity": "style",
+      "Message": "Technically the member function 'pbrealcapturereplay::ReplayV2Writer::Finalize' can be const.",
+      "SourceSHA256": "C29BC1F4AC174474B42E626E9AD28F5E78EE8D330F5AD732AAF238AF981CC848",
+      "Assessment": "False positive from shallow unique_ptr analysis: the analyzer does not follow mutation through the owned implementation pointer, so it reads a body that only writes the pointee as const-capable. Making the member const would be misleading and would not prevent the state change. Finalize writes the footer, closes the handle and sets complete/fileBytes through *implementation_; the empty-session, footer and reopen-verification tests in tests/PBRealCaptureReplay/test_replay_v2.cpp cover it."
+    },
+    {
+      "File": "libs/PBRemoteVisualSimulator/src/channel_transform.cpp",
+      "Line": 242,
+      "Id": "knownConditionTrueFalse",
+      "Severity": "style",
+      "Message": "Condition 'pixelsResult' is always true",
+      "SourceSHA256": "42DA342D5CAD45FA9FAB56E9DC635209B32601A74D1AE085378736975F4BEC27",
+      "Assessment": "Dead defensive branch, not a defect: line 238 already returns PixelLimitExceeded when the checked product is absent, so the ternary at line 242 can never take the empty branch. It keeps the byte-limit expression free of an unchecked Value() call on the path the analyzer sees; tests/PBRemoteVisualSimulator/test_channel_transform.cpp covers the pixel, byte and work limits."
+    },
+    {
+      "File": "libs/PBRemoteVisualSimulator/src/channel_transform.cpp",
+      "Line": 519,
+      "Id": "constParameterReference",
+      "Severity": "style",
+      "Message": "Parameter 'current' can be declared as reference to const",
+      "SourceSHA256": "42DA342D5CAD45FA9FAB56E9DC635209B32601A74D1AE085378736975F4BEC27",
+      "Assessment": "False positive: the mutation happens through a non-const pointer obtained from the parameter (std::vector::data() / a serialization call), which the analyzer does not attribute to the parameter. Declaring it const would be impossible, not merely wrong. ApplyBlockReplacement memcpy's into current.pixels.data() and only reads rowPitch; making it const would delete the transform. tests/PBRemoteVisualSimulator/test_channel_transform.cpp asserts the replaced block bytes."
+    },
+    {
+      "File": "libs/PBRemoteVisualSimulator/src/channel_transform.cpp",
+      "Line": 633,
+      "Id": "constParameterReference",
+      "Severity": "style",
+      "Message": "Parameter 'image' can be declared as reference to const",
+      "SourceSHA256": "42DA342D5CAD45FA9FAB56E9DC635209B32601A74D1AE085378736975F4BEC27",
+      "Assessment": "False positive: the mutation happens through a non-const pointer obtained from the parameter (std::vector::data() / a serialization call), which the analyzer does not attribute to the parameter. Declaring it const would be impossible, not merely wrong. ApplyColorTransfer rewrites every pixel through image.pixels.data() row by row; the limited-range and full-range assertions in tests/PBRemoteVisualSimulator/test_channel_transform.cpp fail if the write does not happen."
+    },
+    {
+      "File": "libs/PBRemoteVisualSimulator/src/channel_transform.cpp",
+      "Line": 728,
+      "Id": "constParameterReference",
+      "Severity": "style",
+      "Message": "Parameter 'image' can be declared as reference to const",
+      "SourceSHA256": "42DA342D5CAD45FA9FAB56E9DC635209B32601A74D1AE085378736975F4BEC27",
+      "Assessment": "False positive: the mutation happens through a non-const pointer obtained from the parameter (std::vector::data() / a serialization call), which the analyzer does not attribute to the parameter. Declaring it const would be impossible, not merely wrong. ApplySolidOverlay blends in place through image.pixels.data(); the overlay byte assertions in tests/PBRemoteVisualSimulator/test_channel_transform.cpp cover the write path."
     },
     {
       "File": "tests/DesktopLevelsGate/phase1_file_metrics.h",
@@ -461,7 +614,15 @@
       "Message": "Function 'GetSnapshot()' should return member 'snapshot_' by const reference.",
       "SourceSHA256": "332EF17834868B8687774FBB66ACFCD3702A14FFC7D6DCD20A0B35508CBC6EE3",
       "Assessment": "Deliberate value snapshot: the fixed counter record is copied so callers cannot alias mutable accumulator state or retain a reference across later observations. Returning a reference would weaken snapshot lifetime and immutability."
+    },
+    {
+      "File": "tools/PBRemoteVisualReceiverEvidence/receiver_evidence.cpp",
+      "Line": 266,
+      "Id": "constParameterReference",
+      "Severity": "style",
+      "Message": "Parameter 'output' can be declared as const array",
+      "SourceSHA256": "8FB91586D7B584A1BF0A080A456687C3CDAFD3EFA22E442CCC4AB6C8AC86AA32",
+      "Assessment": "False positive: the mutation happens through a non-const pointer obtained from the parameter (std::vector::data() / a serialization call), which the analyzer does not attribute to the parameter. Declaring it const would be impossible, not merely wrong. output is the caller-owned Bootstrap record buffer filled by pbprotocol::SerializeBootstrapRecord; a const buffer could not receive the serialization, and tests/tools/test_remote_visual_receiver_evidence.cpp checks the produced record bytes."
     }
-  ],
-  "HashEncoding": "SHA256 of UTF-8 source normalized to LF; no automatic re-review"
+  ]
 }

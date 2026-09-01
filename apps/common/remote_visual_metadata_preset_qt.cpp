@@ -166,7 +166,7 @@ private:
         return false;
     }
 
-    [[nodiscard]] bool DecodeKey(const QByteArray& token, QString& output, QString& errorMessage)
+    [[nodiscard]] static bool DecodeKey(const QByteArray& token, QString& output, QString& errorMessage)
     {
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(QByteArray("[") + token + QByteArray("]"), &parseError);

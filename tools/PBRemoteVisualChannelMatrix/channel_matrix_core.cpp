@@ -173,8 +173,12 @@ pbremotevisualsimulator::BlockReplacementTransform FindDifferingDataBlockTransfo
         if (!pbmodulation::GetRemoteVisualTileMapping(physical, mapping) ||
             !pbmodulation::GetRemoteVisualTile(physical, region) ||
             mapping.role != pbmodulation::RemoteVisualTileRole::Data ||
-            region.x + blockSize > pbmodulation::kLocalDesktopCanvasWidth ||
-            region.y + blockSize > pbmodulation::kLocalDesktopCanvasHeight)
+            // The comparison below reads the whole tile, so the tile rectangle and the
+            // emitted block rectangle must both be inside the fixed logical canvas.
+            static_cast<std::uint64_t>(region.x) + region.width > pbmodulation::kLocalDesktopCanvasWidth ||
+            static_cast<std::uint64_t>(region.y) + region.height > pbmodulation::kLocalDesktopCanvasHeight ||
+            static_cast<std::uint64_t>(region.x) + blockSize > pbmodulation::kLocalDesktopCanvasWidth ||
+            static_cast<std::uint64_t>(region.y) + blockSize > pbmodulation::kLocalDesktopCanvasHeight)
         {
             continue;
         }
@@ -250,7 +254,7 @@ ChannelMatrixClassification Classify(
         return ChannelMatrixClassification::FalseAcceptance;
     }
     if (diagnosticObservation.evaluation.IsVerified() &&
-        productionObservation.evaluation.acceptedTransportBlocks == 4)
+        productionObservation.evaluation.acceptedTransportBlocks == pbmodulation::kRemoteVisualLowFpsCodewords)
     {
         return ChannelMatrixClassification::Verified;
     }
@@ -725,7 +729,8 @@ bool BuildDefaultChannelMatrix(ChannelMatrixReport& output, std::string& error)
         for (const ChannelMatrixCaseEvidence& evidence : cases)
         {
             report.cases.push_back(evidence.summary);
-            const bool digestDispositionConsistent = evidence.summary.acceptedTransportBlocks == 4 ?
+            const bool digestDispositionConsistent = evidence.summary.acceptedTransportBlocks ==
+                pbmodulation::kRemoteVisualLowFpsCodewords ?
                 evidence.summary.receiverEvidence.wholeFileDigestDisposition ==
                     pbremotevisualreceiverevidence::WholeFileDigestDisposition::Pass :
                 evidence.summary.receiverEvidence.wholeFileDigestDisposition ==

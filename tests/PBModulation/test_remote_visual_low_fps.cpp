@@ -341,3 +341,51 @@ TEST_CASE("RemoteVisual low-FPS geometry and resolver fail closed on invalid bou
         aliased.first(pbmodulation::kRemoteVisualLowFpsCodedBits));
     REQUIRE_FALSE(invalid.valid);
 }
+
+TEST_CASE("RemoteVisual low-FPS decode never reports acceptance when an output buffer is null",
+    "[remote-visual][low-fps][negative]")
+{
+    const auto record = MakeLowFpsRecord(11);
+    const auto data = MakeLowFpsData();
+    std::vector<std::byte> bgra(static_cast<std::size_t>(pbmodulation::kLocalDesktopCanvasWidth) *
+        pbmodulation::kLocalDesktopCanvasHeight * 4);
+    REQUIRE(pbmodulation::EncodeRemoteVisualLowFpsFrame(record, data, bgra));
+    const auto image = localdesktoptest::GrayFromGolden(bgra);
+
+    auto created = pbmodulation::RemoteVisualLowFpsWorkspace::Create(
+        pbmodulation::RemoteVisualLowFpsWorkspace::RequiredBytes());
+    REQUIRE(created);
+    auto workspace = std::move(created.Value());
+
+    // A default span carries a null data pointer, so the caller gave the decoder nowhere to
+    // write. IsAccepted() is the only acceptance signal the caller has, therefore every such
+    // call must report an erasure instead of leaving the default None.
+    std::vector<std::byte> hard(pbmodulation::kRemoteVisualLowFpsDataBytes);
+    std::vector<float> soft(pbmodulation::kRemoteVisualLowFpsCodedBits);
+    const std::span<const std::byte> constantHard;
+    const std::span<const float> constantSoft;
+    const auto nullHard = std::span<std::byte>(const_cast<std::byte*>(constantHard.data()), std::size_t{0});
+    const auto nullSoft = std::span<float>(const_cast<float*>(constantSoft.data()), std::size_t{0});
+
+    const auto missingHard = pbmodulation::DecodeRemoteVisualLowFpsFrame(image.View(), workspace, nullHard, soft);
+    REQUIRE_FALSE(missingHard.IsAccepted());
+    REQUIRE(missingHard.dataBytes == 0);
+    const auto missingSoft = pbmodulation::DecodeRemoteVisualLowFpsFrame(image.View(), workspace, hard, nullSoft);
+    REQUIRE_FALSE(missingSoft.IsAccepted());
+    REQUIRE(missingSoft.dataBytes == 0);
+
+    // Non-null but undersized buffers must keep failing closed with the named reason.
+    std::vector<std::byte> shortHard(pbmodulation::kRemoteVisualLowFpsDataBytes - 1);
+    std::vector<float> shortSoft(pbmodulation::kRemoteVisualLowFpsCodedBits - 1);
+    REQUIRE(pbmodulation::DecodeRemoteVisualLowFpsFrame(image.View(), workspace, shortHard, soft).erasure ==
+        pbmodulation::RemoteVisualLowFpsErasure::OutputBufferTooSmall);
+    REQUIRE(pbmodulation::DecodeRemoteVisualLowFpsFrame(image.View(), workspace, hard, shortSoft).erasure ==
+        pbmodulation::RemoteVisualLowFpsErasure::OutputBufferTooSmall);
+
+    // A correctly sized call on the same workspace still succeeds, so the guard above is not
+    // a permanent poisoning of the workspace.
+    const auto accepted = pbmodulation::DecodeRemoteVisualLowFpsFrame(image.View(), workspace, hard, soft);
+    REQUIRE(accepted.IsAccepted());
+    REQUIRE(accepted.dataBytes == pbmodulation::kRemoteVisualLowFpsDataBytes);
+    REQUIRE(std::ranges::equal(hard, data));
+}

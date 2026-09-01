@@ -118,6 +118,45 @@ target_link_libraries(PBRemoteVisualCodecProbe
         PB::CompilerSettings
         PBRemoteVisualCodecProbeCore)
 
+# PBRemoteVisualReplayInspector validates a sealed receiver-only Replay v2 and
+# independently decodes each capture through the existing CPU/reference
+# modulation plus production Transport trust boundary. It never uses sender
+# truth and therefore reports false-accept counts as unavailable.
+add_library(PBRemoteVisualReplayInspectorCore STATIC
+    PBRemoteVisualReplayInspector/replay_inspector_core.cpp)
+target_link_libraries(PBRemoteVisualReplayInspectorCore
+    PUBLIC
+        PB::PBDesktopLevelsReference
+        PB::PBRealCaptureReplay
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBModulation
+        PB::PBProtocol)
+target_include_directories(PBRemoteVisualReplayInspectorCore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/PBRemoteVisualReplayInspector)
+
+add_executable(PBRemoteVisualReplayInspector
+    PBRemoteVisualReplayInspector/main.cpp)
+target_link_libraries(PBRemoteVisualReplayInspector
+    PRIVATE
+        PB::CompilerSettings
+        PBRemoteVisualReplayInspectorCore)
+
+# Evidence-only sender used to obtain real receiver-side Replay v2 captures.
+# LF4 remains absent from the product profile enum/GUI: this tool presents one
+# deterministic diagnostic raster and performs no file-transfer lifecycle.
+add_executable(PBRemoteVisualEvidencePresenter
+    PBRemoteVisualEvidencePresenter/main.cpp
+    "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
+target_link_libraries(PBRemoteVisualEvidencePresenter
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBDesktopLevelsReference
+        PB::PBModulation
+        PB::PBProtocol
+        PB::PBRenderD3D)
+
 # The temporal corpus intentionally reuses the production application identity,
 # duplicate-refinement and stall trackers. It is available only when the app
 # model is built; the tool itself is headless and starts no capture or window.

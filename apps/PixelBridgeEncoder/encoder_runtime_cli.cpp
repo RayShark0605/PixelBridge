@@ -532,13 +532,14 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         static_cast<std::uint64_t>(finalElapsedCount);
     if (!options.journalPath.empty() && !journalCreateAttempted)
     {
-        journalCreateAttempted = true;
         journalSnapshot = pbapp::RunEvidenceJournal::Create(std::filesystem::path(options.journalPath), {}, journal);
     }
     if (journal)
     {
-        journalSnapshot = journal->AppendTerminal(finalElapsedMilliseconds,
-            pbapp::BuildEncoderJournalRecord(UnixNowMilliseconds(), snapshot));
+        // Finish() returns the journal's authoritative snapshot, so it already carries any
+        // invalidation or truncation recorded by the terminal append.
+        static_cast<void>(journal->AppendTerminal(finalElapsedMilliseconds,
+            pbapp::BuildEncoderJournalRecord(UnixNowMilliseconds(), snapshot)));
         journalSnapshot = journal->Finish();
     }
     if (!options.journalPath.empty())

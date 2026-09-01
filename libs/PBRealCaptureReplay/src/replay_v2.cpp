@@ -707,6 +707,12 @@ ReplayStatus ValidateWholeStream(const HANDLE file, const std::uint64_t bytesBef
 
 struct ReplayV2Writer::Implementation
 {
+    Implementation() = default;
+    Implementation(const Implementation&) = delete;
+    Implementation& operator=(const Implementation&) = delete;
+    Implementation(Implementation&&) = delete;
+    Implementation& operator=(Implementation&&) = delete;
+
     ~Implementation()
     {
         if (file != INVALID_HANDLE_VALUE)
@@ -738,6 +744,12 @@ struct ReplayV2Writer::Implementation
 
 struct ReplayV2Reader::Implementation
 {
+    Implementation() = default;
+    Implementation(const Implementation&) = delete;
+    Implementation& operator=(const Implementation&) = delete;
+    Implementation(Implementation&&) = delete;
+    Implementation& operator=(Implementation&&) = delete;
+
     ~Implementation()
     {
         if (file != INVALID_HANDLE_VALUE)

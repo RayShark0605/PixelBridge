@@ -8,6 +8,7 @@
 #include "pbmodulation/local_desktop_bootstrap.h"
 #include "pbmodulation/reference_raster.h"
 #include "pbmodulation/remote_visual.h"
+#include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbouterfec/direct_repeat.h"
 #include "pbouterfec/wirehair_v2.h"
@@ -73,6 +74,13 @@ inline constexpr std::uint64_t maximumRoiResidentBytes = 128ULL * mebibyte;
 static_assert(pbdesktoplevels::kPayloadBytes == outerBlockBytes);
 static_assert(pbdesktoplevels::kInfoBytes == informationBytes);
 static_assert(pbdesktoplevels::kCodewordBytes == codewordBytes);
+
+[[nodiscard]] bool IsReplayEvidenceVisualProfileId(const std::uint64_t visualProfileId) noexcept
+{
+    return visualProfileId == pbmodulation::kDesktopLevels2ProfileId ||
+        visualProfileId == pbmodulation::kShapeChromaProfileId ||
+        visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId;
+}
 
 class RuntimeFailure final : public std::runtime_error
 {
@@ -304,7 +312,7 @@ public:
             return;
         }
         std::uint64_t cpu100ns = 0;
-        if (!ReadCpu100ns(cpu100ns) || cpu100ns < lastCpu100ns_ || monotonicMilliseconds <= lastWallMilliseconds_)
+        if (!ReadCpu100ns(cpu100ns) || cpu100ns < lastCpu100ns_)
         {
             snapshot_.cpuAveragePercent.reset();
             snapshot_.cpuPeakPercent.reset();
@@ -313,6 +321,7 @@ public:
             initialized_ = false;
             return;
         }
+        // The 1 s gate above guarantees intervalMilliseconds >= 1000, so the divisor below is non-zero.
         const std::uint64_t intervalMilliseconds = monotonicMilliseconds - lastWallMilliseconds_;
         const double intervalCores = static_cast<double>(cpu100ns - lastCpu100ns_) /
             (static_cast<double>(intervalMilliseconds) * 10000.0);
@@ -1435,7 +1444,7 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
     replayDescriptor.datasetClass = pbrealcapturereplay::ReplayDatasetClass::RemoteVisual;
     replayDescriptor.datasetId = datasetId.Value().bytes;
     replayDescriptor.runId = runId;
-    replayDescriptor.visualProfileId = profile.visualProfileId;
+    replayDescriptor.visualProfileId = config.replayEvidenceVisualProfileId.value_or(profile.visualProfileId);
     replayDescriptor.createdUtc100ns = GetUtcFileTime100ns();
     replayDescriptor.remoteMetadataJsonUtf8 = BuildRemoteVisualRunMetadataJson(config.remoteMetadata);
     Require(replayDescriptor.createdUtc100ns > 0, "Replay UTC timestamp acquisition failed");
@@ -1463,9 +1472,10 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
     Require(static_cast<bool>(recorderStatus), "Replay recorder creation failed: " +
         DescribeCaptureStatus(recorderStatus));
 
+    const auto captureConfig = MakeCaptureConfig(config);
     pbcapturenormalize::DiagnosticReadbackConfig readbackConfig;
     readbackConfig.maximumRoiSize = {static_cast<std::int32_t>(roiWidth), static_cast<std::int32_t>(roiHeight)};
-    readbackConfig.stagingTextureCount = 3;
+    readbackConfig.stagingTextureCount = captureConfig.capture.roiTextureCount;
     readbackConfig.maximumFrameAgeMilliseconds = 250;
     readbackConfig.maximumReadbackBytes = 256ULL * mebibyte;
     readbackConfig.processingReservedBytes = replayRecorder->ProcessingReservedBytes();
@@ -1475,7 +1485,6 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
     Require(static_cast<bool>(readbackStatus), "Replay diagnostic readback creation failed: " +
         DescribeCaptureStatus(readbackStatus));
 
-    const auto captureConfig = MakeCaptureConfig(config);
     NativeCaptureSession capture(config.captureBackend, captureConfig, replayReadback);
     snapshot.Update([&](DecoderSnapshot& value)
     {
@@ -2975,6 +2984,12 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
         return RuntimeStatus::Failure("输出目录路径无效");
     }
     const bool offlineReplay = !config.replayInputPath.empty();
+    if (config.replayEvidenceVisualProfileId &&
+        (!config.diagnosticCaptureOnly || !IsReplayEvidenceVisualProfileId(*config.replayEvidenceVisualProfileId)))
+    {
+        return RuntimeStatus::Failure(
+            "Replay evidence profile 只允许 Direct、Shape 或 LF4 capture-only descriptor 标记；不得选择 production demodulator");
+    }
     if (offlineReplay && !config.replayOutputPath.empty())
     {
         return RuntimeStatus::Failure("Replay input 与 live replay recorder output 互斥");

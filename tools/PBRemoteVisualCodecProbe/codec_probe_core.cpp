@@ -173,7 +173,7 @@ std::string Classify(const pbdesktoplevels::RemoteVisualLowFpsReferenceObservati
         return "FalseAcceptance";
     }
     if (diagnosticObservation.evaluation.IsVerified() &&
-        productionObservation.evaluation.acceptedTransportBlocks == 4)
+        productionObservation.evaluation.acceptedTransportBlocks == pbmodulation::kRemoteVisualLowFpsCodewords)
     {
         return "Verified";
     }
@@ -580,7 +580,7 @@ bool EvaluateGray8Sequence(const std::span<const std::byte> frames,
         std::vector<FrameEvidence> evidence;
         evidence.reserve(frameCount);
         std::vector<pbdesktoplevels::AcceptedTransportBlock> receiverBlocks;
-        receiverBlocks.reserve(frameCount * 4);
+        receiverBlocks.reserve(frameCount * pbmodulation::kRemoteVisualLowFpsCodewords);
         CodecSequenceEvaluation evaluation;
         evaluation.frames.reserve(frameCount);
         evaluation.truthBoundaryValid = true;
