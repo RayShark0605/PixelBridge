@@ -143,6 +143,34 @@ target_link_libraries(PBRemoteVisualReplayInspector
         PB::CompilerSettings
         PBRemoteVisualReplayInspectorCore)
 
+# Step-07 calibration is an offline Gate. It fits candidate metric mappings
+# from Train observations, selects on Validation, and only then opens Holdout
+# and External results. Production LF4 defaults remain unchanged until the
+# selected manifest is separately frozen by the next route step.
+add_library(PBRemoteVisualMetricCalibrationCore STATIC
+    PBRemoteVisualMetricCalibration/metric_calibration_core.cpp
+    PBRemoteVisualMetricCalibration/calibration_pipeline.cpp)
+target_link_libraries(PBRemoteVisualMetricCalibrationCore
+    PUBLIC
+        PB::PBDesktopLevelsReference
+    PRIVATE
+        PB::CompilerSettings
+        PB::PBModulation
+        PB::PBProtocol
+        PB::PBRealCaptureReplay
+        PB::PBRemoteVisualSimulator
+        PBRemoteVisualReceiverEvidenceCore)
+target_include_directories(PBRemoteVisualMetricCalibrationCore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/PBRemoteVisualMetricCalibration)
+
+add_executable(PBRemoteVisualMetricCalibration
+    PBRemoteVisualMetricCalibration/main.cpp)
+target_link_libraries(PBRemoteVisualMetricCalibration
+    PRIVATE
+        PB::CompilerSettings
+        PBRemoteVisualMetricCalibrationCore)
+
 # Evidence-only sender used to obtain real receiver-side Replay v2 captures.
 # LF4 remains absent from the product profile enum/GUI: this tool presents one
 # deterministic diagnostic raster and performs no file-transfer lifecycle.
