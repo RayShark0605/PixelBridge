@@ -80,6 +80,12 @@ void WriteOptionalFinite(std::ostream& stream, const std::optional<double>& valu
 
 struct RunEvidenceJournal::Implementation
 {
+    Implementation() = default;
+    Implementation(const Implementation&) = delete;
+    Implementation& operator=(const Implementation&) = delete;
+    Implementation(Implementation&&) = delete;
+    Implementation& operator=(Implementation&&) = delete;
+
     ~Implementation()
     {
         if (file != INVALID_HANDLE_VALUE)

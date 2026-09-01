@@ -125,11 +125,14 @@ public:
     // Expected data is generated ONLY AFTER every codeword has gone through
     // soft decoding, syndrome, CRC and identity checks; it cannot aid recovery.
     [[nodiscard]] ReferenceObservation Decode(const pbmodulation::LumaView& view,
-                                             const pbmodulation::DesktopLevelsDecodePolicy& policy = {}) noexcept;
+        const pbmodulation::DesktopLevelsDecodePolicy& policy = {},
+        EvaluationMode mode = EvaluationMode::DiagnosticTruth) noexcept;
     [[nodiscard]] ShapeChromaReferenceObservation DecodeShapeChroma(const pbmodulation::LumaView& view,
-        const pbmodulation::ShapeChromaDecodePolicy& policy = {}) noexcept;
+        const pbmodulation::ShapeChromaDecodePolicy& policy = {},
+        EvaluationMode mode = EvaluationMode::DiagnosticTruth) noexcept;
     [[nodiscard]] RemoteVisualReferenceObservation DecodeRemoteVisual(const pbmodulation::LumaView& view,
-        const pbmodulation::RemoteVisualDecodePolicy& policy = {}) noexcept;
+        const pbmodulation::RemoteVisualDecodePolicy& policy = {},
+        EvaluationMode mode = EvaluationMode::DiagnosticTruth) noexcept;
     [[nodiscard]] RemoteVisualLowFpsReferenceObservation DecodeRemoteVisualLowFps(const pbmodulation::LumaView& view,
         const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy = {},
         EvaluationMode mode = EvaluationMode::DiagnosticTruth) noexcept;

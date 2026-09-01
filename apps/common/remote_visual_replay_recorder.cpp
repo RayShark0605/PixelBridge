@@ -65,7 +65,7 @@ struct RemoteVisualReplayRecorder::Implementation
     {
         RemoteVisualReplayRecorderConfig config;
         std::unique_ptr<pbrealcapturereplay::ReplayV2Writer> writer;
-        std::vector<RecorderSlot> slots;
+        std::vector<RecorderSlot> captureSlots;
         std::vector<std::uint32_t> queue;
         std::vector<pbrealcapturereplay::ReplayV2DemodObservationView> demodObservations;
         std::optional<std::uint32_t> candidateIndex;
@@ -125,9 +125,9 @@ void RunWriter(const std::shared_ptr<RemoteVisualReplayRecorder::Implementation:
             slotIndex = state->queue[state->queueHead];
             state->queueHead = (state->queueHead + 1) % static_cast<std::uint32_t>(state->queue.size());
             state->queueCount--;
-            state->slots[slotIndex].state = SlotState::Writing;
+            state->captureSlots[slotIndex].state = SlotState::Writing;
         }
-        RecorderSlot& slot = state->slots[slotIndex];
+        RecorderSlot& slot = state->captureSlots[slotIndex];
         const pbrealcapturereplay::ReplayV2CaptureView capture{slot.metadata, state->config.dpiX,
             state->config.dpiY, state->config.scaleX, state->config.scaleY,
             state->config.displayIdentityUtf8,
@@ -270,15 +270,15 @@ pbcapturenormalize::CaptureStatus RemoteVisualReplayRecorder::Create(
                 writerStatus.nativeError == 0 ? E_FAIL : static_cast<HRESULT>(writerStatus.nativeError),
                 pbcapturenormalize::CaptureStage::Configuration);
         }
-        state.slots.resize(static_cast<std::size_t>(slotCount.Value()));
-        for (auto& slot : state.slots)
+        state.captureSlots.resize(static_cast<std::size_t>(slotCount.Value()));
+        for (auto& slot : state.captureSlots)
         {
             slot.pixels.resize(static_cast<std::size_t>(frameBytes.Value()));
         }
         state.queue.resize(config.queueCapacity);
         state.demodObservations.reserve(config.limits.maximumCaptureFrames);
         const std::uint64_t fixedReservation = sizeof(Implementation::State) +
-            state.slots.size() * sizeof(RecorderSlot) + state.queue.size() * sizeof(std::uint32_t) +
+            state.captureSlots.size() * sizeof(RecorderSlot) + state.queue.size() * sizeof(std::uint32_t) +
             static_cast<std::uint64_t>(config.limits.maximumCaptureFrames) *
                 sizeof(pbrealcapturereplay::ReplayV2DemodObservationView);
         const auto totalReservation = pbprotocol::CheckedAddUint64(pixelReservation.Value(), fixedReservation);
@@ -343,20 +343,20 @@ pbcapturenormalize::CaptureStatus RemoteVisualReplayRecorder::Analyze(
             state.droppedFrames++;
             return {};
         }
-        const auto iterator = std::ranges::find_if(state.slots, [](const RecorderSlot& slot)
+        const auto iterator = std::ranges::find_if(state.captureSlots, [](const RecorderSlot& slot)
         {
             return slot.state == SlotState::Free;
         });
-        if (iterator == state.slots.end())
+        if (iterator == state.captureSlots.end())
         {
             state.droppedFrames++;
             return {};
         }
-        slotIndex = static_cast<std::uint32_t>(std::distance(state.slots.begin(), iterator));
+        slotIndex = static_cast<std::uint32_t>(std::distance(state.captureSlots.begin(), iterator));
         iterator->state = SlotState::Candidate;
         state.candidateIndex = slotIndex;
     }
-    RecorderSlot& slot = state.slots[slotIndex];
+    RecorderSlot& slot = state.captureSlots[slotIndex];
     std::memcpy(slot.pixels.data(), pixels.data(), pixels.size());
     slot.pixelBytes = pixels.size();
     slot.rowPitch = rowPitch;
@@ -376,7 +376,7 @@ void RemoteVisualReplayRecorder::Commit(const pbcapturenormalize::ScreenCaptureF
     {
         return;
     }
-    RecorderSlot& slot = state.slots[*state.candidateIndex];
+    RecorderSlot& slot = state.captureSlots[*state.candidateIndex];
     const bool identityMatches = slot.metadata.domain == metadata.domain &&
         slot.metadata.captureObservation == metadata.captureObservation;
     if (!identityMatches || state.stopRequested || state.queueCount >= state.queue.size())
@@ -408,7 +408,7 @@ void RemoteVisualReplayRecorder::Discard() noexcept
     std::lock_guard lock(state.mutex);
     if (state.candidateIndex)
     {
-        RecorderSlot& slot = state.slots[*state.candidateIndex];
+        RecorderSlot& slot = state.captureSlots[*state.candidateIndex];
         slot.state = SlotState::Free;
         slot.pixelBytes = 0;
         slot.rowPitch = 0;

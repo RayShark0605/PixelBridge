@@ -605,8 +605,12 @@ RemoteVisualLowFpsObservation DecodeRemoteVisualLowFpsFrame(const LumaView& view
     {
         return observation;
     }
-    if (observation.bootstrap.geometry.originX + observation.bootstrap.geometry.scaleX * 1920 > view.width ||
-        observation.bootstrap.geometry.originY + observation.bootstrap.geometry.scaleY * 1080 > view.height)
+    // ValidateRemoteVisualLowFpsGeometry already rejects a negative or non-finite origin, so
+    // bounding the far corner of the fixed logical canvas keeps every scaled sample in-frame.
+    const LocalDesktopGeometry& geometry = observation.bootstrap.geometry;
+    const double farCornerX = geometry.originX + geometry.scaleX * kLocalDesktopCanvasWidth;
+    const double farCornerY = geometry.originY + geometry.scaleY * kLocalDesktopCanvasHeight;
+    if (farCornerX > view.width || farCornerY > view.height)
     {
         observation.erasure = RemoteVisualLowFpsErasure::FrameOutOfBounds;
         return observation;
@@ -683,32 +687,36 @@ RemoteVisualLowFpsObservation DecodeRemoteVisualLowFpsFrame(const LumaView& view
                 parsed.Value().frameSequence, scratch.soft, policy.minimumFreshnessMetric);
             if (!resolution.valid)
             {
+                // An internal metric-resolution invariant failed. Report the erasure but fall
+                // through so the work/pixel accounting below still describes this attempt.
                 observation.erasure = RemoteVisualLowFpsErasure::InvalidInput;
-                return observation;
             }
-            observation.freshnessRegions = resolution.freshnessRegions;
-            observation.staleRegions = resolution.staleRegions;
-            observation.freshnessTagMismatches = resolution.freshnessTagMismatches;
-            observation.freshnessTagErasures = resolution.freshnessTagErasures;
-            observation.erasedDataMetrics = resolution.erasedDataMetrics;
-            double minimumMargin = 1;
-            for (std::size_t logical = 0; logical < scratch.soft.size(); logical++)
+            else
             {
-                const float metric = scratch.soft[logical];
-                if (metric < 0)
+                observation.freshnessRegions = resolution.freshnessRegions;
+                observation.staleRegions = resolution.staleRegions;
+                observation.freshnessTagMismatches = resolution.freshnessTagMismatches;
+                observation.freshnessTagErasures = resolution.freshnessTagErasures;
+                observation.erasedDataMetrics = resolution.erasedDataMetrics;
+                double minimumMargin = 1;
+                for (std::size_t logical = 0; logical < scratch.soft.size(); logical++)
                 {
-                    scratch.hard[logical / 8] |= static_cast<std::byte>(1u << (logical % 8));
+                    const float metric = scratch.soft[logical];
+                    if (metric < 0)
+                    {
+                        scratch.hard[logical / 8] |= static_cast<std::byte>(1u << (logical % 8));
+                    }
+                    const double margin = std::min(1.0, std::abs(static_cast<double>(metric)));
+                    const auto bin = static_cast<std::size_t>(margin * static_cast<double>(kRemoteVisualMarginBins - 1));
+                    scratch.histogram[std::min(bin, kRemoteVisualMarginBins - 1)]++;
+                    minimumMargin = std::min(minimumMargin, margin);
                 }
-                const double margin = std::min(1.0, std::abs(static_cast<double>(metric)));
-                const auto bin = static_cast<std::size_t>(margin * static_cast<double>(kRemoteVisualMarginBins - 1));
-                scratch.histogram[std::min(bin, kRemoteVisualMarginBins - 1)]++;
-                minimumMargin = std::min(minimumMargin, margin);
+                observation.dataBytes = kRemoteVisualLowFpsDataBytes;
+                observation.margin = SummarizeRemoteVisualMargin(scratch.histogram, minimumMargin);
+                std::copy(scratch.hard.begin(), scratch.hard.end(), hardBits.begin());
+                std::copy(scratch.soft.begin(), scratch.soft.end(), softMetrics.begin());
+                scratch.histogramValid = true;
             }
-            observation.dataBytes = kRemoteVisualLowFpsDataBytes;
-            observation.margin = SummarizeRemoteVisualMargin(scratch.histogram, minimumMargin);
-            std::copy(scratch.hard.begin(), scratch.hard.end(), hardBits.begin());
-            std::copy(scratch.soft.begin(), scratch.soft.end(), softMetrics.begin());
-            scratch.histogramValid = true;
         }
     }
     observation.dataWorkUnits = reader.WorkUnits();

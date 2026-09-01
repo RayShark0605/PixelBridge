@@ -114,6 +114,19 @@ if ($LASTEXITCODE -ne 0 -or $headCommit -notmatch '^[0-9a-f]{40}$')
 {
     throw 'Unable to resolve HEAD'
 }
+# Step 01 freezes the annotated phase1-gate-pass tag; recording a moved tag would silently move the
+# evidence boundary of every package built from this tree, so the frozen identity is re-verified
+# before it is written into the manifest.
+$tagIdentityScript = Join-Path $repositoryRoot 'cmake\PBVerifyPhase1GateTagIdentity.cmake'
+if (-not (Test-Path -LiteralPath $tagIdentityScript -PathType Leaf))
+{
+    throw "Step 01 tag identity check is missing: $tagIdentityScript"
+}
+$null = & cmake "-DPB_REPOSITORY_ROOT=$repositoryRoot" -P $tagIdentityScript
+if ($LASTEXITCODE -ne 0)
+{
+    throw "Phase-1 Gate tag identity check failed (exit $LASTEXITCODE)"
+}
 $tagObject = (& git -C $repositoryRoot rev-parse phase1-gate-pass).Trim()
 $tagCommit = (& git -C $repositoryRoot rev-parse 'phase1-gate-pass^{}').Trim()
 if ($LASTEXITCODE -ne 0)

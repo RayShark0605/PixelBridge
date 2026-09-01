@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-08-31 持续实施路线；Step 01、03..06 已完成，Step 02 因真实 receiver-only Replay 尚不存在而保持 `PARTIAL`。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是双机 field certification。**
+状态：**2026-09-01 持续实施路线；Step 01..06 已全部完成，Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -433,8 +433,8 @@ logical FPS <= 5
 
 | # | 步骤 | 状态 | 难度 | 重要性 | 主要完成证据 |
 | ---: | --- | --- | --- | --- | --- |
-| 01 | 冻结基线、tag 与证据边界 | DONE | ★★☆☆☆ | ★★★★★ | tag identity、pre-change LocalDesktop/RemoteVisual evidence |
-| 02 | 失真样本分析与 RemoteVisual 数据集入口 | PARTIAL | ★★☆☆☆ | ★★★★★ | bounded analyzer、双 hash screenshot index 已有；真实 receiver-only Replay 缺失 |
+| 01 | 冻结基线、tag 与证据边界 | DONE | ★★☆☆☆ | ★★★★★ | `PBPhase1GateTagIdentity` 自动复核 tag object/peeled commit，并断言 build/evidence 未被 git 跟踪 |
+| 02 | 失真样本分析与 RemoteVisual 数据集入口 | DONE | ★★☆☆☆ | ★★★★★ | Direct/Shape/LF4 真实 receiver-only Replay、三项 dataset seal、同一 Inspector 双跑逐字节一致 |
 | 03 | LF4 profile identity、codebook 与容量真值 | DONE | ★★★☆☆ | ★★★★★ | `9b8e806`、codebook/bijection tests |
 | 04 | CPU 连续尺度 demod、freshness erasure、四 codeword 真值链 | DONE | ★★★★☆ | ★★★★★ | scale/stale/QC-LDPC/Transport tests |
 | 05 | Provider-generic deterministic channel transform API | DONE | ★★★★☆ | ★★★★★ | 独立 transforms、seed manifest、resource bounds |
@@ -463,12 +463,15 @@ logical FPS <= 5
 
 ### 11.3 Step 01：冻结基线、tag 与证据边界
 
-- **状态**：`PARTIAL`；**难度**：★★☆☆☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★☆☆☆；**重要性**：★★★★★。
 - **目标**：保证低帧率路线不会追溯重定义历史 Phase-1 Gate，并保留修改前 LocalDesktop 和真实 RemoteVisual 失败证据。
 - **实施要点**：记录 base commit、annotated tag object、peeled commit、source hash、显示器物理矩形和两轮 raw baseline；大体积证据只放在 `build-p1_5-evidence`。
 - **注意事项**：历史 tag 不 amend/move/recreate；旧报告不能用新测试回填；用户原有 `docs/PHASE1_GATE_REPORT.md` 不自动暂存。
 - **验收证据**：`phase1-gate-pass` 仍为 `fde56c...`，peeled 为 `806998...`；四个 pre-change LocalDesktop 文件 hash 一致；Direct/Shape RemoteVisual 无 descriptor/Transport 的失败报告保留。
-- **完成出口**：每次后续提交前后自动复核 tag identity，且 `git status` 中没有 evidence/build artifact 被暂存。
+- **本次复核**：在 HEAD `6669cdf` 上 `git rev-parse phase1-gate-pass` = `fde56c4c4e7124e8ffe29a0dcb619f8236781ebb`，`phase1-gate-pass^{commit}` = `80699813b595bcf6db64047b50d31056872e33e1`；`build-p1_5-evidence/p1_5-prechange-20260830-193716-cd533fe/` 中的四轮 LocalDesktop reference 报告与 Direct/Shape `failure-classification.json`、`decoder-report.json` 均仍在原地，暂存区为空。
+- **自动复核实现**：`cmake/PBVerifyPhase1GateTagIdentity.cmake` 内置冻结常量并禁止调用方覆盖（否则任何调用方都能传入 tag 当前指向的值来“通过”检查）；先校验 pin 自身是 40 位小写 hex，再断言 git work-tree 顶层目录等于请求根目录（git 会向上遍历，否则校验的是别的仓库）、`cat-file -t` 必须是 `tag`（拒绝同名轻量 tag）、`rev-parse <tag>` 与 `rev-parse <tag>^{commit}` 必须等于冻结 tag object 与 peeled commit，并用 `cat-file tag` 头部交叉验证 payload 的 `object`/`type`/`tag`/`tagger`；最后断言 `build/` 与 `build-p1_5-evidence/` 都没有被 git 跟踪。脚本注册为 CTest `PBPhase1GateTagIdentity`，`New-PBRemoteVisualPortablePackage.ps1` 也必须在写 manifest 前通过它，因此 tag 一旦移动，打包直接失败。
+- **历史口径**：`build-p1_5-evidence/20260831-step06-production-truth-v2-validation-1936c02.json` 把 `phaseStatus.step01` 记为 `DONE`，而当时 §11.3 仍是 `PARTIAL`；差异来自该摘要只记录“tag identity 已人工核对”，未检查完成出口要求的自动复核。封存摘要保持原样不改写，状态口径以本节为准。
+- **完成出口**：每次后续提交前后自动复核 tag identity，且 `git status` 中没有 evidence/build artifact 被暂存。`git ls-files` 实测 `build/` 与 `build-p1_5-evidence/` 均为 0 个被跟踪文件，暂存区为空。
 
 ### 11.4 Step 02：失真样本分析与数据集入口
 
@@ -476,9 +479,9 @@ logical FPS <= 5
 - **目标**：把截图、真实 ROI frame sequence 和 metadata 转为可重复、可校验、最小隐私范围的数据源。
 - **实施要点**：使用 `analyze_remote_capture.py` 做 bounded/read-only 初筛；`seal_remote_visual_dataset.py` 对显式 artifact root 下的 screenshot/Replay v2 生成 create-only SHA-256+BLAKE3+size+analysis index，拒绝 path escape、symlink/junction、重复 JSON key、非有限数值、变化中的输入和 protected-monitor pixels。Replay v2 仍由现有 writer 保存 selected ROI、CaptureEpoch、timestamp、format、live observation，并且必须先经 `ReplayV2Reader`/offline decoder 才能成为语义证据。
 - **注意事项**：edge detector 只是诊断候选，不能改变 acceptance；不得保存左屏或 ROI 外像素；输入在分析期间变化必须拒绝；不能根据 provider 名称选择阈值。
-- **已有证据**：analyzer/sealer deterministic/resource/parser/no-overwrite tests；两张用户提供且明确只含 `ExperimentMonitor` 的真实 Sunlogin Direct/Shape 失真截图被封成同一 byte-identical index；最新 create-only `dataset-index-c.json`/`dataset-index-d.json` 均为 3868 bytes，SHA-256=`C9101EB309FEB09768372D3F6BAC25EDDB929014D1D2A350A9E9680C5B08407C`，`acceptanceInput=false`、`containsProtectedMonitorPixels=false`、`replayV2Count=0`。
-- **未满足的验收证据**：原路线要求 Direct/Shape/LF4 各至少一组真实 receiver-only Replay，并且同一 Replay 两次离线运行产生相同 Bootstrap、geometry、metric、FEC/Transport disposition。当前只有静态截图，不能替代 ROI frame sequence 或 Replay v2。因此该步骤不能标记为 `DONE`；Step 15/20 同样继续把真实 Replay 作为硬出口，而不是追溯删除这一要求。
-- **完成出口**：补齐上述三类真实 Replay；先通过 `ReplayV2Reader` 的 bounds/checksum/format 验证，再用同一 production offline decoder 各运行两次并得到逐字段一致的分类。届时才允许把 Step 02 从 `PARTIAL` 改为 `DONE`。
+- **已有证据**：analyzer/sealer deterministic/resource/parser/no-overwrite tests；两张用户提供且明确只含 `ExperimentMonitor` 的真实 Sunlogin Direct/Shape 失真截图被封成同一 byte-identical index；该历史截图索引的 `acceptanceInput=false`、`containsProtectedMonitorPixels=false`、`replayV2Count=0` 口径保持不变。2026-09-01 又在 Windows Remote Desktop receiver-only 路径取得 Direct/Shape/LF4 各 8 帧的封口 Replay v2；三项 create-only dataset index 两次逐字节一致，SHA-256=`c3e81b56163f150be9a1b2cfa133c40f46b494390902c5a588e16d5658795b95`，`replayV2Count=3`、`realRemoteRenderCount=3`、`containsProtectedMonitorPixels=false`、`acceptanceInput=false`。
+- **验收证据**：`PBRemoteVisualReplayInspector` 对每份 Replay 都先用 `ReplayV2Reader` 完整读到 footer，再调用现有 Bootstrap、profile reference decoder、QC-LDPC、padding、Transport CRC 与 Session identity 判决链；每份 Replay 用同一个可执行文件独立运行两次，完整 sealed JSON 逐字节一致。Direct/Shape/LF4 分别得到 8/8 Bootstrap、8/8 modulation、8/8 Transport accepted frames，accepted Transport blocks 分别为 336/256/32，FEC/CRC/identity failures 均为 0。完整证据见第 15 节。
+- **完成出口**：已满足。该出口只证明真实 receiver-only ROI frame sequence 可重复分类；没有 sender truth 时 `falseAcceptedCodewords=null`，WholeFileDigest/final publish 固定为 `NotEvaluated`。Step 15 的 live/offline production parity 与 Step 20 的真实文件发布 Gate 仍是独立硬出口。
 
 ### 11.5 Step 03：LF4 identity、codebook 与容量真值
 
@@ -736,3 +739,127 @@ build-p1_5-evidence/20260831-step06-production-truth-v2-validation-1936c02.json
 ```
 
 该摘要为 1905 bytes，SHA-256=`376f0a93563ede824912b213e02c52ebe90d5e33b4918ad52a23dcd08c4bce80`。本轮没有启动 Encoder/Decoder GUI、capture、ROI selector 或 display API，没有读取或保存左屏像素，也没有输入自动化。真实 Direct/Shape/LF4 receiver-only Replay 仍缺失，因此 Step 02 继续是明确 blocker；这里的离线证据不能转写为 `RemoteVisualSmokePass`。
+## 14. Step 01-06 独立复审第二轮补记
+
+本节只追加，不改写 11 到 13 节的任何历史结论或旧数字。它记录在 HEAD `6669cdf26505ec64fbeabe3b02e15c5ca5b566ba` 的工作树上对 Step 01-06 的第二轮独立复审：修复了哪些缺陷、给自动复核增加了什么、本轮真正跑了什么、以及仍然没有证据的边界。当前改动全部处于未提交、未暂存状态。
+
+### 14.1 计数口径
+
+`ctest` 省略 `-C <Config>` 时不会执行以 `CONFIGURATIONS Release` 注册的用例（例如 `tests/Phase0Gate/CMakeLists.txt` 中的 `PBPhase0GateLarge`），因此计数必须与构建目录和配置一起记录，否则 143 会被误读成 149 的回退：
+
+| 构建目录 | 配置与过滤 | 注册 | 实跑 | 结果 |
+| --- | --- | --- | --- | --- |
+| `build-p1_5-evidence/20260831-step06-headless-release-final` | `-C Release -E "Native|GuiSmoke"`（13 节记录） | 143 | 143 | 143 通过 |
+| `build-desktop-levels-release` | `-C Release -E "Native|GuiSmoke"` | 165 | 149 | 149 通过 |
+| `build-desktop-levels-asan` | `-C RelWithDebInfo -E "Native|GuiSmoke"` | 300 | 284 | 284 通过 |
+
+差额全部来自新增用例；两份日志的 `Skipped` 与 `Disabled` 计数均为 0，即全部真实执行。native 与 GuiSmoke 共 16 项按既定边界继续排除，本轮没有创建任何窗口，也没有读取左屏。
+
+### 14.2 本轮修复（以当前 diff 为准）
+
+1. `apps/common/remote_visual_replay_recorder.cpp`：槽位容器 `slots` 更名为 `captureSlots`。cppcheck 对 `apps/*` 使用 `-Dslots=` 等 shim 代替 moc，`state.slots.resize(n)` 会被预处理成 `state..resize(n)`，于是该翻译单元以语法错误退出静态审查，静态覆盖率静默归零，而 `--error-exitcode=2` 只会显示一条无关的语法错误。
+2. `apps/common/evidence_journal.cpp`、`libs/PBRealCaptureReplay/src/replay_v2.cpp`：三个持有裸 `HANDLE` 的 `Implementation` 显式删除拷贝与移动，消除默认拷贝造成的重复 `CloseHandle`。
+3. `apps/PixelBridgeEncoder/encoder_runtime_cli.cpp`、`apps/PixelBridgeDecoder/decoder_runtime_cli.cpp`：终局不再采用 `AppendTerminal()` 的返回值，统一以 `Finish()` 返回的权威快照为准（该快照已经带上 terminal append 记录的失效或截断），并删除已死的 `journalCreateAttempted` 二次赋值。
+4. `apps/common/local_desktop_runtime.cpp`：删除被上游 1 秒采样门限蕴含的 `monotonicMilliseconds <= lastWallMilliseconds_` 死条件，并注明 interval 非零的不变量；语义不变，但原条件会让读者误以为除数可能为 0。
+5. `libs/PBModulation/src/remote_visual_low_fps.cpp`：远角落界改用 `kLocalDesktopCanvasWidth`/`kLocalDesktopCanvasHeight` 常量替代 1920/1080 字面量；`ResolveRemoteVisualLowFpsPhysicalMetrics` 失败时不再提前 `return`，而是落到统一的 work/pixel 记账，使失败路径同样产出 `dataWorkUnits` 与 `pixelError`，同时 `hardBits`、`softMetrics`、`dataBytes` 与 `histogramValid` 保持不变。
+6. `tools/PBRemoteVisualChannelMatrix/channel_matrix_core.cpp`：`FindDifferingDataBlockTransform` 同时校验被比较的 tile 矩形与写出的 blockSize 矩形，并改用 64 位加法；原代码只检查 blockSize，且 `region.x + blockSize` 在 `uint32` 下可回绕。
+7. `channel_matrix_core.cpp` 与 `tools/PBRemoteVisualCodecProbe/codec_probe_core.cpp`：验收阈值与 `reserve()` 里的裸字面量 4 改为 `pbmodulation::kRemoteVisualLowFpsCodewords`，让 codeword 数量只有一个真值来源。
+8. 新增回归测试：tile 与 block 双矩形在 8/16/64 下的画布内界（`tests/tools/test_remote_visual_channel_matrix.cpp`）；输出 span 为 null 或过小时必须擦除、且同一 workspace 之后仍能正常解码（`tests/PBModulation/test_remote_visual_low_fps.cpp`）；telemetry 快照的取值语义用 `static_assert` 加运行期不变性钉住（`tests/PBApplication/test_application_model.cpp`）；sealer 的 symlink、NTFS junction、非有限 JSON、枚举与成员校验、Replay 扩展名与截断（`tools/PBRemoteVisualEvidence/test_seal_remote_visual_dataset.py`，16 到 20 个用例）。
+9. `tests/DesktopLevelsGate/cppcheck_review.json` 重新钉值：69 条 pin 对当前文件的规范化 SHA-256 逐条复算，0 条失配、0 条缺失。
+
+### 14.3 自动复核增量
+
+- Step 01 的 tag 身份从人工执行 git 改为 `cmake/PBVerifyPhase1GateTagIdentity.cmake`，注册为 CTest `PBPhase1GateTagIdentity`。冻结常量内置于脚本，调用方传入 `PB_PHASE1_GATE_TAG_NAME`、`PB_PHASE1_GATE_TAG_OBJECT` 或 `PB_PHASE1_GATE_COMMIT` 会直接 `FATAL_ERROR`，否则任何人都能拿 tag 当前指向的值来自证通过。脚本先校验 pin 自身是 40 位小写 hex，再断言 work-tree 顶层等于请求根（git 会向上遍历，否则会去校验别的仓库）、`cat-file -t` 必须是 `tag`（拒绝同名轻量 tag）、`rev-parse` 结果与 `cat-file tag` 头部 payload 的 object/type/tag/tagger 三重一致，最后断言 `build/` 与 `build-p1_5-evidence/` 未被 git 跟踪。
+- `New-PBRemoteVisualPortablePackage.ps1` 在写 manifest 之前必须先通过该脚本。本轮首次端到端验证：真实仓库退出码 0，manifest 记录 `fde56c4c4e7124e8ffe29a0dcb619f8236781ebb` 与 `80699813b595bcf6db64047b50d31056872e33e1`，source set 为 841 个文件；另建一个把 `phase1-gate-pass` 指向别的提交的 scratch 仓库，打包脚本退出码 1 并报 `Phase-1 Gate tag identity check failed (exit 1)`，输出目录里没有任何 zip 或 seal，create-only 语义未被破坏。
+- `tests/DesktopLevelsGate/VerifyQtKeywordCollisions.ps1`（CTest `PBDesktopLevelsQtKeywordGuard`）守住上面第 1 条那类静默失效。本轮把它的作用域从 `apps/*` 扩到 apps 翻译单元实际会包含的公共头闭包 `libs/*/include/**`：新增必填参数 `-HeaderClosureRoot`、一个只扫 include 目录的路径过滤器，以及一个证明该过滤器既不是空转也不是全量扫描的 scratch 自测。当前结果为 `apps-files=36 header-files=63 violations=0`。变异验证：在 `libs/PBTelemetry/include/pbtelemetry/` 放一个含 `std::vector<int> slots;` 的头文件，守卫退出码 1 并指名该文件与行号，探针随后删除。
+- `tests/DesktopLevelsGate/InvokeFinalGate.ps1` 的 cppcheck 清单补入 Step 05/06 的 `PBRemoteVisualSimulator` 与 7 个证据工具；23 个条目的 `.vcxproj` 在对应构建目录中逐一存在（缺失会让 cppcheck 以非 0/2 退出而使 Gate 失败，因此这一步必须在合入前逐个确认）。
+
+### 14.4 本轮实测（全部为本轮重新执行）
+
+| 验证 | 命令或套件 | 结果 |
+| --- | --- | --- |
+| Release 全量 | `ctest --test-dir build-desktop-levels-release -C Release -E "Native|GuiSmoke"` | 149/149 通过，551.66 s |
+| MSVC ASan 全量 | `ctest --test-dir build-desktop-levels-asan -C RelWithDebInfo -E "Native|GuiSmoke"` | 284/284 通过，986.96 s |
+| RemoteVisual evidence Python | `test_analyze_remote_capture.py test_seal_remote_visual_dataset.py test_build_codec_corpus.py test_build_step06_corpus.py` | 20/20 OK |
+| RemoteVisual report Python | `test_pb_remote_visual_report.py` | 20/20 OK |
+| cppcheck pin 一致性 | 69 条 pin 规范化 SHA-256 逐条复算 | 0 失配、0 缺失 |
+| 打包 tag 前置 | 真实仓库正例与移动 tag 反例 | 正例 0 并记录冻结身份；反例 1 且零产出 |
+| Qt 关键字守卫 | `apps` 加 `libs/*/include` 全量扫描与公共头变异反例 | 违规 0；公共头反例退出 1 |
+| Gate 静态审查清单 | 23 个条目的 `.vcxproj` 存在性 | 全部存在 |
+
+### 14.5 一个必须记住的流程事实
+
+CTest 脚本用例的参数只有在对应构建目录重新 configure 之后才会更新。本轮就撞上过一次：`tests/DesktopLevelsGate/CMakeLists.txt` 增加 `-HeaderClosureRoot` 之后，尚未重新 configure 的 ASan 树仍然带着旧命令行去调用该脚本。因此任何给 CTest 或 Gate 脚本增加必填参数的改动，都必须对每一个在用的构建目录重新 configure，并重新跑一次全量，否则得到的不是新定义下的结果。
+
+### 14.6 未执行与不执行的验证
+
+- Step 02 的真实 receiver-only Replay 仍然缺失：Direct/Shape/LF4 三类 ROI frame sequence 无法在沙箱内产生，Step 02 继续为 `PARTIAL`，Step 15 与 Step 20 的硬出口不变。
+- 双机 field、`UniqueVisualFPS`、真实 provider 矩阵、6 小时 bounded soak、Certified profile Gate 全部未执行。本轮全部结论仍停留在 CPU/reference 与离线 corpus 级别，不能转写为 `RemoteVisualSmokePass`。
+- 封存 corpus 的逐字节复现（`build_step06_corpus.py` 的 create-only 重建与 `SHA256SUMS.txt` 交叉核对）本轮未重复执行，原因是它与 ASan 全量回归争用 CPU 与磁盘，而其生产端与消费端都在本轮 CTest 覆盖范围内。残余风险：若某台机器上的 ffmpeg 或插件行为漂移，只有重新执行 create-only 重建才会暴露。
+- cppcheck 只重跑了 pin 的一致性，没有重跑全部 23 个工程的发现集合。pin 是按文件内容哈希绑定的，任何源码改动都会使旧 pin 失配而失败，因此残余风险限于「cppcheck 自身版本或默认检查集变化」，而版本变更另有 `Cppcheck` 字段守卫。
+- Python 证据套件仍然没有接入 CMake 与 CTest。项目现行约定是由文档指定 pinned interpreter 手工执行（`tests/PBApplication/InvokeEncoderGuiLocalDesktopSmoke.ps1` 就以 `D:\Python3.12.9\python.exe` 作为默认值），而把它们变成 CTest 需要给所有构建树引入 Python 3.12 硬依赖（本机 `python` 是 3.6，套件用到的 `Path.is_junction` 需要 3.12）。这属于影响构建架构的决定，本轮只如实记录风险，不擅自更改。残余风险：sealer 的路径穿越、symlink、受保护像素等守卫一旦回归，只有手工运行才会发现。
+
+### 14.7 停止点与续办清单
+
+- 审查轮次：R1-R11 已完成。R6、R8、R9 为无代码修改轮；R11 修复 1 个 Medium（cppcheck 关键字守卫只扫 `apps/*`，未覆盖同一预处理单元内的 `libs/*/include/**`）后按规则 cleanRounds 归零，用户在此处指示停止，因此"连续 5 轮无新问题"的收敛条件未达成。
+- 最高优先级的未覆盖缺口：Step 05/06 主体模块的逐行审计尚未执行（此前只审过 diff 与调用点），包括 `libs/PBRemoteVisualSimulator/`（resize/block-replacement/blur/gain-bias-gamma/4:2:0 proxy/crop/solid-alpha overlay/reference blend 与 `PixelBridge.RemoteVisualChannelManifest.1/2` schema）、`tools/PBRemoteVisualReceiverEvidence*`、`tools/PBRemoteVisualTemporalCorpus*`。检查重点：长度/offset/count 溢出、bounds、bounded allocation 与资源配额、未初始化 padding、第三方 API（zstd/wirehair/blake3/ffmpeg）使用方式、manifest 顺序与 seed 可复现、erasure 不得被记为 Verified。
+- 交付状态：21 个修改文件与 2 个新增脚本（`cmake/PBVerifyPhase1GateTagIdentity.cmake`、`tests/DesktopLevelsGate/VerifyQtKeywordCollisions.ps1`）保持未提交、未暂存，提交时机由用户决定；`docs/PHASE1_GATE_REPORT.md` 属用户文件，本轮未做任何操作。
+- 本次工作树的最终验证基线：Release 全量 149/149、ASan 全量 284/284、定向 `RemoteVisual|QtKeyword|Phase1GateTagIdentity` 11/11、Python 证据套件 20/20 与报告套件 20/20。
+- 清理：删除 `tests/PBModulation/__pycache__`；源码树无其它临时或探针产物；可复用校验脚本与日志保留在 `build-desktop-levels-release/_review/`（gitignored，可随构建目录一并删除）。
+
+## 15. Step 02 真实 receiver-only Replay 完成证据
+
+本节是 2026-09-01 在第 14 节历史快照之后取得的新证据。它更新当前 Step 02 状态，但不改写第 14.6 节在当时“真实 Replay 仍缺失”的事实。证据根为 gitignored 的 `build-p1_5-evidence/step02-rdp-20260901/`；机器可读完成摘要 `step02-completion-summary-a.json` 与独立重建的 `-b.json` 均为 8718 bytes，逐字节一致，SHA-256=`dd721e599800737e4fb9584d53d678ee4fae3871392231412cbf85a929e9c987`，payload BLAKE3=`d42c7b0455fcd4560826093862e4745150a514bccd7e181ba6ee33b6f718b567`。
+
+### 15.1 环境、屏幕与发送边界
+
+- Computer B 原生面板为 2560×1600、原生缩放 150%；当前 RDP session 实际可见 canvas 为 2560×1440。Computer A 的 RDP 主窗口完整位于右侧 `\\.\DISPLAY2` 的 `[2560,0,5120,1440]`，受保护左屏为 `\\.\DISPLAY1`。
+- 实验 ROI 固定为 Computer A 物理像素 `[2880,180,4800,1260]`，即 RDP session 内 `[320,180,2240,1260]`；PMv2 捕获报告为 1920×1080、96 DPI、scale 1.0。只保存右屏截图与 selected-ROI Replay；dataset seal 明确记录 `containsProtectedMonitorPixels=false`。
+- `PBRemoteVisualEvidencePresenter` 只构造一个确定性的有效 Bootstrap/Transport raster，并在成功 Present 后报告精确 window geometry。三种 profile 都重复同一 immutable raster，Present cadence 不高于 5 Hz；重复 Present 不被解释为新数据或 `UniqueVisualFPS`。
+- Computer B 便携包 `build-p1_5-evidence/PixelBridge-Step02-ComputerB-Presenter.zip` 为 350280 bytes，SHA-256=`1ba9ce9e8a142e85c115204a2f2058a01bb8ddc504b2186656a279f4fabeb6a0`。Direct/Shape/LF4 的 descriptor hash 分别为 `2920e56fcb5967a144a46cd8cc441386a361b4307f2e423a5d000325a59c214c`、`a907e99f2c50aa56b148e6fd23d1809441d790561f42c5e368c4b4dcf02d1266`、`28b09b66520b87f9cd9407b516530ad1225f84d390cc2b94d18d6e1b8d5e9bc4`。
+- RDP 的具体画质模式与 chroma mode 无法从当前 UI 可靠确认，metadata 保持 `Unknown`；代码与判决没有根据 provider 名称选择阈值。
+
+### 15.2 接收、封口与离线双跑
+
+`PixelBridgeDecoder --headless-receive --diagnostic-capture-only` 使用显式 WGC、右屏 monitor-safety preflight/revalidation、固定 8 帧和 128 MiB Replay 上限。`--replay-evidence-profile direct|shape|lf4` 只给 capture-only Replay descriptor 标记真实 raster identity，不选择 LF4 产品 demodulator，也不运行 Bootstrap/demod/Receiver/publish。三轮 report 均为 WGC 实际后端、Replay `evidenceValid=true`、`finalized=true`、written frames=8、dropped frames=0、monitor safety `PASS`。
+
+| Raster | RunId | Replay bytes | Replay SHA-256 | Reader / Bootstrap / modulation / Transport | accepted blocks | 双跑 inspection SHA-256 |
+| --- | --- | ---: | --- | --- | ---: | --- |
+| Direct | `0ce5e41d6099d4968bc726d184750887` | 66361133 | `6d391140ef32081424e371d812eccbad38c298bd1af140e10058cf242e8a2da4` | complete / 8 / 8 / 8 | 336 | `09ef7c7dac6c7b9b1f56be1c90a70a8e220b6101745921beced66623f393b929` |
+| Shape | `82db9eb2147d938958022e662513c780` | 66361068 | `7404dbbf61a0b05a48e03fc00a7a309834f044ab45312e73f691f4d1df89a17c` | complete / 8 / 8 / 8 | 256 | `e4a5ef679851da0fa8a80b87d15efbabd36342348cf99bcfda503b0dea994586` |
+| LF4 | `dd6d2bc7082afe306686284b36a463ab` | 66361066 | `fe534a2b3778de5ee565b66b017149ffd6ddcc4321d507a54abad914d41b6500` | complete / 8 / 8 / 8 | 32 | `5ccebecd857c9b55ec2cc1a09c299e3a1fe579daeec529b4615638b4bbeeb2a9` |
+
+每个 inspection hash 同时适用于 run 1 与 run 2，因为对应文件逐字节一致；这比只比较汇总计数更强，完整覆盖每帧 Bootstrap canonical hash、连续 geometry、soft/hard metric 统计、FEC iterations、CRC/identity disposition 和 accepted-block digest。三类的 FEC/CRC/identity failures 都是 0；LF4 stale regions 为 0。dataset input 中只列三份相对路径 Replay，`step02-dataset-index-a.json` 与 `-b.json` 逐字节一致，SHA-256=`c3e81b56163f150be9a1b2cfa133c40f46b494390902c5a588e16d5658795b95`。
+
+首次 Direct 探针在零帧时被 `InvalidConfiguration` 正确拒绝；失败 report 被保留，未复用旧输出路径。根因是 capture 配置需要 4 个 ROI texture，而 diagnostic readback 只配置了 3 个 staging texture。修复后 staging 数量从同一个 `CaptureConfig::roiTextureCount` 派生，避免两个常量再次漂移；随后三轮真实捕获均成功封口。
+
+### 15.3 真实性边界
+
+- Receiver-only Replay 没有独立 sender expected-byte oracle，因此 `senderTruthAvailable=false`、`falseAcceptedCodewords=null`/`UnavailableReceiverOnly` 是唯一诚实口径；不能把 CRC-valid block 数量转换为“0 false accept”统计。
+- Inspector 的 acceptance authority 是 `QC-LDPC+padding+TransportCRC+SessionIdentity`；它不创建 Outer/Receiver 会话，不做 WholeFileDigest，也不发布文件，`finalFileDisposition=NotEvaluated`。
+- 本节关闭 Step 02 的真实数据入口与重复分类出口，但不关闭 Step 07 holdout false-confidence Gate、Step 15 LF4 live/offline production consistency 或 Step 20 真实双机文件传输。它也不产生 `RemoteVisualSmokePass`、Certified Profile、真实 provider matrix、带宽/时延、`UniqueVisualFPS` 或 6 小时 soak 结论。
+
+### 15.4 实现与验证闭环
+
+- 新增 `PBRemoteVisualReplayInspector`：以 `ReplayV2Reader` 为唯一录制输入边界，覆盖 Replay v2 完整性、Direct/Shape/LF4 descriptor 路由、Bootstrap、连续几何、modulation metric、QC-LDPC、canonical padding、Transport CRC 和 Session identity；以 create-only 方式写出确定性 JSON。不支持的 profile、截断/冲突 Replay 或不完整 Transport 都 fail closed，且不修改已存在输出。
+- 新增 `PBRemoteVisualEvidencePresenter`：它是 Step 02 的证据发送器，不是第二套产品 runtime。`describe` 输出确定性 raster 描述，`present` 仅在 PMv2、单 monitor、1920×1080 实体像素区域内 Present，且 READY 只在首次成功 Present 后输出。
+- `--replay-evidence-profile direct|shape|lf4` 只允许与 `--diagnostic-capture-only` 共用，只标记 Replay descriptor 中已知的发送 raster；它不会把 LF4 注册为产品 GUI/profile，也不会让在线 Decoder 跳过任何权威校验。
+- WGC 启动修复将 diagnostic staging texture 数量从同一个 `CaptureConfig::roiTextureCount` 派生；修复前的零帧 `InvalidConfiguration` 记录保留，修复后才重新使用新 RunId/新输出路径采集三类证据。
+
+本轮在证据采集后重新 configure/build 两个构建树，再执行新定义下的全量无界面回归：
+
+| 验证 | 命令或套件 | 结果 |
+| --- | --- | --- |
+| Release 构建 | `cmake --build build-desktop-levels-release --config Release --target ALL_BUILD` | 通过 |
+| Release 无界面全量 | `ctest --test-dir build-desktop-levels-release -C Release -E "Native|GuiSmoke" --output-on-failure -j 2` | 154/154 通过，253.22 s |
+| MSVC ASan/RelWithDebInfo 构建 | `cmake --build build-desktop-levels-asan --config RelWithDebInfo --target ALL_BUILD` | 通过 |
+| MSVC ASan 无界面全量 | `ctest --test-dir build-desktop-levels-asan -C RelWithDebInfo -E "Native|GuiSmoke" --output-on-failure -j 2` | 289/289 通过，558.40 s |
+| RemoteVisual evidence Python | `test_analyze_remote_capture.py test_seal_remote_visual_dataset.py test_build_codec_corpus.py test_build_step06_corpus.py` | 20/20 OK |
+| RemoteVisual report Python | `test_pb_remote_visual_report.py` | 20/20 OK |
+| Step 02 工具 cppcheck | 与 Final Gate 相同的 cppcheck 2.21.0 exhaustive/inconclusive/warning/style/performance/portability 参数 | Inspector Core、Inspector CLI、Presenter 3/3 零发现，且已纳入 Gate 的 26 项目清单 |
+| 真实 Replay 重复分类 | Direct、Shape、LF4 各用最终 Release Inspector 独立执行两次 | 每类两份 JSON 逐字节一致 |
+| dataset seal 重建 | 相同三份 Replay 独立 create-only 封口两次 | 两份 index 逐字节一致 |
+
+提交前最后一次定向重建后，Release `PBRemoteVisualReplayInspector.exe` SHA-256=`a59bf320fc0bc6fbe7b53d6b4b466943494ac1e2808b8701d7a2cfbb4b2a7e61`。该最终可执行文件对三份真实 Replay 再各执行两次 create-only 分类，输出 SHA-256 仍与第 15.2 节分别记录的 Direct/Shape/LF4 hash 完全一致。
+
+以上 CTest 明确排除会创建窗口或读取屏幕的 `Native|GuiSmoke` 用例；它们不是对第 15.1/15.2 节 RDP 实机证据的替代，而是对相同读取器、解调、Transport authority、错误路径和封口工具的回归闭环。

@@ -62,6 +62,18 @@ set_tests_properties(PBRemoteVisualCodecProbeTests PROPERTIES
     LABELS "tools;remote-visual;codec;fec;transport;resource"
     TIMEOUT 300)
 
+PbAddUnitTest(PBRemoteVisualReplayInspectorTests
+    test_remote_visual_replay_inspector.cpp)
+target_link_libraries(PBRemoteVisualReplayInspectorTests
+    PRIVATE
+        PBRemoteVisualReplayInspectorCore
+        PB::PBModulation
+        PB::PBProtocol)
+PbInstrumentPresentationTest(PBRemoteVisualReplayInspectorTests)
+set_tests_properties(PBRemoteVisualReplayInspectorTests PROPERTIES
+    LABELS "tools;remote-visual;replay;receiver-only;transport;determinism"
+    TIMEOUT 300)
+
 if(TARGET PBRemoteVisualTemporalCorpusCore)
     PbAddUnitTest(PBRemoteVisualTemporalCorpusTests
         test_remote_visual_temporal_corpus.cpp)
@@ -140,6 +152,30 @@ if(TARGET PBRemoteVisualChannelMatrix)
             -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
     set_tests_properties(PBRemoteVisualChannelMatrixExit.UsageError PROPERTIES
         LABELS "tools;remote-visual;exit-codes"
+        TIMEOUT 30)
+endif()
+
+if(TARGET PBRemoteVisualEvidencePresenter)
+    foreach(pbEvidenceProfile IN ITEMS direct shape lf4)
+        add_test(
+            NAME "PBRemoteVisualEvidencePresenterDescribe.${pbEvidenceProfile}"
+            COMMAND PBRemoteVisualEvidencePresenter describe --profile ${pbEvidenceProfile})
+        set_tests_properties("PBRemoteVisualEvidencePresenterDescribe.${pbEvidenceProfile}" PROPERTIES
+            LABELS "tools;remote-visual;evidence;sender;determinism"
+            PASS_REGULAR_EXPRESSION "PixelBridge.RemoteVisualEvidenceRaster.1"
+            TIMEOUT 30)
+    endforeach()
+    unset(pbEvidenceProfile)
+
+    add_test(
+        NAME PBRemoteVisualEvidencePresenterExit.InvalidProfile
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBRemoteVisualEvidencePresenter>
+            -DPB_EXPECTED_EXIT=2
+            -DPB_TEST_ARGS_ENCODED=describe|--profile|unknown
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBRemoteVisualEvidencePresenterExit.InvalidProfile PROPERTIES
+        LABELS "tools;remote-visual;evidence;exit-codes"
         TIMEOUT 30)
 endif()
 
@@ -223,3 +259,17 @@ if(TARGET PBVectorGen AND TARGET PBFrameInspector)
     unset(pbVectorGenInvalidArguments)
     unset(pbVectorGenInvalidCase)
 endif()
+
+# Step 01 freezes the annotated "phase1-gate-pass" tag as the boundary between the Phase-1 Gate
+# evidence and the low-FPS RemoteVisual route, and forbids moving or recreating it. The identity is
+# therefore re-checked by the suite instead of by a human running git, and the same script runs in
+# the portable-package tool before tag identity is written into a package manifest.
+find_package(Git QUIET)
+add_test(NAME PBPhase1GateTagIdentity
+    COMMAND "${CMAKE_COMMAND}"
+        "-DPB_REPOSITORY_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DPB_GIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        -P "${PROJECT_SOURCE_DIR}/cmake/PBVerifyPhase1GateTagIdentity.cmake")
+set_tests_properties(PBPhase1GateTagIdentity PROPERTIES
+    LABELS "tools;remote-visual;baseline;gate-validation"
+    TIMEOUT 120)

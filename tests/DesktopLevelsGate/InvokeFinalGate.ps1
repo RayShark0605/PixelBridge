@@ -404,7 +404,17 @@ try
         'libs/PBRealCaptureReplay/PBRealCaptureReplay','libs/PBStorage/PBStorage','apps/common/PBApplication',
         'apps/PixelBridgeEncoder/PixelBridgeEncoder','apps/PixelBridgeDecoder/PixelBridgeDecoder',
         'tests/DesktopLevelsGate/PBPhase1FileGate','tests/DesktopLevelsGate/PBDesktopLevelsNativeSupport',
-        'tools/PBDesktopLevelsBaseline','fuzz/PBDesktopLevelsMutation')
+        'tools/PBDesktopLevelsBaseline','fuzz/PBDesktopLevelsMutation',
+        # Remote-visual low-FPS reference stack (Step 02/05/06): the simulator library and every
+        # evidence tool that produces corpus, receiver-truth or real-Replay classification artifacts
+        # are reviewed here. The presenter is also part of the Step 02 evidence provenance chain.
+        'libs/PBRemoteVisualSimulator/PBRemoteVisualSimulator',
+        'tools/PBRemoteVisualChannelMatrixCore','tools/PBRemoteVisualChannelMatrix',
+        'tools/PBRemoteVisualCodecProbeCore','tools/PBRemoteVisualCodecProbe',
+        'tools/PBRemoteVisualReceiverEvidenceCore',
+        'tools/PBRemoteVisualTemporalCorpusCore','tools/PBRemoteVisualTemporalCorpus',
+        'tools/PBRemoteVisualReplayInspectorCore','tools/PBRemoteVisualReplayInspector',
+        'tools/PBRemoteVisualEvidencePresenter')
     foreach ($project in $staticProjects)
     {
         $build = if ($project.StartsWith('fuzz/')) { 'build-desktop-levels-asan' } else { 'build-desktop-levels-release' }

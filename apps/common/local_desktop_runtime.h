@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -51,6 +52,9 @@ struct DecoderConfig
     // Allows a non-Phase-1 ROI only for bounded receiver-side replay capture.
     // No Bootstrap, demodulation, FEC, Receiver mutation, or publish is run.
     bool diagnosticCaptureOnly = false;
+    // Optional descriptor identity for capture-only evidence. This only tags
+    // the sealed receiver-side raster; it never selects a production demodulator.
+    std::optional<std::uint64_t> replayEvidenceVisualProfileId;
     // Nonempty selects bounded offline Replay v2 input instead of live WGC or
     // DXGI capture. The replay adapter only reconstructs the PB-owned BGRA ROI
     // texture and then enters the same CaptureDemodulator/Receiver pipeline.

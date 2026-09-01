@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 #include <thread>
 #include <vector>
 
@@ -269,6 +270,98 @@ TEST_CASE("Remote duplicate refinement retries only an unadmitted current identi
     REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 101, true));
     gate.StartSequence(2, 0);
     REQUIRE(gate.ShouldAttemptDuplicate(2, 0, true));
+}
+
+// GetSnapshot() deliberately returns a value: telemetry sampling and the GUI read a snapshot and keep
+// reading it while the tracker moves on. A const-reference return would keep compiling and would
+// silently turn every earlier reading into a live alias, so the point-in-time property is pinned.
+TEST_CASE("Telemetry snapshots keep the values of the instant they were taken",
+    "[application][telemetry][snapshot-semantics]")
+{
+    // Compile-time pin: a reference return would keep every call site compiling while silently
+    // turning an earlier sample into a live alias, so the reviewed value semantics are asserted.
+    static_assert(!std::is_reference_v<decltype(std::declval<const pbapp::ChannelStallTracker&>().GetSnapshot())>,
+        "ChannelStallTracker::GetSnapshot must return a value so a telemetry sample stays point-in-time");
+    static_assert(!std::is_reference_v<decltype(std::declval<const pbapp::DecoderProgressTracker&>().GetSnapshot())>,
+        "DecoderProgressTracker::GetSnapshot must return a value so a published progress sample stays point-in-time");
+    static_assert(!std::is_reference_v<decltype(std::declval<const pbapp::RemoteDuplicateRefinementGate&>().GetSnapshot())>,
+        "RemoteDuplicateRefinementGate::GetSnapshot must return a value so an admission audit stays point-in-time");
+    static_assert(!std::is_reference_v<decltype(std::declval<const pbapp::VisualIdentityTracker&>().GetSnapshot())>,
+        "VisualIdentityTracker::GetSnapshot must return a value so a frame-identity sample stays point-in-time");
+
+    pbapp::ChannelStallTracker stalls;
+    stalls.Observe(0, 0, 0);
+    stalls.Observe(500, 1, 0);
+    stalls.Observe(999, 2, 0);
+    stalls.Observe(1000, 3, 0);
+    const pbapp::ChannelStallSnapshot stalled = stalls.GetSnapshot();
+    REQUIRE(stalled.visual.count == 1);
+    REQUIRE(stalled.visual.active);
+    REQUIRE(stalled.visual.currentMilliseconds == 1000);
+    REQUIRE(stalled.visual.totalMilliseconds == 0);
+    REQUIRE(stalled.capture.count == 0);
+
+    stalls.Observe(1500, 4, 1);
+    stalls.Observe(2500, 4, 1);
+    stalls.Finish(3000);
+    const pbapp::ChannelStallSnapshot laterStalls = stalls.GetSnapshot();
+    REQUIRE_FALSE(laterStalls.visual.active);
+    REQUIRE(laterStalls.visual.totalMilliseconds == 1500);
+    REQUIRE(laterStalls.capture.count == 1);
+    REQUIRE(stalled.visual.count == 1);
+    REQUIRE(stalled.visual.active);
+    REQUIRE(stalled.visual.currentMilliseconds == 1000);
+    REQUIRE(stalled.visual.totalMilliseconds == 0);
+    REQUIRE(stalled.capture.count == 0);
+
+    pbapp::DecoderProgressTracker progress;
+    REQUIRE(progress.BindDescriptor(1000, 100));
+    REQUIRE(progress.ObserveVerifiedRawBytes(250, 1100));
+    const pbapp::ProgressSnapshot quarter = progress.GetSnapshot();
+    REQUIRE(quarter.progress == 0.25);
+    REQUIRE(quarter.verifiedRawBytes == 250);
+    REQUIRE(quarter.remainingRawBytes == 750);
+    REQUIRE_FALSE(quarter.etaMilliseconds.has_value());
+
+    REQUIRE(progress.ObserveVerifiedRawBytes(500, 2100));
+    progress.ObserveStall(3100);
+    progress.ResetForCaptureEpoch(4000);
+    const pbapp::ProgressSnapshot laterProgress = progress.GetSnapshot();
+    REQUIRE_FALSE(laterProgress.descriptorKnown);
+    REQUIRE(laterProgress.verifiedRawBytes == 0);
+    REQUIRE(quarter.progress == 0.25);
+    REQUIRE(quarter.verifiedRawBytes == 250);
+    REQUIRE(quarter.remainingRawBytes == 750);
+    REQUIRE(quarter.totalRawBytes == 1000);
+    REQUIRE_FALSE(quarter.etaMilliseconds.has_value());
+
+    pbapp::RemoteDuplicateRefinementGate refinement;
+    refinement.StartSequence(1, 100);
+    REQUIRE_FALSE(refinement.ShouldAttemptDuplicate(1, 100, false));
+    const pbapp::RemoteDuplicateRefinementSnapshot attempts = refinement.GetSnapshot();
+    REQUIRE(attempts.attempts == 1);
+    REQUIRE(attempts.recoveries == 0);
+    REQUIRE_FALSE(attempts.currentSequenceAdmitted);
+
+    REQUIRE(refinement.ShouldAttemptDuplicate(1, 100, true));
+    REQUIRE(refinement.MarkAdmission(1, 100, true));
+    refinement.ResetEpoch();
+    const pbapp::RemoteDuplicateRefinementSnapshot laterRefinement = refinement.GetSnapshot();
+    REQUIRE(laterRefinement.attempts == 2);
+    REQUIRE(laterRefinement.recoveries == 1);
+    REQUIRE(attempts.attempts == 1);
+    REQUIRE(attempts.recoveries == 0);
+    REQUIRE_FALSE(attempts.currentSequenceAdmitted);
+
+    pbapp::VisualIdentityTracker identity;
+    REQUIRE(identity.Observe(100, 1, 0) == pbapp::VisualIdentityDisposition::Unique);
+    const pbapp::VisualIdentitySnapshot identityEarly = identity.GetSnapshot();
+    REQUIRE(identityEarly.uniqueFrames == 1);
+    REQUIRE(identity.Observe(100, 1, 10000000) == pbapp::VisualIdentityDisposition::Duplicate);
+    const pbapp::VisualIdentitySnapshot identityLate = identity.GetSnapshot();
+    REQUIRE(identityLate.duplicateFrames == 1);
+    REQUIRE(identityEarly.uniqueFrames == 1);
+    REQUIRE(identityEarly.duplicateFrames == 0);
 }
 
 TEST_CASE("Invalid runtime enum values remain fail-visible in diagnostics", "[application][enum][diagnostics]")

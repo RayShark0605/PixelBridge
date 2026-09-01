@@ -1,10 +1,14 @@
 #include "channel_matrix_core.h"
 
+#include "pbmodulation/local_desktop_bootstrap.h"
+#include "pbmodulation/remote_visual.h"
 #include "pbremotevisualsimulator/channel_transform.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <set>
 #include <string>
 
@@ -23,6 +27,38 @@ const pbremotevisualmatrix::ChannelMatrixCaseSummary& FindCase(
 }
 
 } // namespace
+
+TEST_CASE("RemoteVisual matrix block probes keep the whole data tile inside the fixed canvas",
+    "[tools][remote-visual][low-fps][matrix][bounds]")
+{
+    // FindDifferingDataBlockTransform compares the whole tile rectangle of the tile it
+    // selects and then emits a blockSize x blockSize replacement at the tile origin. Both
+    // rectangles must therefore stay inside the fixed logical canvas, otherwise a future
+    // tile-table or block-size change would read past the raster end.
+    std::uint32_t dataTiles = 0;
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
+    {
+        pbmodulation::RemoteVisualTileMapping mapping;
+        REQUIRE(pbmodulation::GetRemoteVisualTileMapping(physical, mapping));
+        if (mapping.role != pbmodulation::RemoteVisualTileRole::Data)
+        {
+            continue;
+        }
+        pbmodulation::LocalDesktopRegion region;
+        REQUIRE(pbmodulation::GetRemoteVisualTile(physical, region));
+        dataTiles++;
+        REQUIRE(region.width == pbmodulation::kRemoteVisualTilePixels);
+        REQUIRE(region.height == pbmodulation::kRemoteVisualTilePixels);
+        REQUIRE(static_cast<std::uint64_t>(region.x) + region.width <= pbmodulation::kLocalDesktopCanvasWidth);
+        REQUIRE(static_cast<std::uint64_t>(region.y) + region.height <= pbmodulation::kLocalDesktopCanvasHeight);
+        for (const std::uint32_t blockSize : {8u, 16u, 64u})
+        {
+            REQUIRE(static_cast<std::uint64_t>(region.x) + blockSize <= pbmodulation::kLocalDesktopCanvasWidth);
+            REQUIRE(static_cast<std::uint64_t>(region.y) + blockSize <= pbmodulation::kLocalDesktopCanvasHeight);
+        }
+    }
+    REQUIRE(dataTiles > 0);
+}
 
 TEST_CASE("RemoteVisual channel matrix is deterministic and preserves the production truth boundary",
     "[tools][remote-visual][low-fps][matrix][truth]")

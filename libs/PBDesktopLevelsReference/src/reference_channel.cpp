@@ -381,7 +381,8 @@ ModulationResult<ReferenceChannel> ReferenceChannel::Create(const std::uint64_t 
     return ModulationResult<ReferenceChannel>::Success(std::move(result));
 }
 
-ReferenceObservation ReferenceChannel::Decode(const pbmodulation::LumaView& view, const pbmodulation::DesktopLevelsDecodePolicy& policy) noexcept
+ReferenceObservation ReferenceChannel::Decode(const pbmodulation::LumaView& view,
+    const pbmodulation::DesktopLevelsDecodePolicy& policy, const EvaluationMode mode) noexcept
 {
     ReferenceObservation result;
     if (!implementation_)
@@ -400,14 +401,15 @@ ReferenceObservation ReferenceChannel::Decode(const pbmodulation::LumaView& view
     if (result.modulation.IsAccepted())
     {
         const auto bytes = result.modulation.dataBytes;
-        result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44, std::span(state.hard).first(bytes), std::span(state.soft).first(bytes * 8ULL));
+        result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44,
+            std::span(state.hard).first(bytes), std::span(state.soft).first(bytes * 8ULL), mode);
         state.histogramValid = result.evaluation.evaluated;
     }
     return result;
 }
 
 ShapeChromaReferenceObservation ReferenceChannel::DecodeShapeChroma(const pbmodulation::LumaView& view,
-    const pbmodulation::ShapeChromaDecodePolicy& policy) noexcept
+    const pbmodulation::ShapeChromaDecodePolicy& policy, const EvaluationMode mode) noexcept
 {
     ShapeChromaReferenceObservation result;
     if (!implementation_)
@@ -427,14 +429,14 @@ ShapeChromaReferenceObservation ReferenceChannel::DecodeShapeChroma(const pbmodu
     {
         result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44,
             std::span(state.hard).first(result.modulation.dataBytes),
-            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
+            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8), mode);
         state.shapeHistogramValid = result.evaluation.evaluated;
     }
     return result;
 }
 
 RemoteVisualReferenceObservation ReferenceChannel::DecodeRemoteVisual(const pbmodulation::LumaView& view,
-    const pbmodulation::RemoteVisualDecodePolicy& policy) noexcept
+    const pbmodulation::RemoteVisualDecodePolicy& policy, const EvaluationMode mode) noexcept
 {
     RemoteVisualReferenceObservation result;
     if (!implementation_)
@@ -454,7 +456,7 @@ RemoteVisualReferenceObservation ReferenceChannel::DecodeRemoteVisual(const pbmo
     {
         result.evaluation = EvaluateCodewords(result.modulation.bootstrap.canonical44,
             std::span(state.hard).first(result.modulation.dataBytes),
-            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8));
+            std::span(state.soft).first(static_cast<std::size_t>(result.modulation.dataBytes) * 8), mode);
         state.remoteVisualHistogramValid = result.evaluation.evaluated;
     }
     return result;

@@ -3,6 +3,15 @@ add_test(NAME PBDesktopLevelsStaticReviewValidator COMMAND "${PB_DESKTOP_LEVELS_
     "${CMAKE_CURRENT_SOURCE_DIR}/VerifyStaticReview.ps1" -ScratchRoot "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/static-review")
 set_tests_properties(PBDesktopLevelsStaticReviewValidator PROPERTIES LABELS "desktop-levels;gate-validation" TIMEOUT 30)
 
+# The Gate runs cppcheck on apps/* with Qt keyword -D shims; a real identifier colliding with a
+# shim silently removes that translation unit from static review, so guard it as a unit test.
+add_test(NAME PBDesktopLevelsQtKeywordGuard COMMAND "${PB_DESKTOP_LEVELS_POWERSHELL}" -NoProfile -File
+    "${CMAKE_CURRENT_SOURCE_DIR}/VerifyQtKeywordCollisions.ps1" -AppsRoot "${PROJECT_SOURCE_DIR}/apps"
+    -GateScript "${CMAKE_CURRENT_SOURCE_DIR}/InvokeFinalGate.ps1"
+    -HeaderClosureRoot "${PROJECT_SOURCE_DIR}/libs"
+    -ScratchRoot "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/qt-keyword-guard")
+set_tests_properties(PBDesktopLevelsQtKeywordGuard PROPERTIES LABELS "desktop-levels;gate-validation" TIMEOUT 30)
+
 add_test(NAME PBDesktopLevelsGateJsonTests COMMAND "${PB_DESKTOP_LEVELS_POWERSHELL}" -NoProfile -File
     "${CMAKE_CURRENT_SOURCE_DIR}/VerifyGateJson.ps1" -ScratchRoot "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/gate-json")
 set_tests_properties(PBDesktopLevelsGateJsonTests PROPERTIES LABELS "desktop-levels;gate-validation" TIMEOUT 30)
