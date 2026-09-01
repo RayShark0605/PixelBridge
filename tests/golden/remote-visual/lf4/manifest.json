@@ -1,0 +1,201 @@
+{
+  "acceptedTransport": [
+    {
+      "blake3": "168ba6ad44de9e191354ad05e17bd9fd486ad011ab175152ba7b3781a3b951c0",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-0.bin",
+      "slot": 0
+    },
+    {
+      "blake3": "f7947d7a2a91d150d5bc6915ebe0dbd5bf1c474d55bb89375675a113bc9d08d4",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-1.bin",
+      "slot": 1
+    },
+    {
+      "blake3": "e9a32a43a2e8e324df6171c3fcad3420a266b6fffe0215edcfb4c55ae40e3c29",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-2.bin",
+      "slot": 2
+    },
+    {
+      "blake3": "3d87047dafd067874c4f638e4b2a78e25e4f654e21dbbd6d1899b787fc44c182",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-3.bin",
+      "slot": 3
+    }
+  ],
+  "codebook": {
+    "bitsPerTile": 4,
+    "chipsPerSymbol": 16,
+    "file": "lf4-codebook.bin",
+    "format": "16xLE16",
+    "masksHex": [
+      "3333",
+      "00ff",
+      "cc33",
+      "9999",
+      "f00f",
+      "6699",
+      "3cc3",
+      "9669",
+      "cccc",
+      "ff00",
+      "33cc",
+      "6666",
+      "0ff0",
+      "9966",
+      "c33c",
+      "6996"
+    ],
+    "minimumHammingDistance": 8
+  },
+  "codedData": {
+    "blake3": "4adaeeb14f8442611238be6b61a92285f5e6303a49a86838a05db6f43fc6b587",
+    "bytes": 8100,
+    "codedBits": 64800,
+    "codedBitsPerPlane": 16200,
+    "codewordBytes": 2025,
+    "codewords": 4,
+    "file": "lf4-coded-data.bin",
+    "paddingBytes": 0
+  },
+  "files": [
+    {
+      "blake3": "168ba6ad44de9e191354ad05e17bd9fd486ad011ab175152ba7b3781a3b951c0",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-0.bin"
+    },
+    {
+      "blake3": "f7947d7a2a91d150d5bc6915ebe0dbd5bf1c474d55bb89375675a113bc9d08d4",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-1.bin"
+    },
+    {
+      "blake3": "e9a32a43a2e8e324df6171c3fcad3420a266b6fffe0215edcfb4c55ae40e3c29",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-2.bin"
+    },
+    {
+      "blake3": "3d87047dafd067874c4f638e4b2a78e25e4f654e21dbbd6d1899b787fc44c182",
+      "bytes": 1350,
+      "file": "lf4-accepted-transport-3.bin"
+    },
+    {
+      "blake3": "246543ec7ac54348d0d8c81851611496618a331ea9888e3faa10d4a1234c0aa1",
+      "bytes": 44,
+      "file": "lf4-bootstrap.bin"
+    },
+    {
+      "blake3": "a0a4b86a99fd22e1261f5619c1f1a629750bc27c0b8f7813110e32d0d0ce7a84",
+      "bytes": 32,
+      "file": "lf4-codebook.bin"
+    },
+    {
+      "blake3": "4adaeeb14f8442611238be6b61a92285f5e6303a49a86838a05db6f43fc6b587",
+      "bytes": 8100,
+      "file": "lf4-coded-data.bin"
+    },
+    {
+      "blake3": "f24ae0f38f7b6538f8fbef404813bd200bfabc6a22b0f624c0c53830b3216b00",
+      "bytes": 429140,
+      "file": "lf4-mapping.bin"
+    },
+    {
+      "blake3": "589c96f8ea1760fb3b83b5e32189a96caa12cda3be4934559da674cac64027db",
+      "bytes": 532,
+      "file": "lf4-metric-calibration.bin"
+    },
+    {
+      "blake3": "fa1c48f1dafc2e0ccc745fe2ddf2ea97bfd7cff442bc2a7444ae3a7d617abd92",
+      "bytes": 1796,
+      "file": "lf4-metric-probes.bin"
+    },
+    {
+      "blake3": "c77a50dd135d29b337247238da7901f67ed52ebd434ae6147abbc85682ebb0ae",
+      "bytes": 65,
+      "file": "lf4-raster.blake3"
+    }
+  ],
+  "mapping": {
+    "dataTileCount": 16723,
+    "eligibleFreshnessRegions": 77,
+    "file": "lf4-mapping.bin",
+    "format": "PBLF4M01/LE/v1/20-byte-record",
+    "freshnessRegionGrid": [
+      14,
+      7
+    ],
+    "freshnessTagTiles": 2389,
+    "interleaveInverse": 10330,
+    "interleaveMultiplier": 65537,
+    "interleavePhaseCount": 16,
+    "interleavePhaseStep": 104,
+    "minimumFreshnessTags": 24,
+    "physicalTileCount": 21456,
+    "planeSequenceOffsets": [
+      0,
+      4,
+      8,
+      12
+    ],
+    "tilePixels": 8,
+    "unusedTiles": 2344
+  },
+  "metricCalibration": {
+    "adapter": {
+      "clampInclusive": [
+        -32767,
+        32767
+      ],
+      "hardOneDecision": "calibratedMetric <= float32(-0.5/4096)",
+      "output": "signed little-endian int16",
+      "rounding": "C++ std::round half away from zero",
+      "scale": 4096.0
+    },
+    "calibrationFile": "lf4-metric-calibration.bin",
+    "calibrationFormat": "PBLF4C01/LE/v1/32-byte-record",
+    "candidateId": "lf4-default/PiecewiseLookup",
+    "disposition": "FrozenCandidateNotProductionDefault",
+    "nonfiniteOrAboveTerminal": "reject-without-output-mutation",
+    "probeCount": 111,
+    "probeFile": "lf4-metric-probes.bin",
+    "probeFormat": "PBLF4P01/LE/v1/16-byte-record",
+    "rawInput": "IEEE754-binary32",
+    "signRule": "preserve-sign-including-negative-zero",
+    "sourceCorePayloadBlake3": "7a8ff14e09dc5f0b4417349f9ab3053f0e0dac05312be94806e55d40324f619f",
+    "sourceReportSha256": "c17f17844c0b44cf029bb31ecbfc127139fa886588c941c2a3a0f34bf541acf8",
+    "terminalRawMagnitudeInclusive": 1000000.0
+  },
+  "raster": {
+    "blake3": "28b09b66520b87f9cd9407b516530ad1225f84d390cc2b94d18d6e1b8d5e9bc4",
+    "bytes": 8294400,
+    "height": 1080,
+    "pixelFormat": "BGRA8",
+    "rebuild": "generate_remote_visual_lf4_golden.py --output-dir <new-fixture-directory> --raster-output <new-file>",
+    "stored": false,
+    "width": 1920
+  },
+  "schema": "PixelBridge.RemoteVisualLowFpsGolden.1",
+  "status": "ExperimentalGoldenNotCertifiedProfile",
+  "truthBoundary": {
+    "certifiedProfile": false,
+    "postAdmissionExactByteComparison": true,
+    "senderTruthEntersDemodulation": false,
+    "senderTruthEntersFec": false,
+    "wholeFileOutputEvaluated": false
+  },
+  "wire": {
+    "bootstrapBlake3": "246543ec7ac54348d0d8c81851611496618a331ea9888e3faa10d4a1234c0aa1",
+    "bootstrapContract": "PB-Bootstrap-1",
+    "bootstrapFile": "lf4-bootstrap.bin",
+    "controlEpoch": 0,
+    "diagnosticPayloadDomain": "PB-RemoteVisual-LF4-X1-Data",
+    "frameSequence": 17,
+    "innerFec": "Robust DVB-S2 Short QC-LDPC",
+    "layoutVersion": 7,
+    "profileIdHex": "504252564c463431",
+    "sessionTagHex": "5354455030325244",
+    "transportContract": "PB-TransportBlock-1"
+  }
+}

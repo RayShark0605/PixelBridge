@@ -342,6 +342,36 @@ std::uint32_t GetRemoteVisualLowFpsLogicalBit(const std::uint32_t dataOrdinal, c
         plane * kRemoteVisualLowFpsCodedBitsPerPlane + logical : kRemoteVisualLowFpsCodedBits;
 }
 
+bool CalibrateRemoteVisualLowFpsMetric(const float rawMetric, float& calibratedMetric) noexcept
+{
+    if (!std::isfinite(rawMetric))
+    {
+        return false;
+    }
+    const double rawMagnitude = std::abs(static_cast<double>(rawMetric));
+    if (rawMagnitude > kRemoteVisualLowFpsMetricCalibrationBins.back().rawMagnitudeUpper)
+    {
+        return false;
+    }
+    if (rawMetric == 0)
+    {
+        calibratedMetric = rawMetric;
+        return true;
+    }
+    const auto found = std::ranges::find_if(kRemoteVisualLowFpsMetricCalibrationBins,
+        [&](const RemoteVisualLowFpsMetricCalibrationBin& bin)
+    {
+        return rawMagnitude <= bin.rawMagnitudeUpper;
+    });
+    if (found == kRemoteVisualLowFpsMetricCalibrationBins.end())
+    {
+        return false;
+    }
+    const float calibratedMagnitude = std::bit_cast<float>(found->calibratedMagnitudeFloatBits);
+    calibratedMetric = std::copysign(calibratedMagnitude, rawMetric);
+    return true;
+}
+
 RemoteVisualLowFpsMetricResolution ResolveRemoteVisualLowFpsPhysicalMetrics(
     const std::span<const float> physicalBitMetrics, const std::span<const float> physicalFreshnessMetrics,
     const std::uint64_t sessionTag, const std::uint64_t frameSequence, const std::span<float> logicalMetrics,

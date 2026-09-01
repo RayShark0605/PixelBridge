@@ -35,11 +35,13 @@ ROBUST_SHIFTS = (
     (13,231,1684),(14,1129,3894))
 
 
-def DiagnosticData(record: bytes, capacity: int) -> bytes:
+def DiagnosticData(record: bytes, capacity: int,
+                   domain: bytes = b"PB-DesktopLevels-X1-Data") -> bytes:
+    assert domain and b"\x00" not in domain
     result = bytearray()
     tag, sequence = struct.unpack_from("<QQ", record, 16)
     for slot in range(capacity // 2025):
-        payload = b"".join(blake3(b"PB-DesktopLevels-X1-Data" + record + struct.pack("<II", slot, chunk)).digest()
+        payload = b"".join(blake3(domain + record + struct.pack("<II", slot, chunk)).digest()
                            for chunk in range(42))[:1314]
         header = struct.pack("<BBHQQIHH", 1, 0, 0, tag, sequence, slot, len(payload), 0)
         info = header + struct.pack("<I", scaffold.Crc32C(header)) + payload + struct.pack("<I", scaffold.Crc32C(payload))

@@ -527,11 +527,11 @@
     },
     {
       "File": "libs/PBModulation/src/remote_visual_low_fps.cpp",
-      "Line": 664,
+      "Line": 694,
       "Id": "useStlAlgorithm",
       "Severity": "style",
       "Message": "Consider using std::accumulate algorithm instead of a raw loop.",
-      "SourceSHA256": "BDF1A33E38A1397E7731B6E41C2A3B262DA25BC17117549BFC3FEFE890E1D1E6",
+      "SourceSHA256": "6A0F9A0956F7F1D91B330B684A6901223DDA63F9BB0D4D750CF06740ABA286EE",
       "Assessment": "Advisory only: freshness-tag mean over the fixed 16-chip array in the LF4 CPU reference. The explicit loop keeps the normalization next to the DecodeSymbol path it explains, and std::accumulate is only an equivalent spelling here, so rewriting the reference gate would add no correctness value."
     },
     {

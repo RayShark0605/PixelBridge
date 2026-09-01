@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-09-01 持续实施路线；Step 01..07 已全部完成。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 已选择 `lf4-default/PiecewiseLookup` 作为仅供 Step 08 冻结的 soft-metric candidate，未修改 production default 或 admission。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
+状态：**2026-09-01 持续实施路线；Step 01..08 已全部完成。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 选择的 `lf4-default/PiecewiseLookup` 已在 Step 08 与 LF4 raster/mapping/codebook/Bootstrap/4 个 accepted Transport 一起冻结为独立可重建 Golden，但仍未修改 production default 或 admission。Step 06 的 production-truth hardening implementation commit 为 `1936c020cb2c017b9ce3064267f497d15f94d66d`。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -531,12 +531,12 @@ logical FPS <= 5
 
 ### 11.10 Step 08：LF4 Golden/manifest 冻结
 
-- **状态**：`PENDING`；**难度**：★★★☆☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★☆☆；**重要性**：★★★★★。
 - **目标**：把通过 simulator/metric Gate 的 LF4 raster、mapping、codebook、Bootstrap binding 和 accepted Transport 结果变成不可漂移的实验 Golden。
 - **实施要点**：固定 seed/session/frame；记录 canonical raster BLAKE3、coded bytes、metric quantization contract、4 个 accepted Transport hashes；提供独立 generator `--check`。
 - **注意事项**：当前 `9b8e806` 只是 checkpoint，不能在真实 Gate 前宣称 frozen/certified；Golden 不保存大图时至少保存 manifest 和可重建 seed。
 - **验收证据**：clean scratch 独立重生成；CPU/Qt5/Qt6/ASan 一致；旧 32 fixtures 仍不变。
-- **完成出口**：任何 codebook/mapping/profile drift 都导致 Golden check 非零退出。
+- **完成出口**：已关闭。`PixelBridge.RemoteVisualLowFpsGolden.1` 固定 Step 02 Presenter 的 SessionTag/FrameSequence、44-byte Bootstrap、8100-byte coded data、21456-entry mapping、16-mask codebook、Step 07 selected metric binary32/int16 quantization contract、canonical BGRA BLAKE3 和 4×1350-byte accepted Transport。独立 Python oracle 不读取 C++ header/工具，最终两套 clean scratch fixture 与 PBRW 逐字节一致；production C++ gate 在 CPU/Qt5/Qt6/ASan 中一致通过，profile/codebook/mapping drift 均 fail closed，旧 DesktopLevels 32 帧不变。完整格式、命令、hash、验证与非认证边界见 `REMOTE_VISUAL_STEP08_GOLDEN.md` 和第 17 节。
 
 ### 11.11 Step 09：LF4 D3D11 Encoder raster 与 immutable texture
 
@@ -920,4 +920,56 @@ report 的 outer/core/input payload BLAKE3 分别为 `2fdf2c5dbfbc52d7a73d878243
 
 ### 16.5 后续边界
 
-Step 07 关闭的是 CPU/reference calibration candidate Gate，不是 production deployment。Step 08 必须把 selected metric quantization/model 与现有 LF4 raster/mapping/codebook/Bootstrap/accepted Transport 结果冻结成可独立 `--check` 的 Golden；Step 09/10 以后才实现 D3D11 production raster/demod。当前只有一组 Windows Remote Desktop External，画质/chroma mode 为 Unknown；没有 provider matrix、VerifiedEncodedGoodput、`UniqueVisualFPS`、6 小时 soak、双机文件 WholeFileDigest/final publish 或 Certified Profile 结论。
+Step 07 关闭的是 CPU/reference calibration candidate Gate，不是 production deployment。该 candidate 已由 Step 08 与现有 LF4 raster/mapping/codebook/Bootstrap/accepted Transport 结果一起冻结成可独立 `--check` 的 Golden，但仍未接管 production default；Step 09/10 以后才实现 D3D11 production raster/demod。当前只有一组 Windows Remote Desktop External，画质/chroma mode 为 Unknown；没有 provider matrix、VerifiedEncodedGoodput、`UniqueVisualFPS`、6 小时 soak、双机文件 WholeFileDigest/final publish 或 Certified Profile 结论。
+
+---
+
+## 17. Step 08 LF4 Golden / manifest 冻结完成证据
+
+完整 artifact schema、二进制格式、重建命令、hash 与 truth boundary 见 `REMOTE_VISUAL_STEP08_GOLDEN.md`。
+
+### 17.1 独立 oracle 与固定输入
+
+- 新增 `generate_remote_visual_lf4_golden.py`，不读取 C++ header、不调用 PixelBridge executable；它只复用既有独立 Bootstrap RS/CRC scaffold 和旧 DesktopLevels 已验证的独立 Robust QC-LDPC Python oracle。
+- 固定 `VisualProfileId=0x504252564C463431`、`LayoutVersion=7`、`SessionTag=0x5354455030325244`、`FrameSequence=17`、`ControlEpoch=0`、diagnostic domain `PB-RemoteVisual-LF4-X1-Data`。
+- Python 独立 literal 实现七段 geometry、98-region freshness、21456-entry mapping、four-plane affine inverse、16-mask Walsh codebook 与 BGRA paint。完整 raw BGRA BLAKE3=`28b09b66520b87f9cd9407b516530ad1225f84d390cc2b94d18d6e1b8d5e9bc4`，与 Step 02 Presenter seal 相同。
+- `--check` 严格只读并要求 exact inventory/bytes；generation 拒绝 existing output；`.gitattributes` 固定 LF4 binary/text 的 checkout 字节，阻断 Windows `core.autocrlf` 漂移。独立单元测试让 profile、codebook、mapping 各漂移一个 byte，三类均按预期非零失败。
+
+### 17.2 Golden 与 production truth cross-check
+
+- `tests/golden/remote-visual/lf4/` 共 12 个文件、451051 bytes，manifest schema 为 `PixelBridge.RemoteVisualLowFpsGolden.1`，manifest SHA-256=`fc43bb7849f6d00c063372b459338b1b88a324d5bda647b74d4329ac8c13cf79`。旧 `tests/golden/remote-visual/manifest.json` 未改。
+- 固定 44-byte Bootstrap、8100-byte coded data、16×LE16 codebook、21456×20-byte mapping、16-bin metric calibration、111 个 float/adapter probes、raw raster BLAKE3 和 4×1350-byte accepted Transport。
+- production gate 逐项比较全部 tile mapping 与 codebook，重建完整 raster 并计算 BLAKE3；raster 再只通过 pixels 进入 production CPU demod，hard bits 必须等于 coded Golden。
+- calibrated metrics 使用既有 scale4096/int16 adapter，进入既有 QC-LDPC、padding、Transport CRC 与 identity authority；4/4 block 必须 verified，slot/byteCount/bytes 必须逐字节等于 independent Golden。sender expected bytes 不进入 demod/FEC。
+
+### 17.3 Step 07 candidate freeze 边界
+
+- `lf4-default/PiecewiseLookup` 的 16 个 binary64 upper、calibrated binary32 bits、Train sample/error 与 Step 07 provenance 全部固定。
+- `CalibrateRemoteVisualLowFpsMetric` 仅暴露该 frozen reference candidate；非有限或超 terminal 输入 fail closed 且不修改 output，`+0/-0` 保留，bin 使用 inclusive upper。
+- 111 个 probe 覆盖所有 bin boundary 的相邻 binary32、正负号、最小 subnormal、terminal、`±Inf`、qNaN，以及所有可产生 calibrated output 的 int16 rounding/clamp 与 hard-decision 两侧。
+- production LF4 decoder default/admission 未改变；`FrozenCandidateNotProductionDefault` 不能解释为 deployment 或 Certified Profile。
+
+### 17.4 可重复 seal 与验证
+
+最终 create-only seal：
+
+```text
+build-p1_5-evidence/20260901-step08-lf4-golden-final-d
+build-p1_5-evidence/20260901-step08-lf4-golden-final-e
+build-p1_5-evidence/20260901-step08-lf4-raster-final-d.pbrw
+build-p1_5-evidence/20260901-step08-lf4-raster-final-e.pbrw
+```
+
+两套 12-file fixture 对应文件逐字节一致；两份 8294428-byte PBRW 逐字节一致，SHA-256=`8bd270750b30f8705d772d14806aa88201fde80e6321b3074b761711eaf0052f`；final-d 再执行 `--check` 通过。
+
+| 验证 | 结果 |
+| --- | --- |
+| LF4 independent Python tests | 4/4 OK |
+| LF4 committed `--check` | PASS |
+| 旧 DesktopLevels oracle | `files=100 frames=32` PASS |
+| Release / Qt5 / Qt6 / MSVC ASan LF4 targeted gate | 各 1/1 PASS |
+| Release `ALL_BUILD` / 无界面 CTest | PASS / 155/155 PASS，246.43 s |
+| MSVC ASan `ALL_BUILD` / 无界面 CTest | PASS / 290/290 PASS，442.75 s |
+| PBModulation cppcheck 2.21.0 | 10/10 translation units；34 项均精确匹配既有 review ledger，0 new/unreviewed finding |
+
+无界面 CTest 排除了 `Native|GuiSmoke`；Qt build-tree 一致性、CPU 和 ASan 不是 hardware GPU 或 field certification。Step 09 下一步必须实现 LF4 D3D11 Encoder raster/immutable texture，并在 CPU canonical raster 与 GPU-present source diagnostic readback 之间建立实际一致性证据。

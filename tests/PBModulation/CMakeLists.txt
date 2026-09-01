@@ -61,8 +61,10 @@ target_link_libraries(PBShapeChromaTests PRIVATE PB::PBModulation PB::PBProtocol
 PbInstrumentPresentationTest(PBShapeChromaTests)
 set_tests_properties(PBShapeChromaTests PROPERTIES LABELS "shape-chroma;modulation;fec;integration" TIMEOUT 240)
 
-PbAddUnitTest(PBRemoteVisualTests test_remote_visual.cpp test_remote_visual_low_fps.cpp)
+PbAddUnitTest(PBRemoteVisualTests test_remote_visual.cpp test_remote_visual_low_fps.cpp test_remote_visual_low_fps_golden.cpp)
 target_link_libraries(PBRemoteVisualTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInterleave PB::PBDesktopLevelsReference PB::PBInnerFec)
+target_compile_definitions(PBRemoteVisualTests PRIVATE
+    PB_REMOTE_VISUAL_LF4_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/remote-visual/lf4")
 PbInstrumentPresentationTest(PBRemoteVisualTests)
 set_tests_properties(PBRemoteVisualTests PROPERTIES LABELS "remote-visual;modulation;fec;golden" TIMEOUT 240)
 

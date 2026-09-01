@@ -2,3 +2,6 @@
 fuzz/corpus/desktop-levels/*.bin binary
 tests/golden/desktop-levels/*.bin binary
 tests/golden/desktop-levels/manifest.txt text eol=lf
+tests/golden/remote-visual/lf4/*.bin binary
+tests/golden/remote-visual/lf4/*.blake3 text eol=lf
+tests/golden/remote-visual/lf4/manifest.json text eol=lf
