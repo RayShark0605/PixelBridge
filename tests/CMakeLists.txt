@@ -154,6 +154,7 @@ if(MSVC AND TARGET PBProtocol)
             PBFrameInspector
             PBRemoteVisualChannelMatrix
             PBRemoteVisualCodecProbe
+            PBRemoteVisualLf4DynamicPresenter
             PBRemoteVisualTemporalCorpus
             PBVectorGen)
         # add_custom_command(TARGET ...) must live in the directory that

@@ -185,10 +185,31 @@ target_link_libraries(PBRemoteVisualEvidencePresenter
         PB::PBProtocol
         PB::PBRenderD3D)
 
-# The temporal corpus intentionally reuses the production application identity,
-# duplicate-refinement and stall trackers. It is available only when the app
-# model is built; the tool itself is headless and starts no capture or window.
+# Application-bound evidence tools are available only when the Qt-free
+# PBApplication controller model is built.
 if(TARGET PBApplication)
+    # Evidence-only dynamic LF4 sender for receiver-side field pilots. It
+    # invokes the production EncoderRuntime/SenderFrameBuilder but does not
+    # expose LF4 through the product GUI or headless CLI before Step 17.
+    add_executable(PBRemoteVisualLf4DynamicPresenter
+        PBRemoteVisualLf4DynamicPresenter/main.cpp
+        "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
+    target_link_libraries(PBRemoteVisualLf4DynamicPresenter
+        PRIVATE
+            PB::CompilerSettings
+            PB::PBApplication)
+    execute_process(COMMAND git rev-parse --verify HEAD WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        OUTPUT_VARIABLE pbLf4DynamicPresenterGitCommit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT pbLf4DynamicPresenterGitCommit)
+        set(pbLf4DynamicPresenterGitCommit "unknown")
+    endif()
+    target_compile_definitions(PBRemoteVisualLf4DynamicPresenter PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+        "PB_GIT_COMMIT=\"${pbLf4DynamicPresenterGitCommit}\"")
+    unset(pbLf4DynamicPresenterGitCommit)
+
+    # The temporal corpus intentionally reuses the production application
+    # identity, duplicate-refinement and stall trackers. The tool itself is
+    # headless and starts no capture or window.
     add_library(PBRemoteVisualTemporalCorpusCore STATIC
         PBRemoteVisualTemporalCorpus/temporal_corpus_core.cpp)
     target_link_libraries(PBRemoteVisualTemporalCorpusCore
