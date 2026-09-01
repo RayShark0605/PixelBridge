@@ -45,3 +45,10 @@ the long Control prefix gives the receiver time to start after the sender has
 reported `READY`. This pilot is evidence for dynamic pixel-channel survival.
 It does not expose LF4 in the product Decoder, publish a recovered file, prove
 WholeFileDigest, or close the Step 20 two-computer file-transfer Gate.
+
+The first formal 120-second Windows Remote Desktop receiver-only pilot has now
+passed with a bounded 10 Hz pre-readback Replay sampler and byte-identical
+double offline inspection. Its exact environment, identities, commands,
+counters, hashes, and non-certification boundary are recorded in
+`docs/REMOTE_VISUAL_STEP09_DYNAMIC_RDP_PILOT.md`. This does not expose the
+presenter or LF4 candidate through the product GUI/CLI.

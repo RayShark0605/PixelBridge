@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-09-01 持续实施路线；Step 01..09 已全部完成。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 选择的 `lf4-default/PiecewiseLookup` 已在 Step 08 与 LF4 raster/mapping/codebook/Bootstrap/4 个 accepted Transport 一起冻结为独立可重建 Golden；Step 09 已把 LF4 四-codeword raster 接入隐藏的 production Encoder candidate，并以 immutable D3D11 source、1..5 Hz 完整替换和显示许可驱动的重复 Present 关闭发送端 Gate。LF4 仍未接入 GUI/CLI 或 production Decoder admission。这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
+状态：**2026-09-01 本轮在 Step 09 停止；Step 01..09 已全部完成，Step 10 保持 `PENDING`。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 选择的 `lf4-default/PiecewiseLookup` 已在 Step 08 与 LF4 raster/mapping/codebook/Bootstrap/4 个 accepted Transport 一起冻结为独立可重建 Golden；Step 09 已把 LF4 四-codeword raster 接入隐藏的 production Encoder candidate，并以 immutable D3D11 source、1..5 Hz 完整替换和显示许可驱动的重复 Present 关闭发送端 Gate。Step 09 后置 120 秒动态 RDP pilot 又证明 production EncoderRuntime raster 可经真实 AweSun/WGC 链路进入有界 Replay，并由 receiver-only Inspector 两次确定性解出 1428 个 Control copy 与 1496 个 Transport block，FEC/CRC/identity failure 全为 0。LF4 仍未接入 GUI/CLI 或 production Decoder admission；这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -26,7 +26,7 @@
    - 只有 field replay 证明色度或更密 shape 在特定链路可稳定保留时，才另建 `LF5/LF6` 新 profile；不能在同一 Session 中改变 codebook；
    - GPU production path 必须直接在 PB-owned D3D11 texture 上按连续几何采样，不允许为了赶进度加入隐式 GPU→CPU→GPU fast-path round trip。
 
-当前实现包含两条严格分离的边界：CPU reference/simulator 继续提供 scale/freshness/FEC/Transport 真值；Step 09 的 production Encoder-only candidate 负责完整 LF4 raster、immutable D3D11 source replacement 和 repeat Present。LF4 仍未加入 GUI/CLI profile 列表，也未接入 production D3D11 demod；既有 `RemoteVisualResilient` wire identity、GUI token 与 Decoder 路径保持不变。这样可以在不平行创造第二套协议、不偷换旧 token 的前提下先关闭发送端，再由 Step 10/11 关闭 GPU 解调与 truth parity。
+当前实现包含三条严格分离的边界：CPU reference/simulator 提供 scale/freshness/FEC/Transport 真值；Step 09 的 production Encoder-only candidate 负责完整 LF4 raster、immutable D3D11 source replacement 和 repeat Present；Step 09 后置 field pilot 只用 WGC diagnostic capture-only Replay 与离线 CPU Inspector 验证动态远控像素链路。第三条边界不是 product Decoder，也没有 production D3D11 demod。LF4 仍未加入 GUI/CLI profile 列表；既有 `RemoteVisualResilient` wire identity、GUI token 与 Decoder 路径保持不变。这样可以在不平行创造第二套协议、不偷换旧 token 的前提下先关闭发送端和第一条动态 field primitive，再由 Step 10/11 关闭 GPU 解调与 truth parity。
 
 ---
 
@@ -1041,3 +1041,23 @@ build-p1_5-evidence/20260901-step09-final-production-d/lf4-production-encoder-59
 | `git diff --check` | PASS |
 
 GPU source readback 不是 capture；WARP 不是 hardware；source-to-back-buffer hash 不是 remote-provider survival。Step 09 没有 LF4 live production Decoder、scaled GPU demod、CaptureEpoch/lease 闭环、Outer/file convergence、WholeFileDigest/final publish、provider matrix、VerifiedEncodedGoodput 或 Certified Profile 结论。Step 10 下一步实现 scaled Walsh D3D11 demod shader，并要求 compact metrics 经现有 FEC/Transport 得到与 CPU reference 相同的 accepted blocks。
+
+### 18.5 Step 09 后置动态 Windows RDP receiver-only pilot
+
+Step 09 关闭后，新增 evidence-only `PBRemoteVisualLf4DynamicPresenter`；它不实现第二套 encoder，而是以隐藏的 `RemoteVisualLowFps` candidate 调用 production `EncoderRuntime`。Computer B 的 sealed package 使用 1 MiB deterministic RAW source、Wirehair V2、5 logical FPS、64 次 Control repetition 和 300 秒有界时限。package SHA-256=`2c4240478b9f22a72c483ae6799ddaa88c9099d1659a10ea8482082b5f5487b4`。
+
+第一次未采样的动态 capture 暴露了真实资源边界：2434×1376 BGRA8 每帧 13,396,736 bytes，而远控 WGC delivery 明显高于 5 FPS；60 秒 Replay 达 17,175,294,158 bytes 并触及 16 GiB 上限，因此 report 为 invalid，未被当作成功 Gate。后续增加只允许 diagnostic capture-only 使用的 10 Hz pre-readback sampler：WGC interval 只是 hint，`DiagnosticCpuReadback` 在 `CopyResource` 之前执行权威时间采样；`sampledOutFrames` 与 capture/readback/recorder drop 分开，capture domain 变化重置 sampler。
+
+正式 120 秒 evidence：
+
+```text
+build-p1_5-evidence/step09-lf4-dynamic-formal-sampled-120s-20260901-225635
+```
+
+- capture 1085 arrived/1085 delivered；Replay 1026 written + 59 intentionally sampled + 0 dropped，精确闭合；capture/readback drop、stale、epoch reset 全为 0；Replay 13,745,594,661 bytes，valid/finalized；monitor-safety PASS；
+- 两次离线 Inspector JSON 逐字节一致，SHA-256=`7c17433c2c8ee26d907893c3d0d99cf6e9362be9c298f3c5a071cb3bf0a75dee`；
+- 731/1026 帧通过 Bootstrap、modulation 与 authority；357 个完整 Control frame 接受 1428 个 copy，374 个完整 Data frame接受 1496 个 Transport block；partial Data frame=0；
+- 一个 SessionTag，FrameSequence 1..395 中有 394 个 distinct、337 个 duplicate observation、1 个显式 gap/skip、0 reorder；FEC/CRC/identity failure 均为 0；
+- Replay SHA-256=`6dbc62308c18a155ac8ae4c1b2fe06db65c0ebadd8407debe10975efb6fd0748`；sealed summary SHA-256=`51bb47f5f40b5bc947fc31876b791e0606322fe47c59794ed013ba15083c1294`。
+
+完整环境、命令、资源数学、验证矩阵、逐项 hash 与 truth boundary 见 `REMOTE_VISUAL_STEP09_DYNAMIC_RDP_PILOT.md`。该 pilot 证明真实动态远控像素、WGC capture、Replay 与离线 LF4/FEC/Transport primitive；它没有 sender expected-byte oracle，`falseAcceptedCodewords` 仍 unavailable；也没有 live production Decoder、Outer/file path、WholeFileDigest、final publish、VerifiedEncodedGoodput 或 Certified Profile。按本轮停止要求，Step 10 保持 `PENDING`。
