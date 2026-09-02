@@ -148,7 +148,8 @@ public:
             origin.x = static_cast<std::int32_t>(static_cast<std::int64_t>(monitorInfo.rcMonitor.left) + (monitorWidth - config_.width) / 2);
             origin.y = static_cast<std::int32_t>(static_cast<std::int64_t>(monitorInfo.rcMonitor.top) + (monitorHeight - config_.height) / 2);
         }
-        const HWND window = CreateWindowExW(WS_EX_NOACTIVATE, className_.data(), L"PixelBridge Data Window", WS_POPUP, origin.x, origin.y, static_cast<int>(config_.width),
+        const DWORD extendedStyle = WS_EX_NOACTIVATE | (config_.topmost ? WS_EX_TOPMOST : 0U);
+        const HWND window = CreateWindowExW(extendedStyle, className_.data(), L"PixelBridge Data Window", WS_POPUP, origin.x, origin.y, static_cast<int>(config_.width),
                                             static_cast<int>(config_.height), nullptr, nullptr, instance_, this);
         if (window == nullptr)
         {

@@ -91,6 +91,7 @@ TEST_CASE("Encoder report explicitly omits receiver progress goodput and ETA", "
     REQUIRE(json.find("\"runStartedUnixMilliseconds\":1000") != std::string::npos);
     REQUIRE(json.find("\"runEndedUnixMilliseconds\":2000") != std::string::npos);
     REQUIRE(json.find("\"dataWindow\":{\"left\":2560") != std::string::npos);
+    REQUIRE(json.find("\"singleMonitorFullscreen\":false") != std::string::npos);
     REQUIRE(json.find("\"generatedVisualFramesPerSecond\":null") != std::string::npos);
     REQUIRE(json.find("\"generatedVisualFramesPerSecondBasis\":\"logical source replacements") != std::string::npos);
     REQUIRE(json.find("\"configuredLogicalVisualFps\":5") != std::string::npos);
@@ -127,6 +128,7 @@ TEST_CASE("Encoder report explicitly omits receiver progress goodput and ETA", "
     REQUIRE(journalRecord.find("\"generatedVisualFps\":null") != std::string::npos);
     REQUIRE(journalRecord.find("\"generatedPayloadBytesPerSecond\":null") != std::string::npos);
     REQUIRE(journalRecord.find("\"configuredTransportPayloadCeilingBytesPerSecond\":26280") != std::string::npos);
+    REQUIRE(journalRecord.find("\"singleMonitorFullscreen\":false") != std::string::npos);
     REQUIRE(journalRecord.find("\"monitorSafetyPreflightPassed\":true") != std::string::npos);
     REQUIRE(journalRecord.find("\"monitorSafetyRevalidationCount\":17") != std::string::npos);
 }

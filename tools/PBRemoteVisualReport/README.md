@@ -27,3 +27,16 @@ The optional `--summary-csv` remains an append-only cross-run index. It is not a
 Both CSV forms keep the theoretical profile ceiling, actually generated payload rate, presented cadence, captured/unique cadence, raw FEC evaluation, Receiver-bound temporal admission and verified goodput in separate columns. They also include provider/mode/geometry metadata, Bootstrap/BER/FER, RemoteVisual metric confidence split by verified versus rejected frames, unreliable-symbol and freshness erasure rates, duplicate/reorder/gap/stall counters, verified goodput, and final integrity results. `high-confidence-wrong` is never fabricated from production receive alone because that path has no independent per-codeword truth oracle; use sealed Replay evidence for that classification.
 
 When clocks are not synchronized, supply the measured Decoder-to-Encoder offset and uncertainty with `--decoder-clock-offset-ms` and `--clock-uncertainty-ms`. Do not guess these values for formal evidence.
+
+## User-authorized single-monitor file pilot
+
+`verify_single_monitor_file_pilot.py` is a narrow verifier for the explicit `UserAuthorizedSingleMonitorFullscreen` sender exception. It does not replace `Test-PBRemoteVisualPilotEvidence.ps1` and never converts a single-monitor run into the formal dual-monitor Gate.
+
+The verifier strictly reopens and seals the B Encoder report/journal/consumed RunId, A live Decoder report/journal/exit code, the same Replay's offline Decoder report/journal/exit code, source/live/offline files, delivery manifest/executable/package verification, the earlier receiver-only seal, and a freshly generated `PixelBridge.RemoteVisualCombinedReport.1`. It reconstructs the strict combined report byte-for-object from those inputs, requires source/live/offline SHA-256 and length equality, validates terminal journal counters, Replay footer/coverage, Receiver/Outer/WholeFileDigest/publish truth, and publishes one create-only `PixelBridge.SingleMonitorFullscreenFilePilotVerification.1` record.
+
+Its two top-level results deliberately have different meanings:
+
+- `verifiedFileRecoveryChain=true` means the captured-pixel Receiver and the same sealed Replay's production offline path both recovered and safely published the exact source file;
+- `formalStep20PilotAccepted=false` preserves the missing dual-monitor sender Gate, frozen PilotPlan/endpoint process/UI provenance and independently measured cross-computer clock calibration.
+
+The successful verification record therefore remains valid evidence for the user-authorized file pilot without claiming provider coverage, arbitrary geometry support, zero false accepted codewords, Step 21 matrix coverage or profile certification. See `docs/REMOTE_VISUAL_STEP20_SINGLE_MONITOR_FILE_PILOT.md` for the exact FINAL4 evidence and failure history.

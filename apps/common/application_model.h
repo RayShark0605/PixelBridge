@@ -218,6 +218,7 @@ struct EncoderSnapshot
     std::int32_t dataWindowTop = 0;
     std::uint32_t dataWindowWidth = phase1CanvasWidth;
     std::uint32_t dataWindowHeight = phase1CanvasHeight;
+    bool singleMonitorFullscreen = false;
     bool monitorSafetyPreflightPassed = false;
     std::uint64_t monitorSafetyRevalidationCount = 0;
     std::string monitorSafetyStatus;

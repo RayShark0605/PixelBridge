@@ -155,6 +155,9 @@ struct DataWindowConfig
     // The repeated Presents retain the same FrameSequence and never reuse a
     // source across a presentation epoch.
     bool repeatActiveFrame = false;
+    // A sender-only fullscreen presenter may cover the selected monitor while
+    // retaining WS_EX_NOACTIVATE so the control console keeps keyboard focus.
+    bool topmost = false;
     // Physical desktop coordinates, including negative monitor origins.
     // Unspecified: center the client on the primary monitor.
     std::optional<PhysicalPoint> clientOrigin;
