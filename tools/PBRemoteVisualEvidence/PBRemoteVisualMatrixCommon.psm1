@@ -1188,6 +1188,16 @@ function Get-PBNonNegativeUInt64
     }
     try
     {
+        if ($Value -is [System.Numerics.BigInteger])
+        {
+            $minimum = [System.Numerics.BigInteger]::Zero
+            $maximum = [System.Numerics.BigInteger]::Parse([UInt64]::MaxValue.ToString([Globalization.CultureInfo]::InvariantCulture), [Globalization.CultureInfo]::InvariantCulture)
+            if ($Value -lt $minimum -or $Value -gt $maximum)
+            {
+                throw 'out of range'
+            }
+            return [UInt64]$Value
+        }
         $typeCode = [Type]::GetTypeCode($Value.GetType())
         if ($typeCode -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16,
             [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64,
@@ -1554,6 +1564,13 @@ function Import-PBRemoteVisualMatrixRunRecord
     Assert-PBMatrixExactKeys -Dictionary $record.identities -ExpectedKeys @('plan', 'deployment', 'packageManifest', 'source',
         'remoteUiEvidence', 'encoderEnvironment', 'decoderEnvironment', 'replay', 'combinedReport', 'outcomeVerification',
         'inspection', 'encoderReport', 'liveDecoderReport', 'offlineDecoderReport') -Name 'matrix run identities'
+    $visualProfileId = Get-PBNonNegativeUInt64 -Value $record.visualProfileId -Name 'RemoteVisual matrix run visualProfileId'
+    $visualLayoutVersion = Get-PBNonNegativeUInt64 -Value $record.visualLayoutVersion -Name 'RemoteVisual matrix run visualLayoutVersion'
+    $logicalFps = Get-PBNonNegativeUInt64 -Value $record.matrix.logicalFps -Name 'RemoteVisual matrix run logicalFps'
+    if ($visualLayoutVersion -gt [UInt32]::MaxValue -or $logicalFps -gt [UInt32]::MaxValue)
+    {
+        throw 'RemoteVisual matrix run layout version or logical FPS exceeds UInt32'
+    }
     if ($record.contracts.noSilentResample -isnot [bool] -or -not [bool]$record.contracts.noSilentResample -or
         $record.contracts.captureRoiIsNotScaleEvidence -isnot [bool] -or
         -not [bool]$record.contracts.captureRoiIsNotScaleEvidence -or
@@ -1578,8 +1595,8 @@ function Import-PBRemoteVisualMatrixRunRecord
     $plan = Import-PBRemoteVisualPilotPlan -Path ([string]$record.identities.plan.path) -ExpectedSha256 ([string]$record.identities.plan.sha256)
     if ([string]$plan.value.schema -cne 'PixelBridge.RemoteVisualPilotPlan.3' -or
         [string]$record.runId -cne [string]$plan.value.runId -or [string]$record.profileToken -cne [string]$plan.value.profileToken -or
-        [string]$record.profileName -cne [string]$plan.value.profileName -or [UInt64]$record.visualProfileId -ne [UInt64]$plan.value.visualProfileId -or
-        [UInt32]$record.visualLayoutVersion -ne [UInt32]$plan.value.visualLayoutVersion)
+        [string]$record.profileName -cne [string]$plan.value.profileName -or $visualProfileId -ne [UInt64]$plan.value.visualProfileId -or
+        [UInt32]$visualLayoutVersion -ne [UInt32]$plan.value.visualLayoutVersion)
     {
         throw 'Matrix run record profile identity differs from its frozen plan'
     }
@@ -1588,7 +1605,7 @@ function Import-PBRemoteVisualMatrixRunRecord
         [string]$record.matrix.captureBackend -cne [string]$plan.value.policy.captureBackend -or
         [string]$record.matrix.backendCoverageRole -cne [string]$plan.value.matrix.backendCoverageRole -or
         [string]$record.matrix.profileComparisonRole -cne [string]$plan.value.matrix.profileComparisonRole -or
-        [UInt32]$record.matrix.logicalFps -ne [UInt32]$plan.value.logicalFps -or
+        [UInt32]$logicalFps -ne [UInt32]$plan.value.logicalFps -or
         [string]$record.matrix.geometryMode -cne [string]$plan.value.geometryMode -or
         [string]$record.matrix.runIsolation -cne [string]$plan.value.matrix.runIsolation -or
         [string]$record.matrix.scaleTarget -cne [string]$plan.value.matrix.scaleTarget -or
