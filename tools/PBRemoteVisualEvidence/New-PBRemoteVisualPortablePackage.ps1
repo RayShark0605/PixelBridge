@@ -14,7 +14,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputRoot,
 
-    [string[]]$ExcludedSourcePath = @('docs/PHASE1_GATE_REPORT.md')
+    [string[]]$ExcludedSourcePath = @('docs/PHASE1_GATE_REPORT.md'),
+
+    [switch]$CompactPackageName
 )
 
 Set-StrictMode -Version Latest
@@ -438,7 +440,20 @@ $buildIdentity = [ordered]@{
     }
 }
 $buildIdentityFingerprint = Get-TextSha256 -Text ($buildIdentity | ConvertTo-Json -Depth 16 -Compress)
-$packageName = "PixelBridge-RemoteVisual-$Label-$Role-$($headCommit.Substring(0, 8))-$($sourceFingerprint.Substring(0, 12))"
+$packageName = if ($CompactPackageName)
+{
+    $compactRole = switch ($Role)
+    {
+        'Encoder' { 'E' }
+        'Decoder' { 'D' }
+        'Both' { 'B' }
+    }
+    "PB-RV-$compactRole-$($headCommit.Substring(0, 8))-$($sourceFingerprint.Substring(0, 8))"
+}
+else
+{
+    "PixelBridge-RemoteVisual-$Label-$Role-$($headCommit.Substring(0, 8))-$($sourceFingerprint.Substring(0, 12))"
+}
 $packageDirectory = Join-Path $resolvedOutputRoot $packageName
 $stagingDirectory = Join-Path $resolvedOutputRoot "$packageName.partial"
 $zipPath = Join-Path $resolvedOutputRoot "$packageName.zip"

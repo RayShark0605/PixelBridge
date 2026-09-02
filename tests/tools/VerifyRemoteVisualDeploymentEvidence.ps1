@@ -179,7 +179,8 @@ try
         '-Label', 'current-head',
         '-BuildDirectory', $resolvedBuildDirectory,
         '-OutputRoot', $packageOutputRoot,
-        '-ExcludedSourcePath', 'docs/PHASE1_GATE_REPORT.md')
+        '-ExcludedSourcePath', 'docs/PHASE1_GATE_REPORT.md',
+        '-CompactPackageName')
     Require-Success -Result $packageCreation -Name 'Both-role portable-package creation for Computer B kit'
     $packageCreateResult = $packageCreation.output | ConvertFrom-Json
     if ($packageCreateResult.packageDirectory -isnot [string] -or
@@ -229,6 +230,21 @@ try
         $kitVerificationValue.executedCellCount -ne 0)
     {
         throw 'Computer B kit verifier did not preserve the predeployment-only truth boundary'
+    }
+    $kitManifest = Get-Content -LiteralPath (Join-Path ([string]$kitCreateResult.kitDirectory) 'COMPUTER-B-KIT-MANIFEST.json') `
+        -Raw | ConvertFrom-Json
+    $packagedDecoderPath = Join-Path ([string]$kitCreateResult.kitDirectory) `
+        (Join-Path ([string]$kitManifest.package.directoryName) 'Decoder\PixelBridgeDecoder.exe')
+    $packagedCatalogText = @(& $packagedDecoderPath '--list-monitors' 2>&1) -join "`n"
+    $packagedCatalogExitCode = $LASTEXITCODE
+    if ($packagedCatalogExitCode -ne 0)
+    {
+        throw "Computer B kit packaged Decoder could not execute from its deployed path (length=$($packagedDecoderPath.Length)): $packagedCatalogText"
+    }
+    $packagedCatalog = $packagedCatalogText | ConvertFrom-Json
+    if ([string]$packagedCatalog.schema -cne 'PixelBridge.MonitorCatalog.1' -or @($packagedCatalog.monitors).Count -eq 0)
+    {
+        throw 'Computer B kit packaged Decoder did not return a valid local monitor catalog'
     }
 
     $packageManifestPath = Join-Path ([string]$packageCreateResult.packageDirectory) 'package-manifest.json'

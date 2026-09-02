@@ -386,9 +386,9 @@ $documentationPaths = @(
     'docs/REMOTE_VISUAL_STEP20_REAL_REMOTE_PILOT.md',
     'docs/REMOTE_VISUAL_STEP21_PROVIDER_GENERIC_MATRIX.md')
 
-$packageFingerprintPrefix = ([string]$packageManifest.packagePayloadFingerprintSha256).Substring(0, 12)
+$packageFingerprintPrefix = ([string]$packageManifest.packagePayloadFingerprintSha256).Substring(0, 8)
 $sourceFingerprintPrefix = ([string]$sourceManifest.sourceSetFingerprintSha256).Substring(0, 8)
-$kitName = "PixelBridge-RemoteVisual-Step21-ComputerB-$($ExpectedHeadCommit.Substring(0, 8))-$packageFingerprintPrefix-$sourceFingerprintPrefix"
+$kitName = "PB-S21B-$($ExpectedHeadCommit.Substring(0, 8))-$packageFingerprintPrefix-$sourceFingerprintPrefix"
 $finalDirectory = Join-Path $resolvedOutputRoot $kitName
 $stagingDirectory = "$finalDirectory.partial"
 $archivePath = Join-Path $resolvedOutputRoot "$kitName.zip"
