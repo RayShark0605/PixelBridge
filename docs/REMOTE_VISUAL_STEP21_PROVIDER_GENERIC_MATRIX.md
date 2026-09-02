@@ -88,7 +88,7 @@ EndpointScope 仍只能是 `READINESS_ONLY`：它证明静态 catalog 可形成�
 
 ### 2.1 Computer B 单次解压交付包
 
-为了让 Computer B 不再单独复制 BAT、也不再需要先解压外层文件后继续寻找第二层 `RuntimePackage`，可在当前 source/package identity 完全一致时创建一个单次解压包：
+为了让 Computer B 不再单独复制 BAT、也不再需要先解压外层文件后继续寻找第二层 `RuntimePackage`，可在当前 source/package identity 完全一致时创建一个单次解压包。用于该 kit 的 Both-role package 应在正常 package 命令上增加 `-CompactPackageName`；它只把容器目录/ZIP 名缩短为 `PB-RV-*`，不会改变 manifest、payload、HEAD/source identity 或 verifier 语义。kit 根目录同样使用有身份前缀的短名，以便从较深的 Desktop/项目路径启动 Qt EXE/DLL 时仍留有 Windows 路径预算：
 
 ```powershell
 $kit = pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21ComputerBKit.ps1 `
@@ -288,7 +288,7 @@ verifier 会：
 - 对抗性 evidence fixture 明确拒绝 Plan.3 中遗留的 ROI-derived `estimatedScaleX/Y`、分数 ROI 尺寸、字符串型/非有限 scale、case-tampered schema、成功 run 的零 Locator 样本、样本数与 Bootstrap successes 不一致、全程最大各向异性超过 0.015，以及 matrix record 内的 geometry 篡改；
 - create-only run-ledger fixture 机械重算 31 个 included cell，证明 LF4 整屏搜索 ROI 与 1.0×目标画布彼此独立、Direct/Shape 仍为居中 exact 1920×1080，并拒绝 ROI 篡改、父 scope hash 错误、重复输出目录和任何 `estimatedScaleX/Y` 遗留；
 - run-ledger seal importer 逐列、逐行核对 JSON/CSV，在解析前执行逐类 artifact 尺寸上限，并拒绝修改状态后重新计算 hash 的语义篡改或超限 CSV identity；EndpointScope fixture 又验证了 A 端 2560×1440 与 B 端带负 Y origin 的双 1920×1080 monitor role 绑定，拒绝重叠/Duplicate、重复 device name、尺寸不一致、origin 篡改和输出复用；
-- single-extraction Computer B kit 合同用真实 Release Encoder/Decoder 构造 Both-role portable package 和 sealed source set，随后完成展开目录、外部 seal 与外层 ZIP 的逐 entry 流式复核；BAT preflight 找到 exact packaged Encoder 与 1 MiB source，输入/输出目录重叠、错误 expected manifest、archive 单字节篡改、不可变区额外文件、source 单字节篡改和 immutable-root verification output 均被拒绝，而 `Working/` 中的 create-only 运行/验证产物被允许；
+- single-extraction Computer B kit 合同用真实 Release Encoder/Decoder 构造 compact-name Both-role portable package 和 sealed source set，随后完成展开目录、外部 seal 与外层 ZIP 的逐 entry 流式复核；测试还从实际 kit 深层路径执行 packaged Decoder `--list-monitors`，防止只检查“文件存在”却遗漏 Windows loader 路径上限；BAT 两级 preflight 找到 exact packaged Encoder/source并实际创建新 RunId/目录，输入/输出目录重叠、错误 expected manifest、archive 单字节篡改、不可变区额外文件、source 单字节篡改和 immutable-root verification output 均被拒绝，而 `Working/` 中的 create-only 运行/验证产物被允许；
 - `git diff --check` 通过，未修改或纳入用户拥有的 `docs/PHASE1_GATE_REPORT.md`。
 
 当前 create-only campaign 位于 `build-p1_5-evidence/step21-matrix-freeze-6309b44`。MatrixSpec / A catalog / HardwareScope SHA-256 分别为 `fa1f269016a1ab782e4e78516564e32caa1616e53021e76b8f29b892267db8d0`、`d225bebdc3d0a23d4dd7ece6292343578167e09d64219a3a98d463e7c368ba98`、`b7f52190f214a5c4283ca6f81e239d8c29fe154902982e07e0738ff13ee452cc`。`run-ledger` 的 JSON / CSV / seal SHA-256 为 `f0c847feb947e75953ef9f582a4aa3ac08ee02b0b9dcf575e85dc4af58f6a7c0`、`1977d6e1dd6ff6fec30bfa6f0116c768cff9df4c5ed2af08926ce4e72e0be2c1`、`4cb06ff21e3b54d48d6c4521cc90e6f966adfd05af161f80bcdf28d9efb2f4b6`。B 端回传并规范化的 catalog SHA-256 为 `19b6ccf010eea2f7ca9aca9222ecde54cd5225e1cf35ae3228242afa4340711d`；其 raw UTF-16LE identity 与 normalization provenance 仍保存在原始 field-kit。`endpoint-scope` JSON / seal SHA-256 为 `5a94208e8eba1bfd48f888b31e805664f17d66d954aec3909559a83ea847b93e` 与 `db7932c100209465333228a2ad7647ffb5335c58ddd355e7c0d592316f5fdc2a`。这些 hash 只固定 readiness 输入，不改变零现场 cell 的事实。
