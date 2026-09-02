@@ -163,6 +163,39 @@ function Get-PBPilotUInt32
     }
 }
 
+function Get-PBPilotInt32
+{
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -isnot [ValueType])
+    {
+        throw "$Name must be a signed Int32 integer"
+    }
+    try
+    {
+        $typeCode = [Type]::GetTypeCode($Value.GetType())
+        if ($typeCode -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16,
+            [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64,
+            [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal))
+        {
+            throw 'unsupported numeric type'
+        }
+        $number = [decimal]$Value
+        if ($number -lt [decimal][Int32]::MinValue -or $number -gt [decimal][Int32]::MaxValue -or
+            [decimal]::Truncate($number) -ne $number)
+        {
+            throw 'out of range or fractional'
+        }
+        return [Int32]$number
+    }
+    catch
+    {
+        throw "$Name must be a signed Int32 integer"
+    }
+}
+
 function Read-PBBoundedJson
 {
     param(
@@ -394,32 +427,75 @@ function Get-PBPostDecoderBroadcastProofWindow
     }
 }
 
+function Get-PBMonitorRuntimeContractValue
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Monitor,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$ExactContractShape
+    )
+    $requiredFields = @('deviceName', 'physicalRect', 'dpiX', 'dpiY', 'refreshRate', 'rotation', 'adapterLuid', 'primary')
+    if ($Monitor -isnot [System.Collections.IDictionary])
+    {
+        throw "$Name monitor runtime contract is not a JSON object"
+    }
+    if ($ExactContractShape)
+    {
+        Assert-PBPilotExactKeys -Dictionary $Monitor -ExpectedKeys $requiredFields -Name "$Name monitor runtime contract"
+    }
+    else
+    {
+        foreach ($field in $requiredFields)
+        {
+            if (-not $Monitor.Contains($field))
+            {
+                throw "$Name monitor runtime contract lacks required field $field"
+            }
+        }
+    }
+    if ($Monitor.deviceName -isnot [string] -or [string]::IsNullOrWhiteSpace($Monitor.deviceName) -or
+        $Monitor.rotation -isnot [string] -or [string]$Monitor.rotation -cne 'Identity' -or
+        $Monitor.primary -isnot [bool] -or $Monitor.adapterLuid -isnot [System.Collections.IDictionary])
+    {
+        throw "$Name monitor runtime contract is incomplete or invalid"
+    }
+    Assert-PBPilotExactKeys -Dictionary $Monitor.physicalRect -ExpectedKeys @('left', 'top', 'right', 'bottom') `
+        -Name "$Name physicalRect"
+    $physicalRect = Get-PBRectDimensions -Rect $Monitor.physicalRect -Name "$Name physicalRect"
+    Assert-PBPilotExactKeys -Dictionary $Monitor.adapterLuid -ExpectedKeys @('high', 'low') -Name "$Name adapterLuid"
+    $dpiX = Get-PBPilotUInt32 -Value $Monitor.dpiX -Name "$Name dpiX"
+    $dpiY = Get-PBPilotUInt32 -Value $Monitor.dpiY -Name "$Name dpiY"
+    $refreshRate = Get-PBPilotUInt32 -Value $Monitor.refreshRate -Name "$Name refreshRate"
+    $adapterHigh = Get-PBPilotInt32 -Value $Monitor.adapterLuid.high -Name "$Name adapterLuid.high"
+    $adapterLow = Get-PBPilotUInt32 -Value $Monitor.adapterLuid.low -Name "$Name adapterLuid.low"
+    if ($dpiX -eq 0 -or $dpiY -eq 0 -or $refreshRate -le 1)
+    {
+        throw "$Name monitor runtime contract DPI or refresh rate is invalid"
+    }
+    return [ordered]@{
+        deviceName = [string]$Monitor.deviceName
+        physicalRect = [ordered]@{
+            left = [Int64]$physicalRect.left
+            top = [Int64]$physicalRect.top
+            right = [Int64]$physicalRect.right
+            bottom = [Int64]$physicalRect.bottom
+        }
+        dpiX = [UInt32]$dpiX
+        dpiY = [UInt32]$dpiY
+        refreshRate = [UInt32]$refreshRate
+        rotation = [string]$Monitor.rotation
+        adapterLuid = [ordered]@{ high = [Int32]$adapterHigh; low = [UInt32]$adapterLow }
+        primary = [bool]$Monitor.primary
+    }
+}
+
 function Assert-PBMonitorRuntimeContract
 {
     param(
         [Parameter(Mandatory = $true)][object]$Contract,
         [Parameter(Mandatory = $true)][string]$Name
     )
-    if ($Contract -isnot [System.Collections.IDictionary] -or
-        [string]::IsNullOrWhiteSpace([string]$Contract.deviceName) -or
-        [UInt32]$Contract.dpiX -eq 0 -or [UInt32]$Contract.dpiY -eq 0 -or
-        [UInt32]$Contract.refreshRate -eq 0 -or [string]$Contract.rotation -cne 'Identity' -or
-        $Contract.primary -isnot [bool] -or $Contract.adapterLuid -isnot [System.Collections.IDictionary])
-    {
-        throw "$Name monitor runtime contract is incomplete or invalid"
-    }
-    [void](Get-PBRectDimensions -Rect $Contract.physicalRect -Name "$Name physicalRect")
-    foreach ($field in @('high', 'low'))
-    {
-        if (-not $Contract.adapterLuid.Contains($field) -or $Contract.adapterLuid[$field] -is [bool] -or
-            $Contract.adapterLuid[$field] -isnot [byte] -and $Contract.adapterLuid[$field] -isnot [sbyte] -and
-            $Contract.adapterLuid[$field] -isnot [int16] -and $Contract.adapterLuid[$field] -isnot [uint16] -and
-            $Contract.adapterLuid[$field] -isnot [int32] -and $Contract.adapterLuid[$field] -isnot [uint32] -and
-            $Contract.adapterLuid[$field] -isnot [int64] -and $Contract.adapterLuid[$field] -isnot [uint64])
-        {
-            throw "$Name adapterLuid.$field must be an integer"
-        }
-    }
+    [void](Get-PBMonitorRuntimeContractValue -Monitor $Contract -Name $Name -ExactContractShape)
 }
 
 function Test-PBMonitorRuntimeContractMatch
@@ -428,20 +504,27 @@ function Test-PBMonitorRuntimeContractMatch
         [Parameter(Mandatory = $true)][object]$Actual,
         [Parameter(Mandatory = $true)][object]$Expected
     )
+    try
+    {
+        $actualContract = Get-PBMonitorRuntimeContractValue -Monitor $Actual -Name 'Actual live monitor'
+        $expectedContract = Get-PBMonitorRuntimeContractValue -Monitor $Expected -Name 'Expected frozen monitor' -ExactContractShape
+    }
+    catch
+    {
+        return $false
+    }
     foreach ($field in @('left', 'top', 'right', 'bottom'))
     {
-        if ([Int64]$Actual.physicalRect[$field] -ne [Int64]$Expected.physicalRect[$field])
-        {
-            return $false
-        }
+        if ([Int64]$actualContract.physicalRect[$field] -ne [Int64]$expectedContract.physicalRect[$field]) { return $false }
     }
-    return [string]$Actual.deviceName -ceq [string]$Expected.deviceName -and
-        [UInt32]$Actual.dpiX -eq [UInt32]$Expected.dpiX -and [UInt32]$Actual.dpiY -eq [UInt32]$Expected.dpiY -and
-        [UInt32]$Actual.refreshRate -eq [UInt32]$Expected.refreshRate -and
-        [string]$Actual.rotation -ceq [string]$Expected.rotation -and
-        [Int64]$Actual.adapterLuid.high -eq [Int64]$Expected.adapterLuid.high -and
-        [UInt64]$Actual.adapterLuid.low -eq [UInt64]$Expected.adapterLuid.low -and
-        [bool]$Actual.primary -eq [bool]$Expected.primary
+    return [string]$actualContract.deviceName -ceq [string]$expectedContract.deviceName -and
+        [UInt32]$actualContract.dpiX -eq [UInt32]$expectedContract.dpiX -and
+        [UInt32]$actualContract.dpiY -eq [UInt32]$expectedContract.dpiY -and
+        [UInt32]$actualContract.refreshRate -eq [UInt32]$expectedContract.refreshRate -and
+        [string]$actualContract.rotation -ceq [string]$expectedContract.rotation -and
+        [Int32]$actualContract.adapterLuid.high -eq [Int32]$expectedContract.adapterLuid.high -and
+        [UInt32]$actualContract.adapterLuid.low -eq [UInt32]$expectedContract.adapterLuid.low -and
+        [bool]$actualContract.primary -eq [bool]$expectedContract.primary
 }
 
 function New-PBRemoteVisualMonitorPreflight
@@ -870,4 +953,4 @@ function Import-PBRemoteVisualPilotPlan
     return [ordered]@{ path = $resolvedPath; identity = $identity; value = $plan }
 }
 
-Export-ModuleMember -Function ConvertFrom-PBStrictJsonText, Read-PBBoundedJson, Get-PBFileIdentity, Assert-PBIdentityShape, Assert-PBFileIdentity, Write-PBCreateOnlyJson, Get-PBRectDimensions, Test-PBRectContains, Test-PBRectsOverlap, Get-PBPostDecoderBroadcastProofWindow, New-PBRemoteVisualMonitorPreflight, Import-PBRemoteVisualPilotPlan
+Export-ModuleMember -Function ConvertFrom-PBStrictJsonText, Read-PBBoundedJson, Get-PBFileIdentity, Assert-PBIdentityShape, Assert-PBFileIdentity, Write-PBCreateOnlyJson, Get-PBRectDimensions, Test-PBRectContains, Test-PBRectsOverlap, Get-PBPostDecoderBroadcastProofWindow, Get-PBMonitorRuntimeContractValue, New-PBRemoteVisualMonitorPreflight, Import-PBRemoteVisualPilotPlan

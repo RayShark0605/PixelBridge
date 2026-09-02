@@ -82,7 +82,7 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21End
   -OutputDirectory <new-matrix-root>\endpoint-scope
 ```
 
-`PixelBridge.RemoteVisualStep21EndpointScope.1` 要求 B catalog 恰有两块不重叠、未旋转的 exact 1920×1080 monitor，并拒绝 Duplicate/重叠、同名/同角色、错误尺寸、错误 hash 或非整数 rectangle。A 端角色来自已经封存的 HardwareScope：其余那块 monitor 自动成为 ProtectedMonitor；B 端角色必须由操作者显式选择。Encoder Data Window 机械等于 B ExperimentMonitor 的完整 physical rect，因此允许合法的负数桌面 origin，而不会把 `(0,0)` 写死。EndpointScope seal 递归绑定 RunLedger seal（含 CSV）、MatrixSpec、HardwareScope、A/B catalog 与 topology。
+`PixelBridge.RemoteVisualStep21EndpointScope.1` 要求 B catalog 恰有两块不重叠、未旋转的 exact 1920×1080 monitor，并拒绝 Duplicate/重叠、同名/同角色、错误尺寸、错误 hash 或非整数 rectangle。A/B catalog 的 runtime identity 还必须使用真实 JSON 数值/布尔类型：DPI 非零、refresh 不得为 Windows 的 0/1 sentinel、`LUID.HighPart`/`LowPart` 分别落在 `Int32`/`UInt32` 域，rect 与 LUID 子对象不得夹带额外字段；字符串或布尔值不能靠 PowerShell cast 冒充数值。A 端角色来自已经封存的 HardwareScope：其余那块 monitor 自动成为 ProtectedMonitor；B 端角色必须由操作者显式选择。Encoder Data Window 机械等于 B ExperimentMonitor 的完整 physical rect，因此允许合法的负数桌面 origin，而不会把 `(0,0)` 写死。EndpointScope seal 递归绑定 RunLedger seal（含 CSV）、MatrixSpec、HardwareScope、A/B catalog 与 topology。
 
 EndpointScope 仍只能是 `READINESS_ONLY`：它证明静态 catalog 可形成符合要求的双端 Extended Desktop 布局，但不是运行开始时的 topology。每个 cell 的 endpoint wrapper 仍必须重新调用 packaged Decoder `--list-monitors`，并让 live catalog 与 plan 中的完整 device/rect/DPI/refresh/rotation/LUID/primary contract 一致；provider 模式也仍须新的 UI-visible evidence。EndpointScope 保持 `runIdsAllocated=0`、`executedCellCount=0`、`formalStep21Accepted=false`，不能拿来填一个 cell。
 
