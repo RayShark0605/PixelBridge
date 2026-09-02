@@ -342,11 +342,12 @@ if(WIN32)
             -NonInteractive
             -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyRemoteVisualDeploymentEvidence.ps1"
             -ToolsRoot "${PROJECT_SOURCE_DIR}/tools/PBRemoteVisualEvidence"
-            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/remote-visual-deployment-evidence")
+            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/remote-visual-deployment-evidence"
+            -BuildDirectory "${PROJECT_BINARY_DIR}")
     set_tests_properties(PBRemoteVisualDeploymentEvidenceContracts PROPERTIES
         LABELS "tools;remote-visual;deployment;package;source-set;file-safety"
         RUN_SERIAL TRUE
-        TIMEOUT 120)
+        TIMEOUT 240)
 
     add_test(NAME PBLocalDesktopRegressionEvidenceContracts
         COMMAND "${PB_REMOTE_VISUAL_POWERSHELL}"

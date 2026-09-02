@@ -86,6 +86,41 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21End
 
 EndpointScope 仍只能是 `READINESS_ONLY`：它证明静态 catalog 可形成符合要求的双端 Extended Desktop 布局，但不是运行开始时的 topology。每个 cell 的 endpoint wrapper 仍必须重新调用 packaged Decoder `--list-monitors`，并让 live catalog 与 plan 中的完整 device/rect/DPI/refresh/rotation/LUID/primary contract 一致；provider 模式也仍须新的 UI-visible evidence。EndpointScope 保持 `runIdsAllocated=0`、`executedCellCount=0`、`formalStep21Accepted=false`，不能拿来填一个 cell。
 
+### 2.1 Computer B 单次解压交付包
+
+为了让 Computer B 不再单独复制 BAT、也不再需要先解压外层文件后继续寻找第二层 `RuntimePackage`，可在当前 source/package identity 完全一致时创建一个单次解压包：
+
+```powershell
+$kit = pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21ComputerBKit.ps1 `
+  -PackageDirectory <verified-current-head-both-package> `
+  -PackageSealPath <both-package-seal.json> `
+  -PackageArchivePath <both-package.zip> `
+  -ExpectedPackageManifestSha256 <package-manifest-sha256> `
+  -SourceSetDirectory <sealed-source-set> `
+  -SourceSetSealPath <source-set-seal.json> `
+  -ExpectedSourceManifestSha256 <source-manifest-sha256> `
+  -ExpectedHeadCommit <40-hex-current-head> `
+  -ComputerBProtectedMonitorDeviceName <B-protected> `
+  -ComputerBExperimentMonitorDeviceName <B-experiment> `
+  -OutputRoot <new-kit-output-root> | ConvertFrom-Json
+
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\Test-PBRemoteVisualStep21ComputerBKit.ps1 `
+  -KitDirectory $kit.kitDirectory `
+  -KitSealPath $kit.sealPath `
+  -ArchivePath $kit.archivePath `
+  -ExpectedManifestSha256 $kit.manifestSha256
+```
+
+生成器只有在以下条件全部满足后才发布目录、外层 ZIP 和外部 seal：Both-role package 的目录/seal/原始 ZIP 已由权威 package verifier 验证，package HEAD/tree/tested-source fingerprint 与当前 checkout 一致，source set 及其 1 MiB CSPRNG 文件已由权威 source verifier 验证，所有输出与输入目录分离，且展开目录和外层 ZIP 的每一个不可变文件都重新通过清单验证。文件数、单文件、总 payload、manifest、seal 和 ZIP 都有上限；额外文件、重复/不安全路径、reparse point、哈希漂移、archive tamper 和 launcher 语义漂移均 fail closed。只有 `Working/` 是明确可变区。
+
+把 `$kit.archivePath` 复制到 Computer B 后只需解压一次。根目录内有：
+
+1. `VERIFY-COMPUTER-B-KIT.bat`：调用内嵌 PowerShell 7 verifier，递归验证展开的 production package、source set 和全部不可变文件；
+2. `Capture-ComputerBMonitorCatalog.bat`：只运行 packaged Decoder `--list-monitors`，create-only 写入 `Working\computer-b-monitor-catalog.json`；已有 final 或 `.partial` 都会拒绝，不会静默覆盖/删除；
+3. `Start-PBRemoteVisualExperimentMonitorDemo.bat`：先确认 exact packaged `Encoder\PixelBridgeEncoder.exe` 存在，并用 `%SystemRoot%\System32\certutil.exe` 对 sealed `random-1MiB.bin` 做 SHA-256 校验，然后以 2 Hz/12 Control repetitions 在已选 B ExperimentMonitor 上执行 `remote-lf4 --single-monitor-fullscreen --manual-stop --loop`。它持续循环，直到 A 端已经完成 Receiver、WholeFileDigest、safe publish 和 external byte-exact 比较后，由操作者按 Q 或 Enter 正常停止。
+
+第三个 BAT 只用于快速重现用户要求的文件恢复演示，不依赖视频播放器或远控窗口的品牌、宽高比、位置或缩放策略；A 端仍只从实际捕获像素中的 Locator 得到 origin/X/Y scale。它不带 formal `--protected-monitor/--experiment-monitor` 双屏参数，也没有 deployment/UI evidence/PilotPlan.3，因此明确不能填 RunLedger。正式 cell 仍必须先在 A 端创建独立 RunId、environment/deployment/UI evidence 和 plan，先启动 Decoder，再在 B 端调用 `Invoke-PBRemoteVisualPilotEncoder.ps1`。
+
 ## 3. 每个 cell 的冻结输入与几何
 
 每个 included cell 都必须重新生成一个 OS-CSPRNG RunId，并生成与该 RunId 绑定的 metadata、双端 environment、deployment manifest、remote UI evidence 和 `PilotPlan.3`。package manifest 与 1 MiB RAW/OFF source identity 必须在 31 个 run 中完全相同；其余 run-bound artifact 不得复用。历史 `PilotPlan.2` 仍可只读导入和验证，但不能再生成当前 `MatrixRunRecord.2`，以免把旧的 ROI-derived scale 误当作现场几何真值。
@@ -253,6 +288,7 @@ verifier 会：
 - 对抗性 evidence fixture 明确拒绝 Plan.3 中遗留的 ROI-derived `estimatedScaleX/Y`、分数 ROI 尺寸、字符串型/非有限 scale、case-tampered schema、成功 run 的零 Locator 样本、样本数与 Bootstrap successes 不一致、全程最大各向异性超过 0.015，以及 matrix record 内的 geometry 篡改；
 - create-only run-ledger fixture 机械重算 31 个 included cell，证明 LF4 整屏搜索 ROI 与 1.0×目标画布彼此独立、Direct/Shape 仍为居中 exact 1920×1080，并拒绝 ROI 篡改、父 scope hash 错误、重复输出目录和任何 `estimatedScaleX/Y` 遗留；
 - run-ledger seal importer 逐列、逐行核对 JSON/CSV，在解析前执行逐类 artifact 尺寸上限，并拒绝修改状态后重新计算 hash 的语义篡改或超限 CSV identity；EndpointScope fixture 又验证了 A 端 2560×1440 与 B 端带负 Y origin 的双 1920×1080 monitor role 绑定，拒绝重叠/Duplicate、重复 device name、尺寸不一致、origin 篡改和输出复用；
+- single-extraction Computer B kit 合同用真实 Release Encoder/Decoder 构造 Both-role portable package 和 sealed source set，随后完成展开目录、外部 seal 与外层 ZIP 的逐 entry 流式复核；BAT preflight 找到 exact packaged Encoder 与 1 MiB source，输入/输出目录重叠、错误 expected manifest、archive 单字节篡改、不可变区额外文件、source 单字节篡改和 immutable-root verification output 均被拒绝，而 `Working/` 中的 create-only 运行/验证产物被允许；
 - `git diff --check` 通过，未修改或纳入用户拥有的 `docs/PHASE1_GATE_REPORT.md`。
 
 当前 create-only campaign 位于 `build-p1_5-evidence/step21-matrix-freeze-6309b44`。MatrixSpec / A catalog / HardwareScope SHA-256 分别为 `fa1f269016a1ab782e4e78516564e32caa1616e53021e76b8f29b892267db8d0`、`d225bebdc3d0a23d4dd7ece6292343578167e09d64219a3a98d463e7c368ba98`、`b7f52190f214a5c4283ca6f81e239d8c29fe154902982e07e0738ff13ee452cc`。`run-ledger` 的 JSON / CSV / seal SHA-256 为 `f0c847feb947e75953ef9f582a4aa3ac08ee02b0b9dcf575e85dc4af58f6a7c0`、`1977d6e1dd6ff6fec30bfa6f0116c768cff9df4c5ed2af08926ce4e72e0be2c1`、`4cb06ff21e3b54d48d6c4521cc90e6f966adfd05af161f80bcdf28d9efb2f4b6`。B 端回传并规范化的 catalog SHA-256 为 `19b6ccf010eea2f7ca9aca9222ecde54cd5225e1cf35ae3228242afa4340711d`；其 raw UTF-16LE identity 与 normalization provenance 仍保存在原始 field-kit。`endpoint-scope` JSON / seal SHA-256 为 `5a94208e8eba1bfd48f888b31e805664f17d66d954aec3909559a83ea847b93e` 与 `db7932c100209465333228a2ad7647ffb5335c58ddd355e7c0d592316f5fdc2a`。这些 hash 只固定 readiness 输入，不改变零现场 cell 的事实。
