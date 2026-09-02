@@ -52,6 +52,21 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21Har
 
 `PixelBridge.RemoteVisualStep21HardwareScope.1` 只接受两块不重叠、未旋转的 2560×1440 Computer A 显示器，且指定 ExperimentMonitor 必须恰好来自该 catalog。它按“目标 LF4 画布能否完整落入单块 ExperimentMonitor”而不是按 Decoder capture ROI 的宽高比，从 canonical 41-cell MatrixSpec 得到 31 个 included cell：27 个 LF4/WGC（3 mode × 3 可容纳 scale × 3 FPS）、2 个 LF4/DXGI（0.750/1 Hz 与 1.259/2 Hz）和 2 个 Direct/Shape baseline；另把 9 个 LF4/WGC 1.5× 与 1 个 LF4/DXGI 1.5× 封存为 `RequiredRoiExceedsSingleExperimentMonitor`。导入器会重新读取父 MatrixSpec 与 monitor catalog、重算 31/10 partition，拒绝人工删项、换项、移动身份或事后修改 catalog。excluded cell 不需要 run，但也永远不能计入覆盖。
 
+在 HardwareScope 冻结后、任何 cell 开始前，再生成一份只读的操作者账本：
+
+```powershell
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21RunLedger.ps1 `
+  -MatrixSpecPath <new-matrix-root>\step21-matrix-spec.json `
+  -ExpectedMatrixSpecSha256 <frozen-spec-sha256> `
+  -HardwareScopePath <new-matrix-root>\step21-hardware-scope.json `
+  -ExpectedHardwareScopeSha256 <frozen-scope-sha256> `
+  -OutputDirectory <new-matrix-root>\run-ledger
+```
+
+`PixelBridge.RemoteVisualStep21RunLedger.1` 和对应 CSV 逐项保存 31 个 included cell 的固定 ordinal、Profile、backend、mode、scale target、FPS、最小目标画布、`GeometryMode`、Decoder ROI 参数和独立目录名。LF4 的 Decoder ROI 固定为整块 A 端 ExperimentMonitor，purpose 明确为 `LocatorSearchNeighborhood`；这样 0.75/1.0/1.259 三种目标都可在同一个有界任意宽高比搜索区域内平移或 letterbox，ROI 本身不提供尺度证据。Direct/Shape 则使用该显示器中央的 exact 1920×1080 `ExactProfileCanvas`。导入器重算每一行并拒绝顺序、目标、ROI、目录名、状态或父 identity 篡改；seal 绑定 MatrixSpec、HardwareScope、A 端 catalog、JSON 与 CSV。
+
+新账本的每行初始状态只能是 `PENDING`，`runId` 必须为 `null`，顶层只能是 `NOT_EXECUTED`、`executedCellCount=0`、`formalStep21Accepted=false`。RunId 仍然必须等到该 cell 真正开始时独立生成；账本不会预生成或共享 deployment/UI/plan/evidence，也不能填充任何矩阵覆盖率。Computer B monitor catalog 和逐 run provider UI evidence 仍是正式计划的未满足前提。完整账本目录是 create-only；seal 是最后的完成标记，已有目录不可覆盖或复用。
+
 ## 3. 每个 cell 的冻结输入与几何
 
 每个 included cell 都必须重新生成一个 OS-CSPRNG RunId，并生成与该 RunId 绑定的 metadata、双端 environment、deployment manifest、remote UI evidence 和 `PilotPlan.3`。package manifest 与 1 MiB RAW/OFF source identity 必须在 31 个 run 中完全相同；其余 run-bound artifact 不得复用。历史 `PilotPlan.2` 仍可只读导入和验证，但不能再生成当前 `MatrixRunRecord.2`，以免把旧的 ROI-derived scale 误当作现场几何真值。
@@ -217,6 +232,7 @@ verifier 会：
 - 完整 Release CTest（未排除 Native 或 GUI）为 **223/223 PASS**，包括 GUI smoke、WGC/DXGI native capture、4 个物理 WholeFileDigest 文件 Gate、GPU parity、PilotPlan 和 Step 21 matrix contracts；最终 case-sensitive schema 加固后又单独复跑 `PBRemoteVisualPilotEvidenceContracts`，仍为 PASS；
 - MSVC ASan 的 `PBTelemetryTests` 与 `PBApplicationTests` 为 **2/2 PASS**；Python strict report merger 为 **25/25 PASS**；
 - 对抗性 evidence fixture 明确拒绝 Plan.3 中遗留的 ROI-derived `estimatedScaleX/Y`、分数 ROI 尺寸、字符串型/非有限 scale、case-tampered schema、成功 run 的零 Locator 样本、样本数与 Bootstrap successes 不一致、全程最大各向异性超过 0.015，以及 matrix record 内的 geometry 篡改；
+- create-only run-ledger fixture 机械重算 31 个 included cell，证明 LF4 整屏搜索 ROI 与 1.0×目标画布彼此独立、Direct/Shape 仍为居中 exact 1920×1080，并拒绝 ROI 篡改、父 scope hash 错误、重复输出目录和任何 `estimatedScaleX/Y` 遗留；
 - `git diff --check` 通过，未修改或纳入用户拥有的 `docs/PHASE1_GATE_REPORT.md`。
 
 因此，production telemetry、Plan.3、Record.2、Evidence/Seal.3 和验证工具已达到执行正式矩阵的代码 readiness；Step 21 状态仍为 `MANUAL-GATE`，唯一完成出口仍是第 8 节规定的 31 个彼此独立的真实双机 included-cell 证据。

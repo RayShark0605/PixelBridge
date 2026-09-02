@@ -442,7 +442,8 @@ $matrixTool = Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualStep21Matrix.ps1'
 $matrixModule = Join-Path $resolvedToolsRoot 'PBRemoteVisualMatrixCommon.psm1'
 $matrixSpecTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21MatrixSpec.ps1'
 $hardwareScopeTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21HardwareScope.ps1'
-foreach ($path in @($matrixTool, $matrixModule, $matrixSpecTool, $hardwareScopeTool,
+$runLedgerTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21RunLedger.ps1'
+foreach ($path in @($matrixTool, $matrixModule, $matrixSpecTool, $hardwareScopeTool, $runLedgerTool,
     (Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualFieldFailureEvidence.ps1')))
 {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf))
@@ -517,6 +518,118 @@ try
         -ExpectedComputerAMonitorCatalogSha256 $monitorCatalogIdentity.sha256 `
         -ExperimentMonitorDeviceName '\\.\DISPLAY2' -OutputPath $hardwareScopePath | Out-Null
     $hardwareScopeIdentity = New-Identity -Path $hardwareScopePath
+
+    $runLedgerOutput = Join-Path $runRoot 'run-ledger'
+    & $runLedgerTool -MatrixSpecPath $matrixSpecPath -ExpectedMatrixSpecSha256 $matrixSpecIdentity.sha256 `
+        -HardwareScopePath $hardwareScopePath -ExpectedHardwareScopeSha256 $hardwareScopeIdentity.sha256 `
+        -OutputDirectory $runLedgerOutput | Out-Null
+    $runLedgerPath = Join-Path $runLedgerOutput 'step21-run-ledger.json'
+    $runLedgerIdentity = New-Identity -Path $runLedgerPath
+    $runLedgerImport = Import-PBRemoteVisualStep21RunLedger -Path $runLedgerPath `
+        -ExpectedSha256 $runLedgerIdentity.sha256
+    $runLedger = $runLedgerImport.value
+    $lf4OneToOne = @($runLedger.entries | Where-Object {
+        [string]$_.cellId -ceq 'lf4-wgc-quality-priority-s1000-f1'
+    })
+    $lf4Scaled = @($runLedger.entries | Where-Object {
+        [string]$_.cellId -ceq 'lf4-wgc-quality-priority-s0750-f1'
+    })
+    $directBaseline = @($runLedger.entries | Where-Object {
+        [string]$_.profileToken -ceq 'direct'
+    })
+    if ([string]$runLedger.schema -cne 'PixelBridge.RemoteVisualStep21RunLedger.1' -or
+        [string]$runLedger.status -cne 'NOT_EXECUTED' -or @($runLedger.entries).Count -ne 31 -or
+        [UInt32]$runLedger.truthBoundary.executedCellCount -ne 0 -or
+        [UInt32]$runLedger.truthBoundary.pendingCellCount -ne 31 -or
+        [bool]$runLedger.truthBoundary.formalStep21Accepted -or
+        $lf4OneToOne.Count -ne 1 -or [string]$lf4OneToOne[0].geometryMode -cne 'Strict1To1' -or
+        [UInt32]$lf4OneToOne[0].minimumTargetCanvas.width -ne 1920 -or
+        [UInt32]$lf4OneToOne[0].minimumTargetCanvas.height -ne 1080 -or
+        [Int64]$lf4OneToOne[0].decoderCaptureRoi.left -ne 2560 -or
+        [Int64]$lf4OneToOne[0].decoderCaptureRoi.top -ne 0 -or
+        [Int64]$lf4OneToOne[0].decoderCaptureRoi.right -ne 5120 -or
+        [Int64]$lf4OneToOne[0].decoderCaptureRoi.bottom -ne 1440 -or
+        [string]$lf4OneToOne[0].decoderCaptureRoiArgument -cne '2560,0,2560,1440' -or
+        [string]$lf4OneToOne[0].captureRoiPurpose -cne 'LocatorSearchNeighborhood' -or
+        $lf4Scaled.Count -ne 1 -or [string]$lf4Scaled[0].geometryMode -cne 'LocatorScaled' -or
+        $directBaseline.Count -ne 1 -or [string]$directBaseline[0].captureRoiPurpose -cne 'ExactProfileCanvas' -or
+        [string]$directBaseline[0].decoderCaptureRoiArgument -cne '2880,180,1920,1080' -or
+        $null -ne $directBaseline[0].runId -or [string]$directBaseline[0].executionStatus -cne 'PENDING')
+    {
+        throw 'Step 21 run ledger did not freeze the exact 31-cell operator schedule and ROI/target distinction'
+    }
+    $runLedgerRaw = [System.IO.File]::ReadAllText($runLedgerPath)
+    $runLedgerCsvPath = Join-Path $runLedgerOutput 'step21-run-ledger.csv'
+    $runLedgerCsv = @(Import-Csv -LiteralPath $runLedgerCsvPath)
+    if ($runLedgerRaw.Contains('estimatedScaleX') -or $runLedgerRaw.Contains('estimatedScaleY') -or
+        $runLedgerCsv.Count -ne 31 -or $runLedgerCsv[0].PSObject.Properties.Name -contains 'estimatedScaleX' -or
+        $runLedgerCsv[0].PSObject.Properties.Name -contains 'estimatedScaleY')
+    {
+        throw 'Step 21 run ledger retained a legacy ROI-derived scale field or the wrong CSV row count'
+    }
+    $runLedgerSealPath = Join-Path $runLedgerOutput 'step21-run-ledger.seal.json'
+    $runLedgerSeal = Read-PBBoundedJson -Path $runLedgerSealPath -MaximumBytes 512KB
+    if ([string]$runLedgerSeal.schema -cne 'PixelBridge.RemoteVisualStep21RunLedgerSeal.1' -or
+        [string]$runLedgerSeal.status -cne 'NOT_EXECUTED' -or [UInt32]$runLedgerSeal.artifactCount -ne 5 -or
+        @($runLedgerSeal.artifacts).Count -ne 5 -or [bool]$runLedgerSeal.formalStep21Accepted -or
+        [bool]$runLedgerSeal.certifiedRemoteVisualProfile)
+    {
+        throw 'Step 21 run-ledger seal did not preserve the non-execution truth boundary'
+    }
+    foreach ($artifact in @($runLedgerSeal.artifacts))
+    {
+        $actualArtifact = New-Identity -Path ([string]$artifact.path)
+        if ([UInt64]$actualArtifact.size -ne [UInt64]$artifact.size -or
+            [string]$actualArtifact.sha256 -cne [string]$artifact.sha256)
+        {
+            throw 'Step 21 run-ledger seal contains a stale artifact identity'
+        }
+    }
+
+    $runLedgerTampered = Read-PBBoundedJson -Path $runLedgerPath -MaximumBytes 2MB
+    $runLedgerTampered.entries[0].decoderCaptureRoi.right = 5119
+    $runLedgerTamperedPath = Join-Path $runRoot 'run-ledger-tampered.json'
+    Write-NewJson -Path $runLedgerTamperedPath -Value $runLedgerTampered
+    $runLedgerTamperedIdentity = New-Identity -Path $runLedgerTamperedPath
+    $runLedgerTamperRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualStep21RunLedger -Path $runLedgerTamperedPath `
+            -ExpectedSha256 $runLedgerTamperedIdentity.sha256)
+    }
+    catch { $runLedgerTamperRejected = $_.Exception.Message -like '*run-ledger entry*' }
+    if (-not $runLedgerTamperRejected)
+    {
+        throw 'Step 21 run ledger allowed post-generation capture ROI tampering'
+    }
+
+    $runLedgerHashMismatchOutput = Join-Path $runRoot 'run-ledger-hash-mismatch'
+    $runLedgerHashMismatchRejected = $false
+    try
+    {
+        & $runLedgerTool -MatrixSpecPath $matrixSpecPath -ExpectedMatrixSpecSha256 $matrixSpecIdentity.sha256 `
+            -HardwareScopePath $hardwareScopePath -ExpectedHardwareScopeSha256 ('0' * 64) `
+            -OutputDirectory $runLedgerHashMismatchOutput | Out-Null
+    }
+    catch { $runLedgerHashMismatchRejected = $_.Exception.Message -like '*expected SHA-256*' }
+    if (-not $runLedgerHashMismatchRejected -or (Test-Path -LiteralPath $runLedgerHashMismatchOutput))
+    {
+        throw 'Step 21 run-ledger tool published output after a HardwareScope identity mismatch'
+    }
+
+    $runLedgerDuplicateRejected = $false
+    try
+    {
+        & $runLedgerTool -MatrixSpecPath $matrixSpecPath -ExpectedMatrixSpecSha256 $matrixSpecIdentity.sha256 `
+            -HardwareScopePath $hardwareScopePath -ExpectedHardwareScopeSha256 $hardwareScopeIdentity.sha256 `
+            -OutputDirectory $runLedgerOutput | Out-Null
+    }
+    catch { $runLedgerDuplicateRejected = $_.Exception.Message -like '*must be a new directory*' }
+    if (-not $runLedgerDuplicateRejected)
+    {
+        throw 'Step 21 run-ledger tool overwrote or reused an existing output directory'
+    }
+
     $sourcePath = Join-Path $runRoot 'random-1MiB.bin'
     [System.IO.File]::WriteAllBytes($sourcePath, [byte[]]::new(1MB))
     $shared = [ordered]@{
