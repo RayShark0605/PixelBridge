@@ -4,7 +4,10 @@ param(
     [string]$ToolsRoot,
 
     [Parameter(Mandatory = $true)]
-    [string]$WorkRoot
+    [string]$WorkRoot,
+
+    [Parameter(Mandatory = $true)]
+    [string]$BuildDirectory
 )
 
 Set-StrictMode -Version Latest
@@ -51,9 +54,14 @@ function Require-Failure
 
 $resolvedToolsRoot = [System.IO.Path]::GetFullPath($ToolsRoot)
 $resolvedWorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
+$resolvedBuildDirectory = [System.IO.Path]::GetFullPath($BuildDirectory)
 if (-not (Test-Path -LiteralPath $resolvedToolsRoot -PathType Container))
 {
     throw "RemoteVisual evidence tool root does not exist: $resolvedToolsRoot"
+}
+if (-not (Test-Path -LiteralPath $resolvedBuildDirectory -PathType Container))
+{
+    throw "RemoteVisual build directory does not exist: $resolvedBuildDirectory"
 }
 if (-not (Test-Path -LiteralPath $resolvedWorkRoot -PathType Container))
 {
@@ -65,6 +73,8 @@ $scripts = @(
     'Test-PBRemoteVisualPortablePackage.ps1',
     'New-PBRemoteVisualSourceSet.ps1',
     'Test-PBRemoteVisualSourceSet.ps1',
+    'New-PBRemoteVisualStep21ComputerBKit.ps1',
+    'Test-PBRemoteVisualStep21ComputerBKit.ps1',
     'New-PBRemoteVisualRunPreset.ps1',
     'Get-PBRemoteVisualEnvironment.ps1',
     'New-PBRemoteVisualDeploymentManifest.ps1',
@@ -159,6 +169,241 @@ try
         (Test-Path -LiteralPath "$sourceSetDirectory.partial"))
     {
         throw 'Rejected duplicate source-set creation changed the original or left a partial directory'
+    }
+
+    $packageCreator = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualPortablePackage.ps1'
+    $packageOutputRoot = Join-Path $runRoot 'portable-package'
+    [void](New-Item -ItemType Directory -Path $packageOutputRoot)
+    $packageCreation = Invoke-Tool -Script $packageCreator -Arguments @(
+        '-Role', 'Both',
+        '-Label', 'current-head',
+        '-BuildDirectory', $resolvedBuildDirectory,
+        '-OutputRoot', $packageOutputRoot,
+        '-ExcludedSourcePath', 'docs/PHASE1_GATE_REPORT.md')
+    Require-Success -Result $packageCreation -Name 'Both-role portable-package creation for Computer B kit'
+    $packageCreateResult = $packageCreation.output | ConvertFrom-Json
+    if ($packageCreateResult.packageDirectory -isnot [string] -or
+        $packageCreateResult.manifestSha256 -cnotmatch '^[0-9a-f]{64}$')
+    {
+        throw 'Portable-package creator did not return a valid Computer B kit input identity'
+    }
+
+    $kitCreator = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21ComputerBKit.ps1'
+    $kitVerifier = Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualStep21ComputerBKit.ps1'
+    $kitOutputRoot = Join-Path $runRoot 'computer-b-kit'
+    [void](New-Item -ItemType Directory -Path $kitOutputRoot)
+    $headCommit = (& git -C ([System.IO.Path]::GetFullPath((Join-Path $resolvedToolsRoot '..\..'))) rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $headCommit -cnotmatch '^[0-9a-f]{40}$')
+    {
+        throw 'Computer B kit test could not resolve repository HEAD'
+    }
+    $kitCreation = Invoke-Tool -Script $kitCreator -Arguments @(
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-PackageArchivePath', [string]$packageCreateResult.archivePath,
+        '-ExpectedPackageManifestSha256', [string]$packageCreateResult.manifestSha256,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath,
+        '-ExpectedSourceManifestSha256', $manifestHash,
+        '-ExpectedHeadCommit', $headCommit,
+        '-ComputerBProtectedMonitorDeviceName', '\\.\DISPLAY2',
+        '-ComputerBExperimentMonitorDeviceName', '\\.\DISPLAY1',
+        '-OutputRoot', $kitOutputRoot)
+    Require-Success -Result $kitCreation -Name 'single-extraction Computer B kit creation'
+    $kitCreateResult = $kitCreation.output | ConvertFrom-Json
+    if ($kitCreateResult.status -cne 'PREDEPLOYMENT_ONLY' -or $kitCreateResult.executedCellCount -ne 0 -or
+        $kitCreateResult.formalStep21Accepted -or $kitCreateResult.certifiedRemoteVisualProfile -or
+        $kitCreateResult.manifestSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $kitCreateResult.archiveSha256 -cnotmatch '^[0-9a-f]{64}$')
+    {
+        throw 'Computer B kit creator inflated its truth boundary or returned an invalid identity'
+    }
+    $kitVerification = Invoke-Tool -Script $kitVerifier -Arguments @(
+        '-KitDirectory', [string]$kitCreateResult.kitDirectory,
+        '-KitSealPath', [string]$kitCreateResult.sealPath,
+        '-ArchivePath', [string]$kitCreateResult.archivePath,
+        '-ExpectedManifestSha256', [string]$kitCreateResult.manifestSha256)
+    Require-Success -Result $kitVerification -Name 'Computer B kit directory/archive verification'
+    $kitVerificationValue = $kitVerification.output | ConvertFrom-Json
+    if (-not $kitVerificationValue.verified -or $kitVerificationValue.status -cne 'PREDEPLOYMENT_ONLY' -or
+        $kitVerificationValue.executedCellCount -ne 0)
+    {
+        throw 'Computer B kit verifier did not preserve the predeployment-only truth boundary'
+    }
+
+    $packageManifestPath = Join-Path ([string]$packageCreateResult.packageDirectory) 'package-manifest.json'
+    $packageManifestHashBeforeOverlapProbe = (Get-FileHash -LiteralPath $packageManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $overlappingKitCreation = Invoke-Tool -Script $kitCreator -Arguments @(
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-PackageArchivePath', [string]$packageCreateResult.archivePath,
+        '-ExpectedPackageManifestSha256', [string]$packageCreateResult.manifestSha256,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath,
+        '-ExpectedSourceManifestSha256', $manifestHash,
+        '-ExpectedHeadCommit', $headCommit,
+        '-ComputerBProtectedMonitorDeviceName', '\\.\DISPLAY2',
+        '-ComputerBExperimentMonitorDeviceName', '\\.\DISPLAY1',
+        '-OutputRoot', [string]$packageCreateResult.packageDirectory)
+    Require-Failure -Result $overlappingKitCreation -Name 'Computer B kit input/output overlap guard' `
+        -Pattern 'output must remain outside the input package and source-set directories'
+    if ((Get-FileHash -LiteralPath $packageManifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+        $packageManifestHashBeforeOverlapProbe)
+    {
+        throw 'Rejected Computer B kit overlap changed its package input'
+    }
+
+    $archiveStream = [System.IO.File]::Open([string]$kitCreateResult.archivePath, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try
+    {
+        $originalArchiveByte = $archiveStream.ReadByte()
+        if ($originalArchiveByte -lt 0)
+        {
+            throw 'Computer B kit archive is unexpectedly empty'
+        }
+        $archiveStream.Position = 0
+        $archiveStream.WriteByte([byte]($originalArchiveByte -bxor 0xff))
+        $archiveStream.Flush($true)
+    }
+    finally
+    {
+        $archiveStream.Dispose()
+    }
+    $tamperedArchiveVerification = Invoke-Tool -Script $kitVerifier -Arguments @(
+        '-KitDirectory', [string]$kitCreateResult.kitDirectory,
+        '-KitSealPath', [string]$kitCreateResult.sealPath,
+        '-ArchivePath', [string]$kitCreateResult.archivePath,
+        '-ExpectedManifestSha256', [string]$kitCreateResult.manifestSha256)
+    Require-Failure -Result $tamperedArchiveVerification -Name 'Computer B kit archive-tamper guard' `
+        -Pattern 'archive identity differs from its seal'
+    $archiveStream = [System.IO.File]::Open([string]$kitCreateResult.archivePath, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try
+    {
+        $archiveStream.WriteByte([byte]$originalArchiveByte)
+        $archiveStream.Flush($true)
+    }
+    finally
+    {
+        $archiveStream.Dispose()
+    }
+    if ((Get-FileHash -LiteralPath ([string]$kitCreateResult.archivePath) -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+        [string]$kitCreateResult.archiveSha256)
+    {
+        throw 'Computer B kit archive-tamper fixture did not restore the original archive identity'
+    }
+
+    $demoBatchPath = Join-Path ([string]$kitCreateResult.kitDirectory) 'Start-PBRemoteVisualExperimentMonitorDemo.bat'
+    $previousPreflightValue = $env:PB_PACKAGE_PREFLIGHT_ONLY
+    $demoPreflightOutput = ''
+    $demoPreflightExitCode = -1
+    try
+    {
+        $env:PB_PACKAGE_PREFLIGHT_ONLY = '1'
+        $demoPreflightOutput = @(& $env:ComSpec '/d' '/c' ('"' + $demoBatchPath + '"') 2>&1) -join "`n"
+        $demoPreflightExitCode = $LASTEXITCODE
+    }
+    finally
+    {
+        $env:PB_PACKAGE_PREFLIGHT_ONLY = $previousPreflightValue
+    }
+    if ($demoPreflightExitCode -ne 0 -or $demoPreflightOutput -notmatch 'PACKAGE PREFLIGHT PASSED')
+    {
+        throw "Computer B one-click demo preflight did not find the packaged Encoder and test binary: $demoPreflightOutput"
+    }
+    $previousPreflightValue = $env:PB_PACKAGE_PREFLIGHT_ONLY
+    $launchPreflightOutput = ''
+    $launchPreflightExitCode = -1
+    try
+    {
+        $env:PB_PACKAGE_PREFLIGHT_ONLY = '2'
+        $launchPreflightOutput = @(& $env:ComSpec '/d' '/c' ('"' + $demoBatchPath + '"') 2>&1) -join "`n"
+        $launchPreflightExitCode = $LASTEXITCODE
+    }
+    finally
+    {
+        $env:PB_PACKAGE_PREFLIGHT_ONLY = $previousPreflightValue
+    }
+    if ($launchPreflightExitCode -ne 0 -or $launchPreflightOutput -notmatch 'LAUNCH PREFLIGHT PASSED' -or
+        $launchPreflightOutput -notmatch 'Demo RunId: [0-9a-f]{32}')
+    {
+        throw "Computer B one-click demo RunId/create-only preflight failed: $launchPreflightOutput"
+    }
+
+    $wrongKitManifest = Invoke-Tool -Script $kitVerifier -Arguments @(
+        '-KitDirectory', [string]$kitCreateResult.kitDirectory,
+        '-ExpectedManifestSha256', ('0' * 64))
+    Require-Failure -Result $wrongKitManifest -Name 'Computer B kit expected-manifest guard' `
+        -Pattern 'manifest size or expected SHA-256 is invalid'
+
+    $workingDirectory = Join-Path ([string]$kitCreateResult.kitDirectory) 'Working'
+    if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container))
+    {
+        [void](New-Item -ItemType Directory -Path $workingDirectory)
+    }
+    [System.IO.File]::WriteAllText((Join-Path $workingDirectory 'allowed-runtime-output.txt'), 'allowed')
+    $workingVerificationPath = Join-Path $workingDirectory 'verification.json'
+    $workingOutputVerification = Invoke-Tool -Script $kitVerifier -Arguments @(
+        '-KitDirectory', [string]$kitCreateResult.kitDirectory,
+        '-ExpectedManifestSha256', [string]$kitCreateResult.manifestSha256,
+        '-OutputPath', $workingVerificationPath)
+    Require-Success -Result $workingOutputVerification -Name 'Computer B kit mutable Working-directory allowance'
+    if (-not (Test-Path -LiteralPath $workingVerificationPath -PathType Leaf))
+    {
+        throw 'Computer B kit verifier did not publish its create-only result below Working'
+    }
+
+    $immutableVerificationPath = Join-Path ([string]$kitCreateResult.kitDirectory) 'invalid-verification-output.json'
+    $immutableOutputVerification = Invoke-Tool -Script $kitVerifier -Arguments @(
+        '-KitDirectory', [string]$kitCreateResult.kitDirectory,
+        '-ExpectedManifestSha256', [string]$kitCreateResult.manifestSha256,
+        '-OutputPath', $immutableVerificationPath)
+    Require-Failure -Result $immutableOutputVerification -Name 'Computer B kit immutable-output guard' `
+        -Pattern 'outside the immutable kit or below Working'
+    if (Test-Path -LiteralPath $immutableVerificationPath)
+    {
+        throw 'Rejected Computer B kit verification output mutated the immutable kit'
+    }
+
+    $unexpectedFilePath = Join-Path ([string]$kitCreateResult.kitDirectory) 'unexpected-immutable-file.txt'
+    [System.IO.File]::WriteAllText($unexpectedFilePath, 'unexpected')
+    $unexpectedFileVerification = Invoke-Tool -Script $kitVerifier -Arguments @(
+        '-KitDirectory', [string]$kitCreateResult.kitDirectory,
+        '-ExpectedManifestSha256', [string]$kitCreateResult.manifestSha256)
+    Require-Failure -Result $unexpectedFileVerification -Name 'Computer B kit unmanifested-file guard' `
+        -Pattern 'immutable file count mismatch'
+    [System.IO.File]::Delete($unexpectedFilePath)
+
+    $demoSourcePath = Join-Path (Join-Path ([string]$kitCreateResult.kitDirectory) 'source-set') 'random-1MiB.bin'
+    $demoSourceStream = [System.IO.File]::Open($demoSourcePath, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try
+    {
+        $originalByte = $demoSourceStream.ReadByte()
+        $demoSourceStream.Position = 0
+        $demoSourceStream.WriteByte([byte]($originalByte -bxor 0xff))
+        $demoSourceStream.Flush($true)
+    }
+    finally
+    {
+        $demoSourceStream.Dispose()
+    }
+    $tamperedSourceVerification = Invoke-Tool -Script $kitVerifier -Arguments @(
+        '-KitDirectory', [string]$kitCreateResult.kitDirectory,
+        '-ExpectedManifestSha256', [string]$kitCreateResult.manifestSha256)
+    Require-Failure -Result $tamperedSourceVerification -Name 'Computer B kit test-binary tamper guard' `
+        -Pattern 'immutable file identity mismatch'
+    $demoSourceStream = [System.IO.File]::Open($demoSourcePath, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try
+    {
+        $demoSourceStream.WriteByte([byte]$originalByte)
+        $demoSourceStream.Flush($true)
+    }
+    finally
+    {
+        $demoSourceStream.Dispose()
     }
 
     $metadataPath = Join-Path $runRoot 'remote-metadata.json'
