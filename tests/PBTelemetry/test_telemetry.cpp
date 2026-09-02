@@ -83,8 +83,8 @@ TEST_CASE("PBTelemetry preserves independent presentation, capture, visual, FEC 
     telemetry.RecordDroppedFrames(2);
 
     REQUIRE(telemetry.RecordBootstrap({domain, 1, false}));
-    REQUIRE(telemetry.RecordBootstrap({domain, 2, true, 1.0, 1.0, 0.125, -0.125}));
-    REQUIRE(telemetry.RecordBootstrap({domain, 3, true, 1.001, 0.999, 0.0625, -0.0625}));
+    REQUIRE(telemetry.RecordBootstrap({domain, 2, true, 1.0, 1.0, 0.125, -0.125, 10.125, 20.875, 0.25}));
+    REQUIRE(telemetry.RecordBootstrap({domain, 3, true, 1.001, 0.999, 0.0625, -0.0625, 9.75, 21.25, 0.125}));
     REQUIRE(telemetry.RecordFec({domain, 2, Evaluation(true)}));
     REQUIRE(telemetry.RecordFec({domain, 3, Evaluation(false)}));
     telemetry.RecordOuterSymbol(pbtelemetry::OuterSymbolDisposition::AcceptedUnique);
@@ -106,6 +106,24 @@ TEST_CASE("PBTelemetry preserves independent presentation, capture, visual, FEC 
     REQUIRE(snapshot.bootstrapSuccessRate == Catch::Approx(2.0 / 3.0));
     REQUIRE(snapshot.scaleX == Catch::Approx(1.001));
     REQUIRE(snapshot.phaseY == Catch::Approx(-0.0625));
+    const auto& geometry = snapshot.observedLocatorGeometry;
+    REQUIRE(geometry.samples == 2);
+    REQUIRE(geometry.lastOriginX == Catch::Approx(9.75));
+    REQUIRE(geometry.lastOriginY == Catch::Approx(21.25));
+    REQUIRE(geometry.lastScaleX == Catch::Approx(1.001));
+    REQUIRE(geometry.lastScaleY == Catch::Approx(0.999));
+    REQUIRE(geometry.lastMarkerResidualPixels == Catch::Approx(0.125));
+    REQUIRE(geometry.minimumOriginX == Catch::Approx(9.75));
+    REQUIRE(geometry.maximumOriginX == Catch::Approx(10.125));
+    REQUIRE(geometry.minimumOriginY == Catch::Approx(20.875));
+    REQUIRE(geometry.maximumOriginY == Catch::Approx(21.25));
+    REQUIRE(geometry.minimumScaleX == Catch::Approx(1.0));
+    REQUIRE(geometry.maximumScaleX == Catch::Approx(1.001));
+    REQUIRE(geometry.minimumScaleY == Catch::Approx(0.999));
+    REQUIRE(geometry.maximumScaleY == Catch::Approx(1.0));
+    REQUIRE(geometry.minimumMarkerResidualPixels == Catch::Approx(0.125));
+    REQUIRE(geometry.maximumMarkerResidualPixels == Catch::Approx(0.25));
+    REQUIRE(geometry.maximumScaleAnisotropy == Catch::Approx(0.002));
     REQUIRE(snapshot.preFecBerEstimate == Catch::Approx(100.0 / 324000.0));
     REQUIRE(snapshot.fecEvaluatedFrames == 2);
     REQUIRE(snapshot.fecFrameErrorRate == Catch::Approx(0.5));
@@ -137,6 +155,17 @@ TEST_CASE("PBTelemetry preserves independent presentation, capture, visual, FEC 
     REQUIRE(text.find("\"AcceptedTransportCodewordRate\":0.900") != std::string::npos);
     REQUIRE(text.find("\"CRCFailure\":1") != std::string::npos);
     REQUIRE(text.find("\"VerifiedEncodedGoodput\":20000") != std::string::npos);
+    REQUIRE(text.find("\"observedLocatorGeometry\":{\"authority\":\"AcceptedBootstrapLocatorPixels\",\"samples\":2") !=
+        std::string::npos);
+    REQUIRE(text.find("\"minimumScaleX\":1,\"maximumScaleX\":1.000") != std::string::npos);
+
+    const auto resetDomain = MakeDomain(std::byte{0x42}, 10);
+    REQUIRE(telemetry.BeginCaptureEpoch(resetDomain, epochStart + 5000000));
+    const auto reset = telemetry.GetSnapshot();
+    REQUIRE(reset.observedLocatorGeometry.samples == 0);
+    REQUIRE_FALSE(reset.observedLocatorGeometry.lastScaleX);
+    REQUIRE_FALSE(reset.observedLocatorGeometry.minimumOriginX);
+    REQUIRE_FALSE(reset.observedLocatorGeometry.maximumMarkerResidualPixels);
 }
 
 TEST_CASE("PBTelemetry keeps LF4 signal observations separate from unique FEC and Receiver admission denominators",
@@ -257,7 +286,14 @@ TEST_CASE("PBTelemetry rejects cross-epoch, reordered and malformed samples with
     REQUIRE(telemetry.RecordCapture({wrongDomain, 2, 200}).code == pbtelemetry::TelemetryError::DomainMismatch);
     REQUIRE(telemetry.RecordCapture({domain, 1, 200}).code == pbtelemetry::TelemetryError::ObservationOrder);
     REQUIRE(telemetry.RecordCapture({domain, 2, 99}).code == pbtelemetry::TelemetryError::TimestampOrder);
-    REQUIRE(telemetry.RecordBootstrap({domain, 1, true, -1.0, 1.0, 0.0, 0.0}).code == pbtelemetry::TelemetryError::InvalidSample);
+    REQUIRE(telemetry.RecordBootstrap({domain, 1, true, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0}).code ==
+        pbtelemetry::TelemetryError::InvalidSample);
+    REQUIRE(telemetry.RecordBootstrap({domain, 1, true, 1.0, 1.0, 0.0, 0.0}).code ==
+        pbtelemetry::TelemetryError::InvalidSample);
+    REQUIRE(telemetry.RecordBootstrap({domain, 1, true, 1.0, 1.0, 0.0, 0.0,
+        (std::numeric_limits<double>::quiet_NaN)(), 0.0, 0.0}).code == pbtelemetry::TelemetryError::InvalidSample);
+    REQUIRE(telemetry.RecordBootstrap({domain, 1, true, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.001}).code ==
+        pbtelemetry::TelemetryError::InvalidSample);
     auto malformed = Evaluation(true);
     malformed.erroneousCodedBits = malformed.comparedCodedBits + 1;
     REQUIRE(telemetry.RecordFec({domain, 1, malformed}).code == pbtelemetry::TelemetryError::InvalidSample);

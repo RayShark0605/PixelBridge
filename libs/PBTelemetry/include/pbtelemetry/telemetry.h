@@ -50,6 +50,30 @@ struct BootstrapSample
     std::optional<double> scaleY;
     std::optional<double> phaseX;
     std::optional<double> phaseY;
+    std::optional<double> originX;
+    std::optional<double> originY;
+    std::optional<double> markerResidualPixels;
+};
+
+struct LocatorGeometrySnapshot
+{
+    std::uint64_t samples = 0;
+    std::optional<double> lastOriginX;
+    std::optional<double> lastOriginY;
+    std::optional<double> lastScaleX;
+    std::optional<double> lastScaleY;
+    std::optional<double> lastMarkerResidualPixels;
+    std::optional<double> minimumOriginX;
+    std::optional<double> maximumOriginX;
+    std::optional<double> minimumOriginY;
+    std::optional<double> maximumOriginY;
+    std::optional<double> minimumScaleX;
+    std::optional<double> maximumScaleX;
+    std::optional<double> minimumScaleY;
+    std::optional<double> maximumScaleY;
+    std::optional<double> minimumMarkerResidualPixels;
+    std::optional<double> maximumMarkerResidualPixels;
+    std::optional<double> maximumScaleAnisotropy;
 };
 
 struct FecSample
@@ -121,6 +145,7 @@ struct TelemetrySnapshot
     std::optional<double> scaleY;
     std::optional<double> phaseX;
     std::optional<double> phaseY;
+    LocatorGeometrySnapshot observedLocatorGeometry;
 
     std::uint64_t comparedCodedBits = 0;
     std::uint64_t erroneousCodedBits = 0;

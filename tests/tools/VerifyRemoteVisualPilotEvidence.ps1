@@ -353,6 +353,17 @@ try
     {
         throw 'Pilot plan expected-hash mismatch was not rejected'
     }
+    $caseTamperedPlan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $caseTamperedPlan.schema = 'pixelbridge.remotevisualpilotplan.1'
+    $caseTamperedPlanPath = Join-Path $runRoot 'plan-schema-case-tampered.json'
+    Write-NewJson -Path $caseTamperedPlanPath -Value $caseTamperedPlan
+    $caseTamperedPlanRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $caseTamperedPlanPath) }
+    catch { $caseTamperedPlanRejected = $_.Exception.Message -like '*schema or RunId is invalid*' }
+    if (-not $caseTamperedPlanRejected)
+    {
+        throw 'Pilot plan importer accepted a case-tampered schema identity'
+    }
     $tamperedPlan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
     $tamperedPlan.policy.replay.worstCaseBytesIncludingReserve++
     $tamperedPlanPath = Join-Path $runRoot 'plan-tampered.json'
@@ -377,7 +388,7 @@ try
     }
 
     $step21Plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
-    $step21Plan.schema = 'PixelBridge.RemoteVisualPilotPlan.2'
+    $step21Plan.schema = 'PixelBridge.RemoteVisualPilotPlan.3'
     $step21Plan.profileToken = 'direct'
     $step21Plan.profileName = 'Direct-Level 2x2 (Experimental)'
     $step21Plan.visualProfileId = [UInt64]::Parse('EBB15DCE41AB436E', [Globalization.NumberStyles]::HexNumber)
@@ -391,9 +402,21 @@ try
     $step21Plan.remoteUi.provenance = 'RemoteUiVisible'
     $step21Plan.remoteUi.visibleFields = @('remoteProvider', 'remoteMode')
     $step21Plan.remoteUi.visibleClaims = [ordered]@{ remoteProvider = 'ContractFixture'; remoteMode = 'VisibleQualityPanel' }
+    $step21Plan.remoteGeometry = [ordered]@{
+        captureRoiWidth = [UInt32]1920
+        captureRoiHeight = [UInt32]1080
+        captureRoiScaleX = 1.0
+        captureRoiScaleY = 1.0
+        expectedLocatorScaleTarget = '1.000'
+        scaleAuthority = 'AcceptedBootstrapLocatorPixels'
+        axisAligned = $true
+        cropStatus = 'NoneExpected'
+        locatorRemainsAuthoritative = $true
+    }
     $step21Plan.matrix = [ordered]@{
         modeClass = 'QualityPriority'
         visibleRemoteMode = 'VisibleQualityPanel'
+        scaleTarget = '1.000'
         profileComparisonRole = 'Baseline'
         backendCoverageRole = 'RepresentativeRecheck'
         runIsolation = 'IndependentRunIdAndArtifacts; metrics from different runs must not be merged'
@@ -434,7 +457,7 @@ try
     Write-NewJson -Path $step21ScaledDirectPath -Value $step21ScaledDirect
     $step21ScaledDirectRejected = $false
     try { [void](Import-PBRemoteVisualPilotPlan -Path $step21ScaledDirectPath) }
-    catch { $step21ScaledDirectRejected = $_.Exception.Message -like '*strict 1:1 geometry*' }
+    catch { $step21ScaledDirectRejected = $_.Exception.Message -like '*target 1.000*' }
     if (-not $step21ScaledDirectRejected)
     {
         throw 'Step 21 Direct plan did not reject scaled geometry'
@@ -450,6 +473,54 @@ try
     if (-not $step21ModeTamperRejected)
     {
         throw 'Step 21 plan did not reject a mode/UI-evidence mismatch'
+    }
+
+    $step21LegacyScaleLeak = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21LegacyScaleLeak.remoteGeometry['estimatedScaleX'] = 1.0
+    $step21LegacyScaleLeakPath = Join-Path $runRoot 'plan-step21-legacy-scale-leak.json'
+    Write-NewJson -Path $step21LegacyScaleLeakPath -Value $step21LegacyScaleLeak
+    $step21LegacyScaleLeakRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21LegacyScaleLeakPath) }
+    catch { $step21LegacyScaleLeakRejected = $_.Exception.Message -like '*exact required key set*' }
+    if (-not $step21LegacyScaleLeakRejected)
+    {
+        throw 'Step 21 Plan.3 accepted a legacy ROI-derived estimated scale field'
+    }
+
+    $step21FractionalRoi = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21FractionalRoi.remoteGeometry.captureRoiWidth = 1920.25
+    $step21FractionalRoiPath = Join-Path $runRoot 'plan-step21-fractional-roi.json'
+    Write-NewJson -Path $step21FractionalRoiPath -Value $step21FractionalRoi
+    $step21FractionalRoiRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21FractionalRoiPath) }
+    catch { $step21FractionalRoiRejected = $_.Exception.Message -like '*UInt32 integer*' }
+    if (-not $step21FractionalRoiRejected)
+    {
+        throw 'Step 21 Plan.3 silently rounded a fractional capture ROI dimension'
+    }
+
+    $step21StringScale = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21StringScale.remoteGeometry.captureRoiScaleX = 'NaN'
+    $step21StringScalePath = Join-Path $runRoot 'plan-step21-string-scale.json'
+    Write-NewJson -Path $step21StringScalePath -Value $step21StringScale
+    $step21StringScaleRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21StringScalePath) }
+    catch { $step21StringScaleRejected = $_.Exception.Message -like '*finite JSON number*' }
+    if (-not $step21StringScaleRejected)
+    {
+        throw 'Step 21 Plan.3 accepted a string-valued non-finite capture ROI scale'
+    }
+
+    $step21MatrixLegacyScaleLeak = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21MatrixLegacyScaleLeak.matrix['estimatedScaleX'] = 1.0
+    $step21MatrixLegacyScaleLeakPath = Join-Path $runRoot 'plan-step21-matrix-legacy-scale-leak.json'
+    Write-NewJson -Path $step21MatrixLegacyScaleLeakPath -Value $step21MatrixLegacyScaleLeak
+    $step21MatrixLegacyScaleLeakRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21MatrixLegacyScaleLeakPath) }
+    catch { $step21MatrixLegacyScaleLeakRejected = $_.Exception.Message -like '*exact required key set*' }
+    if (-not $step21MatrixLegacyScaleLeakRejected)
+    {
+        throw 'Step 21 Plan.3 matrix tuple accepted a legacy ROI-derived estimated scale field'
     }
 
     $monitorProbePath = Join-Path $runRoot 'mock-monitor-probe.ps1'

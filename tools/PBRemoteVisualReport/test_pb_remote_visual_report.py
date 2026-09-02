@@ -131,6 +131,26 @@ def decoder_report() -> dict:
         "telemetryBootstrapAttempts": 10,
         "telemetryBootstrapSuccesses": 10,
         "bootstrapSuccessRate": 1.0,
+        "observedLocatorGeometry": {
+            "authority": "AcceptedBootstrapLocatorPixels",
+            "samples": 10,
+            "lastOriginX": 464.875,
+            "lastOriginY": 253.875,
+            "lastScaleX": 0.85,
+            "lastScaleY": 0.84999,
+            "lastMarkerResidualPixels": 0.18,
+            "minimumOriginX": 464.86,
+            "maximumOriginX": 464.89,
+            "minimumOriginY": 253.86,
+            "maximumOriginY": 253.91,
+            "minimumScaleX": 0.84997,
+            "maximumScaleX": 0.85001,
+            "minimumScaleY": 0.84995,
+            "maximumScaleY": 0.85001,
+            "minimumMarkerResidualPixels": 0.08,
+            "maximumMarkerResidualPixels": 0.47,
+            "maximumScaleAnisotropy": 0.00006,
+        },
         "evaluatedDataFrames": 1,
         "evaluatedCodewords": 4,
         "postFecFailedFrames": 0,
@@ -326,6 +346,34 @@ class RemoteVisualReportTests(unittest.TestCase):
         encoder["remoteMetadata"]["remoteProvider"] = " \t\r\n "
         with self.assertRaisesRegex(report_tool.ReportError, "must name the remote-control provider"):
             report_tool.merge_reports(encoder, decoder_report())
+
+    def test_observed_locator_geometry_is_backward_compatible_but_fail_closed_when_present(self) -> None:
+        legacy_decoder = decoder_report()
+        legacy_decoder.pop("observedLocatorGeometry")
+        combined = report_tool.merge_reports(encoder_report(), legacy_decoder)
+        self.assertNotIn("observedLocatorGeometry", combined["decoder"])
+
+        mutations = (
+            ("authority", lambda value: value.update(authority="RoiEstimate"), "authority"),
+            ("sample count", lambda value: value.update(samples=9), "geometry samples"),
+            ("missing metric", lambda value: value.update(lastOriginX=None), "must be measured"),
+            ("inverted range", lambda value: value.update(minimumScaleX=0.9), "range is inverted"),
+            ("last outside range", lambda value: value.update(lastScaleX=0.7), "outside its observed range"),
+            ("underreported anisotropy", lambda value: value.update(maximumScaleAnisotropy=0.0),
+                "below the last sample"),
+        )
+        for name, mutate, expected in mutations:
+            with self.subTest(name=name):
+                decoder = decoder_report()
+                mutate(decoder["observedLocatorGeometry"])
+                with self.assertRaisesRegex(report_tool.ReportError, expected):
+                    report_tool.merge_reports(encoder_report(), decoder)
+
+        decoder = decoder_report()
+        decoder["telemetryBootstrapSuccesses"] = 0
+        decoder["observedLocatorGeometry"]["samples"] = 0
+        with self.assertRaisesRegex(report_tool.ReportError, "must be null"):
+            report_tool.merge_reports(encoder_report(), decoder)
 
     def test_v2_requires_matching_provider_independent_endpoint_configuration(self) -> None:
         encoder = encoder_report()

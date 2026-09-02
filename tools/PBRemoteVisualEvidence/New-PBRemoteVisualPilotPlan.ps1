@@ -30,6 +30,8 @@ param(
 
     [string]$MatrixModeClass = '',
 
+    [string]$MatrixScaleTarget = '',
+
     [Parameter(Mandatory = $true)]
     [string]$EncoderProtectedMonitorDeviceName,
 
@@ -194,6 +196,14 @@ if (-not $isStep20Plan -and $MatrixModeClass -notin @('QualityPriority', 'Automa
 {
     throw 'Step 21 field-run plans require MatrixModeClass QualityPriority, Automatic, or Restricted'
 }
+if ($isStep20Plan -and -not [string]::IsNullOrEmpty($MatrixScaleTarget))
+{
+    throw 'Step 20 plans do not accept a Step 21 MatrixScaleTarget'
+}
+if (-not $isStep20Plan -and $MatrixScaleTarget -notin @('0.750', '1.000', '1.259', '1.500'))
+{
+    throw 'Step 21 field-run plans require an explicit MatrixScaleTarget 0.750, 1.000, 1.259, or 1.500'
+}
 $profileContract = switch ($ProfileToken)
 {
     'direct'
@@ -275,25 +285,56 @@ if ([string]$uiEvidence.captureRecord.experimentMonitorDeviceName -cne [string]$
 {
     throw 'Remote UI screenshot was not captured from the Decoder endpoint monitor pair selected by the plan'
 }
-$scaleX = [double]$decoderRoiDimensions.width / 1920.0
-$scaleY = [double]$decoderRoiDimensions.height / 1080.0
-if ([bool]$profileContract.scaledGeometry -and
-    ($scaleX -lt 0.5 -or $scaleX -gt 2.0 -or $scaleY -lt 0.5 -or $scaleY -gt 2.0))
+$captureRoiScaleX = [double]$decoderRoiDimensions.width / 1920.0
+$captureRoiScaleY = [double]$decoderRoiDimensions.height / 1080.0
+if ($isStep20Plan)
 {
-    throw 'Decoder ROI is outside the LF4 0.5..2.0 continuous scale domain'
+    if ($captureRoiScaleX -lt 0.5 -or $captureRoiScaleX -gt 2.0 -or
+        $captureRoiScaleY -lt 0.5 -or $captureRoiScaleY -gt 2.0)
+    {
+        throw 'Decoder ROI is outside the LF4 0.5..2.0 continuous scale domain'
+    }
+    if ($GeometryMode -ceq 'Strict1To1' -and ($decoderRoiDimensions.width -ne 1920 -or $decoderRoiDimensions.height -ne 1080))
+    {
+        throw 'Strict1To1 Step 20 plan requires an exact 1920x1080 Decoder ROI'
+    }
+    if ($GeometryMode -ceq 'LocatorScaled' -and $decoderRoiDimensions.width -eq 1920 -and $decoderRoiDimensions.height -eq 1080)
+    {
+        throw 'LocatorScaled Step 20 plan must exercise a non-1:1 Decoder ROI'
+    }
 }
-if (-not [bool]$profileContract.scaledGeometry -and
-    ($decoderRoiDimensions.width -ne 1920 -or $decoderRoiDimensions.height -ne 1080 -or $GeometryMode -cne 'Strict1To1'))
+elseif (-not [bool]$profileContract.scaledGeometry)
 {
-    throw 'Direct and Shape field-run plans require Strict1To1 with an exact 1920x1080 Decoder ROI; no silent resampling is permitted'
+    if ($MatrixScaleTarget -cne '1.000' -or $decoderRoiDimensions.width -ne 1920 -or
+        $decoderRoiDimensions.height -ne 1080 -or $GeometryMode -cne 'Strict1To1')
+    {
+        throw 'Direct and Shape Step 21 plans require target 1.000, Strict1To1, and an exact 1920x1080 Decoder ROI'
+    }
 }
-if ($GeometryMode -ceq 'Strict1To1' -and ($decoderRoiDimensions.width -ne 1920 -or $decoderRoiDimensions.height -ne 1080))
+else
 {
-    throw 'Strict1To1 plan requires an exact 1920x1080 Decoder ROI'
-}
-if ($GeometryMode -ceq 'LocatorScaled' -and $decoderRoiDimensions.width -eq 1920 -and $decoderRoiDimensions.height -eq 1080)
-{
-    throw 'LocatorScaled plan must exercise a non-1:1 Decoder ROI'
+    if ($decoderRoiDimensions.width -lt 960 -or $decoderRoiDimensions.width -gt 3840 -or
+        $decoderRoiDimensions.height -lt 540 -or $decoderRoiDimensions.height -gt 2160)
+    {
+        throw 'LF4 Step 21 capture ROI must remain within the production 960..3840 by 540..2160 search bounds'
+    }
+    $requiredTargetDimensions = switch ($MatrixScaleTarget)
+    {
+        '0.750' { [ordered]@{ width = 1440; height = 810 } }
+        '1.000' { [ordered]@{ width = 1920; height = 1080 } }
+        '1.259' { [ordered]@{ width = 2417; height = 1360 } }
+        '1.500' { [ordered]@{ width = 2880; height = 1620 } }
+    }
+    if ($decoderRoiDimensions.width -lt [int]$requiredTargetDimensions.width -or
+        $decoderRoiDimensions.height -lt [int]$requiredTargetDimensions.height)
+    {
+        throw 'LF4 Step 21 capture ROI cannot contain the selected Locator scale target'
+    }
+    $expectedGeometryMode = if ($MatrixScaleTarget -ceq '1.000') { 'Strict1To1' } else { 'LocatorScaled' }
+    if ($GeometryMode -cne $expectedGeometryMode)
+    {
+        throw "LF4 Step 21 target $MatrixScaleTarget requires GeometryMode $expectedGeometryMode"
+    }
 }
 
 $sourceManifestPath = [System.IO.Path]::GetFullPath([string]$deployment.artifacts.sourceManifest.path)
@@ -324,12 +365,16 @@ $policyValues = switch ($LogicalFps)
     2 { [ordered]@{ encoderSeconds = 360; decoderSeconds = 300; noProgressSeconds = 90; replaySampleFps = 4 } }
     5 { [ordered]@{ encoderSeconds = 180; decoderSeconds = 120; noProgressSeconds = 60; replaySampleFps = 10 } }
 }
-if (-not $isStep20Plan -and [Math]::Max($scaleX, $scaleY) -gt 1.3)
+if (-not $isStep20Plan)
 {
-    # The 16 GiB hard cap cannot hold a 2x time-sampled 1.5x ROI for the frozen run windows.
-    # Sampling at the logical raster ceiling remains unthrottled from primary demod and is
-    # independently accepted only when the resulting Replay reproduces the complete file.
-    $policyValues.replaySampleFps = $LogicalFps
+    $prospectiveFrames = [UInt64]$policyValues.replaySampleFps * ([UInt64]$policyValues.decoderSeconds + 2) + 2
+    $prospectiveBytes = [UInt64]$decoderRoiDimensions.width * [UInt64]$decoderRoiDimensions.height * 4 * $prospectiveFrames + 256MB
+    if ($prospectiveBytes -gt 16GB)
+    {
+        # Sampling at the logical-raster ceiling remains unthrottled from primary demod and is
+        # independently accepted only when the resulting Replay reproduces the complete file.
+        $policyValues.replaySampleFps = $LogicalFps
+    }
 }
 $worstCaseSampledFrames = [UInt64]$policyValues.replaySampleFps * ([UInt64]$policyValues.decoderSeconds + 2) + 2
 $maximumReplayFrames = if ($isStep20Plan) { [UInt32]1250 } else { [UInt32]$worstCaseSampledFrames }
@@ -341,7 +386,7 @@ if ($worstCaseSampledFrames -gt 1250 -or $maximumReplayFrames -eq 0 -or $worstCa
 
 $deploymentManifestIdentity = Get-PBFileIdentity -Path $resolvedDeployment
 $plan = [ordered]@{
-    schema = if ($isStep20Plan) { 'PixelBridge.RemoteVisualPilotPlan.1' } else { 'PixelBridge.RemoteVisualPilotPlan.2' }
+    schema = if ($isStep20Plan) { 'PixelBridge.RemoteVisualPilotPlan.1' } else { 'PixelBridge.RemoteVisualPilotPlan.3' }
     createdUtc = [DateTime]::UtcNow.ToString('o')
     runId = [string]$deployment.runId
     profileToken = $ProfileToken
@@ -395,12 +440,26 @@ $plan = [ordered]@{
             roiPhysicalRect = $decoderRoi
         }
     }
-    remoteGeometry = [ordered]@{
-        estimatedScaleX = $scaleX
-        estimatedScaleY = $scaleY
-        axisAligned = $true
-        cropStatus = 'NoneExpected'
-        locatorRemainsAuthoritative = $true
+    remoteGeometry = if ($isStep20Plan) {
+        [ordered]@{
+            estimatedScaleX = $captureRoiScaleX
+            estimatedScaleY = $captureRoiScaleY
+            axisAligned = $true
+            cropStatus = 'NoneExpected'
+            locatorRemainsAuthoritative = $true
+        }
+    } else {
+        [ordered]@{
+            captureRoiWidth = [UInt32]$decoderRoiDimensions.width
+            captureRoiHeight = [UInt32]$decoderRoiDimensions.height
+            captureRoiScaleX = $captureRoiScaleX
+            captureRoiScaleY = $captureRoiScaleY
+            expectedLocatorScaleTarget = $MatrixScaleTarget
+            scaleAuthority = 'AcceptedBootstrapLocatorPixels'
+            axisAligned = $true
+            cropStatus = 'NoneExpected'
+            locatorRemainsAuthoritative = $true
+        }
     }
     policy = [ordered]@{
         captureBackend = $CaptureBackend
@@ -447,6 +506,7 @@ if (-not $isStep20Plan)
     $plan['matrix'] = [ordered]@{
         modeClass = $MatrixModeClass
         visibleRemoteMode = [string]$uiEvidence.visibleClaims.remoteMode
+        scaleTarget = $MatrixScaleTarget
         profileComparisonRole = if ($ProfileToken -ceq 'remote-lf4') { 'Candidate' } else { 'Baseline' }
         backendCoverageRole = if ($CaptureBackend -ceq 'wgc') { 'MainMatrix' } else { 'RepresentativeRecheck' }
         runIsolation = 'IndependentRunIdAndArtifacts; metrics from different runs must not be merged'

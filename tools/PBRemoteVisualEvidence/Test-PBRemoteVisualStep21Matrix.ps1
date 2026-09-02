@@ -214,6 +214,7 @@ function New-MatrixCsvRow
     )
     $record = $Run.record
     $metrics = $record.authoritativeMetrics
+    $geometry = $record.matrix.observedLocatorGeometry
     return [pscustomobject][ordered]@{
         runId = [string]$record.runId
         matrixCellId = $CellId
@@ -225,8 +226,23 @@ function New-MatrixCsvRow
         visibleRemoteMode = [string]$record.matrix.visibleRemoteMode
         captureBackend = [string]$record.matrix.captureBackend
         scaleTarget = [string]$record.matrix.scaleTarget
-        estimatedScaleX = [double]$record.matrix.estimatedScaleX
-        estimatedScaleY = [double]$record.matrix.estimatedScaleY
+        locatorGeometrySamples = [UInt64]$geometry.samples
+        locatorLastOriginX = $geometry.lastOriginX
+        locatorLastOriginY = $geometry.lastOriginY
+        locatorLastScaleX = $geometry.lastScaleX
+        locatorLastScaleY = $geometry.lastScaleY
+        locatorLastMarkerResidualPixels = $geometry.lastMarkerResidualPixels
+        locatorMinimumOriginX = $geometry.minimumOriginX
+        locatorMaximumOriginX = $geometry.maximumOriginX
+        locatorMinimumOriginY = $geometry.minimumOriginY
+        locatorMaximumOriginY = $geometry.maximumOriginY
+        locatorMinimumScaleX = $geometry.minimumScaleX
+        locatorMaximumScaleX = $geometry.maximumScaleX
+        locatorMinimumScaleY = $geometry.minimumScaleY
+        locatorMaximumScaleY = $geometry.maximumScaleY
+        locatorMinimumMarkerResidualPixels = $geometry.minimumMarkerResidualPixels
+        locatorMaximumMarkerResidualPixels = $geometry.maximumMarkerResidualPixels
+        locatorMaximumScaleAnisotropy = $geometry.maximumScaleAnisotropy
         logicalFps = [UInt32]$record.matrix.logicalFps
         geometryMode = [string]$record.matrix.geometryMode
         successfulRun = [bool]$metrics.successfulRun
@@ -551,7 +567,7 @@ else
     }
 }
 $summary = [ordered]@{
-    schema = 'PixelBridge.RemoteVisualStep21MatrixEvidence.2'
+    schema = 'PixelBridge.RemoteVisualStep21MatrixEvidence.3'
     createdUtc = [DateTime]::UtcNow.ToString('o')
     status = 'PASS'
     runCount = $runs.Count
@@ -595,6 +611,8 @@ $summary = [ordered]@{
         uiVisibleModeEvidenceRequiredPerRun = $true
         unknownChromaAndLatencyNotInferred = $true
         invalidGeometryNeverResampled = $true
+        captureRoiIsSearchNeighborhoodNotScaleEvidence = $true
+        acceptedLocatorGeometryAuthority = 'AcceptedBootstrapLocatorPixels'
         metricsKeptPerRun = $true
         certifiedRemoteVisualProfile = $false
         statement = if ($null -eq $hardwareScope) {
@@ -621,7 +639,7 @@ if ($null -ne $hardwareScope)
 [void]$sealArtifacts.Add((Get-PBFileIdentity -Path $csvPath))
 [void]$sealArtifacts.Add((Get-PBFileIdentity -Path $summaryPath))
 $seal = [ordered]@{
-    schema = 'PixelBridge.RemoteVisualStep21MatrixSeal.2'
+    schema = 'PixelBridge.RemoteVisualStep21MatrixSeal.3'
     createdUtc = [DateTime]::UtcNow.ToString('o')
     status = 'PASS'
     runCount = $runs.Count

@@ -463,9 +463,9 @@ function Assert-DecoderFailureRunReport
 
 $frozenPlan = Import-PBRemoteVisualPilotPlan -Path $PlanPath -ExpectedSha256 $ExpectedPlanSha256
 $plan = $frozenPlan.value
-if ([string]$plan.schema -cne 'PixelBridge.RemoteVisualPilotPlan.2')
+if ([string]$plan.schema -cne 'PixelBridge.RemoteVisualPilotPlan.3')
 {
-    throw 'Classified field failures are a Step 21 PilotPlan.2 contract'
+    throw 'Current classified field failures require a Step 21 PilotPlan.3 contract'
 }
 $encoderRoot = Resolve-EvidenceRoot -Path $EncoderEvidenceDirectory -Name 'Encoder evidence'
 $liveRoot = Resolve-EvidenceRoot -Path $LiveDecoderEvidenceDirectory -Name 'live Decoder evidence'

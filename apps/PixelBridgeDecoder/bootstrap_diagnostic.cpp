@@ -458,6 +458,9 @@ void BootstrapDiagnosticProcessor::Commit(const ScreenCaptureFrameMetadata& meta
             bootstrapSample.scaleY = pending_.visual.geometry.scaleY;
             bootstrapSample.phaseX = pending_.visual.geometry.originX - std::round(pending_.visual.geometry.originX);
             bootstrapSample.phaseY = pending_.visual.geometry.originY - std::round(pending_.visual.geometry.originY);
+            bootstrapSample.originX = pending_.visual.geometry.originX;
+            bootstrapSample.originY = pending_.visual.geometry.originY;
+            bootstrapSample.markerResidualPixels = pending_.visual.geometry.markerResidualPixels;
         }
         if (!telemetry_.RecordBootstrap(bootstrapSample))
         {

@@ -5,6 +5,7 @@
 #include "pbmodulation/shape_chroma.h"
 #include "pbrealcapturereplay/replay_v2.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <Windows.h>
@@ -372,6 +373,20 @@ TEST_CASE("Production LF4 Receiver admits bounded partial codewords and preserve
         CHECK(probe.decoder.endToEndUniqueFrameSequences == 1);
         CHECK(probe.decoder.evaluatedDataFrames == 1);
         CHECK(probe.decoder.postFecFailedFrames == 1);
+        const auto& geometry = probe.decoder.observedLocatorGeometry;
+        CHECK(geometry.samples == probe.decoder.telemetryBootstrapSuccesses);
+        CHECK(geometry.samples == probe.processedResults);
+        REQUIRE(geometry.lastScaleX);
+        REQUIRE(geometry.lastScaleY);
+        REQUIRE(geometry.minimumScaleX);
+        REQUIRE(geometry.maximumScaleX);
+        REQUIRE(geometry.minimumMarkerResidualPixels);
+        REQUIRE(geometry.maximumMarkerResidualPixels);
+        CHECK(*geometry.lastScaleX == Catch::Approx(1.0));
+        CHECK(*geometry.lastScaleY == Catch::Approx(1.0));
+        CHECK(*geometry.minimumScaleX <= *geometry.lastScaleX);
+        CHECK(*geometry.maximumScaleX >= *geometry.lastScaleX);
+        CHECK(*geometry.minimumMarkerResidualPixels <= *geometry.maximumMarkerResidualPixels);
         CHECK(ReadPublished(probe.decoder.outputPath) == std::vector<std::byte>(source.begin(), source.end()));
     };
 

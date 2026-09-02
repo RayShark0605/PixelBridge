@@ -116,20 +116,13 @@ function Get-ScaleDimensions
 
 function Get-FpsPolicy
 {
-    param(
-        [Parameter(Mandatory = $true)][UInt32]$LogicalFps,
-        [Parameter(Mandatory = $true)][double]$MaximumScale
-    )
+    param([Parameter(Mandatory = $true)][UInt32]$LogicalFps)
     $policy = switch ($LogicalFps)
     {
         1 { [ordered]@{ encoderSeconds = 600; decoderSeconds = 540; noProgressSeconds = 120; replayFps = 2 } }
         2 { [ordered]@{ encoderSeconds = 360; decoderSeconds = 300; noProgressSeconds = 90; replayFps = 4 } }
         5 { [ordered]@{ encoderSeconds = 180; decoderSeconds = 120; noProgressSeconds = 60; replayFps = 10 } }
         default { throw 'Unknown fixture logical FPS' }
-    }
-    if ($MaximumScale -gt 1.3)
-    {
-        $policy.replayFps = $LogicalFps
     }
     return $policy
 }
@@ -140,9 +133,31 @@ function New-CombinedReport
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)][object]$Profile,
         [Parameter(Mandatory = $true)][UInt32]$LogicalFps,
-        [Parameter(Mandatory = $true)][string]$ModeClass
+        [Parameter(Mandatory = $true)][string]$ModeClass,
+        [Parameter(Mandatory = $true)][string]$ScaleTarget
     )
     $profileFactor = switch ([string]$Profile.token) { 'direct' { 3.0 }; 'shape' { 2.0 }; default { 1.0 } }
+    $observedScale = [double]::Parse($ScaleTarget, [Globalization.CultureInfo]::InvariantCulture)
+    $observedGeometry = [ordered]@{
+        authority = 'AcceptedBootstrapLocatorPixels'
+        samples = [UInt64]12
+        lastOriginX = 31.25
+        lastOriginY = 47.5
+        lastScaleX = $observedScale
+        lastScaleY = $observedScale
+        lastMarkerResidualPixels = 0.25
+        minimumOriginX = 31.0
+        maximumOriginX = 31.5
+        minimumOriginY = 47.25
+        maximumOriginY = 47.75
+        minimumScaleX = $observedScale
+        maximumScaleX = $observedScale
+        minimumScaleY = $observedScale
+        maximumScaleY = $observedScale
+        minimumMarkerResidualPixels = 0.2
+        maximumMarkerResidualPixels = 0.3
+        maximumScaleAnisotropy = 0.0
+    }
     return [ordered]@{
         schema = 'PixelBridge.RemoteVisualCombinedReport.1'
         runId = $RunId
@@ -162,6 +177,8 @@ function New-CombinedReport
             uniqueVisualFps = [double]$LogicalFps
             endToEndUniqueVisualFps = [double]$LogicalFps
             bootstrapSuccessRate = 0.95
+            telemetryBootstrapSuccesses = [UInt64]12
+            observedLocatorGeometry = $observedGeometry
             preFecBerEstimate = 0.01 / $profileFactor
             fecFrameErrorRate = 0.02 / $profileFactor
             fecCodewordFailureRate = 0.01 / $profileFactor
@@ -219,16 +236,30 @@ function New-RunFixture
     [void](New-Item -ItemType Directory -Path $runRoot)
     $profileContract = Get-ProfileContract -ProfileToken $ProfileToken
     $profile = [ordered]@{ token = $ProfileToken; contract = $profileContract }
-    $dimensions = Get-ScaleDimensions -ScaleTarget $ScaleTarget
+    $targetDimensions = Get-ScaleDimensions -ScaleTarget $ScaleTarget
     if ($ProfileToken -in @('direct', 'shape') -and $ScaleTarget -cne '1.000')
     {
         throw 'Strict fixture profile requested a scaled ROI'
     }
-    $scaleX = [double]$dimensions.width / 1920.0
-    $scaleY = [double]$dimensions.height / 1080.0
-    $policy = Get-FpsPolicy -LogicalFps $LogicalFps -MaximumScale ([Math]::Max($scaleX, $scaleY))
+    $captureDimensions = if ($ProfileToken -ceq 'remote-lf4' -and $ScaleTarget -ceq '1.000')
+    {
+        [ordered]@{ width = 2048; height = 1200 }
+    }
+    else
+    {
+        $targetDimensions
+    }
+    $captureRoiScaleX = [double]$captureDimensions.width / 1920.0
+    $captureRoiScaleY = [double]$captureDimensions.height / 1080.0
+    $policy = Get-FpsPolicy -LogicalFps $LogicalFps
+    $prospectiveFrames = [UInt64]$policy.replayFps * ([UInt64]$policy.decoderSeconds + 2) + 2
+    $prospectiveBytes = [UInt64]$captureDimensions.width * [UInt64]$captureDimensions.height * 4 * $prospectiveFrames + 256MB
+    if ($prospectiveBytes -gt 16GB)
+    {
+        $policy.replayFps = $LogicalFps
+    }
     $maximumFrames = [UInt32]([UInt64]$policy.replayFps * ([UInt64]$policy.decoderSeconds + 2) + 2)
-    $worstCaseBytes = [UInt64]$dimensions.width * [UInt64]$dimensions.height * 4 * $maximumFrames + 256MB
+    $worstCaseBytes = [UInt64]$captureDimensions.width * [UInt64]$captureDimensions.height * 4 * $maximumFrames + 256MB
     $deployment = New-TextArtifact -Path (Join-Path $runRoot 'deployment.json') -Text "deployment-$runId"
     $metadata = New-TextArtifact -Path (Join-Path $runRoot 'metadata.json') -Text "metadata-$runId"
     $ui = New-TextArtifact -Path (Join-Path $runRoot 'ui.json') -Text "ui-$runId"
@@ -239,7 +270,8 @@ function New-RunFixture
     $offlineReport = New-TextArtifact -Path (Join-Path $runRoot 'offline-report.json') -Text "offline-report-$runId"
     $replay = New-TextArtifact -Path (Join-Path $runRoot 'capture.pbrv2') -Text "replay-$runId"
     $combinedPath = Join-Path $runRoot 'combined.json'
-    Write-NewJson -Path $combinedPath -Value (New-CombinedReport -RunId $runId -Profile $profile -LogicalFps $LogicalFps -ModeClass $ModeClass)
+    Write-NewJson -Path $combinedPath -Value (New-CombinedReport -RunId $runId -Profile $profile `
+        -LogicalFps $LogicalFps -ModeClass $ModeClass -ScaleTarget $ScaleTarget)
     $protectedRect = [ordered]@{ left = 0; top = 0; right = 1920; bottom = 1200 }
     $experimentRect = [ordered]@{ left = 2000; top = 0; right = 5840; bottom = 2160 }
     $protectedContract = [ordered]@{
@@ -259,7 +291,7 @@ function New-RunFixture
         'PlanAndEndpointEnvironmentContainment; current Direct/Shape Encoder CLI does not accept monitor-safety arguments'
     }
     $plan = [ordered]@{
-        schema = 'PixelBridge.RemoteVisualPilotPlan.2'
+        schema = 'PixelBridge.RemoteVisualPilotPlan.3'
         createdUtc = [DateTime]::UtcNow.ToString('o')
         runId = $runId
         profileToken = $ProfileToken
@@ -310,12 +342,22 @@ function New-RunFixture
             decoder = [ordered]@{
                 protectedMonitorDeviceName = 'P'; experimentMonitorDeviceName = 'E'
                 protectedMonitorPhysicalRect = $protectedRect; experimentMonitorPhysicalRect = $experimentRect
-                roiPhysicalRect = [ordered]@{ left = 2000; top = 0; right = 2000 + $dimensions.width; bottom = $dimensions.height }
+                roiPhysicalRect = [ordered]@{ left = 2000; top = 0; right = 2000 + $captureDimensions.width; bottom = $captureDimensions.height }
                 runtimeEnforcement = 'ProductionRuntimePreflightAndPeriodicRevalidation'
                 protectedMonitorContract = $protectedContract; experimentMonitorContract = $experimentContract
             }
         }
-        remoteGeometry = [ordered]@{ estimatedScaleX = $scaleX; estimatedScaleY = $scaleY }
+        remoteGeometry = [ordered]@{
+            captureRoiWidth = [UInt32]$captureDimensions.width
+            captureRoiHeight = [UInt32]$captureDimensions.height
+            captureRoiScaleX = $captureRoiScaleX
+            captureRoiScaleY = $captureRoiScaleY
+            expectedLocatorScaleTarget = $ScaleTarget
+            scaleAuthority = 'AcceptedBootstrapLocatorPixels'
+            axisAligned = $true
+            cropStatus = 'NoneExpected'
+            locatorRemainsAuthoritative = $true
+        }
         policy = [ordered]@{
             captureBackend = $Backend; compression = 'off'
             encoderHardMaximumSeconds = [UInt32]$policy.encoderSeconds
@@ -337,6 +379,7 @@ function New-RunFixture
         matrix = [ordered]@{
             modeClass = $ModeClass
             visibleRemoteMode = "Visible-$ModeClass"
+            scaleTarget = $ScaleTarget
             profileComparisonRole = if ($ProfileToken -ceq 'remote-lf4') { 'Candidate' } else { 'Baseline' }
             backendCoverageRole = if ($Backend -ceq 'wgc') { 'MainMatrix' } else { 'RepresentativeRecheck' }
             runIsolation = 'IndependentRunIdAndArtifacts; metrics from different runs must not be merged'
@@ -517,15 +560,34 @@ try
         throw 'Step 21 contract fixture did not create the expected 41 independent runs'
     }
 
+    $arbitraryAspectRun = @($directories | Where-Object {
+        $candidate = Read-PBBoundedJson -Path (Join-Path $_ 'matrix-run-record.json') -MaximumBytes 4MB
+        [string]$candidate.profileToken -ceq 'remote-lf4' -and [string]$candidate.matrix.scaleTarget -ceq '1.000'
+    })[0]
+    $arbitraryAspectPlan = Read-PBBoundedJson -Path (Join-Path $arbitraryAspectRun 'plan.json') -MaximumBytes 256KB
+    $arbitraryAspectRecord = Read-PBBoundedJson -Path (Join-Path $arbitraryAspectRun 'matrix-run-record.json') -MaximumBytes 4MB
+    if ([UInt32]$arbitraryAspectPlan.remoteGeometry.captureRoiWidth -ne 2048 -or
+        [UInt32]$arbitraryAspectPlan.remoteGeometry.captureRoiHeight -ne 1200 -or
+        [Math]::Abs([double]$arbitraryAspectPlan.remoteGeometry.captureRoiScaleX - 1.0) -lt 0.01 -or
+        [Math]::Abs([double]$arbitraryAspectRecord.matrix.observedLocatorGeometry.lastScaleX - 1.0) -gt 0.000001 -or
+        $arbitraryAspectRecord.matrix.Contains('estimatedScaleX') -or
+        [string]$arbitraryAspectRecord.contracts.geometryAuthority -cne 'AcceptedBootstrapLocatorPixels')
+    {
+        throw 'Step 21 fixture did not prove arbitrary-aspect capture ROI separation from accepted Locator scale truth'
+    }
+
     $output = Join-Path $runRoot 'matrix-output'
     & $matrixTool -MatrixSpecPath $matrixSpecPath -ExpectedMatrixSpecSha256 $matrixSpecIdentity.sha256 `
         -RunEvidenceDirectory @($directories) -OutputDirectory $output | Out-Null
     $summaryPath = Join-Path $output 'step21-provider-generic-matrix.json'
     $summary = Read-PBBoundedJson -Path $summaryPath -MaximumBytes 8MB
-    if ([string]$summary.schema -cne 'PixelBridge.RemoteVisualStep21MatrixEvidence.2' -or
+    if ([string]$summary.schema -cne 'PixelBridge.RemoteVisualStep21MatrixEvidence.3' -or
         [string]$summary.status -cne 'PASS' -or [UInt32]$summary.runCount -ne 41 -or
         [UInt32]$summary.coverage.lf4WgcMain.exactCells -ne 36 -or
         [UInt32]$summary.coverage.lf4DxgiRepresentative.runCount -ne 3 -or
+        $summary.truthBoundary.captureRoiIsSearchNeighborhoodNotScaleEvidence -isnot [bool] -or
+        -not [bool]$summary.truthBoundary.captureRoiIsSearchNeighborhoodNotScaleEvidence -or
+        [string]$summary.truthBoundary.acceptedLocatorGeometryAuthority -cne 'AcceptedBootstrapLocatorPixels' -or
         [string]::IsNullOrWhiteSpace([string]$summary.authoritativeComparison.tupleKey))
     {
         throw 'Step 21 positive matrix fixture did not publish the exact coverage/comparison result'
@@ -545,7 +607,7 @@ try
         -RunEvidenceDirectory $hardwareScopedDirectories -OutputDirectory $hardwareScopedOutput | Out-Null
     $hardwareScopedSummary = Read-PBBoundedJson `
         -Path (Join-Path $hardwareScopedOutput 'step21-provider-generic-matrix.json') -MaximumBytes 8MB
-    if ([string]$hardwareScopedSummary.schema -cne 'PixelBridge.RemoteVisualStep21MatrixEvidence.2' -or
+    if ([string]$hardwareScopedSummary.schema -cne 'PixelBridge.RemoteVisualStep21MatrixEvidence.3' -or
         [string]$hardwareScopedSummary.status -cne 'PASS' -or [UInt32]$hardwareScopedSummary.runCount -ne 31 -or
         [UInt32]$hardwareScopedSummary.coverage.lf4WgcMain.exactCells -ne 27 -or
         [UInt32]$hardwareScopedSummary.coverage.lf4DxgiRepresentative.runCount -ne 2 -or
@@ -743,7 +805,7 @@ try
 
     $fractionalCounterReport = New-CombinedReport -RunId ('f' * 32) `
         -Profile ([ordered]@{ token = 'remote-lf4'; contract = Get-ProfileContract -ProfileToken remote-lf4 }) `
-        -LogicalFps 5 -ModeClass QualityPriority
+        -LogicalFps 5 -ModeClass QualityPriority -ScaleTarget '1.000'
     $fractionalCounterReport.decoder.evaluatedDataFrames = 1.5
     $fractionalCounterRejected = $false
     try
@@ -754,6 +816,60 @@ try
     if (-not $fractionalCounterRejected)
     {
         throw 'Step 21 authoritative metrics silently rounded a fractional counter'
+    }
+
+    $zeroGeometryReport = New-CombinedReport -RunId ('e' * 32) `
+        -Profile ([ordered]@{ token = 'remote-lf4'; contract = Get-ProfileContract -ProfileToken remote-lf4 }) `
+        -LogicalFps 2 -ModeClass Automatic -ScaleTarget '1.000'
+    $zeroGeometryReport.decoder.telemetryBootstrapSuccesses = [UInt64]0
+    $zeroGeometryReport.decoder.observedLocatorGeometry.samples = [UInt64]0
+    foreach ($name in @('lastOriginX', 'lastOriginY', 'lastScaleX', 'lastScaleY', 'lastMarkerResidualPixels',
+        'minimumOriginX', 'maximumOriginX', 'minimumOriginY', 'maximumOriginY', 'minimumScaleX', 'maximumScaleX',
+        'minimumScaleY', 'maximumScaleY', 'minimumMarkerResidualPixels', 'maximumMarkerResidualPixels',
+        'maximumScaleAnisotropy'))
+    {
+        $zeroGeometryReport.decoder.observedLocatorGeometry[$name] = $null
+    }
+    $zeroGeometry = Get-PBRemoteVisualObservedLocatorGeometry -DecoderReport $zeroGeometryReport.decoder
+    $zeroGeometryRejected = $false
+    try
+    {
+        Assert-PBRemoteVisualObservedLocatorTarget -Geometry $zeroGeometry -ScaleTarget '1.000' `
+            -ProfileToken remote-lf4 -Context 'Fixture success'
+    }
+    catch { $zeroGeometryRejected = $_.Exception.Message -like '*lacks accepted Locator geometry*' }
+    if (-not $zeroGeometryRejected)
+    {
+        throw 'Step 21 successful geometry contract accepted zero Locator samples'
+    }
+
+    $anisotropicGeometryReport = New-CombinedReport -RunId ('d' * 32) `
+        -Profile ([ordered]@{ token = 'remote-lf4'; contract = Get-ProfileContract -ProfileToken remote-lf4 }) `
+        -LogicalFps 2 -ModeClass Automatic -ScaleTarget '1.000'
+    $anisotropicGeometryReport.decoder.observedLocatorGeometry.maximumScaleAnisotropy = 0.02
+    $anisotropicGeometry = Get-PBRemoteVisualObservedLocatorGeometry -DecoderReport $anisotropicGeometryReport.decoder
+    $anisotropicGeometryRejected = $false
+    try
+    {
+        Assert-PBRemoteVisualObservedLocatorTarget -Geometry $anisotropicGeometry -ScaleTarget '1.000' `
+            -ProfileToken remote-lf4 -Context 'Fixture success'
+    }
+    catch { $anisotropicGeometryRejected = $_.Exception.Message -like '*anisotropy tolerance*' }
+    if (-not $anisotropicGeometryRejected)
+    {
+        throw 'Step 21 successful geometry contract ignored maximum observed scale anisotropy'
+    }
+
+    $geometrySampleMismatchReport = New-CombinedReport -RunId ('c' * 32) `
+        -Profile ([ordered]@{ token = 'remote-lf4'; contract = Get-ProfileContract -ProfileToken remote-lf4 }) `
+        -LogicalFps 2 -ModeClass Automatic -ScaleTarget '1.000'
+    $geometrySampleMismatchReport.decoder.observedLocatorGeometry.samples = [UInt64]11
+    $geometrySampleMismatchRejected = $false
+    try { [void](Get-PBRemoteVisualObservedLocatorGeometry -DecoderReport $geometrySampleMismatchReport.decoder) }
+    catch { $geometrySampleMismatchRejected = $_.Exception.Message -like '*successful Bootstrap telemetry*' }
+    if (-not $geometrySampleMismatchRejected)
+    {
+        throw 'Step 21 geometry contract accepted a sample count that differs from Bootstrap successes'
     }
 
     $tupleRecord = Read-PBBoundedJson -Path (Join-Path $directories[0] 'matrix-run-record.json') -MaximumBytes 4MB
@@ -769,6 +885,21 @@ try
     if (-not $tupleMismatchRejected)
     {
         throw 'Step 21 matrix record import did not bind its coverage role to the frozen plan'
+    }
+
+    $geometryRecord = Read-PBBoundedJson -Path (Join-Path $directories[0] 'matrix-run-record.json') -MaximumBytes 4MB
+    $geometryRecord.matrix.observedLocatorGeometry.lastOriginX = 999.0
+    $geometryRecordPath = Join-Path $runRoot 'matrix-record-tampered-observed-geometry.json'
+    Write-NewJson -Path $geometryRecordPath -Value $geometryRecord
+    $geometryRecordRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualMatrixRunRecord -Path $geometryRecordPath)
+    }
+    catch { $geometryRecordRejected = $_.Exception.Message -like '*observed Locator geometry differs*' }
+    if (-not $geometryRecordRejected)
+    {
+        throw 'Step 21 matrix record import did not bind its observed geometry to the combined report'
     }
 
     $inspection = [ordered]@{

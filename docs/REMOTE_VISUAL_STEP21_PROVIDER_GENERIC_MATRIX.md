@@ -50,22 +50,24 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21Har
   -OutputPath <new-matrix-root>\step21-hardware-scope.json
 ```
 
-`PixelBridge.RemoteVisualStep21HardwareScope.1` 只接受两块不重叠、未旋转的 2560×1440 Computer A 显示器，且指定 ExperimentMonitor 必须恰好来自该 catalog。它从 canonical 41-cell MatrixSpec 得到 31 个 included cell：27 个 LF4/WGC（3 mode × 3 可容纳 scale × 3 FPS）、2 个 LF4/DXGI（0.750/1 Hz 与 1.259/2 Hz）和 2 个 Direct/Shape baseline；另把 9 个 LF4/WGC 1.5× 与 1 个 LF4/DXGI 1.5× 封存为 `RequiredRoiExceedsSingleExperimentMonitor`。导入器会重新读取父 MatrixSpec 与 monitor catalog、重算 31/10 partition，拒绝人工删项、换项、移动身份或事后修改 catalog。excluded cell 不需要 run，但也永远不能计入覆盖。
+`PixelBridge.RemoteVisualStep21HardwareScope.1` 只接受两块不重叠、未旋转的 2560×1440 Computer A 显示器，且指定 ExperimentMonitor 必须恰好来自该 catalog。它按“目标 LF4 画布能否完整落入单块 ExperimentMonitor”而不是按 Decoder capture ROI 的宽高比，从 canonical 41-cell MatrixSpec 得到 31 个 included cell：27 个 LF4/WGC（3 mode × 3 可容纳 scale × 3 FPS）、2 个 LF4/DXGI（0.750/1 Hz 与 1.259/2 Hz）和 2 个 Direct/Shape baseline；另把 9 个 LF4/WGC 1.5× 与 1 个 LF4/DXGI 1.5× 封存为 `RequiredRoiExceedsSingleExperimentMonitor`。导入器会重新读取父 MatrixSpec 与 monitor catalog、重算 31/10 partition，拒绝人工删项、换项、移动身份或事后修改 catalog。excluded cell 不需要 run，但也永远不能计入覆盖。
 
 ## 3. 每个 cell 的冻结输入与几何
 
-每个 included cell 都必须重新生成一个 OS-CSPRNG RunId，并生成与该 RunId 绑定的 metadata、双端 environment、deployment manifest、remote UI evidence 和 PilotPlan.2。package manifest 与 1 MiB RAW/OFF source identity 必须在 31 个 run 中完全相同；其余 run-bound artifact 不得复用。
+每个 included cell 都必须重新生成一个 OS-CSPRNG RunId，并生成与该 RunId 绑定的 metadata、双端 environment、deployment manifest、remote UI evidence 和 `PilotPlan.3`。package manifest 与 1 MiB RAW/OFF source identity 必须在 31 个 run 中完全相同；其余 run-bound artifact 不得复用。历史 `PilotPlan.2` 仍可只读导入和验证，但不能再生成当前 `MatrixRunRecord.2`，以免把旧的 ROI-derived scale 误当作现场几何真值。
 
-LF4 scale target 对应的建议整数 ROI 为：
+LF4 scale target 对应的**最小目标画布包围尺寸**为：
 
-| target | Decoder ROI size | 实际 X/Y scale |
+| target | 最小目标画布尺寸 | 目标 X/Y scale |
 |---|---:|---:|
 | 0.750 | 1440 × 810 | 0.75 / 0.75 |
 | 1.000 | 1920 × 1080 | 1.0 / 1.0 |
 | 1.259 | 2417 × 1360 | 1.258854… / 1.259259… |
 | 1.500 | 2880 × 1620 | 1.5 / 1.5 |
 
-Matrix verifier 只接受与上述 target 的 X/Y 偏差均不超过 0.015、且 X/Y 各向异性不超过 0.015 的 LF4 记录。Direct/Shape 只接受 exact 1920×1080、`Strict1To1`；任何 scaled Direct/Shape 计划都会在运行前失败，绝不 silent resample。
+这里的尺寸**不是要求外层远控画面、播放器窗口或 Decoder ROI 必须是 16:9**。Decoder ROI 只是 locator 扫描的物理像素搜索邻域：LF4 可使用 960..3840 × 540..2160 范围内、能容纳该目标画布、位于同一 ExperimentMonitor 内的任意宽高比矩形；画面可以在其中平移、缩放或带 letterbox。计划保存 `captureRoiWidth/Height` 与 `captureRoiScaleX/Y` 只用于资源和边界审计，并显式声明 `scaleAuthority=AcceptedBootstrapLocatorPixels`，不得把这些 ROI 比值写入矩阵尺度结论。
+
+成功 run 的 Matrix verifier 从 live 与 offline `RunReport.2.observedLocatorGeometry` 读取实际接受 Bootstrap locator 的 origin、X/Y scale、marker residual、完整 min/max 和样本数。只有 last/min/max scale 均映射到预冻结 target、与 target 的 X/Y 偏差均不超过 0.015、且 X/Y 各向异性不超过 0.015，才接受该成功记录；零样本成功记录必定失败。失败记录允许零 accepted Locator 样本，但必须保留同一权威对象的 `null` 语义并由 Replay/report 支持失败分类。Direct/Shape 仍只接受 exact 1920×1080、`Strict1To1` 和实际 1.0/1.0；任何 scaled Direct/Shape 计划都会在运行前失败，绝不 silent resample。
 
 每个 Step 21 plan 的创建形式为：
 
@@ -78,6 +80,7 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualPilotPlan
   -ProfileToken remote-lf4 `
   -CaptureBackend wgc `
   -MatrixModeClass QualityPriority `
+  -MatrixScaleTarget 0.750 `
   -LogicalFps 1 `
   -GeometryMode LocatorScaled `
   -EncoderProtectedMonitorDeviceName <B-protected> `
@@ -89,7 +92,7 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualPilotPlan
   -DecoderRoiRight <right> -DecoderRoiBottom <bottom>
 ```
 
-`ProfileToken`、`CaptureBackend`、`MatrixModeClass`、`LogicalFps`、geometry/ROI 必须与 MatrixSpec cell 完全一致。provider 品牌或实现策略不进入 profile 阈值；真实模式必须来自该 run 的 UI-visible screenshot/capture record，并且只作为非解码操作者元数据用于矩阵分组。当前 UI 证据没有 latency claim，所以 `observedLatencyMilliseconds` 必须保持 `null`；chroma 只有在 UI 中确实可见并被 `visibleFields` 封存时才允许不是 `Unknown`。
+`ProfileToken`、`CaptureBackend`、`MatrixModeClass`、`MatrixScaleTarget`、`LogicalFps` 和 target geometry 必须与 MatrixSpec cell 完全一致。`GeometryMode` 现在约束预期 locator target：target `1.000` 使用 `Strict1To1`，其余 LF4 target 使用 `LocatorScaled`；它不再声称 capture ROI 本身就是编码画布。provider 品牌或实现策略不进入 profile 阈值；真实模式必须来自该 run 的 UI-visible screenshot/capture record，并且只作为非解码操作者元数据用于矩阵分组。当前 UI 证据没有 latency claim，所以 `observedLatencyMilliseconds` 必须保持 `null`；chroma 只有在 UI 中确实可见并被 `visibleFields` 封存时才允许不是 `Unknown`。
 
 ## 4. 生产 Replay 已对三 profile 使用同一边界
 
@@ -153,7 +156,7 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\Test-PBRemoteVisualFieldFai
 - exact Replay identity 被 offline process result、report、Inspector 和最终 seal 一致引用；
 - `published` 目录至多保留一个 `.part`，绝不出现 final file；partial 也会被封存，不能删除后假装没有输出。
 
-输出包括 `failure-evidence-verification.json`、`matrix-run-record.json`、逐帧 `replay-inspection.json`、strict combined JSON/CSV/Markdown 和 `failure-evidence-seal.json`。成功 verifier 对 PilotPlan.2 同样新增 `matrix-run-record.json` 并纳入 success seal，因此成功/失败均进入同一个矩阵入口。
+输出包括 `failure-evidence-verification.json`、`matrix-run-record.json`、逐帧 `replay-inspection.json`、strict combined JSON/CSV/Markdown 和 `failure-evidence-seal.json`。成功 verifier 对 `PilotPlan.3` 同样新增 `PixelBridge.RemoteVisualMatrixRunRecord.2` 并纳入 success seal，因此成功/失败均进入同一个矩阵入口。记录中不再存在 `estimatedScaleX/Y`；`matrix.observedLocatorGeometry` 必须逐值等于 combined report 的权威 Decoder 几何对象。
 
 ## 7. 最终矩阵校验和 CSV
 
@@ -183,15 +186,16 @@ verifier 会：
 - 将每个 run 恰好映射到一个预冻结 cell，拒绝缺失、重复或 spec 外 run；
 - 要求 Direct/Shape/LF4 存在一个 exact mode/WGC/FPS/1:1 对照 cohort；
 - 只从 `PixelBridge.RemoteVisualCombinedReport.1` 的 Decoder/Receiver 字段提取每行指标；
+- 把 accepted Locator origin/scale/residual 的样本数、last、min/max 和最大各向异性逐 run 写入 CSV，并断言 capture ROI 不是 scale evidence；
 - 至少要求对照 cohort 共有一项非空权威指标：VerifiedEncodedGoodput、Bootstrap success、FER/codeword failure rate、UniqueVisualFPS 或 EndToEndUniqueVisualFPS；
 - 输出一行一个 run 的 `step21-provider-generic-matrix.csv`，不求和、不平均、不拼接分母；
-- 输出 `PixelBridge.RemoteVisualStep21MatrixEvidence.2`、CSV 和最终 `PixelBridge.RemoteVisualStep21MatrixSeal.2`；summary/seal 同时保存父 MatrixSpec、HardwareScope、A 端 catalog、31 included 和 10 excluded 的身份与 truth boundary。
+- 输出 `PixelBridge.RemoteVisualStep21MatrixEvidence.3`、CSV 和最终 `PixelBridge.RemoteVisualStep21MatrixSeal.3`；summary/seal 同时保存父 MatrixSpec、HardwareScope、A 端 catalog、31 included 和 10 excluded 的身份与 truth boundary，并写明 `captureRoiIsSearchNeighborhoodNotScaleEvidence=true` 与 `AcceptedBootstrapLocatorPixels` authority。
 
 对照对象中会原样保存三条 run 的成功/失败、分类、WholeFileDigest/publish 和指标值。“LF4 提升/退化”必须由这些同条件的独立权威数值支持；不能用截图观感替代，也不能把 LF4 的一个 run 与 Direct/Shape 的另一个模式或 FPS 混比。
 
 ## 8. 当前硬件范围与正式关闭条件
 
-用户声明 Computer B 现有两块 1920×1080 显示器，Computer A 有两块 2560×1440 显示器；B 端声明仍须由 packaged `--list-monitors` catalog 封存后才能生成正式 run。正式 plan 要求两端同时存在互不重叠的 `ProtectedMonitor` 与 `ExperimentMonitor`，B 的 1920×1080 Data Window 完全位于 ExperimentMonitor，并在整个 run 中周期重验；A 的 ROI 同样必须完全位于一块独立 ExperimentMonitor。A 的单屏上限排除了 2880×1620 的 1.5× ROI，但不再阻塞经授权的 31-cell hardware scope。
+用户声明 Computer B 现有两块 1920×1080 显示器，Computer A 有两块 2560×1440 显示器；B 端声明仍须由 packaged `--list-monitors` catalog 封存后才能生成正式 run。正式 plan 要求两端同时存在互不重叠的 `ProtectedMonitor` 与 `ExperimentMonitor`，B 的 1920×1080 Data Window 完全位于 ExperimentMonitor，并在整个 run 中周期重验；A 的任意宽高比搜索 ROI 同样必须完全位于一块独立 ExperimentMonitor，并足以容纳目标 locator 画布。A 的单屏上限排除了 2880×1620 的 1.5×目标画布，但不再阻塞经授权的 31-cell hardware scope。
 
 开始正式矩阵前必须满足：
 
@@ -202,3 +206,17 @@ verifier 会：
 - 每个 run 的 UI capture、environment、deployment、plan 和 RunId 都重新封存。
 
 只有 hardware-scoped 31-cell verifier PASS、CSV/summary/seal 完整、Direct/Shape/LF4 均有成功或受支持的失败记录、并且同条件 LF4 比较来自权威指标时，本次 Step 21 才可标记为“当前双机硬件范围内 `DONE`”。最终报告必须同时列出 10 个未运行的 1.5× cell，不能写成 full-41 或 1.5× coverage。该结果仍不设置 `CertifiedRemoteVisualProfile`，也不提前声明 Step 22 的重复文件恢复 smoke 通过。
+
+## 9. 2026-09-03 实现与 readiness 验证（不是现场 cell）
+
+本轮首先用 FINAL4 已封口的真实屏幕像素 Replay 复核尺度 authority。`build-p1_5-evidence/step21-final4-observed-locator-replay-20260903-retry1/observed-locator-verification.json` 为 `PASS`，SHA-256 为 `126b9f09d03a711c9fab7d34f8c68808c5fd1b598a7cb8939f1dab2fd83d3587`。当前 production Decoder 对 906 个 Replay capture 全部完成 demod，514 个成功 Bootstrap 的 `observedLocatorGeometry` 与独立 Inspector 逐值一致：last scale 约 `0.849999/0.849984`，全程 X/Y scale 分别位于 `0.849977..0.850010` 与 `0.849951..0.850003`，最大各向异性约 `0.0000515`；origin 约为 `(464.87,253.88)`。Receiver 再次完成 WholeFileDigest 与 safe publish，1 MiB 输出 SHA-256 为 `93f85aa63ed348ef4d565cd0bb942b2417ba4bb6e5ffafd223239ddfd83d3587`，与此前 live 输出相同。该证据只验证当前代码读取同一真实 Replay 的几何/文件语义，不是新 provider run，也不填任何 Step 21 cell。
+
+实现收口后的自动验证如下：
+
+- 完整 Release build 成功，`PixelBridgeEncoder.exe` 与 `PixelBridgeDecoder.exe` 均重新链接；`windeployqt` 仅报告当前 shell 未设置 `VCINSTALLDIR` 的既有 warning，部署完成且 build exit 0；
+- 完整 Release CTest（未排除 Native 或 GUI）为 **223/223 PASS**，包括 GUI smoke、WGC/DXGI native capture、4 个物理 WholeFileDigest 文件 Gate、GPU parity、PilotPlan 和 Step 21 matrix contracts；最终 case-sensitive schema 加固后又单独复跑 `PBRemoteVisualPilotEvidenceContracts`，仍为 PASS；
+- MSVC ASan 的 `PBTelemetryTests` 与 `PBApplicationTests` 为 **2/2 PASS**；Python strict report merger 为 **25/25 PASS**；
+- 对抗性 evidence fixture 明确拒绝 Plan.3 中遗留的 ROI-derived `estimatedScaleX/Y`、分数 ROI 尺寸、字符串型/非有限 scale、case-tampered schema、成功 run 的零 Locator 样本、样本数与 Bootstrap successes 不一致、全程最大各向异性超过 0.015，以及 matrix record 内的 geometry 篡改；
+- `git diff --check` 通过，未修改或纳入用户拥有的 `docs/PHASE1_GATE_REPORT.md`。
+
+因此，production telemetry、Plan.3、Record.2、Evidence/Seal.3 和验证工具已达到执行正式矩阵的代码 readiness；Step 21 状态仍为 `MANUAL-GATE`，唯一完成出口仍是第 8 节规定的 31 个彼此独立的真实双机 included-cell 证据。

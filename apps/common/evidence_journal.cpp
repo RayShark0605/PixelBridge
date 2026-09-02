@@ -83,6 +83,44 @@ void WriteOptionalUnsigned(std::ostream& stream, const std::optional<std::uint64
     }
 }
 
+void WriteObservedLocatorGeometry(std::ostream& stream, const ObservedLocatorGeometrySnapshot& geometry)
+{
+    stream << "{\"authority\":\"AcceptedBootstrapLocatorPixels\",\"samples\":" << geometry.samples
+           << ",\"lastOriginX\":";
+    WriteOptionalFinite(stream, geometry.lastOriginX);
+    stream << ",\"lastOriginY\":";
+    WriteOptionalFinite(stream, geometry.lastOriginY);
+    stream << ",\"lastScaleX\":";
+    WriteOptionalFinite(stream, geometry.lastScaleX);
+    stream << ",\"lastScaleY\":";
+    WriteOptionalFinite(stream, geometry.lastScaleY);
+    stream << ",\"lastMarkerResidualPixels\":";
+    WriteOptionalFinite(stream, geometry.lastMarkerResidualPixels);
+    stream << ",\"minimumOriginX\":";
+    WriteOptionalFinite(stream, geometry.minimumOriginX);
+    stream << ",\"maximumOriginX\":";
+    WriteOptionalFinite(stream, geometry.maximumOriginX);
+    stream << ",\"minimumOriginY\":";
+    WriteOptionalFinite(stream, geometry.minimumOriginY);
+    stream << ",\"maximumOriginY\":";
+    WriteOptionalFinite(stream, geometry.maximumOriginY);
+    stream << ",\"minimumScaleX\":";
+    WriteOptionalFinite(stream, geometry.minimumScaleX);
+    stream << ",\"maximumScaleX\":";
+    WriteOptionalFinite(stream, geometry.maximumScaleX);
+    stream << ",\"minimumScaleY\":";
+    WriteOptionalFinite(stream, geometry.minimumScaleY);
+    stream << ",\"maximumScaleY\":";
+    WriteOptionalFinite(stream, geometry.maximumScaleY);
+    stream << ",\"minimumMarkerResidualPixels\":";
+    WriteOptionalFinite(stream, geometry.minimumMarkerResidualPixels);
+    stream << ",\"maximumMarkerResidualPixels\":";
+    WriteOptionalFinite(stream, geometry.maximumMarkerResidualPixels);
+    stream << ",\"maximumScaleAnisotropy\":";
+    WriteOptionalFinite(stream, geometry.maximumScaleAnisotropy);
+    stream << '}';
+}
+
 [[nodiscard]] std::string NativeFailure(const char* operation, const DWORD error)
 {
     return std::string(operation) + " failed; win32=" + std::to_string(error);
@@ -334,8 +372,9 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
     stream << ",\"endToEndUniqueVisualFps\":";
     WriteOptionalFinite(stream, snapshot.endToEndUniqueVisualFps);
     stream << ",\"bootstrapAttempts\":" << snapshot.telemetryBootstrapAttempts <<
-        ",\"bootstrapSuccesses\":" << snapshot.telemetryBootstrapSuccesses <<
-        ",\"evaluatedCodewords\":" << snapshot.evaluatedCodewords <<
+        ",\"bootstrapSuccesses\":" << snapshot.telemetryBootstrapSuccesses << ",\"observedLocatorGeometry\":";
+    WriteObservedLocatorGeometry(stream, snapshot.observedLocatorGeometry);
+    stream << ",\"evaluatedCodewords\":" << snapshot.evaluatedCodewords <<
         ",\"fecFailures\":" << snapshot.fecFailures << ",\"crcFailures\":" << snapshot.crcFailures <<
         ",\"fecAcceptedTransportBlocks\":" << snapshot.fecAcceptedTransportBlocks <<
         ",\"temporallyAdmittedTransportBlocks\":" << snapshot.temporallyAdmittedTransportBlocks <<

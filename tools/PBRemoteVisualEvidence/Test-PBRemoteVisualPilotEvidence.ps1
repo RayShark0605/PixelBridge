@@ -169,7 +169,7 @@ function Read-EndpointProcess
         @('exitCodeZero', 'reportExists', 'journalExists', 'reportContract', 'journalEvidenceComplete',
             'wholeFileDigestAndPublish', 'replayContract', 'publishedFileExists', 'reportArtifactPathsStable', 'replayObservationContract')
     }
-    if ([string]$Plan.value.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2' -and
+    if ([string]$Plan.value.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3') -and
         $ExpectedRole -in @('Encoder', 'DecoderLive'))
     {
         $expectedCheckKeys += 'monitorPreflight'
@@ -182,7 +182,7 @@ function Read-EndpointProcess
     {
         @('report', 'journal', 'published', 'replay', 'stdout', 'stderr')
     }
-    if ([string]$Plan.value.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2' -and
+    if ([string]$Plan.value.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3') -and
         $ExpectedRole -in @('Encoder', 'DecoderLive'))
     {
         $expectedArtifactKeys += 'monitorPreflight'
@@ -375,6 +375,12 @@ function Assert-DecoderReport
         [UInt32]$Report.resultQueueHighWater -gt 8)
     {
         throw "Decoder report exceeds the bounded production pipeline queues (offline=$Offline)"
+    }
+    if ([string]$Plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.3')
+    {
+        $geometry = Get-PBRemoteVisualObservedLocatorGeometry -DecoderReport $Report
+        Assert-PBRemoteVisualObservedLocatorTarget -Geometry $geometry -ScaleTarget ([string]$Plan.matrix.scaleTarget) `
+            -ProfileToken ([string]$Plan.profileToken) -Context "Successful Step 21 Decoder report (offline=$Offline)"
     }
 }
 
@@ -581,7 +587,7 @@ if ([string]$uiVerification.status -cne 'PASS' -or [string]$uiVerification.runId
 $encoderEndpoint = Read-EndpointProcess -Root $resolvedEncoderRoot -FileName 'encoder-process-result.json' -ExpectedRole Encoder -Plan $frozenPlan
 $liveEndpoint = Read-EndpointProcess -Root $resolvedLiveRoot -FileName 'live-decoder-process-result.json' -ExpectedRole DecoderLive -Plan $frozenPlan
 $offlineEndpoint = Read-EndpointProcess -Root $resolvedOfflineRoot -FileName 'offline-decoder-process-result.json' -ExpectedRole DecoderOffline -Plan $frozenPlan
-if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2' -and
+if ([string]$plan.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3') -and
     ($null -eq $encoderEndpoint.monitorPreflightPath -or $null -eq $liveEndpoint.monitorPreflightPath -or
      $null -ne $offlineEndpoint.monitorPreflightPath))
 {
@@ -749,7 +755,7 @@ $artifactPaths = @(
     $offlineEndpoint.processPath,
     $offlineEndpoint.reportPath
 )
-if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
+if ([string]$plan.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3'))
 {
     $artifactPaths += @($encoderEndpoint.monitorPreflightPath, $liveEndpoint.monitorPreflightPath)
 }
@@ -833,7 +839,7 @@ $verification = [ordered]@{
     combinedReport = Get-PBFileIdentity -Path $combinedPath -RelativeTo $resolvedOutput
     reportMerger = Get-PBFileIdentity -Path $reportTool
 }
-if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
+if ([string]$plan.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3'))
 {
     $verification['profileToken'] = [string]$plan.profileToken
     $verification['captureBackend'] = [string]$plan.policy.captureBackend
@@ -846,7 +852,7 @@ if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
 $verificationPath = Join-Path $resolvedOutput 'pilot-evidence-verification.json'
 [void](Write-PBCreateOnlyJson -Path $verificationPath -Value $verification -Depth 30)
 $matrixRecordPath = $null
-if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
+if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.3')
 {
     $matrixRecord = New-PBRemoteVisualMatrixRunRecordValue -FrozenPlan $frozenPlan -Outcome Success `
         -FailureClassification success -SourcePath $resolvedSource -ReplayPath $liveEndpoint.replayPath `
@@ -876,12 +882,16 @@ foreach ($path in @(
 {
     [void]$sealInputs.Add((Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($path))))
 }
-if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
+if ([string]$plan.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3'))
 {
-    foreach ($path in @($encoderEndpoint.monitorPreflightPath, $liveEndpoint.monitorPreflightPath, $matrixRecordPath))
+    foreach ($path in @($encoderEndpoint.monitorPreflightPath, $liveEndpoint.monitorPreflightPath))
     {
         [void]$sealInputs.Add((Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($path))))
     }
+}
+if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.3')
+{
+    [void]$sealInputs.Add((Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($matrixRecordPath))))
 }
 $seal = [ordered]@{
     schema = 'PixelBridge.RemoteVisualPilotEvidenceSeal.1'
@@ -891,7 +901,7 @@ $seal = [ordered]@{
     artifactCount = $sealInputs.Count
     artifacts = @($sealInputs)
 }
-if ([string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
+if ([string]$plan.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3'))
 {
     $seal['profileToken'] = [string]$plan.profileToken
     $seal['captureBackend'] = [string]$plan.policy.captureBackend

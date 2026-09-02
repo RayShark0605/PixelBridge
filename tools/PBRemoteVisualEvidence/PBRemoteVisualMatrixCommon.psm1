@@ -457,6 +457,110 @@ function Get-PBNonNegativeUInt64
     }
 }
 
+function Get-PBRemoteVisualObservedLocatorGeometry
+{
+    param([Parameter(Mandatory = $true)][object]$DecoderReport)
+    if ($DecoderReport -isnot [System.Collections.IDictionary] -or
+        -not $DecoderReport.Contains('observedLocatorGeometry') -or
+        -not $DecoderReport.Contains('telemetryBootstrapSuccesses') -or
+        $DecoderReport.observedLocatorGeometry -isnot [System.Collections.IDictionary])
+    {
+        throw 'Decoder report lacks authoritative observed Locator geometry'
+    }
+    $geometry = $DecoderReport.observedLocatorGeometry
+    $metricNames = @('lastOriginX', 'lastOriginY', 'lastScaleX', 'lastScaleY', 'lastMarkerResidualPixels',
+        'minimumOriginX', 'maximumOriginX', 'minimumOriginY', 'maximumOriginY', 'minimumScaleX', 'maximumScaleX',
+        'minimumScaleY', 'maximumScaleY', 'minimumMarkerResidualPixels', 'maximumMarkerResidualPixels',
+        'maximumScaleAnisotropy')
+    Assert-PBMatrixExactKeys -Dictionary $geometry -ExpectedKeys (@('authority', 'samples') + $metricNames) `
+        -Name 'Decoder observed Locator geometry'
+    if ([string]$geometry.authority -cne 'AcceptedBootstrapLocatorPixels')
+    {
+        throw 'Decoder observed Locator geometry has a non-authoritative source'
+    }
+    $samples = Get-PBNonNegativeUInt64 -Value $geometry.samples -Name 'observed Locator geometry samples'
+    $bootstrapSuccesses = Get-PBNonNegativeUInt64 -Value $DecoderReport.telemetryBootstrapSuccesses `
+        -Name 'telemetryBootstrapSuccesses'
+    if ($samples -ne $bootstrapSuccesses)
+    {
+        throw 'Observed Locator geometry samples differ from successful Bootstrap telemetry'
+    }
+    $normalized = [ordered]@{ authority = 'AcceptedBootstrapLocatorPixels'; samples = $samples }
+    foreach ($name in $metricNames)
+    {
+        $nonNegative = $name -like '*Scale*' -or $name -like '*Residual*'
+        $number = Get-PBNullableFiniteNumber -Value $geometry[$name] -Name "observed Locator geometry $name" `
+            -NonNegative:$nonNegative
+        if ($name -like '*Scale*' -and $null -ne $number -and $name -cne 'maximumScaleAnisotropy' -and
+            ($number -le 0.0 -or $number -gt 16.0))
+        {
+            throw "Observed Locator geometry $name is outside (0,16]"
+        }
+        if (($name -like '*Residual*' -or $name -ceq 'maximumScaleAnisotropy') -and
+            $null -ne $number -and $number -gt 16.0)
+        {
+            throw "Observed Locator geometry $name exceeds 16 pixels/scale units"
+        }
+        if (($samples -ne 0) -ne ($null -ne $number))
+        {
+            throw "Observed Locator geometry $name has invalid null semantics for its sample count"
+        }
+        $normalized[$name] = $number
+    }
+    if ($samples -eq 0)
+    {
+        return $normalized
+    }
+    foreach ($axis in @('OriginX', 'OriginY', 'ScaleX', 'ScaleY', 'MarkerResidualPixels'))
+    {
+        $minimum = [double]$normalized["minimum$axis"]
+        $maximum = [double]$normalized["maximum$axis"]
+        $last = [double]$normalized["last$axis"]
+        if ($minimum -gt $maximum)
+        {
+            throw "Observed Locator geometry $axis range is inverted"
+        }
+        if ($last -lt $minimum -or $last -gt $maximum)
+        {
+            throw "Observed Locator geometry last$axis is outside its observed range"
+        }
+    }
+    $lastAnisotropy = [Math]::Abs([double]$normalized.lastScaleX - [double]$normalized.lastScaleY)
+    if ([double]$normalized.maximumScaleAnisotropy + 0.000000000000001 -lt $lastAnisotropy)
+    {
+        throw 'Observed Locator geometry maximumScaleAnisotropy is below the last sample'
+    }
+    return $normalized
+}
+
+function Assert-PBRemoteVisualObservedLocatorTarget
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Geometry,
+        [Parameter(Mandatory = $true)][string]$ScaleTarget,
+        [Parameter(Mandatory = $true)][string]$ProfileToken,
+        [string]$Context = 'Successful matrix run'
+    )
+    if ([UInt64]$Geometry.samples -eq 0)
+    {
+        throw "$Context lacks accepted Locator geometry"
+    }
+    if ([double]$Geometry.maximumScaleAnisotropy -gt 0.015)
+    {
+        throw "$Context exceeds the frozen 0.015 Locator scale anisotropy tolerance"
+    }
+    foreach ($pair in @(
+        @([double]$Geometry.lastScaleX, [double]$Geometry.lastScaleY),
+        @([double]$Geometry.minimumScaleX, [double]$Geometry.minimumScaleY),
+        @([double]$Geometry.maximumScaleX, [double]$Geometry.maximumScaleY)))
+    {
+        if ((Get-PBStep21ScaleTarget -ScaleX $pair[0] -ScaleY $pair[1] -ProfileToken $ProfileToken) -cne $ScaleTarget)
+        {
+            throw "$Context Locator geometry differs from the frozen scale target"
+        }
+    }
+}
+
 function Get-PBRemoteVisualAuthoritativeMetrics
 {
     param([Parameter(Mandatory = $true)][object]$CombinedReport)
@@ -491,6 +595,7 @@ function Get-PBRemoteVisualAuthoritativeMetrics
     {
         throw 'Step 21 evidence reports an Outer symbol conflict'
     }
+    $observedLocatorGeometry = Get-PBRemoteVisualObservedLocatorGeometry -DecoderReport $decoder
     return [ordered]@{
         successfulRun = [bool]$CombinedReport.successfulRun
         evidenceValid = [bool]$CombinedReport.evidenceValid
@@ -503,6 +608,7 @@ function Get-PBRemoteVisualAuthoritativeMetrics
         uniqueVisualFps = Get-PBNullableFiniteNumber -Value $decoder.uniqueVisualFps -Name 'uniqueVisualFps' -NonNegative
         endToEndUniqueVisualFps = Get-PBNullableFiniteNumber -Value $decoder.endToEndUniqueVisualFps -Name 'endToEndUniqueVisualFps' -NonNegative
         bootstrapSuccessRate = Get-PBNullableFiniteNumber -Value $decoder.bootstrapSuccessRate -Name 'bootstrapSuccessRate' -NonNegative
+        observedLocatorGeometry = $observedLocatorGeometry
         preFecBerEstimate = Get-PBNullableFiniteNumber -Value $decoder.preFecBerEstimate -Name 'preFecBerEstimate' -NonNegative
         fecFrameErrorRate = Get-PBNullableFiniteNumber -Value $decoder.fecFrameErrorRate -Name 'fecFrameErrorRate' -NonNegative
         fecCodewordFailureRate = Get-PBNullableFiniteNumber -Value $decoder.fecCodewordFailureRate -Name 'fecCodewordFailureRate' -NonNegative
@@ -567,9 +673,9 @@ function New-PBRemoteVisualMatrixRunRecordValue
         [AllowNull()][string]$InspectionPath
     )
     $plan = $FrozenPlan.value
-    if ([string]$plan.schema -cne 'PixelBridge.RemoteVisualPilotPlan.2')
+    if ([string]$plan.schema -cne 'PixelBridge.RemoteVisualPilotPlan.3')
     {
-        throw 'Matrix run records require a Step 21 PilotPlan.2'
+        throw 'Current matrix run records require a Step 21 PilotPlan.3'
     }
     if (($Outcome -ceq 'Success') -ne ($FailureClassification -ceq 'success'))
     {
@@ -591,8 +697,18 @@ function New-PBRemoteVisualMatrixRunRecordValue
     {
         throw 'Matrix run requires complete endpoint evidence journals'
     }
-    $scaleTarget = Get-PBStep21ScaleTarget -ScaleX ([double]$plan.remoteGeometry.estimatedScaleX) `
-        -ScaleY ([double]$plan.remoteGeometry.estimatedScaleY) -ProfileToken ([string]$plan.profileToken)
+    $scaleTarget = [string]$plan.matrix.scaleTarget
+    if ($scaleTarget -notin @('0.750', '1.000', '1.259', '1.500') -or
+        [string]$plan.remoteGeometry.expectedLocatorScaleTarget -cne $scaleTarget)
+    {
+        throw 'Matrix plan lacks one explicit Locator scale target'
+    }
+    $observedGeometry = $metrics.observedLocatorGeometry
+    if ($Outcome -ceq 'Success')
+    {
+        Assert-PBRemoteVisualObservedLocatorTarget -Geometry $observedGeometry -ScaleTarget $scaleTarget `
+            -ProfileToken ([string]$plan.profileToken) -Context 'Successful matrix run'
+    }
     $actualSource = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($SourcePath))
     if ([UInt64]$actualSource.size -ne [UInt64]$plan.source.size -or [string]$actualSource.sha256 -cne [string]$plan.source.sha256)
     {
@@ -604,7 +720,7 @@ function New-PBRemoteVisualMatrixRunRecordValue
         $inspectionIdentity = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($InspectionPath))
     }
     return [ordered]@{
-        schema = 'PixelBridge.RemoteVisualMatrixRunRecord.1'
+        schema = 'PixelBridge.RemoteVisualMatrixRunRecord.2'
         createdUtc = [DateTime]::UtcNow.ToString('o')
         runId = [string]$plan.runId
         outcome = $Outcome
@@ -621,13 +737,14 @@ function New-PBRemoteVisualMatrixRunRecordValue
             profileComparisonRole = [string]$plan.matrix.profileComparisonRole
             logicalFps = [UInt32]$plan.logicalFps
             geometryMode = [string]$plan.geometryMode
-            estimatedScaleX = [double]$plan.remoteGeometry.estimatedScaleX
-            estimatedScaleY = [double]$plan.remoteGeometry.estimatedScaleY
             scaleTarget = $scaleTarget
+            observedLocatorGeometry = $observedGeometry
             runIsolation = [string]$plan.matrix.runIsolation
         }
         contracts = [ordered]@{
             noSilentResample = $true
+            captureRoiIsNotScaleEvidence = $true
+            geometryAuthority = 'AcceptedBootstrapLocatorPixels'
             unknownChromaAndLatencyRemainUnknown = $true
             differentRunMetricsMustNotBeMerged = $true
             authoritativeMetricSource = 'PixelBridge.RemoteVisualCombinedReport.1 Decoder/Receiver fields'
@@ -669,7 +786,7 @@ function Import-PBRemoteVisualMatrixRunRecord
     Assert-PBMatrixExactKeys -Dictionary $record -ExpectedKeys @('schema', 'createdUtc', 'runId', 'outcome',
         'failureClassification', 'profileToken', 'profileName', 'visualProfileId', 'visualLayoutVersion', 'matrix',
         'contracts', 'identities', 'authoritativeMetrics') -Name 'matrix run record'
-    if ([string]$record.schema -cne 'PixelBridge.RemoteVisualMatrixRunRecord.1' -or
+    if ([string]$record.schema -cne 'PixelBridge.RemoteVisualMatrixRunRecord.2' -or
         [string]$record.runId -cnotmatch '^[0-9a-f]{32}$' -or [string]$record.outcome -notin @('Success', 'Failure') -or
         [string]$record.failureClassification -notin @('success', 'geometry', 'signal', 'temporal', 'metric', 'scheduler') -or
         (([string]$record.outcome -ceq 'Success') -ne ([string]$record.failureClassification -ceq 'success')))
@@ -677,15 +794,19 @@ function Import-PBRemoteVisualMatrixRunRecord
         throw 'Matrix run record schema, RunId, outcome, or classification is invalid'
     }
     Assert-PBMatrixExactKeys -Dictionary $record.matrix -ExpectedKeys @('modeClass', 'visibleRemoteMode', 'captureBackend',
-        'backendCoverageRole', 'profileComparisonRole', 'logicalFps', 'geometryMode', 'estimatedScaleX', 'estimatedScaleY',
-        'scaleTarget', 'runIsolation') -Name 'matrix run tuple'
+        'backendCoverageRole', 'profileComparisonRole', 'logicalFps', 'geometryMode', 'scaleTarget',
+        'observedLocatorGeometry', 'runIsolation') -Name 'matrix run tuple'
     Assert-PBMatrixExactKeys -Dictionary $record.contracts -ExpectedKeys @('noSilentResample',
-        'unknownChromaAndLatencyRemainUnknown', 'differentRunMetricsMustNotBeMerged', 'authoritativeMetricSource',
-        'certifiedRemoteVisualProfile') -Name 'matrix run contracts'
+        'captureRoiIsNotScaleEvidence', 'geometryAuthority', 'unknownChromaAndLatencyRemainUnknown',
+        'differentRunMetricsMustNotBeMerged', 'authoritativeMetricSource', 'certifiedRemoteVisualProfile') `
+        -Name 'matrix run contracts'
     Assert-PBMatrixExactKeys -Dictionary $record.identities -ExpectedKeys @('plan', 'deployment', 'packageManifest', 'source',
         'remoteUiEvidence', 'encoderEnvironment', 'decoderEnvironment', 'replay', 'combinedReport', 'outcomeVerification',
         'inspection', 'encoderReport', 'liveDecoderReport', 'offlineDecoderReport') -Name 'matrix run identities'
     if ($record.contracts.noSilentResample -isnot [bool] -or -not [bool]$record.contracts.noSilentResample -or
+        $record.contracts.captureRoiIsNotScaleEvidence -isnot [bool] -or
+        -not [bool]$record.contracts.captureRoiIsNotScaleEvidence -or
+        [string]$record.contracts.geometryAuthority -cne 'AcceptedBootstrapLocatorPixels' -or
         $record.contracts.unknownChromaAndLatencyRemainUnknown -isnot [bool] -or -not [bool]$record.contracts.unknownChromaAndLatencyRemainUnknown -or
         $record.contracts.differentRunMetricsMustNotBeMerged -isnot [bool] -or -not [bool]$record.contracts.differentRunMetricsMustNotBeMerged -or
         [string]$record.contracts.authoritativeMetricSource -cne 'PixelBridge.RemoteVisualCombinedReport.1 Decoder/Receiver fields' -or
@@ -704,7 +825,7 @@ function Import-PBRemoteVisualMatrixRunRecord
         [void](Assert-PBFileIdentity -Path ([string]$record.identities.inspection.path) -Expected $record.identities.inspection -Name 'matrix inspection')
     }
     $plan = Import-PBRemoteVisualPilotPlan -Path ([string]$record.identities.plan.path) -ExpectedSha256 ([string]$record.identities.plan.sha256)
-    if ([string]$plan.value.schema -cne 'PixelBridge.RemoteVisualPilotPlan.2' -or
+    if ([string]$plan.value.schema -cne 'PixelBridge.RemoteVisualPilotPlan.3' -or
         [string]$record.runId -cne [string]$plan.value.runId -or [string]$record.profileToken -cne [string]$plan.value.profileToken -or
         [string]$record.profileName -cne [string]$plan.value.profileName -or [UInt64]$record.visualProfileId -ne [UInt64]$plan.value.visualProfileId -or
         [UInt32]$record.visualLayoutVersion -ne [UInt32]$plan.value.visualLayoutVersion)
@@ -718,11 +839,9 @@ function Import-PBRemoteVisualMatrixRunRecord
         [string]$record.matrix.profileComparisonRole -cne [string]$plan.value.matrix.profileComparisonRole -or
         [UInt32]$record.matrix.logicalFps -ne [UInt32]$plan.value.logicalFps -or
         [string]$record.matrix.geometryMode -cne [string]$plan.value.geometryMode -or
-        [Math]::Abs([double]$record.matrix.estimatedScaleX - [double]$plan.value.remoteGeometry.estimatedScaleX) -gt 0.0000001 -or
-        [Math]::Abs([double]$record.matrix.estimatedScaleY - [double]$plan.value.remoteGeometry.estimatedScaleY) -gt 0.0000001 -or
         [string]$record.matrix.runIsolation -cne [string]$plan.value.matrix.runIsolation -or
-        [string]$record.matrix.scaleTarget -cne (Get-PBStep21ScaleTarget -ScaleX ([double]$record.matrix.estimatedScaleX) `
-            -ScaleY ([double]$record.matrix.estimatedScaleY) -ProfileToken ([string]$record.profileToken)))
+        [string]$record.matrix.scaleTarget -cne [string]$plan.value.matrix.scaleTarget -or
+        [string]$record.matrix.scaleTarget -cne [string]$plan.value.remoteGeometry.expectedLocatorScaleTarget)
     {
         throw 'Matrix run tuple differs from its frozen plan or scale grid'
     }
@@ -748,6 +867,15 @@ function Import-PBRemoteVisualMatrixRunRecord
     }
     $expectedMetrics = Get-PBRemoteVisualAuthoritativeMetrics -CombinedReport $combined
     Compare-PBMatrixJsonValue -First $record.authoritativeMetrics -Second $expectedMetrics -Name 'matrix authoritative metrics'
+    Compare-PBMatrixJsonValue -First $record.matrix.observedLocatorGeometry `
+        -Second $expectedMetrics.observedLocatorGeometry -Name 'matrix observed Locator geometry'
+    if ([string]$record.outcome -ceq 'Success')
+    {
+        $observedGeometry = $expectedMetrics.observedLocatorGeometry
+        Assert-PBRemoteVisualObservedLocatorTarget -Geometry $observedGeometry `
+            -ScaleTarget ([string]$record.matrix.scaleTarget) -ProfileToken ([string]$record.profileToken) `
+            -Context 'Successful matrix record'
+    }
     $verification = Read-PBBoundedJson -Path ([string]$record.identities.outcomeVerification.path) -MaximumBytes 4MB
     if ([string]$record.outcome -ceq 'Success')
     {
@@ -926,5 +1054,7 @@ Export-ModuleMember -Function Assert-PBMatrixExactKeys, Assert-PBMatrixIdentityE
     New-PBRemoteVisualStep21ExpectedCells, Get-PBRemoteVisualStep21CellRequiredRoi, `
     New-PBRemoteVisualStep21HardwareScopePartition, Import-PBRemoteVisualStep21MatrixSpec, `
     Import-PBRemoteVisualStep21HardwareScope, `
-    Get-PBNonNegativeUInt64, Get-PBRemoteVisualAuthoritativeMetrics, New-PBRemoteVisualMatrixRunRecordValue, `
+    Get-PBNonNegativeUInt64, Get-PBRemoteVisualObservedLocatorGeometry, Assert-PBRemoteVisualObservedLocatorTarget, `
+    Get-PBRemoteVisualAuthoritativeMetrics, `
+    New-PBRemoteVisualMatrixRunRecordValue, `
     Import-PBRemoteVisualMatrixRunRecord, Get-PBRemoteVisualFailureSupport
