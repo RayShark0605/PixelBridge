@@ -3,6 +3,7 @@
 #include "pbdemodd3d11/demodulator.h"
 #include "pbmodulation/local_desktop_decode.h"
 #include "pbmodulation/reference_visual_profile.h"
+#include "pbmodulation/visual_temporal.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 
 #include <array>
@@ -14,12 +15,23 @@ namespace pbdemodd3d11
 {
 
 inline constexpr std::uint32_t maximumCaptureDemodResultQueue = 256;
+inline constexpr std::uint32_t maximumCaptureDemodDuplicateRefinementAttempts = 4;
 inline constexpr std::size_t localDesktopErasureCount =
     static_cast<std::size_t>(pbmodulation::LocalDesktopErasureReason::ExcessResidual) + 1;
 
 enum class CaptureDemodulatorResultKind : std::uint8_t
 {
     Transport, ControlRecord, ControlFragment, TelemetryOnly
+};
+
+enum class CaptureDemodulatorGeometryStatus : std::uint8_t
+{
+    NotApplicable, ExactCanvas, Scaled, Letterboxed, Rejected
+};
+
+enum class CaptureDemodulatorTemporalDisposition : std::uint8_t
+{
+    NotApplicable, Unique, DuplicateRefinement, DuplicateSuppressed, Reordered, StaleCompletion
 };
 
 struct CaptureDemodulatorResult
@@ -30,7 +42,17 @@ struct CaptureDemodulatorResult
     std::array<std::byte, pbmodulation::kReferenceControlWindowBytes> controlBytes{};
     std::uint32_t controlByteCount = 0;
     pbmodulation::LocalDesktopObservation bootstrap;
+    CaptureDemodulatorGeometryStatus geometryStatus = CaptureDemodulatorGeometryStatus::NotApplicable;
+    CaptureDemodulatorTemporalDisposition temporalDisposition = CaptureDemodulatorTemporalDisposition::NotApplicable;
     DemodFrameResult demodulation;
+    // Indices into demodulation.acceptedTransportBlocks that are newly admitted
+    // by the bounded LF4 temporal gate. Strict profiles expose every accepted
+    // block here. Consumers must not infer temporal admission from the raw
+    // observation count in DemodFrameResult.
+    std::array<std::uint32_t, pbdesktoplevels::kMaximumCodewords> admittedTransportBlockIndices{};
+    std::uint32_t admittedTransportBlockCount = 0;
+    std::array<std::uint32_t, pbmodulation::kRemoteVisualLowFpsCodewords> admittedRemoteControlBlockIndices{};
+    std::uint32_t admittedRemoteControlBlockCount = 0;
 };
 
 struct CaptureDemodulatorConfig
@@ -41,6 +63,15 @@ struct CaptureDemodulatorConfig
     std::uint32_t resultQueueCapacity = 64;
     std::uint64_t maximumResidentBytes = 128ULL * 1024 * 1024;
     pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::Transport;
+    // LF4 only: the reservation is calculated from these hard bounds before
+    // CaptureNormalize allocates its pool/ring. Strict 1:1 profiles continue to
+    // reserve and require exactly the canonical 1920x1080 canvas.
+    std::uint32_t maximumRoiWidth = 3840;
+    std::uint32_t maximumRoiHeight = 2160;
+    pbmodulation::RemoteVisualLowFpsDecodePolicy remoteVisualLowFpsPolicy;
+    // LF4 only. A duplicate may re-evaluate missing codeword slots this many
+    // times after the first observation. Zero suppresses every duplicate.
+    std::uint32_t maximumDuplicateRefinementAttempts = 1;
 };
 
 struct CaptureDemodulatorBudget
@@ -73,6 +104,25 @@ struct CaptureDemodulatorSnapshot
     std::uint64_t bootstrapRejectedFrames = 0;
     std::uint64_t controlFrames = 0;
     std::uint64_t controlFrameFailures = 0;
+    std::uint64_t stagedGpuSubmissions = 0;
+    std::uint64_t stagedGpuCompletions = 0;
+    std::uint64_t exactGeometryFrames = 0;
+    std::uint64_t scaledGeometryFrames = 0;
+    std::uint64_t letterboxedGeometryFrames = 0;
+    std::uint64_t rejectedGeometryFrames = 0;
+    CaptureDemodulatorGeometryStatus lastGeometryStatus = CaptureDemodulatorGeometryStatus::NotApplicable;
+    pbmodulation::LocalDesktopGeometry lastGeometry;
+    std::uint64_t temporalUniqueFrames = 0;
+    std::uint64_t temporalDuplicateFrames = 0;
+    std::uint64_t temporalReorderedFrames = 0;
+    std::uint64_t temporalGapEvents = 0;
+    std::uint64_t temporalSkippedSequences = 0;
+    std::uint64_t duplicateRefinementAttempts = 0;
+    std::uint64_t duplicateRefinementRecoveries = 0;
+    std::uint64_t duplicateRefinementLimitDrops = 0;
+    std::uint64_t temporalSuppressedFrames = 0;
+    std::uint64_t temporalStaleCompletionDrops = 0;
+    std::uint64_t temporallyAdmittedTransportBlocks = 0;
     std::array<std::uint64_t, localDesktopErasureCount> bootstrapErasures{};
     std::uint64_t bootstrapMapCalls = 0;
     std::uint64_t bootstrapReadbackBytes = 0;
@@ -101,13 +151,14 @@ struct CaptureDemodulatorSnapshot
 [[nodiscard]] pbcapturenormalize::CaptureStatus CalculateCaptureDemodulatorBudget(
     const CaptureDemodulatorConfig& config, CaptureDemodulatorBudget& output) noexcept;
 
-// Same-frame LocalDesktop Bootstrap plus D3D11 metric/FEC consumer. Submit
-// queues a bounded staging copy and GPU demodulation on the capture owner;
-// Completed maps only after the capture runtime's later retirement marker.
-// Results enter a fixed ring. Every non-cancelled, non-terminal completed frame
-// contributes a bounded observation: TelemetryOnly reports a Bootstrap erasure
-// or a frame without protocol payload, while Transport carries only blocks that
-// passed QC-LDPC, canonical framing/CRC, and Bootstrap SessionTag validation.
+// Same-frame LocalDesktop Bootstrap plus D3D11 metric/FEC consumer. Strict 1:1
+// profiles queue Bootstrap staging and GPU demodulation in Submit. LF4 queues
+// only Bootstrap staging there; its first staged completion resolves continuous
+// geometry and then submits direct-texture GPU work while the exact ROI remains
+// leased. Results enter a fixed ring after a retirement marker. TelemetryOnly
+// reports a Bootstrap/signal erasure or a frame without protocol payload, while
+// Transport carries only blocks that passed QC-LDPC, canonical framing/CRC, and
+// Bootstrap SessionTag validation.
 class CaptureDemodulator final : public pbcapturenormalize::ScreenCaptureConsumer
 {
 public:
@@ -123,6 +174,9 @@ public:
     void DomainInvalidated(const pbcapturenormalize::ScreenCaptureDomain& domain) noexcept override;
     [[nodiscard]] pbcapturenormalize::CaptureStatus Submit(
         const pbcapturenormalize::ScreenCaptureFrame& frame, ID3D11DeviceContext* context) override;
+    [[nodiscard]] pbcapturenormalize::CaptureConsumerCompletion CompleteStage(
+        const pbcapturenormalize::ScreenCaptureFrameMetadata& metadata, ID3D11Texture2D* texture,
+        ID3D11DeviceContext* context, bool cancelled) override;
     [[nodiscard]] pbcapturenormalize::CaptureStatus Completed(
         const pbcapturenormalize::ScreenCaptureFrameMetadata& metadata,
         ID3D11DeviceContext* context, bool cancelled) override;
@@ -135,6 +189,9 @@ public:
 
 private:
     struct Implementation;
+    [[nodiscard]] pbcapturenormalize::CaptureStatus CompleteInternal(
+        const pbcapturenormalize::ScreenCaptureFrameMetadata& metadata, ID3D11Texture2D* texture,
+        ID3D11DeviceContext* context, bool cancelled, bool allowContinuation, bool& gpuWorkSubmitted);
     explicit CaptureDemodulator(std::unique_ptr<Implementation> implementation) noexcept;
     std::unique_ptr<Implementation> implementation_;
 };

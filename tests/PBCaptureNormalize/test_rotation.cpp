@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -227,6 +228,52 @@ public:
     std::vector<std::byte> pixels;
 };
 
+class ThrowingCompletionConsumer final : public RawRoiConsumer
+{
+public:
+    CaptureStatus EpochStarted(std::uint64_t, const CaptureEnvironment&, ID3D11Device*) override
+    {
+        return {};
+    }
+
+    CaptureStatus Submit(const RawRoiFrameMetadata&, ID3D11Texture2D* const texture, ID3D11DeviceContext*) override
+    {
+        D3D11_TEXTURE2D_DESC description{};
+        ComPtr<ID3D11Device> device;
+        texture->GetDesc(&description);
+        texture->GetDevice(&device);
+        borrowedTexture = texture;
+        description.Usage = D3D11_USAGE_STAGING;
+        description.BindFlags = 0;
+        description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        return FromHresult(device->CreateTexture2D(&description, nullptr, &staging), CaptureStage::Consumer);
+    }
+
+    CaptureConsumerCompletion CompleteStage(const RawRoiFrameMetadata&, ID3D11Texture2D* const texture,
+        ID3D11DeviceContext* const context, const bool cancelled) override
+    {
+        completionCalls++;
+        if (cancelled)
+        {
+            cancelledWithGpuObjects = texture != nullptr || context != nullptr;
+            borrowedTexture = nullptr;
+            staging.Reset();
+            return {};
+        }
+        if (texture == nullptr || context == nullptr || texture != borrowedTexture || !staging)
+        {
+            return {CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion), false};
+        }
+        context->CopyResource(staging.Get(), texture);
+        throw std::runtime_error("injected exception after GPU submission");
+    }
+
+    ComPtr<ID3D11Texture2D> staging;
+    ID3D11Texture2D* borrowedTexture = nullptr;
+    std::uint32_t completionCalls = 0;
+    bool cancelledWithGpuObjects = false;
+};
+
 struct GraphicsFixture
 {
     GraphicsFixture()
@@ -287,6 +334,47 @@ void VerifyPixels(GraphicsFixture& graphics, const CaptureEnvironment& environme
     REQUIRE(ring.CheckDebug());
     ring.Reset();
 }
+}
+
+TEST_CASE("D3D ROI completion exception records a conservative retirement marker before releasing the slot",
+    "[capture][rotation][staged-completion][exception][negative]")
+{
+    GraphicsFixture graphics;
+    const auto environment = MakeEnvironment(DXGI_MODE_ROTATION_IDENTITY, DXGI_FORMAT_B8G8R8A8_UNORM,
+        {4, 3}, {0, 0, 4, 3});
+    const auto config = MakeConfig(environment);
+    D3dRoiRing ring;
+    REQUIRE(ring.Initialize(graphics.device.Get(), graphics.context.Get(), config, environment, true));
+    const auto counters = std::make_shared<LeaseCounters>();
+    const auto closes = std::make_shared<std::atomic<std::uint32_t>>(0);
+    auto source = MakeSource(*graphics.device.Get(), environment, 19, counters, closes);
+    bool submitted = false;
+    REQUIRE(ring.Copy(source, 0, submitted));
+    REQUIRE(submitted);
+    REQUIRE(WaitForSlot(ring, 0));
+    source.Reset();
+    REQUIRE(counters->live == 0);
+    REQUIRE(*closes == 1);
+
+    ThrowingCompletionConsumer consumer;
+    RawRoiFrameMetadata metadata;
+    metadata.slotIndex = 0;
+    REQUIRE(ring.Consume(consumer, metadata, 0));
+    REQUIRE(WaitForSlot(ring, 0));
+    const auto failed = ring.Complete(consumer, metadata, false);
+    CHECK(failed.status.code == CaptureError::ConsumerFailure);
+    CHECK(failed.gpuWorkSubmitted);
+    CHECK(consumer.completionCalls == 1);
+    CHECK(ring.Consume(consumer, metadata, 0).code == CaptureError::InternalError);
+    CHECK(ring.Recreate(config, environment).code == CaptureError::InternalError);
+    REQUIRE(WaitForSlot(ring, 0));
+    const auto cleanup = ring.Complete(consumer, metadata, true);
+    REQUIRE(cleanup.status);
+    CHECK_FALSE(cleanup.gpuWorkSubmitted);
+    CHECK(consumer.completionCalls == 2);
+    CHECK_FALSE(consumer.cancelledWithGpuObjects);
+    REQUIRE(ring.Recreate(config, environment));
+    REQUIRE(ring.CheckDebug());
 }
 
 TEST_CASE("Capture layout pins inverse half-open rotation boxes and charges the raw ROI scratch", "[capture][rotation][layout]")

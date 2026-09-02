@@ -1,12 +1,36 @@
 #include "application_model.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace pbapp
 {
 namespace
 {
+
+constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
+    {VisualProfile::DirectLevels2x2, "direct", "Direct-Level 2x2 (Experimental)", false, 0, 4},
+    {VisualProfile::ShapeChroma, "shape", "Shape+Chroma (Experimental)", false, 0, 4},
+    {VisualProfile::RemoteVisualResilient, "remote", "RemoteVisual Resilient 8x8 Luma (Experimental)", true, 2, 12},
+    {VisualProfile::RemoteVisualLowFps, "remote-lf4", "PB-RemoteVisual-LF4-X1 (Experimental)", true, 2, 12}
+}};
+
+[[nodiscard]] bool EqualsAsciiToken(const std::wstring_view wideToken, const std::string_view asciiToken) noexcept
+{
+    if (wideToken.size() != asciiToken.size())
+    {
+        return false;
+    }
+    for (std::size_t index = 0; index < wideToken.size(); index++)
+    {
+        if (wideToken[index] != static_cast<wchar_t>(static_cast<unsigned char>(asciiToken[index])))
+        {
+            return false;
+        }
+    }
+    return true;
+}
 
 [[nodiscard]] bool CanBeginEncoder(const EncoderState state) noexcept
 {
@@ -269,89 +293,6 @@ CarouselSnapshot CarouselCounter::GetSnapshot() const noexcept
     return snapshot_;
 }
 
-VisualIdentityDisposition VisualIdentityTracker::Observe(const std::uint64_t sequence, const std::uint64_t captureEpoch,
-    const std::int64_t timestamp100ns, const std::optional<std::uint64_t> streamIdentity) noexcept
-{
-    if (captureEpoch == 0 || timestamp100ns < 0)
-    {
-        return VisualIdentityDisposition::Invalid;
-    }
-    if (!hasBaseline_ || captureEpoch != lastCaptureEpoch_ || streamIdentity != lastStreamIdentity_)
-    {
-        hasBaseline_ = true;
-        maximumSequence_ = sequence;
-        lastCaptureEpoch_ = captureEpoch;
-        lastStreamIdentity_ = streamIdentity;
-        lastTimestamp100ns_ = timestamp100ns;
-        if (uniqueFrames_ != (std::numeric_limits<std::uint64_t>::max)())
-        {
-            uniqueFrames_++;
-        }
-        return VisualIdentityDisposition::Unique;
-    }
-    if (sequence == maximumSequence_)
-    {
-        if (duplicateFrames_ != (std::numeric_limits<std::uint64_t>::max)())
-        {
-            duplicateFrames_++;
-        }
-        return VisualIdentityDisposition::Duplicate;
-    }
-    if (sequence < maximumSequence_)
-    {
-        if (reorderedFrames_ != (std::numeric_limits<std::uint64_t>::max)())
-        {
-            reorderedFrames_++;
-        }
-        return VisualIdentityDisposition::Reordered;
-    }
-
-    const std::uint64_t distance = sequence - maximumSequence_;
-    if (distance == 1 && timestamp100ns > lastTimestamp100ns_)
-    {
-        if (intervalCount_ != (std::numeric_limits<std::uint64_t>::max)())
-        {
-            intervalCount_++;
-        }
-        const std::uint64_t interval = static_cast<std::uint64_t>(timestamp100ns - lastTimestamp100ns_);
-        intervalTime100ns_ = interval > (std::numeric_limits<std::uint64_t>::max)() - intervalTime100ns_ ?
-            (std::numeric_limits<std::uint64_t>::max)() : intervalTime100ns_ + interval;
-    }
-    else if (distance > 1)
-    {
-        if (gapEvents_ != (std::numeric_limits<std::uint64_t>::max)())
-        {
-            gapEvents_++;
-        }
-        const std::uint64_t skipped = distance - 1;
-        skippedSequences_ = skipped > (std::numeric_limits<std::uint64_t>::max)() - skippedSequences_ ?
-            (std::numeric_limits<std::uint64_t>::max)() : skippedSequences_ + skipped;
-    }
-    maximumSequence_ = sequence;
-    lastTimestamp100ns_ = timestamp100ns;
-    if (uniqueFrames_ != (std::numeric_limits<std::uint64_t>::max)())
-    {
-        uniqueFrames_++;
-    }
-    return VisualIdentityDisposition::Unique;
-}
-
-VisualIdentitySnapshot VisualIdentityTracker::GetSnapshot() const noexcept
-{
-    VisualIdentitySnapshot snapshot;
-    snapshot.uniqueFrames = uniqueFrames_;
-    snapshot.duplicateFrames = duplicateFrames_;
-    snapshot.reorderedFrames = reorderedFrames_;
-    snapshot.gapEvents = gapEvents_;
-    snapshot.skippedSequences = skippedSequences_;
-    if (intervalCount_ != 0 && intervalTime100ns_ != 0)
-    {
-        snapshot.framesPerSecond = static_cast<double>(intervalCount_) * 10000000.0 /
-            static_cast<double>(intervalTime100ns_);
-    }
-    return snapshot;
-}
-
 void ChannelStallTracker::StartInterval(StallIntervalSnapshot& interval, const std::uint64_t startedMilliseconds,
     std::uint64_t& storedStartedMilliseconds) noexcept
 {
@@ -484,6 +425,7 @@ void RemoteDuplicateRefinementGate::StartSequence(const std::uint64_t captureEpo
     currentFrameSequence_ = frameSequence;
     snapshot_.currentSequenceAdmitted = false;
     hasCurrentSequence_ = true;
+    currentSequenceAttempted_ = false;
 }
 
 bool RemoteDuplicateRefinementGate::ShouldAttemptDuplicate(const std::uint64_t captureEpoch,
@@ -494,6 +436,15 @@ bool RemoteDuplicateRefinementGate::ShouldAttemptDuplicate(const std::uint64_t c
     {
         return false;
     }
+    if (currentSequenceAttempted_)
+    {
+        if (snapshot_.limitDrops != (std::numeric_limits<std::uint64_t>::max)())
+        {
+            snapshot_.limitDrops++;
+        }
+        return false;
+    }
+    currentSequenceAttempted_ = true;
     if (snapshot_.attempts != (std::numeric_limits<std::uint64_t>::max)())
     {
         snapshot_.attempts++;
@@ -523,6 +474,7 @@ void RemoteDuplicateRefinementGate::ResetEpoch() noexcept
     currentFrameSequence_ = 0;
     snapshot_.currentSequenceAdmitted = false;
     hasCurrentSequence_ = false;
+    currentSequenceAttempted_ = false;
 }
 
 RemoteDuplicateRefinementSnapshot RemoteDuplicateRefinementGate::GetSnapshot() const noexcept
@@ -670,14 +622,40 @@ const char* GetDecoderStateName(const DecoderState state) noexcept
 
 const char* GetVisualProfileName(const VisualProfile profile) noexcept
 {
-    switch (profile)
-    {
-    case VisualProfile::DirectLevels2x2: return "Direct-Level 2x2 (Experimental)";
-    case VisualProfile::ShapeChroma: return "Shape+Chroma (Experimental)";
-    case VisualProfile::RemoteVisualResilient: return "RemoteVisual Resilient 8x8 Luma (Experimental)";
-    case VisualProfile::RemoteVisualLowFps: return "PB-RemoteVisual-LF4-X1 (Hidden Encoder Candidate)";
-    }
-    return "Unknown";
+    const VisualProfileOption* const option = FindVisualProfileOption(profile);
+    return option == nullptr ? "Unknown" : option->displayName.data();
+}
+
+std::span<const VisualProfileOption> GetVisualProfileOptions() noexcept
+{
+    return visualProfileOptions;
+}
+
+const VisualProfileOption* FindVisualProfileOption(const VisualProfile profile) noexcept
+{
+    const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
+        [profile](const VisualProfileOption& value) { return value.profile == profile; });
+    return option == visualProfileOptions.end() ? nullptr : &*option;
+}
+
+std::optional<VisualProfile> ParseVisualProfileToken(const std::string_view token) noexcept
+{
+    const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
+        [token](const VisualProfileOption& value) { return value.cliToken == token; });
+    return option == visualProfileOptions.end() ? std::nullopt : std::optional(option->profile);
+}
+
+std::optional<VisualProfile> ParseVisualProfileToken(const std::wstring_view token) noexcept
+{
+    const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
+        [token](const VisualProfileOption& value) { return EqualsAsciiToken(token, value.cliToken); });
+    return option == visualProfileOptions.end() ? std::nullopt : std::optional(option->profile);
+}
+
+bool IsRemoteVisualProfile(const VisualProfile profile) noexcept
+{
+    const VisualProfileOption* const option = FindVisualProfileOption(profile);
+    return option != nullptr && option->remoteVisual;
 }
 
 const char* GetCaptureBackendName(const CaptureBackend backend) noexcept

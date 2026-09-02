@@ -151,6 +151,48 @@ pbrealcapturereplay::ReplayV2DemodObservationView MakeObservation(const std::uin
     return observation;
 }
 
+pbrealcapturereplay::ReplayV2DemodObservationView MakeDetailedObservation(
+    const std::uint64_t captureObservation, const std::uint64_t frameSequence)
+{
+    auto observation = MakeObservation(captureObservation, frameSequence);
+    observation.productionDetailAvailable = true;
+    observation.layoutAvailable = true;
+    observation.visualLayoutVersion = 7;
+    observation.resultKind = pbrealcapturereplay::ReplayV2DemodResultKind::Transport;
+    observation.geometryAvailable = true;
+    observation.geometryStatus = pbrealcapturereplay::ReplayV2GeometryStatus::Scaled;
+    observation.geometryOriginX = 17.25;
+    observation.geometryOriginY = 9.5;
+    observation.geometryScaleX = 1.25;
+    observation.geometryScaleY = 1.25;
+    observation.temporalDisposition = pbrealcapturereplay::ReplayV2TemporalDisposition::Unique;
+    observation.evaluationAvailable = true;
+    observation.paddingValid = true;
+    observation.codewords = 4;
+    observation.fecFailures = 1;
+    observation.acceptedTransportBlocks = 3;
+    observation.admittedTransportBlocks = 2;
+    observation.iterationsTotal = 24;
+    observation.iterationsMaximum = 10;
+    observation.metricSummaryAvailable = true;
+    observation.metricSamples = 64800;
+    observation.zeroMagnitudeMetrics = 12;
+    observation.minimumAbsoluteMetric = 0.125;
+    observation.meanAbsoluteMetric = 1.75;
+    observation.freshnessRegions = 32;
+    observation.staleRegions = 1;
+    observation.freshnessTagMismatches = 1;
+    observation.freshnessTagErasures = 1;
+    observation.freshnessErasedDataMetrics = 100;
+    observation.unreliableSymbols = 120;
+    observation.metricReadbackBytes = 261040;
+    observation.gpuTimingAvailable = true;
+    observation.gpuTime100ns = 12345;
+    observation.carrierAccepted = true;
+    observation.receiverStateAdvanced = true;
+    return observation;
+}
+
 void FlipFileByte(const std::filesystem::path& path, const std::uint64_t offset)
 {
     std::fstream stream(path, std::ios::binary | std::ios::in | std::ios::out);
@@ -191,7 +233,7 @@ TEST_CASE("Replay v2 preserves receiver-only RemoteVisual captures and asynchron
     REQUIRE(writer->AppendCapture(first.View()));
     REQUIRE(writer->AppendCapture(second.View()));
     REQUIRE(writer->AppendDemodObservation(MakeObservation(1, 101)));
-    REQUIRE(writer->AppendDemodObservation(MakeObservation(2, 102)));
+    REQUIRE(writer->AppendDemodObservation(MakeDetailedObservation(2, 102)));
     REQUIRE(writer->Finalize());
     const auto writerSnapshot = writer->GetSnapshot();
     REQUIRE(writerSnapshot.complete);
@@ -228,11 +270,37 @@ TEST_CASE("Replay v2 preserves receiver-only RemoteVisual captures and asynchron
     REQUIRE(record.demodObservation.captureObservation == 1);
     REQUIRE(record.demodObservation.frameSequence == 101);
     REQUIRE(record.demodObservation.receiverAdmitted);
+    REQUIRE_FALSE(record.demodObservation.productionDetailAvailable);
+    REQUIRE(record.demodObservation.resultKind == pbrealcapturereplay::ReplayV2DemodResultKind::Unavailable);
 
     REQUIRE(reader->ReadNext(record));
     REQUIRE(record.type == pbrealcapturereplay::ReplayV2RecordType::DemodObservation);
     REQUIRE(record.demodObservation.captureObservation == 2);
     REQUIRE(record.demodObservation.frameSequence == 102);
+    REQUIRE(record.demodObservation.productionDetailAvailable);
+    REQUIRE(record.demodObservation.layoutAvailable);
+    REQUIRE(record.demodObservation.visualLayoutVersion == 7);
+    REQUIRE(record.demodObservation.resultKind == pbrealcapturereplay::ReplayV2DemodResultKind::Transport);
+    REQUIRE(record.demodObservation.geometryStatus == pbrealcapturereplay::ReplayV2GeometryStatus::Scaled);
+    REQUIRE(record.demodObservation.geometryOriginX == 17.25);
+    REQUIRE(record.demodObservation.geometryScaleX == 1.25);
+    REQUIRE(record.demodObservation.temporalDisposition == pbrealcapturereplay::ReplayV2TemporalDisposition::Unique);
+    REQUIRE(record.demodObservation.evaluationAvailable);
+    REQUIRE(record.demodObservation.paddingValid);
+    REQUIRE_FALSE(record.demodObservation.senderTruthAvailable);
+    REQUIRE(record.demodObservation.codewords == 4);
+    REQUIRE(record.demodObservation.fecFailures == 1);
+    REQUIRE(record.demodObservation.acceptedTransportBlocks == 3);
+    REQUIRE(record.demodObservation.admittedTransportBlocks == 2);
+    REQUIRE(record.demodObservation.metricSummaryAvailable);
+    REQUIRE(record.demodObservation.metricSamples == 64800);
+    REQUIRE(record.demodObservation.minimumAbsoluteMetric == 0.125);
+    REQUIRE(record.demodObservation.meanAbsoluteMetric == 1.75);
+    REQUIRE(record.demodObservation.metricReadbackBytes == 261040);
+    REQUIRE(record.demodObservation.gpuTimingAvailable);
+    REQUIRE(record.demodObservation.gpuTime100ns == 12345);
+    REQUIRE(record.demodObservation.carrierAccepted);
+    REQUIRE(record.demodObservation.receiverStateAdvanced);
     const auto unchanged = record;
     REQUIRE(reader->ReadNext(record).code == pbrealcapturereplay::ReplayError::EndOfFile);
     REQUIRE(record.demodObservation.captureObservation == unchanged.demodObservation.captureObservation);
@@ -259,6 +327,22 @@ TEST_CASE("Replay v2 enforces linkage, receiver-only presence, frame caps and no
     REQUIRE(writer->AppendDemodObservation(MakeObservation(1, 101)).code ==
         pbrealcapturereplay::ReplayError::InvalidArgument);
     REQUIRE(writer->AppendCapture(first.View()));
+    auto absentDetailWithValue = MakeObservation(1, 101);
+    absentDetailWithValue.visualLayoutVersion = 7;
+    REQUIRE(writer->AppendDemodObservation(absentDetailWithValue).code ==
+        pbrealcapturereplay::ReplayError::InvalidArgument);
+    auto invalidDetail = MakeDetailedObservation(1, 101);
+    invalidDetail.metricSamples = 0;
+    REQUIRE(writer->AppendDemodObservation(invalidDetail).code ==
+        pbrealcapturereplay::ReplayError::InvalidArgument);
+    invalidDetail = MakeDetailedObservation(1, 101);
+    invalidDetail.comparedCodedBits = 1;
+    REQUIRE(writer->AppendDemodObservation(invalidDetail).code ==
+        pbrealcapturereplay::ReplayError::InvalidArgument);
+    invalidDetail = MakeDetailedObservation(1, 101);
+    invalidDetail.receiverStateAdvanced = false;
+    REQUIRE(writer->AppendDemodObservation(invalidDetail).code ==
+        pbrealcapturereplay::ReplayError::InvalidArgument);
     auto wrongEpoch = MakeObservation(1, 101);
     wrongEpoch.captureEpoch = 10;
     REQUIRE(writer->AppendDemodObservation(wrongEpoch).code == pbrealcapturereplay::ReplayError::InvalidArgument);

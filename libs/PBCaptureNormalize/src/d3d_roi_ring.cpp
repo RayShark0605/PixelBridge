@@ -390,17 +390,55 @@ CaptureStatus D3dRoiRing::Consume(RawRoiConsumer& consumer, const RawRoiFrameMet
     return status ? retirement : status;
 }
 
-CaptureStatus D3dRoiRing::Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, const bool cancelled) noexcept
+CaptureConsumerCompletion D3dRoiRing::Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, const bool cancelled) noexcept
 {
+    if (!cancelled && (metadata.slotIndex >= slotCount_ || slots_[metadata.slotIndex].pending))
+    {
+        return {CaptureStatus::Failure(CaptureError::InternalError, CaptureStage::Completion), false};
+    }
     try
     {
         // Cancelled retirement can run on the OS cleanup thread. Deliberately
         // withhold the context: cleanup must not Map or submit GPU work there.
-        return consumer.Completed(metadata, cancelled ? nullptr : context_.Get(), cancelled);
+        ID3D11Texture2D* const texture = cancelled || metadata.slotIndex >= slotCount_ ? nullptr : slots_[metadata.slotIndex].texture.Get();
+        auto completion = consumer.CompleteStage(metadata, texture, cancelled ? nullptr : context_.Get(), cancelled);
+        if (cancelled)
+        {
+            if (completion.gpuWorkSubmitted)
+            {
+                completion.status = CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion);
+                completion.gpuWorkSubmitted = false;
+            }
+            return completion;
+        }
+        context_->ClearState();
+        if (!completion.gpuWorkSubmitted)
+        {
+            return completion;
+        }
+        // Mark sets the emergency query pending before the optional fence
+        // signal, so even a post-submission signal/debug failure remains safely
+        // retireable through Poll.
+        const auto retirement = Mark(metadata.slotIndex);
+        if (completion.status && !retirement)
+        {
+            completion.status = retirement;
+        }
+        return completion;
     }
     catch (...)
     {
-        return CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion);
+        if (cancelled)
+        {
+            return {CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion), false};
+        }
+        // The callback may have thrown after issuing immediate-context work.
+        // Record a conservative marker and retain the slot even though the
+        // callback could not report its lifetime claim.
+        context_->ClearState();
+        const auto retirement = Mark(metadata.slotIndex);
+        const auto failure = CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion);
+        return {retirement ? failure : retirement, true};
     }
 }
 

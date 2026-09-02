@@ -85,6 +85,7 @@ TelemetryStatus TelemetryAccumulator::BeginCaptureEpoch(const pbcapturenormalize
     lastCaptureObservation_ = 0;
     lastBootstrapObservation_ = 0;
     lastFecObservation_ = 0;
+    lastRemoteMetricObservation_ = 0;
     firstCaptureTimestamp100ns_ = 0;
     lastCaptureTimestamp100ns_ = 0;
     firstVisualTimestamp100ns_ = 0;
@@ -92,6 +93,12 @@ TelemetryStatus TelemetryAccumulator::BeginCaptureEpoch(const pbcapturenormalize
     verifiedTimestamp100ns_ = 0;
     intervalMean100ns_ = 0;
     intervalM2_ = 0;
+    remoteAbsoluteMetricSum_ = 0;
+    remoteVerifiedAbsoluteMetricSum_ = 0;
+    remoteRejectedAbsoluteMetricSum_ = 0;
+    remoteVerifiedMetricSamples_ = 0;
+    remoteRejectedMetricSamples_ = 0;
+    remoteRejectedZeroMagnitudeMetrics_ = 0;
     previousPixelDigest_.reset();
     return {};
 }
@@ -252,9 +259,81 @@ TelemetryStatus TelemetryAccumulator::RecordFec(const FecSample& sample) noexcep
     static_cast<void>(Add(snapshot_.fecCodewords, evaluation.codewords));
     static_cast<void>(Add(snapshot_.fecFailures, evaluation.fecFailures));
     static_cast<void>(Add(snapshot_.crcFailures, evaluation.crcFailures));
+    static_cast<void>(Add(snapshot_.identityFailures, evaluation.identityFailures));
+    static_cast<void>(Add(snapshot_.acceptedTransportCodewords, evaluation.acceptedTransportBlocks));
     if (!evaluation.IsVerified())
     {
         static_cast<void>(Add(snapshot_.postFecFailedFrames, 1));
+    }
+    return snapshot_.counterSaturated ? TelemetryStatus::Failure(TelemetryError::CounterOverflow) : TelemetryStatus{};
+}
+
+TelemetryStatus TelemetryAccumulator::RecordRemoteMetric(const RemoteMetricSample& sample) noexcept
+{
+    const auto domainStatus = ValidateDomain(sample.domain);
+    if (!domainStatus)
+    {
+        return domainStatus;
+    }
+    const bool validFrameClass = sample.frameClass == RemoteMetricFrameClass::Other ||
+        sample.frameClass == RemoteMetricFrameClass::TransportVerified ||
+        sample.frameClass == RemoteMetricFrameClass::TransportRejected;
+    const double weightedMetricSum = sample.meanAbsoluteMetric * static_cast<double>(sample.metricSamples);
+    if (sample.captureObservation == 0 || sample.captureObservation > lastCaptureObservation_ ||
+        sample.captureObservation <= lastRemoteMetricObservation_)
+    {
+        return TelemetryStatus::Failure(TelemetryError::ObservationOrder);
+    }
+    if (!validFrameClass || sample.metricSamples == 0 || sample.zeroMagnitudeMetrics > sample.metricSamples ||
+        !std::isfinite(sample.minimumAbsoluteMetric) || !std::isfinite(sample.meanAbsoluteMetric) ||
+        sample.minimumAbsoluteMetric < 0 || sample.meanAbsoluteMetric < sample.minimumAbsoluteMetric ||
+        !std::isfinite(weightedMetricSum) || sample.unreliableSymbols > sample.symbolSamples ||
+        (sample.symbolSamples == 0 && sample.unreliableSymbols != 0) || sample.freshnessRegions == 0 ||
+        sample.staleRegions > sample.freshnessRegions ||
+        sample.freshnessErasedDataMetrics > sample.metricSamples)
+    {
+        return TelemetryStatus::Failure(TelemetryError::InvalidSample);
+    }
+    const double nextMetricSum = remoteAbsoluteMetricSum_ + weightedMetricSum;
+    const double nextVerifiedMetricSum = sample.frameClass == RemoteMetricFrameClass::TransportVerified ?
+        remoteVerifiedAbsoluteMetricSum_ + weightedMetricSum : remoteVerifiedAbsoluteMetricSum_;
+    const double nextRejectedMetricSum = sample.frameClass == RemoteMetricFrameClass::TransportRejected ?
+        remoteRejectedAbsoluteMetricSum_ + weightedMetricSum : remoteRejectedAbsoluteMetricSum_;
+    if (!std::isfinite(nextMetricSum) || !std::isfinite(nextVerifiedMetricSum) || !std::isfinite(nextRejectedMetricSum))
+    {
+        snapshot_.counterSaturated = true;
+        return TelemetryStatus::Failure(TelemetryError::CounterOverflow);
+    }
+
+    lastRemoteMetricObservation_ = sample.captureObservation;
+    const bool firstMetricFrame = snapshot_.remoteMetricFrames == 0;
+    static_cast<void>(Add(snapshot_.remoteMetricFrames, 1));
+    static_cast<void>(Add(snapshot_.remoteMetricSamples, sample.metricSamples));
+    static_cast<void>(Add(snapshot_.remoteZeroMagnitudeMetrics, sample.zeroMagnitudeMetrics));
+    static_cast<void>(Add(snapshot_.remoteSymbolSamples, sample.symbolSamples));
+    static_cast<void>(Add(snapshot_.remoteUnreliableSymbols, sample.unreliableSymbols));
+    static_cast<void>(Add(snapshot_.remoteFreshnessRegions, sample.freshnessRegions));
+    static_cast<void>(Add(snapshot_.remoteFreshRegions, sample.freshnessRegions - sample.staleRegions));
+    static_cast<void>(Add(snapshot_.remoteStaleRegions, sample.staleRegions));
+    static_cast<void>(Add(snapshot_.remoteFramesWithStaleRegions, static_cast<std::uint64_t>(sample.staleRegions != 0)));
+    static_cast<void>(Add(snapshot_.remoteFreshnessTagMismatches, sample.freshnessTagMismatches));
+    static_cast<void>(Add(snapshot_.remoteFreshnessTagErasures, sample.freshnessTagErasures));
+    static_cast<void>(Add(snapshot_.remoteFreshnessErasedDataMetrics, sample.freshnessErasedDataMetrics));
+    snapshot_.remoteMinimumAbsoluteMetric = firstMetricFrame ? sample.minimumAbsoluteMetric :
+        std::min(*snapshot_.remoteMinimumAbsoluteMetric, sample.minimumAbsoluteMetric);
+    remoteAbsoluteMetricSum_ = nextMetricSum;
+    if (sample.frameClass == RemoteMetricFrameClass::TransportVerified)
+    {
+        static_cast<void>(Add(snapshot_.remoteTransportVerifiedMetricFrames, 1));
+        static_cast<void>(Add(remoteVerifiedMetricSamples_, sample.metricSamples));
+        remoteVerifiedAbsoluteMetricSum_ = nextVerifiedMetricSum;
+    }
+    else if (sample.frameClass == RemoteMetricFrameClass::TransportRejected)
+    {
+        static_cast<void>(Add(snapshot_.remoteTransportRejectedMetricFrames, 1));
+        static_cast<void>(Add(remoteRejectedMetricSamples_, sample.metricSamples));
+        static_cast<void>(Add(remoteRejectedZeroMagnitudeMetrics_, sample.zeroMagnitudeMetrics));
+        remoteRejectedAbsoluteMetricSum_ = nextRejectedMetricSum;
     }
     return snapshot_.counterSaturated ? TelemetryStatus::Failure(TelemetryError::CounterOverflow) : TelemetryStatus{};
 }
@@ -356,6 +435,38 @@ TelemetrySnapshot TelemetryAccumulator::GetSnapshot() const noexcept
     if (result.fecCodewords != 0)
     {
         result.fecCodewordFailureRate = static_cast<double>(result.fecFailures) / static_cast<double>(result.fecCodewords);
+        result.acceptedTransportCodewordRate = static_cast<double>(result.acceptedTransportCodewords) /
+            static_cast<double>(result.fecCodewords);
+    }
+    if (result.remoteMetricSamples != 0)
+    {
+        result.remoteZeroMagnitudeMetricRate = static_cast<double>(result.remoteZeroMagnitudeMetrics) /
+            static_cast<double>(result.remoteMetricSamples);
+        result.remoteMeanAbsoluteMetric = remoteAbsoluteMetricSum_ / static_cast<double>(result.remoteMetricSamples);
+        result.remoteFreshnessErasedDataMetricRate = static_cast<double>(result.remoteFreshnessErasedDataMetrics) /
+            static_cast<double>(result.remoteMetricSamples);
+    }
+    if (result.remoteSymbolSamples != 0)
+    {
+        result.remoteUnreliableSymbolRate = static_cast<double>(result.remoteUnreliableSymbols) /
+            static_cast<double>(result.remoteSymbolSamples);
+    }
+    if (remoteVerifiedMetricSamples_ != 0)
+    {
+        result.remoteVerifiedMeanAbsoluteMetric = remoteVerifiedAbsoluteMetricSum_ /
+            static_cast<double>(remoteVerifiedMetricSamples_);
+    }
+    if (remoteRejectedMetricSamples_ != 0)
+    {
+        result.remoteRejectedMeanAbsoluteMetric = remoteRejectedAbsoluteMetricSum_ /
+            static_cast<double>(remoteRejectedMetricSamples_);
+        result.remoteRejectedZeroMagnitudeMetricRate = static_cast<double>(remoteRejectedZeroMagnitudeMetrics_) /
+            static_cast<double>(remoteRejectedMetricSamples_);
+    }
+    if (result.remoteFreshnessRegions != 0)
+    {
+        result.remoteStaleRegionRate = static_cast<double>(result.remoteStaleRegions) /
+            static_cast<double>(result.remoteFreshnessRegions);
     }
     if (result.verifiedEncodedBytes != 0 && verifiedTimestamp100ns_ > firstCaptureTimestamp100ns_ &&
         result.verifiedEncodedBytes <= std::numeric_limits<std::uint64_t>::max() / 8)
@@ -405,7 +516,41 @@ void WriteTelemetryJson(std::ostream& output, const TelemetrySnapshot& snapshot)
     WriteOptional(output, snapshot.fecFrameErrorRate);
     output << ",\"FecCodewordFailureRate\":";
     WriteOptional(output, snapshot.fecCodewordFailureRate);
-    output << ",\"CRCFailure\":" << snapshot.crcFailures << ",\"OuterSymbols\":{\"unique\":" << snapshot.uniqueOuterSymbols
+    output << ",\"AcceptedTransportCodewordRate\":";
+    WriteOptional(output, snapshot.acceptedTransportCodewordRate);
+    output << ",\"remoteMetric\":{\"frames\":" << snapshot.remoteMetricFrames
+           << ",\"samples\":" << snapshot.remoteMetricSamples
+           << ",\"zeroMagnitudeMetrics\":" << snapshot.remoteZeroMagnitudeMetrics
+           << ",\"zeroMagnitudeRate\":";
+    WriteOptional(output, snapshot.remoteZeroMagnitudeMetricRate);
+    output << ",\"minimumAbsoluteMetric\":";
+    WriteOptional(output, snapshot.remoteMinimumAbsoluteMetric);
+    output << ",\"meanAbsoluteMetric\":";
+    WriteOptional(output, snapshot.remoteMeanAbsoluteMetric);
+    output << ",\"verifiedFrames\":" << snapshot.remoteTransportVerifiedMetricFrames
+           << ",\"rejectedFrames\":" << snapshot.remoteTransportRejectedMetricFrames
+           << ",\"verifiedMeanAbsoluteMetric\":";
+    WriteOptional(output, snapshot.remoteVerifiedMeanAbsoluteMetric);
+    output << ",\"rejectedMeanAbsoluteMetric\":";
+    WriteOptional(output, snapshot.remoteRejectedMeanAbsoluteMetric);
+    output << ",\"rejectedZeroMagnitudeMetricRate\":";
+    WriteOptional(output, snapshot.remoteRejectedZeroMagnitudeMetricRate);
+    output << ",\"symbolSamples\":" << snapshot.remoteSymbolSamples
+           << ",\"unreliableSymbols\":" << snapshot.remoteUnreliableSymbols
+           << ",\"unreliableSymbolRate\":";
+    WriteOptional(output, snapshot.remoteUnreliableSymbolRate);
+    output << ",\"freshnessRegions\":" << snapshot.remoteFreshnessRegions
+           << ",\"freshRegions\":" << snapshot.remoteFreshRegions
+           << ",\"staleRegions\":" << snapshot.remoteStaleRegions
+           << ",\"staleRegionRate\":";
+    WriteOptional(output, snapshot.remoteStaleRegionRate);
+    output << ",\"framesWithStaleRegions\":" << snapshot.remoteFramesWithStaleRegions
+           << ",\"freshnessTagMismatches\":" << snapshot.remoteFreshnessTagMismatches
+           << ",\"freshnessTagErasures\":" << snapshot.remoteFreshnessTagErasures
+           << ",\"freshnessErasedDataMetrics\":" << snapshot.remoteFreshnessErasedDataMetrics
+           << ",\"freshnessErasedDataMetricRate\":";
+    WriteOptional(output, snapshot.remoteFreshnessErasedDataMetricRate);
+    output << "},\"CRCFailure\":" << snapshot.crcFailures << ",\"OuterSymbols\":{\"unique\":" << snapshot.uniqueOuterSymbols
            << ",\"duplicate\":" << snapshot.duplicateOuterSymbols << ",\"accepted\":" << snapshot.acceptedOuterSymbols
            << ",\"conflict\":" << snapshot.outerSymbolConflicts << ",\"rejected\":" << snapshot.rejectedOuterSymbols
            << "},\"VerifiedEncodedGoodput\":";

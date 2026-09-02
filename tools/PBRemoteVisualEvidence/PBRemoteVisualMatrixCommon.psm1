@@ -1,0 +1,930 @@
+#Requires -Version 7.0
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$pilotModule = Join-Path $PSScriptRoot 'PBRemoteVisualPilotCommon.psm1'
+Import-Module -Name $pilotModule -ErrorAction Stop
+
+function Assert-PBMatrixExactKeys
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Dictionary,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedKeys,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($Dictionary -isnot [System.Collections.IDictionary])
+    {
+        throw "$Name must be a JSON object"
+    }
+    $actual = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($key in $Dictionary.Keys)
+    {
+        if (-not $actual.Add([string]$key))
+        {
+            throw "$Name contains duplicate key '$key'"
+        }
+    }
+    if ($actual.Count -ne $ExpectedKeys.Count)
+    {
+        throw "$Name does not contain the exact required key set"
+    }
+    foreach ($key in $ExpectedKeys)
+    {
+        if (-not $actual.Remove($key))
+        {
+            throw "$Name is missing exact key '$key'"
+        }
+    }
+}
+
+function Assert-PBMatrixIdentityEqual
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Actual,
+        [Parameter(Mandatory = $true)][object]$Expected,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    Assert-PBIdentityShape -Identity $Actual -Name $Name
+    Assert-PBIdentityShape -Identity $Expected -Name "$Name expected"
+    if ([UInt64]$Actual.size -ne [UInt64]$Expected.size -or [string]$Actual.sha256 -cne [string]$Expected.sha256)
+    {
+        throw "$Name identity mismatch"
+    }
+}
+
+function Get-PBStep21ScaleTarget
+{
+    param(
+        [Parameter(Mandatory = $true)][double]$ScaleX,
+        [Parameter(Mandatory = $true)][double]$ScaleY,
+        [Parameter(Mandatory = $true)][string]$ProfileToken
+    )
+    if ([double]::IsNaN($ScaleX) -or [double]::IsInfinity($ScaleX) -or
+        [double]::IsNaN($ScaleY) -or [double]::IsInfinity($ScaleY) -or
+        $ScaleX -le 0.0 -or $ScaleY -le 0.0)
+    {
+        throw 'Step 21 scale must be finite and positive'
+    }
+    if ([Math]::Abs($ScaleX - $ScaleY) -gt 0.015)
+    {
+        throw 'Step 21 matrix rejects anisotropic geometry outside the frozen 0.015 scale tolerance'
+    }
+    if ($ProfileToken -in @('direct', 'shape'))
+    {
+        if ([Math]::Abs($ScaleX - 1.0) -gt 0.000001 -or [Math]::Abs($ScaleY - 1.0) -gt 0.000001)
+        {
+            throw 'Direct and Shape matrix records must remain exact 1:1 without resampling'
+        }
+        return '1.000'
+    }
+    if ($ProfileToken -cne 'remote-lf4')
+    {
+        throw 'Unknown Step 21 profile token'
+    }
+    $targets = @(
+        [ordered]@{ label = '0.750'; value = 0.750 },
+        [ordered]@{ label = '1.000'; value = 1.000 },
+        [ordered]@{ label = '1.259'; value = 1.259 },
+        [ordered]@{ label = '1.500'; value = 1.500 })
+    $best = $null
+    $bestDistance = [double]::PositiveInfinity
+    foreach ($target in $targets)
+    {
+        $distance = [Math]::Max([Math]::Abs($ScaleX - [double]$target.value), [Math]::Abs($ScaleY - [double]$target.value))
+        if ($distance -lt $bestDistance)
+        {
+            $best = $target
+            $bestDistance = $distance
+        }
+    }
+    if ($null -eq $best -or $bestDistance -gt 0.015)
+    {
+        throw 'LF4 geometry is outside the frozen approximately 0.75/1.0/1.259/1.5 Step 21 scale grid'
+    }
+    return [string]$best.label
+}
+
+function New-PBRemoteVisualStep21ExpectedCells
+{
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('QualityPriority', 'Automatic', 'Restricted')]
+        [string]$ComparisonModeClass,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(1, 2, 5)]
+        [UInt32]$ComparisonLogicalFps
+    )
+    $modeSlugs = @{
+        QualityPriority = 'quality-priority'
+        Automatic = 'automatic'
+        Restricted = 'restricted'
+    }
+    $scaleSlugs = @{
+        '0.750' = '0750'
+        '1.000' = '1000'
+        '1.259' = '1259'
+        '1.500' = '1500'
+    }
+    $cells = [Collections.Generic.List[object]]::new()
+    foreach ($mode in @('QualityPriority', 'Automatic', 'Restricted'))
+    {
+        foreach ($scale in @('0.750', '1.000', '1.259', '1.500'))
+        {
+            foreach ($fps in @(1, 2, 5))
+            {
+                [void]$cells.Add([ordered]@{
+                    cellId = "lf4-wgc-$($modeSlugs[$mode])-s$($scaleSlugs[$scale])-f$fps"
+                    profileToken = 'remote-lf4'
+                    captureBackend = 'wgc'
+                    modeClass = $mode
+                    scaleTarget = $scale
+                    logicalFps = [UInt32]$fps
+                    coverageRole = 'MainMatrix'
+                    profileComparisonRole = 'Candidate'
+                })
+            }
+        }
+    }
+    foreach ($case in @(
+        [ordered]@{ mode = 'QualityPriority'; scale = '0.750'; fps = 1 },
+        [ordered]@{ mode = 'Automatic'; scale = '1.259'; fps = 2 },
+        [ordered]@{ mode = 'Restricted'; scale = '1.500'; fps = 5 }))
+    {
+        [void]$cells.Add([ordered]@{
+            cellId = "lf4-dxgi-$($modeSlugs[$case.mode])-s$($scaleSlugs[$case.scale])-f$($case.fps)"
+            profileToken = 'remote-lf4'
+            captureBackend = 'dxgi'
+            modeClass = [string]$case.mode
+            scaleTarget = [string]$case.scale
+            logicalFps = [UInt32]$case.fps
+            coverageRole = 'RepresentativeRecheck'
+            profileComparisonRole = 'Candidate'
+        })
+    }
+    foreach ($profile in @('direct', 'shape'))
+    {
+        [void]$cells.Add([ordered]@{
+            cellId = "$profile-wgc-$($modeSlugs[$ComparisonModeClass])-s1000-f$ComparisonLogicalFps"
+            profileToken = $profile
+            captureBackend = 'wgc'
+            modeClass = $ComparisonModeClass
+            scaleTarget = '1.000'
+            logicalFps = $ComparisonLogicalFps
+            coverageRole = 'ProfileBaseline'
+            profileComparisonRole = 'Baseline'
+        })
+    }
+    return @($cells)
+}
+
+function Get-PBRemoteVisualStep21CellRequiredRoi
+{
+    param([Parameter(Mandatory = $true)][object]$Cell)
+    Assert-PBMatrixExactKeys -Dictionary $Cell -ExpectedKeys @('cellId', 'profileToken', 'captureBackend',
+        'modeClass', 'scaleTarget', 'logicalFps', 'coverageRole', 'profileComparisonRole') -Name 'Step 21 matrix cell'
+    if ([string]$Cell.profileToken -in @('direct', 'shape'))
+    {
+        if ([string]$Cell.scaleTarget -cne '1.000')
+        {
+            throw 'Direct and Shape Step 21 cells must remain exact 1:1'
+        }
+        return [ordered]@{ width = [UInt32]1920; height = [UInt32]1080 }
+    }
+    if ([string]$Cell.profileToken -cne 'remote-lf4')
+    {
+        throw 'Step 21 hardware scope contains an unknown profile token'
+    }
+    switch ([string]$Cell.scaleTarget)
+    {
+        '0.750' { return [ordered]@{ width = [UInt32]1440; height = [UInt32]810 } }
+        '1.000' { return [ordered]@{ width = [UInt32]1920; height = [UInt32]1080 } }
+        '1.259' { return [ordered]@{ width = [UInt32]2417; height = [UInt32]1360 } }
+        '1.500' { return [ordered]@{ width = [UInt32]2880; height = [UInt32]1620 } }
+        default { throw 'Step 21 hardware scope contains an unknown scale target' }
+    }
+}
+
+function New-PBRemoteVisualStep21HardwareScopePartition
+{
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Cells,
+        [Parameter(Mandatory = $true)][UInt32]$ExperimentMonitorWidth,
+        [Parameter(Mandatory = $true)][UInt32]$ExperimentMonitorHeight
+    )
+    if ($ExperimentMonitorWidth -eq 0 -or $ExperimentMonitorHeight -eq 0)
+    {
+        throw 'Step 21 hardware scope monitor dimensions must be positive'
+    }
+    $included = [Collections.Generic.List[object]]::new()
+    $excluded = [Collections.Generic.List[object]]::new()
+    foreach ($cell in $Cells)
+    {
+        $requiredRoi = Get-PBRemoteVisualStep21CellRequiredRoi -Cell $cell
+        if ([UInt32]$requiredRoi.width -le $ExperimentMonitorWidth -and [UInt32]$requiredRoi.height -le $ExperimentMonitorHeight)
+        {
+            [void]$included.Add($cell)
+        }
+        else
+        {
+            [void]$excluded.Add([ordered]@{
+                cell = $cell
+                requiredRoi = $requiredRoi
+                exclusionReason = 'RequiredRoiExceedsSingleExperimentMonitor'
+            })
+        }
+    }
+    return [ordered]@{ includedCells = @($included); excludedCells = @($excluded) }
+}
+
+function Import-PBRemoteVisualStep21MatrixSpec
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if ([UInt64]$identity.size -gt 256KB -or
+        (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256))
+    {
+        throw 'Step 21 matrix specification size or expected SHA-256 is invalid'
+    }
+    $spec = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 256KB
+    Assert-PBMatrixExactKeys -Dictionary $spec -ExpectedKeys @('schema', 'createdUtc', 'matrixId',
+        'comparisonModeClass', 'comparisonLogicalFps', 'cellCount', 'cells', 'contracts') -Name 'Step 21 matrix specification'
+    $comparisonLogicalFps = Get-PBNonNegativeUInt64 -Value $spec.comparisonLogicalFps `
+        -Name 'Step 21 matrix specification comparisonLogicalFps'
+    $cellCount = Get-PBNonNegativeUInt64 -Value $spec.cellCount -Name 'Step 21 matrix specification cellCount'
+    if ([string]$spec.schema -cne 'PixelBridge.RemoteVisualStep21MatrixSpec.1' -or
+        [string]$spec.matrixId -cnotmatch '^[0-9a-f]{32}$' -or
+        [string]$spec.comparisonModeClass -notin @('QualityPriority', 'Automatic', 'Restricted') -or
+        $comparisonLogicalFps -notin @(1, 2, 5) -or $cellCount -ne 41 -or @($spec.cells).Count -ne 41)
+    {
+        throw 'Step 21 matrix specification identity or cell count is invalid'
+    }
+    Assert-PBMatrixExactKeys -Dictionary $spec.contracts -ExpectedKeys @('oneIndependentRunPerCell',
+        'failedRunsAreRetained', 'differentRunMetricsMustNotBeMerged', 'uiVisibleModeRequired',
+        'unknownChromaAndLatencyRemainUnknown', 'invalidGeometryNeverResampled', 'certifiedRemoteVisualProfile') `
+        -Name 'Step 21 matrix specification contracts'
+    if ($spec.contracts.oneIndependentRunPerCell -isnot [bool] -or -not [bool]$spec.contracts.oneIndependentRunPerCell -or
+        $spec.contracts.failedRunsAreRetained -isnot [bool] -or -not [bool]$spec.contracts.failedRunsAreRetained -or
+        $spec.contracts.differentRunMetricsMustNotBeMerged -isnot [bool] -or -not [bool]$spec.contracts.differentRunMetricsMustNotBeMerged -or
+        $spec.contracts.uiVisibleModeRequired -isnot [bool] -or -not [bool]$spec.contracts.uiVisibleModeRequired -or
+        $spec.contracts.unknownChromaAndLatencyRemainUnknown -isnot [bool] -or -not [bool]$spec.contracts.unknownChromaAndLatencyRemainUnknown -or
+        $spec.contracts.invalidGeometryNeverResampled -isnot [bool] -or -not [bool]$spec.contracts.invalidGeometryNeverResampled -or
+        $spec.contracts.certifiedRemoteVisualProfile -isnot [bool] -or [bool]$spec.contracts.certifiedRemoteVisualProfile)
+    {
+        throw 'Step 21 matrix specification truth-boundary contracts are invalid'
+    }
+    $expectedCells = @(New-PBRemoteVisualStep21ExpectedCells -ComparisonModeClass ([string]$spec.comparisonModeClass) `
+        -ComparisonLogicalFps ([UInt32]$spec.comparisonLogicalFps))
+    for ($index = 0; $index -lt $expectedCells.Count; $index++)
+    {
+        Assert-PBMatrixExactKeys -Dictionary $spec.cells[$index] -ExpectedKeys @('cellId', 'profileToken',
+            'captureBackend', 'modeClass', 'scaleTarget', 'logicalFps', 'coverageRole', 'profileComparisonRole') `
+            -Name "Step 21 matrix cell $index"
+        Compare-PBMatrixJsonValue -First $spec.cells[$index] -Second $expectedCells[$index] -Name "Step 21 matrix cell $index"
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $spec }
+}
+
+function Import-PBRemoteVisualStep21HardwareScope
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if ([UInt64]$identity.size -gt 512KB -or
+        (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256))
+    {
+        throw 'Step 21 hardware scope size or expected SHA-256 is invalid'
+    }
+    $scope = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 512KB
+    Assert-PBMatrixExactKeys -Dictionary $scope -ExpectedKeys @('schema', 'createdUtc', 'scopeId', 'scopeClass',
+        'matrixSpecification', 'computerAMonitorCatalog', 'experimentMonitor', 'fullCellCount', 'includedCellCount',
+        'includedCells', 'excludedCellCount', 'excludedCells', 'contracts') -Name 'Step 21 hardware scope'
+    if ([string]$scope.schema -cne 'PixelBridge.RemoteVisualStep21HardwareScope.1' -or
+        [string]$scope.scopeId -cnotmatch '^[0-9a-f]{32}$' -or
+        [string]$scope.scopeClass -cne 'Dual2560x1440SingleExperimentMonitor')
+    {
+        throw 'Step 21 hardware scope schema, identity, or class is invalid'
+    }
+    foreach ($name in @('matrixSpecification', 'computerAMonitorCatalog'))
+    {
+        Assert-PBIdentityShape -Identity $scope[$name] -Name "Step 21 hardware scope $name"
+        [void](Assert-PBFileIdentity -Path ([string]$scope[$name].path) -Expected $scope[$name] -Name "Step 21 hardware scope $name")
+    }
+    $matrixSpec = Import-PBRemoteVisualStep21MatrixSpec -Path ([string]$scope.matrixSpecification.path) `
+        -ExpectedSha256 ([string]$scope.matrixSpecification.sha256)
+    if ([UInt32]$matrixSpec.value.cellCount -ne 41)
+    {
+        throw 'Step 21 hardware scope requires the canonical 41-cell parent MatrixSpec'
+    }
+    $monitorCatalog = Read-PBBoundedJson -Path ([string]$scope.computerAMonitorCatalog.path) -MaximumBytes 2MB
+    $monitorCount = Get-PBNonNegativeUInt64 -Value $monitorCatalog.monitorCount `
+        -Name 'Step 21 hardware scope monitorCount'
+    if ([string]$monitorCatalog.schema -cne 'PixelBridge.MonitorCatalog.1' -or $monitorCount -ne 2 -or
+        @($monitorCatalog.monitors).Count -ne 2)
+    {
+        throw 'Step 21 hardware scope requires the sealed two-monitor Computer A catalog'
+    }
+    $monitorDeviceNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($monitor in @($monitorCatalog.monitors))
+    {
+        if ([string]::IsNullOrWhiteSpace([string]$monitor.deviceName) -or
+            -not $monitorDeviceNames.Add([string]$monitor.deviceName) -or [string]$monitor.rotation -cne 'Identity')
+        {
+            throw 'Step 21 hardware scope monitor identities must be unique, non-empty, and unrotated'
+        }
+        $dimensions = Get-PBRectDimensions -Rect $monitor.physicalRect -Name 'Step 21 hardware scope monitor physicalRect'
+        $resolutionWidth = Get-PBNonNegativeUInt64 -Value $monitor.resolution.width `
+            -Name 'Step 21 hardware scope monitor resolution width'
+        $resolutionHeight = Get-PBNonNegativeUInt64 -Value $monitor.resolution.height `
+            -Name 'Step 21 hardware scope monitor resolution height'
+        if ([UInt32]$dimensions.width -ne 2560 -or [UInt32]$dimensions.height -ne 1440 -or
+            $resolutionWidth -ne 2560 -or $resolutionHeight -ne 1440)
+        {
+            throw 'Step 21 hardware scope is valid only for the authorized two-by-2560x1440 Computer A topology'
+        }
+    }
+    if (Test-PBRectsOverlap -First $monitorCatalog.monitors[0].physicalRect -Second $monitorCatalog.monitors[1].physicalRect)
+    {
+        throw 'Step 21 hardware scope requires two non-overlapping Computer A monitors'
+    }
+    Assert-PBMatrixExactKeys -Dictionary $scope.experimentMonitor -ExpectedKeys @('deviceName', 'physicalRect',
+        'resolution', 'rotation') -Name 'Step 21 hardware scope experiment monitor'
+    $experimentMatches = @($monitorCatalog.monitors | Where-Object { [string]$_.deviceName -ieq [string]$scope.experimentMonitor.deviceName })
+    if ($experimentMatches.Count -ne 1)
+    {
+        throw 'Step 21 hardware scope ExperimentMonitor is not unique in the sealed catalog'
+    }
+    $experimentMonitor = $experimentMatches[0]
+    $expectedExperimentMonitor = [ordered]@{
+        deviceName = [string]$experimentMonitor.deviceName
+        physicalRect = $experimentMonitor.physicalRect
+        resolution = $experimentMonitor.resolution
+        rotation = [string]$experimentMonitor.rotation
+    }
+    Compare-PBMatrixJsonValue -First $scope.experimentMonitor -Second $expectedExperimentMonitor `
+        -Name 'Step 21 hardware scope ExperimentMonitor'
+    $experimentDimensions = Get-PBRectDimensions -Rect $experimentMonitor.physicalRect `
+        -Name 'Step 21 hardware scope ExperimentMonitor physicalRect'
+    $partition = New-PBRemoteVisualStep21HardwareScopePartition -Cells @($matrixSpec.value.cells) `
+        -ExperimentMonitorWidth ([UInt32]$experimentDimensions.width) -ExperimentMonitorHeight ([UInt32]$experimentDimensions.height)
+    $fullCellCount = Get-PBNonNegativeUInt64 -Value $scope.fullCellCount -Name 'Step 21 hardware scope fullCellCount'
+    $includedCellCount = Get-PBNonNegativeUInt64 -Value $scope.includedCellCount -Name 'Step 21 hardware scope includedCellCount'
+    $excludedCellCount = Get-PBNonNegativeUInt64 -Value $scope.excludedCellCount -Name 'Step 21 hardware scope excludedCellCount'
+    if ($fullCellCount -ne 41 -or $includedCellCount -ne 31 -or $excludedCellCount -ne 10 -or
+        @($scope.includedCells).Count -ne 31 -or @($scope.excludedCells).Count -ne 10)
+    {
+        throw 'Step 21 hardware scope must contain the exact authorized 31 included and 10 excluded cells'
+    }
+    Compare-PBMatrixJsonValue -First @($scope.includedCells) -Second @($partition.includedCells) `
+        -Name 'Step 21 hardware scope included cells'
+    Compare-PBMatrixJsonValue -First @($scope.excludedCells) -Second @($partition.excludedCells) `
+        -Name 'Step 21 hardware scope excluded cells'
+    Assert-PBMatrixExactKeys -Dictionary $scope.contracts -ExpectedKeys @('sourceMatrixRemainsCanonical',
+        'cellsSelectedOnlyByRoiContainment', 'oneIndependentRunPerIncludedCell', 'excludedCellsDoNotCountAsCoverage',
+        'noPostRunScopeMutation', 'certifiedRemoteVisualProfile') -Name 'Step 21 hardware scope contracts'
+    if ($scope.contracts.sourceMatrixRemainsCanonical -isnot [bool] -or -not [bool]$scope.contracts.sourceMatrixRemainsCanonical -or
+        $scope.contracts.cellsSelectedOnlyByRoiContainment -isnot [bool] -or -not [bool]$scope.contracts.cellsSelectedOnlyByRoiContainment -or
+        $scope.contracts.oneIndependentRunPerIncludedCell -isnot [bool] -or -not [bool]$scope.contracts.oneIndependentRunPerIncludedCell -or
+        $scope.contracts.excludedCellsDoNotCountAsCoverage -isnot [bool] -or -not [bool]$scope.contracts.excludedCellsDoNotCountAsCoverage -or
+        $scope.contracts.noPostRunScopeMutation -isnot [bool] -or -not [bool]$scope.contracts.noPostRunScopeMutation -or
+        $scope.contracts.certifiedRemoteVisualProfile -isnot [bool] -or [bool]$scope.contracts.certifiedRemoteVisualProfile)
+    {
+        throw 'Step 21 hardware scope truth-boundary contracts are invalid'
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $scope; matrixSpec = $matrixSpec; monitorCatalog = $monitorCatalog }
+}
+
+function Get-PBNullableFiniteNumber
+{
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$NonNegative
+    )
+    if ($null -eq $Value)
+    {
+        return $null
+    }
+    if ($Value -is [bool] -or $Value -isnot [ValueType])
+    {
+        throw "$Name must be null or numeric"
+    }
+    $number = [double]$Value
+    if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or ($NonNegative -and $number -lt 0.0))
+    {
+        throw "$Name must be finite$(if ($NonNegative) { ' and non-negative' } else { '' })"
+    }
+    return $number
+}
+
+function Get-PBNonNegativeUInt64
+{
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -isnot [ValueType])
+    {
+        throw "$Name must be a non-negative integer"
+    }
+    try
+    {
+        $typeCode = [Type]::GetTypeCode($Value.GetType())
+        if ($typeCode -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16,
+            [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64,
+            [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal))
+        {
+            throw 'unsupported numeric type'
+        }
+        $number = [decimal]$Value
+        if ($number -lt 0 -or $number -gt [decimal][UInt64]::MaxValue -or [decimal]::Truncate($number) -ne $number)
+        {
+            throw 'out of range or fractional'
+        }
+        return [UInt64]$number
+    }
+    catch
+    {
+        throw "$Name must be a non-negative integer"
+    }
+}
+
+function Get-PBRemoteVisualAuthoritativeMetrics
+{
+    param([Parameter(Mandatory = $true)][object]$CombinedReport)
+    if ([string]$CombinedReport.schema -cne 'PixelBridge.RemoteVisualCombinedReport.1' -or
+        $CombinedReport.successfulRun -isnot [bool] -or $CombinedReport.evidenceValid -isnot [bool] -or
+        $CombinedReport.encoder -isnot [System.Collections.IDictionary] -or
+        $CombinedReport.decoder -isnot [System.Collections.IDictionary] -or
+        $CombinedReport.externalVerification -isnot [System.Collections.IDictionary])
+    {
+        throw 'Combined report cannot provide authoritative Step 21 metrics'
+    }
+    $encoder = $CombinedReport.encoder
+    $decoder = $CombinedReport.decoder
+    $remoteMetrics = $decoder.remoteMetricTelemetry
+    $outer = $decoder.outerAdmission
+    $captureStall = $decoder.captureStall
+    $visualStall = $decoder.visualStall
+    if ($remoteMetrics -isnot [System.Collections.IDictionary] -or $outer -isnot [System.Collections.IDictionary] -or
+        $captureStall -isnot [System.Collections.IDictionary] -or $visualStall -isnot [System.Collections.IDictionary] -or
+        $decoder.wholeFileDigestVerified -isnot [bool] -or $decoder.finalPublishSucceeded -isnot [bool] -or
+        ($null -ne $CombinedReport.externalVerification.match -and $CombinedReport.externalVerification.match -isnot [bool]))
+    {
+        throw 'Combined report is missing metric, Outer admission, or stall denominators'
+    }
+    $falseAccepted = $decoder.falseAcceptedCodewords
+    if ($null -ne $falseAccepted -and (Get-PBNonNegativeUInt64 -Value $falseAccepted -Name 'falseAcceptedCodewords') -ne 0)
+    {
+        throw 'Step 21 evidence reports nonzero false accepted codewords'
+    }
+    $outerConflictRejections = Get-PBNonNegativeUInt64 -Value $outer.conflictRejections -Name 'outerConflictRejections'
+    if ($outerConflictRejections -ne 0)
+    {
+        throw 'Step 21 evidence reports an Outer symbol conflict'
+    }
+    return [ordered]@{
+        successfulRun = [bool]$CombinedReport.successfulRun
+        evidenceValid = [bool]$CombinedReport.evidenceValid
+        encoderState = [string]$encoder.state
+        decoderState = [string]$decoder.state
+        configuredLogicalVisualFps = [UInt32](Get-PBNonNegativeUInt64 -Value $encoder.configuredLogicalVisualFps -Name 'configuredLogicalVisualFps')
+        generatedVisualFramesPerSecond = Get-PBNullableFiniteNumber -Value $encoder.generatedVisualFramesPerSecond -Name 'generatedVisualFramesPerSecond' -NonNegative
+        generatedPayloadBytesPerSecond = Get-PBNullableFiniteNumber -Value $encoder.generatedPayloadBytesPerSecond -Name 'generatedPayloadBytesPerSecond' -NonNegative
+        captureFps = Get-PBNullableFiniteNumber -Value $decoder.captureFps -Name 'captureFps' -NonNegative
+        uniqueVisualFps = Get-PBNullableFiniteNumber -Value $decoder.uniqueVisualFps -Name 'uniqueVisualFps' -NonNegative
+        endToEndUniqueVisualFps = Get-PBNullableFiniteNumber -Value $decoder.endToEndUniqueVisualFps -Name 'endToEndUniqueVisualFps' -NonNegative
+        bootstrapSuccessRate = Get-PBNullableFiniteNumber -Value $decoder.bootstrapSuccessRate -Name 'bootstrapSuccessRate' -NonNegative
+        preFecBerEstimate = Get-PBNullableFiniteNumber -Value $decoder.preFecBerEstimate -Name 'preFecBerEstimate' -NonNegative
+        fecFrameErrorRate = Get-PBNullableFiniteNumber -Value $decoder.fecFrameErrorRate -Name 'fecFrameErrorRate' -NonNegative
+        fecCodewordFailureRate = Get-PBNullableFiniteNumber -Value $decoder.fecCodewordFailureRate -Name 'fecCodewordFailureRate' -NonNegative
+        evaluatedDataFrames = Get-PBNonNegativeUInt64 -Value $decoder.evaluatedDataFrames -Name 'evaluatedDataFrames'
+        evaluatedCodewords = Get-PBNonNegativeUInt64 -Value $decoder.evaluatedCodewords -Name 'evaluatedCodewords'
+        fecAcceptedTransportBlocks = Get-PBNonNegativeUInt64 -Value $decoder.fecAcceptedTransportBlocks -Name 'fecAcceptedTransportBlocks'
+        temporallyAdmittedTransportBlocks = Get-PBNonNegativeUInt64 -Value $decoder.temporallyAdmittedTransportBlocks -Name 'temporallyAdmittedTransportBlocks'
+        remoteMetricFrames = Get-PBNonNegativeUInt64 -Value $remoteMetrics.frames -Name 'remoteMetricFrames'
+        remoteMetricSamples = Get-PBNonNegativeUInt64 -Value $remoteMetrics.samples -Name 'remoteMetricSamples'
+        remoteMetricZeroMagnitudeRate = Get-PBNullableFiniteNumber -Value $remoteMetrics.zeroMagnitudeRate -Name 'remoteMetricZeroMagnitudeRate' -NonNegative
+        remoteMetricMeanAbsoluteMetric = Get-PBNullableFiniteNumber -Value $remoteMetrics.meanAbsoluteMetric -Name 'remoteMetricMeanAbsoluteMetric' -NonNegative
+        remoteSymbolSamples = Get-PBNonNegativeUInt64 -Value $remoteMetrics.symbolSamples -Name 'remoteSymbolSamples'
+        remoteUnreliableSymbols = Get-PBNonNegativeUInt64 -Value $remoteMetrics.unreliableSymbols -Name 'remoteUnreliableSymbols'
+        remoteUnreliableSymbolRate = Get-PBNullableFiniteNumber -Value $remoteMetrics.unreliableSymbolRate -Name 'remoteUnreliableSymbolRate' -NonNegative
+        remoteRejectedMetricFrames = Get-PBNonNegativeUInt64 -Value $remoteMetrics.rejectedFrames -Name 'remoteRejectedMetricFrames'
+        remoteStaleRegions = Get-PBNonNegativeUInt64 -Value $remoteMetrics.staleRegions -Name 'remoteStaleRegions'
+        remoteFreshnessTagMismatches = Get-PBNonNegativeUInt64 -Value $remoteMetrics.freshnessTagMismatches -Name 'remoteFreshnessTagMismatches'
+        remoteFreshnessTagErasures = Get-PBNonNegativeUInt64 -Value $remoteMetrics.freshnessTagErasures -Name 'remoteFreshnessTagErasures'
+        duplicateFrameSequences = Get-PBNonNegativeUInt64 -Value $decoder.duplicateFrameSequences -Name 'duplicateFrameSequences'
+        reorderedFrameSequences = Get-PBNonNegativeUInt64 -Value $decoder.reorderedFrameSequences -Name 'reorderedFrameSequences'
+        frameSequenceGapEvents = Get-PBNonNegativeUInt64 -Value $decoder.frameSequenceGapEvents -Name 'frameSequenceGapEvents'
+        skippedFrameSequences = Get-PBNonNegativeUInt64 -Value $decoder.skippedFrameSequences -Name 'skippedFrameSequences'
+        captureStallCount = Get-PBNonNegativeUInt64 -Value $captureStall.count -Name 'captureStallCount'
+        visualStallCount = Get-PBNonNegativeUInt64 -Value $visualStall.count -Name 'visualStallCount'
+        verifiedEncodedGoodputBitsPerSecond = Get-PBNullableFiniteNumber -Value $decoder.verifiedEncodedGoodputBitsPerSecond -Name 'verifiedEncodedGoodputBitsPerSecond' -NonNegative
+        wholeFileDigestVerified = [bool]$decoder.wholeFileDigestVerified
+        finalPublishSucceeded = [bool]$decoder.finalPublishSucceeded
+        externalMatch = if ($null -eq $CombinedReport.externalVerification.match) { $null } else { [bool]$CombinedReport.externalVerification.match }
+        falseAcceptedCodewords = $falseAccepted
+        outerConflictRejections = $outerConflictRejections
+    }
+}
+
+function Compare-PBMatrixJsonValue
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$First,
+        [Parameter(Mandatory = $true)][object]$Second,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $firstJson = $First | ConvertTo-Json -Depth 20 -Compress
+    $secondJson = $Second | ConvertTo-Json -Depth 20 -Compress
+    if ($firstJson -cne $secondJson)
+    {
+        throw "$Name differs from the authoritative combined report"
+    }
+}
+
+function New-PBRemoteVisualMatrixRunRecordValue
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$FrozenPlan,
+        [Parameter(Mandatory = $true)][ValidateSet('Success', 'Failure')][string]$Outcome,
+        [Parameter(Mandatory = $true)][ValidateSet('success', 'geometry', 'signal', 'temporal', 'metric', 'scheduler')][string]$FailureClassification,
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$ReplayPath,
+        [Parameter(Mandatory = $true)][string]$CombinedReportPath,
+        [Parameter(Mandatory = $true)][string]$EncoderReportPath,
+        [Parameter(Mandatory = $true)][string]$LiveDecoderReportPath,
+        [Parameter(Mandatory = $true)][string]$OfflineDecoderReportPath,
+        [Parameter(Mandatory = $true)][string]$OutcomeVerificationPath,
+        [AllowNull()][string]$InspectionPath
+    )
+    $plan = $FrozenPlan.value
+    if ([string]$plan.schema -cne 'PixelBridge.RemoteVisualPilotPlan.2')
+    {
+        throw 'Matrix run records require a Step 21 PilotPlan.2'
+    }
+    if (($Outcome -ceq 'Success') -ne ($FailureClassification -ceq 'success'))
+    {
+        throw 'Matrix outcome and failure classification disagree'
+    }
+    if (($Outcome -ceq 'Failure') -ne (-not [string]::IsNullOrWhiteSpace($InspectionPath)))
+    {
+        throw 'Only classified-failure matrix records require a Replay inspection artifact'
+    }
+    $combinedPath = [System.IO.Path]::GetFullPath($CombinedReportPath)
+    $combined = Read-PBBoundedJson -Path $combinedPath -MaximumBytes 8MB
+    if ([string]$combined.runId -cne [string]$plan.runId -or [string]$combined.profile -cne [string]$plan.profileName -or
+        [bool]$combined.successfulRun -ne ($Outcome -ceq 'Success'))
+    {
+        throw 'Combined report identity or outcome disagrees with the Step 21 plan'
+    }
+    $metrics = Get-PBRemoteVisualAuthoritativeMetrics -CombinedReport $combined
+    if (-not [bool]$metrics.evidenceValid)
+    {
+        throw 'Matrix run requires complete endpoint evidence journals'
+    }
+    $scaleTarget = Get-PBStep21ScaleTarget -ScaleX ([double]$plan.remoteGeometry.estimatedScaleX) `
+        -ScaleY ([double]$plan.remoteGeometry.estimatedScaleY) -ProfileToken ([string]$plan.profileToken)
+    $actualSource = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($SourcePath))
+    if ([UInt64]$actualSource.size -ne [UInt64]$plan.source.size -or [string]$actualSource.sha256 -cne [string]$plan.source.sha256)
+    {
+        throw 'Matrix source identity differs from the frozen plan'
+    }
+    $inspectionIdentity = $null
+    if (-not [string]::IsNullOrWhiteSpace($InspectionPath))
+    {
+        $inspectionIdentity = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($InspectionPath))
+    }
+    return [ordered]@{
+        schema = 'PixelBridge.RemoteVisualMatrixRunRecord.1'
+        createdUtc = [DateTime]::UtcNow.ToString('o')
+        runId = [string]$plan.runId
+        outcome = $Outcome
+        failureClassification = $FailureClassification
+        profileToken = [string]$plan.profileToken
+        profileName = [string]$plan.profileName
+        visualProfileId = [UInt64]$plan.visualProfileId
+        visualLayoutVersion = [UInt32]$plan.visualLayoutVersion
+        matrix = [ordered]@{
+            modeClass = [string]$plan.matrix.modeClass
+            visibleRemoteMode = [string]$plan.matrix.visibleRemoteMode
+            captureBackend = [string]$plan.policy.captureBackend
+            backendCoverageRole = [string]$plan.matrix.backendCoverageRole
+            profileComparisonRole = [string]$plan.matrix.profileComparisonRole
+            logicalFps = [UInt32]$plan.logicalFps
+            geometryMode = [string]$plan.geometryMode
+            estimatedScaleX = [double]$plan.remoteGeometry.estimatedScaleX
+            estimatedScaleY = [double]$plan.remoteGeometry.estimatedScaleY
+            scaleTarget = $scaleTarget
+            runIsolation = [string]$plan.matrix.runIsolation
+        }
+        contracts = [ordered]@{
+            noSilentResample = $true
+            unknownChromaAndLatencyRemainUnknown = $true
+            differentRunMetricsMustNotBeMerged = $true
+            authoritativeMetricSource = 'PixelBridge.RemoteVisualCombinedReport.1 Decoder/Receiver fields'
+            certifiedRemoteVisualProfile = $false
+        }
+        identities = [ordered]@{
+            plan = $FrozenPlan.identity
+            deployment = Get-PBFileIdentity -Path ([string]$plan.deployment.manifest.path)
+            packageManifest = Get-PBFileIdentity -Path ([string]$plan.deployment.packageManifest.path)
+            source = $actualSource
+            remoteUiEvidence = Get-PBFileIdentity -Path ([string]$plan.remoteUi.evidence.path)
+            encoderEnvironment = Get-PBFileIdentity -Path ([string]$plan.deployment.encoderEnvironment.path)
+            decoderEnvironment = Get-PBFileIdentity -Path ([string]$plan.deployment.decoderEnvironment.path)
+            replay = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($ReplayPath))
+            combinedReport = Get-PBFileIdentity -Path $combinedPath
+            outcomeVerification = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($OutcomeVerificationPath))
+            inspection = $inspectionIdentity
+            encoderReport = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($EncoderReportPath))
+            liveDecoderReport = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($LiveDecoderReportPath))
+            offlineDecoderReport = Get-PBFileIdentity -Path ([System.IO.Path]::GetFullPath($OfflineDecoderReportPath))
+        }
+        authoritativeMetrics = $metrics
+    }
+}
+
+function Import-PBRemoteVisualMatrixRunRecord
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256)
+    {
+        throw 'Matrix run record SHA-256 mismatch'
+    }
+    $record = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 4MB
+    Assert-PBMatrixExactKeys -Dictionary $record -ExpectedKeys @('schema', 'createdUtc', 'runId', 'outcome',
+        'failureClassification', 'profileToken', 'profileName', 'visualProfileId', 'visualLayoutVersion', 'matrix',
+        'contracts', 'identities', 'authoritativeMetrics') -Name 'matrix run record'
+    if ([string]$record.schema -cne 'PixelBridge.RemoteVisualMatrixRunRecord.1' -or
+        [string]$record.runId -cnotmatch '^[0-9a-f]{32}$' -or [string]$record.outcome -notin @('Success', 'Failure') -or
+        [string]$record.failureClassification -notin @('success', 'geometry', 'signal', 'temporal', 'metric', 'scheduler') -or
+        (([string]$record.outcome -ceq 'Success') -ne ([string]$record.failureClassification -ceq 'success')))
+    {
+        throw 'Matrix run record schema, RunId, outcome, or classification is invalid'
+    }
+    Assert-PBMatrixExactKeys -Dictionary $record.matrix -ExpectedKeys @('modeClass', 'visibleRemoteMode', 'captureBackend',
+        'backendCoverageRole', 'profileComparisonRole', 'logicalFps', 'geometryMode', 'estimatedScaleX', 'estimatedScaleY',
+        'scaleTarget', 'runIsolation') -Name 'matrix run tuple'
+    Assert-PBMatrixExactKeys -Dictionary $record.contracts -ExpectedKeys @('noSilentResample',
+        'unknownChromaAndLatencyRemainUnknown', 'differentRunMetricsMustNotBeMerged', 'authoritativeMetricSource',
+        'certifiedRemoteVisualProfile') -Name 'matrix run contracts'
+    Assert-PBMatrixExactKeys -Dictionary $record.identities -ExpectedKeys @('plan', 'deployment', 'packageManifest', 'source',
+        'remoteUiEvidence', 'encoderEnvironment', 'decoderEnvironment', 'replay', 'combinedReport', 'outcomeVerification',
+        'inspection', 'encoderReport', 'liveDecoderReport', 'offlineDecoderReport') -Name 'matrix run identities'
+    if ($record.contracts.noSilentResample -isnot [bool] -or -not [bool]$record.contracts.noSilentResample -or
+        $record.contracts.unknownChromaAndLatencyRemainUnknown -isnot [bool] -or -not [bool]$record.contracts.unknownChromaAndLatencyRemainUnknown -or
+        $record.contracts.differentRunMetricsMustNotBeMerged -isnot [bool] -or -not [bool]$record.contracts.differentRunMetricsMustNotBeMerged -or
+        [string]$record.contracts.authoritativeMetricSource -cne 'PixelBridge.RemoteVisualCombinedReport.1 Decoder/Receiver fields' -or
+        $record.contracts.certifiedRemoteVisualProfile -isnot [bool] -or [bool]$record.contracts.certifiedRemoteVisualProfile)
+    {
+        throw 'Matrix run truth-boundary contracts are invalid'
+    }
+    foreach ($name in @('plan', 'deployment', 'packageManifest', 'source', 'remoteUiEvidence', 'encoderEnvironment',
+        'decoderEnvironment', 'replay', 'combinedReport', 'outcomeVerification', 'encoderReport', 'liveDecoderReport',
+        'offlineDecoderReport'))
+    {
+        [void](Assert-PBFileIdentity -Path ([string]$record.identities[$name].path) -Expected $record.identities[$name] -Name "matrix $name")
+    }
+    if ($null -ne $record.identities.inspection)
+    {
+        [void](Assert-PBFileIdentity -Path ([string]$record.identities.inspection.path) -Expected $record.identities.inspection -Name 'matrix inspection')
+    }
+    $plan = Import-PBRemoteVisualPilotPlan -Path ([string]$record.identities.plan.path) -ExpectedSha256 ([string]$record.identities.plan.sha256)
+    if ([string]$plan.value.schema -cne 'PixelBridge.RemoteVisualPilotPlan.2' -or
+        [string]$record.runId -cne [string]$plan.value.runId -or [string]$record.profileToken -cne [string]$plan.value.profileToken -or
+        [string]$record.profileName -cne [string]$plan.value.profileName -or [UInt64]$record.visualProfileId -ne [UInt64]$plan.value.visualProfileId -or
+        [UInt32]$record.visualLayoutVersion -ne [UInt32]$plan.value.visualLayoutVersion)
+    {
+        throw 'Matrix run record profile identity differs from its frozen plan'
+    }
+    if ([string]$record.matrix.modeClass -cne [string]$plan.value.matrix.modeClass -or
+        [string]$record.matrix.visibleRemoteMode -cne [string]$plan.value.matrix.visibleRemoteMode -or
+        [string]$record.matrix.captureBackend -cne [string]$plan.value.policy.captureBackend -or
+        [string]$record.matrix.backendCoverageRole -cne [string]$plan.value.matrix.backendCoverageRole -or
+        [string]$record.matrix.profileComparisonRole -cne [string]$plan.value.matrix.profileComparisonRole -or
+        [UInt32]$record.matrix.logicalFps -ne [UInt32]$plan.value.logicalFps -or
+        [string]$record.matrix.geometryMode -cne [string]$plan.value.geometryMode -or
+        [Math]::Abs([double]$record.matrix.estimatedScaleX - [double]$plan.value.remoteGeometry.estimatedScaleX) -gt 0.0000001 -or
+        [Math]::Abs([double]$record.matrix.estimatedScaleY - [double]$plan.value.remoteGeometry.estimatedScaleY) -gt 0.0000001 -or
+        [string]$record.matrix.runIsolation -cne [string]$plan.value.matrix.runIsolation -or
+        [string]$record.matrix.scaleTarget -cne (Get-PBStep21ScaleTarget -ScaleX ([double]$record.matrix.estimatedScaleX) `
+            -ScaleY ([double]$record.matrix.estimatedScaleY) -ProfileToken ([string]$record.profileToken)))
+    {
+        throw 'Matrix run tuple differs from its frozen plan or scale grid'
+    }
+    if (([string]$record.outcome -ceq 'Failure') -ne ($null -ne $record.identities.inspection))
+    {
+        throw 'Matrix outcome and Replay inspection identity disagree'
+    }
+    Assert-PBMatrixIdentityEqual -Actual $record.identities.deployment -Expected $plan.value.deployment.manifest -Name 'matrix deployment'
+    Assert-PBMatrixIdentityEqual -Actual $record.identities.packageManifest -Expected $plan.value.deployment.packageManifest -Name 'matrix package manifest'
+    Assert-PBMatrixIdentityEqual -Actual $record.identities.remoteUiEvidence -Expected $plan.value.remoteUi.evidence -Name 'matrix UI evidence'
+    Assert-PBMatrixIdentityEqual -Actual $record.identities.encoderEnvironment -Expected $plan.value.deployment.encoderEnvironment -Name 'matrix Encoder environment'
+    Assert-PBMatrixIdentityEqual -Actual $record.identities.decoderEnvironment -Expected $plan.value.deployment.decoderEnvironment -Name 'matrix Decoder environment'
+    if ([UInt64]$record.identities.source.size -ne [UInt64]$plan.value.source.size -or
+        [string]$record.identities.source.sha256 -cne [string]$plan.value.source.sha256)
+    {
+        throw 'Matrix source identity differs from its frozen plan'
+    }
+    $combined = Read-PBBoundedJson -Path ([string]$record.identities.combinedReport.path) -MaximumBytes 8MB
+    if ([string]$combined.runId -cne [string]$record.runId -or [string]$combined.profile -cne [string]$record.profileName -or
+        [bool]$combined.successfulRun -ne ([string]$record.outcome -ceq 'Success'))
+    {
+        throw 'Matrix combined report outcome or identity mismatch'
+    }
+    $expectedMetrics = Get-PBRemoteVisualAuthoritativeMetrics -CombinedReport $combined
+    Compare-PBMatrixJsonValue -First $record.authoritativeMetrics -Second $expectedMetrics -Name 'matrix authoritative metrics'
+    $verification = Read-PBBoundedJson -Path ([string]$record.identities.outcomeVerification.path) -MaximumBytes 4MB
+    if ([string]$record.outcome -ceq 'Success')
+    {
+        if ([string]$verification.schema -cne 'PixelBridge.RemoteVisualPilotEvidenceVerification.1' -or
+            [string]$verification.status -cne 'PASS' -or [string]$verification.runId -cne [string]$record.runId -or
+            [string]$verification.completion.failureClassification -cne 'success' -or
+            [string]$verification.profileToken -cne [string]$record.profileToken -or
+            [string]$verification.captureBackend -cne [string]$record.matrix.captureBackend)
+        {
+            throw 'Matrix success verification is invalid'
+        }
+        Compare-PBMatrixJsonValue -First $verification.matrix -Second $plan.value.matrix -Name 'matrix success verification tuple'
+        Assert-PBMatrixIdentityEqual -Actual $verification.plan -Expected $record.identities.plan -Name 'matrix success plan'
+        Assert-PBMatrixIdentityEqual -Actual $verification.replayIdentity -Expected $record.identities.replay -Name 'matrix success Replay'
+        Assert-PBMatrixIdentityEqual -Actual $verification.combinedReport -Expected $record.identities.combinedReport -Name 'matrix success combined report'
+        Assert-PBMatrixIdentityEqual -Actual $verification.endpointReports.encoder -Expected $record.identities.encoderReport -Name 'matrix success Encoder report'
+        Assert-PBMatrixIdentityEqual -Actual $verification.endpointReports.liveDecoder -Expected $record.identities.liveDecoderReport -Name 'matrix success live Decoder report'
+        Assert-PBMatrixIdentityEqual -Actual $verification.endpointReports.offlineDecoder -Expected $record.identities.offlineDecoderReport -Name 'matrix success offline Decoder report'
+    }
+    elseif ([string]$verification.schema -cne 'PixelBridge.RemoteVisualFieldFailureVerification.1' -or
+        [string]$verification.status -cne 'PASS' -or [string]$verification.runId -cne [string]$record.runId -or
+        [string]$verification.failureClassification -cne [string]$record.failureClassification -or
+        [string]$verification.profileToken -cne [string]$record.profileToken -or
+        [string]$verification.captureBackend -cne [string]$record.matrix.captureBackend)
+    {
+        throw 'Matrix failure verification is invalid'
+    }
+    else
+    {
+        Compare-PBMatrixJsonValue -First $verification.matrix -Second $plan.value.matrix -Name 'matrix failure verification tuple'
+        Assert-PBMatrixIdentityEqual -Actual $verification.plan -Expected $record.identities.plan -Name 'matrix failure plan'
+        Assert-PBMatrixIdentityEqual -Actual $verification.replay -Expected $record.identities.replay -Name 'matrix failure Replay'
+        Assert-PBMatrixIdentityEqual -Actual $verification.replayInspection -Expected $record.identities.inspection -Name 'matrix failure Replay inspection'
+        Assert-PBMatrixIdentityEqual -Actual $verification.combinedReport -Expected $record.identities.combinedReport -Name 'matrix failure combined report'
+        Assert-PBMatrixIdentityEqual -Actual $verification.endpointReports.encoder -Expected $record.identities.encoderReport -Name 'matrix failure Encoder report'
+        Assert-PBMatrixIdentityEqual -Actual $verification.endpointReports.liveDecoder -Expected $record.identities.liveDecoderReport -Name 'matrix failure live Decoder report'
+        Assert-PBMatrixIdentityEqual -Actual $verification.endpointReports.offlineDecoder -Expected $record.identities.offlineDecoderReport -Name 'matrix failure offline Decoder report'
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $record; plan = $plan; combined = $combined }
+}
+
+function Add-PBFailureSupport
+{
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Support,
+        [Parameter(Mandatory = $true)][string]$Category,
+        [Parameter(Mandatory = $true)][string]$Evidence,
+        [UInt64]$Count = 1
+    )
+    $Support[$Category].count = [UInt64]$Support[$Category].count + $Count
+    [void]$Support[$Category].evidence.Add($Evidence)
+}
+
+function Get-PBRemoteVisualFailureSupport
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Inspection,
+        [Parameter(Mandatory = $true)][object]$EncoderReport,
+        [Parameter(Mandatory = $true)][object]$LiveDecoderReport,
+        [Parameter(Mandatory = $true)][object]$OfflineDecoderReport
+    )
+    if ([string]$Inspection.schema -cne 'PixelBridge.RemoteVisualReplayInspection.1' -or
+        $Inspection.frames -isnot [System.Collections.IEnumerable] -or
+        [string]$LiveDecoderReport.role -cne 'Decoder' -or [string]$OfflineDecoderReport.role -cne 'Decoder')
+    {
+        throw 'Failure support requires one valid Replay inspection and two Decoder reports'
+    }
+    $support = @{}
+    foreach ($category in @('geometry', 'signal', 'temporal', 'metric', 'scheduler'))
+    {
+        $support[$category] = [ordered]@{ count = [UInt64]0; evidence = [Collections.Generic.List[string]]::new() }
+    }
+    $geometryErasures = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($name in @('ScaleOutOfRange', 'AlignmentOutOfRange', 'FrameOutOfBounds', 'InvalidGeometry', 'AmbiguousGeometry'))
+    {
+        [void]$geometryErasures.Add($name)
+    }
+    $signalErasures = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($name in @('MarkersNotFound', 'IncompleteMarkers', 'LowContrast', 'BootstrapFecFailure', 'BootstrapCrcFailure',
+        'BootstrapMismatch', 'TimingMismatch', 'DoubleImage', 'ExcessResidual', 'BootstrapErasure', 'PilotClipping',
+        'PilotOrder', 'PilotVariance', 'PilotSpatialMismatch', 'PixelReadFailure'))
+    {
+        [void]$signalErasures.Add($name)
+    }
+    foreach ($frame in @($Inspection.frames))
+    {
+        $bootstrapErasure = [string]$frame.bootstrap.erasure
+        $modulationErasure = [string]$frame.modulation.erasure
+        if ($geometryErasures.Contains($bootstrapErasure) -or $geometryErasures.Contains($modulationErasure))
+        {
+            Add-PBFailureSupport -Support $support -Category geometry -Evidence "Replay frame $($frame.ordinal): $bootstrapErasure/$modulationErasure"
+        }
+        if ($signalErasures.Contains($bootstrapErasure) -or $signalErasures.Contains($modulationErasure))
+        {
+            Add-PBFailureSupport -Support $support -Category signal -Evidence "Replay frame $($frame.ordinal): $bootstrapErasure/$modulationErasure"
+        }
+        $fecFailures = [UInt64]$frame.transport.fecFailures
+        $crcFailures = [UInt64]$frame.transport.crcFailures
+        $identityFailures = [UInt64]$frame.transport.identityFailures
+        if ($fecFailures + $crcFailures + $identityFailures -gt 0)
+        {
+            Add-PBFailureSupport -Support $support -Category signal -Evidence "Replay frame $($frame.ordinal): FEC/CRC/identity failures" `
+                -Count ($fecFailures + $crcFailures + $identityFailures)
+            Add-PBFailureSupport -Support $support -Category metric -Evidence "Replay frame $($frame.ordinal): transport rejection under decoded soft metrics" `
+                -Count ($fecFailures + $crcFailures + $identityFailures)
+        }
+        $unreliable = [UInt64]$frame.modulation.unreliablePrimary
+        if ($null -ne $frame.modulation.unreliableSecondary)
+        {
+            $unreliable += [UInt64]$frame.modulation.unreliableSecondary
+        }
+        if ($unreliable -gt 0)
+        {
+            Add-PBFailureSupport -Support $support -Category metric -Evidence "Replay frame $($frame.ordinal): unreliable modulation work units" -Count $unreliable
+        }
+        $temporalCount = [UInt64]0
+        foreach ($name in @('staleRegions', 'freshnessTagMismatches', 'freshnessTagErasures', 'erasedDataMetrics'))
+        {
+            if ($null -ne $frame.modulation[$name])
+            {
+                $temporalCount += [UInt64]$frame.modulation[$name]
+            }
+        }
+        if ($temporalCount -gt 0)
+        {
+            Add-PBFailureSupport -Support $support -Category temporal -Evidence "Replay frame $($frame.ordinal): stale/freshness evidence" -Count $temporalCount
+        }
+    }
+    $remoteMetrics = $LiveDecoderReport.remoteMetricTelemetry
+    $reportTemporal = [UInt64]$LiveDecoderReport.duplicateFrameSequences + [UInt64]$LiveDecoderReport.reorderedFrameSequences +
+        [UInt64]$LiveDecoderReport.frameSequenceGapEvents + [UInt64]$LiveDecoderReport.skippedFrameSequences +
+        [UInt64]$remoteMetrics.staleRegions + [UInt64]$remoteMetrics.freshnessTagMismatches + [UInt64]$remoteMetrics.freshnessTagErasures
+    if ($reportTemporal -gt 0)
+    {
+        Add-PBFailureSupport -Support $support -Category temporal -Evidence 'Live Decoder temporal admission/stale counters' -Count $reportTemporal
+    }
+    $reportMetric = [UInt64]$remoteMetrics.unreliableSymbols + [UInt64]$remoteMetrics.rejectedFrames + [UInt64]$LiveDecoderReport.fecFailures +
+        [UInt64]$LiveDecoderReport.crcFailures + [UInt64]$LiveDecoderReport.identityFailures
+    if ($reportMetric -gt 0)
+    {
+        Add-PBFailureSupport -Support $support -Category metric -Evidence 'Live Decoder unreliable/rejected/FEC metric counters' -Count $reportMetric
+    }
+    $schedulerCount = [UInt64]$LiveDecoderReport.captureDroppedFrames + [UInt64]$LiveDecoderReport.captureAcquireTimeouts +
+        [UInt64]$LiveDecoderReport.captureReadbackDropEvents + [UInt64]$LiveDecoderReport.staleResultDrops +
+        [UInt64]$LiveDecoderReport.captureStall.count + [UInt64]$LiveDecoderReport.visualStall.count
+    if ([UInt64]$LiveDecoderReport.captureArrivedFrames -eq 0 -and [UInt64]$EncoderReport.submittedFrames -gt 0)
+    {
+        $schedulerCount++
+        Add-PBFailureSupport -Support $support -Category scheduler -Evidence 'Encoder submitted frames while live Decoder captured zero frames' -Count 0
+    }
+    $terminalText = ([string]$LiveDecoderReport.statusMessage + ' ' + [string]$LiveDecoderReport.errorDetail).ToLowerInvariant()
+    if ([string]$LiveDecoderReport.state -ne 'Completed' -and
+        ($terminalText.Contains('timeout') -or $terminalText.Contains('no progress') -or
+        $terminalText.Contains('without descriptor') -or $terminalText.Contains('stopped')))
+    {
+        $schedulerCount++
+        Add-PBFailureSupport -Support $support -Category scheduler -Evidence 'Frozen run/no-progress window ended before Receiver convergence' -Count 0
+    }
+    if ($schedulerCount -gt 0)
+    {
+        Add-PBFailureSupport -Support $support -Category scheduler -Evidence 'Live Decoder capture/result queue or stall counters' -Count $schedulerCount
+    }
+    $result = [ordered]@{}
+    foreach ($category in @('geometry', 'signal', 'temporal', 'metric', 'scheduler'))
+    {
+        $result[$category] = [ordered]@{
+            supported = [UInt64]$support[$category].count -gt 0
+            count = [UInt64]$support[$category].count
+            evidence = @($support[$category].evidence)
+        }
+    }
+    return $result
+}
+
+Export-ModuleMember -Function Assert-PBMatrixExactKeys, Assert-PBMatrixIdentityEqual, Get-PBStep21ScaleTarget, `
+    New-PBRemoteVisualStep21ExpectedCells, Get-PBRemoteVisualStep21CellRequiredRoi, `
+    New-PBRemoteVisualStep21HardwareScopePartition, Import-PBRemoteVisualStep21MatrixSpec, `
+    Import-PBRemoteVisualStep21HardwareScope, `
+    Get-PBNonNegativeUInt64, Get-PBRemoteVisualAuthoritativeMetrics, New-PBRemoteVisualMatrixRunRecordValue, `
+    Import-PBRemoteVisualMatrixRunRecord, Get-PBRemoteVisualFailureSupport

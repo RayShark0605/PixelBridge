@@ -20,8 +20,12 @@ public:
     [[nodiscard]] CaptureStatus EpochStarted(std::uint64_t epoch, const CaptureEnvironment& environment, ID3D11Device* device) override;
     void EpochInvalidated(std::uint64_t epoch) noexcept override;
     [[nodiscard]] CaptureStatus Submit(const RawRoiFrameMetadata& rawMetadata, ID3D11Texture2D* texture, ID3D11DeviceContext* context) override;
+    [[nodiscard]] CaptureConsumerCompletion CompleteStage(const RawRoiFrameMetadata& rawMetadata, ID3D11Texture2D* texture,
+                                                           ID3D11DeviceContext* context, bool cancelled) override;
     [[nodiscard]] CaptureStatus Completed(const RawRoiFrameMetadata& rawMetadata, ID3D11DeviceContext* context, bool cancelled) override;
 private:
+    [[nodiscard]] CaptureConsumerCompletion CompleteInternal(const RawRoiFrameMetadata& rawMetadata, ID3D11Texture2D* texture,
+                                                             ID3D11DeviceContext* context, bool cancelled, bool allowContinuation);
     struct Implementation;
     explicit NormalizeConsumer(std::unique_ptr<Implementation> implementation) noexcept;
     std::unique_ptr<Implementation> implementation_;

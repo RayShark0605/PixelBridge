@@ -193,7 +193,13 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     stream << ",\"visualProfileId\":" << snapshot.visualProfileId
            << ",\"visualLayoutVersion\":" << static_cast<unsigned int>(snapshot.visualLayoutVersion)
            << ",\"codedDataBytesPerFrame\":" << snapshot.codedDataBytesPerFrame
-           << ",\"codewordsPerFrame\":" << snapshot.codewordsPerFrame;
+           << ",\"codewordsPerFrame\":" << snapshot.codewordsPerFrame
+           << ",\"capacityModel\":{\"rawVisualBitsPerLogicalFrame\":" << snapshot.rawVisualBitsPerLogicalFrame
+           << ",\"innerFecInformationBytesPerLogicalFrame\":" << snapshot.innerFecInformationBytesPerLogicalFrame
+           << ",\"transportPayloadCeilingBytesPerLogicalFrame\":" << snapshot.transportPayloadCeilingBytesPerLogicalFrame
+           << ",\"configuredTransportPayloadCeilingBytesPerSecond\":";
+    WriteOptionalNumber(stream, snapshot.configuredTransportPayloadCeilingBytesPerSecond);
+    stream << ",\"basis\":\"profile constants multiplied by configured logical visual FPS; excludes Control dilution, retransmission, capture loss, FEC rejection, Receiver verification and publish\"}";
     stream << ",\"compressionCodec\":";
     WriteEscaped(stream, GetCompressionCodecName(snapshot.compressionCodec));
     stream << ",\"outerFec\":";
@@ -218,10 +224,12 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     stream << ",\"presentCallFps\":";
     WriteOptionalNumber(stream, snapshot.presentCallFps);
     stream << ",\"generatedVisualFramesPerSecond\":";
-    WriteNumber(stream, snapshot.generatedVisualFramesPerSecond);
-    stream << ",\"generatedPayloadBytesPerSecond\":";
-    WriteNumber(stream, snapshot.generatedPayloadBytesPerSecond);
-    stream << ",\"configuredLogicalVisualFps\":" << snapshot.configuredLogicalVisualFps
+    WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);
+    stream << ",\"generatedVisualFramesPerSecondBasis\":\"logical source replacements; (N-1)/(last-first), with the initial frame excluded as an elapsed interval\""
+           << ",\"generatedPayloadBytesPerSecond\":";
+    WriteOptionalNumber(stream, snapshot.generatedPayloadBytesPerSecond);
+    stream << ",\"generatedPayloadBytesPerSecondBasis\":\"actual Outer-FEC payload bytes encoded into Data frames divided by broadcast runtime; Control frames contribute zero; not Receiver-verified goodput\""
+           << ",\"configuredLogicalVisualFps\":" << snapshot.configuredLogicalVisualFps
            << ",\"configuredLogicalDwellMilliseconds\":";
     WriteOptionalNumber(stream, snapshot.configuredLogicalDwellMilliseconds);
     stream << ",\"minimumObservedLogicalDwellMilliseconds\":";
@@ -265,6 +273,11 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
            << ",\"invalidReason\":";
     WriteEscaped(stream, snapshot.evidenceInvalidReason);
     stream << '}';
+    stream << ",\"monitorSafety\":{\"preflightPassed\":" << snapshot.monitorSafetyPreflightPassed
+           << ",\"revalidationCount\":" << snapshot.monitorSafetyRevalidationCount
+           << ",\"status\":";
+    WriteEscaped(stream, snapshot.monitorSafetyStatus);
+    stream << '}';
     stream << ",\"receiverProgress\":null,\"receiverEta\":null,\"verifiedGoodput\":null"
            << ",\"remoteMetadata\":";
     WriteRemoteMetadata(stream, snapshot.remoteMetadata);
@@ -305,7 +318,11 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     WriteEscaped(stream, snapshot.backendReason);
     stream << ",\"profile\":";
     WriteEscaped(stream, GetVisualProfileName(snapshot.visualProfile));
-    stream << ",\"sessionId\":";
+    stream << ",\"visualProfileId\":" << snapshot.visualProfileId
+           << ",\"visualLayoutVersion\":" << static_cast<unsigned int>(snapshot.visualLayoutVersion)
+           << ",\"codedDataBytesPerFrame\":" << snapshot.codedDataBytesPerFrame
+           << ",\"codewordsPerFrame\":" << snapshot.codewordsPerFrame
+           << ",\"sessionId\":";
     WriteEscaped(stream, snapshot.sessionIdHex);
     stream << ",\"sessionTag\":" << snapshot.sessionTag
            << ",\"descriptorKnown\":" << snapshot.descriptorKnown
@@ -390,8 +407,14 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"bootstrapMismatchFrames\":" << snapshot.bootstrapMismatchFrames
            << ",\"bootstrapControlFrameFailures\":" << snapshot.bootstrapControlFrameFailures
            << ",\"evaluatedDataFrames\":" << snapshot.evaluatedDataFrames
+           << ",\"evaluatedCodewords\":" << snapshot.evaluatedCodewords
            << ",\"postFecFailedFrames\":" << snapshot.postFecFailedFrames
-           << ",\"acceptedTransportBlocks\":" << snapshot.acceptedTransportBlocks
+           << ",\"fecAcceptedTransportBlocks\":" << snapshot.fecAcceptedTransportBlocks
+           << ",\"fecAcceptedTransportBlockRate\":";
+    WriteOptionalNumber(stream, snapshot.fecAcceptedTransportBlockRate);
+    stream << ",\"acceptedTransportBlocks\":" << snapshot.acceptedTransportBlocks
+           << ",\"temporallyAdmittedTransportBlocks\":" << snapshot.temporallyAdmittedTransportBlocks
+           << ",\"acceptedTransportBlocksBasis\":\"Receiver-bound unique temporal admission; raw repeated FEC acceptance is fecAcceptedTransportBlocks\""
            << ",\"outerAdmission\":{\"uniqueSymbols\":" << snapshot.outerUniqueSymbols
            << ",\"identicalDuplicateSymbols\":" << snapshot.outerIdenticalDuplicateSymbols
            << ",\"recoveryAlreadyReadySymbols\":" << snapshot.outerRecoveryAlreadyReadySymbols
@@ -431,20 +454,48 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     WriteOptionalNumber(stream, snapshot.remoteMeanAbsoluteMetric);
     stream << ",\"verifiedFrames\":" << snapshot.remoteVerifiedMetricFrames
            << ",\"rejectedFrames\":" << snapshot.remoteRejectedMetricFrames
-           << ",\"verifiedMeanAbsoluteMetric\":";
+           << ",\"transportEvaluatedFrames\":";
+    if (snapshot.remoteVerifiedMetricFrames <= snapshot.remoteMetricFrames &&
+        snapshot.remoteRejectedMetricFrames <= snapshot.remoteMetricFrames - snapshot.remoteVerifiedMetricFrames)
+    {
+        stream << snapshot.remoteVerifiedMetricFrames + snapshot.remoteRejectedMetricFrames;
+    }
+    else
+    {
+        stream << "null";
+    }
+    stream << ",\"nonTransportFrames\":";
+    if (snapshot.remoteVerifiedMetricFrames <= snapshot.remoteMetricFrames &&
+        snapshot.remoteRejectedMetricFrames <= snapshot.remoteMetricFrames - snapshot.remoteVerifiedMetricFrames)
+    {
+        stream << snapshot.remoteMetricFrames - snapshot.remoteVerifiedMetricFrames - snapshot.remoteRejectedMetricFrames;
+    }
+    else
+    {
+        stream << "null";
+    }
+    stream << ",\"symbolSamples\":" << snapshot.remoteSymbolSamples
+           << ",\"unreliableSymbols\":" << snapshot.remoteUnreliableSymbols
+           << ",\"unreliableSymbolRate\":";
+    WriteOptionalNumber(stream, snapshot.remoteUnreliableSymbolRate);
+    stream << ",\"verifiedMeanAbsoluteMetric\":";
     WriteOptionalNumber(stream, snapshot.remoteVerifiedMeanAbsoluteMetric);
     stream << ",\"rejectedMeanAbsoluteMetric\":";
     WriteOptionalNumber(stream, snapshot.remoteRejectedMeanAbsoluteMetric);
     stream << ",\"rejectedZeroMagnitudeRate\":";
     WriteOptionalNumber(stream, snapshot.remoteRejectedZeroMagnitudeMetricRate);
     stream << ",\"freshnessRegions\":" << snapshot.remoteFreshnessRegions
+           << ",\"freshRegions\":" << snapshot.remoteFreshRegions
            << ",\"staleRegions\":" << snapshot.remoteStaleRegions
            << ",\"staleRegionRate\":";
     WriteOptionalNumber(stream, snapshot.remoteStaleRegionRate);
     stream << ",\"framesWithStaleRegions\":" << snapshot.remoteFramesWithStaleRegions
            << ",\"freshnessTagMismatches\":" << snapshot.remoteFreshnessTagMismatches
            << ",\"freshnessTagErasures\":" << snapshot.remoteFreshnessTagErasures
-           << ",\"freshnessErasedDataMetrics\":" << snapshot.remoteFreshnessErasedDataMetrics;
+           << ",\"freshnessErasedDataMetrics\":" << snapshot.remoteFreshnessErasedDataMetrics
+           << ",\"freshnessErasedDataMetricRate\":";
+    WriteOptionalNumber(stream, snapshot.remoteFreshnessErasedDataMetricRate);
+    stream << ",\"observationBasis\":\"profile-validated metric-bearing demodulation observations; bounded duplicate refinements may add signal samples but not FEC or Receiver admission samples\"";
     stream << ",\"highConfidenceWrongCodewords\":null"
            << ",\"highConfidenceWrongUnavailableReason\":";
     WriteEscaped(stream, "Production receive has no independent per-codeword truth oracle; use failed-frame confidence jointly with sealed Replay evidence");
@@ -517,6 +568,8 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     WriteOptionalNumber(stream, snapshot.preFecBerEstimate);
     stream << ",\"fecFrameErrorRate\":";
     WriteOptionalNumber(stream, snapshot.fecFrameErrorRate);
+    stream << ",\"fecCodewordFailureRate\":";
+    WriteOptionalNumber(stream, snapshot.fecCodewordFailureRate);
     stream << ",\"frameLeaseHighWater\":" << snapshot.frameLeaseHighWater
            << ",\"demodPendingHighWater\":" << snapshot.demodPendingHighWater
            << ",\"resultQueueHighWater\":" << snapshot.resultQueueHighWater

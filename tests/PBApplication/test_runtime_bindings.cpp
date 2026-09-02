@@ -144,11 +144,62 @@ TEST_CASE("Encoder validation accepts only inventory profiles with an explicit m
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
     config.controlRepetitions = 12;
     config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "TestRemote";
+    config.remoteMetadata.protectedMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY2)";
+    config.monitorSafety = pbapp::MonitorSafetySelection{
+        MakeMonitor(1, L"\\\\.\\DISPLAY1", {-2560, 0, 0, 1440}, true),
+        MakeMonitor(2, L"\\\\.\\DISPLAY2", {0, 0, 2560, 1440}, false)};
     REQUIRE(pbapp::ValidateEncoderConfig(config));
     config.runId = "0123456789ABCDEF0123456789ABCDEF";
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
     config.runId.clear();
     config.visualProfile = static_cast<pbapp::VisualProfile>(255);
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("remote-lf4 Encoder validation binds channel monitor identities and a contained physical Data Window",
+    "[application][validation][remote-lf4][encoder][monitor]")
+{
+    ScratchDirectory scratch(L"encoder-lf4-monitor-validation");
+    const auto source = scratch.Path() / L"source.bin";
+    std::ofstream(source, std::ios::binary).put('x');
+    pbapp::EncoderConfig config;
+    config.sourcePath = source.wstring();
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    config.logicalVisualFps = 2;
+    config.controlRepetitions = 12;
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{320, 180};
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "TestRemote";
+    config.remoteMetadata.protectedMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY2)";
+    config.monitorSafety = pbapp::MonitorSafetySelection{
+        MakeMonitor(1, L"\\\\.\\DISPLAY1", {-2560, 0, 0, 1440}, true),
+        MakeMonitor(2, L"\\\\.\\DISPLAY2", {0, 0, 2560, 1440}, false)};
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+
+    config.remoteMetadata.channelType = pbapp::ChannelType::LocalDesktop;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    const auto safety = config.monitorSafety;
+    config.monitorSafety.reset();
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorSafety = safety;
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY3)";
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY2)";
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{-2240, 180};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{320, 180};
+    config.monitorSafety->protectedMonitor.physicalRect = {-100, 0, 100, 1440};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorSafety = safety;
+    config.monitorSafety->experimentMonitor.rotation = DXGI_MODE_ROTATION_ROTATE90;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorSafety = safety;
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{(std::numeric_limits<std::int32_t>::max)() - 100, 180};
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
 }
 
@@ -177,6 +228,75 @@ TEST_CASE("Production RemoteVisual sender builds LF4 four-codeword carousels pas
     REQUIRE(unchanged.framesBuilt == 91);
     REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(source, 0, 2, unchanged));
     REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(source, 1, 0, unchanged));
+}
+
+TEST_CASE("Production LF4 Receiver admits bounded partial codewords and preserves digest-gated publish",
+    "[application][decoder][remote-visual][lf4][temporal][receiver][outer][publish]")
+{
+    ScratchDirectory scratch(L"lf4-production-receiver");
+    const auto ReadPublished = [](const std::string& utf8Path)
+    {
+        const std::filesystem::path path(utf8Path);
+        std::ifstream input(path, std::ios::binary);
+        REQUIRE(input.good());
+        const std::vector<char> raw((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        std::vector<std::byte> bytes(raw.size());
+        for (std::size_t index = 0; index < raw.size(); index++)
+        {
+            bytes[index] = static_cast<std::byte>(static_cast<unsigned char>(raw[index]));
+        }
+        return bytes;
+    };
+    const auto Run = [&](const std::span<const std::byte> source, const wchar_t* directoryName,
+        const pbprotocol::OuterFecMode expectedMode, const std::uint64_t expectedOuterUnique)
+    {
+        const auto directory = scratch.Path() / directoryName;
+        REQUIRE(std::filesystem::create_directories(directory));
+        pbapp::DecoderAdmissionProbeSnapshot probe;
+        const auto status = pbapp::DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReceiver(source,
+            directory.wstring(), 32, probe);
+        INFO(status.message);
+        REQUIRE(status);
+        CHECK(probe.outerFecMode == expectedMode);
+        CHECK(probe.processedResults == 37);
+        CHECK(probe.suppressedDuplicateResults == 32);
+        CHECK(probe.duplicateRefinementResults == 1);
+        CHECK(probe.rawAcceptedTransportBlocks == 6);
+        CHECK(probe.temporallyAdmittedTransportBlocks == 4);
+        CHECK(probe.decoder.state == pbapp::DecoderState::Completed);
+        CHECK(probe.decoder.visualProfile == pbapp::VisualProfile::RemoteVisualLowFps);
+        CHECK(probe.decoder.wholeFileDigestVerified);
+        CHECK(probe.decoder.finalPublishSucceeded);
+        CHECK(probe.decoder.originalFileBytes == source.size());
+        CHECK(probe.decoder.verifiedRawBytes == source.size());
+        CHECK(probe.decoder.remainingRawBytes == 0);
+        CHECK(probe.decoder.acceptedTransportBlocks == 4);
+        CHECK(probe.decoder.outerUniqueSymbols == expectedOuterUnique);
+        CHECK(probe.decoder.outerConflictRejections == 0);
+        CHECK(probe.decoder.outerResourceRejections == 0);
+        CHECK(probe.decoder.duplicateFrameSequences == 33);
+        CHECK(probe.decoder.endToEndUniqueFrameSequences == 1);
+        CHECK(probe.decoder.evaluatedDataFrames == 1);
+        CHECK(probe.decoder.postFecFailedFrames == 1);
+        CHECK(ReadPublished(probe.decoder.outputPath) == std::vector<std::byte>(source.begin(), source.end()));
+    };
+
+    const std::array<std::byte, 1> directSource{std::byte{0x5A}};
+    Run(directSource, L"direct-repeat", pbprotocol::OuterFecMode::DirectRepeat, 1);
+    std::vector<std::byte> wirehairSource(4096);
+    for (std::size_t index = 0; index < wirehairSource.size(); index++)
+    {
+        wirehairSource[index] = static_cast<std::byte>((index * 73 + index / 7 + 19) & 0xFF);
+    }
+    Run(wirehairSource, L"wirehair", pbprotocol::OuterFecMode::WirehairV2, 4);
+
+    pbapp::DecoderAdmissionProbeSnapshot unchanged;
+    unchanged.processedResults = 91;
+    REQUIRE_FALSE(pbapp::DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReceiver({},
+        scratch.Path().wstring(), 32, unchanged));
+    CHECK(unchanged.processedResults == 91);
+    REQUIRE_FALSE(pbapp::DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReceiver(directSource,
+        scratch.Path().wstring(), 0, unchanged));
 }
 
 TEST_CASE("Decoder validation rejects invalid output directory ROI scaling and rotation", "[application][validation][roi]")
@@ -216,6 +336,77 @@ TEST_CASE("Decoder validation rejects invalid output directory ROI scaling and r
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
 }
 
+TEST_CASE("remote-lf4 live Decoder admits only bounded physical scale and explicit monitor safety",
+    "[application][validation][remote-lf4][decoder][geometry][monitor]")
+{
+    ScratchDirectory scratch(L"decoder-lf4-monitor-validation");
+    pbapp::DecoderConfig config;
+    config.outputDirectory = scratch.Path().wstring();
+    config.captureBackend = pbapp::CaptureBackend::Wgc;
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    config.region.monitor = reinterpret_cast<HMONITOR>(2);
+    config.region.physicalRect = {320, 180, 2240, 1260};
+    config.region.monitorPhysicalRect = {0, 0, 5120, 2880};
+    config.region.dpiX = 96;
+    config.region.dpiY = 96;
+    config.region.rotation = DXGI_MODE_ROTATION_IDENTITY;
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "TestRemote";
+    config.remoteMetadata.protectedMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY2)";
+    config.monitorSafety = pbapp::MonitorSafetySelection{
+        MakeMonitor(1, L"\\\\.\\DISPLAY1", {-2560, 0, 0, 1440}, true),
+        MakeMonitor(2, L"\\\\.\\DISPLAY2", {0, 0, 5120, 2880}, false)};
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+
+    config.region.physicalRect = {320, 180, 1280, 720};
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.region.physicalRect = {320, 180, 4160, 2340};
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.region.physicalRect = {320, 180, 1279, 720};
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.region.physicalRect = {320, 180, 4161, 2340};
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.region.physicalRect = {320, 180, 2240, 1260};
+
+    config.remoteMetadata.channelType = pbapp::ChannelType::LocalDesktop;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    const auto safety = config.monitorSafety;
+    config.monitorSafety.reset();
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.monitorSafety = safety;
+    config.remoteMetadata.protectedMonitorIdentity = R"(\\.\DISPLAY9)";
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.remoteMetadata.protectedMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.region.rotation = DXGI_MODE_ROTATION_ROTATE90;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.region.rotation = DXGI_MODE_ROTATION_IDENTITY;
+
+    config.replayOutputPath = (scratch.Path() / L"lf4-production.pbrv2").wstring();
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.region.physicalRect = {320, 180, 4160, 2340};
+    const std::uint64_t maximumScaleRecorderPixels = 3840ULL * 2160 * 4 * 3;
+    config.replayMaximumFileBytes = maximumScaleRecorderPixels - 1;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumFileBytes = maximumScaleRecorderPixels;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumFileBytes = pbrealcapturereplay::kReplayV2DefaultMaximumFileBytes;
+    config.region.physicalRect = {320, 180, 2240, 1260};
+    config.replayMaximumCaptureFramesPerSecond = 10;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 60;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 61;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.replayMaximumCaptureFramesPerSecond = 10;
+    config.diagnosticCaptureOnly = true;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.diagnosticCaptureOnly = false;
+    config.replayOutputPath.clear();
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+}
+
 TEST_CASE("Decoder offline Replay v2 validation is bounded and independent from live monitor geometry",
     "[application][validation][replay][offline]")
 {
@@ -243,6 +434,12 @@ TEST_CASE("Decoder offline Replay v2 validation is bounded and independent from 
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
     config.replayOutputPath.clear();
     config.visualProfile = pbapp::VisualProfile::DirectLevels2x2;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::ShapeChroma;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.visualProfile = static_cast<pbapp::VisualProfile>(255);
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
     config.visualProfile = pbapp::VisualProfile::RemoteVisualResilient;
     config.replayMaximumCaptureFrames = 0;
@@ -299,6 +496,45 @@ TEST_CASE("RemoteVisual metadata validation is bounded finite UTF-8 and provider
     config.remoteMetadata.notes = std::string("left\0right", 10);
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
     config.remoteMetadata.notes.assign(1025, 'x');
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+}
+
+TEST_CASE("RemoteVisual production Replay fan-out supports Direct and Shape with the same bounded live contract",
+    "[application][validation][remote-visual][production-replay]")
+{
+    ScratchDirectory scratch(L"remote-production-replay-validation");
+    pbapp::DecoderConfig config;
+    config.outputDirectory = scratch.Path().wstring();
+    config.captureBackend = pbapp::CaptureBackend::Wgc;
+    config.visualProfile = pbapp::VisualProfile::DirectLevels2x2;
+    config.region.monitor = reinterpret_cast<HMONITOR>(2);
+    config.region.physicalRect = {2560, 180, 4480, 1260};
+    config.region.monitorPhysicalRect = {2560, 0, 5120, 1440};
+    config.region.dpiX = 96;
+    config.region.dpiY = 96;
+    config.region.rotation = DXGI_MODE_ROTATION_IDENTITY;
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "GenericRemote";
+    config.monitorSafety = pbapp::MonitorSafetySelection{
+        MakeMonitor(1, L"\\\\.\\DISPLAY1", {0, 0, 2560, 1440}, true),
+        MakeMonitor(2, L"\\\\.\\DISPLAY2", {2560, 0, 5120, 1440}, false)};
+    config.replayOutputPath = (scratch.Path() / L"direct-production.pbrv2").wstring();
+    config.replayMaximumCaptureFramesPerSecond = 10;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+
+    config.visualProfile = pbapp::VisualProfile::ShapeChroma;
+    config.replayOutputPath = (scratch.Path() / L"shape-production.pbrv2").wstring();
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.captureBackend = pbapp::CaptureBackend::Dxgi;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+
+    config.diagnosticCaptureOnly = true;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.diagnosticCaptureOnly = false;
+    config.remoteMetadata.channelType = pbapp::ChannelType::LocalDesktop;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.replayMaximumCaptureFramesPerSecond = 61;
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
 }
 

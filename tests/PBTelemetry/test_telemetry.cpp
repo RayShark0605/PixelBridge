@@ -42,6 +42,18 @@ pbdesktoplevels::FrameEvaluation Evaluation(const bool verified)
     return evaluation;
 }
 
+pbtelemetry::RemoteMetricSample RemoteMetric(const pbcapturenormalize::ScreenCaptureDomain& domain,
+    const std::uint64_t captureObservation, const pbtelemetry::RemoteMetricFrameClass frameClass,
+    const std::uint32_t zeroMagnitudeMetrics, const double minimumAbsoluteMetric,
+    const double meanAbsoluteMetric, const std::uint32_t unreliableSymbols,
+    const std::uint32_t staleRegions, const std::uint32_t freshnessTagMismatches,
+    const std::uint32_t freshnessTagErasures, const std::uint32_t erasedDataMetrics)
+{
+    return {domain, captureObservation, 100, zeroMagnitudeMetrics, minimumAbsoluteMetric, meanAbsoluteMetric,
+        16, unreliableSymbols, 4, staleRegions, freshnessTagMismatches, freshnessTagErasures,
+        erasedDataMetrics, frameClass};
+}
+
 } // namespace
 
 TEST_CASE("PBTelemetry preserves independent presentation, capture, visual, FEC and verified-goodput denominators",
@@ -98,6 +110,8 @@ TEST_CASE("PBTelemetry preserves independent presentation, capture, visual, FEC 
     REQUIRE(snapshot.fecEvaluatedFrames == 2);
     REQUIRE(snapshot.fecFrameErrorRate == Catch::Approx(0.5));
     REQUIRE(snapshot.fecCodewordFailureRate == Catch::Approx(0.05));
+    REQUIRE(snapshot.acceptedTransportCodewords == 18);
+    REQUIRE(snapshot.acceptedTransportCodewordRate == Catch::Approx(0.9));
     REQUIRE(snapshot.crcFailures == 1);
     REQUIRE(snapshot.postFecFailedFrames == 1);
     REQUIRE(snapshot.uniqueOuterSymbols == 2);
@@ -120,8 +134,115 @@ TEST_CASE("PBTelemetry preserves independent presentation, capture, visual, FEC 
     REQUIRE(text.find("\"PreFecBER\":") != std::string::npos);
     REQUIRE(text.find("\"FER\":0.5") != std::string::npos);
     REQUIRE(text.find("\"FecCodewordFailureRate\":0.050") != std::string::npos);
+    REQUIRE(text.find("\"AcceptedTransportCodewordRate\":0.900") != std::string::npos);
     REQUIRE(text.find("\"CRCFailure\":1") != std::string::npos);
     REQUIRE(text.find("\"VerifiedEncodedGoodput\":20000") != std::string::npos);
+}
+
+TEST_CASE("PBTelemetry keeps LF4 signal observations separate from unique FEC and Receiver admission denominators",
+    "[telemetry][remote-visual][denominators]")
+{
+    pbtelemetry::TelemetryAccumulator telemetry;
+    const auto domain = MakeDomain(std::byte{0x63}, 8);
+    REQUIRE(telemetry.BeginCaptureEpoch(domain, 100));
+    REQUIRE(telemetry.RecordCapture({domain, 1, 100}));
+    REQUIRE(telemetry.RecordCapture({domain, 2, 200}));
+    REQUIRE(telemetry.RecordCapture({domain, 3, 300}));
+
+    const auto unavailable = telemetry.GetSnapshot();
+    REQUIRE(unavailable.remoteMetricFrames == 0);
+    REQUIRE_FALSE(unavailable.remoteZeroMagnitudeMetricRate);
+    REQUIRE_FALSE(unavailable.remoteUnreliableSymbolRate);
+    REQUIRE_FALSE(unavailable.remoteStaleRegionRate);
+    REQUIRE_FALSE(unavailable.remoteFreshnessErasedDataMetricRate);
+
+    REQUIRE(telemetry.RecordRemoteMetric(RemoteMetric(domain, 1, pbtelemetry::RemoteMetricFrameClass::Other,
+        0, 0.25, 0.5, 0, 0, 0, 0, 0)));
+    REQUIRE(telemetry.RecordRemoteMetric(RemoteMetric(domain, 2, pbtelemetry::RemoteMetricFrameClass::TransportVerified,
+        10, 0.1, 1.0, 2, 1, 1, 1, 25)));
+    REQUIRE(telemetry.RecordRemoteMetric(RemoteMetric(domain, 3, pbtelemetry::RemoteMetricFrameClass::TransportRejected,
+        40, 0.0, 0.25, 8, 4, 2, 3, 50)));
+
+    const auto snapshot = telemetry.GetSnapshot();
+    REQUIRE(snapshot.remoteMetricFrames == 3);
+    REQUIRE(snapshot.remoteMetricSamples == 300);
+    REQUIRE(snapshot.remoteZeroMagnitudeMetrics == 50);
+    REQUIRE(snapshot.remoteZeroMagnitudeMetricRate == Catch::Approx(1.0 / 6.0));
+    REQUIRE(snapshot.remoteMinimumAbsoluteMetric == Catch::Approx(0.0));
+    REQUIRE(snapshot.remoteMeanAbsoluteMetric == Catch::Approx(7.0 / 12.0));
+    REQUIRE(snapshot.remoteSymbolSamples == 48);
+    REQUIRE(snapshot.remoteUnreliableSymbols == 10);
+    REQUIRE(snapshot.remoteUnreliableSymbolRate == Catch::Approx(5.0 / 24.0));
+    REQUIRE(snapshot.remoteTransportVerifiedMetricFrames == 1);
+    REQUIRE(snapshot.remoteTransportRejectedMetricFrames == 1);
+    REQUIRE(snapshot.remoteVerifiedMeanAbsoluteMetric == Catch::Approx(1.0));
+    REQUIRE(snapshot.remoteRejectedMeanAbsoluteMetric == Catch::Approx(0.25));
+    REQUIRE(snapshot.remoteRejectedZeroMagnitudeMetricRate == Catch::Approx(0.4));
+    REQUIRE(snapshot.remoteFreshnessRegions == 12);
+    REQUIRE(snapshot.remoteFreshRegions == 7);
+    REQUIRE(snapshot.remoteStaleRegions == 5);
+    REQUIRE(snapshot.remoteStaleRegionRate == Catch::Approx(5.0 / 12.0));
+    REQUIRE(snapshot.remoteFramesWithStaleRegions == 2);
+    REQUIRE(snapshot.remoteFreshnessTagMismatches == 3);
+    REQUIRE(snapshot.remoteFreshnessTagErasures == 4);
+    REQUIRE(snapshot.remoteFreshnessErasedDataMetrics == 75);
+    REQUIRE(snapshot.remoteFreshnessErasedDataMetricRate == Catch::Approx(0.25));
+    REQUIRE(snapshot.fecEvaluatedFrames == 0);
+    REQUIRE(snapshot.acceptedTransportCodewords == 0);
+    REQUIRE(snapshot.acceptedOuterSymbols == 0);
+
+    std::ostringstream json;
+    pbtelemetry::WriteTelemetryJson(json, snapshot);
+    const auto text = json.str();
+    REQUIRE(text.find("\"remoteMetric\":{\"frames\":3,\"samples\":300") != std::string::npos);
+    REQUIRE(text.find("\"symbolSamples\":48,\"unreliableSymbols\":10") != std::string::npos);
+    REQUIRE(text.find("\"freshnessRegions\":12,\"freshRegions\":7,\"staleRegions\":5") != std::string::npos);
+}
+
+TEST_CASE("PBTelemetry distinguishes a measured zero LF4 rate from an unavailable rate and rejects duplicate metrics",
+    "[telemetry][remote-visual][null-semantics][errors]")
+{
+    pbtelemetry::TelemetryAccumulator telemetry;
+    const auto domain = MakeDomain(std::byte{0x64}, 9);
+    REQUIRE(telemetry.BeginCaptureEpoch(domain, 100));
+    REQUIRE(telemetry.RecordCapture({domain, 1, 100}));
+    REQUIRE(telemetry.RecordCapture({domain, 2, 200}));
+    const auto zeroSample = RemoteMetric(domain, 1, pbtelemetry::RemoteMetricFrameClass::TransportVerified,
+        0, 0.5, 0.5, 0, 0, 0, 0, 0);
+    REQUIRE(telemetry.RecordRemoteMetric(zeroSample));
+
+    const auto measuredZero = telemetry.GetSnapshot();
+    REQUIRE(measuredZero.remoteZeroMagnitudeMetricRate == 0.0);
+    REQUIRE(measuredZero.remoteUnreliableSymbolRate == 0.0);
+    REQUIRE(measuredZero.remoteStaleRegionRate == 0.0);
+    REQUIRE(measuredZero.remoteFreshnessErasedDataMetricRate == 0.0);
+    REQUIRE(telemetry.RecordRemoteMetric(zeroSample).code == pbtelemetry::TelemetryError::ObservationOrder);
+
+    auto malformed = RemoteMetric(domain, 2, pbtelemetry::RemoteMetricFrameClass::TransportRejected,
+        0, 0.5, 0.25, 0, 0, 0, 0, 0);
+    REQUIRE(telemetry.RecordRemoteMetric(malformed).code == pbtelemetry::TelemetryError::InvalidSample);
+    malformed = RemoteMetric(domain, 2, pbtelemetry::RemoteMetricFrameClass::TransportRejected,
+        0, 0.0, 0.5, 17, 0, 0, 0, 0);
+    REQUIRE(telemetry.RecordRemoteMetric(malformed).code == pbtelemetry::TelemetryError::InvalidSample);
+    malformed = RemoteMetric(domain, 2, pbtelemetry::RemoteMetricFrameClass::TransportRejected,
+        0, 0.0, 0.5, 0, 5, 0, 0, 0);
+    REQUIRE(telemetry.RecordRemoteMetric(malformed).code == pbtelemetry::TelemetryError::InvalidSample);
+    malformed = RemoteMetric(domain, 2, pbtelemetry::RemoteMetricFrameClass::TransportRejected,
+        0, 0.0, (std::numeric_limits<double>::quiet_NaN)(), 0, 0, 0, 0, 0);
+    REQUIRE(telemetry.RecordRemoteMetric(malformed).code == pbtelemetry::TelemetryError::InvalidSample);
+    const auto afterRejected = telemetry.GetSnapshot();
+    REQUIRE(afterRejected.remoteMetricFrames == measuredZero.remoteMetricFrames);
+    REQUIRE(afterRejected.remoteMetricSamples == measuredZero.remoteMetricSamples);
+
+    const auto nextDomain = MakeDomain(std::byte{0x65}, 10);
+    REQUIRE(telemetry.BeginCaptureEpoch(nextDomain, 1000));
+    const auto reset = telemetry.GetSnapshot();
+    REQUIRE(reset.remoteMetricFrames == 0);
+    REQUIRE(reset.remoteMetricSamples == 0);
+    REQUIRE_FALSE(reset.remoteZeroMagnitudeMetricRate);
+    REQUIRE_FALSE(reset.remoteMinimumAbsoluteMetric);
+    REQUIRE_FALSE(reset.remoteMeanAbsoluteMetric);
+    REQUIRE_FALSE(reset.remoteUnreliableSymbolRate);
 }
 
 TEST_CASE("PBTelemetry rejects cross-epoch, reordered and malformed samples without mutating committed counters",

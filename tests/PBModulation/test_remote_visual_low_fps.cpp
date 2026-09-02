@@ -2,6 +2,7 @@
 
 #include "pbdesktoplevels/reference_channel.h"
 #include "pbmodulation/remote_visual_low_fps.h"
+#include "pbmodulation/visual_temporal.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -30,6 +31,36 @@ std::array<std::byte, pbprotocol::kBootstrapRecordBytes> MakeLowFpsRecord(const 
     std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bytes{};
     REQUIRE(pbprotocol::SerializeBootstrapRecord(record, bytes));
     return bytes;
+}
+
+TEST_CASE("Visual identity tracker keeps cumulative counters while resetting only its epoch baseline",
+    "[remote-visual][low-fps][temporal][identity]")
+{
+    pbmodulation::VisualIdentityTracker tracker;
+    CHECK(tracker.Observe(9, 2, 100, 0x17) == pbmodulation::VisualIdentityDisposition::Unique);
+    CHECK(tracker.Observe(9, 2, 110, 0x17) == pbmodulation::VisualIdentityDisposition::Duplicate);
+    CHECK(tracker.Observe(12, 2, 120, 0x17) == pbmodulation::VisualIdentityDisposition::Unique);
+    CHECK(tracker.Observe(11, 2, 130, 0x17) == pbmodulation::VisualIdentityDisposition::Reordered);
+    auto snapshot = tracker.GetSnapshot();
+    CHECK(snapshot.uniqueFrames == 2);
+    CHECK(snapshot.duplicateFrames == 1);
+    CHECK(snapshot.reorderedFrames == 1);
+    CHECK(snapshot.gapEvents == 1);
+    CHECK(snapshot.skippedSequences == 2);
+    CHECK_FALSE(snapshot.framesPerSecond);
+
+    tracker.ResetBaseline();
+    CHECK(tracker.Observe(1, 2, 140, 0x17) == pbmodulation::VisualIdentityDisposition::Unique);
+    CHECK(tracker.Observe(2, 2, 240, 0x17) == pbmodulation::VisualIdentityDisposition::Unique);
+    CHECK(tracker.Observe(0, 0, 250, 0x17) == pbmodulation::VisualIdentityDisposition::Invalid);
+    snapshot = tracker.GetSnapshot();
+    CHECK(snapshot.uniqueFrames == 4);
+    CHECK(snapshot.duplicateFrames == 1);
+    CHECK(snapshot.reorderedFrames == 1);
+    CHECK(snapshot.gapEvents == 1);
+    CHECK(snapshot.skippedSequences == 2);
+    REQUIRE(snapshot.framesPerSecond);
+    CHECK(*snapshot.framesPerSecond == 100000.0);
 }
 
 std::vector<std::byte> MakeLowFpsData()
@@ -186,6 +217,40 @@ TEST_CASE("RemoteVisual low-FPS CPU reference decodes exact and independently re
     }
 }
 
+TEST_CASE("RemoteVisual low-FPS bounded Bootstrap search preserves the frozen binding across continuous geometry",
+    "[remote-visual][low-fps][bootstrap][scale]")
+{
+    const auto record = MakeLowFpsRecord(71);
+    const auto data = MakeLowFpsData();
+    std::vector<std::byte> bgra(static_cast<std::size_t>(pbmodulation::kLocalDesktopCanvasWidth) *
+        pbmodulation::kLocalDesktopCanvasHeight * 4);
+    REQUIRE(pbmodulation::EncodeRemoteVisualLowFpsFrame(record, data, bgra));
+    const auto original = localdesktoptest::GrayFromGolden(bgra);
+    const auto scaled = localdesktoptest::Resample(original, 1.259375, 1.2592592592592593, 11.25, 13.5,
+        localdesktoptest::FixtureFilter::Area);
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbmodulation::kRemoteVisualLowFpsProfileId, pbmodulation::kRemoteVisualLowFpsLayoutVersion};
+
+    for (const auto* const image : {&original, &scaled})
+    {
+        const auto observation = pbmodulation::DecodeLocalDesktopBootstrap(image->View(), binding);
+        INFO(pbmodulation::GetLocalDesktopErasureName(observation.erasure));
+        REQUIRE(observation.IsAccepted());
+        REQUIRE(observation.canonical44 == record);
+    }
+
+    const pbmodulation::LocalDesktopBootstrapBinding wrongKnownBinding{
+        pbmodulation::kRemoteVisualProfileId, pbmodulation::kRemoteVisualLayoutVersion};
+    const auto wrongKnown = pbmodulation::DecodeLocalDesktopBootstrap(original.View(), wrongKnownBinding);
+    REQUIRE(wrongKnown.erasure == pbmodulation::LocalDesktopErasureReason::UnsupportedRecord);
+    REQUIRE(std::ranges::all_of(wrongKnown.canonical44, [](const std::byte value) { return value == std::byte{0}; }));
+
+    const auto unknown = pbmodulation::DecodeLocalDesktopBootstrap(original.View(),
+        pbmodulation::LocalDesktopBootstrapBinding{0xDEADBEEF, 0xFF});
+    REQUIRE(unknown.erasure == pbmodulation::LocalDesktopErasureReason::UnsupportedRecord);
+    REQUIRE(std::ranges::all_of(unknown.canonical44, [](const std::byte value) { return value == std::byte{0}; }));
+}
+
 TEST_CASE("RemoteVisual low-FPS freshness mismatch erases one spatial region across all four planes",
     "[remote-visual][low-fps][freshness][erasure]")
 {
@@ -329,6 +394,33 @@ TEST_CASE("RemoteVisual low-FPS geometry and resolver fail closed on invalid bou
     geometry.originX = -0.01;
     REQUIRE(pbmodulation::ValidateRemoteVisualLowFpsGeometry(geometry) ==
         pbmodulation::RemoteVisualLowFpsErasure::InvalidInput);
+
+    const pbmodulation::LocalDesktopGeometry exactCanvasFit{-7.4024239893333288e-07,
+        -1.4539924904966028e-05, 1.0000000007710859, 1.0000002254867735, 0.0027374946912459563};
+    pbmodulation::LocalDesktopGeometry samplingGeometry{31, 37, 0.75, 0.75, 0.5};
+    REQUIRE(pbmodulation::ResolveRemoteVisualLowFpsSamplingGeometry(exactCanvasFit, 1920, 1080,
+        samplingGeometry) == pbmodulation::RemoteVisualLowFpsErasure::None);
+    REQUIRE(samplingGeometry.originX == 0);
+    REQUIRE(samplingGeometry.originY == 0);
+    REQUIRE(samplingGeometry.originX + samplingGeometry.scaleX * 1920 <= 1920);
+    REQUIRE(samplingGeometry.originY + samplingGeometry.scaleY * 1080 <= 1080);
+
+    const auto unchangedSamplingGeometry = samplingGeometry;
+    auto clippedFit = exactCanvasFit;
+    clippedFit.originX = -0.01;
+    REQUIRE(pbmodulation::ResolveRemoteVisualLowFpsSamplingGeometry(clippedFit, 1920, 1080,
+        samplingGeometry) == pbmodulation::RemoteVisualLowFpsErasure::InvalidInput);
+    REQUIRE(samplingGeometry.originX == unchangedSamplingGeometry.originX);
+    REQUIRE(samplingGeometry.originY == unchangedSamplingGeometry.originY);
+    REQUIRE(samplingGeometry.scaleX == unchangedSamplingGeometry.scaleX);
+    REQUIRE(samplingGeometry.scaleY == unchangedSamplingGeometry.scaleY);
+
+    clippedFit = exactCanvasFit;
+    clippedFit.scaleY += 0.00001;
+    REQUIRE(pbmodulation::ResolveRemoteVisualLowFpsSamplingGeometry(clippedFit, 1920, 1080,
+        samplingGeometry) == pbmodulation::RemoteVisualLowFpsErasure::FrameOutOfBounds);
+    REQUIRE(samplingGeometry == unchangedSamplingGeometry);
+
     pbmodulation::RemoteVisualLowFpsDecodePolicy invalidPolicy;
     invalidPolicy.locator.maximumWorkUnits = 0;
     REQUIRE(pbmodulation::ValidateRemoteVisualLowFpsGeometry({}, invalidPolicy) ==

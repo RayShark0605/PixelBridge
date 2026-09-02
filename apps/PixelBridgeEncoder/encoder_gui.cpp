@@ -75,15 +75,19 @@ namespace
         .arg(minutes, 2, 10, QLatin1Char('0')).arg(seconds, 2, 10, QLatin1Char('0'));
 }
 
-[[nodiscard]] QString RateText(const double bytesPerSecond)
+[[nodiscard]] QString RateText(const std::optional<double>& bytesPerSecond)
 {
-    if (!(bytesPerSecond > 0) || !std::isfinite(bytesPerSecond))
+    if (!bytesPerSecond)
+    {
+        return QStringLiteral("—");
+    }
+    if (!(*bytesPerSecond > 0) || !std::isfinite(*bytesPerSecond))
     {
         return QStringLiteral("0 B/s");
     }
     return QStringLiteral("%1 MiB/s (%2 Mbps)")
-        .arg(bytesPerSecond / (1024.0 * 1024.0), 0, 'f', 2)
-        .arg(bytesPerSecond * 8.0 / 1000000.0, 0, 'f', 2);
+        .arg(*bytesPerSecond / (1024.0 * 1024.0), 0, 'f', 2)
+        .arg(*bytesPerSecond * 8.0 / 1000000.0, 0, 'f', 2);
 }
 
 [[nodiscard]] bool PlaceOnExperimentMonitor(QWidget& window, const std::wstring_view deviceName) noexcept
@@ -241,18 +245,20 @@ private:
         auto* const bindingGroup = new QGroupBox(QStringLiteral("Profile / FEC / 输出显示器"));
         auto* const bindingLayout = new QGridLayout(bindingGroup);
         profileCombo_ = new QComboBox();
-        profileCombo_->addItem(QStringLiteral("Direct-Level 2x2 · Experimental"),
-            static_cast<int>(pbapp::VisualProfile::DirectLevels2x2));
-        profileCombo_->addItem(QStringLiteral("Shape+Chroma · Experimental"),
-            static_cast<int>(pbapp::VisualProfile::ShapeChroma));
-        profileCombo_->addItem(QStringLiteral("RemoteVisual Resilient 8x8 Luma · Experimental"),
-            static_cast<int>(pbapp::VisualProfile::RemoteVisualResilient));
+        for (const pbapp::VisualProfileOption& option : pbapp::GetVisualProfileOptions())
+        {
+            profileCombo_->addItem(QString::fromUtf8(option.displayName.data(),
+                static_cast<int>(option.displayName.size())), static_cast<int>(option.profile));
+        }
         profileCombo_->setToolTip(QStringLiteral(
-            "RemoteVisual X2 使用独立 8x8 二值亮度、中央采样、128x128 区域新鲜度标签、同帧软擦除和稳定驻留；面向远控编码器的块损坏/局部刷新，不修改 Direct/Shape。"));
+            "旧 remote 与新的 remote-lf4 是不同 wire identity。LF4 使用 4x4 Walsh tile、四 codeword、区域 freshness soft erasure 和 1..5 Hz 稳定驻留；仍为 Experimental。"));
         outerFecLabel_ = new QLabel(QStringLiteral("Automatic: DirectRepeat or Wirehair V2"));
         outerFecLabel_->setToolTip(QStringLiteral("由已编码 Segment 大小和现有 ChooseOuterFecMode 决定；不提供非法 override。"));
         auto* const innerFecLabel = new QLabel(QStringLiteral("Robust DVB-S2 Short QC-LDPC (fixed)"));
         monitorCombo_ = new QComboBox();
+        protectedMonitorCombo_ = new QComboBox();
+        protectedMonitorCombo_->addItem(QStringLiteral("LF4：请选择 ProtectedMonitor（不得显示 Data Window）"), -1);
+        protectedMonitorCombo_->setEnabled(false);
         refreshMonitorButton_ = new QPushButton(QStringLiteral("刷新"));
         monitorInfoLabel_ = new QLabel();
         monitorInfoLabel_->setWordWrap(true);
@@ -265,9 +271,13 @@ private:
         bindingLayout->addWidget(new QLabel(QStringLiteral("目标 monitor")), 1, 2);
         bindingLayout->addWidget(monitorCombo_, 1, 3);
         bindingLayout->addWidget(refreshMonitorButton_, 1, 4);
-        bindingLayout->addWidget(monitorInfoLabel_, 2, 0, 1, 5);
+        bindingLayout->addWidget(new QLabel(QStringLiteral("ProtectedMonitor")), 2, 0);
+        bindingLayout->addWidget(protectedMonitorCombo_, 2, 1, 1, 4);
+        bindingLayout->addWidget(monitorInfoLabel_, 3, 0, 1, 5);
         connect(refreshMonitorButton_, &QPushButton::clicked, this, &EncoderWindow::RefreshMonitors);
         connect(monitorCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &EncoderWindow::UpdateMonitorDetails);
+        connect(protectedMonitorCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &EncoderWindow::UpdateMonitorDetails);
         root->addWidget(bindingGroup);
 
@@ -420,6 +430,7 @@ private:
         compressionCheck_->setChecked(settings.value(QStringLiteral("ui/compressionEnabled"), false).toBool());
         advancedGroup_->setChecked(settings.value(QStringLiteral("ui/advancedExpanded"), false).toBool());
         preferredMonitorDevice_ = settings.value(QStringLiteral("ui/lastMonitorDevice")).toString();
+        preferredProtectedMonitorDevice_ = settings.value(QStringLiteral("ui/lastProtectedMonitorDevice")).toString();
     }
 
     void SaveSettings()
@@ -434,6 +445,12 @@ private:
         {
             settings.setValue(QStringLiteral("ui/lastMonitorDevice"),
                 QString::fromStdWString(monitors_[static_cast<std::size_t>(monitorIndex)].deviceName));
+        }
+        const int protectedMonitorIndex = protectedMonitorCombo_->currentData().toInt();
+        if (protectedMonitorIndex >= 0 && static_cast<std::size_t>(protectedMonitorIndex) < monitors_.size())
+        {
+            settings.setValue(QStringLiteral("ui/lastProtectedMonitorDevice"),
+                QString::fromStdWString(monitors_[static_cast<std::size_t>(protectedMonitorIndex)].deviceName));
         }
     }
 
@@ -509,8 +526,15 @@ private:
             candidate.notes = networkNote.toUtf8().toStdString();
             candidate.networkProvenance = pbapp::MetadataProvenance::Manual;
         }
-        candidate.experimentMonitorIdentity = monitor.deviceName.empty() ? "" :
+        const std::string experimentIdentity = monitor.deviceName.empty() ? "" :
             QString::fromWCharArray(monitor.deviceName.c_str()).toUtf8().toStdString();
+        if (!candidate.experimentMonitorIdentity.empty() &&
+            candidate.experimentMonitorIdentity != experimentIdentity)
+        {
+            errorMessage = QStringLiteral("ExperimentMonitor 与 metadata preset 不一致");
+            return false;
+        }
+        candidate.experimentMonitorIdentity = experimentIdentity;
         candidate.computerBDisplayResolution = std::to_string(monitor.physicalRect.right - monitor.physicalRect.left) +
             "x" + std::to_string(monitor.physicalRect.bottom - monitor.physicalRect.top);
         candidate.computerBRefreshRate = static_cast<double>(monitor.refreshRate);
@@ -519,14 +543,69 @@ private:
         return true;
     }
 
+    [[nodiscard]] bool BuildRemoteVisualLowFpsMonitorSafety(const bool revalidateTopology,
+        const pbapp::MonitorInfo& experimentMonitor,
+        std::optional<pbapp::MonitorSafetySelection>& output, pbapp::RemoteRunMetadata& metadata,
+        QString& errorMessage) const
+    {
+        const auto profile = static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt());
+        if (profile != pbapp::VisualProfile::RemoteVisualLowFps)
+        {
+            output.reset();
+            return true;
+        }
+        const int protectedMonitorIndex = protectedMonitorCombo_->currentData().toInt();
+        if (protectedMonitorIndex < 0 || static_cast<std::size_t>(protectedMonitorIndex) >= monitors_.size())
+        {
+            errorMessage = QStringLiteral("remote-lf4 必须显式选择 ProtectedMonitor");
+            return false;
+        }
+        pbapp::MonitorSafetySelection candidate{
+            monitors_[static_cast<std::size_t>(protectedMonitorIndex)], experimentMonitor};
+        const RECT target{experimentMonitor.phase1CanvasOrigin.x, experimentMonitor.phase1CanvasOrigin.y,
+            static_cast<LONG>(static_cast<std::int64_t>(experimentMonitor.phase1CanvasOrigin.x) +
+                pbapp::phase1CanvasWidth),
+            static_cast<LONG>(static_cast<std::int64_t>(experimentMonitor.phase1CanvasOrigin.y) +
+                pbapp::phase1CanvasHeight)};
+        const pbapp::MonitorSafetyStatus topology = revalidateTopology ?
+            pbapp::RevalidateMonitorSafetySelection(candidate) : pbapp::MonitorSafetyStatus{};
+        const pbapp::MonitorSafetyStatus safety = pbapp::ValidateMonitorSafetyTarget(candidate, target,
+            experimentMonitor.monitor);
+        if (!topology || !safety || experimentMonitor.rotation != DXGI_MODE_ROTATION_IDENTITY)
+        {
+            const pbapp::MonitorSafetyError error = !topology ? topology.code : safety.code;
+            errorMessage = QStringLiteral("remote-lf4 屏幕安全检查失败：%1")
+                .arg(QString::fromLatin1(pbapp::GetMonitorSafetyErrorName(error)));
+            return false;
+        }
+        const std::string protectedIdentity = QString::fromStdWString(candidate.protectedMonitor.deviceName)
+            .toUtf8().toStdString();
+        if (!metadata.protectedMonitorIdentity.empty() && metadata.protectedMonitorIdentity != protectedIdentity)
+        {
+            errorMessage = QStringLiteral("ProtectedMonitor 与 metadata preset 不一致");
+            return false;
+        }
+        metadata.protectedMonitorIdentity = protectedIdentity;
+        metadata.experimentMonitorIdentity = QString::fromStdWString(experimentMonitor.deviceName)
+            .toUtf8().toStdString();
+        output = std::move(candidate);
+        errorMessage.clear();
+        return true;
+    }
+
     void ApplyProfileDefaults(const int)
     {
         const auto profile = static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt());
-        if (profile == pbapp::VisualProfile::RemoteVisualResilient)
+        const pbapp::VisualProfileOption* const option = pbapp::FindVisualProfileOption(profile);
+        if (option != nullptr && option->remoteVisual)
         {
             logicalFpsSpin_->setRange(1, 5);
-            logicalFpsSpin_->setValue(2);
-            controlRepetitionsSpin_->setValue(12);
+            logicalFpsSpin_->setValue(static_cast<int>(option->defaultLogicalVisualFps));
+            controlRepetitionsSpin_->setValue(static_cast<int>(option->defaultControlRepetitions));
+            if (profile == pbapp::VisualProfile::RemoteVisualLowFps)
+            {
+                channelCombo_->setCurrentIndex(1);
+            }
         }
         else
         {
@@ -534,6 +613,8 @@ private:
             logicalFpsSpin_->setValue(0);
             controlRepetitionsSpin_->setValue(4);
         }
+        protectedMonitorCombo_->setEnabled(profile == pbapp::VisualProfile::RemoteVisualLowFps &&
+            !controller_.IsActive());
         UpdateActionButtons();
     }
 
@@ -568,6 +649,8 @@ private:
         std::vector<pbapp::MonitorInfo> monitors;
         const pbapp::MonitorCatalogStatus status = pbapp::EnumerateMonitors(monitors);
         monitorCombo_->clear();
+        protectedMonitorCombo_->clear();
+        protectedMonitorCombo_->addItem(QStringLiteral("LF4：请选择 ProtectedMonitor（不得显示 Data Window）"), -1);
         monitors_.clear();
         if (!status)
         {
@@ -578,13 +661,16 @@ private:
             return;
         }
         monitors_ = std::move(monitors);
-        for (const pbapp::MonitorInfo& monitor : monitors_)
+        for (std::size_t index = 0; index < monitors_.size(); index++)
         {
+            const pbapp::MonitorInfo& monitor = monitors_[index];
             const std::int64_t width = static_cast<std::int64_t>(monitor.physicalRect.right) - monitor.physicalRect.left;
             const std::int64_t height = static_cast<std::int64_t>(monitor.physicalRect.bottom) - monitor.physicalRect.top;
-            monitorCombo_->addItem(QStringLiteral("%1 · %2x%3 @ %4 Hz%5")
+            const QString label = QStringLiteral("%1 · %2x%3 @ %4 Hz%5")
                 .arg(QString::fromWCharArray(monitor.deviceName.c_str())).arg(width).arg(height)
-                .arg(monitor.refreshRate).arg(monitor.primary ? QStringLiteral(" · Primary") : QString()));
+                .arg(monitor.refreshRate).arg(monitor.primary ? QStringLiteral(" · Primary") : QString());
+            monitorCombo_->addItem(label);
+            protectedMonitorCombo_->addItem(label, static_cast<int>(index));
         }
         const auto preferred = std::find_if(monitors_.begin(), monitors_.end(),
             [this](const pbapp::MonitorInfo& value)
@@ -603,6 +689,16 @@ private:
         else if (primary != monitors_.end())
         {
             monitorCombo_->setCurrentIndex(static_cast<int>(std::distance(monitors_.begin(), primary)));
+        }
+        const auto preferredProtected = std::find_if(monitors_.begin(), monitors_.end(),
+            [this](const pbapp::MonitorInfo& value)
+            {
+                return QString::fromStdWString(value.deviceName) == preferredProtectedMonitorDevice_;
+            });
+        if (preferredProtected != monitors_.end())
+        {
+            protectedMonitorCombo_->setCurrentIndex(
+                static_cast<int>(std::distance(monitors_.begin(), preferredProtected)) + 1);
         }
         UpdateMonitorDetails();
     }
@@ -657,6 +753,12 @@ private:
             monitor.phase1CanvasOrigin.y};
         QString metadataError;
         if (!BuildRemoteMetadata(monitor, config.remoteMetadata, metadataError))
+        {
+            QMessageBox::warning(this, QStringLiteral("无法开始广播"), metadataError);
+            return;
+        }
+        if (!BuildRemoteVisualLowFpsMonitorSafety(true, monitor, config.monitorSafety,
+            config.remoteMetadata, metadataError))
         {
             QMessageBox::warning(this, QStringLiteral("无法开始广播"), metadataError);
             return;
@@ -721,7 +823,7 @@ private:
             .arg(snapshot.pendingFrames).arg(snapshot.pendingHighWater)
             .arg(snapshot.activeFrame ? QStringLiteral("true") : QStringLiteral("false")).arg(snapshot.activeFrameSequence)
             .arg(snapshot.candidateContractSatisfied ? QStringLiteral("PASS") : QStringLiteral("warming/unavailable"))
-            .arg(snapshot.generatedVisualFramesPerSecond, 0, 'f', 2)
+            .arg(snapshot.generatedVisualFramesPerSecond ? QString::number(*snapshot.generatedVisualFramesPerSecond, 'f', 2) : QStringLiteral("—"))
             .arg(snapshot.sourceStable ? QStringLiteral("true") : QStringLiteral("false"))
             .arg(FromUtf8(snapshot.wholeFileDigestHex)) +
             QStringLiteral(" · LogicalFPS=%1 · configured/min dwell=%2/%3 ms · dwellViolations=%4 · ControlRepetitions=%5")
@@ -765,6 +867,9 @@ private:
         controlRepetitionsSpin_->setEnabled(enabled);
         monitorCombo_->setEnabled(enabled);
         refreshMonitorButton_->setEnabled(enabled);
+        protectedMonitorCombo_->setEnabled(enabled &&
+            static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt()) ==
+                pbapp::VisualProfile::RemoteVisualLowFps);
         channelCombo_->setEnabled(enabled);
         remoteProviderEdit_->setEnabled(enabled);
         metadataPresetPathEdit_->setEnabled(enabled);
@@ -798,6 +903,9 @@ private:
         QString metadataError;
         const bool metadataValid = monitorEligible && BuildRemoteMetadata(
             monitors_[static_cast<std::size_t>(monitorIndex)], config.remoteMetadata, metadataError);
+        const bool monitorSafetyValid = metadataValid && BuildRemoteVisualLowFpsMonitorSafety(false,
+            monitors_[static_cast<std::size_t>(monitorIndex)], config.monitorSafety,
+            config.remoteMetadata, metadataError);
         const bool runIdMatches = config.remoteMetadata.runId.empty() || config.runId.empty() ||
             config.remoteMetadata.runId == config.runId;
         if (config.runId.empty() && !config.remoteMetadata.runId.empty())
@@ -805,7 +913,7 @@ private:
             config.runId = config.remoteMetadata.runId;
         }
         config.remoteMetadata.runId = config.runId;
-        const bool valid = monitorEligible && metadataValid && runIdMatches &&
+        const bool valid = monitorEligible && metadataValid && monitorSafetyValid && runIdMatches &&
             static_cast<bool>(pbapp::ValidateEncoderConfig(config));
         const bool active = controller_.IsActive();
         startButton_->setEnabled(valid && !active);
@@ -865,6 +973,7 @@ private:
     QComboBox* profileCombo_ = nullptr;
     QLabel* outerFecLabel_ = nullptr;
     QComboBox* monitorCombo_ = nullptr;
+    QComboBox* protectedMonitorCombo_ = nullptr;
     QPushButton* refreshMonitorButton_ = nullptr;
     QLabel* monitorInfoLabel_ = nullptr;
     QPushButton* startButton_ = nullptr;
@@ -890,6 +999,7 @@ private:
     QPlainTextEdit* logEdit_ = nullptr;
     std::vector<pbapp::MonitorInfo> monitors_;
     QString preferredMonitorDevice_;
+    QString preferredProtectedMonitorDevice_;
     pbapp::EncoderState lastLoggedState_ = pbapp::EncoderState::Idle;
     std::string lastError_;
     bool closePending_ = false;

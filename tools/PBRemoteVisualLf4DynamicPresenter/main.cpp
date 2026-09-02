@@ -12,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -35,12 +36,16 @@ struct Options
     Mode mode = Mode::Describe;
     std::wstring sourcePath;
     std::wstring reportPath;
+    std::wstring protectedMonitorDevice;
+    std::wstring experimentMonitorDevice;
     pbrenderd3d::PhysicalPoint origin{};
     std::uint32_t seconds = 0;
     std::uint32_t logicalVisualFps = 5;
     std::uint32_t controlRepetitions = 1;
     bool sourceSpecified = false;
     bool reportSpecified = false;
+    bool protectedMonitorSpecified = false;
+    bool experimentMonitorSpecified = false;
     bool originSpecified = false;
     bool secondsSpecified = false;
     bool logicalVisualFpsSpecified = false;
@@ -164,6 +169,26 @@ struct Options
             }
             options.originSpecified = true;
         }
+        else if (option == L"--protected-monitor")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || options.protectedMonitorSpecified || *value == L'\0')
+            {
+                return false;
+            }
+            options.protectedMonitorDevice = value;
+            options.protectedMonitorSpecified = true;
+        }
+        else if (option == L"--experiment-monitor")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || options.experimentMonitorSpecified || *value == L'\0')
+            {
+                return false;
+            }
+            options.experimentMonitorDevice = value;
+            options.experimentMonitorSpecified = true;
+        }
         else if (option == L"--seconds")
         {
             const wchar_t* const value = nextArgument();
@@ -201,12 +226,35 @@ struct Options
             return false;
         }
     }
-    if (!options.sourceSpecified || !options.originSpecified || !options.secondsSpecified)
+    if (!options.sourceSpecified || !options.originSpecified || !options.secondsSpecified ||
+        !options.protectedMonitorSpecified || !options.experimentMonitorSpecified ||
+        options.protectedMonitorDevice == options.experimentMonitorDevice)
     {
         return false;
     }
     output = std::move(options);
     return true;
+}
+
+[[nodiscard]] std::string WideToUtf8(const std::wstring_view value)
+{
+    if (value.empty() || value.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)()))
+    {
+        throw std::length_error("monitor identity is empty or too long");
+    }
+    const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (count <= 0)
+    {
+        throw std::runtime_error("monitor identity is not valid UTF-16");
+    }
+    std::string output(static_cast<std::size_t>(count), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
+        output.data(), count, nullptr, nullptr) != count)
+    {
+        throw std::runtime_error("monitor identity conversion failed");
+    }
+    return output;
 }
 
 [[nodiscard]] std::string UtcNow()
@@ -273,7 +321,8 @@ void Describe()
     std::cout << "{\"schema\":\"PixelBridge.RemoteVisualLf4DynamicPresenter.1\","
                  "\"profile\":\"PB-RemoteVisual-LF4-X1\",\"productionEncoderRuntime\":true,"
                  "\"dynamicCarousel\":true,\"logicalFpsMinimum\":1,\"logicalFpsMaximum\":5,"
-                 "\"secondsMinimum\":2,\"secondsMaximum\":600,\"productProfileExposed\":false}\n";
+                 "\"secondsMinimum\":2,\"secondsMaximum\":600,\"productProfileExposed\":true,"
+                 "\"explicitDualMonitorSafetyRequired\":true}\n";
 }
 
 void PrintProgress(const pbapp::EncoderSnapshot& snapshot, const std::uint64_t elapsedSeconds)
@@ -282,21 +331,34 @@ void PrintProgress(const pbapp::EncoderSnapshot& snapshot, const std::uint64_t e
         " cycle=" << snapshot.cycleCount << " position=" << snapshot.cyclePosition << '/' <<
         snapshot.cycleFrameCount << " sourceReplacements=" << snapshot.sourceTextureReplacements <<
         " repeatedPresents=" << snapshot.repeatedPresentCalls << " generatedVisualFps=" <<
-        snapshot.generatedVisualFramesPerSecond << '\n' << std::flush;
+        (snapshot.generatedVisualFramesPerSecond ? std::to_string(*snapshot.generatedVisualFramesPerSecond) : "null") <<
+        '\n' << std::flush;
 }
 
 [[nodiscard]] int Broadcast(const Options& options)
 {
+    pbapp::MonitorSafetySelection monitorSafety;
+    const pbapp::MonitorSafetyStatus safetyStatus = pbapp::ResolveMonitorSafetySelection(
+        options.protectedMonitorDevice, options.experimentMonitorDevice, monitorSafety);
+    if (!safetyStatus)
+    {
+        std::cerr << "PBRemoteVisualLf4DynamicPresenter monitor safety resolution failed: " <<
+            pbapp::GetMonitorSafetyErrorName(safetyStatus.code) << '\n';
+        return 1;
+    }
     pbapp::EncoderConfig config;
     config.sourcePath = options.sourcePath;
     config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
     config.monitorClientOrigin = options.origin;
+    config.monitorSafety = monitorSafety;
     config.logicalVisualFps = options.logicalVisualFps;
     config.controlRepetitions = options.controlRepetitions;
     config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
     config.remoteMetadata.remoteProvider = "PBRemoteVisualLf4DynamicPresenter";
     config.remoteMetadata.remoteMode = "EvidenceOnlyDynamicFieldPilot";
-    config.remoteMetadata.notes = "Production EncoderRuntime LF4 hidden candidate; no product GUI or CLI admission";
+    config.remoteMetadata.protectedMonitorIdentity = WideToUtf8(monitorSafety.protectedMonitor.deviceName);
+    config.remoteMetadata.experimentMonitorIdentity = WideToUtf8(monitorSafety.experimentMonitor.deviceName);
+    config.remoteMetadata.notes = "Production EncoderRuntime LF4 public profile with explicit dual-monitor safety";
 
     pbapp::EncoderRuntime runtime;
     const pbapp::RuntimeStatus started = runtime.Start(config);
@@ -318,7 +380,9 @@ void PrintProgress(const pbapp::EncoderSnapshot& snapshot, const std::uint64_t e
         const auto now = std::chrono::steady_clock::now();
         const pbapp::EncoderSnapshot snapshot = runtime.GetSnapshot();
         if (!broadcastStarted && snapshot.state == pbapp::EncoderState::Broadcasting &&
-            snapshot.candidateContractSatisfied && snapshot.activeFrame && snapshot.sourceTextureReplacements != 0)
+            snapshot.candidateContractSatisfied && snapshot.monitorSafetyPreflightPassed &&
+            snapshot.monitorSafetyRevalidationCount != 0 && snapshot.monitorSafetyStatus == "PASS" &&
+            snapshot.activeFrame && snapshot.sourceTextureReplacements != 0)
         {
             broadcastStarted = now;
             nextProgress = now + std::chrono::seconds(1);
@@ -329,8 +393,9 @@ void PrintProgress(const pbapp::EncoderSnapshot& snapshot, const std::uint64_t e
                 " logicalFps=" << options.logicalVisualFps << " sourceBytes=" << snapshot.sourceBytes <<
                 " outerFec=" << pbapp::GetOuterFecModeName(snapshot.outerFecMode) <<
                 " controlRepetitions=" << options.controlRepetitions << " cycleFrames=" << snapshot.cycleFrameCount <<
-                " frameSequence=" << snapshot.frameSequence << " dynamicCarousel=true productionEncoderRuntime=true\n" <<
-                std::flush;
+                " frameSequence=" << snapshot.frameSequence << " dynamicCarousel=true productionEncoderRuntime=true" <<
+                " protectedMonitor=" << config.remoteMetadata.protectedMonitorIdentity << " experimentMonitor=" <<
+                config.remoteMetadata.experimentMonitorIdentity << " monitorSafety=PASS\n" << std::flush;
         }
         if (broadcastStarted && nextProgress && now >= *nextProgress)
         {
@@ -375,7 +440,9 @@ void PrintProgress(const pbapp::EncoderSnapshot& snapshot, const std::uint64_t e
         finalSnapshot.sourceTextureReplacements > readySourceReplacements;
     const bool passed = finalSnapshot.state == pbapp::EncoderState::Stopped && requestedStopAfterDuration &&
         !readyTimeout && dynamicFrameAdvance && finalSnapshot.sourceStable &&
-        finalSnapshot.logicalDwellViolationCount == 0 && finalSnapshot.errorDetail.empty();
+        finalSnapshot.logicalDwellViolationCount == 0 && finalSnapshot.monitorSafetyPreflightPassed &&
+        finalSnapshot.monitorSafetyRevalidationCount != 0 && finalSnapshot.monitorSafetyStatus == "PASS" &&
+        finalSnapshot.errorDetail.empty();
     if (!passed)
     {
         std::cerr << "PBRemoteVisualLf4DynamicPresenter failed: state=" <<
@@ -394,7 +461,8 @@ void PrintProgress(const pbapp::EncoderSnapshot& snapshot, const std::uint64_t e
 void Usage()
 {
     std::cerr << "usage: PBRemoteVisualLf4DynamicPresenter describe\n"
-                 "       PBRemoteVisualLf4DynamicPresenter broadcast --source PATH --origin X Y --seconds 2..600 "
+                 "       PBRemoteVisualLf4DynamicPresenter broadcast --source PATH --origin X Y "
+                 "--protected-monitor DEVICE --experiment-monitor DEVICE --seconds 2..600 "
                  "[--logical-fps 1..5] [--control-repetitions 1..64] [--report NEW_PATH]\n";
 }
 

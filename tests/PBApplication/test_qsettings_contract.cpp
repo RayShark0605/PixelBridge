@@ -25,6 +25,7 @@ TEST_CASE("QSettings persists only local UI preferences and cannot replace core 
         settings.setValue(QStringLiteral("ui/backend"), 1);
         settings.setValue(QStringLiteral("ui/advancedExpanded"), true);
         settings.setValue(QStringLiteral("ui/lastMonitorDevice"), QStringLiteral("\\\\.\\DISPLAY2"));
+        settings.setValue(QStringLiteral("ui/lastProtectedMonitorDevice"), QStringLiteral("\\\\.\\DISPLAY1"));
         settings.sync();
         REQUIRE(settings.status() == QSettings::NoError);
     }
@@ -36,6 +37,7 @@ TEST_CASE("QSettings persists only local UI preferences and cannot replace core 
     REQUIRE(keys.contains(QStringLiteral("ui/backend")));
     REQUIRE(keys.contains(QStringLiteral("ui/advancedExpanded")));
     REQUIRE(keys.contains(QStringLiteral("ui/lastMonitorDevice")));
+    REQUIRE(keys.contains(QStringLiteral("ui/lastProtectedMonitorDevice")));
     for (const QString& key : keys)
     {
         REQUIRE_FALSE(key.contains(QStringLiteral("session"), Qt::CaseInsensitive));
@@ -43,6 +45,7 @@ TEST_CASE("QSettings persists only local UI preferences and cannot replace core 
         REQUIRE_FALSE(key.contains(QStringLiteral("resume"), Qt::CaseInsensitive));
         REQUIRE_FALSE(key.contains(QStringLiteral("fecState"), Qt::CaseInsensitive));
         REQUIRE_FALSE(key.contains(QStringLiteral("protocol"), Qt::CaseInsensitive));
+        REQUIRE_FALSE(key.contains(QStringLiteral("visualProfile"), Qt::CaseInsensitive));
     }
 
     pbapp::EncoderConfig encoderConfig;

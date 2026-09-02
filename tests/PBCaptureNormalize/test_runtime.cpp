@@ -127,7 +127,7 @@ public:
         ordinals_[slot] = metadata.arrivalOrdinal;
         return capturetest::Backend::Consume(consumer, metadata, slot);
     }
-    CaptureStatus Complete(RawRoiConsumer&, const RawRoiFrameMetadata& metadata, std::size_t, bool) noexcept override
+    CaptureConsumerCompletion Complete(RawRoiConsumer&, const RawRoiFrameMetadata& metadata, std::size_t, bool) noexcept override
     {
         control_->Record("priority-complete", static_cast<std::int64_t>(metadata.arrivalOrdinal));
         return {};
@@ -207,7 +207,7 @@ public:
         }
         return capturetest::Backend::Consume(consumer, metadata, slot);
     }
-    CaptureStatus Complete(RawRoiConsumer&, const RawRoiFrameMetadata& metadata, std::size_t, bool) noexcept override
+    CaptureConsumerCompletion Complete(RawRoiConsumer&, const RawRoiFrameMetadata& metadata, std::size_t, bool) noexcept override
     {
         control_->Record("ordered-dxgi-complete", static_cast<std::int64_t>(metadata.arrivalOrdinal));
         return {};
@@ -398,7 +398,7 @@ public:
         : capturetest::Backend(control), control_(std::move(control)), observations_(std::move(observations))
     {
     }
-    CaptureStatus Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, std::size_t, const bool cancelled) noexcept override
+    CaptureConsumerCompletion Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, std::size_t, const bool cancelled) noexcept override
     {
         // Exercise the production callback/exception/context-withholding wrapper;
         // only acquisition and GPU completion are supplied by the test backend.

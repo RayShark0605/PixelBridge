@@ -59,6 +59,11 @@ struct LocalDesktopDecodePolicy
     double maximumGeometryResidualPixels = 1.25;
 };
 
+// A refinement iteration is complete once its fitted frame-boundary movement
+// is no greater than this amount. Consumers that sample continuous geometry
+// may use the same bound to snap an exact-canvas fit inward.
+inline constexpr double kLocalDesktopGeometryRefinementConvergencePixels = 0.005;
+
 // Pixel-edge coordinates in the supplied view: a logical point (x,y) maps to
 // (originX + scaleX*x, originY + scaleY*y). No integer origin/scale rounding,
 // perspective warp, whole-frame resize, Windows monitor, or capture domain.
@@ -127,6 +132,13 @@ struct LocalDesktopBootstrapBinding
 // all 44 bytes must agree and every distributed timing patch must match. This
 // function is stateless and does not track capture epochs or duplicate frames.
 [[nodiscard]] LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const LocalDesktopDecodePolicy& policy = {}) noexcept;
+// Continuous-geometry search constrained to one frozen, known profile/layout
+// binding. Unknown bindings and otherwise valid records from another binding
+// are erased as UnsupportedRecord. This does not apply profile-specific data
+// geometry gates; the owning Data Plane decoder must apply those after locator
+// acceptance and before sampling its payload.
+[[nodiscard]] LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view,
+    const LocalDesktopBootstrapBinding& binding, const LocalDesktopDecodePolicy& policy = {}) noexcept;
 // Certified 1920x1080 1:1 fast path. It skips the full-ROI marker search but
 // still re-reads and validates all four fixed markers, refines their edges,
 // independently RS/CRC/parses both Bootstrap copies, requires exact 44-byte

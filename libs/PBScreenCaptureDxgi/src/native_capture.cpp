@@ -673,7 +673,7 @@ public:
         return ring_.Consume(consumer, metadata, slot);
     }
 
-    CaptureStatus Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, std::size_t, const bool cancelled) noexcept override
+    CaptureConsumerCompletion Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, std::size_t, const bool cancelled) noexcept override
     {
         return ring_.Complete(consumer, metadata, cancelled);
     }

@@ -1,0 +1,10 @@
+#pragma once
+
+namespace pbdemodd3d11::detail
+{
+
+inline constexpr char kRemoteVisualLowFpsComputeShader[] = R"PBHLSL(
+@PB_REMOTE_VISUAL_LOW_FPS_D3D11_HLSL@
+)PBHLSL";
+
+} // namespace pbdemodd3d11::detail

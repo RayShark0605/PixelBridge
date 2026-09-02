@@ -8,6 +8,7 @@ namespace pbscreencapturewgc
 using CaptureError = pbcapturenormalize::CaptureError;
 using CaptureStage = pbcapturenormalize::CaptureStage;
 using CaptureStatus = pbcapturenormalize::CaptureStatus;
+using CaptureConsumerCompletion = pbcapturenormalize::CaptureConsumerCompletion;
 using CaptureSize = pbcapturenormalize::CaptureSize;
 using WgcCaptureConfig = pbcapturenormalize::CaptureConfig;
 using CaptureCapabilities = pbcapturenormalize::CaptureCapabilities;

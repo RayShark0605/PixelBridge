@@ -1,13 +1,20 @@
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/demod_compute.hlsl")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/demod_compute.hlsl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/remote_visual_low_fps_compute.hlsl")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/demod_compute.hlsl" PB_DEMOD_D3D11_HLSL)
 configure_file(src/demod_shader_source.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/demod_shader_source.h" @ONLY)
 unset(PB_DEMOD_D3D11_HLSL)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/remote_visual_low_fps_compute.hlsl" PB_REMOTE_VISUAL_LOW_FPS_D3D11_HLSL)
+configure_file(src/remote_visual_low_fps_shader_source.h.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/remote_visual_low_fps_shader_source.h" @ONLY)
+unset(PB_REMOTE_VISUAL_LOW_FPS_D3D11_HLSL)
 
 add_library(PBDemodD3D11 STATIC)
 add_library(PB::PBDemodD3D11 ALIAS PBDemodD3D11)
 target_sources(PBDemodD3D11 PRIVATE src/demodulator.cpp src/capture_demodulator.cpp src/demod_compute.hlsl
+    src/remote_visual_low_fps_compute.hlsl
     PUBLIC FILE_SET HEADERS BASE_DIRS include FILES include/pbdemodd3d11/demodulator.h include/pbdemodd3d11/capture_demodulator.h)
-set_source_files_properties(src/demod_compute.hlsl PROPERTIES HEADER_FILE_ONLY TRUE)
+set_source_files_properties(src/demod_compute.hlsl src/remote_visual_low_fps_compute.hlsl PROPERTIES HEADER_FILE_ONLY TRUE)
 target_include_directories(PBDemodD3D11 PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
     PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")

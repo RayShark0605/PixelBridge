@@ -6,6 +6,8 @@ target_sources(PBApplication
         application_model.cpp
         evidence_journal.cpp
         local_desktop_runtime.cpp
+        optional_diagnostic_fanout.cpp
+        optional_diagnostic_fanout.h
         monitor_catalog.cpp
         remote_visual_replay_recorder.cpp
         run_report.cpp

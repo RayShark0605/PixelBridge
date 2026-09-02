@@ -28,6 +28,7 @@ struct EncoderConfig
     int compressionLevel = 3;
     VisualProfile visualProfile = VisualProfile::DirectLevels2x2;
     std::optional<pbrenderd3d::PhysicalPoint> monitorClientOrigin;
+    std::optional<MonitorSafetySelection> monitorSafety;
     std::string runId;
     RemoteRunMetadata remoteMetadata;
     // Zero preserves the historical presentation-driven cadence for local
@@ -57,12 +58,15 @@ struct DecoderConfig
     std::optional<std::uint64_t> replayEvidenceVisualProfileId;
     // Nonempty selects bounded offline Replay v2 input instead of live WGC or
     // DXGI capture. The replay adapter only reconstructs the PB-owned BGRA ROI
-    // texture and then enters the same CaptureDemodulator/Receiver pipeline.
+    // texture and then enters the same configured production
+    // CaptureDemodulator/Receiver pipeline. The selected public profile remains
+    // explicit; Replay input never auto-detects or changes its wire identity.
     std::wstring replayInputPath;
     std::uint32_t replayMaximumCaptureFrames = 256;
     std::uint64_t replayMaximumFileBytes = 2ULL * 1024 * 1024 * 1024;
-    // Diagnostic capture-only policy. Zero records every capture delivery;
-    // 1..60 applies an authoritative pre-readback time sampler.
+    // Optional Replay evidence policy. Zero records every capture delivery;
+    // 1..60 applies an authoritative pre-readback time sampler. For production
+    // LF4 the primary GPU demodulator remains unsampled.
     std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
 };
 
@@ -112,6 +116,48 @@ public:
     [[nodiscard]] static RuntimeStatus ProbeRemoteVisualLowFpsCarousel(std::span<const std::byte> rawBytes,
         std::uint32_t controlRepetitions, std::uint32_t completedCyclesBeforeMarker,
         EncoderCarouselProbeSnapshot& output) noexcept;
+};
+
+struct DecoderAdmissionProbeSnapshot
+{
+    DecoderSnapshot decoder;
+    pbprotocol::OuterFecMode outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
+    std::uint64_t processedResults = 0;
+    std::uint64_t suppressedDuplicateResults = 0;
+    std::uint64_t duplicateRefinementResults = 0;
+    std::uint64_t rawAcceptedTransportBlocks = 0;
+    std::uint64_t temporallyAdmittedTransportBlocks = 0;
+};
+
+struct DecoderReplayProbeSnapshot
+{
+    DecoderSnapshot decoder;
+    std::uint64_t replayFileBytes = 0;
+    std::uint64_t captureFrames = 0;
+    std::uint64_t demodObservations = 0;
+    std::uint64_t droppedCaptureFrames = 0;
+    std::uint64_t droppedDemodObservations = 0;
+    std::uint64_t duplicateSuppressedResults = 0;
+    std::uint32_t recorderQueueHighWater = 0;
+};
+
+// Narrow headless seam over the production LF4 SenderFrameBuilder,
+// ReferenceChannel truth boundary, ReceiverPipeline, ReceiverIngress,
+// WholeFileDigest verification, and PBStorage publish path. This seam remains
+// useful as deterministic headless coverage after public LF4 exposure.
+class DecoderRuntimeTestAccess
+{
+public:
+    [[nodiscard]] static RuntimeStatus ProbeRemoteVisualLowFpsReceiver(std::span<const std::byte> rawBytes,
+        const std::wstring& outputDirectory, std::uint32_t suppressedDuplicateResults,
+        DecoderAdmissionProbeSnapshot& output) noexcept;
+    // Headless production LF4 source raster -> WARP CaptureDemodulator ->
+    // ReceiverPipeline path with the actual bounded asynchronous Replay v2
+    // recorder. Captures contain only the selected receiver ROI; sender truth
+    // and canonical Bootstrap remain absent by construction.
+    [[nodiscard]] static RuntimeStatus ProbeRemoteVisualLowFpsReplay(std::span<const std::byte> rawBytes,
+        const std::wstring& replayPath, const std::wstring& outputDirectory,
+        std::uint32_t duplicateFrames, DecoderReplayProbeSnapshot& output) noexcept;
 };
 
 // Qt-free application controller. Start launches one bounded worker and

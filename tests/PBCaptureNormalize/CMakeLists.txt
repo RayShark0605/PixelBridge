@@ -14,11 +14,12 @@ PbInstrumentPresentationTest(PBCaptureNormalizeTests)
 set_tests_properties(PBCaptureNormalizeTests PROPERTIES LABELS "capture;normalize;capture-unit" TIMEOUT 60)
 
 PbAddUnitTest(PBCapturePipelineTests test_pipeline.cpp)
-target_link_libraries(PBCapturePipelineTests PRIVATE PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi d3d11 dxgi ole32)
+target_link_libraries(PBCapturePipelineTests PRIVATE PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBDemodD3D11
+    PB::PBModulation PB::PBDesktopLevelsReference PB::PBInnerFec PB::PBProtocol d3d11 dxgi ole32)
 target_include_directories(PBCapturePipelineTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBCaptureNormalize/src")
 target_compile_definitions(PBCapturePipelineTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 PbInstrumentPresentationTest(PBCapturePipelineTests)
-set_tests_properties(PBCapturePipelineTests PROPERTIES LABELS "capture;normalize;capture-d3d;integration" TIMEOUT 60)
+set_tests_properties(PBCapturePipelineTests PROPERTIES LABELS "capture;normalize;capture-d3d;integration" TIMEOUT 180)
 
 PbAddUnitTest(PBDecoderCliTests test_decoder_arguments.cpp
     "${PROJECT_SOURCE_DIR}/apps/PixelBridgeDecoder/capture_bootstrap_telemetry.cpp"

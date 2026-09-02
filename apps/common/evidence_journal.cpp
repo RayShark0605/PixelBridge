@@ -71,6 +71,18 @@ void WriteOptionalFinite(std::ostream& stream, const std::optional<double>& valu
     }
 }
 
+void WriteOptionalUnsigned(std::ostream& stream, const std::optional<std::uint64_t>& value)
+{
+    if (value)
+    {
+        stream << *value;
+    }
+    else
+    {
+        stream << "null";
+    }
+}
+
 [[nodiscard]] std::string NativeFailure(const char* operation, const DWORD error)
 {
     return std::string(operation) + " failed; win32=" + std::to_string(error);
@@ -267,13 +279,22 @@ std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
     WriteOptionalFinite(stream, snapshot.presentedVisualFps);
     stream << ",\"presentCallFps\":";
     WriteOptionalFinite(stream, snapshot.presentCallFps);
-    stream << ",\"generatedVisualFps\":" << snapshot.generatedVisualFramesPerSecond <<
-        ",\"generatedPayloadBytesPerSecond\":" << snapshot.generatedPayloadBytesPerSecond <<
-        ",\"configuredLogicalDwellMs\":";
+    stream << ",\"generatedVisualFps\":";
+    WriteOptionalFinite(stream, snapshot.generatedVisualFramesPerSecond);
+    stream << ",\"generatedPayloadBytesPerSecond\":";
+    WriteOptionalFinite(stream, snapshot.generatedPayloadBytesPerSecond);
+    stream << ",\"rawVisualBitsPerLogicalFrame\":" << snapshot.rawVisualBitsPerLogicalFrame <<
+        ",\"innerFecInformationBytesPerLogicalFrame\":" << snapshot.innerFecInformationBytesPerLogicalFrame <<
+        ",\"transportPayloadCeilingBytesPerLogicalFrame\":" << snapshot.transportPayloadCeilingBytesPerLogicalFrame <<
+        ",\"configuredTransportPayloadCeilingBytesPerSecond\":";
+    WriteOptionalUnsigned(stream, snapshot.configuredTransportPayloadCeilingBytesPerSecond);
+    stream << ",\"configuredLogicalDwellMs\":";
     WriteOptionalFinite(stream, snapshot.configuredLogicalDwellMilliseconds);
     stream << ",\"minimumObservedLogicalDwellMs\":";
     WriteOptionalFinite(stream, snapshot.minimumObservedLogicalDwellMilliseconds);
     stream << ",\"logicalDwellViolationCount\":" << snapshot.logicalDwellViolationCount <<
+        ",\"monitorSafetyPreflightPassed\":" << (snapshot.monitorSafetyPreflightPassed ? "true" : "false") <<
+        ",\"monitorSafetyRevalidationCount\":" << snapshot.monitorSafetyRevalidationCount <<
         ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements <<
         ",\"repeatedPresentCalls\":" << snapshot.repeatedPresentCalls <<
         ",\"invalidatedActiveFrames\":" << snapshot.invalidatedActiveFrames <<
@@ -313,7 +334,10 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
     WriteOptionalFinite(stream, snapshot.endToEndUniqueVisualFps);
     stream << ",\"bootstrapAttempts\":" << snapshot.telemetryBootstrapAttempts <<
         ",\"bootstrapSuccesses\":" << snapshot.telemetryBootstrapSuccesses <<
+        ",\"evaluatedCodewords\":" << snapshot.evaluatedCodewords <<
         ",\"fecFailures\":" << snapshot.fecFailures << ",\"crcFailures\":" << snapshot.crcFailures <<
+        ",\"fecAcceptedTransportBlocks\":" << snapshot.fecAcceptedTransportBlocks <<
+        ",\"temporallyAdmittedTransportBlocks\":" << snapshot.temporallyAdmittedTransportBlocks <<
         ",\"acceptedTransportBlocks\":" << snapshot.acceptedTransportBlocks <<
         ",\"outerUniqueSymbols\":" << snapshot.outerUniqueSymbols <<
         ",\"outerIdenticalDuplicateSymbols\":" << snapshot.outerIdenticalDuplicateSymbols <<
@@ -322,6 +346,12 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"outerRecoveryReadyEvents\":" << snapshot.outerRecoveryReadyEvents <<
         ",\"outerResourceRejections\":" << snapshot.outerResourceRejections <<
         ",\"outerConflictRejections\":" << snapshot.outerConflictRejections <<
+        ",\"remoteMetricFrames\":" << snapshot.remoteMetricFrames <<
+        ",\"remoteMetricSamples\":" << snapshot.remoteMetricSamples <<
+        ",\"remoteSymbolSamples\":" << snapshot.remoteSymbolSamples <<
+        ",\"remoteUnreliableSymbols\":" << snapshot.remoteUnreliableSymbols <<
+        ",\"remoteFreshnessRegions\":" << snapshot.remoteFreshnessRegions <<
+        ",\"remoteFreshRegions\":" << snapshot.remoteFreshRegions <<
         ",\"remoteStaleRegions\":" << snapshot.remoteStaleRegions <<
         ",\"remoteFreshnessTagMismatches\":" << snapshot.remoteFreshnessTagMismatches <<
         ",\"remoteFreshnessTagErasures\":" << snapshot.remoteFreshnessTagErasures <<
@@ -332,6 +362,8 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"visualStallMs\":" << snapshot.visualStallTotalMilliseconds <<
         ",\"frameLeaseHwm\":" << snapshot.frameLeaseHighWater << ",\"demodPendingHwm\":" << snapshot.demodPendingHighWater <<
         ",\"resultQueueHwm\":" << snapshot.resultQueueHighWater << ",\"staleResultDrops\":" << snapshot.staleResultDrops <<
+        ",\"monitorSafetyPreflightPassed\":" << (snapshot.monitorSafetyPreflightPassed ? "true" : "false") <<
+        ",\"monitorSafetyRevalidationCount\":" << snapshot.monitorSafetyRevalidationCount <<
         ",\"replayCaptureOnly\":" << (snapshot.replayCaptureOnly ? "true" : "false") <<
         ",\"replayWrittenFrames\":" << snapshot.replayWrittenFrames <<
         ",\"replayDroppedFrames\":" << snapshot.replayDroppedFrames <<

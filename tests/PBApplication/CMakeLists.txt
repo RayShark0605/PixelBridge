@@ -7,6 +7,7 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core)
 PbAddUnitTest(PBApplicationTests
     test_application_model.cpp
     test_offline_replay_runtime.cpp
+    test_optional_diagnostic_fanout.cpp
     test_remote_visual_replay_recorder.cpp
     test_runtime_bindings.cpp
     test_run_report.cpp)
@@ -14,7 +15,10 @@ target_link_libraries(PBApplicationTests PRIVATE PB::PBApplication PB::PBProtoco
 target_compile_definitions(PBApplicationTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
     "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
 PbInstrumentPresentationTest(PBApplicationTests)
-set_tests_properties(PBApplicationTests PROPERTIES LABELS "application;controller;gui-model" TIMEOUT 60)
+# The headless production Replay corpus includes bounded WARP live/offline
+# passes. Individual tests retain tighter explicit deadlines; this outer CTest
+# bound prevents sanitizer overhead from terminating a still-progressing gate.
+set_tests_properties(PBApplicationTests PROPERTIES LABELS "application;controller;gui-model" TIMEOUT 600)
 
 PbAddUnitTest(PBQSettingsTests test_qsettings_contract.cpp test_remote_visual_metadata_preset.cpp
     "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.cpp")

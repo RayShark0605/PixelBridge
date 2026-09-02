@@ -77,6 +77,9 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
         RawRoiFrameMetadata metadata;
         std::uint64_t generation = 0;
         std::chrono::steady_clock::time_point submittedAt;
+        std::uint8_t continuationCount = 0;
+        bool continuationMarkerPending = false;
+        bool forceTerminalCancellation = false;
     };
 
     Implementation(const CaptureConfig& initialConfig, std::shared_ptr<RawRoiConsumer> initialConsumer, std::unique_ptr<CaptureBackend> initialBackend)
@@ -195,10 +198,19 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
             auto& slot = slots[index];
             if (slot.state == SlotState::Consuming)
             {
-                SetError(backend->Complete(*consumer, slot.metadata, index, true));
+                const auto completion = backend->Complete(*consumer, slot.metadata, index, true);
+                SetError(completion.status);
+                if (completion.gpuWorkSubmitted)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(working.consumerContinuationRejections);
+                    SetError(CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion));
+                }
             }
             slot.source.Reset();
             slot.state = SlotState::Free;
+            slot.continuationCount = 0;
+            slot.continuationMarkerPending = false;
+            slot.forceTerminalCancellation = false;
         }
     }
 
@@ -252,12 +264,52 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
         }
         if (slot.state == SlotState::Consuming)
         {
+            if (slot.continuationMarkerPending)
+            {
+                slot.continuationMarkerPending = false;
+                pbprotocol::SaturatingIncrementUnsigned(working.consumerContinuationCompletions);
+            }
+            if (slot.forceTerminalCancellation)
+            {
+                const auto terminal = backend->Complete(*consumer, slot.metadata, index, true);
+                SetError(terminal.status);
+                if (terminal.gpuWorkSubmitted)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(working.consumerContinuationRejections);
+                    SetError(CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion));
+                }
+                slot.state = SlotState::Free;
+                slot.continuationCount = 0;
+                slot.forceTerminalCancellation = false;
+                return;
+            }
             const auto input = inbox->GetSnapshot();
             const bool cancelled = !deliver || !working.error || !input.error || input.recreateRequested || input.stopRequested ||
                                    slot.metadata.captureEpoch != working.captureEpoch;
-            SetError(backend->Complete(*consumer, slot.metadata, index, cancelled));
+            const auto consumerCompletion = backend->Complete(*consumer, slot.metadata, index, cancelled);
+            SetError(consumerCompletion.status);
+            if (consumerCompletion.gpuWorkSubmitted)
+            {
+                pbprotocol::SaturatingIncrementUnsigned(working.consumerContinuationSubmissions);
+                slot.continuationMarkerPending = true;
+                slot.submittedAt = std::chrono::steady_clock::now();
+                if (cancelled || slot.continuationCount != 0)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(working.consumerContinuationRejections);
+                    SetError(CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion));
+                    slot.forceTerminalCancellation = true;
+                }
+                else
+                {
+                    slot.continuationCount = 1;
+                }
+                return;
+            }
         }
         slot.state = SlotState::Free;
+        slot.continuationCount = 0;
+        slot.continuationMarkerPending = false;
+        slot.forceTerminalCancellation = false;
     }
 
     void PollSlotsInState(const SlotState expectedState, const bool deliver) noexcept
@@ -330,6 +382,9 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
                 return;
             }
             slot.generation++;
+            slot.continuationCount = 0;
+            slot.continuationMarkerPending = false;
+            slot.forceTerminalCancellation = false;
             slot.metadata = {source.captureEpoch, source.arrivalOrdinal, source.timestamp100ns, backend->GetEnvironment(), backend->GetCapabilities()};
             slot.metadata.cursorState = source.cursorState;
             slot.metadata.pointer = source.pointer;

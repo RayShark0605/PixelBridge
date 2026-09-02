@@ -39,6 +39,16 @@ struct CaptureStatus
     bool operator==(const CaptureStatus&) const = default;
 };
 
+// Result of an owner-thread consumer completion callback. A true
+// gpuWorkSubmitted is a precise lifetime claim: the callback enqueued more work
+// on the supplied immediate context, so the PB-owned ROI slot must remain
+// leased until a new backend marker retires that work.
+struct CaptureConsumerCompletion
+{
+    CaptureStatus status;
+    bool gpuWorkSubmitted = false;
+};
+
 struct CaptureSize
 {
     std::int32_t width = 0;
@@ -177,6 +187,17 @@ public:
     // Optional hooks preserve the legacy raw API. Strict consumers invalidate
     // CPU admission before GPU drain, then retire each submitted consumer job.
     virtual void EpochInvalidated(std::uint64_t) noexcept {}
+    // The runtime permits at most one non-cancelled continuation. The first
+    // callback may enqueue one additional bounded GPU stage and return true;
+    // the following callback must return false. A callback that throws after
+    // it might have submitted work is conservatively treated as a continuation.
+    // cancelled always withholds GPU objects and must never request or submit
+    // a continuation.
+    [[nodiscard]] virtual CaptureConsumerCompletion CompleteStage(const RawRoiFrameMetadata& metadata, ID3D11Texture2D*, ID3D11DeviceContext* context, bool cancelled)
+    {
+        return {Completed(metadata, context, cancelled), false};
+    }
+    // Legacy completion hook. No GPU work may be submitted here.
     [[nodiscard]] virtual CaptureStatus Completed(const RawRoiFrameMetadata&, ID3D11DeviceContext*, bool) { return {}; }
 };
 
@@ -228,6 +249,9 @@ struct CaptureSnapshot
     std::uint64_t roiCopyTimingUnavailable = 0;
     std::uint64_t roiCopyTimeTotal100ns = 0;
     std::uint64_t roiCopyTimeHighWater100ns = 0;
+    std::uint64_t consumerContinuationSubmissions = 0;
+    std::uint64_t consumerContinuationCompletions = 0;
+    std::uint64_t consumerContinuationRejections = 0;
 };
 
 enum class CaptureFrameAgeDisposition : std::uint8_t

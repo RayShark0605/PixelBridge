@@ -503,6 +503,58 @@ RemoteVisualLowFpsErasure ValidateRemoteVisualLowFpsGeometry(const LocalDesktopG
     return RemoteVisualLowFpsErasure::None;
 }
 
+RemoteVisualLowFpsErasure ResolveRemoteVisualLowFpsSamplingGeometry(const LocalDesktopGeometry& geometry,
+    const std::uint32_t frameWidth, const std::uint32_t frameHeight, LocalDesktopGeometry& output,
+    const RemoteVisualLowFpsDecodePolicy& policy) noexcept
+{
+    if (!ValidPolicy(policy))
+    {
+        return RemoteVisualLowFpsErasure::InvalidPolicy;
+    }
+    const std::array<double, 5> values{geometry.originX, geometry.originY, geometry.scaleX, geometry.scaleY,
+        geometry.markerResidualPixels};
+    if (frameWidth == 0 || frameHeight == 0 ||
+        !std::ranges::all_of(values, [](const double value) { return std::isfinite(value); }) ||
+        geometry.originX < -kRemoteVisualLowFpsFrameBoundaryTolerancePixels ||
+        geometry.originY < -kRemoteVisualLowFpsFrameBoundaryTolerancePixels || geometry.scaleX <= 0 ||
+        geometry.scaleY <= 0 || geometry.markerResidualPixels < 0)
+    {
+        return RemoteVisualLowFpsErasure::InvalidInput;
+    }
+
+    LocalDesktopGeometry candidate = geometry;
+    const auto SnapAxisToFrame = [](const double framePixels, const double canvasPixels, double& origin,
+                                    double& scale) noexcept
+    {
+        const double farBoundary = origin + scale * canvasPixels;
+        if (!std::isfinite(farBoundary) || farBoundary > framePixels + kRemoteVisualLowFpsFrameBoundaryTolerancePixels)
+        {
+            return false;
+        }
+        const double boundedOrigin = std::max(0.0, origin);
+        const double boundedFarBoundary = std::min(framePixels, farBoundary);
+        if (boundedFarBoundary <= boundedOrigin)
+        {
+            return false;
+        }
+        origin = boundedOrigin;
+        scale = (boundedFarBoundary - boundedOrigin) / canvasPixels;
+        return std::isfinite(scale) && scale > 0;
+    };
+    if (!SnapAxisToFrame(frameWidth, kLocalDesktopCanvasWidth, candidate.originX, candidate.scaleX) ||
+        !SnapAxisToFrame(frameHeight, kLocalDesktopCanvasHeight, candidate.originY, candidate.scaleY))
+    {
+        return RemoteVisualLowFpsErasure::FrameOutOfBounds;
+    }
+    const auto status = ValidateRemoteVisualLowFpsGeometry(candidate, policy);
+    if (status != RemoteVisualLowFpsErasure::None)
+    {
+        return status;
+    }
+    output = candidate;
+    return RemoteVisualLowFpsErasure::None;
+}
+
 ModulationStatus EncodeRemoteVisualLowFpsFrame(const std::span<const std::byte> bootstrapRecord,
     const std::span<const std::byte> logicalData, const std::span<std::byte> outBgra) noexcept
 {
@@ -615,8 +667,8 @@ RemoteVisualLowFpsObservation DecodeRemoteVisualLowFpsFrame(const LumaView& view
         observation.erasure = RemoteVisualLowFpsErasure::OverlappingSpans;
         return observation;
     }
-    observation.bootstrap = detail::DecodeLocalDesktopScaffold(view, policy.locator,
-        detail::LocalDesktopBinding::RemoteVisualLowFps);
+    observation.bootstrap = DecodeLocalDesktopBootstrap(view,
+        LocalDesktopBootstrapBinding{kRemoteVisualLowFpsProfileId, kRemoteVisualLowFpsLayoutVersion}, policy.locator);
     if (!observation.bootstrap.IsAccepted())
     {
         observation.erasure = observation.bootstrap.erasure == LocalDesktopErasureReason::UnsupportedRecord ?
@@ -630,19 +682,11 @@ RemoteVisualLowFpsObservation DecodeRemoteVisualLowFpsFrame(const LumaView& view
         observation.erasure = RemoteVisualLowFpsErasure::UnsupportedProfile;
         return observation;
     }
-    observation.erasure = ValidateRemoteVisualLowFpsGeometry(observation.bootstrap.geometry, policy);
+    LocalDesktopGeometry samplingGeometry;
+    observation.erasure = ResolveRemoteVisualLowFpsSamplingGeometry(observation.bootstrap.geometry,
+        view.width, view.height, samplingGeometry, policy);
     if (observation.erasure != RemoteVisualLowFpsErasure::None)
     {
-        return observation;
-    }
-    // ValidateRemoteVisualLowFpsGeometry already rejects a negative or non-finite origin, so
-    // bounding the far corner of the fixed logical canvas keeps every scaled sample in-frame.
-    const LocalDesktopGeometry& geometry = observation.bootstrap.geometry;
-    const double farCornerX = geometry.originX + geometry.scaleX * kLocalDesktopCanvasWidth;
-    const double farCornerY = geometry.originY + geometry.scaleY * kLocalDesktopCanvasHeight;
-    if (farCornerX > view.width || farCornerY > view.height)
-    {
-        observation.erasure = RemoteVisualLowFpsErasure::FrameOutOfBounds;
         return observation;
     }
     if (hardBits.size() < kRemoteVisualLowFpsDataBytes || softMetrics.size() < kRemoteVisualLowFpsCodedBits)
@@ -651,7 +695,7 @@ RemoteVisualLowFpsObservation DecodeRemoteVisualLowFpsFrame(const LumaView& view
         return observation;
     }
     detail::LumaReader reader(view, policy.maximumDataWorkUnits, true);
-    observation.erasure = Calibrate(reader, observation.bootstrap.geometry, policy, observation.calibration);
+    observation.erasure = Calibrate(reader, samplingGeometry, policy, observation.calibration);
     if (observation.erasure == RemoteVisualLowFpsErasure::None)
     {
         scratch.hard.fill(std::byte{0});
@@ -681,7 +725,7 @@ RemoteVisualLowFpsObservation DecodeRemoteVisualLowFpsFrame(const LumaView& view
             }
             std::array<double, 16> chips{};
             bool clipped = false;
-            if (!SampleTileChips(reader, observation.bootstrap.geometry, region, chips, clipped))
+            if (!SampleTileChips(reader, samplingGeometry, region, chips, clipped))
             {
                 observation.erasure = RemoteVisualLowFpsErasure::PixelReadFailure;
                 break;

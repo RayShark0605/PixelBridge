@@ -69,8 +69,9 @@ struct ScreenCaptureFrame
 {
     ScreenCaptureFrameMetadata metadata;
     // Borrowed PB-owned upright ROI, never an OS acquisition/pool surface.
-    // Only Submit may use this pointer. ComPtr/AddRef does NOT extend the slot
-    // lease: submitting later work with a retained reference is invalid.
+    // Submit and a non-cancelled CompleteStage may use this pointer. A consumer
+    // may retain only its pointer value while that staged job is pending;
+    // ComPtr/AddRef does NOT extend the capture slot lease outside callbacks.
     ID3D11Texture2D* texture = nullptr;
 };
 
@@ -100,9 +101,21 @@ public:
     // device or frame ever arrives. Must be bounded; never scan an image here.
     virtual void DomainInvalidated(const ScreenCaptureDomain& domain) noexcept = 0;
     [[nodiscard]] virtual CaptureStatus Submit(const ScreenCaptureFrame& frame, ID3D11DeviceContext* context) = 0;
-    // After the SECOND (consumer-work) marker. Only this owner callback may do
-    // diagnostic nonblocking Map/Unmap. No new GPU work may be submitted here.
-    // cancelled can run during deferred cleanup: do NOT Map or touch the context.
+    // Optional staged completion. The first non-cancelled callback may submit
+    // exactly one additional bounded GPU stage on context and return true. The
+    // capture runtime records another retirement marker while retaining the
+    // same PB-owned ROI slot; the following callback must return false. Once a
+    // callback might have submitted work it must return true even when its
+    // status is failure. cancelled always has null GPU objects and must never
+    // request a continuation.
+    [[nodiscard]] virtual CaptureConsumerCompletion CompleteStage(const ScreenCaptureFrameMetadata& metadata, ID3D11Texture2D*,
+                                                                   ID3D11DeviceContext* context, bool cancelled)
+    {
+        return {Completed(metadata, context, cancelled), false};
+    }
+    // Legacy completion hook. It runs after the consumer-work marker but cannot
+    // extend the ROI lease or submit new GPU work. cancelled can run during
+    // deferred cleanup: do NOT Map or touch the context.
     [[nodiscard]] virtual CaptureStatus Completed(const ScreenCaptureFrameMetadata&, ID3D11DeviceContext*, bool) { return {}; }
     virtual void Erased(const CaptureErasure&) noexcept {}
 };

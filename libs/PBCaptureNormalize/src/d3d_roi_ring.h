@@ -17,7 +17,7 @@ public:
     [[nodiscard]] CaptureStatus Recreate(const CaptureConfig& config, const CaptureEnvironment& environment) noexcept;
     [[nodiscard]] CaptureStatus Copy(const FrameLease& frame, std::size_t slotIndex, bool& submitted) noexcept;
     [[nodiscard]] CaptureStatus Consume(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, std::size_t slotIndex) noexcept;
-    [[nodiscard]] CaptureStatus Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, bool cancelled) noexcept;
+    [[nodiscard]] CaptureConsumerCompletion Complete(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, bool cancelled) noexcept;
     [[nodiscard]] CompletionResult Poll(std::size_t slotIndex) noexcept;
     [[nodiscard]] bool DeviceRemoved() const noexcept;
     [[nodiscard]] bool UsesFence() const noexcept;
