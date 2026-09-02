@@ -167,6 +167,26 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     snapshot.fingerprintedFrames = 0;
     snapshot.uniqueVisualFps.reset();
     snapshot.admittedFrameSequenceFps = 59.5;
+    snapshot.telemetryBootstrapAttempts = 5;
+    snapshot.telemetryBootstrapSuccesses = 4;
+    snapshot.bootstrapSuccessRate = 0.8;
+    snapshot.observedLocatorGeometry.samples = 4;
+    snapshot.observedLocatorGeometry.lastOriginX = 464.875;
+    snapshot.observedLocatorGeometry.lastOriginY = 253.875;
+    snapshot.observedLocatorGeometry.lastScaleX = 0.85;
+    snapshot.observedLocatorGeometry.lastScaleY = 0.84999;
+    snapshot.observedLocatorGeometry.lastMarkerResidualPixels = 0.18;
+    snapshot.observedLocatorGeometry.minimumOriginX = 464.86;
+    snapshot.observedLocatorGeometry.maximumOriginX = 464.89;
+    snapshot.observedLocatorGeometry.minimumOriginY = 253.86;
+    snapshot.observedLocatorGeometry.maximumOriginY = 253.91;
+    snapshot.observedLocatorGeometry.minimumScaleX = 0.84997;
+    snapshot.observedLocatorGeometry.maximumScaleX = 0.85001;
+    snapshot.observedLocatorGeometry.minimumScaleY = 0.84995;
+    snapshot.observedLocatorGeometry.maximumScaleY = 0.85001;
+    snapshot.observedLocatorGeometry.minimumMarkerResidualPixels = 0.08;
+    snapshot.observedLocatorGeometry.maximumMarkerResidualPixels = 0.47;
+    snapshot.observedLocatorGeometry.maximumScaleAnisotropy = 0.0001;
     snapshot.wholeFileDigestVerified = false;
     snapshot.finalPublishSucceeded = false;
     snapshot.backendReason = "WGC unavailable; no fallback was attempted";
@@ -319,6 +339,11 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     REQUIRE(json.find("\"roiPixelDigestUniqueVisualFps\":null") != std::string::npos);
     REQUIRE(json.find("production D3D11 fast path has no full-ROI CPU pixel digest") != std::string::npos);
     REQUIRE(json.find("\"admittedFrameSequenceFps\":59.5") != std::string::npos);
+    REQUIRE(json.find("\"observedLocatorGeometry\":{\"authority\":\"AcceptedBootstrapLocatorPixels\",\"samples\":4") !=
+        std::string::npos);
+    REQUIRE(json.find("\"minimumScaleX\":0.84997,\"maximumScaleX\":0.85001") != std::string::npos);
+    REQUIRE(json.find("\"maximumMarkerResidualPixels\":") != std::string::npos);
+    REQUIRE(json.find("\"maximumScaleAnisotropy\":") != std::string::npos);
     REQUIRE(json.find("\"offlineMode\":true") != std::string::npos);
     REQUIRE(json.find("\"captureOnly\":true") != std::string::npos);
     REQUIRE(json.find("\"sampledOutFrames\":37") != std::string::npos);
@@ -340,6 +365,10 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     REQUIRE(journalRecord.find("\"evaluatedCodewords\":12") != std::string::npos);
     REQUIRE(journalRecord.find("\"fecAcceptedTransportBlocks\":10") != std::string::npos);
     REQUIRE(journalRecord.find("\"temporallyAdmittedTransportBlocks\":8") != std::string::npos);
+    REQUIRE(journalRecord.find("\"observedLocatorGeometry\":{\"authority\":\"AcceptedBootstrapLocatorPixels\",\"samples\":4") !=
+        std::string::npos);
+    REQUIRE(journalRecord.find("\"lastScaleX\":") != std::string::npos);
+    REQUIRE(journalRecord.find("\"lastScaleY\":") != std::string::npos);
     REQUIRE(journalRecord.find("\"remoteMetricSamples\":583200") != std::string::npos);
     REQUIRE(journalRecord.find("\"remoteSymbolSamples\":150507") != std::string::npos);
     REQUIRE(journalRecord.find("\"monitorSafetyPreflightPassed\":true") != std::string::npos);

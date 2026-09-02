@@ -81,6 +81,44 @@ void WriteOptionalRect(std::ostream& stream, const std::optional<MetadataPhysica
            << ",\"right\":" << rectangle->right << ",\"bottom\":" << rectangle->bottom << '}';
 }
 
+void WriteObservedLocatorGeometry(std::ostream& stream, const ObservedLocatorGeometrySnapshot& geometry)
+{
+    stream << "{\"authority\":\"AcceptedBootstrapLocatorPixels\",\"samples\":" << geometry.samples
+           << ",\"lastOriginX\":";
+    WriteOptionalNumber(stream, geometry.lastOriginX);
+    stream << ",\"lastOriginY\":";
+    WriteOptionalNumber(stream, geometry.lastOriginY);
+    stream << ",\"lastScaleX\":";
+    WriteOptionalNumber(stream, geometry.lastScaleX);
+    stream << ",\"lastScaleY\":";
+    WriteOptionalNumber(stream, geometry.lastScaleY);
+    stream << ",\"lastMarkerResidualPixels\":";
+    WriteOptionalNumber(stream, geometry.lastMarkerResidualPixels);
+    stream << ",\"minimumOriginX\":";
+    WriteOptionalNumber(stream, geometry.minimumOriginX);
+    stream << ",\"maximumOriginX\":";
+    WriteOptionalNumber(stream, geometry.maximumOriginX);
+    stream << ",\"minimumOriginY\":";
+    WriteOptionalNumber(stream, geometry.minimumOriginY);
+    stream << ",\"maximumOriginY\":";
+    WriteOptionalNumber(stream, geometry.maximumOriginY);
+    stream << ",\"minimumScaleX\":";
+    WriteOptionalNumber(stream, geometry.minimumScaleX);
+    stream << ",\"maximumScaleX\":";
+    WriteOptionalNumber(stream, geometry.maximumScaleX);
+    stream << ",\"minimumScaleY\":";
+    WriteOptionalNumber(stream, geometry.minimumScaleY);
+    stream << ",\"maximumScaleY\":";
+    WriteOptionalNumber(stream, geometry.maximumScaleY);
+    stream << ",\"minimumMarkerResidualPixels\":";
+    WriteOptionalNumber(stream, geometry.minimumMarkerResidualPixels);
+    stream << ",\"maximumMarkerResidualPixels\":";
+    WriteOptionalNumber(stream, geometry.maximumMarkerResidualPixels);
+    stream << ",\"maximumScaleAnisotropy\":";
+    WriteOptionalNumber(stream, geometry.maximumScaleAnisotropy);
+    stream << '}';
+}
+
 void WriteRemoteMetadata(std::ostream& stream, const RemoteRunMetadata& metadata)
 {
     stream << "{\"schema\":\"PixelBridge.RemoteVisualRunMetadata.1\",\"runId\":";
@@ -403,6 +441,8 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"telemetryBootstrapSuccesses\":" << snapshot.telemetryBootstrapSuccesses
            << ",\"bootstrapSuccessRate\":";
     WriteOptionalNumber(stream, snapshot.bootstrapSuccessRate);
+    stream << ",\"observedLocatorGeometry\":";
+    WriteObservedLocatorGeometry(stream, snapshot.observedLocatorGeometry);
     stream << ",\"bootstrapAcceptedFrames\":" << snapshot.bootstrapAcceptedFrames
            << ",\"bootstrapRejectedFrames\":" << snapshot.bootstrapRejectedFrames
            << ",\"bootstrapMismatchFrames\":" << snapshot.bootstrapMismatchFrames

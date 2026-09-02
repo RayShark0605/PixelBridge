@@ -2244,6 +2244,7 @@ public:
             value.telemetryBootstrapAttempts = 0;
             value.telemetryBootstrapSuccesses = 0;
             value.bootstrapSuccessRate.reset();
+            value.observedLocatorGeometry = {};
             value.evaluatedDataFrames = 0;
             value.evaluatedCodewords = 0;
             value.postFecFailedFrames = 0;
@@ -2397,6 +2398,9 @@ private:
             bootstrapSample.scaleY = result.bootstrap.geometry.scaleY;
             bootstrapSample.phaseX = result.bootstrap.geometry.originX - std::floor(result.bootstrap.geometry.originX);
             bootstrapSample.phaseY = result.bootstrap.geometry.originY - std::floor(result.bootstrap.geometry.originY);
+            bootstrapSample.originX = result.bootstrap.geometry.originX;
+            bootstrapSample.originY = result.bootstrap.geometry.originY;
+            bootstrapSample.markerResidualPixels = result.bootstrap.geometry.markerResidualPixels;
         }
         RequireTelemetry(telemetry_.RecordBootstrap(bootstrapSample), "PBTelemetry RecordBootstrap");
     }
@@ -2927,6 +2931,25 @@ private:
             value.telemetryBootstrapAttempts = telemetry.bootstrapAttempts;
             value.telemetryBootstrapSuccesses = telemetry.bootstrapSuccesses;
             value.bootstrapSuccessRate = telemetry.bootstrapSuccessRate;
+            const auto& sourceGeometry = telemetry.observedLocatorGeometry;
+            auto& destinationGeometry = value.observedLocatorGeometry;
+            destinationGeometry.samples = sourceGeometry.samples;
+            destinationGeometry.lastOriginX = sourceGeometry.lastOriginX;
+            destinationGeometry.lastOriginY = sourceGeometry.lastOriginY;
+            destinationGeometry.lastScaleX = sourceGeometry.lastScaleX;
+            destinationGeometry.lastScaleY = sourceGeometry.lastScaleY;
+            destinationGeometry.lastMarkerResidualPixels = sourceGeometry.lastMarkerResidualPixels;
+            destinationGeometry.minimumOriginX = sourceGeometry.minimumOriginX;
+            destinationGeometry.maximumOriginX = sourceGeometry.maximumOriginX;
+            destinationGeometry.minimumOriginY = sourceGeometry.minimumOriginY;
+            destinationGeometry.maximumOriginY = sourceGeometry.maximumOriginY;
+            destinationGeometry.minimumScaleX = sourceGeometry.minimumScaleX;
+            destinationGeometry.maximumScaleX = sourceGeometry.maximumScaleX;
+            destinationGeometry.minimumScaleY = sourceGeometry.minimumScaleY;
+            destinationGeometry.maximumScaleY = sourceGeometry.maximumScaleY;
+            destinationGeometry.minimumMarkerResidualPixels = sourceGeometry.minimumMarkerResidualPixels;
+            destinationGeometry.maximumMarkerResidualPixels = sourceGeometry.maximumMarkerResidualPixels;
+            destinationGeometry.maximumScaleAnisotropy = sourceGeometry.maximumScaleAnisotropy;
             value.evaluatedDataFrames = telemetry.fecEvaluatedFrames;
             value.evaluatedCodewords = telemetry.fecCodewords;
             value.postFecFailedFrames = telemetry.postFecFailedFrames;

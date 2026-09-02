@@ -311,6 +311,54 @@ def _validate_stall(value: Any, name: str) -> None:
     _field(value, "active", bool)
 
 
+def _validate_observed_locator_geometry(decoder: dict[str, Any]) -> None:
+    geometry = decoder.get("observedLocatorGeometry")
+    if geometry is None:
+        return
+    if not isinstance(geometry, dict):
+        raise ReportError("Decoder observedLocatorGeometry must be an object")
+    metric_names = {
+        "lastOriginX", "lastOriginY", "lastScaleX", "lastScaleY", "lastMarkerResidualPixels",
+        "minimumOriginX", "maximumOriginX", "minimumOriginY", "maximumOriginY", "minimumScaleX",
+        "maximumScaleX", "minimumScaleY", "maximumScaleY", "minimumMarkerResidualPixels",
+        "maximumMarkerResidualPixels", "maximumScaleAnisotropy",
+    }
+    _expect_exact_keys(geometry, {"authority", "samples", *metric_names}, "Decoder observedLocatorGeometry")
+    _require_equal("observed Locator geometry authority", _field(geometry, "authority", str),
+                   "AcceptedBootstrapLocatorPixels")
+    samples = _nonnegative_integer(geometry, "samples")
+    _require_equal("observed Locator geometry samples", samples,
+                   _nonnegative_integer(decoder, "telemetryBootstrapSuccesses"))
+    values: dict[str, int | float | None] = {}
+    for name in ("lastOriginX", "lastOriginY", "minimumOriginX", "maximumOriginX", "minimumOriginY",
+                 "maximumOriginY"):
+        values[name] = _nullable_number(geometry, name)
+    for name in ("lastScaleX", "lastScaleY", "minimumScaleX", "maximumScaleX", "minimumScaleY",
+                 "maximumScaleY"):
+        values[name] = _nullable_number(geometry, name, minimum=0.000001, maximum=16.0)
+    for name in ("lastMarkerResidualPixels", "minimumMarkerResidualPixels", "maximumMarkerResidualPixels",
+                 "maximumScaleAnisotropy"):
+        values[name] = _nullable_number(geometry, name, minimum=0.0, maximum=16.0)
+    measured = samples != 0
+    for name in metric_names:
+        if measured != (values[name] is not None):
+            state = "measured" if measured else "null"
+            raise ReportError(f"Decoder observedLocatorGeometry.{name} must be {state} for its sample count")
+    if not measured:
+        return
+    for axis in ("OriginX", "OriginY", "ScaleX", "ScaleY", "MarkerResidualPixels"):
+        minimum = float(values[f"minimum{axis}"])
+        maximum = float(values[f"maximum{axis}"])
+        last = float(values[f"last{axis}"])
+        if minimum > maximum:
+            raise ReportError(f"Decoder observedLocatorGeometry {axis} range is inverted")
+        if last < minimum or last > maximum:
+            raise ReportError(f"Decoder observedLocatorGeometry last{axis} is outside its observed range")
+    last_anisotropy = abs(float(values["lastScaleX"]) - float(values["lastScaleY"]))
+    if float(values["maximumScaleAnisotropy"]) + 1e-15 < last_anisotropy:
+        raise ReportError("Decoder observedLocatorGeometry maximumScaleAnisotropy is below the last sample")
+
+
 def _validate_lf4_encoder(encoder: dict[str, Any]) -> None:
     _require_equal("LF4 VisualProfileId", _field(encoder, "visualProfileId", int), LF4_PROFILE_ID)
     _require_equal("LF4 LayoutVersion", _field(encoder, "visualLayoutVersion", int), LF4_LAYOUT_VERSION)
@@ -452,6 +500,7 @@ def _validate_v2_endpoints(encoder: dict[str, Any], decoder: dict[str, Any]) -> 
                  "duplicateFrameSequences", "reorderedFrameSequences", "frameSequenceGapEvents",
                  "skippedFrameSequences", "endToEndUniqueFrameSequences", "captureEpochResets"):
         _nonnegative_integer(decoder, name)
+    _validate_observed_locator_geometry(decoder)
     _nullable_number(decoder, "recoveryProgress", minimum=0.0, maximum=1.0)
     for name in ("instantVerifiedRawGoodputBytesPerSecond", "smoothedVerifiedRawGoodputBytesPerSecond",
                  "averageVerifiedRawGoodputBytesPerSecond", "verifiedEncodedGoodputBitsPerSecond",
@@ -707,6 +756,7 @@ def _markdown(combined: dict[str, Any]) -> str:
     outer_admission = decoder.get("outerAdmission") if isinstance(decoder.get("outerAdmission"), dict) else {}
     capture_stall = decoder.get("captureStall") if isinstance(decoder.get("captureStall"), dict) else {}
     visual_stall = decoder.get("visualStall") if isinstance(decoder.get("visualStall"), dict) else {}
+    locator_geometry = decoder.get("observedLocatorGeometry") if isinstance(decoder.get("observedLocatorGeometry"), dict) else {}
     lines = [
         f"# PixelBridge RemoteVisual Run {combined['runId']}",
         "",
@@ -724,7 +774,8 @@ def _markdown(combined: dict[str, Any]) -> str:
         f"| Encoder state | `{encoder.get('state')}` |",
         f"| Provider / mode | `{metadata.get('remoteProvider')}` / `{metadata.get('remoteMode')}` |",
         f"| Target / observed remote FPS | `{metadata.get('targetFps')}` / `{metadata.get('observedFps')}` |",
-        f"| Geometry / scale | `{metadata.get('geometryStatus')}` / `{metadata.get('estimatedScaleX')},{metadata.get('estimatedScaleY')}` |",
+        f"| Declared metadata geometry / estimated scale (not Locator truth) | `{metadata.get('geometryStatus')}` / `{metadata.get('estimatedScaleX')},{metadata.get('estimatedScaleY')}` |",
+        f"| Accepted Locator scale | `{locator_geometry.get('lastScaleX')},{locator_geometry.get('lastScaleY')}`; samples `{locator_geometry.get('samples')}` |",
         f"| Configured / generated / presented logical FPS | `{encoder.get('configuredLogicalVisualFps')}` / `{encoder.get('generatedVisualFramesPerSecond')}` / `{encoder.get('presentedVisualFps')}` |",
         f"| Raw visual / InnerFEC information bits per logical frame | `{capacity.get('rawVisualBitsPerLogicalFrame')}` / `{None if capacity.get('innerFecInformationBytesPerLogicalFrame') is None else capacity.get('innerFecInformationBytesPerLogicalFrame') * 8}` |",
         f"| Transport ceiling bytes/frame / configured bytes/s | `{capacity.get('transportPayloadCeilingBytesPerLogicalFrame')}` / `{capacity.get('configuredTransportPayloadCeilingBytesPerSecond')}` |",

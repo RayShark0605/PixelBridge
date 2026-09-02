@@ -67,6 +67,102 @@ function ConvertFrom-PBStrictJsonText
     return $value
 }
 
+function Assert-PBPilotExactKeys
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Dictionary,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedKeys,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($Dictionary -isnot [System.Collections.IDictionary])
+    {
+        throw "$Name must be a JSON object"
+    }
+    $actualKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($key in $Dictionary.Keys)
+    {
+        if (-not $actualKeys.Add([string]$key))
+        {
+            throw "$Name contains duplicate key '$key'"
+        }
+    }
+    if ($actualKeys.Count -ne $ExpectedKeys.Count)
+    {
+        throw "$Name does not contain the exact required key set"
+    }
+    foreach ($key in $ExpectedKeys)
+    {
+        if (-not $actualKeys.Remove($key))
+        {
+            throw "$Name is missing exact key '$key'"
+        }
+    }
+}
+
+function Get-PBPilotFiniteDouble
+{
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -isnot [ValueType])
+    {
+        throw "$Name must be a finite JSON number"
+    }
+    try
+    {
+        $typeCode = [Type]::GetTypeCode($Value.GetType())
+        if ($typeCode -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16,
+            [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64,
+            [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal))
+        {
+            throw 'unsupported numeric type'
+        }
+        $number = [double]$Value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number))
+        {
+            throw 'non-finite number'
+        }
+        return $number
+    }
+    catch
+    {
+        throw "$Name must be a finite JSON number"
+    }
+}
+
+function Get-PBPilotUInt32
+{
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -isnot [ValueType])
+    {
+        throw "$Name must be a non-negative UInt32 integer"
+    }
+    try
+    {
+        $typeCode = [Type]::GetTypeCode($Value.GetType())
+        if ($typeCode -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16,
+            [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64,
+            [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal))
+        {
+            throw 'unsupported numeric type'
+        }
+        $number = [decimal]$Value
+        if ($number -lt 0 -or $number -gt [decimal][UInt32]::MaxValue -or [decimal]::Truncate($number) -ne $number)
+        {
+            throw 'out of range or fractional'
+        }
+        return [UInt32]$number
+    }
+    catch
+    {
+        throw "$Name must be a non-negative UInt32 integer"
+    }
+}
+
 function Read-PBBoundedJson
 {
     param(
@@ -431,7 +527,8 @@ function Import-PBRemoteVisualPilotPlan
     }
     $plan = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 256KB
     $schema = [string]$plan.schema
-    if ($schema -notin @('PixelBridge.RemoteVisualPilotPlan.1', 'PixelBridge.RemoteVisualPilotPlan.2') -or
+    if (@('PixelBridge.RemoteVisualPilotPlan.1', 'PixelBridge.RemoteVisualPilotPlan.2',
+        'PixelBridge.RemoteVisualPilotPlan.3') -cnotcontains $schema -or
         [string]$plan.runId -cnotmatch '^[0-9a-f]{32}$')
     {
         throw 'RemoteVisual pilot plan schema or RunId is invalid'
@@ -483,7 +580,10 @@ function Import-PBRemoteVisualPilotPlan
     {
         throw 'RemoteVisual pilot plan identity/profile constants mismatch'
     }
-    if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
+    $isStep21Plan = $schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2' -or
+        $schema -ceq 'PixelBridge.RemoteVisualPilotPlan.3'
+    $isCurrentStep21Plan = $schema -ceq 'PixelBridge.RemoteVisualPilotPlan.3'
+    if ($isStep21Plan)
     {
         if ($plan.matrix -isnot [System.Collections.IDictionary] -or
             [string]$plan.matrix.modeClass -notin @('QualityPriority', 'Automatic', 'Restricted') -or
@@ -493,6 +593,18 @@ function Import-PBRemoteVisualPilotPlan
             [string]$plan.matrix.runIsolation -cne 'IndependentRunIdAndArtifacts; metrics from different runs must not be merged')
         {
             throw 'RemoteVisual Step 21 plan matrix identity or run-isolation contract mismatch'
+        }
+        if ($isCurrentStep21Plan)
+        {
+            Assert-PBPilotExactKeys -Dictionary $plan.matrix -ExpectedKeys @('modeClass', 'visibleRemoteMode',
+                'scaleTarget', 'profileComparisonRole', 'backendCoverageRole', 'runIsolation') `
+                -Name 'RemoteVisual Step 21 matrix tuple'
+        }
+        if ($isCurrentStep21Plan -and
+            ([string]$plan.matrix.scaleTarget -notin @('0.750', '1.000', '1.259', '1.500') -or
+             [string]$plan.matrix.scaleTarget -cne [string]$plan.remoteGeometry.expectedLocatorScaleTarget))
+        {
+            throw 'RemoteVisual Step 21 plan lacks one explicit matching Locator scale target'
         }
     }
     $logicalFps = [UInt32]$plan.logicalFps
@@ -533,7 +645,7 @@ function Import-PBRemoteVisualPilotPlan
     {
         throw 'RemoteVisual pilot plan RunId/source contract mismatch'
     }
-    if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2' -and
+    if ($isStep21Plan -and
         ([string]$plan.remoteUi.provenance -cne 'RemoteUiVisible' -or
          [string]$plan.remoteUi.visibleClaims.remoteMode -cne [string]$plan.matrix.visibleRemoteMode -or
          @($plan.remoteUi.visibleFields) -cnotcontains 'remoteMode'))
@@ -558,33 +670,96 @@ function Import-PBRemoteVisualPilotPlan
     {
         throw 'RemoteVisual LF4 Encoder Data Window must be exactly 1920x1080 physical pixels'
     }
-    $scaleX = [double]$decoderRoi.width / 1920.0
-    $scaleY = [double]$decoderRoi.height / 1080.0
-    if ([Math]::Abs([double]$plan.remoteGeometry.estimatedScaleX - $scaleX) -gt 0.0000001 -or
-        [Math]::Abs([double]$plan.remoteGeometry.estimatedScaleY - $scaleY) -gt 0.0000001)
+    $captureRoiScaleX = [double]$decoderRoi.width / 1920.0
+    $captureRoiScaleY = [double]$decoderRoi.height / 1080.0
+    if ($isCurrentStep21Plan)
     {
-        throw 'RemoteVisual pilot ROI scale is inconsistent with its physical rectangle'
+        Assert-PBPilotExactKeys -Dictionary $plan.remoteGeometry -ExpectedKeys @('captureRoiWidth',
+            'captureRoiHeight', 'captureRoiScaleX', 'captureRoiScaleY', 'expectedLocatorScaleTarget',
+            'scaleAuthority', 'axisAligned', 'cropStatus', 'locatorRemainsAuthoritative') `
+            -Name 'RemoteVisual Step 21 geometry contract'
+        $recordedCaptureRoiWidth = Get-PBPilotUInt32 -Value $plan.remoteGeometry.captureRoiWidth `
+            -Name 'RemoteVisual Step 21 captureRoiWidth'
+        $recordedCaptureRoiHeight = Get-PBPilotUInt32 -Value $plan.remoteGeometry.captureRoiHeight `
+            -Name 'RemoteVisual Step 21 captureRoiHeight'
+        $recordedCaptureRoiScaleX = Get-PBPilotFiniteDouble -Value $plan.remoteGeometry.captureRoiScaleX `
+            -Name 'RemoteVisual Step 21 captureRoiScaleX'
+        $recordedCaptureRoiScaleY = Get-PBPilotFiniteDouble -Value $plan.remoteGeometry.captureRoiScaleY `
+            -Name 'RemoteVisual Step 21 captureRoiScaleY'
+        if ($recordedCaptureRoiWidth -ne [UInt32]$decoderRoi.width -or
+            $recordedCaptureRoiHeight -ne [UInt32]$decoderRoi.height -or
+            [Math]::Abs($recordedCaptureRoiScaleX - $captureRoiScaleX) -gt 0.0000001 -or
+            [Math]::Abs($recordedCaptureRoiScaleY - $captureRoiScaleY) -gt 0.0000001 -or
+            [string]$plan.remoteGeometry.scaleAuthority -cne 'AcceptedBootstrapLocatorPixels' -or
+            $plan.remoteGeometry.axisAligned -isnot [bool] -or -not [bool]$plan.remoteGeometry.axisAligned -or
+            [string]$plan.remoteGeometry.cropStatus -cne 'NoneExpected' -or
+            $plan.remoteGeometry.locatorRemainsAuthoritative -isnot [bool] -or
+            -not [bool]$plan.remoteGeometry.locatorRemainsAuthoritative)
+        {
+            throw 'RemoteVisual Step 21 capture ROI or Locator authority contract is invalid'
+        }
+        $scaleTarget = [string]$plan.matrix.scaleTarget
+        $requiredTargetDimensions = switch ($scaleTarget)
+        {
+            '0.750' { [ordered]@{ width = 1440; height = 810 } }
+            '1.000' { [ordered]@{ width = 1920; height = 1080 } }
+            '1.259' { [ordered]@{ width = 2417; height = 1360 } }
+            '1.500' { [ordered]@{ width = 2880; height = 1620 } }
+        }
+        if ([bool]$profileContract.scaledGeometry)
+        {
+            $expectedGeometryMode = if ($scaleTarget -ceq '1.000') { 'Strict1To1' } else { 'LocatorScaled' }
+            if ($decoderRoi.width -lt 960 -or $decoderRoi.width -gt 3840 -or
+                $decoderRoi.height -lt 540 -or $decoderRoi.height -gt 2160 -or
+                $decoderRoi.width -lt [int]$requiredTargetDimensions.width -or
+                $decoderRoi.height -lt [int]$requiredTargetDimensions.height -or
+                [string]$plan.geometryMode -cne $expectedGeometryMode)
+            {
+                throw 'RemoteVisual LF4 Step 21 ROI cannot contain its target or has the wrong target geometry mode'
+            }
+        }
+        elseif ($scaleTarget -cne '1.000' -or [string]$plan.geometryMode -cne 'Strict1To1' -or
+            $decoderRoi.width -ne 1920 -or $decoderRoi.height -ne 1080)
+        {
+            throw 'Direct and Shape Step 21 plans require target 1.000 and an exact strict 1920x1080 ROI'
+        }
     }
-    if ([bool]$profileContract.scaledGeometry -and
-        ($scaleX -lt 0.5 -or $scaleX -gt 2.0 -or $scaleY -lt 0.5 -or $scaleY -gt 2.0))
+    else
     {
-        throw 'RemoteVisual LF4 pilot ROI is outside the 0.5..2.0 domain'
-    }
-    if (-not [bool]$profileContract.scaledGeometry -and
-        ([string]$plan.geometryMode -cne 'Strict1To1' -or
-         [Math]::Abs($scaleX - 1.0) -gt 0.0000001 -or [Math]::Abs($scaleY - 1.0) -gt 0.0000001))
-    {
-        throw 'Direct and Shape field-run plans require strict 1:1 geometry; no silent resampling is permitted'
-    }
-    if ([string]$plan.geometryMode -ceq 'Strict1To1' -and
-        ([Math]::Abs($scaleX - 1.0) -gt 0.0000001 -or [Math]::Abs($scaleY - 1.0) -gt 0.0000001))
-    {
-        throw 'Strict1To1 pilot plan must use an exact 1920x1080 Decoder ROI'
-    }
-    if ([string]$plan.geometryMode -ceq 'LocatorScaled' -and
-        [Math]::Abs($scaleX - 1.0) -le 0.0000001 -and [Math]::Abs($scaleY - 1.0) -le 0.0000001)
-    {
-        throw 'LocatorScaled pilot plan must exercise a non-1:1 geometry'
+        $estimatedScaleX = Get-PBPilotFiniteDouble -Value $plan.remoteGeometry.estimatedScaleX `
+            -Name 'RemoteVisual pilot estimatedScaleX'
+        $estimatedScaleY = Get-PBPilotFiniteDouble -Value $plan.remoteGeometry.estimatedScaleY `
+            -Name 'RemoteVisual pilot estimatedScaleY'
+        if ([Math]::Abs($estimatedScaleX - $captureRoiScaleX) -gt 0.0000001 -or
+            [Math]::Abs($estimatedScaleY - $captureRoiScaleY) -gt 0.0000001)
+        {
+            throw 'RemoteVisual pilot ROI scale is inconsistent with its physical rectangle'
+        }
+        if ([bool]$profileContract.scaledGeometry -and
+            ($captureRoiScaleX -lt 0.5 -or $captureRoiScaleX -gt 2.0 -or
+             $captureRoiScaleY -lt 0.5 -or $captureRoiScaleY -gt 2.0))
+        {
+            throw 'RemoteVisual LF4 pilot ROI is outside the 0.5..2.0 domain'
+        }
+        if (-not [bool]$profileContract.scaledGeometry -and
+            ([string]$plan.geometryMode -cne 'Strict1To1' -or
+             [Math]::Abs($captureRoiScaleX - 1.0) -gt 0.0000001 -or
+             [Math]::Abs($captureRoiScaleY - 1.0) -gt 0.0000001))
+        {
+            throw 'Direct and Shape field-run plans require strict 1:1 geometry; no silent resampling is permitted'
+        }
+        if ([string]$plan.geometryMode -ceq 'Strict1To1' -and
+            ([Math]::Abs($captureRoiScaleX - 1.0) -gt 0.0000001 -or
+             [Math]::Abs($captureRoiScaleY - 1.0) -gt 0.0000001))
+        {
+            throw 'Strict1To1 pilot plan must use an exact 1920x1080 Decoder ROI'
+        }
+        if ([string]$plan.geometryMode -ceq 'LocatorScaled' -and
+            [Math]::Abs($captureRoiScaleX - 1.0) -le 0.0000001 -and
+            [Math]::Abs($captureRoiScaleY - 1.0) -le 0.0000001)
+        {
+            throw 'LocatorScaled pilot plan must exercise a non-1:1 geometry'
+        }
     }
 
     $expectedPolicy = switch ($logicalFps)
@@ -593,9 +768,19 @@ function Import-PBRemoteVisualPilotPlan
         2 { [ordered]@{ encoderSeconds = 360; decoderSeconds = 300; noProgressSeconds = 90; replaySampleFps = 4 } }
         5 { [ordered]@{ encoderSeconds = 180; decoderSeconds = 120; noProgressSeconds = 60; replaySampleFps = 10 } }
     }
-    if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2' -and [Math]::Max($scaleX, $scaleY) -gt 1.3)
+    if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2' -and
+        [Math]::Max($captureRoiScaleX, $captureRoiScaleY) -gt 1.3)
     {
         $expectedPolicy.replaySampleFps = $logicalFps
+    }
+    elseif ($isCurrentStep21Plan)
+    {
+        $prospectiveFrames = [UInt64]$expectedPolicy.replaySampleFps * ([UInt64]$expectedPolicy.decoderSeconds + 2) + 2
+        $prospectiveBytes = [UInt64]$decoderRoi.width * [UInt64]$decoderRoi.height * 4 * $prospectiveFrames + 256MB
+        if ($prospectiveBytes -gt 16GB)
+        {
+            $expectedPolicy.replaySampleFps = $logicalFps
+        }
     }
     $policy = $plan.policy
     $captureBackendValid = if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.1')
@@ -623,7 +808,7 @@ function Import-PBRemoteVisualPilotPlan
     {
         throw 'RemoteVisual pilot plan does not use the frozen Step 20 execution policy'
     }
-    if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2')
+    if ($isStep21Plan)
     {
         $expectedEncoderRuntimeEnforcement = if ([string]$plan.profileToken -ceq 'remote-lf4')
         {

@@ -241,6 +241,27 @@ struct EncoderSnapshot
     RemoteRunMetadata remoteMetadata;
 };
 
+struct ObservedLocatorGeometrySnapshot
+{
+    std::uint64_t samples = 0;
+    std::optional<double> lastOriginX;
+    std::optional<double> lastOriginY;
+    std::optional<double> lastScaleX;
+    std::optional<double> lastScaleY;
+    std::optional<double> lastMarkerResidualPixels;
+    std::optional<double> minimumOriginX;
+    std::optional<double> maximumOriginX;
+    std::optional<double> minimumOriginY;
+    std::optional<double> maximumOriginY;
+    std::optional<double> minimumScaleX;
+    std::optional<double> maximumScaleX;
+    std::optional<double> minimumScaleY;
+    std::optional<double> maximumScaleY;
+    std::optional<double> minimumMarkerResidualPixels;
+    std::optional<double> maximumMarkerResidualPixels;
+    std::optional<double> maximumScaleAnisotropy;
+};
+
 struct DecoderSnapshot
 {
     DecoderState state = DecoderState::Idle;
@@ -304,6 +325,7 @@ struct DecoderSnapshot
     std::uint64_t telemetryBootstrapAttempts = 0;
     std::uint64_t telemetryBootstrapSuccesses = 0;
     std::optional<double> bootstrapSuccessRate;
+    ObservedLocatorGeometrySnapshot observedLocatorGeometry;
     std::uint64_t bootstrapAcceptedFrames = 0;
     std::uint64_t bootstrapRejectedFrames = 0;
     std::uint64_t bootstrapMismatchFrames = 0;

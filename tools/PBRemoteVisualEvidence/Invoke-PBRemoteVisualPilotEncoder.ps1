@@ -36,7 +36,7 @@ $commonModule = Join-Path $PSScriptRoot 'PBRemoteVisualPilotCommon.psm1'
 Import-Module -Name $commonModule -Force -ErrorAction Stop
 $frozenPlan = Import-PBRemoteVisualPilotPlan -Path $PlanPath -ExpectedSha256 $ExpectedPlanSha256
 $plan = $frozenPlan.value
-$isStep21Plan = [string]$plan.schema -ceq 'PixelBridge.RemoteVisualPilotPlan.2'
+$isStep21Plan = [string]$plan.schema -in @('PixelBridge.RemoteVisualPilotPlan.2', 'PixelBridge.RemoteVisualPilotPlan.3')
 $encoderRuntimeMonitorSafety = [string]$plan.profileToken -ceq 'remote-lf4'
 $resolvedPackageDirectory = [System.IO.Path]::GetFullPath($PackageDirectory).TrimEnd('\')
 $resolvedPackageSeal = [System.IO.Path]::GetFullPath($PackageSealPath)

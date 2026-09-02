@@ -25,6 +25,12 @@ bool ValidOptionalMetric(const std::optional<double>& value, const bool positive
     return !value || (std::isfinite(*value) && (positive ? *value > 0 : *value >= 0));
 }
 
+void ExtendRange(std::optional<double>& minimum, std::optional<double>& maximum, const double value) noexcept
+{
+    minimum = minimum ? std::min(*minimum, value) : value;
+    maximum = maximum ? std::max(*maximum, value) : value;
+}
+
 void WriteOptional(std::ostream& output, const std::optional<double>& value)
 {
     if (value && std::isfinite(*value))
@@ -206,8 +212,13 @@ TelemetryStatus TelemetryAccumulator::RecordBootstrap(const BootstrapSample& sam
     {
         return TelemetryStatus::Failure(TelemetryError::ObservationOrder);
     }
-    if (sample.success && (!ValidOptionalMetric(sample.scaleX, true) || !ValidOptionalMetric(sample.scaleY, true) ||
-        !sample.scaleX || !sample.scaleY || !sample.phaseX || !sample.phaseY || !std::isfinite(*sample.phaseX) || !std::isfinite(*sample.phaseY)))
+    const bool completeGeometry = sample.scaleX && sample.scaleY && sample.phaseX && sample.phaseY && sample.originX &&
+        sample.originY && sample.markerResidualPixels;
+    const double scaleAnisotropy = completeGeometry ? std::abs(*sample.scaleX - *sample.scaleY) : 0;
+    if (sample.success && (!completeGeometry || !ValidOptionalMetric(sample.scaleX, true) ||
+        !ValidOptionalMetric(sample.scaleY, true) || !std::isfinite(*sample.phaseX) || !std::isfinite(*sample.phaseY) ||
+        !std::isfinite(*sample.originX) || !std::isfinite(*sample.originY) ||
+        !ValidOptionalMetric(sample.markerResidualPixels) || !std::isfinite(scaleAnisotropy)))
     {
         return TelemetryStatus::Failure(TelemetryError::InvalidSample);
     }
@@ -220,6 +231,20 @@ TelemetryStatus TelemetryAccumulator::RecordBootstrap(const BootstrapSample& sam
         snapshot_.scaleY = sample.scaleY;
         snapshot_.phaseX = sample.phaseX;
         snapshot_.phaseY = sample.phaseY;
+        auto& geometry = snapshot_.observedLocatorGeometry;
+        static_cast<void>(Add(geometry.samples, 1));
+        geometry.lastOriginX = sample.originX;
+        geometry.lastOriginY = sample.originY;
+        geometry.lastScaleX = sample.scaleX;
+        geometry.lastScaleY = sample.scaleY;
+        geometry.lastMarkerResidualPixels = sample.markerResidualPixels;
+        ExtendRange(geometry.minimumOriginX, geometry.maximumOriginX, *sample.originX);
+        ExtendRange(geometry.minimumOriginY, geometry.maximumOriginY, *sample.originY);
+        ExtendRange(geometry.minimumScaleX, geometry.maximumScaleX, *sample.scaleX);
+        ExtendRange(geometry.minimumScaleY, geometry.maximumScaleY, *sample.scaleY);
+        ExtendRange(geometry.minimumMarkerResidualPixels, geometry.maximumMarkerResidualPixels, *sample.markerResidualPixels);
+        geometry.maximumScaleAnisotropy = geometry.maximumScaleAnisotropy ?
+            std::max(*geometry.maximumScaleAnisotropy, scaleAnisotropy) : scaleAnisotropy;
     }
     return snapshot_.counterSaturated ? TelemetryStatus::Failure(TelemetryError::CounterOverflow) : TelemetryStatus{};
 }
@@ -510,6 +535,40 @@ void WriteTelemetryJson(std::ostream& output, const TelemetrySnapshot& snapshot)
     WriteOptional(output, snapshot.phaseX);
     output << ",\"phaseY\":";
     WriteOptional(output, snapshot.phaseY);
+    const auto& geometry = snapshot.observedLocatorGeometry;
+    output << "},\"observedLocatorGeometry\":{\"authority\":\"AcceptedBootstrapLocatorPixels\",\"samples\":" <<
+        geometry.samples << ",\"lastOriginX\":";
+    WriteOptional(output, geometry.lastOriginX);
+    output << ",\"lastOriginY\":";
+    WriteOptional(output, geometry.lastOriginY);
+    output << ",\"lastScaleX\":";
+    WriteOptional(output, geometry.lastScaleX);
+    output << ",\"lastScaleY\":";
+    WriteOptional(output, geometry.lastScaleY);
+    output << ",\"lastMarkerResidualPixels\":";
+    WriteOptional(output, geometry.lastMarkerResidualPixels);
+    output << ",\"minimumOriginX\":";
+    WriteOptional(output, geometry.minimumOriginX);
+    output << ",\"maximumOriginX\":";
+    WriteOptional(output, geometry.maximumOriginX);
+    output << ",\"minimumOriginY\":";
+    WriteOptional(output, geometry.minimumOriginY);
+    output << ",\"maximumOriginY\":";
+    WriteOptional(output, geometry.maximumOriginY);
+    output << ",\"minimumScaleX\":";
+    WriteOptional(output, geometry.minimumScaleX);
+    output << ",\"maximumScaleX\":";
+    WriteOptional(output, geometry.maximumScaleX);
+    output << ",\"minimumScaleY\":";
+    WriteOptional(output, geometry.minimumScaleY);
+    output << ",\"maximumScaleY\":";
+    WriteOptional(output, geometry.maximumScaleY);
+    output << ",\"minimumMarkerResidualPixels\":";
+    WriteOptional(output, geometry.minimumMarkerResidualPixels);
+    output << ",\"maximumMarkerResidualPixels\":";
+    WriteOptional(output, geometry.maximumMarkerResidualPixels);
+    output << ",\"maximumScaleAnisotropy\":";
+    WriteOptional(output, geometry.maximumScaleAnisotropy);
     output << "},\"PreFecBER\":";
     WriteOptional(output, snapshot.preFecBerEstimate);
     output << ",\"FER\":";

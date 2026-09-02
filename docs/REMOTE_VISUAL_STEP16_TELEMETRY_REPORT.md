@@ -90,6 +90,8 @@ Decoder report 新增并区分：
 - LF4 metric、symbol unreliable、fresh/stale、erased metric 的 numerator/denominator/rate；
 - unavailable reason 与 production truth-oracle 边界。
 
+Step 21 后续以不改变 `RunReport.2` decisive Receiver/WholeFileDigest 语义的方式追加了 `observedLocatorGeometry`：每个成功 Bootstrap 从实际捕获像素保存 locator origin、X/Y scale、marker residual、last/min/max、最大 scale anisotropy 和样本数，authority 固定为 `AcceptedBootstrapLocatorPixels`。样本数必须逐值等于 `telemetryBootstrapSuccesses`；零样本时全部测量值必须为 `null`，CaptureEpoch 切换时与 Bootstrap 分母一起清零。该对象用于阻止 evidence 工具把任意宽高比 capture ROI 或 metadata `estimatedScaleX/Y` 冒充实际视频几何，不改变 FEC、temporal admission、Receiver、WholeFileDigest 或 publish 分支。
+
 `tools/PBRemoteVisualReport/pb_remote_visual_report.py` 对 LF4 fail closed：
 
 1. 固定 `VisualProfileId=0x504252564C463431`、`LayoutVersion=7`、8,100 bytes、4 codewords 和全部容量常量；
