@@ -518,6 +518,68 @@ try
             })
     })
     $monitorCatalogIdentity = New-Identity -Path $monitorCatalogPath
+    $runtimeContractBoundary = Read-PBBoundedJson -Path $monitorCatalogPath -MaximumBytes 2MB
+    $runtimeContractBoundary.monitors[0].adapterLuid.high = [Int64][Int32]::MinValue
+    $runtimeContractBoundary.monitors[0].adapterLuid.low = [UInt64][UInt32]::MaxValue
+    $normalizedRuntimeContract = Get-PBMonitorRuntimeContractValue -Monitor $runtimeContractBoundary.monitors[0] `
+        -Name 'Step 21 runtime-contract signed boundary fixture'
+    if ($normalizedRuntimeContract.adapterLuid.high -isnot [Int32] -or
+        [Int32]$normalizedRuntimeContract.adapterLuid.high -ne [Int32]::MinValue -or
+        $normalizedRuntimeContract.adapterLuid.low -isnot [UInt32] -or
+        [UInt32]$normalizedRuntimeContract.adapterLuid.low -ne [UInt32]::MaxValue)
+    {
+        throw 'Step 21 monitor runtime-contract normalization did not preserve the Windows LUID boundary types'
+    }
+    $runtimeContractCases = @(
+        [ordered]@{ name = 'string dpiX'; pattern = '*dpiX must be a non-negative UInt32 integer*'; mutate = { param($monitor) $monitor.dpiX = '96' } },
+        [ordered]@{ name = 'boolean dpiY'; pattern = '*dpiY must be a non-negative UInt32 integer*'; mutate = { param($monitor) $monitor.dpiY = $true } },
+        [ordered]@{ name = 'zero dpiX'; pattern = '*DPI or refresh rate is invalid*'; mutate = { param($monitor) $monitor.dpiX = 0 } },
+        [ordered]@{ name = 'sentinel refresh rate'; pattern = '*DPI or refresh rate is invalid*'; mutate = { param($monitor) $monitor.refreshRate = 1 } },
+        [ordered]@{ name = 'fractional refresh rate'; pattern = '*refreshRate must be a non-negative UInt32 integer*'; mutate = { param($monitor) $monitor.refreshRate = 59.5 } },
+        [ordered]@{ name = 'adapter high overflow'; pattern = '*adapterLuid.high must be a signed Int32 integer*'; mutate = { param($monitor) $monitor.adapterLuid.high = 2147483648 } },
+        [ordered]@{ name = 'adapter high underflow'; pattern = '*adapterLuid.high must be a signed Int32 integer*'; mutate = { param($monitor) $monitor.adapterLuid.high = -2147483649 } },
+        [ordered]@{ name = 'adapter low overflow'; pattern = '*adapterLuid.low must be a non-negative UInt32 integer*'; mutate = { param($monitor) $monitor.adapterLuid.low = 4294967296 } },
+        [ordered]@{ name = 'negative adapter low'; pattern = '*adapterLuid.low must be a non-negative UInt32 integer*'; mutate = { param($monitor) $monitor.adapterLuid.low = -1 } },
+        [ordered]@{ name = 'extra adapter identity field'; pattern = '*adapterLuid does not contain the exact required key set*'; mutate = { param($monitor) $monitor.adapterLuid.extra = 0 } },
+        [ordered]@{ name = 'extra rectangle field'; pattern = '*physicalRect does not contain the exact required key set*'; mutate = { param($monitor) $monitor.physicalRect.extra = 0 } },
+        [ordered]@{ name = 'numeric device name'; pattern = '*monitor runtime contract is incomplete or invalid*'; mutate = { param($monitor) $monitor.deviceName = 1 } },
+        [ordered]@{ name = 'string primary identity'; pattern = '*monitor runtime contract is incomplete or invalid*'; mutate = { param($monitor) $monitor.primary = 'false' } })
+    foreach ($runtimeContractCase in $runtimeContractCases)
+    {
+        $candidateCatalog = Read-PBBoundedJson -Path $monitorCatalogPath -MaximumBytes 2MB
+        & $runtimeContractCase.mutate $candidateCatalog.monitors[0]
+        $runtimeContractRejected = $false
+        try
+        {
+            [void](Get-PBMonitorRuntimeContractValue -Monitor $candidateCatalog.monitors[0] `
+                -Name "Step 21 $($runtimeContractCase.name) fixture")
+        }
+        catch { $runtimeContractRejected = $_.Exception.Message -like [string]$runtimeContractCase.pattern }
+        if (-not $runtimeContractRejected)
+        {
+            throw "Step 21 monitor runtime contract accepted invalid $($runtimeContractCase.name)"
+        }
+    }
+    $typedInvalidCatalog = Read-PBBoundedJson -Path $monitorCatalogPath -MaximumBytes 2MB
+    $typedInvalidCatalog.monitors[1].dpiX = '96'
+    $typedInvalidCatalogPath = Join-Path $runRoot 'computer-a-monitor-catalog-string-dpi.json'
+    Write-NewJson -Path $typedInvalidCatalogPath -Value $typedInvalidCatalog
+    $typedInvalidCatalogIdentity = New-Identity -Path $typedInvalidCatalogPath
+    $typedInvalidScopeOutput = Join-Path $runRoot 'typed-invalid-hardware-scope.json'
+    $typedInvalidScopeRejected = $false
+    try
+    {
+        & $hardwareScopeTool -MatrixSpecPath $matrixSpecPath -ExpectedMatrixSpecSha256 $matrixSpecIdentity.sha256 `
+            -ComputerAMonitorCatalogPath $typedInvalidCatalogPath `
+            -ExpectedComputerAMonitorCatalogSha256 $typedInvalidCatalogIdentity.sha256 `
+            -ExperimentMonitorDeviceName '\\.\DISPLAY2' -OutputPath $typedInvalidScopeOutput | Out-Null
+    }
+    catch { $typedInvalidScopeRejected = $_.Exception.Message -like '*dpiX must be a non-negative UInt32 integer*' }
+    if (-not $typedInvalidScopeRejected -or (Test-Path -LiteralPath $typedInvalidScopeOutput) -or
+        @(Get-ChildItem -LiteralPath $runRoot -Filter 'typed-invalid-hardware-scope.json.validation-*.json' -Force).Count -ne 0)
+    {
+        throw 'Step 21 HardwareScope accepted or published an implicitly coercible Computer A runtime field'
+    }
     $overlappingCatalog = Read-PBBoundedJson -Path $monitorCatalogPath -MaximumBytes 2MB
     $overlappingCatalog.monitors[1].physicalRect.left = 0
     $overlappingCatalog.monitors[1].physicalRect.right = 2560
@@ -735,6 +797,27 @@ try
             })
     })
     $computerBCatalogIdentity = New-Identity -Path $computerBCatalogPath
+    $overflowingComputerBCatalog = Read-PBBoundedJson -Path $computerBCatalogPath -MaximumBytes 2MB
+    $overflowingComputerBCatalog.monitors[0].adapterLuid.low = 4294967296
+    $overflowingComputerBCatalogPath = Join-Path $runRoot 'computer-b-monitor-catalog-overflow-luid.json'
+    Write-NewJson -Path $overflowingComputerBCatalogPath -Value $overflowingComputerBCatalog
+    $overflowingComputerBCatalogIdentity = New-Identity -Path $overflowingComputerBCatalogPath
+    $overflowingEndpointScopeOutput = Join-Path $runRoot 'endpoint-scope-overflow-luid'
+    $overflowingEndpointScopeRejected = $false
+    try
+    {
+        & $endpointScopeTool -RunLedgerPath $runLedgerPath -ExpectedRunLedgerSha256 $runLedgerIdentity.sha256 `
+            -RunLedgerSealPath $runLedgerSealPath -ExpectedRunLedgerSealSha256 $runLedgerSealIdentity.sha256 `
+            -ComputerBMonitorCatalogPath $overflowingComputerBCatalogPath `
+            -ExpectedComputerBMonitorCatalogSha256 $overflowingComputerBCatalogIdentity.sha256 `
+            -ComputerBProtectedMonitorDeviceName '\\.\DISPLAY2' `
+            -ComputerBExperimentMonitorDeviceName '\\.\DISPLAY1' -OutputDirectory $overflowingEndpointScopeOutput | Out-Null
+    }
+    catch { $overflowingEndpointScopeRejected = $_.Exception.Message -like '*adapterLuid.low must be a non-negative UInt32 integer*' }
+    if (-not $overflowingEndpointScopeRejected -or (Test-Path -LiteralPath $overflowingEndpointScopeOutput))
+    {
+        throw 'Step 21 EndpointScope accepted or published an out-of-domain Computer B adapter LUID'
+    }
     $endpointScopeOutput = Join-Path $runRoot 'endpoint-scope'
     & $endpointScopeTool -RunLedgerPath $runLedgerPath -ExpectedRunLedgerSha256 $runLedgerIdentity.sha256 `
         -RunLedgerSealPath $runLedgerSealPath -ExpectedRunLedgerSealSha256 $runLedgerSealIdentity.sha256 `

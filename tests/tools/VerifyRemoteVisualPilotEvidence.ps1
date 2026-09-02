@@ -451,6 +451,30 @@ try
         throw 'Frozen Step 21 Direct/DXGI plan fixture did not validate'
     }
 
+    $step21StringDpi = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21StringDpi.monitorSafety.encoder.protectedMonitorContract.dpiX = '96'
+    $step21StringDpiPath = Join-Path $runRoot 'plan-step21-string-dpi.json'
+    Write-NewJson -Path $step21StringDpiPath -Value $step21StringDpi
+    $step21StringDpiRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21StringDpiPath) }
+    catch { $step21StringDpiRejected = $_.Exception.Message -like '*dpiX must be a non-negative UInt32 integer*' }
+    if (-not $step21StringDpiRejected)
+    {
+        throw 'Step 21 Plan.3 accepted a string-valued monitor DPI through implicit conversion'
+    }
+
+    $step21OverflowLuid = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21OverflowLuid.monitorSafety.decoder.experimentMonitorContract.adapterLuid.high = 2147483648
+    $step21OverflowLuidPath = Join-Path $runRoot 'plan-step21-overflow-luid.json'
+    Write-NewJson -Path $step21OverflowLuidPath -Value $step21OverflowLuid
+    $step21OverflowLuidRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21OverflowLuidPath) }
+    catch { $step21OverflowLuidRejected = $_.Exception.Message -like '*adapterLuid.high must be a signed Int32 integer*' }
+    if (-not $step21OverflowLuidRejected)
+    {
+        throw 'Step 21 Plan.3 accepted an adapter LUID outside the Windows signed-high domain'
+    }
+
     $step21ScaledDirect = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
     $step21ScaledDirect.geometryMode = 'LocatorScaled'
     $step21ScaledDirectPath = Join-Path $runRoot 'plan-step21-invalid-direct-scaled.json'
@@ -566,6 +590,26 @@ try
     if (-not $monitorDriftRejected)
     {
         throw 'Step 21 live monitor preflight did not reject monitor identity drift'
+    }
+
+    $coercibleMonitorProbePath = Join-Path $runRoot 'mock-monitor-probe-string-refresh.ps1'
+    $coercibleMonitorCatalogJson = $monitorCatalogJson.Replace('"refreshRate":60', '"refreshRate":"60"')
+    $coercibleMonitorProbeScript = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(`$false)`n" +
+        "Write-Output '$coercibleMonitorCatalogJson'`nexit 0`n"
+    [System.IO.File]::WriteAllText($coercibleMonitorProbePath, $coercibleMonitorProbeScript,
+        [System.Text.UTF8Encoding]::new($false))
+    $coercibleMonitorPreflightPath = Join-Path $runRoot 'monitor-preflight-string-refresh.json'
+    $coercibleMonitorRejected = $false
+    try
+    {
+        [void](New-PBRemoteVisualMonitorPreflight -DecoderPath $coercibleMonitorProbePath `
+            -Safety $step21Plan.monitorSafety.encoder -TargetRect $step21Plan.monitorSafety.encoder.dataWindowPhysicalRect `
+            -EndpointRole Encoder -OutputPath $coercibleMonitorPreflightPath)
+    }
+    catch { $coercibleMonitorRejected = $_.Exception.Message -like '*differs from the frozen*' }
+    if (-not $coercibleMonitorRejected -or (Test-Path -LiteralPath $coercibleMonitorPreflightPath))
+    {
+        throw 'Step 21 live monitor preflight accepted or published an implicitly coercible refresh-rate identity'
     }
 
     Write-Output 'PBRemoteVisual pilot-evidence contracts: PASS'

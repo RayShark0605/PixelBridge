@@ -356,6 +356,7 @@ function Import-PBRemoteVisualStep21HardwareScope
         {
             throw 'Step 21 hardware scope monitor identities must be unique, non-empty, and unrotated'
         }
+        [void](Get-PBMonitorRuntimeContractValue -Monitor $monitor -Name 'Step 21 Computer A catalog monitor')
         $dimensions = Get-PBRectDimensions -Rect $monitor.physicalRect -Name 'Step 21 hardware scope monitor physicalRect'
         $resolutionWidth = Get-PBNonNegativeUInt64 -Value $monitor.resolution.width `
             -Name 'Step 21 hardware scope monitor resolution width'
@@ -727,6 +728,7 @@ function Import-PBRemoteVisualStep21ComputerBMonitorCatalog
         {
             throw 'Computer B Step 21 monitor identities must be unique, non-empty, and unrotated'
         }
+        [void](Get-PBMonitorRuntimeContractValue -Monitor $monitor -Name 'Step 21 Computer B catalog monitor')
         $dimensions = Get-PBRectDimensions -Rect $monitor.physicalRect -Name 'Computer B Step 21 monitor physicalRect'
         foreach ($coordinate in @($dimensions.left, $dimensions.top, $dimensions.right, $dimensions.bottom))
         {
@@ -1077,33 +1079,7 @@ function Get-PBRemoteVisualStep21CellPlanArguments
 function New-PBRemoteVisualStep21MonitorRuntimeContractValue
 {
     param([Parameter(Mandatory = $true)][object]$Monitor)
-    if ($Monitor -isnot [System.Collections.IDictionary])
-    {
-        throw 'Step 21 cell-plan catalog monitor is not an object'
-    }
-    foreach ($field in @('deviceName', 'physicalRect', 'dpiX', 'dpiY', 'refreshRate', 'rotation', 'adapterLuid', 'primary'))
-    {
-        if (-not $Monitor.Contains($field))
-        {
-            throw "Step 21 cell-plan catalog monitor lacks runtime field $field"
-        }
-    }
-    if ($Monitor.adapterLuid -isnot [System.Collections.IDictionary] -or
-        -not $Monitor.adapterLuid.Contains('high') -or -not $Monitor.adapterLuid.Contains('low') -or
-        $Monitor.primary -isnot [bool])
-    {
-        throw 'Step 21 cell-plan catalog monitor adapter LUID or primary identity is invalid'
-    }
-    return [ordered]@{
-        deviceName = [string]$Monitor.deviceName
-        physicalRect = $Monitor.physicalRect
-        dpiX = [UInt32]$Monitor.dpiX
-        dpiY = [UInt32]$Monitor.dpiY
-        refreshRate = [UInt32]$Monitor.refreshRate
-        rotation = [string]$Monitor.rotation
-        adapterLuid = [ordered]@{ high = [Int64]$Monitor.adapterLuid.high; low = [UInt64]$Monitor.adapterLuid.low }
-        primary = [bool]$Monitor.primary
-    }
+    return Get-PBMonitorRuntimeContractValue -Monitor $Monitor -Name 'Step 21 cell-plan catalog monitor'
 }
 
 function Assert-PBRemoteVisualStep21CellPlanBinding
