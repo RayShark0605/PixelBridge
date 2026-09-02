@@ -209,7 +209,8 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
            << ",\"dataWindow\":{\"left\":" << snapshot.dataWindowLeft
            << ",\"top\":" << snapshot.dataWindowTop
            << ",\"width\":" << snapshot.dataWindowWidth
-           << ",\"height\":" << snapshot.dataWindowHeight << '}';
+           << ",\"height\":" << snapshot.dataWindowHeight
+           << ",\"singleMonitorFullscreen\":" << snapshot.singleMonitorFullscreen << '}';
     stream << ",\"broadcastRuntimeMilliseconds\":" << snapshot.broadcastRuntimeMilliseconds
            << ",\"cycleCount\":" << snapshot.cycleCount
            << ",\"cyclePosition\":" << snapshot.cyclePosition

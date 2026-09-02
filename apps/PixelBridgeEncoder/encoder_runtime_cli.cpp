@@ -28,6 +28,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -56,8 +57,13 @@ struct Options
     std::wstring remoteMetadataPath;
     std::wstring protectedMonitorDeviceName;
     std::wstring experimentMonitorDeviceName;
+    std::wstring singleMonitorFullscreenDeviceName;
     bool protectedMonitorSpecified = false;
     bool experimentMonitorSpecified = false;
+    bool singleMonitorFullscreenSpecified = false;
+    bool secondsSpecified = false;
+    bool loopUntilManualStop = false;
+    bool loopSpecified = false;
 };
 
 class ManualStopConsole final
@@ -312,6 +318,16 @@ private:
             options.experimentMonitorDeviceName = value;
             options.experimentMonitorSpecified = true;
         }
+        else if (option == L"--single-monitor-fullscreen")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || *value == L'\0' || options.singleMonitorFullscreenSpecified)
+            {
+                return false;
+            }
+            options.singleMonitorFullscreenDeviceName = value;
+            options.singleMonitorFullscreenSpecified = true;
+        }
         else if (option == L"--compression")
         {
             const wchar_t* const value = nextArgument();
@@ -362,6 +378,7 @@ private:
             {
                 return false;
             }
+            options.secondsSpecified = true;
         }
         else if (option == L"--logical-fps")
         {
@@ -392,12 +409,21 @@ private:
             options.manualStop = true;
             options.manualStopSpecified = true;
         }
+        else if (option == L"--loop")
+        {
+            if (options.loopSpecified)
+            {
+                return false;
+            }
+            options.loopUntilManualStop = true;
+            options.loopSpecified = true;
+        }
         else
         {
             return false;
         }
     }
-    if (options.sourcePath.empty() || !options.hasOrigin)
+    if (options.sourcePath.empty() || options.hasOrigin == options.singleMonitorFullscreenSpecified)
     {
         return false;
     }
@@ -420,12 +446,24 @@ private:
             return false;
         }
     }
-    const bool anyMonitorSafetyArgument = !options.protectedMonitorDeviceName.empty() ||
+    const bool dualMonitorSafety = !options.protectedMonitorDeviceName.empty() &&
         !options.experimentMonitorDeviceName.empty();
+    const bool anyMonitorArgument = !options.protectedMonitorDeviceName.empty() ||
+        !options.experimentMonitorDeviceName.empty() || options.singleMonitorFullscreenSpecified;
     if ((options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
-         (options.protectedMonitorDeviceName.empty() || options.experimentMonitorDeviceName.empty() ||
-          !options.remoteChannel)) ||
-        (options.profile != pbapp::VisualProfile::RemoteVisualLowFps && anyMonitorSafetyArgument))
+         (dualMonitorSafety == options.singleMonitorFullscreenSpecified || !options.remoteChannel)) ||
+        (options.profile != pbapp::VisualProfile::RemoteVisualLowFps && anyMonitorArgument) ||
+        (options.singleMonitorFullscreenSpecified &&
+         (options.protectedMonitorSpecified || options.experimentMonitorSpecified)))
+    {
+        return false;
+    }
+    if (options.singleMonitorFullscreenSpecified &&
+        (!options.manualStop || !options.loopUntilManualStop || options.secondsSpecified))
+    {
+        return false;
+    }
+    if (options.loopUntilManualStop && !options.singleMonitorFullscreenSpecified)
     {
         return false;
     }
@@ -457,6 +495,31 @@ private:
         throw std::runtime_error("remote provider conversion failed");
     }
     return output;
+}
+
+[[nodiscard]] bool ResolveFullscreenMonitor(const std::wstring_view requested,
+    pbapp::MonitorInfo& output, std::string& errorMessage)
+{
+    std::vector<pbapp::MonitorInfo> monitors;
+    const pbapp::MonitorCatalogStatus catalog = pbapp::EnumerateMonitors(monitors);
+    if (!catalog)
+    {
+        errorMessage = "single-monitor fullscreen monitor catalog failed";
+        return false;
+    }
+    const auto matches = [&requested](const pbapp::MonitorInfo& monitor)
+    {
+        return requested == L"primary" ? monitor.primary : monitor.deviceName == requested;
+    };
+    const auto selected = std::find_if(monitors.begin(), monitors.end(), matches);
+    if (selected == monitors.end() || std::find_if(std::next(selected), monitors.end(), matches) != monitors.end())
+    {
+        errorMessage = "single-monitor fullscreen requires exactly one matching primary or DEVICE";
+        return false;
+    }
+    output = *selected;
+    errorMessage.clear();
+    return true;
 }
 
 [[nodiscard]] std::string UtcNow()
@@ -499,8 +562,10 @@ private:
 void Usage()
 {
     std::cerr << "usage: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
-                 "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on --origin X Y --seconds 1..600 [--logical-fps 0..240; remote=1..5] "
-                 "[--protected-monitor DEVICE --experiment-monitor DEVICE; required only for remote-lf4] "
+                 "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on "
+                 "(--origin X Y --seconds 1..600 | --single-monitor-fullscreen primary|DEVICE --manual-stop --loop) "
+                 "[--logical-fps 0..240; remote=1..5] "
+                 "[--protected-monitor DEVICE --experiment-monitor DEVICE; strict dual-monitor remote-lf4 only] "
                  "[--control-repetitions 1..64] [--run-id 32_LOWERCASE_HEX] "
                  "[--compression-level 1..22] [--manual-stop; press Enter or Q, --seconds remains the hard maximum] "
                  "[--journal NEW_PATH] [--report NEW_PATH]\n";
@@ -521,7 +586,10 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.compressionEnabled = options.compression;
     config.compressionLevel = options.compressionLevel;
     config.visualProfile = options.profile;
-    config.monitorClientOrigin = options.origin;
+    if (options.hasOrigin)
+    {
+        config.monitorClientOrigin = options.origin;
+    }
     config.logicalVisualFps = options.logicalVisualFps;
     config.controlRepetitions = options.controlRepetitions;
     config.runId = options.runId;
@@ -566,41 +634,80 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     }
     if (options.profile == pbapp::VisualProfile::RemoteVisualLowFps)
     {
-        pbapp::MonitorSafetySelection safetySelection;
-        const pbapp::MonitorSafetyStatus safety = pbapp::ResolveMonitorSafetySelection(
-            options.protectedMonitorDeviceName, options.experimentMonitorDeviceName, safetySelection);
-        if (!safety)
+        if (options.singleMonitorFullscreenSpecified)
         {
-            std::cerr << "remote-lf4 monitor safety resolution failed: " <<
-                pbapp::GetMonitorSafetyErrorName(safety.code) << '\n';
-            return 2;
-        }
-        try
-        {
-            const std::string protectedIdentity = WideToUtf8(safetySelection.protectedMonitor.deviceName);
-            const std::string experimentIdentity = WideToUtf8(safetySelection.experimentMonitor.deviceName);
-            if ((!config.remoteMetadata.protectedMonitorIdentity.empty() &&
-                 config.remoteMetadata.protectedMonitorIdentity != protectedIdentity) ||
-                (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
-                 config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
+            pbapp::MonitorInfo fullscreenMonitor;
+            std::string monitorError;
+            if (!ResolveFullscreenMonitor(options.singleMonitorFullscreenDeviceName,
+                fullscreenMonitor, monitorError))
             {
-                std::cerr << "remote-lf4 monitor identities conflict with metadata preset\n";
+                std::cerr << monitorError << '\n';
                 return 2;
             }
-            config.remoteMetadata.protectedMonitorIdentity = protectedIdentity;
-            config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
-            config.remoteMetadata.computerBDisplayResolution =
-                std::to_string(safetySelection.experimentMonitor.physicalRect.right -
-                    safetySelection.experimentMonitor.physicalRect.left) + "x" +
-                std::to_string(safetySelection.experimentMonitor.physicalRect.bottom -
-                    safetySelection.experimentMonitor.physicalRect.top);
-            config.remoteMetadata.computerBRefreshRate = safetySelection.experimentMonitor.refreshRate;
-            config.monitorSafety = std::move(safetySelection);
+            try
+            {
+                const std::string experimentIdentity = WideToUtf8(fullscreenMonitor.deviceName);
+                if (!config.remoteMetadata.protectedMonitorIdentity.empty() ||
+                    (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
+                     config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
+                {
+                    std::cerr << "single-monitor fullscreen identities conflict with metadata preset\n";
+                    return 2;
+                }
+                config.remoteMetadata.protectedMonitorIdentity.clear();
+                config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
+                config.remoteMetadata.computerBDisplayResolution =
+                    std::to_string(fullscreenMonitor.physicalRect.right - fullscreenMonitor.physicalRect.left) +
+                    "x" + std::to_string(fullscreenMonitor.physicalRect.bottom - fullscreenMonitor.physicalRect.top);
+                config.remoteMetadata.computerBRefreshRate = fullscreenMonitor.refreshRate;
+                config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{
+                    fullscreenMonitor.physicalRect.left, fullscreenMonitor.physicalRect.top};
+                config.singleMonitorFullscreen = std::move(fullscreenMonitor);
+            }
+            catch (const std::exception& exception)
+            {
+                std::cerr << "single-monitor fullscreen identity conversion failed: " << exception.what() << '\n';
+                return 2;
+            }
         }
-        catch (const std::exception& exception)
+        else
         {
-            std::cerr << "remote-lf4 monitor identity conversion failed: " << exception.what() << '\n';
-            return 2;
+            pbapp::MonitorSafetySelection safetySelection;
+            const pbapp::MonitorSafetyStatus safety = pbapp::ResolveMonitorSafetySelection(
+                options.protectedMonitorDeviceName, options.experimentMonitorDeviceName, safetySelection);
+            if (!safety)
+            {
+                std::cerr << "remote-lf4 monitor safety resolution failed: " <<
+                    pbapp::GetMonitorSafetyErrorName(safety.code) << '\n';
+                return 2;
+            }
+            try
+            {
+                const std::string protectedIdentity = WideToUtf8(safetySelection.protectedMonitor.deviceName);
+                const std::string experimentIdentity = WideToUtf8(safetySelection.experimentMonitor.deviceName);
+                if ((!config.remoteMetadata.protectedMonitorIdentity.empty() &&
+                     config.remoteMetadata.protectedMonitorIdentity != protectedIdentity) ||
+                    (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
+                     config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
+                {
+                    std::cerr << "remote-lf4 monitor identities conflict with metadata preset\n";
+                    return 2;
+                }
+                config.remoteMetadata.protectedMonitorIdentity = protectedIdentity;
+                config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
+                config.remoteMetadata.computerBDisplayResolution =
+                    std::to_string(safetySelection.experimentMonitor.physicalRect.right -
+                        safetySelection.experimentMonitor.physicalRect.left) + "x" +
+                    std::to_string(safetySelection.experimentMonitor.physicalRect.bottom -
+                        safetySelection.experimentMonitor.physicalRect.top);
+                config.remoteMetadata.computerBRefreshRate = safetySelection.experimentMonitor.refreshRate;
+                config.monitorSafety = std::move(safetySelection);
+            }
+            catch (const std::exception& exception)
+            {
+                std::cerr << "remote-lf4 monitor identity conversion failed: " << exception.what() << '\n';
+                return 2;
+            }
         }
     }
     pbapp::EncoderRuntime runtime;
@@ -627,8 +734,9 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     bool journalCreateAttempted = false;
     std::optional<std::uint64_t> lastJournalAttemptMilliseconds;
     std::optional<std::chrono::steady_clock::time_point> broadcastStarted;
-    const auto overallDeadline = std::chrono::steady_clock::now() +
-        std::chrono::seconds(options.seconds) + std::chrono::seconds(30);
+    const std::optional<std::chrono::steady_clock::time_point> overallDeadline = options.loopUntilManualStop ?
+        std::nullopt : std::optional{std::chrono::steady_clock::now() +
+            std::chrono::seconds(options.seconds) + std::chrono::seconds(30)};
     bool requestedStopAfterDuration = false;
     bool requestedManualStop = false;
     bool manualStopInputFailed = false;
@@ -672,13 +780,14 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
                 runtime.RequestStop();
             }
         }
-        if (broadcastStarted && std::chrono::steady_clock::now() - *broadcastStarted >=
+        if (!options.loopUntilManualStop && broadcastStarted &&
+            std::chrono::steady_clock::now() - *broadcastStarted >=
             std::chrono::seconds(options.seconds))
         {
             requestedStopAfterDuration = true;
             runtime.RequestStop();
         }
-        else if (std::chrono::steady_clock::now() >= overallDeadline)
+        else if (overallDeadline && std::chrono::steady_clock::now() >= *overallDeadline)
         {
             overallTimeout = true;
             runtime.RequestStop();

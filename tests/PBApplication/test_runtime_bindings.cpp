@@ -203,6 +203,100 @@ TEST_CASE("remote-lf4 Encoder validation binds channel monitor identities and a 
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
 }
 
+TEST_CASE("remote-lf4 single-monitor fullscreen requires explicit exact bounded sender authority",
+    "[application][validation][remote-lf4][encoder][single-monitor][fullscreen]")
+{
+    ScratchDirectory scratch(L"encoder-lf4-single-monitor-fullscreen");
+    const auto source = scratch.Path() / L"source.bin";
+    std::ofstream(source, std::ios::binary).put('x');
+    pbapp::EncoderConfig config;
+    config.sourcePath = source.wstring();
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
+    config.logicalVisualFps = 2;
+    config.controlRepetitions = 12;
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "UserProvidedFullscreenLink";
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.singleMonitorFullscreen = MakeMonitor(1, L"\\\\.\\DISPLAY1", {0, 0, 2560, 1600}, true);
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+
+    config.monitorSafety = pbapp::MonitorSafetySelection{
+        MakeMonitor(2, L"\\\\.\\DISPLAY2", {-1920, 0, 0, 1080}, false), *config.singleMonitorFullscreen};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorSafety.reset();
+    config.remoteMetadata.protectedMonitorIdentity = R"(\\.\DISPLAY2)";
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.remoteMetadata.protectedMonitorIdentity.clear();
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY3)";
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{1, 0};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
+    config.singleMonitorFullscreen->rotation = DXGI_MODE_ROTATION_ROTATE90;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.singleMonitorFullscreen->rotation = DXGI_MODE_ROTATION_IDENTITY;
+    config.singleMonitorFullscreen->physicalRect = {0, 0, 1600, 900};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.singleMonitorFullscreen->physicalRect = {0, 0, 3841, 1600};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.singleMonitorFullscreen->physicalRect = {0, 0, 2560, 1600};
+    config.visualProfile = pbapp::VisualProfile::RemoteVisualResilient;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("remote-lf4 fullscreen composition centers an exact canvas inside non-16:9 surfaces",
+    "[application][remote-lf4][encoder][single-monitor][fullscreen][composition]")
+{
+    constexpr std::size_t sourceBytes =
+        static_cast<std::size_t>(pbapp::phase1CanvasWidth) * pbapp::phase1CanvasHeight * 4U;
+    std::vector<std::byte> source(sourceBytes, std::byte{0});
+    source[0] = std::byte{0x11};
+    source[1] = std::byte{0x22};
+    source[2] = std::byte{0x33};
+    source[3] = std::byte{0x44};
+    source[source.size() - 4U] = std::byte{0x55};
+    source[source.size() - 3U] = std::byte{0x66};
+    source[source.size() - 2U] = std::byte{0x77};
+    source[source.size() - 1U] = std::byte{0x88};
+
+    constexpr std::uint32_t destinationWidth = 2560;
+    constexpr std::uint32_t destinationHeight = 1600;
+    std::vector<std::byte> destination;
+    REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(
+        source, destinationWidth, destinationHeight, destination));
+    REQUIRE(destination.size() == static_cast<std::size_t>(destinationWidth) * destinationHeight * 4U);
+    const auto ReadPixel = [&destination](const std::uint32_t width, const std::uint32_t x, const std::uint32_t y)
+    {
+        const std::size_t offset = (static_cast<std::size_t>(y) * width + x) * 4U;
+        return std::array{destination[offset], destination[offset + 1U],
+            destination[offset + 2U], destination[offset + 3U]};
+    };
+    const std::array neutral{std::byte{0x80}, std::byte{0x80}, std::byte{0x80}, std::byte{0xFF}};
+    const std::array firstSource{std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
+    const std::array lastSource{std::byte{0x55}, std::byte{0x66}, std::byte{0x77}, std::byte{0x88}};
+    constexpr std::uint32_t canvasLeft = 320;
+    constexpr std::uint32_t canvasTop = 260;
+    REQUIRE(ReadPixel(destinationWidth, 0, 0) == neutral);
+    REQUIRE(ReadPixel(destinationWidth, canvasLeft - 1U, canvasTop) == neutral);
+    REQUIRE(ReadPixel(destinationWidth, canvasLeft, canvasTop - 1U) == neutral);
+    REQUIRE(ReadPixel(destinationWidth, canvasLeft, canvasTop) == firstSource);
+    REQUIRE(ReadPixel(destinationWidth, canvasLeft + pbapp::phase1CanvasWidth - 1U,
+        canvasTop + pbapp::phase1CanvasHeight - 1U) == lastSource);
+    REQUIRE(ReadPixel(destinationWidth, canvasLeft + pbapp::phase1CanvasWidth, canvasTop) == neutral);
+    REQUIRE(ReadPixel(destinationWidth, canvasLeft, canvasTop + pbapp::phase1CanvasHeight) == neutral);
+    REQUIRE(ReadPixel(destinationWidth, destinationWidth - 1U, destinationHeight - 1U) == neutral);
+
+    std::vector<std::byte> rejected{std::byte{0xA5}};
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(
+        source, pbapp::phase1CanvasWidth - 1U, pbapp::phase1CanvasHeight, rejected));
+    REQUIRE(rejected == std::vector<std::byte>{std::byte{0xA5}});
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(
+        source, pbapp::phase1CanvasWidth * 2U + 1U, pbapp::phase1CanvasHeight, rejected));
+    REQUIRE(rejected == std::vector<std::byte>{std::byte{0xA5}});
+}
+
 TEST_CASE("Production RemoteVisual sender builds LF4 four-codeword carousels past an external completion marker",
     "[application][encoder][remote-visual][lf4][carousel]")
 {

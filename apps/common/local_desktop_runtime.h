@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace pbapp
 {
@@ -29,6 +30,10 @@ struct EncoderConfig
     VisualProfile visualProfile = VisualProfile::DirectLevels2x2;
     std::optional<pbrenderd3d::PhysicalPoint> monitorClientOrigin;
     std::optional<MonitorSafetySelection> monitorSafety;
+    // Explicit sender-only kiosk authority. This permits one selected monitor
+    // to be occupied by the LF4 raster and therefore cannot satisfy the
+    // dual-monitor ProtectedMonitor field-gate contract.
+    std::optional<MonitorInfo> singleMonitorFullscreen;
     std::string runId;
     RemoteRunMetadata remoteMetadata;
     // Zero preserves the historical presentation-driven cadence for local
@@ -116,6 +121,9 @@ public:
     [[nodiscard]] static RuntimeStatus ProbeRemoteVisualLowFpsCarousel(std::span<const std::byte> rawBytes,
         std::uint32_t controlRepetitions, std::uint32_t completedCyclesBeforeMarker,
         EncoderCarouselProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeRemoteVisualFullscreenComposition(std::span<const std::byte> source,
+        std::uint32_t destinationWidth, std::uint32_t destinationHeight,
+        std::vector<std::byte>& output) noexcept;
 };
 
 struct DecoderAdmissionProbeSnapshot

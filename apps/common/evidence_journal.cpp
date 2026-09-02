@@ -293,6 +293,7 @@ std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
     stream << ",\"minimumObservedLogicalDwellMs\":";
     WriteOptionalFinite(stream, snapshot.minimumObservedLogicalDwellMilliseconds);
     stream << ",\"logicalDwellViolationCount\":" << snapshot.logicalDwellViolationCount <<
+        ",\"singleMonitorFullscreen\":" << (snapshot.singleMonitorFullscreen ? "true" : "false") <<
         ",\"monitorSafetyPreflightPassed\":" << (snapshot.monitorSafetyPreflightPassed ? "true" : "false") <<
         ",\"monitorSafetyRevalidationCount\":" << snapshot.monitorSafetyRevalidationCount <<
         ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements <<
