@@ -402,6 +402,173 @@ function Import-PBRemoteVisualStep21HardwareScope
     return [ordered]@{ path = $resolvedPath; identity = $identity; value = $scope; matrixSpec = $matrixSpec; monitorCatalog = $monitorCatalog }
 }
 
+function New-PBRemoteVisualStep21RunLedgerEntry
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Cell,
+        [Parameter(Mandatory = $true)][UInt32]$Ordinal,
+        [Parameter(Mandatory = $true)][object]$ExperimentMonitorRect
+    )
+    if ($Ordinal -eq 0 -or $Ordinal -gt 256)
+    {
+        throw 'Step 21 run-ledger ordinal is outside the bounded range'
+    }
+    $requiredTarget = Get-PBRemoteVisualStep21CellRequiredRoi -Cell $Cell
+    $experimentMonitor = Get-PBRectDimensions -Rect $ExperimentMonitorRect `
+        -Name 'Step 21 run-ledger ExperimentMonitor physicalRect'
+    if ([UInt32]$requiredTarget.width -gt [UInt32]$experimentMonitor.width -or
+        [UInt32]$requiredTarget.height -gt [UInt32]$experimentMonitor.height)
+    {
+        throw 'Step 21 run-ledger cell target does not fit the ExperimentMonitor'
+    }
+    $captureRoiPurpose = 'LocatorSearchNeighborhood'
+    if ([string]$Cell.profileToken -ceq 'remote-lf4')
+    {
+        $captureRoi = [ordered]@{
+            left = [Int64]$experimentMonitor.left
+            top = [Int64]$experimentMonitor.top
+            right = [Int64]$experimentMonitor.right
+            bottom = [Int64]$experimentMonitor.bottom
+        }
+    }
+    elseif ([string]$Cell.profileToken -in @('direct', 'shape'))
+    {
+        $left = [Int64]$experimentMonitor.left + [Int64][Math]::Floor(([Int64]$experimentMonitor.width - [Int64]$requiredTarget.width) / 2.0)
+        $top = [Int64]$experimentMonitor.top + [Int64][Math]::Floor(([Int64]$experimentMonitor.height - [Int64]$requiredTarget.height) / 2.0)
+        $captureRoi = [ordered]@{
+            left = $left
+            top = $top
+            right = $left + [Int64]$requiredTarget.width
+            bottom = $top + [Int64]$requiredTarget.height
+        }
+        $captureRoiPurpose = 'ExactProfileCanvas'
+    }
+    else
+    {
+        throw 'Step 21 run-ledger cell has an unknown profile token'
+    }
+    $captureRoiDimensions = Get-PBRectDimensions -Rect $captureRoi -Name 'Step 21 run-ledger Decoder capture ROI'
+    if (-not (Test-PBRectContains -Outer $ExperimentMonitorRect -Inner $captureRoi))
+    {
+        throw 'Step 21 run-ledger Decoder capture ROI escapes the ExperimentMonitor'
+    }
+    $geometryMode = if ([string]$Cell.scaleTarget -ceq '1.000') { 'Strict1To1' } else { 'LocatorScaled' }
+    return [ordered]@{
+        ordinal = $Ordinal
+        cellId = [string]$Cell.cellId
+        profileToken = [string]$Cell.profileToken
+        captureBackend = [string]$Cell.captureBackend
+        modeClass = [string]$Cell.modeClass
+        scaleTarget = [string]$Cell.scaleTarget
+        logicalFps = [UInt32]$Cell.logicalFps
+        coverageRole = [string]$Cell.coverageRole
+        profileComparisonRole = [string]$Cell.profileComparisonRole
+        geometryMode = $geometryMode
+        minimumTargetCanvas = [ordered]@{ width = [UInt32]$requiredTarget.width; height = [UInt32]$requiredTarget.height }
+        decoderCaptureRoi = $captureRoi
+        decoderCaptureRoiArgument = "$($captureRoi.left),$($captureRoi.top),$($captureRoiDimensions.width),$($captureRoiDimensions.height)"
+        captureRoiPurpose = $captureRoiPurpose
+        runDirectoryName = ('cell-{0:D3}-{1}' -f $Ordinal, [string]$Cell.cellId)
+        runId = $null
+        executionStatus = 'PENDING'
+        artifactsMustBeIndependent = $true
+    }
+}
+
+function Import-PBRemoteVisualStep21RunLedger
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if ([UInt64]$identity.size -gt 2MB -or
+        (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256))
+    {
+        throw 'Step 21 run ledger size or expected SHA-256 is invalid'
+    }
+    $ledger = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 2MB
+    Assert-PBMatrixExactKeys -Dictionary $ledger -ExpectedKeys @('schema', 'createdUtc', 'status', 'ledgerId',
+        'matrixSpecification', 'hardwareScope', 'computerAMonitorCatalog', 'experimentMonitor', 'fullCellCount',
+        'includedCellCount', 'entries', 'excludedCellCount', 'excludedCells', 'contracts', 'truthBoundary') `
+        -Name 'Step 21 run ledger'
+    if ([string]$ledger.schema -cne 'PixelBridge.RemoteVisualStep21RunLedger.1' -or
+        [string]$ledger.status -cne 'NOT_EXECUTED' -or [string]$ledger.ledgerId -cnotmatch '^[0-9a-f]{32}$')
+    {
+        throw 'Step 21 run ledger schema, status, or identity is invalid'
+    }
+    foreach ($name in @('matrixSpecification', 'hardwareScope', 'computerAMonitorCatalog'))
+    {
+        Assert-PBIdentityShape -Identity $ledger[$name] -Name "Step 21 run ledger $name"
+        [void](Assert-PBFileIdentity -Path ([string]$ledger[$name].path) -Expected $ledger[$name] `
+            -Name "Step 21 run ledger $name")
+    }
+    $matrixSpec = Import-PBRemoteVisualStep21MatrixSpec -Path ([string]$ledger.matrixSpecification.path) `
+        -ExpectedSha256 ([string]$ledger.matrixSpecification.sha256)
+    $hardwareScope = Import-PBRemoteVisualStep21HardwareScope -Path ([string]$ledger.hardwareScope.path) `
+        -ExpectedSha256 ([string]$ledger.hardwareScope.sha256)
+    Assert-PBMatrixIdentityEqual -Actual $hardwareScope.value.matrixSpecification -Expected $ledger.matrixSpecification `
+        -Name 'Step 21 run ledger parent MatrixSpec'
+    Assert-PBMatrixIdentityEqual -Actual $hardwareScope.value.computerAMonitorCatalog -Expected $ledger.computerAMonitorCatalog `
+        -Name 'Step 21 run ledger Computer A monitor catalog'
+    Compare-PBMatrixJsonValue -First $ledger.experimentMonitor -Second $hardwareScope.value.experimentMonitor `
+        -Name 'Step 21 run ledger ExperimentMonitor'
+    $fullCellCount = Get-PBNonNegativeUInt64 -Value $ledger.fullCellCount -Name 'Step 21 run ledger fullCellCount'
+    $includedCellCount = Get-PBNonNegativeUInt64 -Value $ledger.includedCellCount -Name 'Step 21 run ledger includedCellCount'
+    $excludedCellCount = Get-PBNonNegativeUInt64 -Value $ledger.excludedCellCount -Name 'Step 21 run ledger excludedCellCount'
+    if ($fullCellCount -ne 41 -or $includedCellCount -ne 31 -or $excludedCellCount -ne 10 -or
+        @($ledger.entries).Count -ne 31 -or @($ledger.excludedCells).Count -ne 10)
+    {
+        throw 'Step 21 run ledger must preserve the exact 31 included and 10 excluded hardware scope'
+    }
+    for ($index = 0; $index -lt 31; $index++)
+    {
+        $expectedEntry = New-PBRemoteVisualStep21RunLedgerEntry -Cell $hardwareScope.value.includedCells[$index] `
+            -Ordinal ([UInt32]($index + 1)) -ExperimentMonitorRect $hardwareScope.value.experimentMonitor.physicalRect
+        Compare-PBMatrixJsonValue -First $ledger.entries[$index] -Second $expectedEntry `
+            -Name "Step 21 run-ledger entry $index"
+    }
+    Compare-PBMatrixJsonValue -First @($ledger.excludedCells) -Second @($hardwareScope.value.excludedCells) `
+        -Name 'Step 21 run-ledger excluded cells'
+    Assert-PBMatrixExactKeys -Dictionary $ledger.contracts -ExpectedKeys @('sourceMatrixAndScopeImmutable',
+        'oneIndependentRunPerIncludedCell', 'runIdAllocatedOnlyWhenCellExecutionBegins',
+        'perRunDeploymentUiPlanAndEvidenceRequired', 'captureRoiDoesNotEstablishScale',
+        'failedRunsMustBeClassifiedAndRetained') -Name 'Step 21 run-ledger contracts'
+    if ($ledger.contracts.sourceMatrixAndScopeImmutable -isnot [bool] -or -not [bool]$ledger.contracts.sourceMatrixAndScopeImmutable -or
+        $ledger.contracts.oneIndependentRunPerIncludedCell -isnot [bool] -or -not [bool]$ledger.contracts.oneIndependentRunPerIncludedCell -or
+        $ledger.contracts.runIdAllocatedOnlyWhenCellExecutionBegins -isnot [bool] -or -not [bool]$ledger.contracts.runIdAllocatedOnlyWhenCellExecutionBegins -or
+        $ledger.contracts.perRunDeploymentUiPlanAndEvidenceRequired -isnot [bool] -or -not [bool]$ledger.contracts.perRunDeploymentUiPlanAndEvidenceRequired -or
+        $ledger.contracts.captureRoiDoesNotEstablishScale -isnot [bool] -or -not [bool]$ledger.contracts.captureRoiDoesNotEstablishScale -or
+        $ledger.contracts.failedRunsMustBeClassifiedAndRetained -isnot [bool] -or -not [bool]$ledger.contracts.failedRunsMustBeClassifiedAndRetained)
+    {
+        throw 'Step 21 run-ledger execution contracts are invalid'
+    }
+    Assert-PBMatrixExactKeys -Dictionary $ledger.truthBoundary -ExpectedKeys @('formalStep21Accepted',
+        'executedCellCount', 'pendingCellCount', 'full41CoverageCompleted', 'excludedCellsDoNotCountAsCoverage',
+        'acceptedLocatorGeometryAuthority', 'computerBMonitorCatalogStillRequired',
+        'providerUiEvidenceStillRequiredPerRun', 'certifiedRemoteVisualProfile', 'statement') `
+        -Name 'Step 21 run-ledger truth boundary'
+    $executedCellCount = Get-PBNonNegativeUInt64 -Value $ledger.truthBoundary.executedCellCount `
+        -Name 'Step 21 run-ledger executedCellCount'
+    $pendingCellCount = Get-PBNonNegativeUInt64 -Value $ledger.truthBoundary.pendingCellCount `
+        -Name 'Step 21 run-ledger pendingCellCount'
+    $expectedStatement = 'This ledger freezes an operator schedule only; no Step 21 matrix cell, provider behavior, file recovery, or certification is claimed.'
+    if ($ledger.truthBoundary.formalStep21Accepted -isnot [bool] -or [bool]$ledger.truthBoundary.formalStep21Accepted -or
+        $executedCellCount -ne 0 -or $pendingCellCount -ne 31 -or
+        $ledger.truthBoundary.full41CoverageCompleted -isnot [bool] -or [bool]$ledger.truthBoundary.full41CoverageCompleted -or
+        $ledger.truthBoundary.excludedCellsDoNotCountAsCoverage -isnot [bool] -or -not [bool]$ledger.truthBoundary.excludedCellsDoNotCountAsCoverage -or
+        [string]$ledger.truthBoundary.acceptedLocatorGeometryAuthority -cne 'AcceptedBootstrapLocatorPixels' -or
+        $ledger.truthBoundary.computerBMonitorCatalogStillRequired -isnot [bool] -or -not [bool]$ledger.truthBoundary.computerBMonitorCatalogStillRequired -or
+        $ledger.truthBoundary.providerUiEvidenceStillRequiredPerRun -isnot [bool] -or -not [bool]$ledger.truthBoundary.providerUiEvidenceStillRequiredPerRun -or
+        $ledger.truthBoundary.certifiedRemoteVisualProfile -isnot [bool] -or [bool]$ledger.truthBoundary.certifiedRemoteVisualProfile -or
+        [string]$ledger.truthBoundary.statement -cne $expectedStatement)
+    {
+        throw 'Step 21 run-ledger truth boundary is invalid'
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $ledger; matrixSpec = $matrixSpec; hardwareScope = $hardwareScope }
+}
+
 function Get-PBNullableFiniteNumber
 {
     param(
@@ -1053,7 +1220,8 @@ function Get-PBRemoteVisualFailureSupport
 Export-ModuleMember -Function Assert-PBMatrixExactKeys, Assert-PBMatrixIdentityEqual, Get-PBStep21ScaleTarget, `
     New-PBRemoteVisualStep21ExpectedCells, Get-PBRemoteVisualStep21CellRequiredRoi, `
     New-PBRemoteVisualStep21HardwareScopePartition, Import-PBRemoteVisualStep21MatrixSpec, `
-    Import-PBRemoteVisualStep21HardwareScope, `
+    Import-PBRemoteVisualStep21HardwareScope, New-PBRemoteVisualStep21RunLedgerEntry, `
+    Import-PBRemoteVisualStep21RunLedger, `
     Get-PBNonNegativeUInt64, Get-PBRemoteVisualObservedLocatorGeometry, Assert-PBRemoteVisualObservedLocatorTarget, `
     Get-PBRemoteVisualAuthoritativeMetrics, `
     New-PBRemoteVisualMatrixRunRecordValue, `
