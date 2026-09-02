@@ -86,7 +86,26 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21End
 
 EndpointScope 仍只能是 `READINESS_ONLY`：它证明静态 catalog 可形成符合要求的双端 Extended Desktop 布局，但不是运行开始时的 topology。每个 cell 的 endpoint wrapper 仍必须重新调用 packaged Decoder `--list-monitors`，并让 live catalog 与 plan 中的完整 device/rect/DPI/refresh/rotation/LUID/primary contract 一致；provider 模式也仍须新的 UI-visible evidence。EndpointScope 保持 `runIdsAllocated=0`、`executedCellCount=0`、`formalStep21Accepted=false`，不能拿来填一个 cell。
 
-### 2.1 Computer B 单次解压交付包
+### 2.1 从冻结账本创建单个 cell 的 plan
+
+每个真实 cell 开始时仍先生成新的 OS-CSPRNG RunId，并用它生成该轮独立的 metadata、A/B environment、deployment manifest、provider UI screenshot/capture record 与 UI evidence。不要再把 RunLedger 的 profile/backend/mode/scale/FPS、A/B monitor、B 端 origin 和 A 端 ROI 手工抄入通用 plan creator；改为使用唯一的薄桥接工具：
+
+```powershell
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21CellPlan.ps1 `
+  -EndpointScopePath <matrix-root>\endpoint-scope\step21-endpoint-scope.json `
+  -ExpectedEndpointScopeSha256 <endpoint-scope-sha256> `
+  -EndpointScopeSealPath <matrix-root>\endpoint-scope\step21-endpoint-scope.seal.json `
+  -ExpectedEndpointScopeSealSha256 <endpoint-scope-seal-sha256> `
+  -CellOrdinal 1 `
+  -DeploymentManifestPath <this-run>\deployment-manifest.json `
+  -UiEvidencePath <this-run>\remote-ui-evidence.json `
+  -PythonPath D:\Python3.12.9\python.exe `
+  -OutputPath <this-run>\pilot-plan.json
+```
+
+该工具递归验证 EndpointScope seal 与其 RunLedger/HardwareScope/两端 catalog，机械派生所选 `PENDING` 行的全部参数，再调用现有 `New-PBRemoteVisualPilotPlan.ps1`；它不复制、不重解释计划生成语义。生成结果先在同目录临时路径由 `Import-PBRemoteVisualPilotPlan` 和独立 cell/scope binder 验证，只有 cell tuple、A/B role、全部 physical rect、DPI/refresh/rotation/LUID/primary runtime contract、B Data Window（包括合法负 origin）和 Decoder ROI 完全一致时才以 no-overwrite rename 发布最终 plan。输出 receipt 固定为 `PLAN_READY_NOT_EXECUTED`：plan 的创建不算 cell 已执行，live packaged monitor preflight、Decoder-before-Encoder、Replay、WholeFileDigest、offline reproduce 和成功/失败 verifier 仍全部必需。
+
+### 2.2 Computer B 单次解压交付包
 
 为了让 Computer B 不再单独复制 BAT、也不再需要先解压外层文件后继续寻找第二层 `RuntimePackage`，可在当前 source/package identity 完全一致时创建一个单次解压包。用于该 kit 的 Both-role package 应在正常 package 命令上增加 `-CompactPackageName`；它只把容器目录/ZIP 名缩短为 `PB-RV-*`，不会改变 manifest、payload、HEAD/source identity 或 verifier 语义。kit 根目录同样使用有身份前缀的短名，以便从较深的 Desktop/项目路径启动 Qt EXE/DLL 时仍留有 Windows 路径预算：
 
@@ -138,7 +157,7 @@ LF4 scale target 对应的**最小目标画布包围尺寸**为：
 
 成功 run 的 Matrix verifier 从 live 与 offline `RunReport.2.observedLocatorGeometry` 读取实际接受 Bootstrap locator 的 origin、X/Y scale、marker residual、完整 min/max 和样本数。只有 last/min/max scale 均映射到预冻结 target、与 target 的 X/Y 偏差均不超过 0.015、且 X/Y 各向异性不超过 0.015，才接受该成功记录；零样本成功记录必定失败。失败记录允许零 accepted Locator 样本，但必须保留同一权威对象的 `null` 语义并由 Replay/report 支持失败分类。Direct/Shape 仍只接受 exact 1920×1080、`Strict1To1` 和实际 1.0/1.0；任何 scaled Direct/Shape 计划都会在运行前失败，绝不 silent resample。
 
-每个 Step 21 plan 的创建形式为：
+下面是底层通用 plan creator 的等价参数形式，用于理解合同或调试；正式 31-cell 操作应使用第 2.1 节的 ledger-bound bridge，避免人工转录错误：
 
 ```powershell
 pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualPilotPlan.ps1 `

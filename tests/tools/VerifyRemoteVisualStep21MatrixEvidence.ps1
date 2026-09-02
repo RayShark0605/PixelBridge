@@ -62,6 +62,21 @@ function New-TextArtifact
     return New-Identity -Path $Path
 }
 
+function New-MonitorRuntimeContract
+{
+    param([Parameter(Mandatory = $true)][object]$Monitor)
+    return [ordered]@{
+        deviceName = [string]$Monitor.deviceName
+        physicalRect = $Monitor.physicalRect
+        dpiX = [UInt32]$Monitor.dpiX
+        dpiY = [UInt32]$Monitor.dpiY
+        refreshRate = [UInt32]$Monitor.refreshRate
+        rotation = [string]$Monitor.rotation
+        adapterLuid = [ordered]@{ high = [Int64]$Monitor.adapterLuid.high; low = [UInt64]$Monitor.adapterLuid.low }
+        primary = [bool]$Monitor.primary
+    }
+}
+
 function Get-ProfileContract
 {
     param([Parameter(Mandatory = $true)][string]$ProfileToken)
@@ -444,7 +459,9 @@ $matrixSpecTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21MatrixSp
 $hardwareScopeTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21HardwareScope.ps1'
 $runLedgerTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21RunLedger.ps1'
 $endpointScopeTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21EndpointScope.ps1'
+$cellPlanTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21CellPlan.ps1'
 foreach ($path in @($matrixTool, $matrixModule, $matrixSpecTool, $hardwareScopeTool, $runLedgerTool, $endpointScopeTool,
+    $cellPlanTool,
     (Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualFieldFailureEvidence.ps1')))
 {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf))
@@ -481,13 +498,23 @@ try
                 deviceName = '\\.\DISPLAY1'
                 physicalRect = [ordered]@{ left = 0; top = 0; right = 2560; bottom = 1440 }
                 resolution = [ordered]@{ width = 2560; height = 1440 }
+                dpiX = 96
+                dpiY = 96
+                refreshRate = 180
                 rotation = 'Identity'
+                adapterLuid = [ordered]@{ high = 0; low = 94961 }
+                primary = $true
             },
             [ordered]@{
                 deviceName = '\\.\DISPLAY2'
                 physicalRect = [ordered]@{ left = 2560; top = 0; right = 5120; bottom = 1440 }
                 resolution = [ordered]@{ width = 2560; height = 1440 }
+                dpiX = 96
+                dpiY = 96
+                refreshRate = 180
                 rotation = 'Identity'
+                adapterLuid = [ordered]@{ high = 0; low = 94961 }
+                primary = $false
             })
     })
     $monitorCatalogIdentity = New-Identity -Path $monitorCatalogPath
@@ -688,13 +715,23 @@ try
                 deviceName = '\\.\DISPLAY1'
                 physicalRect = [ordered]@{ left = 1920; top = -1; right = 3840; bottom = 1079 }
                 resolution = [ordered]@{ width = 1920; height = 1080 }
+                dpiX = 96
+                dpiY = 96
+                refreshRate = 60
                 rotation = 'Identity'
+                adapterLuid = [ordered]@{ high = 0; low = 63917 }
+                primary = $false
             },
             [ordered]@{
                 deviceName = '\\.\DISPLAY2'
                 physicalRect = [ordered]@{ left = 0; top = 0; right = 1920; bottom = 1080 }
                 resolution = [ordered]@{ width = 1920; height = 1080 }
+                dpiX = 96
+                dpiY = 96
+                refreshRate = 165
                 rotation = 'Identity'
+                adapterLuid = [ordered]@{ high = 0; low = 63917 }
+                primary = $true
             })
     })
     $computerBCatalogIdentity = New-Identity -Path $computerBCatalogPath
@@ -733,6 +770,185 @@ try
         [string]$endpointScopeSeal.value.endpointScopeId -cne [string]$endpointScope.endpointScopeId)
     {
         throw 'Step 21 endpoint-scope seal did not bind the exact seven readiness artifacts'
+    }
+
+    $cellPlanToolText = Get-Content -LiteralPath $cellPlanTool -Raw -Encoding UTF8
+    if ($cellPlanToolText -notmatch 'Import-PBRemoteVisualStep21EndpointScopeSeal' -or
+        $cellPlanToolText -notmatch 'Get-PBRemoteVisualStep21CellPlanArguments' -or
+        $cellPlanToolText -notmatch 'Assert-PBRemoteVisualStep21CellPlanBinding' -or
+        $cellPlanToolText -notmatch '\[System\.IO\.File\]::Move\(\$temporaryPath, \$resolvedOutput\)' -or
+        $cellPlanToolText -notmatch "status = 'PLAN_READY_NOT_EXECUTED'" -or
+        $cellPlanToolText -notmatch 'planCreationIsNotCellExecution = \$true')
+    {
+        throw 'Step 21 cell-plan tool does not preserve sealed-scope, atomic create-only, or non-execution semantics'
+    }
+    $cellPlanArguments = Get-PBRemoteVisualStep21CellPlanArguments -EndpointScope $endpointScopeImport -CellOrdinal 1
+    if ([UInt32]$cellPlanArguments.cellOrdinal -ne 1 -or
+        [string]$cellPlanArguments.cellId -cne 'lf4-wgc-quality-priority-s0750-f1' -or
+        [string]$cellPlanArguments.profileToken -cne 'remote-lf4' -or
+        [string]$cellPlanArguments.captureBackend -cne 'wgc' -or
+        [string]$cellPlanArguments.matrixModeClass -cne 'QualityPriority' -or
+        [string]$cellPlanArguments.matrixScaleTarget -cne '0.750' -or
+        [UInt32]$cellPlanArguments.logicalFps -ne 1 -or
+        [string]$cellPlanArguments.geometryMode -cne 'LocatorScaled' -or
+        [Int64]$cellPlanArguments.encoderOriginX -ne 1920 -or [Int64]$cellPlanArguments.encoderOriginY -ne -1 -or
+        [Int64]$cellPlanArguments.decoderRoiLeft -ne 2560 -or [Int64]$cellPlanArguments.decoderRoiTop -ne 0 -or
+        [Int64]$cellPlanArguments.decoderRoiRight -ne 5120 -or [Int64]$cellPlanArguments.decoderRoiBottom -ne 1440)
+    {
+        throw 'Step 21 cell-plan resolver did not derive the exact first RunLedger tuple and EndpointScope geometry'
+    }
+    $dxgiCellPlanArguments = Get-PBRemoteVisualStep21CellPlanArguments -EndpointScope $endpointScopeImport -CellOrdinal 29
+    $baselineCellPlanArguments = Get-PBRemoteVisualStep21CellPlanArguments -EndpointScope $endpointScopeImport -CellOrdinal 30
+    if ([string]$dxgiCellPlanArguments.captureBackend -cne 'dxgi' -or
+        [string]$dxgiCellPlanArguments.backendCoverageRole -cne 'RepresentativeRecheck' -or
+        [string]$baselineCellPlanArguments.profileToken -cne 'direct' -or
+        [string]$baselineCellPlanArguments.entry.coverageRole -cne 'ProfileBaseline' -or
+        [string]$baselineCellPlanArguments.backendCoverageRole -cne 'MainMatrix' -or
+        [Int64]$baselineCellPlanArguments.decoderRoiLeft -ne 2880 -or
+        [Int64]$baselineCellPlanArguments.decoderRoiTop -ne 180 -or
+        [Int64]$baselineCellPlanArguments.decoderRoiRight -ne 4800 -or
+        [Int64]$baselineCellPlanArguments.decoderRoiBottom -ne 1260)
+    {
+        throw 'Step 21 cell-plan resolver confused backend coverage with the independent baseline coverage role'
+    }
+    $computerACatalog = $endpointScopeImport.ledgerSeal.ledger.hardwareScope.monitorCatalog
+    $computerBCatalog = $endpointScopeImport.computerB.value
+    $computerAProtectedMonitor = @($computerACatalog.monitors | Where-Object {
+        [string]$_.deviceName -ieq [string]$endpointScope.topology.computerA.protectedMonitor.deviceName })[0]
+    $computerAExperimentMonitor = @($computerACatalog.monitors | Where-Object {
+        [string]$_.deviceName -ieq [string]$endpointScope.topology.computerA.experimentMonitor.deviceName })[0]
+    $computerBProtectedMonitor = @($computerBCatalog.monitors | Where-Object {
+        [string]$_.deviceName -ieq [string]$endpointScope.topology.computerB.protectedMonitor.deviceName })[0]
+    $computerBExperimentMonitor = @($computerBCatalog.monitors | Where-Object {
+        [string]$_.deviceName -ieq [string]$endpointScope.topology.computerB.experimentMonitor.deviceName })[0]
+    $cellPlanFixture = [ordered]@{
+        schema = 'PixelBridge.RemoteVisualPilotPlan.3'
+        runId = 'a' * 32
+        profileToken = [string]$cellPlanArguments.profileToken
+        logicalFps = [UInt32]$cellPlanArguments.logicalFps
+        geometryMode = [string]$cellPlanArguments.geometryMode
+        policy = [ordered]@{ captureBackend = [string]$cellPlanArguments.captureBackend }
+        matrix = [ordered]@{
+            modeClass = [string]$cellPlanArguments.matrixModeClass
+            scaleTarget = [string]$cellPlanArguments.matrixScaleTarget
+            profileComparisonRole = [string]$cellPlanArguments.entry.profileComparisonRole
+            backendCoverageRole = [string]$cellPlanArguments.backendCoverageRole
+        }
+        monitorSafety = [ordered]@{
+            encoder = [ordered]@{
+                protectedMonitorDeviceName = [string]$endpointScope.topology.computerB.protectedMonitor.deviceName
+                experimentMonitorDeviceName = [string]$endpointScope.topology.computerB.experimentMonitor.deviceName
+                protectedMonitorPhysicalRect = $endpointScope.topology.computerB.protectedMonitor.physicalRect
+                experimentMonitorPhysicalRect = $endpointScope.topology.computerB.experimentMonitor.physicalRect
+                dataWindowPhysicalRect = $endpointScope.topology.computerB.encoderDataWindow
+                protectedMonitorContract = New-MonitorRuntimeContract -Monitor $computerBProtectedMonitor
+                experimentMonitorContract = New-MonitorRuntimeContract -Monitor $computerBExperimentMonitor
+            }
+            decoder = [ordered]@{
+                protectedMonitorDeviceName = [string]$endpointScope.topology.computerA.protectedMonitor.deviceName
+                experimentMonitorDeviceName = [string]$endpointScope.topology.computerA.experimentMonitor.deviceName
+                protectedMonitorPhysicalRect = $endpointScope.topology.computerA.protectedMonitor.physicalRect
+                experimentMonitorPhysicalRect = $endpointScope.topology.computerA.experimentMonitor.physicalRect
+                roiPhysicalRect = $cellPlanArguments.entry.decoderCaptureRoi
+                protectedMonitorContract = New-MonitorRuntimeContract -Monitor $computerAProtectedMonitor
+                experimentMonitorContract = New-MonitorRuntimeContract -Monitor $computerAExperimentMonitor
+            }
+        }
+    }
+    $cellPlanBinding = Assert-PBRemoteVisualStep21CellPlanBinding -EndpointScope $endpointScopeImport `
+        -CellOrdinal 1 -Plan $cellPlanFixture
+    if ([string]$cellPlanBinding.cellId -cne 'lf4-wgc-quality-priority-s0750-f1' -or
+        [string]$cellPlanBinding.runId -cne ('a' * 32))
+    {
+        throw 'Step 21 cell-plan positive binding did not preserve the selected cell and fresh run identity'
+    }
+    foreach ($scheduledEntry in @($endpointScopeImport.ledgerSeal.ledger.value.entries))
+    {
+        $scheduledOrdinal = [UInt32]$scheduledEntry.ordinal
+        $scheduledArguments = Get-PBRemoteVisualStep21CellPlanArguments -EndpointScope $endpointScopeImport `
+            -CellOrdinal $scheduledOrdinal
+        $scheduledPlan = $cellPlanFixture | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
+        $scheduledPlan.runId = $scheduledOrdinal.ToString('x32')
+        $scheduledPlan.profileToken = [string]$scheduledArguments.profileToken
+        $scheduledPlan.logicalFps = [UInt32]$scheduledArguments.logicalFps
+        $scheduledPlan.geometryMode = [string]$scheduledArguments.geometryMode
+        $scheduledPlan.policy.captureBackend = [string]$scheduledArguments.captureBackend
+        $scheduledPlan.matrix.modeClass = [string]$scheduledArguments.matrixModeClass
+        $scheduledPlan.matrix.scaleTarget = [string]$scheduledArguments.matrixScaleTarget
+        $scheduledPlan.matrix.profileComparisonRole = [string]$scheduledArguments.entry.profileComparisonRole
+        $scheduledPlan.matrix.backendCoverageRole = [string]$scheduledArguments.backendCoverageRole
+        $scheduledPlan.monitorSafety.decoder.roiPhysicalRect = $scheduledArguments.entry.decoderCaptureRoi
+        $scheduledBinding = Assert-PBRemoteVisualStep21CellPlanBinding -EndpointScope $endpointScopeImport `
+            -CellOrdinal $scheduledOrdinal -Plan $scheduledPlan
+        if ([UInt32]$scheduledBinding.cellOrdinal -ne $scheduledOrdinal -or
+            [string]$scheduledBinding.cellId -cne [string]$scheduledEntry.cellId -or
+            [string]$scheduledBinding.runId -cne $scheduledOrdinal.ToString('x32'))
+        {
+            throw "Step 21 cell-plan binding did not round-trip scheduled ordinal $scheduledOrdinal"
+        }
+    }
+    $invalidRunIdPlan = $cellPlanFixture | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
+    $invalidRunIdPlan.runId = 'not-a-run-id'
+    $invalidRunIdRejected = $false
+    try
+    {
+        [void](Assert-PBRemoteVisualStep21CellPlanBinding -EndpointScope $endpointScopeImport `
+            -CellOrdinal 1 -Plan $invalidRunIdPlan)
+    }
+    catch { $invalidRunIdRejected = $_.Exception.Message -like '*selected RunLedger cell tuple*' }
+    if (-not $invalidRunIdRejected)
+    {
+        throw 'Step 21 cell-plan binding accepted a malformed run identity'
+    }
+    $wrongCellRejected = $false
+    try
+    {
+        [void](Assert-PBRemoteVisualStep21CellPlanBinding -EndpointScope $endpointScopeImport `
+            -CellOrdinal 2 -Plan $cellPlanFixture)
+    }
+    catch { $wrongCellRejected = $_.Exception.Message -like '*selected RunLedger cell tuple*' }
+    if (-not $wrongCellRejected)
+    {
+        throw 'Step 21 cell-plan binding accepted one plan for a different RunLedger ordinal'
+    }
+    $tamperedCellPlan = $cellPlanFixture | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
+    $tamperedCellPlan.monitorSafety.encoder.dataWindowPhysicalRect.left++
+    $tamperedOriginRejected = $false
+    try
+    {
+        [void](Assert-PBRemoteVisualStep21CellPlanBinding -EndpointScope $endpointScopeImport `
+            -CellOrdinal 1 -Plan $tamperedCellPlan)
+    }
+    catch { $tamperedOriginRejected = $_.Exception.Message -like '*Encoder Data Window*' }
+    if (-not $tamperedOriginRejected)
+    {
+        throw 'Step 21 cell-plan binding accepted a post-derived Computer B Data Window origin change'
+    }
+    $tamperedRuntimePlan = $cellPlanFixture | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
+    $tamperedRuntimePlan.monitorSafety.decoder.experimentMonitorContract.refreshRate++
+    $tamperedRefreshRejected = $false
+    try
+    {
+        [void](Assert-PBRemoteVisualStep21CellPlanBinding -EndpointScope $endpointScopeImport `
+            -CellOrdinal 1 -Plan $tamperedRuntimePlan)
+    }
+    catch { $tamperedRefreshRejected = $_.Exception.Message -like '*complete runtime contract*' }
+    if (-not $tamperedRefreshRejected)
+    {
+        throw 'Step 21 cell-plan binding accepted a Decoder refresh-rate identity change'
+    }
+    $tamperedRuntimePlan = $cellPlanFixture | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
+    $tamperedRuntimePlan.monitorSafety.encoder.experimentMonitorContract.adapterLuid.low++
+    $tamperedAdapterRejected = $false
+    try
+    {
+        [void](Assert-PBRemoteVisualStep21CellPlanBinding -EndpointScope $endpointScopeImport `
+            -CellOrdinal 1 -Plan $tamperedRuntimePlan)
+    }
+    catch { $tamperedAdapterRejected = $_.Exception.Message -like '*complete runtime contract*' }
+    if (-not $tamperedAdapterRejected)
+    {
+        throw 'Step 21 cell-plan binding accepted an Encoder adapter-LUID identity change'
     }
 
     $endpointScopeTampered = Read-PBBoundedJson -Path $endpointScopePath -MaximumBytes 2MB
