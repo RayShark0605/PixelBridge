@@ -53,6 +53,22 @@ function Assert-PBMatrixIdentityEqual
     }
 }
 
+function Assert-PBMatrixBoundedIdentity
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Identity,
+        [Parameter(Mandatory = $true)][UInt64]$MaximumBytes,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    Assert-PBMatrixExactKeys -Dictionary $Identity -ExpectedKeys @('path', 'size', 'sha256') -Name $Name
+    Assert-PBIdentityShape -Identity $Identity -Name $Name
+    $size = Get-PBNonNegativeUInt64 -Value $Identity.size -Name "$Name size"
+    if ($size -eq 0 -or $size -gt $MaximumBytes)
+    {
+        throw "$Name exceeds its bounded artifact size"
+    }
+}
+
 function Get-PBStep21ScaleTarget
 {
     param(
@@ -567,6 +583,442 @@ function Import-PBRemoteVisualStep21RunLedger
         throw 'Step 21 run-ledger truth boundary is invalid'
     }
     return [ordered]@{ path = $resolvedPath; identity = $identity; value = $ledger; matrixSpec = $matrixSpec; hardwareScope = $hardwareScope }
+}
+
+function Import-PBRemoteVisualStep21RunLedgerSeal
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if ([UInt64]$identity.size -gt 512KB -or
+        (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256))
+    {
+        throw 'Step 21 run-ledger seal size or expected SHA-256 is invalid'
+    }
+    $seal = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 512KB
+    Assert-PBMatrixExactKeys -Dictionary $seal -ExpectedKeys @('schema', 'createdUtc', 'status', 'ledgerId',
+        'matrixId', 'scopeId', 'includedCellCount', 'excludedCellCount', 'artifactCount', 'artifacts',
+        'formalStep21Accepted', 'certifiedRemoteVisualProfile') -Name 'Step 21 run-ledger seal'
+    $includedCellCount = Get-PBNonNegativeUInt64 -Value $seal.includedCellCount `
+        -Name 'Step 21 run-ledger seal includedCellCount'
+    $excludedCellCount = Get-PBNonNegativeUInt64 -Value $seal.excludedCellCount `
+        -Name 'Step 21 run-ledger seal excludedCellCount'
+    $artifactCount = Get-PBNonNegativeUInt64 -Value $seal.artifactCount -Name 'Step 21 run-ledger seal artifactCount'
+    if ([string]$seal.schema -cne 'PixelBridge.RemoteVisualStep21RunLedgerSeal.1' -or
+        [string]$seal.status -cne 'NOT_EXECUTED' -or [string]$seal.ledgerId -cnotmatch '^[0-9a-f]{32}$' -or
+        [string]$seal.matrixId -cnotmatch '^[0-9a-f]{32}$' -or [string]$seal.scopeId -cnotmatch '^[0-9a-f]{32}$' -or
+        $includedCellCount -ne 31 -or $excludedCellCount -ne 10 -or $artifactCount -ne 5 -or
+        @($seal.artifacts).Count -ne 5 -or $seal.formalStep21Accepted -isnot [bool] -or
+        [bool]$seal.formalStep21Accepted -or $seal.certifiedRemoteVisualProfile -isnot [bool] -or
+        [bool]$seal.certifiedRemoteVisualProfile)
+    {
+        throw 'Step 21 run-ledger seal schema, counts, or truth boundary is invalid'
+    }
+    $artifactMaximumBytes = @([UInt64](256KB), [UInt64](512KB), [UInt64](2MB), [UInt64](2MB), [UInt64](1MB))
+    for ($index = 0; $index -lt @($seal.artifacts).Count; $index++)
+    {
+        $artifact = $seal.artifacts[$index]
+        Assert-PBMatrixBoundedIdentity -Identity $artifact -MaximumBytes $artifactMaximumBytes[$index] `
+            -Name "Step 21 run-ledger sealed artifact $index"
+        [void](Assert-PBFileIdentity -Path ([string]$artifact.path) -Expected $artifact `
+            -Name 'Step 21 run-ledger sealed artifact')
+    }
+    $ledger = Import-PBRemoteVisualStep21RunLedger -Path ([string]$seal.artifacts[3].path) `
+        -ExpectedSha256 ([string]$seal.artifacts[3].sha256)
+    Assert-PBMatrixIdentityEqual -Actual $seal.artifacts[0] -Expected $ledger.matrixSpec.identity `
+        -Name 'Step 21 run-ledger seal MatrixSpec'
+    Assert-PBMatrixIdentityEqual -Actual $seal.artifacts[1] -Expected $ledger.hardwareScope.identity `
+        -Name 'Step 21 run-ledger seal HardwareScope'
+    Assert-PBMatrixIdentityEqual -Actual $seal.artifacts[2] -Expected $ledger.value.computerAMonitorCatalog `
+        -Name 'Step 21 run-ledger seal Computer A monitor catalog'
+    Assert-PBMatrixIdentityEqual -Actual $seal.artifacts[3] -Expected $ledger.identity `
+        -Name 'Step 21 run-ledger seal ledger'
+    $csvPath = [System.IO.Path]::GetFullPath([string]$seal.artifacts[4].path)
+    if ([System.IO.Path]::GetFileName($csvPath) -cne 'step21-run-ledger.csv' -or
+        [System.IO.Path]::GetDirectoryName($csvPath) -cne [System.IO.Path]::GetDirectoryName($ledger.path))
+    {
+        throw 'Step 21 run-ledger seal CSV path is not beside the ledger'
+    }
+    $csvRows = @(Import-Csv -LiteralPath $csvPath)
+    $expectedColumns = @('ordinal', 'cellId', 'profileToken', 'captureBackend', 'modeClass', 'scaleTarget',
+        'logicalFps', 'coverageRole', 'profileComparisonRole', 'geometryMode', 'minimumTargetWidth',
+        'minimumTargetHeight', 'decoderCaptureRoiLeft', 'decoderCaptureRoiTop', 'decoderCaptureRoiRight',
+        'decoderCaptureRoiBottom', 'decoderCaptureRoiArgument', 'captureRoiPurpose', 'runDirectoryName',
+        'executionStatus', 'runId')
+    if ($csvRows.Count -ne 31 -or @($csvRows[0].PSObject.Properties.Name).Count -ne $expectedColumns.Count)
+    {
+        throw 'Step 21 run-ledger seal CSV row or column count is invalid'
+    }
+    for ($columnIndex = 0; $columnIndex -lt $expectedColumns.Count; $columnIndex++)
+    {
+        if ([string]$csvRows[0].PSObject.Properties.Name[$columnIndex] -cne $expectedColumns[$columnIndex])
+        {
+            throw 'Step 21 run-ledger seal CSV columns are invalid'
+        }
+    }
+    for ($index = 0; $index -lt $csvRows.Count; $index++)
+    {
+        $entry = $ledger.value.entries[$index]
+        $row = $csvRows[$index]
+        if ([string]$row.ordinal -cne [string]$entry.ordinal -or [string]$row.cellId -cne [string]$entry.cellId -or
+            [string]$row.profileToken -cne [string]$entry.profileToken -or
+            [string]$row.captureBackend -cne [string]$entry.captureBackend -or
+            [string]$row.modeClass -cne [string]$entry.modeClass -or [string]$row.scaleTarget -cne [string]$entry.scaleTarget -or
+            [string]$row.logicalFps -cne [string]$entry.logicalFps -or
+            [string]$row.coverageRole -cne [string]$entry.coverageRole -or
+            [string]$row.profileComparisonRole -cne [string]$entry.profileComparisonRole -or
+            [string]$row.geometryMode -cne [string]$entry.geometryMode -or
+            [string]$row.minimumTargetWidth -cne [string]$entry.minimumTargetCanvas.width -or
+            [string]$row.minimumTargetHeight -cne [string]$entry.minimumTargetCanvas.height -or
+            [string]$row.decoderCaptureRoiLeft -cne [string]$entry.decoderCaptureRoi.left -or
+            [string]$row.decoderCaptureRoiTop -cne [string]$entry.decoderCaptureRoi.top -or
+            [string]$row.decoderCaptureRoiRight -cne [string]$entry.decoderCaptureRoi.right -or
+            [string]$row.decoderCaptureRoiBottom -cne [string]$entry.decoderCaptureRoi.bottom -or
+            [string]$row.decoderCaptureRoiArgument -cne [string]$entry.decoderCaptureRoiArgument -or
+            [string]$row.captureRoiPurpose -cne [string]$entry.captureRoiPurpose -or
+            [string]$row.runDirectoryName -cne [string]$entry.runDirectoryName -or
+            [string]$row.executionStatus -cne 'PENDING' -or -not [string]::IsNullOrEmpty([string]$row.runId))
+        {
+            throw "Step 21 run-ledger seal CSV row $index differs from the ledger"
+        }
+    }
+    if ([string]$seal.ledgerId -cne [string]$ledger.value.ledgerId -or
+        [string]$seal.matrixId -cne [string]$ledger.matrixSpec.value.matrixId -or
+        [string]$seal.scopeId -cne [string]$ledger.hardwareScope.value.scopeId)
+    {
+        throw 'Step 21 run-ledger seal identity tuple differs from the ledger'
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $seal; ledger = $ledger; csvIdentity = $seal.artifacts[4] }
+}
+
+function Import-PBRemoteVisualStep21ComputerBMonitorCatalog
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if ([UInt64]$identity.size -gt 2MB -or
+        (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256))
+    {
+        throw 'Computer B Step 21 monitor catalog size or expected SHA-256 is invalid'
+    }
+    $catalog = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 2MB
+    Assert-PBMatrixExactKeys -Dictionary $catalog -ExpectedKeys @('schema', 'monitorCount', 'monitors') `
+        -Name 'Computer B Step 21 monitor catalog'
+    $monitorCount = Get-PBNonNegativeUInt64 -Value $catalog.monitorCount `
+        -Name 'Computer B Step 21 monitor catalog monitorCount'
+    if ([string]$catalog.schema -cne 'PixelBridge.MonitorCatalog.1' -or $monitorCount -ne 2 -or
+        @($catalog.monitors).Count -ne 2)
+    {
+        throw 'Computer B Step 21 requires exactly two monitor catalog entries'
+    }
+    $deviceNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($monitor in @($catalog.monitors))
+    {
+        if ($monitor -isnot [System.Collections.IDictionary] -or -not $monitor.Contains('deviceName') -or
+            -not $monitor.Contains('physicalRect') -or -not $monitor.Contains('resolution') -or
+            -not $monitor.Contains('rotation') -or [string]::IsNullOrWhiteSpace([string]$monitor.deviceName) -or
+            -not $deviceNames.Add([string]$monitor.deviceName) -or [string]$monitor.rotation -cne 'Identity')
+        {
+            throw 'Computer B Step 21 monitor identities must be unique, non-empty, and unrotated'
+        }
+        $dimensions = Get-PBRectDimensions -Rect $monitor.physicalRect -Name 'Computer B Step 21 monitor physicalRect'
+        foreach ($coordinate in @($dimensions.left, $dimensions.top, $dimensions.right, $dimensions.bottom))
+        {
+            if ([Int64]$coordinate -lt [Int32]::MinValue -or [Int64]$coordinate -gt [Int32]::MaxValue)
+            {
+                throw 'Computer B Step 21 monitor coordinates exceed the Windows signed 32-bit desktop domain'
+            }
+        }
+        if ($monitor.resolution -isnot [System.Collections.IDictionary] -or
+            -not $monitor.resolution.Contains('width') -or -not $monitor.resolution.Contains('height'))
+        {
+            throw 'Computer B Step 21 monitor resolution is missing'
+        }
+        $resolutionWidth = Get-PBNonNegativeUInt64 -Value $monitor.resolution.width `
+            -Name 'Computer B Step 21 monitor resolution width'
+        $resolutionHeight = Get-PBNonNegativeUInt64 -Value $monitor.resolution.height `
+            -Name 'Computer B Step 21 monitor resolution height'
+        if ([UInt32]$dimensions.width -ne 1920 -or [UInt32]$dimensions.height -ne 1080 -or
+            $resolutionWidth -ne 1920 -or $resolutionHeight -ne 1080)
+        {
+            throw 'Computer B Step 21 requires two exact 1920x1080 monitors'
+        }
+    }
+    if (Test-PBRectsOverlap -First $catalog.monitors[0].physicalRect -Second $catalog.monitors[1].physicalRect)
+    {
+        throw 'Computer B Step 21 requires two non-overlapping monitors in Extend mode'
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $catalog }
+}
+
+function New-PBRemoteVisualStep21NormalizedMonitor
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$Monitor,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $rect = Get-PBRectDimensions -Rect $Monitor.physicalRect -Name "$Name physicalRect"
+    $resolutionWidth = Get-PBNonNegativeUInt64 -Value $Monitor.resolution.width -Name "$Name resolution width"
+    $resolutionHeight = Get-PBNonNegativeUInt64 -Value $Monitor.resolution.height -Name "$Name resolution height"
+    return [ordered]@{
+        deviceName = [string]$Monitor.deviceName
+        physicalRect = [ordered]@{ left = $rect.left; top = $rect.top; right = $rect.right; bottom = $rect.bottom }
+        resolution = [ordered]@{ width = $resolutionWidth; height = $resolutionHeight }
+        rotation = [string]$Monitor.rotation
+    }
+}
+
+function New-PBRemoteVisualStep21EndpointTopologyValue
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$RunLedger,
+        [Parameter(Mandatory = $true)][object]$ComputerBCatalog,
+        [Parameter(Mandatory = $true)][string]$ComputerBProtectedMonitorDeviceName,
+        [Parameter(Mandatory = $true)][string]$ComputerBExperimentMonitorDeviceName
+    )
+    $computerACatalog = $RunLedger.hardwareScope.monitorCatalog
+    $computerAExperimentName = [string]$RunLedger.value.experimentMonitor.deviceName
+    $computerAExperimentMatches = @($computerACatalog.monitors | Where-Object {
+        [string]$_.deviceName -ieq $computerAExperimentName
+    })
+    $computerAProtectedMatches = @($computerACatalog.monitors | Where-Object {
+        [string]$_.deviceName -ine $computerAExperimentName
+    })
+    if ($computerAExperimentMatches.Count -ne 1 -or $computerAProtectedMatches.Count -ne 1)
+    {
+        throw 'Step 21 endpoint scope cannot resolve the unique Computer A monitor pair'
+    }
+    if ([string]::IsNullOrWhiteSpace($ComputerBProtectedMonitorDeviceName) -or
+        [string]::IsNullOrWhiteSpace($ComputerBExperimentMonitorDeviceName) -or
+        $ComputerBProtectedMonitorDeviceName -ieq $ComputerBExperimentMonitorDeviceName)
+    {
+        throw 'Step 21 endpoint scope requires distinct Computer B Protected and Experiment monitors'
+    }
+    $computerBProtectedMatches = @($ComputerBCatalog.monitors | Where-Object {
+        [string]$_.deviceName -ieq $ComputerBProtectedMonitorDeviceName
+    })
+    $computerBExperimentMatches = @($ComputerBCatalog.monitors | Where-Object {
+        [string]$_.deviceName -ieq $ComputerBExperimentMonitorDeviceName
+    })
+    if ($computerBProtectedMatches.Count -ne 1 -or $computerBExperimentMatches.Count -ne 1)
+    {
+        throw 'Step 21 endpoint scope cannot resolve the selected Computer B monitor pair'
+    }
+    $lf4Entries = @($RunLedger.value.entries | Where-Object { [string]$_.profileToken -ceq 'remote-lf4' })
+    $baselineEntries = @($RunLedger.value.entries | Where-Object { [string]$_.profileToken -in @('direct', 'shape') })
+    if ($lf4Entries.Count -ne 29 -or $baselineEntries.Count -ne 2)
+    {
+        throw 'Step 21 endpoint scope requires the canonical 29 LF4 and two baseline ledger entries'
+    }
+    foreach ($entry in $lf4Entries)
+    {
+        if ([string]$entry.decoderCaptureRoiArgument -cne [string]$lf4Entries[0].decoderCaptureRoiArgument -or
+            [string]$entry.captureRoiPurpose -cne 'LocatorSearchNeighborhood')
+        {
+            throw 'Step 21 endpoint scope LF4 ledger capture policy is inconsistent'
+        }
+    }
+    foreach ($entry in $baselineEntries)
+    {
+        if ([string]$entry.decoderCaptureRoiArgument -cne [string]$baselineEntries[0].decoderCaptureRoiArgument -or
+            [string]$entry.captureRoiPurpose -cne 'ExactProfileCanvas')
+        {
+            throw 'Step 21 endpoint scope baseline ledger capture policy is inconsistent'
+        }
+    }
+    $computerAProtected = New-PBRemoteVisualStep21NormalizedMonitor -Monitor $computerAProtectedMatches[0] `
+        -Name 'Computer A ProtectedMonitor'
+    $computerAExperiment = New-PBRemoteVisualStep21NormalizedMonitor -Monitor $computerAExperimentMatches[0] `
+        -Name 'Computer A ExperimentMonitor'
+    $computerBProtected = New-PBRemoteVisualStep21NormalizedMonitor -Monitor $computerBProtectedMatches[0] `
+        -Name 'Computer B ProtectedMonitor'
+    $computerBExperiment = New-PBRemoteVisualStep21NormalizedMonitor -Monitor $computerBExperimentMatches[0] `
+        -Name 'Computer B ExperimentMonitor'
+    return [ordered]@{
+        computerA = [ordered]@{
+            protectedMonitor = $computerAProtected
+            experimentMonitor = $computerAExperiment
+            decoderCapturePolicies = [ordered]@{
+                lf4 = [ordered]@{
+                    purpose = 'LocatorSearchNeighborhood'
+                    physicalRect = $lf4Entries[0].decoderCaptureRoi
+                    argument = [string]$lf4Entries[0].decoderCaptureRoiArgument
+                }
+                directShape = [ordered]@{
+                    purpose = 'ExactProfileCanvas'
+                    physicalRect = $baselineEntries[0].decoderCaptureRoi
+                    argument = [string]$baselineEntries[0].decoderCaptureRoiArgument
+                }
+            }
+        }
+        computerB = [ordered]@{
+            protectedMonitor = $computerBProtected
+            experimentMonitor = $computerBExperiment
+            encoderDataWindow = $computerBExperiment.physicalRect
+            encoderOrigin = [ordered]@{ x = [Int64]$computerBExperiment.physicalRect.left; y = [Int64]$computerBExperiment.physicalRect.top }
+        }
+    }
+}
+
+function Import-PBRemoteVisualStep21EndpointScope
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if ([UInt64]$identity.size -gt 2MB -or
+        (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256))
+    {
+        throw 'Step 21 endpoint scope size or expected SHA-256 is invalid'
+    }
+    $scope = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 2MB
+    Assert-PBMatrixExactKeys -Dictionary $scope -ExpectedKeys @('schema', 'createdUtc', 'status', 'endpointScopeId',
+        'runLedger', 'runLedgerSeal', 'matrixSpecification', 'hardwareScope', 'computerAMonitorCatalog',
+        'computerBMonitorCatalog', 'topology', 'contracts', 'truthBoundary') -Name 'Step 21 endpoint scope'
+    if ([string]$scope.schema -cne 'PixelBridge.RemoteVisualStep21EndpointScope.1' -or
+        [string]$scope.status -cne 'READINESS_ONLY' -or [string]$scope.endpointScopeId -cnotmatch '^[0-9a-f]{32}$')
+    {
+        throw 'Step 21 endpoint scope schema, status, or identity is invalid'
+    }
+    $identityMaximumBytes = [ordered]@{
+        runLedger = [UInt64](2MB)
+        runLedgerSeal = [UInt64](512KB)
+        matrixSpecification = [UInt64](256KB)
+        hardwareScope = [UInt64](512KB)
+        computerAMonitorCatalog = [UInt64](2MB)
+        computerBMonitorCatalog = [UInt64](2MB)
+    }
+    foreach ($name in $identityMaximumBytes.Keys)
+    {
+        Assert-PBMatrixBoundedIdentity -Identity $scope[$name] -MaximumBytes $identityMaximumBytes[$name] `
+            -Name "Step 21 endpoint scope $name"
+        [void](Assert-PBFileIdentity -Path ([string]$scope[$name].path) -Expected $scope[$name] `
+            -Name "Step 21 endpoint scope $name")
+    }
+    $ledgerSeal = Import-PBRemoteVisualStep21RunLedgerSeal -Path ([string]$scope.runLedgerSeal.path) `
+        -ExpectedSha256 ([string]$scope.runLedgerSeal.sha256)
+    $ledger = $ledgerSeal.ledger
+    $computerB = Import-PBRemoteVisualStep21ComputerBMonitorCatalog -Path ([string]$scope.computerBMonitorCatalog.path) `
+        -ExpectedSha256 ([string]$scope.computerBMonitorCatalog.sha256)
+    Assert-PBMatrixIdentityEqual -Actual $scope.runLedger -Expected $ledger.identity -Name 'Step 21 endpoint scope RunLedger'
+    Assert-PBMatrixIdentityEqual -Actual $scope.matrixSpecification -Expected $ledger.matrixSpec.identity `
+        -Name 'Step 21 endpoint scope MatrixSpec'
+    Assert-PBMatrixIdentityEqual -Actual $scope.hardwareScope -Expected $ledger.hardwareScope.identity `
+        -Name 'Step 21 endpoint scope HardwareScope'
+    Assert-PBMatrixIdentityEqual -Actual $scope.computerAMonitorCatalog -Expected $ledger.value.computerAMonitorCatalog `
+        -Name 'Step 21 endpoint scope Computer A monitor catalog'
+    $expectedTopology = New-PBRemoteVisualStep21EndpointTopologyValue -RunLedger $ledger `
+        -ComputerBCatalog $computerB.value `
+        -ComputerBProtectedMonitorDeviceName ([string]$scope.topology.computerB.protectedMonitor.deviceName) `
+        -ComputerBExperimentMonitorDeviceName ([string]$scope.topology.computerB.experimentMonitor.deviceName)
+    Compare-PBMatrixJsonValue -First $scope.topology -Second $expectedTopology -Name 'Step 21 endpoint-scope topology'
+    Assert-PBMatrixExactKeys -Dictionary $scope.contracts -ExpectedKeys @('runLedgerAndParentsImmutable',
+        'twoNonOverlappingExtendedMonitorsPerEndpoint', 'dataPixelsConfinedToExperimentMonitors',
+        'freshLiveMonitorCatalogRequiredPerRun', 'perRunDeploymentAndUiEvidenceRequired',
+        'noFileClipboardOrIpcPayloadSideChannel') -Name 'Step 21 endpoint-scope contracts'
+    if ($scope.contracts.runLedgerAndParentsImmutable -isnot [bool] -or -not [bool]$scope.contracts.runLedgerAndParentsImmutable -or
+        $scope.contracts.twoNonOverlappingExtendedMonitorsPerEndpoint -isnot [bool] -or -not [bool]$scope.contracts.twoNonOverlappingExtendedMonitorsPerEndpoint -or
+        $scope.contracts.dataPixelsConfinedToExperimentMonitors -isnot [bool] -or -not [bool]$scope.contracts.dataPixelsConfinedToExperimentMonitors -or
+        $scope.contracts.freshLiveMonitorCatalogRequiredPerRun -isnot [bool] -or -not [bool]$scope.contracts.freshLiveMonitorCatalogRequiredPerRun -or
+        $scope.contracts.perRunDeploymentAndUiEvidenceRequired -isnot [bool] -or -not [bool]$scope.contracts.perRunDeploymentAndUiEvidenceRequired -or
+        $scope.contracts.noFileClipboardOrIpcPayloadSideChannel -isnot [bool] -or -not [bool]$scope.contracts.noFileClipboardOrIpcPayloadSideChannel)
+    {
+        throw 'Step 21 endpoint-scope contracts are invalid'
+    }
+    Assert-PBMatrixExactKeys -Dictionary $scope.truthBoundary -ExpectedKeys @('topologyReadinessOnly',
+        'formalStep21Accepted', 'executedCellCount', 'runIdsAllocated', 'providerUiEvidenceStillRequiredPerRun',
+        'liveCatalogRevalidationStillRequiredPerRun', 'certifiedRemoteVisualProfile', 'statement') `
+        -Name 'Step 21 endpoint-scope truth boundary'
+    $executedCellCount = Get-PBNonNegativeUInt64 -Value $scope.truthBoundary.executedCellCount `
+        -Name 'Step 21 endpoint-scope executedCellCount'
+    $runIdsAllocated = Get-PBNonNegativeUInt64 -Value $scope.truthBoundary.runIdsAllocated `
+        -Name 'Step 21 endpoint-scope runIdsAllocated'
+    $expectedStatement = 'This scope binds readiness catalogs and monitor roles only; it is not a live endpoint preflight, a matrix cell, file recovery evidence, or certification.'
+    if ($scope.truthBoundary.topologyReadinessOnly -isnot [bool] -or -not [bool]$scope.truthBoundary.topologyReadinessOnly -or
+        $scope.truthBoundary.formalStep21Accepted -isnot [bool] -or [bool]$scope.truthBoundary.formalStep21Accepted -or
+        $executedCellCount -ne 0 -or $runIdsAllocated -ne 0 -or
+        $scope.truthBoundary.providerUiEvidenceStillRequiredPerRun -isnot [bool] -or -not [bool]$scope.truthBoundary.providerUiEvidenceStillRequiredPerRun -or
+        $scope.truthBoundary.liveCatalogRevalidationStillRequiredPerRun -isnot [bool] -or -not [bool]$scope.truthBoundary.liveCatalogRevalidationStillRequiredPerRun -or
+        $scope.truthBoundary.certifiedRemoteVisualProfile -isnot [bool] -or [bool]$scope.truthBoundary.certifiedRemoteVisualProfile -or
+        [string]$scope.truthBoundary.statement -cne $expectedStatement)
+    {
+        throw 'Step 21 endpoint-scope truth boundary is invalid'
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $scope; ledgerSeal = $ledgerSeal; computerB = $computerB }
+}
+
+function Import-PBRemoteVisualStep21EndpointScopeSeal
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSha256 = ''
+    )
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $identity = Get-PBFileIdentity -Path $resolvedPath
+    if ([UInt64]$identity.size -gt 512KB -or
+        (-not [string]::IsNullOrEmpty($ExpectedSha256) -and [string]$identity.sha256 -cne $ExpectedSha256))
+    {
+        throw 'Step 21 endpoint-scope seal size or expected SHA-256 is invalid'
+    }
+    $seal = Read-PBBoundedJson -Path $resolvedPath -MaximumBytes 512KB
+    Assert-PBMatrixExactKeys -Dictionary $seal -ExpectedKeys @('schema', 'createdUtc', 'status', 'endpointScopeId',
+        'ledgerId', 'matrixId', 'scopeId', 'artifactCount', 'artifacts', 'executedCellCount',
+        'formalStep21Accepted', 'certifiedRemoteVisualProfile') -Name 'Step 21 endpoint-scope seal'
+    $artifactCount = Get-PBNonNegativeUInt64 -Value $seal.artifactCount `
+        -Name 'Step 21 endpoint-scope seal artifactCount'
+    $executedCellCount = Get-PBNonNegativeUInt64 -Value $seal.executedCellCount `
+        -Name 'Step 21 endpoint-scope seal executedCellCount'
+    if ([string]$seal.schema -cne 'PixelBridge.RemoteVisualStep21EndpointScopeSeal.1' -or
+        [string]$seal.status -cne 'READINESS_ONLY' -or [string]$seal.endpointScopeId -cnotmatch '^[0-9a-f]{32}$' -or
+        [string]$seal.ledgerId -cnotmatch '^[0-9a-f]{32}$' -or [string]$seal.matrixId -cnotmatch '^[0-9a-f]{32}$' -or
+        [string]$seal.scopeId -cnotmatch '^[0-9a-f]{32}$' -or $artifactCount -ne 7 -or
+        @($seal.artifacts).Count -ne 7 -or $executedCellCount -ne 0 -or
+        $seal.formalStep21Accepted -isnot [bool] -or [bool]$seal.formalStep21Accepted -or
+        $seal.certifiedRemoteVisualProfile -isnot [bool] -or [bool]$seal.certifiedRemoteVisualProfile)
+    {
+        throw 'Step 21 endpoint-scope seal schema, counts, or truth boundary is invalid'
+    }
+    $artifactMaximumBytes = @([UInt64](2MB), [UInt64](512KB), [UInt64](256KB), [UInt64](512KB),
+        [UInt64](2MB), [UInt64](2MB), [UInt64](2MB))
+    for ($index = 0; $index -lt @($seal.artifacts).Count; $index++)
+    {
+        $artifact = $seal.artifacts[$index]
+        Assert-PBMatrixBoundedIdentity -Identity $artifact -MaximumBytes $artifactMaximumBytes[$index] `
+            -Name "Step 21 endpoint-scope sealed artifact $index"
+        [void](Assert-PBFileIdentity -Path ([string]$artifact.path) -Expected $artifact `
+            -Name 'Step 21 endpoint-scope sealed artifact')
+    }
+    $scope = Import-PBRemoteVisualStep21EndpointScope -Path ([string]$seal.artifacts[6].path) `
+        -ExpectedSha256 ([string]$seal.artifacts[6].sha256)
+    $expectedIdentities = @(
+        $scope.value.runLedger,
+        $scope.value.runLedgerSeal,
+        $scope.value.matrixSpecification,
+        $scope.value.hardwareScope,
+        $scope.value.computerAMonitorCatalog,
+        $scope.value.computerBMonitorCatalog,
+        $scope.identity)
+    for ($index = 0; $index -lt $expectedIdentities.Count; $index++)
+    {
+        Assert-PBMatrixIdentityEqual -Actual $seal.artifacts[$index] -Expected $expectedIdentities[$index] `
+            -Name "Step 21 endpoint-scope seal artifact $index"
+    }
+    if ([string]$seal.endpointScopeId -cne [string]$scope.value.endpointScopeId -or
+        [string]$seal.ledgerId -cne [string]$scope.ledgerSeal.ledger.value.ledgerId -or
+        [string]$seal.matrixId -cne [string]$scope.ledgerSeal.ledger.matrixSpec.value.matrixId -or
+        [string]$seal.scopeId -cne [string]$scope.ledgerSeal.ledger.hardwareScope.value.scopeId)
+    {
+        throw 'Step 21 endpoint-scope seal identity tuple differs from the scope'
+    }
+    return [ordered]@{ path = $resolvedPath; identity = $identity; value = $seal; scope = $scope }
 }
 
 function Get-PBNullableFiniteNumber
@@ -1221,7 +1673,9 @@ Export-ModuleMember -Function Assert-PBMatrixExactKeys, Assert-PBMatrixIdentityE
     New-PBRemoteVisualStep21ExpectedCells, Get-PBRemoteVisualStep21CellRequiredRoi, `
     New-PBRemoteVisualStep21HardwareScopePartition, Import-PBRemoteVisualStep21MatrixSpec, `
     Import-PBRemoteVisualStep21HardwareScope, New-PBRemoteVisualStep21RunLedgerEntry, `
-    Import-PBRemoteVisualStep21RunLedger, `
+    Import-PBRemoteVisualStep21RunLedger, Import-PBRemoteVisualStep21RunLedgerSeal, `
+    Import-PBRemoteVisualStep21ComputerBMonitorCatalog, New-PBRemoteVisualStep21EndpointTopologyValue, `
+    Import-PBRemoteVisualStep21EndpointScope, Import-PBRemoteVisualStep21EndpointScopeSeal, `
     Get-PBNonNegativeUInt64, Get-PBRemoteVisualObservedLocatorGeometry, Assert-PBRemoteVisualObservedLocatorTarget, `
     Get-PBRemoteVisualAuthoritativeMetrics, `
     New-PBRemoteVisualMatrixRunRecordValue, `

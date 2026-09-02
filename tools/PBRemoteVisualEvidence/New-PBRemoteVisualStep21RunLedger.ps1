@@ -205,6 +205,7 @@ $seal = [ordered]@{
 }
 $sealPath = Join-Path $resolvedOutput 'step21-run-ledger.seal.json'
 $sealIdentity = Write-PBCreateOnlyJson -Path $sealPath -Value $seal -Depth 30
+[void](Import-PBRemoteVisualStep21RunLedgerSeal -Path $sealIdentity.path -ExpectedSha256 $sealIdentity.sha256)
 
 [ordered]@{
     path = $resolvedOutput
