@@ -1021,6 +1021,162 @@ function Import-PBRemoteVisualStep21EndpointScopeSeal
     return [ordered]@{ path = $resolvedPath; identity = $identity; value = $seal; scope = $scope }
 }
 
+function Get-PBRemoteVisualStep21CellPlanArguments
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$EndpointScope,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 31)][UInt32]$CellOrdinal
+    )
+    if ($EndpointScope.value -isnot [System.Collections.IDictionary] -or
+        $EndpointScope.ledgerSeal.ledger.value -isnot [System.Collections.IDictionary] -or
+        $EndpointScope.ledgerSeal.ledger.hardwareScope.monitorCatalog -isnot [System.Collections.IDictionary] -or
+        $EndpointScope.computerB.value -isnot [System.Collections.IDictionary])
+    {
+        throw 'Step 21 cell-plan argument resolution requires an imported EndpointScope'
+    }
+    $scopeValue = $EndpointScope.value
+    $ledger = $EndpointScope.ledgerSeal.ledger.value
+    $entryMatches = @($ledger.entries | Where-Object { [UInt32]$_.ordinal -eq $CellOrdinal })
+    if ($entryMatches.Count -ne 1)
+    {
+        throw "Step 21 cell-plan ordinal $CellOrdinal is not one unique included RunLedger entry"
+    }
+    $entry = $entryMatches[0]
+    if ($null -ne $entry.runId -or [string]$entry.executionStatus -cne 'PENDING' -or
+        $entry.artifactsMustBeIndependent -isnot [bool] -or -not [bool]$entry.artifactsMustBeIndependent)
+    {
+        throw 'Step 21 cell-plan source entry is no longer an untouched pending schedule row'
+    }
+    $topology = $scopeValue.topology
+    $decoderRoi = $entry.decoderCaptureRoi
+    return [ordered]@{
+        cellOrdinal = [UInt32]$entry.ordinal
+        cellId = [string]$entry.cellId
+        runDirectoryName = [string]$entry.runDirectoryName
+        profileToken = [string]$entry.profileToken
+        captureBackend = [string]$entry.captureBackend
+        matrixModeClass = [string]$entry.modeClass
+        matrixScaleTarget = [string]$entry.scaleTarget
+        backendCoverageRole = if ([string]$entry.captureBackend -ceq 'wgc') { 'MainMatrix' } else { 'RepresentativeRecheck' }
+        logicalFps = [UInt32]$entry.logicalFps
+        geometryMode = [string]$entry.geometryMode
+        encoderProtectedMonitorDeviceName = [string]$topology.computerB.protectedMonitor.deviceName
+        encoderExperimentMonitorDeviceName = [string]$topology.computerB.experimentMonitor.deviceName
+        encoderOriginX = [Int64]$topology.computerB.encoderOrigin.x
+        encoderOriginY = [Int64]$topology.computerB.encoderOrigin.y
+        decoderProtectedMonitorDeviceName = [string]$topology.computerA.protectedMonitor.deviceName
+        decoderExperimentMonitorDeviceName = [string]$topology.computerA.experimentMonitor.deviceName
+        decoderRoiLeft = [Int64]$decoderRoi.left
+        decoderRoiTop = [Int64]$decoderRoi.top
+        decoderRoiRight = [Int64]$decoderRoi.right
+        decoderRoiBottom = [Int64]$decoderRoi.bottom
+        entry = $entry
+    }
+}
+
+function New-PBRemoteVisualStep21MonitorRuntimeContractValue
+{
+    param([Parameter(Mandatory = $true)][object]$Monitor)
+    if ($Monitor -isnot [System.Collections.IDictionary])
+    {
+        throw 'Step 21 cell-plan catalog monitor is not an object'
+    }
+    foreach ($field in @('deviceName', 'physicalRect', 'dpiX', 'dpiY', 'refreshRate', 'rotation', 'adapterLuid', 'primary'))
+    {
+        if (-not $Monitor.Contains($field))
+        {
+            throw "Step 21 cell-plan catalog monitor lacks runtime field $field"
+        }
+    }
+    if ($Monitor.adapterLuid -isnot [System.Collections.IDictionary] -or
+        -not $Monitor.adapterLuid.Contains('high') -or -not $Monitor.adapterLuid.Contains('low') -or
+        $Monitor.primary -isnot [bool])
+    {
+        throw 'Step 21 cell-plan catalog monitor adapter LUID or primary identity is invalid'
+    }
+    return [ordered]@{
+        deviceName = [string]$Monitor.deviceName
+        physicalRect = $Monitor.physicalRect
+        dpiX = [UInt32]$Monitor.dpiX
+        dpiY = [UInt32]$Monitor.dpiY
+        refreshRate = [UInt32]$Monitor.refreshRate
+        rotation = [string]$Monitor.rotation
+        adapterLuid = [ordered]@{ high = [Int64]$Monitor.adapterLuid.high; low = [UInt64]$Monitor.adapterLuid.low }
+        primary = [bool]$Monitor.primary
+    }
+}
+
+function Assert-PBRemoteVisualStep21CellPlanBinding
+{
+    param(
+        [Parameter(Mandatory = $true)][object]$EndpointScope,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 31)][UInt32]$CellOrdinal,
+        [Parameter(Mandatory = $true)][object]$Plan
+    )
+    $arguments = Get-PBRemoteVisualStep21CellPlanArguments -EndpointScope $EndpointScope -CellOrdinal $CellOrdinal
+    if ([string]$Plan.schema -cne 'PixelBridge.RemoteVisualPilotPlan.3' -or
+        [string]$Plan.runId -cnotmatch '^[0-9a-f]{32}$' -or
+        [string]$Plan.profileToken -cne [string]$arguments.profileToken -or
+        [string]$Plan.policy.captureBackend -cne [string]$arguments.captureBackend -or
+        [string]$Plan.matrix.modeClass -cne [string]$arguments.matrixModeClass -or
+        [string]$Plan.matrix.scaleTarget -cne [string]$arguments.matrixScaleTarget -or
+        [UInt32]$Plan.logicalFps -ne [UInt32]$arguments.logicalFps -or
+        [string]$Plan.geometryMode -cne [string]$arguments.geometryMode -or
+        [string]$Plan.matrix.profileComparisonRole -cne [string]$arguments.entry.profileComparisonRole -or
+        [string]$Plan.matrix.backendCoverageRole -cne [string]$arguments.backendCoverageRole)
+    {
+        throw 'Step 21 PilotPlan does not match the selected RunLedger cell tuple'
+    }
+    $topology = $EndpointScope.value.topology
+    if ([string]$Plan.monitorSafety.encoder.protectedMonitorDeviceName -cne [string]$arguments.encoderProtectedMonitorDeviceName -or
+        [string]$Plan.monitorSafety.encoder.experimentMonitorDeviceName -cne [string]$arguments.encoderExperimentMonitorDeviceName -or
+        [string]$Plan.monitorSafety.decoder.protectedMonitorDeviceName -cne [string]$arguments.decoderProtectedMonitorDeviceName -or
+        [string]$Plan.monitorSafety.decoder.experimentMonitorDeviceName -cne [string]$arguments.decoderExperimentMonitorDeviceName)
+    {
+        throw 'Step 21 PilotPlan monitor roles do not match the frozen EndpointScope'
+    }
+    Compare-PBMatrixJsonValue -First $Plan.monitorSafety.encoder.protectedMonitorPhysicalRect `
+        -Second $topology.computerB.protectedMonitor.physicalRect -Name 'Step 21 PilotPlan Encoder ProtectedMonitor rectangle'
+    Compare-PBMatrixJsonValue -First $Plan.monitorSafety.encoder.experimentMonitorPhysicalRect `
+        -Second $topology.computerB.experimentMonitor.physicalRect -Name 'Step 21 PilotPlan Encoder ExperimentMonitor rectangle'
+    Compare-PBMatrixJsonValue -First $Plan.monitorSafety.encoder.dataWindowPhysicalRect `
+        -Second $topology.computerB.encoderDataWindow -Name 'Step 21 PilotPlan Encoder Data Window'
+    Compare-PBMatrixJsonValue -First $Plan.monitorSafety.decoder.protectedMonitorPhysicalRect `
+        -Second $topology.computerA.protectedMonitor.physicalRect -Name 'Step 21 PilotPlan Decoder ProtectedMonitor rectangle'
+    Compare-PBMatrixJsonValue -First $Plan.monitorSafety.decoder.experimentMonitorPhysicalRect `
+        -Second $topology.computerA.experimentMonitor.physicalRect -Name 'Step 21 PilotPlan Decoder ExperimentMonitor rectangle'
+    Compare-PBMatrixJsonValue -First $Plan.monitorSafety.decoder.roiPhysicalRect -Second $arguments.entry.decoderCaptureRoi `
+        -Name 'Step 21 PilotPlan Decoder capture ROI'
+    $monitorBindings = @(
+        [ordered]@{ contract = $Plan.monitorSafety.encoder.protectedMonitorContract; catalog = $EndpointScope.computerB.value; deviceName = $topology.computerB.protectedMonitor.deviceName; name = 'Encoder ProtectedMonitor' },
+        [ordered]@{ contract = $Plan.monitorSafety.encoder.experimentMonitorContract; catalog = $EndpointScope.computerB.value; deviceName = $topology.computerB.experimentMonitor.deviceName; name = 'Encoder ExperimentMonitor' },
+        [ordered]@{ contract = $Plan.monitorSafety.decoder.protectedMonitorContract; catalog = $EndpointScope.ledgerSeal.ledger.hardwareScope.monitorCatalog; deviceName = $topology.computerA.protectedMonitor.deviceName; name = 'Decoder ProtectedMonitor' },
+        [ordered]@{ contract = $Plan.monitorSafety.decoder.experimentMonitorContract; catalog = $EndpointScope.ledgerSeal.ledger.hardwareScope.monitorCatalog; deviceName = $topology.computerA.experimentMonitor.deviceName; name = 'Decoder ExperimentMonitor' })
+    foreach ($binding in $monitorBindings)
+    {
+        $monitorMatches = @($binding.catalog.monitors | Where-Object { [string]$_.deviceName -ieq [string]$binding.deviceName })
+        if ($monitorMatches.Count -ne 1)
+        {
+            throw "Step 21 PilotPlan $($binding.name) is not unique in the EndpointScope catalog"
+        }
+        $expectedContract = New-PBRemoteVisualStep21MonitorRuntimeContractValue -Monitor $monitorMatches[0]
+        Compare-PBMatrixJsonValue -First $binding.contract -Second $expectedContract `
+            -Name "Step 21 PilotPlan $($binding.name) complete runtime contract"
+    }
+    return [ordered]@{
+        cellOrdinal = [UInt32]$arguments.cellOrdinal
+        cellId = [string]$arguments.cellId
+        runDirectoryName = [string]$arguments.runDirectoryName
+        runId = [string]$Plan.runId
+        profileToken = [string]$arguments.profileToken
+        captureBackend = [string]$arguments.captureBackend
+        matrixModeClass = [string]$arguments.matrixModeClass
+        matrixScaleTarget = [string]$arguments.matrixScaleTarget
+        logicalFps = [UInt32]$arguments.logicalFps
+        geometryMode = [string]$arguments.geometryMode
+    }
+}
+
 function Get-PBNullableFiniteNumber
 {
     param(
@@ -1676,6 +1832,7 @@ Export-ModuleMember -Function Assert-PBMatrixExactKeys, Assert-PBMatrixIdentityE
     Import-PBRemoteVisualStep21RunLedger, Import-PBRemoteVisualStep21RunLedgerSeal, `
     Import-PBRemoteVisualStep21ComputerBMonitorCatalog, New-PBRemoteVisualStep21EndpointTopologyValue, `
     Import-PBRemoteVisualStep21EndpointScope, Import-PBRemoteVisualStep21EndpointScopeSeal, `
+    Get-PBRemoteVisualStep21CellPlanArguments, Assert-PBRemoteVisualStep21CellPlanBinding, `
     Get-PBNonNegativeUInt64, Get-PBRemoteVisualObservedLocatorGeometry, Assert-PBRemoteVisualObservedLocatorTarget, `
     Get-PBRemoteVisualAuthoritativeMetrics, `
     New-PBRemoteVisualMatrixRunRecordValue, `
