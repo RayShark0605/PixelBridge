@@ -443,7 +443,8 @@ $matrixModule = Join-Path $resolvedToolsRoot 'PBRemoteVisualMatrixCommon.psm1'
 $matrixSpecTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21MatrixSpec.ps1'
 $hardwareScopeTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21HardwareScope.ps1'
 $runLedgerTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21RunLedger.ps1'
-foreach ($path in @($matrixTool, $matrixModule, $matrixSpecTool, $hardwareScopeTool, $runLedgerTool,
+$endpointScopeTool = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21EndpointScope.ps1'
+foreach ($path in @($matrixTool, $matrixModule, $matrixSpecTool, $hardwareScopeTool, $runLedgerTool, $endpointScopeTool,
     (Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualFieldFailureEvidence.ps1')))
 {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf))
@@ -569,6 +570,9 @@ try
     }
     $runLedgerSealPath = Join-Path $runLedgerOutput 'step21-run-ledger.seal.json'
     $runLedgerSeal = Read-PBBoundedJson -Path $runLedgerSealPath -MaximumBytes 512KB
+    $runLedgerSealIdentity = New-Identity -Path $runLedgerSealPath
+    [void](Import-PBRemoteVisualStep21RunLedgerSeal -Path $runLedgerSealPath `
+        -ExpectedSha256 $runLedgerSealIdentity.sha256)
     if ([string]$runLedgerSeal.schema -cne 'PixelBridge.RemoteVisualStep21RunLedgerSeal.1' -or
         [string]$runLedgerSeal.status -cne 'NOT_EXECUTED' -or [UInt32]$runLedgerSeal.artifactCount -ne 5 -or
         @($runLedgerSeal.artifacts).Count -ne 5 -or [bool]$runLedgerSeal.formalStep21Accepted -or
@@ -628,6 +632,235 @@ try
     if (-not $runLedgerDuplicateRejected)
     {
         throw 'Step 21 run-ledger tool overwrote or reused an existing output directory'
+    }
+
+    $runLedgerCsvTamperOutput = Join-Path $runRoot 'run-ledger-csv-tamper'
+    & $runLedgerTool -MatrixSpecPath $matrixSpecPath -ExpectedMatrixSpecSha256 $matrixSpecIdentity.sha256 `
+        -HardwareScopePath $hardwareScopePath -ExpectedHardwareScopeSha256 $hardwareScopeIdentity.sha256 `
+        -OutputDirectory $runLedgerCsvTamperOutput | Out-Null
+    $runLedgerCsvTamperPath = Join-Path $runLedgerCsvTamperOutput 'step21-run-ledger.csv'
+    $runLedgerCsvTamperText = [System.IO.File]::ReadAllText($runLedgerCsvTamperPath)
+    $runLedgerCsvTamperText = $runLedgerCsvTamperText.Replace('"PENDING",""', '"COMPLETE",""')
+    [System.IO.File]::WriteAllText($runLedgerCsvTamperPath, $runLedgerCsvTamperText,
+        [System.Text.UTF8Encoding]::new($false))
+    $runLedgerCsvTamperSeal = Read-PBBoundedJson `
+        -Path (Join-Path $runLedgerCsvTamperOutput 'step21-run-ledger.seal.json') -MaximumBytes 512KB
+    $runLedgerCsvTamperSeal.artifacts[4] = New-Identity -Path $runLedgerCsvTamperPath
+    $runLedgerCsvTamperSealPath = Join-Path $runRoot 'run-ledger-csv-tampered-resealed.json'
+    Write-NewJson -Path $runLedgerCsvTamperSealPath -Value $runLedgerCsvTamperSeal
+    $runLedgerCsvTamperSealIdentity = New-Identity -Path $runLedgerCsvTamperSealPath
+    $runLedgerCsvTamperRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualStep21RunLedgerSeal -Path $runLedgerCsvTamperSealPath `
+            -ExpectedSha256 $runLedgerCsvTamperSealIdentity.sha256)
+    }
+    catch { $runLedgerCsvTamperRejected = $_.Exception.Message -like '*CSV row 0 differs*' }
+    if (-not $runLedgerCsvTamperRejected)
+    {
+        throw 'Step 21 run-ledger seal allowed a semantically tampered and re-sealed CSV row'
+    }
+
+    $runLedgerOversizedCsvSeal = Read-PBBoundedJson `
+        -Path (Join-Path $runLedgerCsvTamperOutput 'step21-run-ledger.seal.json') -MaximumBytes 512KB
+    $runLedgerOversizedCsvSeal.artifacts[4].size = [UInt64](1MB + 1)
+    $runLedgerOversizedCsvSealPath = Join-Path $runRoot 'run-ledger-oversized-csv-resealed.json'
+    Write-NewJson -Path $runLedgerOversizedCsvSealPath -Value $runLedgerOversizedCsvSeal
+    $runLedgerOversizedCsvSealIdentity = New-Identity -Path $runLedgerOversizedCsvSealPath
+    $runLedgerOversizedCsvRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualStep21RunLedgerSeal -Path $runLedgerOversizedCsvSealPath `
+            -ExpectedSha256 $runLedgerOversizedCsvSealIdentity.sha256)
+    }
+    catch { $runLedgerOversizedCsvRejected = $_.Exception.Message -like '*bounded artifact size*' }
+    if (-not $runLedgerOversizedCsvRejected)
+    {
+        throw 'Step 21 run-ledger seal did not reject an oversized CSV identity before parsing'
+    }
+
+    $computerBCatalogPath = Join-Path $runRoot 'computer-b-monitor-catalog.json'
+    Write-NewJson -Path $computerBCatalogPath -Value ([ordered]@{
+        schema = 'PixelBridge.MonitorCatalog.1'
+        monitorCount = 2
+        monitors = @(
+            [ordered]@{
+                deviceName = '\\.\DISPLAY1'
+                physicalRect = [ordered]@{ left = 1920; top = -1; right = 3840; bottom = 1079 }
+                resolution = [ordered]@{ width = 1920; height = 1080 }
+                rotation = 'Identity'
+            },
+            [ordered]@{
+                deviceName = '\\.\DISPLAY2'
+                physicalRect = [ordered]@{ left = 0; top = 0; right = 1920; bottom = 1080 }
+                resolution = [ordered]@{ width = 1920; height = 1080 }
+                rotation = 'Identity'
+            })
+    })
+    $computerBCatalogIdentity = New-Identity -Path $computerBCatalogPath
+    $endpointScopeOutput = Join-Path $runRoot 'endpoint-scope'
+    & $endpointScopeTool -RunLedgerPath $runLedgerPath -ExpectedRunLedgerSha256 $runLedgerIdentity.sha256 `
+        -RunLedgerSealPath $runLedgerSealPath -ExpectedRunLedgerSealSha256 $runLedgerSealIdentity.sha256 `
+        -ComputerBMonitorCatalogPath $computerBCatalogPath `
+        -ExpectedComputerBMonitorCatalogSha256 $computerBCatalogIdentity.sha256 `
+        -ComputerBProtectedMonitorDeviceName '\\.\DISPLAY2' `
+        -ComputerBExperimentMonitorDeviceName '\\.\DISPLAY1' -OutputDirectory $endpointScopeOutput | Out-Null
+    $endpointScopePath = Join-Path $endpointScopeOutput 'step21-endpoint-scope.json'
+    $endpointScopeIdentity = New-Identity -Path $endpointScopePath
+    $endpointScopeImport = Import-PBRemoteVisualStep21EndpointScope -Path $endpointScopePath `
+        -ExpectedSha256 $endpointScopeIdentity.sha256
+    $endpointScope = $endpointScopeImport.value
+    if ([string]$endpointScope.status -cne 'READINESS_ONLY' -or
+        [string]$endpointScope.topology.computerA.protectedMonitor.deviceName -cne '\\.\DISPLAY1' -or
+        [string]$endpointScope.topology.computerA.experimentMonitor.deviceName -cne '\\.\DISPLAY2' -or
+        [string]$endpointScope.topology.computerA.decoderCapturePolicies.lf4.argument -cne '2560,0,2560,1440' -or
+        [string]$endpointScope.topology.computerA.decoderCapturePolicies.directShape.argument -cne '2880,180,1920,1080' -or
+        [string]$endpointScope.topology.computerB.protectedMonitor.deviceName -cne '\\.\DISPLAY2' -or
+        [string]$endpointScope.topology.computerB.experimentMonitor.deviceName -cne '\\.\DISPLAY1' -or
+        [Int64]$endpointScope.topology.computerB.encoderOrigin.x -ne 1920 -or
+        [Int64]$endpointScope.topology.computerB.encoderOrigin.y -ne -1 -or
+        [bool]$endpointScope.truthBoundary.formalStep21Accepted -or
+        [UInt32]$endpointScope.truthBoundary.executedCellCount -ne 0 -or
+        [UInt32]$endpointScope.truthBoundary.runIdsAllocated -ne 0)
+    {
+        throw 'Step 21 endpoint scope did not bind the exact A/B monitor roles and readiness-only boundary'
+    }
+    $endpointScopeSealPath = Join-Path $endpointScopeOutput 'step21-endpoint-scope.seal.json'
+    $endpointScopeSealIdentity = New-Identity -Path $endpointScopeSealPath
+    $endpointScopeSeal = Import-PBRemoteVisualStep21EndpointScopeSeal -Path $endpointScopeSealPath `
+        -ExpectedSha256 $endpointScopeSealIdentity.sha256
+    if ([UInt32]$endpointScopeSeal.value.artifactCount -ne 7 -or
+        [string]$endpointScopeSeal.value.endpointScopeId -cne [string]$endpointScope.endpointScopeId)
+    {
+        throw 'Step 21 endpoint-scope seal did not bind the exact seven readiness artifacts'
+    }
+
+    $endpointScopeTampered = Read-PBBoundedJson -Path $endpointScopePath -MaximumBytes 2MB
+    $endpointScopeTampered.topology.computerB.encoderOrigin.x = 1921
+    $endpointScopeTamperedPath = Join-Path $runRoot 'endpoint-scope-tampered.json'
+    Write-NewJson -Path $endpointScopeTamperedPath -Value $endpointScopeTampered
+    $endpointScopeTamperedIdentity = New-Identity -Path $endpointScopeTamperedPath
+    $endpointScopeTamperRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualStep21EndpointScope -Path $endpointScopeTamperedPath `
+            -ExpectedSha256 $endpointScopeTamperedIdentity.sha256)
+    }
+    catch { $endpointScopeTamperRejected = $_.Exception.Message -like '*endpoint-scope topology*' }
+    if (-not $endpointScopeTamperRejected)
+    {
+        throw 'Step 21 endpoint scope allowed post-generation monitor-role or origin tampering'
+    }
+
+    $computerBOverlap = Read-PBBoundedJson -Path $computerBCatalogPath -MaximumBytes 2MB
+    $computerBOverlap.monitors[0].physicalRect.left = 0
+    $computerBOverlap.monitors[0].physicalRect.top = 0
+    $computerBOverlap.monitors[0].physicalRect.right = 1920
+    $computerBOverlap.monitors[0].physicalRect.bottom = 1080
+    $computerBOverlapPath = Join-Path $runRoot 'computer-b-monitor-catalog-overlap.json'
+    Write-NewJson -Path $computerBOverlapPath -Value $computerBOverlap
+    $computerBOverlapIdentity = New-Identity -Path $computerBOverlapPath
+    $endpointScopeOverlapOutput = Join-Path $runRoot 'endpoint-scope-overlap'
+    $endpointScopeOverlapRejected = $false
+    try
+    {
+        & $endpointScopeTool -RunLedgerPath $runLedgerPath -ExpectedRunLedgerSha256 $runLedgerIdentity.sha256 `
+            -RunLedgerSealPath $runLedgerSealPath -ExpectedRunLedgerSealSha256 $runLedgerSealIdentity.sha256 `
+            -ComputerBMonitorCatalogPath $computerBOverlapPath `
+            -ExpectedComputerBMonitorCatalogSha256 $computerBOverlapIdentity.sha256 `
+            -ComputerBProtectedMonitorDeviceName '\\.\DISPLAY2' `
+            -ComputerBExperimentMonitorDeviceName '\\.\DISPLAY1' `
+            -OutputDirectory $endpointScopeOverlapOutput | Out-Null
+    }
+    catch { $endpointScopeOverlapRejected = $_.Exception.Message -like '*non-overlapping*' }
+    if (-not $endpointScopeOverlapRejected -or (Test-Path -LiteralPath $endpointScopeOverlapOutput))
+    {
+        throw 'Step 21 endpoint-scope tool published output for a Duplicate/overlapping Computer B topology'
+    }
+
+    $computerBFractional = Read-PBBoundedJson -Path $computerBCatalogPath -MaximumBytes 2MB
+    $computerBFractional.monitors[0].physicalRect.top = -1.5
+    $computerBFractionalPath = Join-Path $runRoot 'computer-b-monitor-catalog-fractional.json'
+    Write-NewJson -Path $computerBFractionalPath -Value $computerBFractional
+    $computerBFractionalIdentity = New-Identity -Path $computerBFractionalPath
+    $computerBFractionalRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualStep21ComputerBMonitorCatalog -Path $computerBFractionalPath `
+            -ExpectedSha256 $computerBFractionalIdentity.sha256)
+    }
+    catch { $computerBFractionalRejected = $_.Exception.Message -like '*must be an integer*' }
+    if (-not $computerBFractionalRejected)
+    {
+        throw 'Step 21 Computer B catalog silently rounded a fractional desktop coordinate'
+    }
+
+    $computerBDuplicateName = Read-PBBoundedJson -Path $computerBCatalogPath -MaximumBytes 2MB
+    $computerBDuplicateName.monitors[1].deviceName = [string]$computerBDuplicateName.monitors[0].deviceName
+    $computerBDuplicateNamePath = Join-Path $runRoot 'computer-b-monitor-catalog-duplicate-name.json'
+    Write-NewJson -Path $computerBDuplicateNamePath -Value $computerBDuplicateName
+    $computerBDuplicateNameIdentity = New-Identity -Path $computerBDuplicateNamePath
+    $computerBDuplicateNameRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualStep21ComputerBMonitorCatalog -Path $computerBDuplicateNamePath `
+            -ExpectedSha256 $computerBDuplicateNameIdentity.sha256)
+    }
+    catch { $computerBDuplicateNameRejected = $_.Exception.Message -like '*identities must be unique*' }
+    if (-not $computerBDuplicateNameRejected)
+    {
+        throw 'Step 21 Computer B catalog allowed duplicate monitor device names'
+    }
+
+    $computerBWrongSize = Read-PBBoundedJson -Path $computerBCatalogPath -MaximumBytes 2MB
+    $computerBWrongSize.monitors[0].resolution.width = 1919
+    $computerBWrongSizePath = Join-Path $runRoot 'computer-b-monitor-catalog-wrong-size.json'
+    Write-NewJson -Path $computerBWrongSizePath -Value $computerBWrongSize
+    $computerBWrongSizeIdentity = New-Identity -Path $computerBWrongSizePath
+    $computerBWrongSizeRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualStep21ComputerBMonitorCatalog -Path $computerBWrongSizePath `
+            -ExpectedSha256 $computerBWrongSizeIdentity.sha256)
+    }
+    catch { $computerBWrongSizeRejected = $_.Exception.Message -like '*exact 1920x1080*' }
+    if (-not $computerBWrongSizeRejected)
+    {
+        throw 'Step 21 Computer B catalog allowed a resolution/physical-rectangle mismatch'
+    }
+
+    $endpointScopeSameRoleOutput = Join-Path $runRoot 'endpoint-scope-same-role'
+    $endpointScopeSameRoleRejected = $false
+    try
+    {
+        & $endpointScopeTool -RunLedgerPath $runLedgerPath -ExpectedRunLedgerSha256 $runLedgerIdentity.sha256 `
+            -RunLedgerSealPath $runLedgerSealPath -ExpectedRunLedgerSealSha256 $runLedgerSealIdentity.sha256 `
+            -ComputerBMonitorCatalogPath $computerBCatalogPath `
+            -ExpectedComputerBMonitorCatalogSha256 $computerBCatalogIdentity.sha256 `
+            -ComputerBProtectedMonitorDeviceName '\\.\DISPLAY1' `
+            -ComputerBExperimentMonitorDeviceName '\\.\DISPLAY1' `
+            -OutputDirectory $endpointScopeSameRoleOutput | Out-Null
+    }
+    catch { $endpointScopeSameRoleRejected = $_.Exception.Message -like '*distinct Computer B*' }
+    if (-not $endpointScopeSameRoleRejected -or (Test-Path -LiteralPath $endpointScopeSameRoleOutput))
+    {
+        throw 'Step 21 endpoint-scope tool allowed one Computer B monitor to hold both roles'
+    }
+
+    $endpointScopeDuplicateRejected = $false
+    try
+    {
+        & $endpointScopeTool -RunLedgerPath $runLedgerPath -ExpectedRunLedgerSha256 $runLedgerIdentity.sha256 `
+            -RunLedgerSealPath $runLedgerSealPath -ExpectedRunLedgerSealSha256 $runLedgerSealIdentity.sha256 `
+            -ComputerBMonitorCatalogPath $computerBCatalogPath `
+            -ExpectedComputerBMonitorCatalogSha256 $computerBCatalogIdentity.sha256 `
+            -ComputerBProtectedMonitorDeviceName '\\.\DISPLAY2' `
+            -ComputerBExperimentMonitorDeviceName '\\.\DISPLAY1' -OutputDirectory $endpointScopeOutput | Out-Null
+    }
+    catch { $endpointScopeDuplicateRejected = $_.Exception.Message -like '*must be a new directory*' }
+    if (-not $endpointScopeDuplicateRejected)
+    {
+        throw 'Step 21 endpoint-scope tool overwrote or reused an existing output directory'
     }
 
     $sourcePath = Join-Path $runRoot 'random-1MiB.bin'

@@ -67,6 +67,25 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21Run
 
 新账本的每行初始状态只能是 `PENDING`，`runId` 必须为 `null`，顶层只能是 `NOT_EXECUTED`、`executedCellCount=0`、`formalStep21Accepted=false`。RunId 仍然必须等到该 cell 真正开始时独立生成；账本不会预生成或共享 deployment/UI/plan/evidence，也不能填充任何矩阵覆盖率。Computer B monitor catalog 和逐 run provider UI evidence 仍是正式计划的未满足前提。完整账本目录是 create-only；seal 是最后的完成标记，已有目录不可覆盖或复用。
 
+取得 Computer B 的 packaged `--list-monitors` 输出后，先把两端 monitor role 绑定为 readiness-only EndpointScope：
+
+```powershell
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21EndpointScope.ps1 `
+  -RunLedgerPath <new-matrix-root>\run-ledger\step21-run-ledger.json `
+  -ExpectedRunLedgerSha256 <ledger-sha256> `
+  -RunLedgerSealPath <new-matrix-root>\run-ledger\step21-run-ledger.seal.json `
+  -ExpectedRunLedgerSealSha256 <ledger-seal-sha256> `
+  -ComputerBMonitorCatalogPath <computer-b-monitor-catalog.json> `
+  -ExpectedComputerBMonitorCatalogSha256 <computer-b-catalog-sha256> `
+  -ComputerBProtectedMonitorDeviceName <B-protected> `
+  -ComputerBExperimentMonitorDeviceName <B-experiment> `
+  -OutputDirectory <new-matrix-root>\endpoint-scope
+```
+
+`PixelBridge.RemoteVisualStep21EndpointScope.1` 要求 B catalog 恰有两块不重叠、未旋转的 exact 1920×1080 monitor，并拒绝 Duplicate/重叠、同名/同角色、错误尺寸、错误 hash 或非整数 rectangle。A 端角色来自已经封存的 HardwareScope：其余那块 monitor 自动成为 ProtectedMonitor；B 端角色必须由操作者显式选择。Encoder Data Window 机械等于 B ExperimentMonitor 的完整 physical rect，因此允许合法的负数桌面 origin，而不会把 `(0,0)` 写死。EndpointScope seal 递归绑定 RunLedger seal（含 CSV）、MatrixSpec、HardwareScope、A/B catalog 与 topology。
+
+EndpointScope 仍只能是 `READINESS_ONLY`：它证明静态 catalog 可形成符合要求的双端 Extended Desktop 布局，但不是运行开始时的 topology。每个 cell 的 endpoint wrapper 仍必须重新调用 packaged Decoder `--list-monitors`，并让 live catalog 与 plan 中的完整 device/rect/DPI/refresh/rotation/LUID/primary contract 一致；provider 模式也仍须新的 UI-visible evidence。EndpointScope 保持 `runIdsAllocated=0`、`executedCellCount=0`、`formalStep21Accepted=false`，不能拿来填一个 cell。
+
 ## 3. 每个 cell 的冻结输入与几何
 
 每个 included cell 都必须重新生成一个 OS-CSPRNG RunId，并生成与该 RunId 绑定的 metadata、双端 environment、deployment manifest、remote UI evidence 和 `PilotPlan.3`。package manifest 与 1 MiB RAW/OFF source identity 必须在 31 个 run 中完全相同；其余 run-bound artifact 不得复用。历史 `PilotPlan.2` 仍可只读导入和验证，但不能再生成当前 `MatrixRunRecord.2`，以免把旧的 ROI-derived scale 误当作现场几何真值。
@@ -233,6 +252,9 @@ verifier 会：
 - MSVC ASan 的 `PBTelemetryTests` 与 `PBApplicationTests` 为 **2/2 PASS**；Python strict report merger 为 **25/25 PASS**；
 - 对抗性 evidence fixture 明确拒绝 Plan.3 中遗留的 ROI-derived `estimatedScaleX/Y`、分数 ROI 尺寸、字符串型/非有限 scale、case-tampered schema、成功 run 的零 Locator 样本、样本数与 Bootstrap successes 不一致、全程最大各向异性超过 0.015，以及 matrix record 内的 geometry 篡改；
 - create-only run-ledger fixture 机械重算 31 个 included cell，证明 LF4 整屏搜索 ROI 与 1.0×目标画布彼此独立、Direct/Shape 仍为居中 exact 1920×1080，并拒绝 ROI 篡改、父 scope hash 错误、重复输出目录和任何 `estimatedScaleX/Y` 遗留；
+- run-ledger seal importer 逐列、逐行核对 JSON/CSV，在解析前执行逐类 artifact 尺寸上限，并拒绝修改状态后重新计算 hash 的语义篡改或超限 CSV identity；EndpointScope fixture 又验证了 A 端 2560×1440 与 B 端带负 Y origin 的双 1920×1080 monitor role 绑定，拒绝重叠/Duplicate、重复 device name、尺寸不一致、origin 篡改和输出复用；
 - `git diff --check` 通过，未修改或纳入用户拥有的 `docs/PHASE1_GATE_REPORT.md`。
+
+当前 create-only campaign 位于 `build-p1_5-evidence/step21-matrix-freeze-6309b44`。MatrixSpec / A catalog / HardwareScope SHA-256 分别为 `fa1f269016a1ab782e4e78516564e32caa1616e53021e76b8f29b892267db8d0`、`d225bebdc3d0a23d4dd7ece6292343578167e09d64219a3a98d463e7c368ba98`、`b7f52190f214a5c4283ca6f81e239d8c29fe154902982e07e0738ff13ee452cc`。`run-ledger` 的 JSON / CSV / seal SHA-256 为 `f0c847feb947e75953ef9f582a4aa3ac08ee02b0b9dcf575e85dc4af58f6a7c0`、`1977d6e1dd6ff6fec30bfa6f0116c768cff9df4c5ed2af08926ce4e72e0be2c1`、`4cb06ff21e3b54d48d6c4521cc90e6f966adfd05af161f80bcdf28d9efb2f4b6`。B 端回传并规范化的 catalog SHA-256 为 `19b6ccf010eea2f7ca9aca9222ecde54cd5225e1cf35ae3228242afa4340711d`；其 raw UTF-16LE identity 与 normalization provenance 仍保存在原始 field-kit。`endpoint-scope` JSON / seal SHA-256 为 `5a94208e8eba1bfd48f888b31e805664f17d66d954aec3909559a83ea847b93e` 与 `db7932c100209465333228a2ad7647ffb5335c58ddd355e7c0d592316f5fdc2a`。这些 hash 只固定 readiness 输入，不改变零现场 cell 的事实。
 
 因此，production telemetry、Plan.3、Record.2、Evidence/Seal.3 和验证工具已达到执行正式矩阵的代码 readiness；Step 21 状态仍为 `MANUAL-GATE`，唯一完成出口仍是第 8 节规定的 31 个彼此独立的真实双机 included-cell 证据。
