@@ -1532,6 +1532,51 @@ try
         throw 'Step 21 matrix record import did not bind its coverage role to the frozen plan'
     }
 
+    $stringLogicalFpsRecord = Read-PBBoundedJson -Path (Join-Path $directories[0] 'matrix-run-record.json') -MaximumBytes 4MB
+    $stringLogicalFpsRecord.matrix.logicalFps = [string]$stringLogicalFpsRecord.matrix.logicalFps
+    $stringLogicalFpsRecordPath = Join-Path $runRoot 'matrix-record-string-logical-fps.json'
+    Write-NewJson -Path $stringLogicalFpsRecordPath -Value $stringLogicalFpsRecord
+    $stringLogicalFpsRecordRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualMatrixRunRecord -Path $stringLogicalFpsRecordPath)
+    }
+    catch { $stringLogicalFpsRecordRejected = $_.Exception.Message -like '*logicalFps must be a non-negative integer*' }
+    if (-not $stringLogicalFpsRecordRejected)
+    {
+        throw 'Step 21 matrix record accepted a string-valued logical FPS through implicit conversion'
+    }
+
+    $fractionalLayoutRecord = Read-PBBoundedJson -Path (Join-Path $directories[0] 'matrix-run-record.json') -MaximumBytes 4MB
+    $fractionalLayoutRecord.visualLayoutVersion = [double]$fractionalLayoutRecord.visualLayoutVersion + 0.4
+    $fractionalLayoutRecordPath = Join-Path $runRoot 'matrix-record-fractional-layout.json'
+    Write-NewJson -Path $fractionalLayoutRecordPath -Value $fractionalLayoutRecord
+    $fractionalLayoutRecordRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualMatrixRunRecord -Path $fractionalLayoutRecordPath)
+    }
+    catch { $fractionalLayoutRecordRejected = $_.Exception.Message -like '*visualLayoutVersion must be a non-negative integer*' }
+    if (-not $fractionalLayoutRecordRejected)
+    {
+        throw 'Step 21 matrix record silently rounded a fractional visual layout version'
+    }
+
+    $stringProfileIdRecord = Read-PBBoundedJson -Path (Join-Path $directories[0] 'matrix-run-record.json') -MaximumBytes 4MB
+    $stringProfileIdRecord.visualProfileId = [string]$stringProfileIdRecord.visualProfileId
+    $stringProfileIdRecordPath = Join-Path $runRoot 'matrix-record-string-profile-id.json'
+    Write-NewJson -Path $stringProfileIdRecordPath -Value $stringProfileIdRecord
+    $stringProfileIdRecordRejected = $false
+    try
+    {
+        [void](Import-PBRemoteVisualMatrixRunRecord -Path $stringProfileIdRecordPath)
+    }
+    catch { $stringProfileIdRecordRejected = $_.Exception.Message -like '*visualProfileId must be a non-negative integer*' }
+    if (-not $stringProfileIdRecordRejected)
+    {
+        throw 'Step 21 matrix record accepted a string-valued profile identity through implicit conversion'
+    }
+
     $geometryRecord = Read-PBBoundedJson -Path (Join-Path $directories[0] 'matrix-run-record.json') -MaximumBytes 4MB
     $geometryRecord.matrix.observedLocatorGeometry.lastOriginX = 999.0
     $geometryRecordPath = Join-Path $runRoot 'matrix-record-tampered-observed-geometry.json'

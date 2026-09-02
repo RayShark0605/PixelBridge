@@ -163,6 +163,48 @@ function Get-PBPilotUInt32
     }
 }
 
+function Get-PBPilotUInt64
+{
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -isnot [ValueType])
+    {
+        throw "$Name must be a non-negative UInt64 integer"
+    }
+    try
+    {
+        if ($Value -is [System.Numerics.BigInteger])
+        {
+            $minimum = [System.Numerics.BigInteger]::Zero
+            $maximum = [System.Numerics.BigInteger]::Parse([UInt64]::MaxValue.ToString([Globalization.CultureInfo]::InvariantCulture), [Globalization.CultureInfo]::InvariantCulture)
+            if ($Value -lt $minimum -or $Value -gt $maximum)
+            {
+                throw 'out of range'
+            }
+            return [UInt64]$Value
+        }
+        $typeCode = [Type]::GetTypeCode($Value.GetType())
+        if ($typeCode -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16,
+            [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64,
+            [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal))
+        {
+            throw 'unsupported numeric type'
+        }
+        $number = [decimal]$Value
+        if ($number -lt 0 -or $number -gt [decimal][UInt64]::MaxValue -or [decimal]::Truncate($number) -ne $number)
+        {
+            throw 'out of range or fractional'
+        }
+        return [UInt64]$number
+    }
+    catch
+    {
+        throw "$Name must be a non-negative UInt64 integer"
+    }
+}
+
 function Get-PBPilotInt32
 {
     param(
@@ -264,9 +306,13 @@ function Assert-PBIdentityShape
         [Parameter(Mandatory = $true)][string]$Name
     )
     if ($Identity -isnot [System.Collections.IDictionary] -or
-        [string]::IsNullOrWhiteSpace([string]$Identity.path) -or
-        $Identity.size -is [bool] -or [UInt64]$Identity.size -eq 0 -or
-        [string]$Identity.sha256 -cnotmatch '^[0-9a-f]{64}$')
+        $Identity.path -isnot [string] -or [string]::IsNullOrWhiteSpace($Identity.path) -or
+        $Identity.sha256 -isnot [string] -or $Identity.sha256 -cnotmatch '^[0-9a-f]{64}$')
+    {
+        throw "$Name does not contain a valid path/size/SHA-256 identity"
+    }
+    $size = Get-PBPilotUInt64 -Value $Identity.size -Name "$Name size"
+    if ($size -eq 0)
     {
         throw "$Name does not contain a valid path/size/SHA-256 identity"
     }
@@ -653,13 +699,17 @@ function Import-PBRemoteVisualPilotPlan
         }
         default { $null }
     }
+    $visualProfileId = Get-PBPilotUInt64 -Value $plan.visualProfileId -Name 'RemoteVisual pilot visualProfileId'
+    $visualLayoutVersion = Get-PBPilotUInt32 -Value $plan.visualLayoutVersion -Name 'RemoteVisual pilot visualLayoutVersion'
+    $codedDataBytesPerFrame = Get-PBPilotUInt32 -Value $plan.codedDataBytesPerFrame -Name 'RemoteVisual pilot codedDataBytesPerFrame'
+    $codewordsPerFrame = Get-PBPilotUInt32 -Value $plan.codewordsPerFrame -Name 'RemoteVisual pilot codewordsPerFrame'
     if ($null -eq $profileContract -or
         ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.1' -and [string]$plan.profileToken -cne 'remote-lf4') -or
         [string]$plan.profileName -cne [string]$profileContract.name -or
-        [UInt64]$plan.visualProfileId -ne [UInt64]$profileContract.visualProfileId -or
-        [UInt32]$plan.visualLayoutVersion -ne [UInt32]$profileContract.visualLayoutVersion -or
-        [UInt32]$plan.codedDataBytesPerFrame -ne [UInt32]$profileContract.codedDataBytesPerFrame -or
-        [UInt32]$plan.codewordsPerFrame -ne [UInt32]$profileContract.codewordsPerFrame)
+        $visualProfileId -ne [UInt64]$profileContract.visualProfileId -or
+        $visualLayoutVersion -ne [UInt32]$profileContract.visualLayoutVersion -or
+        $codedDataBytesPerFrame -ne [UInt32]$profileContract.codedDataBytesPerFrame -or
+        $codewordsPerFrame -ne [UInt32]$profileContract.codewordsPerFrame)
     {
         throw 'RemoteVisual pilot plan identity/profile constants mismatch'
     }
@@ -690,7 +740,7 @@ function Import-PBRemoteVisualPilotPlan
             throw 'RemoteVisual Step 21 plan lacks one explicit matching Locator scale target'
         }
     }
-    $logicalFps = [UInt32]$plan.logicalFps
+    $logicalFps = Get-PBPilotUInt32 -Value $plan.logicalFps -Name 'RemoteVisual pilot logicalFps'
     if ($logicalFps -notin @(1, 2, 5))
     {
         throw 'RemoteVisual pilot plan logicalFps must be exactly 1, 2, or 5'
@@ -712,18 +762,22 @@ function Import-PBRemoteVisualPilotPlan
     {
         $application = $plan.applications[$role]
         $roleName = if ($role -ceq 'encoder') { 'Encoder' } else { 'Decoder' }
+        $applicationSize = Get-PBPilotUInt64 -Value $application.size -Name "RemoteVisual pilot $roleName application size"
         if ([string]$application.role -cne $roleName -or
             [string]$application.relativeExecutablePath -cne "$roleName/PixelBridge$roleName.exe" -or
-            [UInt64]$application.size -eq 0 -or [string]$application.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-            [string]::IsNullOrWhiteSpace([string]$application.versionOutput))
+            $applicationSize -eq 0 -or $application.sha256 -isnot [string] -or
+            $application.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $application.versionOutput -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($application.versionOutput))
         {
             throw "RemoteVisual pilot plan $roleName application identity is invalid"
         }
     }
+    $sourceSize = Get-PBPilotUInt64 -Value $plan.source.size -Name 'RemoteVisual pilot source size'
     if ([string]$plan.deployment.runId -cne [string]$plan.runId -or
         [string]$plan.remoteUi.runId -cne [string]$plan.runId -or
         [string]$plan.source.relativePath -cne 'random-1MiB.bin' -or
-        [UInt64]$plan.source.size -ne 1MB -or [string]$plan.source.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $sourceSize -ne 1MB -or $plan.source.sha256 -isnot [string] -or
+        $plan.source.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         [string]$plan.source.pixelBridgeSegmentCompression -cne 'RAW/OFF')
     {
         throw 'RemoteVisual pilot plan RunId/source contract mismatch'
@@ -866,6 +920,23 @@ function Import-PBRemoteVisualPilotPlan
         }
     }
     $policy = $plan.policy
+    $encoderHardMaximumSeconds = Get-PBPilotUInt32 -Value $policy.encoderHardMaximumSeconds -Name 'RemoteVisual pilot encoderHardMaximumSeconds'
+    $decoderTimeoutSeconds = Get-PBPilotUInt32 -Value $policy.decoderTimeoutSeconds -Name 'RemoteVisual pilot decoderTimeoutSeconds'
+    $noProgressSeconds = Get-PBPilotUInt32 -Value $policy.noProgressSeconds -Name 'RemoteVisual pilot noProgressSeconds'
+    $offlineReplayTimeoutSeconds = Get-PBPilotUInt32 -Value $policy.offlineReplayTimeoutSeconds -Name 'RemoteVisual pilot offlineReplayTimeoutSeconds'
+    $offlineNoProgressSeconds = Get-PBPilotUInt32 -Value $policy.offlineNoProgressSeconds -Name 'RemoteVisual pilot offlineNoProgressSeconds'
+    $decoderWarmupMaximumSeconds = Get-PBPilotUInt32 -Value $policy.decoderWarmupMaximumSeconds -Name 'RemoteVisual pilot decoderWarmupMaximumSeconds'
+    $controlRepetitions = Get-PBPilotUInt32 -Value $policy.controlRepetitions -Name 'RemoteVisual pilot controlRepetitions'
+    $postPublishReplayTailSeconds = Get-PBPilotUInt32 -Value $policy.postPublishReplayTailSeconds -Name 'RemoteVisual pilot postPublishReplayTailSeconds'
+    $postDecoderBroadcastProofSeconds = Get-PBPilotUInt32 -Value $policy.postDecoderBroadcastProofSeconds -Name 'RemoteVisual pilot postDecoderBroadcastProofSeconds'
+    $maximumCaptureFramesPerSecond = Get-PBPilotUInt32 -Value $policy.replay.maximumCaptureFramesPerSecond -Name 'RemoteVisual pilot maximumCaptureFramesPerSecond'
+    $maximumMiB = Get-PBPilotUInt32 -Value $policy.replay.maximumMiB -Name 'RemoteVisual pilot maximumMiB'
+    $reservedNonFrameMiB = Get-PBPilotUInt32 -Value $policy.replay.reservedNonFrameMiB -Name 'RemoteVisual pilot reservedNonFrameMiB'
+    $decoderOffsetMilliseconds = Get-PBPilotInt32 -Value $policy.clock.decoderOffsetMilliseconds -Name 'RemoteVisual pilot decoderOffsetMilliseconds'
+    $uncertaintyMilliseconds = Get-PBPilotUInt32 -Value $policy.clock.uncertaintyMilliseconds -Name 'RemoteVisual pilot uncertaintyMilliseconds'
+    $maximumFrames = Get-PBPilotUInt32 -Value $policy.replay.maximumFrames -Name 'RemoteVisual pilot maximumFrames'
+    $worstCaseSampledFrames = Get-PBPilotUInt64 -Value $policy.replay.worstCaseSampledFrames -Name 'RemoteVisual pilot worstCaseSampledFrames'
+    $worstCaseBytesIncludingReserve = Get-PBPilotUInt64 -Value $policy.replay.worstCaseBytesIncludingReserve -Name 'RemoteVisual pilot worstCaseBytesIncludingReserve'
     $captureBackendValid = if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.1')
     {
         [string]$policy.captureBackend -ceq 'wgc'
@@ -875,16 +946,15 @@ function Import-PBRemoteVisualPilotPlan
         [string]$policy.captureBackend -in @('wgc', 'dxgi')
     }
     if (-not $captureBackendValid -or [string]$policy.compression -cne 'off' -or
-        [UInt32]$policy.encoderHardMaximumSeconds -ne $expectedPolicy.encoderSeconds -or
-        [UInt32]$policy.decoderTimeoutSeconds -ne $expectedPolicy.decoderSeconds -or
-        [UInt32]$policy.noProgressSeconds -ne $expectedPolicy.noProgressSeconds -or
-        [UInt32]$policy.offlineReplayTimeoutSeconds -ne 600 -or [UInt32]$policy.offlineNoProgressSeconds -ne 120 -or
-        [UInt32]$policy.decoderWarmupMaximumSeconds -ne 30 -or [UInt32]$policy.controlRepetitions -ne 12 -or
-        [UInt32]$policy.postPublishReplayTailSeconds -ne 2 -or
-        [UInt32]$policy.postDecoderBroadcastProofSeconds -ne [UInt32]([Math]::Ceiling([UInt32]$policy.clock.uncertaintyMilliseconds / 1000.0) + 2) -or
-        [UInt32]$policy.replay.maximumCaptureFramesPerSecond -ne $expectedPolicy.replaySampleFps -or
-        [UInt32]$policy.replay.maximumMiB -ne 16384 -or
-        [UInt32]$policy.replay.reservedNonFrameMiB -ne 256 -or
+        $encoderHardMaximumSeconds -ne $expectedPolicy.encoderSeconds -or
+        $decoderTimeoutSeconds -ne $expectedPolicy.decoderSeconds -or
+        $noProgressSeconds -ne $expectedPolicy.noProgressSeconds -or
+        $offlineReplayTimeoutSeconds -ne 600 -or $offlineNoProgressSeconds -ne 120 -or
+        $decoderWarmupMaximumSeconds -ne 30 -or $controlRepetitions -ne 12 -or
+        $postPublishReplayTailSeconds -ne 2 -or
+        $postDecoderBroadcastProofSeconds -ne [UInt32]([Math]::Ceiling($uncertaintyMilliseconds / 1000.0) + 2) -or
+        $maximumCaptureFramesPerSecond -ne $expectedPolicy.replaySampleFps -or
+        $maximumMiB -ne 16384 -or $reservedNonFrameMiB -ne 256 -or
         $policy.manualStopRequired -isnot [bool] -or -not [bool]$policy.manualStopRequired -or
         $policy.decoderStartsBeforeEncoder -isnot [bool] -or -not [bool]$policy.decoderStartsBeforeEncoder -or
         $policy.noFileClipboardOrIpcSideChannel -isnot [bool] -or -not [bool]$policy.noFileClipboardOrIpcSideChannel)
@@ -924,29 +994,30 @@ function Import-PBRemoteVisualPilotPlan
             [ordered]@{ selected = $decoderSafety.experimentMonitorPhysicalRect; contract = $decoderSafety.experimentMonitorContract.physicalRect })
         foreach ($binding in $rectBindings)
         {
+            $selectedRect = Get-PBRectDimensions -Rect $binding.selected -Name 'RemoteVisual Step 21 selected monitor rectangle'
             foreach ($field in @('left', 'top', 'right', 'bottom'))
             {
-                if ([Int64]$binding.selected[$field] -ne [Int64]$binding.contract[$field])
+                if ([Int64]$selectedRect[$field] -ne [Int64]$binding.contract[$field])
                 {
                     throw 'RemoteVisual Step 21 monitor runtime contract rectangle mismatch'
                 }
             }
         }
     }
-    if ([Int32]$policy.clock.decoderOffsetMilliseconds -lt -300000 -or [Int32]$policy.clock.decoderOffsetMilliseconds -gt 300000 -or
-        [UInt32]$policy.clock.uncertaintyMilliseconds -gt 300000)
+    if ($decoderOffsetMilliseconds -lt -300000 -or $decoderOffsetMilliseconds -gt 300000 -or
+        $uncertaintyMilliseconds -gt 300000)
     {
         throw 'RemoteVisual pilot plan clock offset/uncertainty exceeds the bounded evidence contract'
     }
     $worstCaseFrames = [UInt64]$expectedPolicy.replaySampleFps * ([UInt64]$expectedPolicy.decoderSeconds + 2) + 2
     $expectedMaximumFrames = if ($schema -ceq 'PixelBridge.RemoteVisualPilotPlan.1') { [UInt32]1250 } else { [UInt32]$worstCaseFrames }
-    if ($worstCaseFrames -gt 1250 -or [UInt32]$policy.replay.maximumFrames -ne $expectedMaximumFrames -or
-        [UInt64]$policy.replay.worstCaseSampledFrames -ne $worstCaseFrames)
+    if ($worstCaseFrames -gt 1250 -or $maximumFrames -ne $expectedMaximumFrames -or
+        $worstCaseSampledFrames -ne $worstCaseFrames)
     {
         throw 'RemoteVisual pilot replay frame budget is inconsistent'
     }
     $worstCaseBytes = [UInt64]$decoderRoi.width * [UInt64]$decoderRoi.height * 4 * $expectedMaximumFrames + 256MB
-    if ($worstCaseBytes -gt 16GB -or [UInt64]$policy.replay.worstCaseBytesIncludingReserve -ne $worstCaseBytes)
+    if ($worstCaseBytes -gt 16GB -or $worstCaseBytesIncludingReserve -ne $worstCaseBytes)
     {
         throw 'RemoteVisual pilot replay byte budget exceeds or disagrees with the frozen 16 GiB cap'
     }

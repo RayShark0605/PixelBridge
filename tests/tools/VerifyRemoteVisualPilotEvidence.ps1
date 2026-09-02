@@ -451,6 +451,66 @@ try
         throw 'Frozen Step 21 Direct/DXGI plan fixture did not validate'
     }
 
+    $step21StringLogicalFps = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21StringLogicalFps.logicalFps = '5'
+    $step21StringLogicalFpsPath = Join-Path $runRoot 'plan-step21-string-logical-fps.json'
+    Write-NewJson -Path $step21StringLogicalFpsPath -Value $step21StringLogicalFps
+    $step21StringLogicalFpsRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21StringLogicalFpsPath) }
+    catch { $step21StringLogicalFpsRejected = $_.Exception.Message -like '*logicalFps must be a non-negative UInt32 integer*' }
+    if (-not $step21StringLogicalFpsRejected)
+    {
+        throw 'Step 21 Plan.3 accepted a string-valued logical FPS through implicit conversion'
+    }
+
+    $step21FractionalLayout = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21FractionalLayout.visualLayoutVersion = 3.4
+    $step21FractionalLayoutPath = Join-Path $runRoot 'plan-step21-fractional-layout.json'
+    Write-NewJson -Path $step21FractionalLayoutPath -Value $step21FractionalLayout
+    $step21FractionalLayoutRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21FractionalLayoutPath) }
+    catch { $step21FractionalLayoutRejected = $_.Exception.Message -like '*visualLayoutVersion must be a non-negative UInt32 integer*' }
+    if (-not $step21FractionalLayoutRejected)
+    {
+        throw 'Step 21 Plan.3 silently rounded a fractional visual layout version'
+    }
+
+    $step21FractionalPolicy = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21FractionalPolicy.policy.encoderHardMaximumSeconds = 179.6
+    $step21FractionalPolicyPath = Join-Path $runRoot 'plan-step21-fractional-policy.json'
+    Write-NewJson -Path $step21FractionalPolicyPath -Value $step21FractionalPolicy
+    $step21FractionalPolicyRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21FractionalPolicyPath) }
+    catch { $step21FractionalPolicyRejected = $_.Exception.Message -like '*encoderHardMaximumSeconds must be a non-negative UInt32 integer*' }
+    if (-not $step21FractionalPolicyRejected)
+    {
+        throw 'Step 21 Plan.3 silently rounded a fractional execution-policy duration'
+    }
+
+    $step21StringIdentitySize = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21StringIdentitySize.deployment.manifest.size = [string]$step21StringIdentitySize.deployment.manifest.size
+    $step21StringIdentitySizePath = Join-Path $runRoot 'plan-step21-string-identity-size.json'
+    Write-NewJson -Path $step21StringIdentitySizePath -Value $step21StringIdentitySize
+    $step21StringIdentitySizeRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21StringIdentitySizePath) }
+    catch { $step21StringIdentitySizeRejected = $_.Exception.Message -like '*deployment manifest size must be a non-negative UInt64 integer*' }
+    if (-not $step21StringIdentitySizeRejected)
+    {
+        throw 'Step 21 Plan.3 accepted a string-valued artifact size through implicit conversion'
+    }
+
+    $step21StringSelectedRect = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $step21StringSelectedRect.monitorSafety.decoder.experimentMonitorPhysicalRect.right = '4480'
+    $step21StringSelectedRectPath = Join-Path $runRoot 'plan-step21-string-selected-rect.json'
+    Write-NewJson -Path $step21StringSelectedRectPath -Value $step21StringSelectedRect
+    $step21StringSelectedRectRejected = $false
+    try { [void](Import-PBRemoteVisualPilotPlan -Path $step21StringSelectedRectPath) }
+    catch { $step21StringSelectedRectRejected = $_.Exception.Message -like '*selected monitor rectangle.right must be an integer*' }
+    if (-not $step21StringSelectedRectRejected)
+    {
+        throw 'Step 21 Plan.3 accepted a string-valued selected monitor rectangle through implicit conversion'
+    }
+
     $step21StringDpi = Get-Content -LiteralPath $step21PlanPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
     $step21StringDpi.monitorSafety.encoder.protectedMonitorContract.dpiX = '96'
     $step21StringDpiPath = Join-Path $runRoot 'plan-step21-string-dpi.json'

@@ -307,6 +307,7 @@ verifier 会：
 - 对抗性 evidence fixture 明确拒绝 Plan.3 中遗留的 ROI-derived `estimatedScaleX/Y`、分数 ROI 尺寸、字符串型/非有限 scale、case-tampered schema、成功 run 的零 Locator 样本、样本数与 Bootstrap successes 不一致、全程最大各向异性超过 0.015，以及 matrix record 内的 geometry 篡改；
 - create-only run-ledger fixture 机械重算 31 个 included cell，证明 LF4 整屏搜索 ROI 与 1.0×目标画布彼此独立、Direct/Shape 仍为居中 exact 1920×1080，并拒绝 ROI 篡改、父 scope hash 错误、重复输出目录和任何 `estimatedScaleX/Y` 遗留；
 - run-ledger seal importer 逐列、逐行核对 JSON/CSV，在解析前执行逐类 artifact 尺寸上限，并拒绝修改状态后重新计算 hash 的语义篡改或超限 CSV identity；EndpointScope fixture 又验证了 A 端 2560×1440 与 B 端带负 Y origin 的双 1920×1080 monitor role 绑定，拒绝重叠/Duplicate、重复 device name、尺寸不一致、origin 篡改和输出复用；
+- Plan.3、MatrixRunRecord.2 与最终 run-seal 导入不再依赖 PowerShell 的隐式数值转换：字符串型 FPS/artifact size、分数型 layout/policy duration、布尔型数值、字符串型 selected monitor rectangle 均 fail closed；对大于 `Int64` 但仍在 `UInt64` 域内的 profile ID 则显式接受 `ConvertFrom-Json` 产生的 `BigInteger`，避免把合法 Direct profile identity 误拒绝；
 - single-extraction Computer B kit 合同用真实 Release Encoder/Decoder 构造 compact-name Both-role portable package 和 sealed source set，随后完成展开目录、外部 seal 与外层 ZIP 的逐 entry 流式复核；测试还从实际 kit 深层路径执行 packaged Decoder `--list-monitors`，防止只检查“文件存在”却遗漏 Windows loader 路径上限；BAT 两级 preflight 找到 exact packaged Encoder/source并实际创建新 RunId/目录，输入/输出目录重叠、错误 expected manifest、archive 单字节篡改、不可变区额外文件、source 单字节篡改和 immutable-root verification output 均被拒绝，而 `Working/` 中的 create-only 运行/验证产物被允许；
 - `git diff --check` 通过，未修改或纳入用户拥有的 `docs/PHASE1_GATE_REPORT.md`。
 

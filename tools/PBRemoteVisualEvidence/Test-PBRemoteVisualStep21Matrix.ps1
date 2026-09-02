@@ -93,9 +93,10 @@ function Get-SealedRun
     {
         'PixelBridge.RemoteVisualFieldFailureSeal.1'
     }
+    $sealArtifactCount = Get-PBNonNegativeUInt64 -Value $seal.artifactCount -Name 'Matrix run evidence seal artifactCount'
     if ([string]$seal.schema -cne $expectedSchema -or [string]$seal.status -cne 'PASS' -or
-        [string]$seal.runId -cne [string]$record.value.runId -or $seal.artifactCount -is [bool] -or
-        [UInt64]$seal.artifactCount -ne @($seal.artifacts).Count -or @($seal.artifacts).Count -eq 0 -or
+        [string]$seal.runId -cne [string]$record.value.runId -or
+        $sealArtifactCount -ne @($seal.artifacts).Count -or @($seal.artifacts).Count -eq 0 -or
         @($seal.artifacts).Count -gt 256)
     {
         throw 'Matrix run evidence seal schema, status, RunId, or artifact count is invalid'
