@@ -1,0 +1,204 @@
+# RemoteVisual Step 21：provider-generic 正式矩阵、失败归因与逐 run 封存
+
+## 1. 状态、目标与完成真值
+
+Step 21 的状态保持 `MANUAL-GATE`，直到预先冻结的验收范围被彼此独立的真实远控 run 完整覆盖并通过最终 verifier。canonical MatrixSpec 仍固定 41 个 cell；本次经用户明确授权的 `Dual2560x1440SingleExperimentMonitor` hardware scope 在任何正式 run 前仅按 Computer A 封存 monitor catalog 的单屏 ROI containment 机械选出 31 个可执行 cell，并明确排除 10 个 1.5× cell。工具、production Replay 绑定、scope 和契约测试通过只代表 readiness，不能替代 Computer B 可见像素 → 任意远控桌面/视频链路 → Computer A 实际 WGC/DXGI 捕获 → production demod/Receiver 的现场证据；31-cell PASS 也不声称 1.5× 已覆盖。
+
+本步回答三个问题：
+
+1. LF4 在 1/2/5 Hz、质量优先/自动/受限模式、且当前硬件能完整容纳的约 0.75/1.0/1.259 scale 下的可用域和 blocker 是什么；canonical 1.5× 列作为明确未覆盖限制保留；
+2. WGC 主矩阵的结论能否由代表性的 DXGI 复核支持；
+3. 在相同 mode/backend/FPS/strict-1:1 条件下，Direct、Shape、LF4 的成功/失败和权威 Decoder/Receiver 指标如何比较。
+
+这里的 provider、可见产品模式和 `modeClass` 只属于 `NonDecodingOperatorMetadata`：它们用于把彼此独立的现场 run 分层、避免跨条件合并指标，并进入 report/Replay 证据身份。它们不是 Decoder 的信道输入，不选择 locator/demod 阈值，不改变 FEC、Receiver、WholeFileDigest 或 publish 分支，也不进入 wire format。生产 Decoder 仍只根据所选 PixelBridge profile、capture backend、实际 ROI/capture records 以及从屏幕捕获到的像素作出解码判断；同一批像素在 provider/mode 标签变化后必须得到相同的解码语义。
+
+以下内容不能单独关闭 Step 21：截图主观“看起来更清楚”、Presenter/Encoder 正常退出、Replay 文件存在、某个 Transport block 被接受、Sender cycle 位置、离线模拟、WARP、单机闭环、单屏诊断，或把多个 run 的计数/时长/分母相加后得到的结果。
+
+## 2. 预先冻结的 41-cell MatrixSpec 与 31-cell HardwareScope
+
+先运行：
+
+```powershell
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21MatrixSpec.ps1 `
+  -ComparisonModeClass QualityPriority `
+  -ComparisonLogicalFps 5 `
+  -OutputPath <new-matrix-root>\step21-matrix-spec.json
+```
+
+保存命令返回的 `matrixId`、`sha256` 和 MatrixSpec 文件。它必须在正式 run 前创建，且之后不可覆盖或编辑。`ComparisonModeClass` 与 `ComparisonLogicalFps` 只选择 Direct/Shape/LF4 的共同对照条件；它们不改变 LF4 主矩阵。
+
+MatrixSpec 固定以下 41 个 cell：
+
+- **LF4 + WGC 主矩阵：36 个**：3 个 mode class × 4 个 scale target × 3 个 logical FPS 的完整笛卡尔积；
+- **LF4 + DXGI 代表性复核：3 个**：
+  - `QualityPriority / 0.750 / 1 Hz`；
+  - `Automatic / 1.259 / 2 Hz`；
+  - `Restricted / 1.500 / 5 Hz`；
+- **Profile baseline：2 个**：Direct 与 Shape 各一个，均为 WGC、strict 1:1，并使用命令指定的共同 mode class/FPS。
+
+每个 cell 只允许一个独立 run。失败 run 不能删除后用成功 run 覆盖；如果需要第二次完整矩阵，应生成新的 MatrixSpec/matrixId，并保留第一份矩阵。该规则防止事后挑选 provider 状态最好的一次结果。
+
+本次 canonical MatrixSpec 创建后、任何正式 run 开始前，使用 A 端真实 `PixelBridge.MonitorCatalog.1` 创建不可覆盖的 hardware scope：
+
+```powershell
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualStep21HardwareScope.ps1 `
+  -MatrixSpecPath <new-matrix-root>\step21-matrix-spec.json `
+  -ExpectedMatrixSpecSha256 <frozen-spec-sha256> `
+  -ComputerAMonitorCatalogPath <new-matrix-root>\computer-a-monitor-catalog.json `
+  -ExpectedComputerAMonitorCatalogSha256 <catalog-sha256> `
+  -ExperimentMonitorDeviceName \\.\DISPLAY2 `
+  -OutputPath <new-matrix-root>\step21-hardware-scope.json
+```
+
+`PixelBridge.RemoteVisualStep21HardwareScope.1` 只接受两块不重叠、未旋转的 2560×1440 Computer A 显示器，且指定 ExperimentMonitor 必须恰好来自该 catalog。它从 canonical 41-cell MatrixSpec 得到 31 个 included cell：27 个 LF4/WGC（3 mode × 3 可容纳 scale × 3 FPS）、2 个 LF4/DXGI（0.750/1 Hz 与 1.259/2 Hz）和 2 个 Direct/Shape baseline；另把 9 个 LF4/WGC 1.5× 与 1 个 LF4/DXGI 1.5× 封存为 `RequiredRoiExceedsSingleExperimentMonitor`。导入器会重新读取父 MatrixSpec 与 monitor catalog、重算 31/10 partition，拒绝人工删项、换项、移动身份或事后修改 catalog。excluded cell 不需要 run，但也永远不能计入覆盖。
+
+## 3. 每个 cell 的冻结输入与几何
+
+每个 included cell 都必须重新生成一个 OS-CSPRNG RunId，并生成与该 RunId 绑定的 metadata、双端 environment、deployment manifest、remote UI evidence 和 PilotPlan.2。package manifest 与 1 MiB RAW/OFF source identity 必须在 31 个 run 中完全相同；其余 run-bound artifact 不得复用。
+
+LF4 scale target 对应的建议整数 ROI 为：
+
+| target | Decoder ROI size | 实际 X/Y scale |
+|---|---:|---:|
+| 0.750 | 1440 × 810 | 0.75 / 0.75 |
+| 1.000 | 1920 × 1080 | 1.0 / 1.0 |
+| 1.259 | 2417 × 1360 | 1.258854… / 1.259259… |
+| 1.500 | 2880 × 1620 | 1.5 / 1.5 |
+
+Matrix verifier 只接受与上述 target 的 X/Y 偏差均不超过 0.015、且 X/Y 各向异性不超过 0.015 的 LF4 记录。Direct/Shape 只接受 exact 1920×1080、`Strict1To1`；任何 scaled Direct/Shape 计划都会在运行前失败，绝不 silent resample。
+
+每个 Step 21 plan 的创建形式为：
+
+```powershell
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\New-PBRemoteVisualPilotPlan.ps1 `
+  -DeploymentManifestPath <this-run>\deployment-manifest.json `
+  -UiEvidencePath <this-run>\remote-ui-evidence.json `
+  -PythonPath D:\Python3.12.9\python.exe `
+  -OutputPath <this-run>\pilot-plan.json `
+  -ProfileToken remote-lf4 `
+  -CaptureBackend wgc `
+  -MatrixModeClass QualityPriority `
+  -LogicalFps 1 `
+  -GeometryMode LocatorScaled `
+  -EncoderProtectedMonitorDeviceName <B-protected> `
+  -EncoderExperimentMonitorDeviceName <B-experiment> `
+  -EncoderOriginX <B-data-left> -EncoderOriginY <B-data-top> `
+  -DecoderProtectedMonitorDeviceName <A-protected> `
+  -DecoderExperimentMonitorDeviceName <A-experiment> `
+  -DecoderRoiLeft <left> -DecoderRoiTop <top> `
+  -DecoderRoiRight <right> -DecoderRoiBottom <bottom>
+```
+
+`ProfileToken`、`CaptureBackend`、`MatrixModeClass`、`LogicalFps`、geometry/ROI 必须与 MatrixSpec cell 完全一致。provider 品牌或实现策略不进入 profile 阈值；真实模式必须来自该 run 的 UI-visible screenshot/capture record，并且只作为非解码操作者元数据用于矩阵分组。当前 UI 证据没有 latency claim，所以 `observedLatencyMilliseconds` 必须保持 `null`；chroma 只有在 UI 中确实可见并被 `visibleFields` 封存时才允许不是 `Unknown`。
+
+## 4. 生产 Replay 已对三 profile 使用同一边界
+
+RemoteVisual live/offline production Replay 现支持 `direct`、`shape`、`remote-lf4` 三个 public profile token：
+
+- live Decoder 的 primary D3D11 demod 不受 evidence sampler 节流；
+- Replay 只采样实际捕获 ROI pixels，保持 16 GiB、最大帧数、队列 high-water 和零 dropped-frame 硬门禁；
+- offline Decoder 对 Replay 中每个 capture frame 运行 production demod 和 Receiver；
+- Direct/Shape offline Replay 仍执行 exact 1920×1080/1:1 production geometry 检查；
+- LF4 offline Replay 仍执行 locator、0.5..2.0 scale、temporal admission、FEC、Transport、Receiver 和 WholeFileDigest 语义；
+- diagnostic capture-only 仍然是独立的非 Receiver 入口，不能作为 MatrixRunRecord。
+
+Direct/Shape Encoder CLI 既有公共契约不接受 LF4 专用的 monitor-safety 参数。Step 21 对它们采用 plan/environment containment + 启动前 packaged Decoder live-monitor preflight；Decoder 对三个 profile 都继续执行 production monitor preflight/periodic revalidation。LF4 Encoder 继续执行 production monitor-safety preflight/periodic revalidation。该差异会在 plan 的 `runtimeEnforcement` 中显式记录，不能伪装为相同的运行时实现。
+
+## 5. 单个真实 run 的执行顺序
+
+每个 cell 都沿用 Step 20 的双端顺序，但 profile/backend 来自该 cell：
+
+1. 两端验证同一个 Both-role package、source set、metadata 和 plan SHA-256；
+2. A 端启动 `Invoke-PBRemoteVisualPilotDecoder.ps1 -Mode Live`；
+3. 看到 A 端 ready 后，在冻结的 30 秒 warmup 内启动 B 端 `Invoke-PBRemoteVisualPilotEncoder.ps1`；
+4. 成功时，A 端完成 WholeFileDigest/safe publish/Replay footer 后，等待计划要求的跨机证明窗口，再人工在 B 端按 Enter/Q；
+5. 失败时，等待 A 端 frozen timeout/no-progress 终止并保留 Replay，然后仍人工正常停止 B，不能杀进程后只留半份证据；
+6. A 端用 exact live Replay 运行 `Invoke-PBRemoteVisualPilotDecoder.ps1 -Mode Offline`；
+7. 成功 run 使用 `Test-PBRemoteVisualPilotEvidence.ps1`；失败 run 使用下节的分类 verifier。
+
+每次 endpoint wrapper 启动前都会调用 verified package 内 Decoder 的 `--list-monitors`，重新核对 device name、physical rect、DPI、refresh、rotation、adapter LUID 和 primary 标志。任何 topology/identity 漂移都在像素运行前 fail closed；这种 preflight-blocked 目录不是已执行 matrix cell，不能拿来填覆盖率。
+
+## 6. 失败 run 的五类归因和封存
+
+失败 run 不能只写一句人工判断。运行：
+
+```powershell
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\Test-PBRemoteVisualFieldFailureEvidence.ps1 `
+  -PlanPath <this-run>\pilot-plan.json `
+  -ExpectedPlanSha256 <exact-plan-sha256> `
+  -EncoderEvidenceDirectory <this-run>\encoder `
+  -LiveDecoderEvidenceDirectory <this-run>\decoder-live `
+  -OfflineDecoderEvidenceDirectory <this-run>\decoder-offline `
+  -SourcePath <source-set>\random-1MiB.bin `
+  -PythonPath D:\Python3.12.9\python.exe `
+  -ReplayInspectorPath <tested-build>\tools\Release\PBRemoteVisualReplayInspector.exe `
+  -FailureClassification signal `
+  -OutputDirectory <this-run>\classified-failure
+```
+
+允许的分类及其最低支持证据为：
+
+- `geometry`：Replay 中出现 `ScaleOutOfRange`、`AlignmentOutOfRange`、`FrameOutOfBounds`、`InvalidGeometry` 或 `AmbiguousGeometry`；
+- `signal`：Bootstrap marker/contrast/FEC/CRC/timing erasure、LF4 pilot erasure、pixel read failure，或 Transport FEC/CRC/identity rejection；
+- `temporal`：stale/freshness mismatch/erasure、duplicate/reorder/gap/skipped sequence 等 production temporal evidence；
+- `metric`：unreliable symbol、rejected metric frame、soft-metric 下的 FEC/CRC/identity rejection；
+- `scheduler`：零 capture、capture/readback/result drop、capture/visual stall，或 frozen timeout/no-progress window 在 Receiver convergence 前结束。
+
+不同类别可能由同一失败同时支持；操作者选择主分类，但 verifier 会保存五类全部支持计数和逐帧说明，并拒绝一个没有任何对应证据的选择。它还必须证明：
+
+- Encoder 正常人工 Stop，source immutable，journal 完成；
+- live/offline Decoder 应用进程均正常退出并完成 report/journal/Replay 封存，但均未 `Completed`、未 WholeFileDigest PASS、未 publish final file；应用崩溃或 wrapper/preflight 故障不能伪装成远控信道失败；
+- `falseAcceptedCodewords` 为 0 或 receiver-only unavailable，Outer conflict 为 0；
+- live Replay finalized、非空、零 drop，offline 对全部 sampled frames 跑完 production demod；
+- exact Replay identity 被 offline process result、report、Inspector 和最终 seal 一致引用；
+- `published` 目录至多保留一个 `.part`，绝不出现 final file；partial 也会被封存，不能删除后假装没有输出。
+
+输出包括 `failure-evidence-verification.json`、`matrix-run-record.json`、逐帧 `replay-inspection.json`、strict combined JSON/CSV/Markdown 和 `failure-evidence-seal.json`。成功 verifier 对 PilotPlan.2 同样新增 `matrix-run-record.json` 并纳入 success seal，因此成功/失败均进入同一个矩阵入口。
+
+## 7. 最终矩阵校验和 CSV
+
+收齐 HardwareScope 中恰好 31 个 evidence directory 后运行：
+
+```powershell
+$runEvidenceDirectories = @(
+  <cell-01-success-or-classified-failure>,
+  <cell-02-success-or-classified-failure>
+  # ...exactly 31 independent roots from includedCells...
+)
+
+pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\Test-PBRemoteVisualStep21Matrix.ps1 `
+  -MatrixSpecPath <new-matrix-root>\step21-matrix-spec.json `
+  -ExpectedMatrixSpecSha256 <frozen-spec-sha256> `
+  -HardwareScopePath <new-matrix-root>\step21-hardware-scope.json `
+  -ExpectedHardwareScopeSha256 <frozen-scope-sha256> `
+  -RunEvidenceDirectory $runEvidenceDirectories `
+  -OutputDirectory <new-matrix-root>\verified-matrix
+```
+
+verifier 会：
+
+- 对每个 run 重新验证 plan、success/failure verification、combined report、Replay、三端 report 和 seal identity；
+- 拒绝复用 RunId、plan、deployment、UI evidence、endpoint environment、Replay、combined report 或 evidence directory；
+- 要求 31 个 run 使用同一个 package manifest 和同一个 1 MiB RAW source identity；
+- 将每个 run 恰好映射到一个预冻结 cell，拒绝缺失、重复或 spec 外 run；
+- 要求 Direct/Shape/LF4 存在一个 exact mode/WGC/FPS/1:1 对照 cohort；
+- 只从 `PixelBridge.RemoteVisualCombinedReport.1` 的 Decoder/Receiver 字段提取每行指标；
+- 至少要求对照 cohort 共有一项非空权威指标：VerifiedEncodedGoodput、Bootstrap success、FER/codeword failure rate、UniqueVisualFPS 或 EndToEndUniqueVisualFPS；
+- 输出一行一个 run 的 `step21-provider-generic-matrix.csv`，不求和、不平均、不拼接分母；
+- 输出 `PixelBridge.RemoteVisualStep21MatrixEvidence.2`、CSV 和最终 `PixelBridge.RemoteVisualStep21MatrixSeal.2`；summary/seal 同时保存父 MatrixSpec、HardwareScope、A 端 catalog、31 included 和 10 excluded 的身份与 truth boundary。
+
+对照对象中会原样保存三条 run 的成功/失败、分类、WholeFileDigest/publish 和指标值。“LF4 提升/退化”必须由这些同条件的独立权威数值支持；不能用截图观感替代，也不能把 LF4 的一个 run 与 Direct/Shape 的另一个模式或 FPS 混比。
+
+## 8. 当前硬件范围与正式关闭条件
+
+用户声明 Computer B 现有两块 1920×1080 显示器，Computer A 有两块 2560×1440 显示器；B 端声明仍须由 packaged `--list-monitors` catalog 封存后才能生成正式 run。正式 plan 要求两端同时存在互不重叠的 `ProtectedMonitor` 与 `ExperimentMonitor`，B 的 1920×1080 Data Window 完全位于 ExperimentMonitor，并在整个 run 中周期重验；A 的 ROI 同样必须完全位于一块独立 ExperimentMonitor。A 的单屏上限排除了 2880×1620 的 1.5× ROI，但不再阻塞经授权的 31-cell hardware scope。
+
+开始正式矩阵前必须满足：
+
+- B 端两块 1920×1080 显示器必须被 Windows/PixelBridge catalog 独立、非重叠地枚举，且为 Extend 而非 Duplicate；
+- A 端两块 2560×1440 catalog identity 与 HardwareScope 完全一致，ProtectedMonitor 与 ExperimentMonitor 不重叠；
+- 实际远控 UI 能逐 run 显示并证明质量优先/自动/受限模式；
+- 生成包含最终 Step 21 代码的新的 verified Both-role package；
+- 每个 run 的 UI capture、environment、deployment、plan 和 RunId 都重新封存。
+
+只有 hardware-scoped 31-cell verifier PASS、CSV/summary/seal 完整、Direct/Shape/LF4 均有成功或受支持的失败记录、并且同条件 LF4 比较来自权威指标时，本次 Step 21 才可标记为“当前双机硬件范围内 `DONE`”。最终报告必须同时列出 10 个未运行的 1.5× cell，不能写成 full-41 或 1.5× coverage。该结果仍不设置 `CertifiedRemoteVisualProfile`，也不提前声明 Step 22 的重复文件恢复 smoke 通过。

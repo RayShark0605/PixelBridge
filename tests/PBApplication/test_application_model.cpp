@@ -250,10 +250,8 @@ TEST_CASE("Remote duplicate refinement retries only an unadmitted current identi
 {
     pbapp::RemoteDuplicateRefinementGate gate;
     gate.StartSequence(1, 100);
-    REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 100, false));
-    REQUIRE(gate.GetSnapshot().attempts == 1);
     REQUIRE(gate.ShouldAttemptDuplicate(1, 100, true));
-    REQUIRE(gate.GetSnapshot().attempts == 2);
+    REQUIRE(gate.GetSnapshot().attempts == 1);
     REQUIRE(gate.MarkAdmission(1, 100, true));
     auto snapshot = gate.GetSnapshot();
     REQUIRE(snapshot.currentSequenceAdmitted);
@@ -264,6 +262,10 @@ TEST_CASE("Remote duplicate refinement retries only an unadmitted current identi
 
     gate.StartSequence(1, 101);
     REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 100, true));
+    REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 101, false));
+    REQUIRE_FALSE(gate.ShouldAttemptDuplicate(1, 101, true));
+    REQUIRE(gate.GetSnapshot().attempts == 2);
+    REQUIRE(gate.GetSnapshot().limitDrops == 1);
     REQUIRE(gate.MarkAdmission(1, 101, false));
     REQUIRE(gate.GetSnapshot().recoveries == 1);
     gate.ResetEpoch();
@@ -337,17 +339,16 @@ TEST_CASE("Telemetry snapshots keep the values of the instant they were taken",
 
     pbapp::RemoteDuplicateRefinementGate refinement;
     refinement.StartSequence(1, 100);
-    REQUIRE_FALSE(refinement.ShouldAttemptDuplicate(1, 100, false));
+    REQUIRE(refinement.ShouldAttemptDuplicate(1, 100, true));
     const pbapp::RemoteDuplicateRefinementSnapshot attempts = refinement.GetSnapshot();
     REQUIRE(attempts.attempts == 1);
     REQUIRE(attempts.recoveries == 0);
     REQUIRE_FALSE(attempts.currentSequenceAdmitted);
 
-    REQUIRE(refinement.ShouldAttemptDuplicate(1, 100, true));
     REQUIRE(refinement.MarkAdmission(1, 100, true));
     refinement.ResetEpoch();
     const pbapp::RemoteDuplicateRefinementSnapshot laterRefinement = refinement.GetSnapshot();
-    REQUIRE(laterRefinement.attempts == 2);
+    REQUIRE(laterRefinement.attempts == 1);
     REQUIRE(laterRefinement.recoveries == 1);
     REQUIRE(attempts.attempts == 1);
     REQUIRE(attempts.recoveries == 0);
@@ -372,6 +373,49 @@ TEST_CASE("Invalid runtime enum values remain fail-visible in diagnostics", "[ap
         static_cast<pbprotocol::CompressionCodec>(0xff))) == "Unknown");
     REQUIRE(std::string_view(pbapp::GetOuterFecModeName(static_cast<pbprotocol::OuterFecMode>(0xff))) == "Unknown");
     REQUIRE(std::string_view(pbapp::GetMetadataProvenanceName(static_cast<pbapp::MetadataProvenance>(0xff))) == "Unknown");
+}
+
+TEST_CASE("Visual profile catalog preserves old tokens and exposes LF4 through one explicit identity",
+    "[application][profile][cli][gui-model]")
+{
+    const std::span<const pbapp::VisualProfileOption> options = pbapp::GetVisualProfileOptions();
+    REQUIRE(options.size() == 4);
+    REQUIRE(options[0].profile == pbapp::VisualProfile::DirectLevels2x2);
+    REQUIRE(options[0].cliToken == "direct");
+    REQUIRE_FALSE(options[0].remoteVisual);
+    REQUIRE(options[0].defaultLogicalVisualFps == 0);
+    REQUIRE(options[0].defaultControlRepetitions == 4);
+    REQUIRE(options[1].profile == pbapp::VisualProfile::ShapeChroma);
+    REQUIRE(options[1].cliToken == "shape");
+    REQUIRE_FALSE(options[1].remoteVisual);
+    REQUIRE(options[2].profile == pbapp::VisualProfile::RemoteVisualResilient);
+    REQUIRE(options[2].cliToken == "remote");
+    REQUIRE(options[2].remoteVisual);
+    REQUIRE(options[2].defaultLogicalVisualFps == 2);
+    REQUIRE(options[2].defaultControlRepetitions == 12);
+    REQUIRE(options[3].profile == pbapp::VisualProfile::RemoteVisualLowFps);
+    REQUIRE(options[3].cliToken == "remote-lf4");
+    REQUIRE(options[3].displayName == "PB-RemoteVisual-LF4-X1 (Experimental)");
+    REQUIRE(options[3].remoteVisual);
+    REQUIRE(options[3].defaultLogicalVisualFps == 2);
+    REQUIRE(options[3].defaultControlRepetitions == 12);
+
+    REQUIRE(pbapp::ParseVisualProfileToken("direct") == pbapp::VisualProfile::DirectLevels2x2);
+    REQUIRE(pbapp::ParseVisualProfileToken("shape") == pbapp::VisualProfile::ShapeChroma);
+    REQUIRE(pbapp::ParseVisualProfileToken("remote") == pbapp::VisualProfile::RemoteVisualResilient);
+    REQUIRE(pbapp::ParseVisualProfileToken("remote-lf4") == pbapp::VisualProfile::RemoteVisualLowFps);
+    REQUIRE(pbapp::ParseVisualProfileToken(L"remote") == pbapp::VisualProfile::RemoteVisualResilient);
+    REQUIRE(pbapp::ParseVisualProfileToken(L"remote-lf4") == pbapp::VisualProfile::RemoteVisualLowFps);
+    REQUIRE_FALSE(pbapp::ParseVisualProfileToken("lf4"));
+    REQUIRE_FALSE(pbapp::ParseVisualProfileToken("Remote-LF4"));
+    REQUIRE_FALSE(pbapp::ParseVisualProfileToken("remote_lf4"));
+    REQUIRE_FALSE(pbapp::ParseVisualProfileToken(L"remote-lf4 "));
+    REQUIRE(pbapp::FindVisualProfileOption(static_cast<pbapp::VisualProfile>(0xff)) == nullptr);
+    REQUIRE_FALSE(pbapp::IsRemoteVisualProfile(pbapp::VisualProfile::DirectLevels2x2));
+    REQUIRE(pbapp::IsRemoteVisualProfile(pbapp::VisualProfile::RemoteVisualResilient));
+    REQUIRE(pbapp::IsRemoteVisualProfile(pbapp::VisualProfile::RemoteVisualLowFps));
+    REQUIRE(std::string_view(pbapp::GetVisualProfileName(pbapp::VisualProfile::RemoteVisualLowFps)) ==
+        "PB-RemoteVisual-LF4-X1 (Experimental)");
 }
 
 TEST_CASE("Window close defers exactly one stop while active and accepts after terminal state",

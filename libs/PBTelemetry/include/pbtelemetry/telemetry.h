@@ -59,6 +59,31 @@ struct FecSample
     pbdesktoplevels::FrameEvaluation evaluation;
 };
 
+enum class RemoteMetricFrameClass : std::uint8_t
+{
+    Other, TransportVerified, TransportRejected
+};
+
+struct RemoteMetricSample
+{
+    pbcapturenormalize::ScreenCaptureDomain domain;
+    std::uint64_t captureObservation = 0;
+    std::uint32_t metricSamples = 0;
+    std::uint32_t zeroMagnitudeMetrics = 0;
+    double minimumAbsoluteMetric = 0;
+    double meanAbsoluteMetric = 0;
+    // Zero means this profile has no symbol-level reliability observation.
+    // LF4 supplies exactly one sample for each data-role tile.
+    std::uint32_t symbolSamples = 0;
+    std::uint32_t unreliableSymbols = 0;
+    std::uint32_t freshnessRegions = 0;
+    std::uint32_t staleRegions = 0;
+    std::uint32_t freshnessTagMismatches = 0;
+    std::uint32_t freshnessTagErasures = 0;
+    std::uint32_t freshnessErasedDataMetrics = 0;
+    RemoteMetricFrameClass frameClass = RemoteMetricFrameClass::Other;
+};
+
 enum class OuterSymbolDisposition : std::uint8_t
 {
     AcceptedUnique, Duplicate, Conflict, Rejected
@@ -103,10 +128,40 @@ struct TelemetrySnapshot
     std::uint64_t fecCodewords = 0;
     std::uint64_t fecFailures = 0;
     std::uint64_t crcFailures = 0;
+    std::uint64_t identityFailures = 0;
+    std::uint64_t acceptedTransportCodewords = 0;
     std::uint64_t postFecFailedFrames = 0;
     std::optional<double> preFecBerEstimate;
     std::optional<double> fecFrameErrorRate;
     std::optional<double> fecCodewordFailureRate;
+    std::optional<double> acceptedTransportCodewordRate;
+
+    // Metric-bearing observations have a separate denominator from unique FEC
+    // frames: a bounded duplicate refinement can carry a new signal sample but
+    // must not add another FER sample or verified byte count.
+    std::uint64_t remoteMetricFrames = 0;
+    std::uint64_t remoteMetricSamples = 0;
+    std::uint64_t remoteZeroMagnitudeMetrics = 0;
+    std::optional<double> remoteZeroMagnitudeMetricRate;
+    std::optional<double> remoteMinimumAbsoluteMetric;
+    std::optional<double> remoteMeanAbsoluteMetric;
+    std::uint64_t remoteSymbolSamples = 0;
+    std::uint64_t remoteUnreliableSymbols = 0;
+    std::optional<double> remoteUnreliableSymbolRate;
+    std::uint64_t remoteTransportVerifiedMetricFrames = 0;
+    std::uint64_t remoteTransportRejectedMetricFrames = 0;
+    std::optional<double> remoteVerifiedMeanAbsoluteMetric;
+    std::optional<double> remoteRejectedMeanAbsoluteMetric;
+    std::optional<double> remoteRejectedZeroMagnitudeMetricRate;
+    std::uint64_t remoteFreshnessRegions = 0;
+    std::uint64_t remoteFreshRegions = 0;
+    std::uint64_t remoteStaleRegions = 0;
+    std::optional<double> remoteStaleRegionRate;
+    std::uint64_t remoteFramesWithStaleRegions = 0;
+    std::uint64_t remoteFreshnessTagMismatches = 0;
+    std::uint64_t remoteFreshnessTagErasures = 0;
+    std::uint64_t remoteFreshnessErasedDataMetrics = 0;
+    std::optional<double> remoteFreshnessErasedDataMetricRate;
 
     std::uint64_t uniqueOuterSymbols = 0;
     std::uint64_t duplicateOuterSymbols = 0;
@@ -140,6 +195,9 @@ public:
     // coded bits 0/0: FER remains covered while PreFecBER stays unavailable.
     // Any nonzero comparison must cover the complete coded frame.
     [[nodiscard]] TelemetryStatus RecordFec(const FecSample& sample) noexcept;
+    // The caller supplies one profile-validated, metric-bearing observation.
+    // A suppressed duplicate has no metric sample and must not call this API.
+    [[nodiscard]] TelemetryStatus RecordRemoteMetric(const RemoteMetricSample& sample) noexcept;
     void RecordOuterSymbol(OuterSymbolDisposition disposition) noexcept;
     // Call only after the authoritative receiver/storage digest gate has
     // accepted these encoded bytes. Timestamp is the corresponding completion
@@ -156,6 +214,7 @@ private:
     std::uint64_t lastCaptureObservation_ = 0;
     std::uint64_t lastBootstrapObservation_ = 0;
     std::uint64_t lastFecObservation_ = 0;
+    std::uint64_t lastRemoteMetricObservation_ = 0;
     std::int64_t firstCaptureTimestamp100ns_ = 0;
     std::int64_t lastCaptureTimestamp100ns_ = 0;
     std::int64_t firstVisualTimestamp100ns_ = 0;
@@ -163,6 +222,12 @@ private:
     std::int64_t verifiedTimestamp100ns_ = 0;
     double intervalMean100ns_ = 0;
     double intervalM2_ = 0;
+    double remoteAbsoluteMetricSum_ = 0;
+    double remoteVerifiedAbsoluteMetricSum_ = 0;
+    double remoteRejectedAbsoluteMetricSum_ = 0;
+    std::uint64_t remoteVerifiedMetricSamples_ = 0;
+    std::uint64_t remoteRejectedMetricSamples_ = 0;
+    std::uint64_t remoteRejectedZeroMagnitudeMetrics_ = 0;
     std::optional<std::array<std::byte, 32>> previousPixelDigest_;
 };
 

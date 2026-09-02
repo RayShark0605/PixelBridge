@@ -2,6 +2,7 @@
 
 #include "pbcapturenormalize/screen_capture_frame.h"
 #include "pbdesktoplevels/reference_channel.h"
+#include "pbmodulation/remote_visual_low_fps.h"
 
 #include <array>
 #include <cstddef>
@@ -69,7 +70,8 @@ struct DemodFrameResult
     pbdesktoplevels::FrameEvaluation evaluation;
     std::array<pbdesktoplevels::AcceptedTransportBlock, pbdesktoplevels::kMaximumCodewords> acceptedTransportBlocks{};
     std::uint32_t acceptedTransportBlockCount = 0;
-    std::array<pbdesktoplevels::AcceptedRemoteControlBlock, 1> acceptedRemoteControlBlocks{};
+    std::array<pbdesktoplevels::AcceptedRemoteControlBlock, pbmodulation::kRemoteVisualLowFpsCodewords>
+        acceptedRemoteControlBlocks{};
     std::uint32_t acceptedRemoteControlBlockCount = 0;
     std::uint64_t metricReadbackBytes = 0;
     // Timestamp scope: constants/upload, calibration dispatch, data dispatch,
@@ -90,6 +92,7 @@ struct DemodFrameResult
     std::uint32_t remoteFreshnessTagMismatches = 0;
     std::uint32_t remoteFreshnessTagErasures = 0;
     std::uint32_t remoteFreshnessErasedDataMetrics = 0;
+    std::uint32_t remoteUnreliableSymbols = 0;
 };
 
 struct DemodPollResult
@@ -145,6 +148,14 @@ public:
         std::unique_ptr<Demodulator>& output) noexcept;
     [[nodiscard]] DemodStatus Submit(const pbcapturenormalize::ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
         std::span<const std::byte> bootstrapRecord, DemodSubmission& output) noexcept;
+    // Experimental Step-10 LF4 path. geometry and bootstrapRecord must both
+    // have been recovered from this exact admitted pixel observation/domain.
+    // The GPU samples the PB-owned source texture directly and reads back only
+    // compact logical metrics, calibration data, and freshness counters.
+    [[nodiscard]] DemodStatus SubmitRemoteVisualLowFps(const pbcapturenormalize::ScreenCaptureFrame& frame,
+        ID3D11DeviceContext* context, std::span<const std::byte> bootstrapRecord,
+        const pbmodulation::LocalDesktopGeometry& geometry,
+        const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy, DemodSubmission& output) noexcept;
     // Fixed-profile first stage for a same-frame Bootstrap readback pipeline.
     // The profile selects only GPU geometry; no sender identity or sequence is
     // trusted here. PollUnbound must later receive the canonical Bootstrap

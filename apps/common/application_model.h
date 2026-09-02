@@ -1,12 +1,15 @@
 #pragma once
 
 #include "pbprotocol/protocol_types.h"
+#include "pbmodulation/visual_temporal.h"
 
 #include <cstdint>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -23,9 +26,17 @@ enum class VisualProfile : std::uint8_t
     DirectLevels2x2,
     ShapeChroma,
     RemoteVisualResilient,
-    // Step09 production Encoder candidate. It remains absent from GUI/CLI and
-    // rejected by Decoder validation until the later exposure/demod Gates.
     RemoteVisualLowFps
+};
+
+struct VisualProfileOption
+{
+    VisualProfile profile = VisualProfile::DirectLevels2x2;
+    std::string_view cliToken;
+    std::string_view displayName;
+    bool remoteVisual = false;
+    std::uint32_t defaultLogicalVisualFps = 0;
+    std::uint32_t defaultControlRepetitions = 4;
 };
 
 enum class CaptureBackend : std::uint8_t
@@ -181,8 +192,12 @@ struct EncoderSnapshot
     std::optional<double> presentCallFps;
     // Interval-authoritative logical cadence: (N - 1) / (last - first).
     // The initial submitted frame is not treated as one elapsed interval.
-    double generatedVisualFramesPerSecond = 0;
-    double generatedPayloadBytesPerSecond = 0;
+    std::optional<double> generatedVisualFramesPerSecond;
+    std::optional<double> generatedPayloadBytesPerSecond;
+    std::uint64_t rawVisualBitsPerLogicalFrame = 0;
+    std::uint64_t innerFecInformationBytesPerLogicalFrame = 0;
+    std::uint64_t transportPayloadCeilingBytesPerLogicalFrame = 0;
+    std::optional<std::uint64_t> configuredTransportPayloadCeilingBytesPerSecond;
     std::uint32_t configuredLogicalVisualFps = 0;
     std::optional<double> configuredLogicalDwellMilliseconds;
     std::optional<double> minimumObservedLogicalDwellMilliseconds;
@@ -203,6 +218,9 @@ struct EncoderSnapshot
     std::int32_t dataWindowTop = 0;
     std::uint32_t dataWindowWidth = phase1CanvasWidth;
     std::uint32_t dataWindowHeight = phase1CanvasHeight;
+    bool monitorSafetyPreflightPassed = false;
+    std::uint64_t monitorSafetyRevalidationCount = 0;
+    std::string monitorSafetyStatus;
     std::optional<double> processCpuAveragePercent;
     std::optional<double> processCpuPeakPercent;
     std::optional<double> processCpuEquivalentCores;
@@ -233,6 +251,10 @@ struct DecoderSnapshot
     std::optional<CaptureBackend> actualBackend;
     std::string backendReason;
     VisualProfile visualProfile = VisualProfile::DirectLevels2x2;
+    std::uint64_t visualProfileId = 0;
+    std::uint8_t visualLayoutVersion = 0;
+    std::uint32_t codedDataBytesPerFrame = 0;
+    std::uint32_t codewordsPerFrame = 0;
     bool descriptorKnown = false;
     std::uint64_t originalFileBytes = 0;
     std::uint64_t verifiedRawBytes = 0;
@@ -286,10 +308,18 @@ struct DecoderSnapshot
     std::uint64_t bootstrapMismatchFrames = 0;
     std::uint64_t bootstrapControlFrameFailures = 0;
     std::uint64_t evaluatedDataFrames = 0;
+    std::uint64_t evaluatedCodewords = 0;
     std::uint64_t postFecFailedFrames = 0;
     std::optional<double> preFecBerEstimate;
     std::optional<double> fecFrameErrorRate;
+    std::optional<double> fecCodewordFailureRate;
+    std::uint64_t fecAcceptedTransportBlocks = 0;
+    std::optional<double> fecAcceptedTransportBlockRate;
+    // Historical field retained for report compatibility. It is the same
+    // Receiver-bound count as temporallyAdmittedTransportBlocks, not the raw
+    // number accepted by repeated FEC evaluations.
     std::uint64_t acceptedTransportBlocks = 0;
+    std::uint64_t temporallyAdmittedTransportBlocks = 0;
     std::uint64_t comparedCodedBits = 0;
     std::uint64_t erroneousCodedBits = 0;
     std::uint64_t fecFailures = 0;
@@ -308,18 +338,23 @@ struct DecoderSnapshot
     std::optional<double> remoteZeroMagnitudeMetricRate;
     std::optional<double> remoteMinimumAbsoluteMetric;
     std::optional<double> remoteMeanAbsoluteMetric;
+    std::uint64_t remoteSymbolSamples = 0;
+    std::uint64_t remoteUnreliableSymbols = 0;
+    std::optional<double> remoteUnreliableSymbolRate;
     std::uint64_t remoteVerifiedMetricFrames = 0;
     std::uint64_t remoteRejectedMetricFrames = 0;
     std::optional<double> remoteVerifiedMeanAbsoluteMetric;
     std::optional<double> remoteRejectedMeanAbsoluteMetric;
     std::optional<double> remoteRejectedZeroMagnitudeMetricRate;
     std::uint64_t remoteFreshnessRegions = 0;
+    std::uint64_t remoteFreshRegions = 0;
     std::uint64_t remoteStaleRegions = 0;
     std::optional<double> remoteStaleRegionRate;
     std::uint64_t remoteFramesWithStaleRegions = 0;
     std::uint64_t remoteFreshnessTagMismatches = 0;
     std::uint64_t remoteFreshnessTagErasures = 0;
     std::uint64_t remoteFreshnessErasedDataMetrics = 0;
+    std::optional<double> remoteFreshnessErasedDataMetricRate;
     std::uint64_t outerUniqueSymbols = 0;
     std::uint64_t outerIdenticalDuplicateSymbols = 0;
     std::uint64_t outerRecoveryAlreadyReadySymbols = 0;
@@ -468,15 +503,7 @@ struct ProgressSnapshot
     std::uint32_t positiveSampleCount = 0;
 };
 
-struct VisualIdentitySnapshot
-{
-    std::uint64_t uniqueFrames = 0;
-    std::uint64_t duplicateFrames = 0;
-    std::uint64_t reorderedFrames = 0;
-    std::uint64_t gapEvents = 0;
-    std::uint64_t skippedSequences = 0;
-    std::optional<double> framesPerSecond;
-};
+using VisualIdentitySnapshot = pbmodulation::VisualIdentitySnapshot;
 
 struct StallIntervalSnapshot
 {
@@ -493,39 +520,8 @@ struct ChannelStallSnapshot
     StallIntervalSnapshot visual;
 };
 
-enum class VisualIdentityDisposition : std::uint8_t
-{
-    Invalid,
-    Unique,
-    Duplicate,
-    Reordered
-};
-
-// FrameSequence is authoritative only inside one CaptureEpoch and one observed
-// visual-stream identity (normally Bootstrap SessionTag). A new epoch or stream
-// identity establishes a fresh sequence baseline while diagnostic counters
-// remain cumulative for the current application run.
-class VisualIdentityTracker
-{
-public:
-    [[nodiscard]] VisualIdentityDisposition Observe(std::uint64_t sequence, std::uint64_t captureEpoch,
-        std::int64_t timestamp100ns, std::optional<std::uint64_t> streamIdentity = std::nullopt) noexcept;
-    [[nodiscard]] VisualIdentitySnapshot GetSnapshot() const noexcept;
-
-private:
-    std::uint64_t maximumSequence_ = 0;
-    std::uint64_t lastCaptureEpoch_ = 0;
-    std::int64_t lastTimestamp100ns_ = 0;
-    std::uint64_t uniqueFrames_ = 0;
-    std::uint64_t duplicateFrames_ = 0;
-    std::uint64_t reorderedFrames_ = 0;
-    std::uint64_t gapEvents_ = 0;
-    std::uint64_t skippedSequences_ = 0;
-    std::uint64_t intervalCount_ = 0;
-    std::uint64_t intervalTime100ns_ = 0;
-    std::optional<std::uint64_t> lastStreamIdentity_;
-    bool hasBaseline_ = false;
-};
+using VisualIdentityDisposition = pbmodulation::VisualIdentityDisposition;
+using VisualIdentityTracker = pbmodulation::VisualIdentityTracker;
 
 // Telemetry only. A capture stall begins after one second without any new
 // capture observation. A visual stall begins after one second of continued
@@ -561,13 +557,14 @@ struct RemoteDuplicateRefinementSnapshot
 {
     std::uint64_t attempts = 0;
     std::uint64_t recoveries = 0;
+    std::uint64_t limitDrops = 0;
     bool currentSequenceAdmitted = false;
 };
 
 // Remote codecs can progressively refine repeated presentations of one
-// FrameSequence. A later duplicate may be admitted only when the first capture
-// of that same identity produced no valid carrier. Successful admission makes
-// the identity terminal; no frame data is combined across observations.
+// FrameSequence. At most the first later duplicate may be admitted when the
+// initial capture produced no valid carrier. Successful admission makes the
+// identity terminal; no frame data is combined across observations.
 class RemoteDuplicateRefinementGate
 {
 public:
@@ -584,6 +581,7 @@ private:
     std::uint64_t currentFrameSequence_ = 0;
     RemoteDuplicateRefinementSnapshot snapshot_;
     bool hasCurrentSequence_ = false;
+    bool currentSequenceAttempted_ = false;
 };
 
 // Uses verified raw-byte mutations only. Capture frames, symbols, sender rate,
@@ -638,6 +636,11 @@ private:
 
 [[nodiscard]] const char* GetEncoderStateName(EncoderState state) noexcept;
 [[nodiscard]] const char* GetDecoderStateName(DecoderState state) noexcept;
+[[nodiscard]] std::span<const VisualProfileOption> GetVisualProfileOptions() noexcept;
+[[nodiscard]] const VisualProfileOption* FindVisualProfileOption(VisualProfile profile) noexcept;
+[[nodiscard]] std::optional<VisualProfile> ParseVisualProfileToken(std::string_view token) noexcept;
+[[nodiscard]] std::optional<VisualProfile> ParseVisualProfileToken(std::wstring_view token) noexcept;
+[[nodiscard]] bool IsRemoteVisualProfile(VisualProfile profile) noexcept;
 [[nodiscard]] const char* GetVisualProfileName(VisualProfile profile) noexcept;
 [[nodiscard]] const char* GetCaptureBackendName(CaptureBackend backend) noexcept;
 [[nodiscard]] const char* GetCompressionCodecName(pbprotocol::CompressionCodec codec) noexcept;

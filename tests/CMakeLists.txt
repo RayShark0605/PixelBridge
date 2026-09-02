@@ -239,7 +239,15 @@ if(TARGET PixelBridgeEncoder)
             "--headless-broadcast|--source|missing.bin|--origin|2147483648|0"
             "--headless-broadcast|--source|missing.bin|--origin|-2147483649|0"
             "--headless-broadcast|--source|missing.bin|--origin|-|0"
-            "--headless-broadcast|--source|missing.bin|--origin|+1|0")
+            "--headless-broadcast|--source|missing.bin|--origin|+1|0"
+            "--headless-broadcast|--source|missing.bin|--profile|lf4|--origin|0|0"
+            "--headless-broadcast|--source|missing.bin|--profile|remote-lf4|--channel|remote|--remote-provider|test|--origin|0|0"
+            "--headless-broadcast|--source|missing.bin|--profile|remote-lf4|--channel|remote|--remote-provider|test|--origin|0|0|--protected-monitor|protected"
+            "--headless-broadcast|--source|missing.bin|--profile|remote-lf4|--channel|local|--remote-provider|test|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment"
+            "--headless-broadcast|--source|missing.bin|--profile|direct|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment"
+            "--headless-broadcast|--source|missing.bin|--profile|remote-lf4|--channel|remote|--remote-provider|test|--origin|0|0|--protected-monitor|same|--experiment-monitor|same"
+            "--headless-broadcast|--source|missing.bin|--profile|remote-lf4|--channel|remote|--remote-provider|test|--origin|0|0|--protected-monitor|protected|--protected-monitor|other|--experiment-monitor|experiment"
+            "--headless-broadcast|--source|missing.bin|--profile|remote-lf4|--channel|remote|--remote-provider|test|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--experiment-monitor|other")
         set(pbEncoderArgumentIndex 0)
         foreach(pbEncoderArguments IN LISTS pbEncoderInvalidArguments)
             add_test(NAME "PixelBridgeEncoderRejectsArguments.${pbEncoderArgumentIndex}"
@@ -279,7 +287,14 @@ if(TARGET PixelBridgeDecoder)
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|-|0|1920|1080"
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|+1|0|1920|1080"
             "--headless-receive|--replay-sample-fps" "--headless-receive|--replay-sample-fps|0"
-            "--headless-receive|--replay-sample-fps|61")
+            "--headless-receive|--replay-sample-fps|61"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--profile|lf4|--roi|0|0|1920|1080"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--profile|remote-lf4|--remote-provider|test|--roi|0|0|1920|1080"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--profile|remote-lf4|--remote-provider|test|--roi|0|0|1920|1080|--protected-monitor|protected"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--profile|remote-lf4|--channel|local|--roi|0|0|1920|1080|--protected-monitor|protected|--experiment-monitor|experiment"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--profile|remote-lf4|--remote-provider|test|--roi|0|0|1920|1080|--protected-monitor|same|--experiment-monitor|same"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--profile|remote-lf4|--remote-provider|test|--roi|0|0|1920|1080|--protected-monitor|protected|--protected-monitor|other|--experiment-monitor|experiment"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--profile|remote-lf4|--remote-provider|test|--roi|0|0|1920|1080|--protected-monitor|protected|--experiment-monitor|experiment|--experiment-monitor|other")
         set(pbDecoderArgumentIndex 0)
         foreach(pbDecoderArguments IN LISTS pbDecoderInvalidArguments)
             add_test(NAME "PixelBridgeDecoderRejectsArguments.${pbDecoderArgumentIndex}"

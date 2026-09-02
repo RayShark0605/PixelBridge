@@ -143,7 +143,9 @@ public:
     [[nodiscard]] virtual CaptureStatus Acquire() noexcept { return {}; }
     [[nodiscard]] virtual bool WaitingForEnvironment() const noexcept { return false; }
     virtual void UpdateSnapshot(CaptureSnapshot&) const noexcept {}
-    [[nodiscard]] virtual CaptureStatus Complete(RawRoiConsumer&, const RawRoiFrameMetadata&, std::size_t, bool) noexcept { return {}; }
+    // A true gpuWorkSubmitted means the backend has recorded a new retirement
+    // marker after the callback's continuation work.
+    [[nodiscard]] virtual CaptureConsumerCompletion Complete(RawRoiConsumer&, const RawRoiFrameMetadata&, std::size_t, bool) noexcept { return {}; }
     [[nodiscard]] virtual CaptureStatus Initialize(const CaptureConfig& config, std::shared_ptr<FrameInbox> inbox) noexcept = 0;
     [[nodiscard]] virtual CaptureStatus Start(std::uint64_t epoch) noexcept = 0;
     [[nodiscard]] virtual CaptureStatus Pause() noexcept = 0;

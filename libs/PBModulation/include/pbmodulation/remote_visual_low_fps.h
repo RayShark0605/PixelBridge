@@ -23,6 +23,11 @@ inline constexpr std::uint32_t kRemoteVisualLowFpsCodedBits =
 inline constexpr std::uint32_t kRemoteVisualLowFpsDataBytes = kRemoteVisualLowFpsCodedBits / 8;
 inline constexpr std::uint32_t kRemoteVisualLowFpsCodewords = 4;
 inline constexpr std::uint32_t kRemoteVisualLowFpsPaddingBytes = 0;
+// The locator stops once its fitted boundary movement is at most 0.005 pixels.
+// An exact-canvas observation can therefore straddle zero or the far frame edge
+// by that amount even though no source pixel lies outside the captured ROI.
+inline constexpr double kRemoteVisualLowFpsFrameBoundaryTolerancePixels =
+    kLocalDesktopGeometryRefinementConvergencePixels;
 inline constexpr std::array<std::uint16_t, 16> kRemoteVisualLowFpsSymbolMasks{
     0x3333, 0x00FF, 0xCC33, 0x9999, 0xF00F, 0x6699, 0x3CC3, 0x9669,
     0xCCCC, 0xFF00, 0x33CC, 0x6666, 0x0FF0, 0x9966, 0xC33C, 0x6996};
@@ -152,6 +157,12 @@ private:
     const RemoteVisualLowFpsDecodePolicy& policy = {}) noexcept;
 [[nodiscard]] RemoteVisualLowFpsErasure ValidateRemoteVisualLowFpsGeometry(const LocalDesktopGeometry& geometry,
     const RemoteVisualLowFpsDecodePolicy& policy = {}) noexcept;
+// Produces the bounded geometry used for sampling. Only locator-sized boundary
+// roundoff is snapped inward; genuine negative origins and clipped frames remain
+// fail-closed. output is unchanged on failure.
+[[nodiscard]] RemoteVisualLowFpsErasure ResolveRemoteVisualLowFpsSamplingGeometry(
+    const LocalDesktopGeometry& geometry, std::uint32_t frameWidth, std::uint32_t frameHeight,
+    LocalDesktopGeometry& output, const RemoteVisualLowFpsDecodePolicy& policy = {}) noexcept;
 [[nodiscard]] const char* GetRemoteVisualLowFpsErasureName(RemoteVisualLowFpsErasure reason) noexcept;
 
 } // namespace pbmodulation

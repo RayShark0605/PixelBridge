@@ -35,7 +35,7 @@ struct LocatorLimits
     static constexpr double quietSeedMinimum = 0.65;
     static constexpr double edgeSearchRadius = 1.5;
     static constexpr double edgeSearchStep = 0.5;
-    static constexpr double refinementConvergence = 0.005;
+    static constexpr double refinementConvergence = kLocalDesktopGeometryRefinementConvergencePixels;
     static constexpr double scaleRoundoffTolerance = 1.0e-9;
     static constexpr std::uint64_t rsWorkUnits = 50000;
     static constexpr std::uint64_t timingWorkUnits = 1024;
@@ -862,6 +862,37 @@ int DiagnosticDepth(const LocalDesktopObservation& observation) noexcept
     return depth;
 }
 
+bool ResolveLocalDesktopBinding(const LocalDesktopBootstrapBinding& binding,
+    detail::LocalDesktopBinding& output) noexcept
+{
+    if (binding == LocalDesktopBootstrapBinding{kLocalDesktopVisualProfileId, kLocalDesktopLayoutVersion})
+    {
+        output = detail::LocalDesktopBinding::BootstrapOnly;
+        return true;
+    }
+    if (binding.visualLayoutVersion == kDesktopLevelsLayoutVersion && GetDesktopLevelsProfile(binding.visualProfileId) != nullptr)
+    {
+        output = detail::LocalDesktopBinding::DesktopLevels;
+        return true;
+    }
+    if (binding == LocalDesktopBootstrapBinding{kShapeChromaProfileId, kShapeChromaLayoutVersion})
+    {
+        output = detail::LocalDesktopBinding::ShapeChroma;
+        return true;
+    }
+    if (binding == LocalDesktopBootstrapBinding{kRemoteVisualProfileId, kRemoteVisualLayoutVersion})
+    {
+        output = detail::LocalDesktopBinding::RemoteVisual;
+        return true;
+    }
+    if (binding == LocalDesktopBootstrapBinding{kRemoteVisualLowFpsProfileId, kRemoteVisualLowFpsLayoutVersion})
+    {
+        output = detail::LocalDesktopBinding::RemoteVisualLowFps;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 Erasure ValidateLumaView(const LumaView& view) noexcept
@@ -1104,31 +1135,24 @@ LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const 
     return detail::DecodeLocalDesktopScaffold(view, policy, detail::LocalDesktopBinding::BootstrapOnly);
 }
 
+LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const LocalDesktopBootstrapBinding& binding,
+    const LocalDesktopDecodePolicy& policy) noexcept
+{
+    detail::LocalDesktopBinding family;
+    if (!ResolveLocalDesktopBinding(binding, family))
+    {
+        LocalDesktopObservation result;
+        result.erasure = LocalDesktopErasureReason::UnsupportedRecord;
+        return result;
+    }
+    return detail::DecodeLocalDesktopScaffold(view, policy, family);
+}
+
 LocalDesktopObservation DecodeLocalDesktopFixedCanvasBootstrap(const LumaView& view, const LocalDesktopBootstrapBinding& binding,
     const LocalDesktopDecodePolicy& policy) noexcept
 {
     detail::LocalDesktopBinding family;
-    if (binding == LocalDesktopBootstrapBinding{kLocalDesktopVisualProfileId, kLocalDesktopLayoutVersion})
-    {
-        family = detail::LocalDesktopBinding::BootstrapOnly;
-    }
-    else if (binding.visualLayoutVersion == kDesktopLevelsLayoutVersion && GetDesktopLevelsProfile(binding.visualProfileId) != nullptr)
-    {
-        family = detail::LocalDesktopBinding::DesktopLevels;
-    }
-    else if (binding == LocalDesktopBootstrapBinding{kShapeChromaProfileId, kShapeChromaLayoutVersion})
-    {
-        family = detail::LocalDesktopBinding::ShapeChroma;
-    }
-    else if (binding == LocalDesktopBootstrapBinding{kRemoteVisualProfileId, kRemoteVisualLayoutVersion})
-    {
-        family = detail::LocalDesktopBinding::RemoteVisual;
-    }
-    else if (binding == LocalDesktopBootstrapBinding{kRemoteVisualLowFpsProfileId, kRemoteVisualLowFpsLayoutVersion})
-    {
-        family = detail::LocalDesktopBinding::RemoteVisualLowFps;
-    }
-    else
+    if (!ResolveLocalDesktopBinding(binding, family))
     {
         LocalDesktopObservation result;
         result.erasure = LocalDesktopErasureReason::UnsupportedRecord;

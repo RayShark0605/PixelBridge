@@ -12,7 +12,7 @@ param(
     [string]$RemoteMode = 'HighestAvailableQuality',
 
     [ValidateRange(1.0, 240.0)]
-    [double]$TargetFps = 60.0,
+    [Nullable[double]]$TargetFps,
 
     [ValidateSet('Unknown', '4:4:4', '4:2:0')]
     [string]$ChromaMode = 'Unknown',
@@ -28,6 +28,9 @@ param(
     [string]$ProtectedMonitorIdentity = '',
 
     [string]$ExperimentMonitorIdentity = '',
+
+    [ValidateSet('Manual', 'RemoteUiVisible')]
+    [string]$RemoteUiProvenance = 'Manual',
 
     [string]$Notes = ''
 )
@@ -70,9 +73,10 @@ function Write-NewUtf8File
 }
 
 $resolvedOutput = [System.IO.Path]::GetFullPath($OutputPath)
-if (Test-Path -LiteralPath $resolvedOutput)
+$temporaryOutput = "$resolvedOutput.partial"
+if ((Test-Path -LiteralPath $resolvedOutput) -or (Test-Path -LiteralPath $temporaryOutput))
 {
-    throw "Create-only RemoteVisual metadata preset already exists: $resolvedOutput"
+    throw "Create-only RemoteVisual metadata preset or partial already exists: $resolvedOutput"
 }
 $parent = [System.IO.Path]::GetDirectoryName($resolvedOutput)
 if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container))
@@ -123,7 +127,7 @@ $metadata = [ordered]@{
     observedLatencyMilliseconds = $null
     protectedMonitorIdentity = $ProtectedMonitorIdentity
     experimentMonitorIdentity = $ExperimentMonitorIdentity
-    remoteUiProvenance = 'Manual'
+    remoteUiProvenance = $RemoteUiProvenance
     geometryProvenance = 'NotProvided'
     networkProvenance = if ([string]::IsNullOrWhiteSpace($NetworkType)) { 'NotProvided' } else { 'Manual' }
     notes = $Notes
@@ -153,7 +157,18 @@ if ($totalMetadataStringBytes -gt 8192)
     throw "RemoteVisual metadata string budget exceeds 8192 UTF-8 bytes: $totalMetadataStringBytes"
 }
 $json = $metadata | ConvertTo-Json -Depth 6
-Write-NewUtf8File -Path $resolvedOutput -Content $json
+try
+{
+    Write-NewUtf8File -Path $temporaryOutput -Content $json
+    Move-Item -LiteralPath $temporaryOutput -Destination $resolvedOutput
+}
+finally
+{
+    if (Test-Path -LiteralPath $temporaryOutput -PathType Leaf)
+    {
+        [System.IO.File]::Delete($temporaryOutput)
+    }
+}
 [ordered]@{
     path = $resolvedOutput
     runId = $runId

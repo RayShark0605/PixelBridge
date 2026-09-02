@@ -18,6 +18,7 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -47,10 +48,79 @@ struct Options
     bool hasOrigin = false;
     bool logicalVisualFpsSpecified = false;
     bool controlRepetitionsSpecified = false;
+    bool manualStop = false;
+    bool manualStopSpecified = false;
     bool remoteChannel = false;
     bool channelSpecified = false;
     std::wstring remoteProvider;
     std::wstring remoteMetadataPath;
+    std::wstring protectedMonitorDeviceName;
+    std::wstring experimentMonitorDeviceName;
+    bool protectedMonitorSpecified = false;
+    bool experimentMonitorSpecified = false;
+};
+
+class ManualStopConsole final
+{
+public:
+    [[nodiscard]] bool Initialize(std::string& errorMessage) noexcept
+    {
+        inputHandle_ = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD consoleMode = 0;
+        if (inputHandle_ == nullptr || inputHandle_ == INVALID_HANDLE_VALUE ||
+            GetConsoleMode(inputHandle_, &consoleMode) == 0)
+        {
+            errorMessage = "--manual-stop requires an attached interactive Windows console";
+            inputHandle_ = nullptr;
+            return false;
+        }
+        errorMessage.clear();
+        return true;
+    }
+
+    [[nodiscard]] bool Poll(bool& stopRequested, std::string& errorMessage) noexcept
+    {
+        stopRequested = false;
+        DWORD pendingEvents = 0;
+        if (inputHandle_ == nullptr || GetNumberOfConsoleInputEvents(inputHandle_, &pendingEvents) == 0)
+        {
+            errorMessage = "manual-stop console polling failed";
+            return false;
+        }
+        if (pendingEvents != 0)
+        {
+            INPUT_RECORD records[32]{};
+            const DWORD requestedRecords = (std::min)(pendingEvents, static_cast<DWORD>(std::size(records)));
+            DWORD readRecords = 0;
+            if (ReadConsoleInputW(inputHandle_, records, requestedRecords, &readRecords) == 0)
+            {
+                errorMessage = "manual-stop console input failed";
+                return false;
+            }
+            for (DWORD index = 0; index < readRecords; index++)
+            {
+                if (records[index].EventType != KEY_EVENT || records[index].Event.KeyEvent.bKeyDown == FALSE)
+                {
+                    continue;
+                }
+                const wchar_t character = records[index].Event.KeyEvent.uChar.UnicodeChar;
+                if (character == L'\r' || character == L'q' || character == L'Q')
+                {
+                    stopRequested = true;
+                }
+            }
+            if (stopRequested)
+            {
+                errorMessage.clear();
+                return true;
+            }
+        }
+        errorMessage.clear();
+        return true;
+    }
+
+private:
+    HANDLE inputHandle_ = nullptr;
 };
 
 [[nodiscard]] bool ParseSigned(const std::wstring_view text, std::int32_t& output) noexcept
@@ -174,27 +244,13 @@ struct Options
         else if (option == L"--profile")
         {
             const wchar_t* const value = nextArgument();
-            if (value == nullptr)
+            const std::optional<pbapp::VisualProfile> profile = value == nullptr ? std::nullopt :
+                pbapp::ParseVisualProfileToken(std::wstring_view(value));
+            if (!profile)
             {
                 return false;
             }
-            const std::wstring_view profile(value);
-            if (profile == L"direct")
-            {
-                options.profile = pbapp::VisualProfile::DirectLevels2x2;
-            }
-            else if (profile == L"shape")
-            {
-                options.profile = pbapp::VisualProfile::ShapeChroma;
-            }
-            else if (profile == L"remote")
-            {
-                options.profile = pbapp::VisualProfile::RemoteVisualResilient;
-            }
-            else
-            {
-                return false;
-            }
+            options.profile = *profile;
         }
         else if (option == L"--channel")
         {
@@ -235,6 +291,26 @@ struct Options
                 return false;
             }
             options.remoteMetadataPath = value;
+        }
+        else if (option == L"--protected-monitor")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || *value == L'\0' || options.protectedMonitorSpecified)
+            {
+                return false;
+            }
+            options.protectedMonitorDeviceName = value;
+            options.protectedMonitorSpecified = true;
+        }
+        else if (option == L"--experiment-monitor")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || *value == L'\0' || options.experimentMonitorSpecified)
+            {
+                return false;
+            }
+            options.experimentMonitorDeviceName = value;
+            options.experimentMonitorSpecified = true;
         }
         else if (option == L"--compression")
         {
@@ -307,6 +383,15 @@ struct Options
             }
             options.controlRepetitionsSpecified = true;
         }
+        else if (option == L"--manual-stop")
+        {
+            if (options.manualStopSpecified)
+            {
+                return false;
+            }
+            options.manualStop = true;
+            options.manualStopSpecified = true;
+        }
         else
         {
             return false;
@@ -316,7 +401,7 @@ struct Options
     {
         return false;
     }
-    if (options.profile == pbapp::VisualProfile::RemoteVisualResilient)
+    if (pbapp::IsRemoteVisualProfile(options.profile))
     {
         if (!options.channelSpecified)
         {
@@ -334,6 +419,15 @@ struct Options
         {
             return false;
         }
+    }
+    const bool anyMonitorSafetyArgument = !options.protectedMonitorDeviceName.empty() ||
+        !options.experimentMonitorDeviceName.empty();
+    if ((options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
+         (options.protectedMonitorDeviceName.empty() || options.experimentMonitorDeviceName.empty() ||
+          !options.remoteChannel)) ||
+        (options.profile != pbapp::VisualProfile::RemoteVisualLowFps && anyMonitorSafetyArgument))
+    {
+        return false;
     }
     if ((options.remoteChannel && options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
         (!options.remoteChannel && !options.remoteMetadataPath.empty()))
@@ -404,10 +498,12 @@ struct Options
 
 void Usage()
 {
-    std::cerr << "usage: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote "
+    std::cerr << "usage: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
                  "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on --origin X Y --seconds 1..600 [--logical-fps 0..240; remote=1..5] "
+                 "[--protected-monitor DEVICE --experiment-monitor DEVICE; required only for remote-lf4] "
                  "[--control-repetitions 1..64] [--run-id 32_LOWERCASE_HEX] "
-                 "[--compression-level 1..22] [--journal NEW_PATH] [--report NEW_PATH]\n";
+                 "[--compression-level 1..22] [--manual-stop; press Enter or Q, --seconds remains the hard maximum] "
+                 "[--journal NEW_PATH] [--report NEW_PATH]\n";
 }
 
 } // namespace
@@ -468,7 +564,57 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
             return 2;
         }
     }
+    if (options.profile == pbapp::VisualProfile::RemoteVisualLowFps)
+    {
+        pbapp::MonitorSafetySelection safetySelection;
+        const pbapp::MonitorSafetyStatus safety = pbapp::ResolveMonitorSafetySelection(
+            options.protectedMonitorDeviceName, options.experimentMonitorDeviceName, safetySelection);
+        if (!safety)
+        {
+            std::cerr << "remote-lf4 monitor safety resolution failed: " <<
+                pbapp::GetMonitorSafetyErrorName(safety.code) << '\n';
+            return 2;
+        }
+        try
+        {
+            const std::string protectedIdentity = WideToUtf8(safetySelection.protectedMonitor.deviceName);
+            const std::string experimentIdentity = WideToUtf8(safetySelection.experimentMonitor.deviceName);
+            if ((!config.remoteMetadata.protectedMonitorIdentity.empty() &&
+                 config.remoteMetadata.protectedMonitorIdentity != protectedIdentity) ||
+                (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
+                 config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
+            {
+                std::cerr << "remote-lf4 monitor identities conflict with metadata preset\n";
+                return 2;
+            }
+            config.remoteMetadata.protectedMonitorIdentity = protectedIdentity;
+            config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
+            config.remoteMetadata.computerBDisplayResolution =
+                std::to_string(safetySelection.experimentMonitor.physicalRect.right -
+                    safetySelection.experimentMonitor.physicalRect.left) + "x" +
+                std::to_string(safetySelection.experimentMonitor.physicalRect.bottom -
+                    safetySelection.experimentMonitor.physicalRect.top);
+            config.remoteMetadata.computerBRefreshRate = safetySelection.experimentMonitor.refreshRate;
+            config.monitorSafety = std::move(safetySelection);
+        }
+        catch (const std::exception& exception)
+        {
+            std::cerr << "remote-lf4 monitor identity conversion failed: " << exception.what() << '\n';
+            return 2;
+        }
+    }
     pbapp::EncoderRuntime runtime;
+    ManualStopConsole manualStopConsole;
+    if (options.manualStop)
+    {
+        std::string manualStopError;
+        if (!manualStopConsole.Initialize(manualStopError))
+        {
+            std::cerr << manualStopError << '\n';
+            return 2;
+        }
+        std::cerr << "manual stop armed: after Decoder success, press Enter or Q in this Encoder console\n";
+    }
     const pbapp::RuntimeStatus started = runtime.Start(config);
     if (!started)
     {
@@ -484,6 +630,8 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     const auto overallDeadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(options.seconds) + std::chrono::seconds(30);
     bool requestedStopAfterDuration = false;
+    bool requestedManualStop = false;
+    bool manualStopInputFailed = false;
     bool overallTimeout = false;
     for (;;)
     {
@@ -506,6 +654,23 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         if (snapshot.state == pbapp::EncoderState::Broadcasting && !broadcastStarted)
         {
             broadcastStarted = std::chrono::steady_clock::now();
+        }
+        if (options.manualStop && !requestedManualStop && !manualStopInputFailed)
+        {
+            bool stopRequested = false;
+            std::string manualStopError;
+            if (!manualStopConsole.Poll(stopRequested, manualStopError))
+            {
+                manualStopInputFailed = true;
+                std::cerr << manualStopError << '\n';
+                runtime.RequestStop();
+            }
+            else if (stopRequested)
+            {
+                requestedManualStop = true;
+                std::cerr << "manual stop requested; draining Encoder runtime and sealing evidence\n";
+                runtime.RequestStop();
+            }
         }
         if (broadcastStarted && std::chrono::steady_clock::now() - *broadcastStarted >=
             std::chrono::seconds(options.seconds))
@@ -555,6 +720,7 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         std::cerr << "failed to create report path\n";
         return 2;
     }
-    return snapshot.state == pbapp::EncoderState::Stopped && broadcastStarted && requestedStopAfterDuration &&
-        !overallTimeout ? 0 : 1;
+    const bool requestedExpectedStop = options.manualStop ? requestedManualStop : requestedStopAfterDuration;
+    return snapshot.state == pbapp::EncoderState::Stopped && broadcastStarted && requestedExpectedStop &&
+        !manualStopInputFailed && !overallTimeout ? 0 : 1;
 }

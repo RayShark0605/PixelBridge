@@ -66,6 +66,7 @@ struct NormalizeConsumer::Implementation
         bool active = false;
         bool submitFailed = false;
         ScreenCaptureFrameMetadata metadata;
+        ID3D11Texture2D* texture = nullptr;
     };
 
     Implementation(const CaptureConfig& config, const CaptureBackendKind kind, std::shared_ptr<ScreenCaptureConsumer> receiver,
@@ -423,7 +424,7 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& rawMetadata, 
     metadata.pointer = rawMetadata.pointer;
     frame.texture = texture;
     auto& pending = state.pending[rawMetadata.slotIndex];
-    pending = {true, true, metadata};
+    pending = {true, true, metadata, texture};
     CaptureStatus status;
     try
     {
@@ -442,16 +443,28 @@ CaptureStatus NormalizeConsumer::Submit(const RawRoiFrameMetadata& rawMetadata, 
     return status;
 }
 
+CaptureConsumerCompletion NormalizeConsumer::CompleteStage(const RawRoiFrameMetadata& rawMetadata, ID3D11Texture2D* texture,
+                                                           ID3D11DeviceContext* context, const bool cancelled)
+{
+    return CompleteInternal(rawMetadata, texture, context, cancelled, true);
+}
+
 CaptureStatus NormalizeConsumer::Completed(const RawRoiFrameMetadata& rawMetadata, ID3D11DeviceContext* context, const bool cancelled)
+{
+    return CompleteInternal(rawMetadata, nullptr, context, cancelled, false).status;
+}
+
+CaptureConsumerCompletion NormalizeConsumer::CompleteInternal(const RawRoiFrameMetadata& rawMetadata, ID3D11Texture2D* texture,
+                                                              ID3D11DeviceContext* context, const bool cancelled, const bool allowContinuation)
 {
     auto& state = *implementation_;
     if (!cancelled && state.ownerThread != GetCurrentThreadId())
     {
-        return CaptureStatus::Failure(CaptureError::WrongThread, CaptureStage::Completion);
+        return {CaptureStatus::Failure(CaptureError::WrongThread, CaptureStage::Completion), false};
     }
     if (rawMetadata.slotIndex >= state.pending.size())
     {
-        return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion);
+        return {CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion), false};
     }
     auto& pending = state.pending[rawMetadata.slotIndex];
     if (!pending.active)
@@ -460,21 +473,52 @@ CaptureStatus NormalizeConsumer::Completed(const RawRoiFrameMetadata& rawMetadat
     }
     if (!SameCompletion(rawMetadata, pending.metadata))
     {
-        return CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion);
+        return {CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion), false};
+    }
+    if (cancelled && (texture != nullptr || context != nullptr))
+    {
+        return {CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion), false};
+    }
+    if (!cancelled)
+    {
+        Microsoft::WRL::ComPtr<ID3D11Device> contextDevice;
+        if (context != nullptr)
+        {
+            context->GetDevice(&contextDevice);
+        }
+        if (context == nullptr || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE ||
+            contextDevice.Get() != state.device.Get() || (allowContinuation && texture != pending.texture))
+        {
+            return {CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Completion), false};
+        }
     }
     const auto current = GetSnapshot();
     const bool discard = cancelled || pending.submitFailed || !current.active || pending.metadata.domain != current.domain;
-    CaptureStatus status;
+    CaptureConsumerCompletion completion;
     try
     {
-        status = state.consumer->Completed(pending.metadata, discard ? nullptr : context, discard);
+        completion = allowContinuation ? state.consumer->CompleteStage(pending.metadata, discard ? nullptr : pending.texture,
+                                                                        discard ? nullptr : context, discard) :
+                                         CaptureConsumerCompletion{state.consumer->Completed(pending.metadata, discard ? nullptr : context, discard), false};
     }
     catch (...)
     {
-        status = CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion);
+        completion.status = CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion);
+        // A throwing non-cancelled consumer may already have issued work on the
+        // supplied immediate context. Keep both the normalized pending identity
+        // and the outer ROI lease until another marker proves retirement.
+        completion.gpuWorkSubmitted = allowContinuation && !discard;
     }
-    pending = {};
-    return status;
+    if (discard && completion.gpuWorkSubmitted)
+    {
+        completion.status = CaptureStatus::Failure(CaptureError::ConsumerFailure, CaptureStage::Completion);
+        completion.gpuWorkSubmitted = false;
+    }
+    if (!completion.gpuWorkSubmitted)
+    {
+        pending = {};
+    }
+    return completion;
 }
 
 } // namespace detail

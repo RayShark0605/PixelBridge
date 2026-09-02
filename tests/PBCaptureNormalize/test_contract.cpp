@@ -30,8 +30,13 @@ public:
     std::vector<ScreenCaptureFrameMetadata> submitted;
     std::vector<ScreenCaptureFrameMetadata> completed;
     std::vector<bool> cancelled;
+    std::vector<ID3D11Texture2D*> stageTextures;
+    std::vector<ID3D11DeviceContext*> stageContexts;
     std::vector<CaptureErasure> erased;
     bool cancelledHasContext = false;
+    bool requestContinuation = false;
+    bool requestContinuationWhenCancelled = false;
+    std::uint32_t stageThrowsRemaining = 0;
     ID3D11Texture2D* borrowedTexture = nullptr;
 
     std::uint64_t ReservedBytes() const noexcept override { return reservedBytes; }
@@ -65,6 +70,21 @@ public:
         cancelled.push_back(isCancelled);
         cancelledHasContext = cancelledHasContext || (isCancelled && context != nullptr);
         return {};
+    }
+    CaptureConsumerCompletion CompleteStage(const ScreenCaptureFrameMetadata& metadata, ID3D11Texture2D* texture,
+                                              ID3D11DeviceContext* context, const bool isCancelled) override
+    {
+        completed.push_back(metadata);
+        cancelled.push_back(isCancelled);
+        stageTextures.push_back(texture);
+        stageContexts.push_back(context);
+        if (stageThrowsRemaining != 0)
+        {
+            stageThrowsRemaining--;
+            throw std::runtime_error("injected staged completion failure");
+        }
+        const bool continuation = isCancelled ? requestContinuationWhenCancelled : requestContinuation && completed.size() == 1;
+        return {{}, continuation};
     }
     void Erased(const CaptureErasure& erasure) noexcept override
     {
@@ -384,6 +404,94 @@ TEST_CASE("Original pending domain survives invalidation and completion cannot b
     CHECK(fixture.receiver->completed.back().domain.captureEpoch == 8);
     CHECK(fixture.receiver->completed.front().domain.sourceId == fixture.receiver->completed.back().domain.sourceId);
     CHECK(fixture.normalizer->GetSnapshot().epochStarts == 2);
+}
+
+TEST_CASE("Normalized staged completion retains one exact ROI lease and rejects cancelled continuation", "[normalize-contract][staged-completion]")
+{
+    Fixture fixture;
+    fixture.Start();
+    fixture.receiver->requestContinuation = true;
+    const auto raw = fixture.Frame();
+    REQUIRE(fixture.normalizer->Submit(raw, fixture.texture.Get(), fixture.context.Get()));
+    const auto missingContext = fixture.normalizer->CompleteStage(raw, fixture.texture.Get(), nullptr, false);
+    CHECK(missingContext.status.code == CaptureError::InvalidFrame);
+    CHECK_FALSE(missingContext.gpuWorkSubmitted);
+    CHECK(fixture.receiver->completed.empty());
+    const auto first = fixture.normalizer->CompleteStage(raw, fixture.texture.Get(), fixture.context.Get(), false);
+    REQUIRE(first.status);
+    REQUIRE(first.gpuWorkSubmitted);
+    REQUIRE(fixture.receiver->completed.size() == 1);
+    CHECK(fixture.receiver->stageTextures.front() == fixture.texture.Get());
+    CHECK(fixture.receiver->stageContexts.front() == fixture.context.Get());
+    CHECK_FALSE(fixture.receiver->cancelled.front());
+
+    ComPtr<ID3D11Texture2D> wrongTexture;
+    D3D11_TEXTURE2D_DESC description{};
+    fixture.texture->GetDesc(&description);
+    REQUIRE(SUCCEEDED(fixture.device->CreateTexture2D(&description, nullptr, &wrongTexture)));
+    const auto wrong = fixture.normalizer->CompleteStage(raw, wrongTexture.Get(), fixture.context.Get(), false);
+    CHECK(wrong.status.code == CaptureError::InvalidFrame);
+    CHECK_FALSE(wrong.gpuWorkSubmitted);
+    CHECK(fixture.receiver->completed.size() == 1);
+
+    const auto second = fixture.normalizer->CompleteStage(raw, fixture.texture.Get(), fixture.context.Get(), false);
+    REQUIRE(second.status);
+    CHECK_FALSE(second.gpuWorkSubmitted);
+    REQUIRE(fixture.receiver->completed.size() == 2);
+    CHECK(fixture.receiver->stageTextures.back() == fixture.texture.Get());
+    const auto duplicate = fixture.normalizer->CompleteStage(raw, fixture.texture.Get(), fixture.context.Get(), false);
+    REQUIRE(duplicate.status);
+    CHECK_FALSE(duplicate.gpuWorkSubmitted);
+    CHECK(fixture.receiver->completed.size() == 2);
+
+    const auto cancelledRaw = fixture.Frame(2);
+    REQUIRE(fixture.normalizer->Submit(cancelledRaw, fixture.texture.Get(), fixture.context.Get()));
+    fixture.receiver->requestContinuationWhenCancelled = true;
+    const auto cancelledWithGpuObjects = fixture.normalizer->CompleteStage(
+        cancelledRaw, fixture.texture.Get(), fixture.context.Get(), true);
+    CHECK(cancelledWithGpuObjects.status.code == CaptureError::InvalidFrame);
+    CHECK_FALSE(cancelledWithGpuObjects.gpuWorkSubmitted);
+    CHECK(fixture.receiver->completed.size() == 2);
+    const auto cancelled = fixture.normalizer->CompleteStage(cancelledRaw, nullptr, nullptr, true);
+    CHECK(cancelled.status.code == CaptureError::ConsumerFailure);
+    CHECK_FALSE(cancelled.gpuWorkSubmitted);
+    REQUIRE(fixture.receiver->completed.size() == 3);
+    CHECK(fixture.receiver->cancelled.back());
+    CHECK(fixture.receiver->stageTextures.back() == nullptr);
+    CHECK(fixture.receiver->stageContexts.back() == nullptr);
+    const auto cancelledDuplicate = fixture.normalizer->CompleteStage(cancelledRaw, nullptr, nullptr, true);
+    REQUIRE(cancelledDuplicate.status);
+    CHECK_FALSE(cancelledDuplicate.gpuWorkSubmitted);
+    CHECK(fixture.receiver->completed.size() == 3);
+}
+
+TEST_CASE("Normalized staged completion conservatively retains a throwing consumer until cancellation",
+    "[normalize-contract][staged-completion][exception][negative]")
+{
+    Fixture fixture;
+    fixture.Start();
+    fixture.receiver->stageThrowsRemaining = 1;
+    const auto raw = fixture.Frame();
+    REQUIRE(fixture.normalizer->Submit(raw, fixture.texture.Get(), fixture.context.Get()));
+    const auto failed = fixture.normalizer->CompleteStage(raw, fixture.texture.Get(), fixture.context.Get(), false);
+    CHECK(failed.status.code == CaptureError::ConsumerFailure);
+    CHECK(failed.gpuWorkSubmitted);
+    REQUIRE(fixture.receiver->completed.size() == 1);
+    CHECK_FALSE(fixture.receiver->cancelled.front());
+    CHECK(fixture.receiver->stageTextures.front() == fixture.texture.Get());
+    CHECK(fixture.receiver->stageContexts.front() == fixture.context.Get());
+
+    const auto cleanup = fixture.normalizer->CompleteStage(raw, nullptr, nullptr, true);
+    REQUIRE(cleanup.status);
+    CHECK_FALSE(cleanup.gpuWorkSubmitted);
+    REQUIRE(fixture.receiver->completed.size() == 2);
+    CHECK(fixture.receiver->cancelled.back());
+    CHECK(fixture.receiver->stageTextures.back() == nullptr);
+    CHECK(fixture.receiver->stageContexts.back() == nullptr);
+    const auto duplicate = fixture.normalizer->CompleteStage(raw, nullptr, nullptr, true);
+    REQUIRE(duplicate.status);
+    CHECK_FALSE(duplicate.gpuWorkSubmitted);
+    CHECK(fixture.receiver->completed.size() == 2);
 }
 
 TEST_CASE("Normalized factories reserve all consumer memory and keep failure outputs unchanged", "[normalize-contract]")

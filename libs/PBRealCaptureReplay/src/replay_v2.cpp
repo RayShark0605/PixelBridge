@@ -36,6 +36,16 @@ constexpr std::uint8_t demodFlagBootstrapSucceeded = 1u << 1;
 constexpr std::uint8_t demodFlagFrameSequenceAvailable = 1u << 2;
 constexpr std::uint8_t demodFlagTransportProduced = 1u << 3;
 constexpr std::uint8_t demodFlagReceiverAdmitted = 1u << 4;
+constexpr std::uint8_t demodFlagProductionDetail = 1u << 5;
+constexpr std::uint8_t demodDetailFlagLayoutAvailable = 1u << 0;
+constexpr std::uint8_t demodDetailFlagGeometryAvailable = 1u << 1;
+constexpr std::uint8_t demodDetailFlagEvaluationAvailable = 1u << 2;
+constexpr std::uint8_t demodDetailFlagMetricSummaryAvailable = 1u << 3;
+constexpr std::uint8_t demodDetailFlagCarrierAccepted = 1u << 4;
+constexpr std::uint8_t demodDetailFlagReceiverStateAdvanced = 1u << 5;
+constexpr std::uint8_t demodDetailFlagSenderTruthAvailable = 1u << 6;
+constexpr std::uint8_t demodDetailFlagPaddingValid = 1u << 7;
+constexpr std::uint8_t demodTimingFlagGpuTimingAvailable = 1u << 0;
 constexpr std::uint8_t captureFlagHdr = 1u << 0;
 constexpr std::uint8_t captureFlagCursorExcluded = 1u << 1;
 constexpr std::size_t fileHeaderCrcOffset = 252;
@@ -266,6 +276,43 @@ bool ValidDisposition(const ReplayV2DemodDisposition value) noexcept
     return value >= ReplayV2DemodDisposition::Unavailable && value <= ReplayV2DemodDisposition::Accepted;
 }
 
+bool ValidResultKind(const ReplayV2DemodResultKind value) noexcept
+{
+    return value >= ReplayV2DemodResultKind::Unavailable && value <= ReplayV2DemodResultKind::TelemetryOnly;
+}
+
+bool ValidGeometryStatus(const ReplayV2GeometryStatus value) noexcept
+{
+    return value >= ReplayV2GeometryStatus::Unavailable && value <= ReplayV2GeometryStatus::Rejected;
+}
+
+bool ValidTemporalDisposition(const ReplayV2TemporalDisposition value) noexcept
+{
+    return value >= ReplayV2TemporalDisposition::Unavailable && value <= ReplayV2TemporalDisposition::StaleCompletion;
+}
+
+bool HasEmptyProductionDetail(const ReplayV2DemodObservationView& observation) noexcept
+{
+    return !observation.layoutAvailable && observation.visualLayoutVersion == 0 &&
+        observation.resultKind == ReplayV2DemodResultKind::Unavailable && !observation.geometryAvailable &&
+        observation.geometryStatus == ReplayV2GeometryStatus::Unavailable && observation.geometryOriginX == 0 &&
+        observation.geometryOriginY == 0 && observation.geometryScaleX == 0 && observation.geometryScaleY == 0 &&
+        observation.temporalDisposition == ReplayV2TemporalDisposition::Unavailable && !observation.evaluationAvailable &&
+        !observation.paddingValid && !observation.senderTruthAvailable && observation.codewords == 0 &&
+        observation.fecFailures == 0 && observation.crcFailures == 0 && observation.identityFailures == 0 &&
+        observation.falseAcceptedCodewords == 0 && observation.acceptedTransportBlocks == 0 &&
+        observation.acceptedRemoteControlBlocks == 0 && observation.admittedTransportBlocks == 0 &&
+        observation.admittedRemoteControlBlocks == 0 && observation.iterationsTotal == 0 &&
+        observation.iterationsMaximum == 0 && observation.comparedCodedBits == 0 &&
+        observation.erroneousCodedBits == 0 && !observation.metricSummaryAvailable && observation.metricSamples == 0 &&
+        observation.zeroMagnitudeMetrics == 0 && observation.minimumAbsoluteMetric == 0 &&
+        observation.meanAbsoluteMetric == 0 && observation.freshnessRegions == 0 && observation.staleRegions == 0 &&
+        observation.freshnessTagMismatches == 0 && observation.freshnessTagErasures == 0 &&
+        observation.freshnessErasedDataMetrics == 0 && observation.unreliableSymbols == 0 &&
+        observation.metricReadbackBytes == 0 && !observation.gpuTimingAvailable && observation.gpuTime100ns == 0 &&
+        !observation.carrierAccepted && !observation.receiverStateAdvanced;
+}
+
 std::optional<std::uint32_t> BytesPerPixel(const DXGI_FORMAT format) noexcept
 {
     switch (format)
@@ -395,6 +442,104 @@ ReplayStatus ValidateDemodObservation(const ReplayV2DemodObservationView& observ
         (observation.receiverAdmitted && !observation.transportProduced) ||
         (!observation.frameSequenceAvailable && observation.frameSequence != 0) ||
         (observation.disposition == ReplayV2DemodDisposition::Accepted && !observation.receiverAdmitted))
+    {
+        return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+    }
+    if (!observation.productionDetailAvailable)
+    {
+        return HasEmptyProductionDetail(observation) ? ReplayStatus{} :
+            ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+    }
+    if (!ValidResultKind(observation.resultKind) || observation.resultKind == ReplayV2DemodResultKind::Unavailable ||
+        !ValidGeometryStatus(observation.geometryStatus) ||
+        observation.geometryStatus == ReplayV2GeometryStatus::Unavailable ||
+        !ValidTemporalDisposition(observation.temporalDisposition) ||
+        observation.temporalDisposition == ReplayV2TemporalDisposition::Unavailable ||
+        observation.layoutAvailable != (observation.visualLayoutVersion != 0) ||
+        observation.layoutAvailable != observation.frameSequenceAvailable ||
+        observation.frameSequenceAvailable != observation.bootstrapSucceeded ||
+        observation.receiverStateAdvanced && !observation.carrierAccepted ||
+        observation.receiverAdmitted != (observation.transportProduced && observation.receiverStateAdvanced) ||
+        (observation.disposition == ReplayV2DemodDisposition::Accepted) != observation.receiverAdmitted)
+    {
+        return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+    }
+    if (observation.geometryAvailable)
+    {
+        if (observation.geometryStatus != ReplayV2GeometryStatus::ExactCanvas &&
+            observation.geometryStatus != ReplayV2GeometryStatus::Scaled &&
+            observation.geometryStatus != ReplayV2GeometryStatus::Letterboxed)
+        {
+            return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+        }
+        if (!std::isfinite(observation.geometryOriginX) || !std::isfinite(observation.geometryOriginY) ||
+            !std::isfinite(observation.geometryScaleX) || !std::isfinite(observation.geometryScaleY) ||
+            observation.geometryScaleX <= 0 || observation.geometryScaleY <= 0 ||
+            observation.geometryScaleX > 16 || observation.geometryScaleY > 16)
+        {
+            return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+        }
+    }
+    else if (observation.geometryOriginX != 0 || observation.geometryOriginY != 0 ||
+        observation.geometryScaleX != 0 || observation.geometryScaleY != 0 ||
+        (observation.geometryStatus != ReplayV2GeometryStatus::NotApplicable &&
+         observation.geometryStatus != ReplayV2GeometryStatus::Rejected))
+    {
+        return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+    }
+    if (observation.evaluationAvailable)
+    {
+        if (observation.codewords == 0 || observation.codewords > kReplayV2HardMaximumCodewordsPerObservation ||
+            observation.fecFailures > observation.codewords || observation.crcFailures > observation.codewords ||
+            observation.identityFailures > observation.codewords || observation.falseAcceptedCodewords > observation.codewords ||
+            observation.acceptedTransportBlocks > observation.codewords ||
+            observation.acceptedRemoteControlBlocks > observation.codewords ||
+            observation.admittedTransportBlocks > observation.acceptedTransportBlocks ||
+            observation.admittedRemoteControlBlocks > observation.acceptedRemoteControlBlocks ||
+            observation.iterationsMaximum > observation.iterationsTotal ||
+            observation.erroneousCodedBits > observation.comparedCodedBits ||
+            (!observation.senderTruthAvailable && (observation.falseAcceptedCodewords != 0 ||
+                observation.comparedCodedBits != 0 || observation.erroneousCodedBits != 0)))
+        {
+            return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+        }
+    }
+    else if (observation.paddingValid || observation.senderTruthAvailable || observation.codewords != 0 ||
+        observation.fecFailures != 0 || observation.crcFailures != 0 || observation.identityFailures != 0 ||
+        observation.falseAcceptedCodewords != 0 || observation.acceptedTransportBlocks != 0 ||
+        observation.acceptedRemoteControlBlocks != 0 || observation.admittedTransportBlocks != 0 ||
+        observation.admittedRemoteControlBlocks != 0 || observation.iterationsTotal != 0 ||
+        observation.iterationsMaximum != 0 || observation.comparedCodedBits != 0 || observation.erroneousCodedBits != 0)
+    {
+        return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+    }
+    if (observation.metricSummaryAvailable)
+    {
+        if (!observation.evaluationAvailable || observation.metricSamples == 0 ||
+            observation.zeroMagnitudeMetrics > observation.metricSamples ||
+            observation.freshnessErasedDataMetrics > observation.metricSamples ||
+            observation.unreliableSymbols > observation.metricSamples ||
+            !std::isfinite(observation.minimumAbsoluteMetric) || !std::isfinite(observation.meanAbsoluteMetric) ||
+            observation.minimumAbsoluteMetric < 0 || observation.meanAbsoluteMetric < observation.minimumAbsoluteMetric ||
+            observation.metricReadbackBytes == 0)
+        {
+            return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+        }
+    }
+    else if (observation.metricSamples != 0 || observation.zeroMagnitudeMetrics != 0 ||
+        observation.minimumAbsoluteMetric != 0 || observation.meanAbsoluteMetric != 0 ||
+        observation.freshnessRegions != 0 || observation.staleRegions != 0 ||
+        observation.freshnessTagMismatches != 0 || observation.freshnessTagErasures != 0 ||
+        observation.freshnessErasedDataMetrics != 0 || observation.unreliableSymbols != 0)
+    {
+        return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
+    }
+    if ((!observation.gpuTimingAvailable && observation.gpuTime100ns != 0) ||
+        observation.transportProduced != (observation.resultKind == ReplayV2DemodResultKind::Transport &&
+            observation.acceptedTransportBlocks != 0) ||
+        (observation.resultKind == ReplayV2DemodResultKind::TelemetryOnly &&
+            (observation.admittedTransportBlocks != 0 || observation.admittedRemoteControlBlocks != 0 ||
+             observation.carrierAccepted || observation.receiverStateAdvanced)))
     {
         return ReplayStatus::Failure(ReplayError::InvalidArgument, ReplayStage::RecordHeader);
     }
@@ -577,7 +722,54 @@ std::array<std::byte, kReplayV2RecordHeaderBytes> MakeDemodHeader(const ReplayV2
         (observation.bootstrapSucceeded ? demodFlagBootstrapSucceeded : 0) |
         (observation.frameSequenceAvailable ? demodFlagFrameSequenceAvailable : 0) |
         (observation.transportProduced ? demodFlagTransportProduced : 0) |
-        (observation.receiverAdmitted ? demodFlagReceiverAdmitted : 0));
+        (observation.receiverAdmitted ? demodFlagReceiverAdmitted : 0) |
+        (observation.productionDetailAvailable ? demodFlagProductionDetail : 0));
+    if (observation.productionDetailAvailable)
+    {
+        header[138] = static_cast<std::byte>(kReplayV2DemodDetailVersion);
+        header[139] = static_cast<std::byte>(observation.visualLayoutVersion);
+        header[140] = static_cast<std::byte>(observation.resultKind);
+        header[141] = static_cast<std::byte>(observation.geometryStatus);
+        header[142] = static_cast<std::byte>(observation.temporalDisposition);
+        header[143] = static_cast<std::byte>((observation.layoutAvailable ? demodDetailFlagLayoutAvailable : 0) |
+            (observation.geometryAvailable ? demodDetailFlagGeometryAvailable : 0) |
+            (observation.evaluationAvailable ? demodDetailFlagEvaluationAvailable : 0) |
+            (observation.metricSummaryAvailable ? demodDetailFlagMetricSummaryAvailable : 0) |
+            (observation.carrierAccepted ? demodDetailFlagCarrierAccepted : 0) |
+            (observation.receiverStateAdvanced ? demodDetailFlagReceiverStateAdvanced : 0) |
+            (observation.senderTruthAvailable ? demodDetailFlagSenderTruthAvailable : 0) |
+            (observation.paddingValid ? demodDetailFlagPaddingValid : 0));
+        header[144] = static_cast<std::byte>(observation.gpuTimingAvailable ? demodTimingFlagGpuTimingAvailable : 0);
+        StoreDouble(header, 152, observation.geometryOriginX);
+        StoreDouble(header, 160, observation.geometryOriginY);
+        StoreDouble(header, 168, observation.geometryScaleX);
+        StoreDouble(header, 176, observation.geometryScaleY);
+        StoreUint32(header, 184, observation.codewords);
+        StoreUint32(header, 188, observation.fecFailures);
+        StoreUint32(header, 192, observation.crcFailures);
+        StoreUint32(header, 196, observation.identityFailures);
+        StoreUint32(header, 200, observation.falseAcceptedCodewords);
+        StoreUint32(header, 204, observation.acceptedTransportBlocks);
+        StoreUint32(header, 208, observation.acceptedRemoteControlBlocks);
+        StoreUint32(header, 212, observation.admittedTransportBlocks);
+        StoreUint32(header, 216, observation.admittedRemoteControlBlocks);
+        StoreUint32(header, 220, observation.iterationsTotal);
+        StoreUint32(header, 224, observation.iterationsMaximum);
+        StoreUint64(header, 228, observation.comparedCodedBits);
+        StoreUint64(header, 236, observation.erroneousCodedBits);
+        StoreUint32(header, 244, observation.metricSamples);
+        StoreUint32(header, 248, observation.zeroMagnitudeMetrics);
+        StoreDouble(header, 252, observation.minimumAbsoluteMetric);
+        StoreDouble(header, 260, observation.meanAbsoluteMetric);
+        StoreUint32(header, 268, observation.freshnessRegions);
+        StoreUint32(header, 272, observation.staleRegions);
+        StoreUint32(header, 276, observation.freshnessTagMismatches);
+        StoreUint32(header, 280, observation.freshnessTagErasures);
+        StoreUint32(header, 284, observation.freshnessErasedDataMetrics);
+        StoreUint32(header, 288, observation.unreliableSymbols);
+        StoreUint64(header, 292, observation.metricReadbackBytes);
+        StoreUint64(header, 300, observation.gpuTime100ns);
+    }
     StoreUint64(header, 456, observation.visualProfileId);
     StoreUint32(header, recordHeaderCrcOffset,
         pbprotocol::ComputeCrc32c(std::span<const std::byte>(header).first(recordHeaderCrcOffset)));
@@ -1500,7 +1692,7 @@ ReplayStatus ReplayV2Reader::ReadNext(ReplayV2Record& output) noexcept
             const auto headerBytes = std::span<const std::byte>(header);
             if (recordBytes != kReplayV2RecordHeaderBytes + 4 || !IsZero(headerBytes.subspan(28, 60)) ||
                 !IsZero(headerBytes.subspan(104, 16)) || !IsZero(headerBytes.subspan(128, 4)) ||
-                !IsZero(headerBytes.subspan(138, 318)) || !IsZero(headerBytes.subspan(464, recordHeaderCrcOffset - 464)))
+                !IsZero(headerBytes.subspan(464, recordHeaderCrcOffset - 464)))
             {
                 return FailReader(implementation, ReplayStatus::Failure(ReplayError::MalformedFrame,
                     ReplayStage::RecordHeader, 0, implementation.currentOffset));
@@ -1532,13 +1724,74 @@ ReplayStatus ReplayV2Reader::ReadNext(ReplayV2Record& output) noexcept
             observation.frameSequenceAvailable = (flags & demodFlagFrameSequenceAvailable) != 0;
             observation.transportProduced = (flags & demodFlagTransportProduced) != 0;
             observation.receiverAdmitted = (flags & demodFlagReceiverAdmitted) != 0;
+            observation.productionDetailAvailable = (flags & demodFlagProductionDetail) != 0;
             if (!observation.frameSequenceAvailable)
             {
                 observation.frameSequence = 0;
             }
             if ((flags & ~(demodFlagBootstrapAttempted | demodFlagBootstrapSucceeded |
-                demodFlagFrameSequenceAvailable | demodFlagTransportProduced | demodFlagReceiverAdmitted)) != 0 ||
+                demodFlagFrameSequenceAvailable | demodFlagTransportProduced | demodFlagReceiverAdmitted |
+                demodFlagProductionDetail)) != 0 ||
                 (!observation.frameSequenceAvailable && LoadUint64(header, 120) != unavailableUint64))
+            {
+                return FailReader(implementation, ReplayStatus::Failure(ReplayError::MalformedFrame,
+                    ReplayStage::RecordHeader, 0, implementation.currentOffset));
+            }
+            if (observation.productionDetailAvailable)
+            {
+                const std::uint8_t detailFlags = std::to_integer<std::uint8_t>(header[143]);
+                const std::uint8_t timingFlags = std::to_integer<std::uint8_t>(header[144]);
+                if (std::to_integer<std::uint8_t>(header[138]) != kReplayV2DemodDetailVersion ||
+                    (timingFlags & ~demodTimingFlagGpuTimingAvailable) != 0 ||
+                    !IsZero(headerBytes.subspan(145, 7)) || !IsZero(headerBytes.subspan(308, 148)))
+                {
+                    return FailReader(implementation, ReplayStatus::Failure(ReplayError::MalformedFrame,
+                        ReplayStage::RecordHeader, 0, implementation.currentOffset));
+                }
+                observation.layoutAvailable = (detailFlags & demodDetailFlagLayoutAvailable) != 0;
+                observation.geometryAvailable = (detailFlags & demodDetailFlagGeometryAvailable) != 0;
+                observation.evaluationAvailable = (detailFlags & demodDetailFlagEvaluationAvailable) != 0;
+                observation.metricSummaryAvailable = (detailFlags & demodDetailFlagMetricSummaryAvailable) != 0;
+                observation.carrierAccepted = (detailFlags & demodDetailFlagCarrierAccepted) != 0;
+                observation.receiverStateAdvanced = (detailFlags & demodDetailFlagReceiverStateAdvanced) != 0;
+                observation.senderTruthAvailable = (detailFlags & demodDetailFlagSenderTruthAvailable) != 0;
+                observation.paddingValid = (detailFlags & demodDetailFlagPaddingValid) != 0;
+                observation.gpuTimingAvailable = (timingFlags & demodTimingFlagGpuTimingAvailable) != 0;
+                observation.visualLayoutVersion = std::to_integer<std::uint8_t>(header[139]);
+                observation.resultKind = static_cast<ReplayV2DemodResultKind>(std::to_integer<std::uint8_t>(header[140]));
+                observation.geometryStatus = static_cast<ReplayV2GeometryStatus>(std::to_integer<std::uint8_t>(header[141]));
+                observation.temporalDisposition = static_cast<ReplayV2TemporalDisposition>(std::to_integer<std::uint8_t>(header[142]));
+                observation.geometryOriginX = LoadDouble(header, 152);
+                observation.geometryOriginY = LoadDouble(header, 160);
+                observation.geometryScaleX = LoadDouble(header, 168);
+                observation.geometryScaleY = LoadDouble(header, 176);
+                observation.codewords = LoadUint32(header, 184);
+                observation.fecFailures = LoadUint32(header, 188);
+                observation.crcFailures = LoadUint32(header, 192);
+                observation.identityFailures = LoadUint32(header, 196);
+                observation.falseAcceptedCodewords = LoadUint32(header, 200);
+                observation.acceptedTransportBlocks = LoadUint32(header, 204);
+                observation.acceptedRemoteControlBlocks = LoadUint32(header, 208);
+                observation.admittedTransportBlocks = LoadUint32(header, 212);
+                observation.admittedRemoteControlBlocks = LoadUint32(header, 216);
+                observation.iterationsTotal = LoadUint32(header, 220);
+                observation.iterationsMaximum = LoadUint32(header, 224);
+                observation.comparedCodedBits = LoadUint64(header, 228);
+                observation.erroneousCodedBits = LoadUint64(header, 236);
+                observation.metricSamples = LoadUint32(header, 244);
+                observation.zeroMagnitudeMetrics = LoadUint32(header, 248);
+                observation.minimumAbsoluteMetric = LoadDouble(header, 252);
+                observation.meanAbsoluteMetric = LoadDouble(header, 260);
+                observation.freshnessRegions = LoadUint32(header, 268);
+                observation.staleRegions = LoadUint32(header, 272);
+                observation.freshnessTagMismatches = LoadUint32(header, 276);
+                observation.freshnessTagErasures = LoadUint32(header, 280);
+                observation.freshnessErasedDataMetrics = LoadUint32(header, 284);
+                observation.unreliableSymbols = LoadUint32(header, 288);
+                observation.metricReadbackBytes = LoadUint64(header, 292);
+                observation.gpuTime100ns = LoadUint64(header, 300);
+            }
+            else if (!IsZero(headerBytes.subspan(138, 318)))
             {
                 return FailReader(implementation, ReplayStatus::Failure(ReplayError::MalformedFrame,
                     ReplayStage::RecordHeader, 0, implementation.currentOffset));

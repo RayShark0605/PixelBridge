@@ -204,7 +204,7 @@ if(TARGET PBRemoteVisualLf4DynamicPresenter)
         COMMAND "${CMAKE_COMMAND}"
             -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBRemoteVisualLf4DynamicPresenter>
             -DPB_EXPECTED_EXIT=1
-            -DPB_TEST_ARGS_ENCODED=broadcast|--source|missing.bin|--origin|0|0|--seconds|2
+            -DPB_TEST_ARGS_ENCODED=broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2
             -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
     set_tests_properties(PBRemoteVisualLf4DynamicPresenterExit.MissingSource PROPERTIES
         LABELS "tools;remote-visual;evidence;sender;dynamic;validation"
@@ -216,15 +216,20 @@ if(TARGET PBRemoteVisualLf4DynamicPresenter)
         "describe|extra"
         "broadcast"
         "broadcast|--source|missing.bin|--origin|0|0"
-        "broadcast|--source|missing.bin|--origin|0|0|--seconds|1"
-        "broadcast|--source|missing.bin|--origin|0|0|--seconds|601"
-        "broadcast|--source|missing.bin|--origin|+1|0|--seconds|2"
-        "broadcast|--source|missing.bin|--origin|2147483648|0|--seconds|2"
-        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--logical-fps|0"
-        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--logical-fps|6"
-        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--control-repetitions|0"
-        "broadcast|--source|missing.bin|--origin|0|0|--seconds|2|--control-repetitions|65"
-        "broadcast|--source|missing.bin|--source|other.bin|--origin|0|0|--seconds|2")
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|0|0|--experiment-monitor|experiment|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|same|--experiment-monitor|same|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|1"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|601"
+        "broadcast|--source|missing.bin|--origin|+1|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|2147483648|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2|--logical-fps|0"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2|--logical-fps|6"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2|--control-repetitions|0"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2|--control-repetitions|65"
+        "broadcast|--source|missing.bin|--source|other.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--protected-monitor|other|--experiment-monitor|experiment|--seconds|2"
+        "broadcast|--source|missing.bin|--origin|0|0|--protected-monitor|protected|--experiment-monitor|experiment|--experiment-monitor|other|--seconds|2")
     set(pbLf4DynamicPresenterArgumentIndex 0)
     foreach(pbLf4DynamicPresenterArguments IN LISTS pbLf4DynamicPresenterInvalidArguments)
         add_test(NAME "PBRemoteVisualLf4DynamicPresenterExit.Invalid.${pbLf4DynamicPresenterArgumentIndex}"
@@ -322,6 +327,63 @@ if(TARGET PBVectorGen AND TARGET PBFrameInspector)
     unset(pbVectorGenInvalidArgumentsEncoded)
     unset(pbVectorGenInvalidArguments)
     unset(pbVectorGenInvalidCase)
+endif()
+
+if(WIN32)
+    find_program(PB_REMOTE_VISUAL_POWERSHELL NAMES pwsh REQUIRED)
+    find_program(PB_REMOTE_VISUAL_EVIDENCE_PYTHON
+        NAMES python.exe
+        PATHS "D:/Python3.12.9"
+        NO_DEFAULT_PATH
+        REQUIRED)
+    add_test(NAME PBRemoteVisualDeploymentEvidenceContracts
+        COMMAND "${PB_REMOTE_VISUAL_POWERSHELL}"
+            -NoProfile
+            -NonInteractive
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyRemoteVisualDeploymentEvidence.ps1"
+            -ToolsRoot "${PROJECT_SOURCE_DIR}/tools/PBRemoteVisualEvidence"
+            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/remote-visual-deployment-evidence")
+    set_tests_properties(PBRemoteVisualDeploymentEvidenceContracts PROPERTIES
+        LABELS "tools;remote-visual;deployment;package;source-set;file-safety"
+        RUN_SERIAL TRUE
+        TIMEOUT 120)
+
+    add_test(NAME PBLocalDesktopRegressionEvidenceContracts
+        COMMAND "${PB_REMOTE_VISUAL_POWERSHELL}"
+            -NoProfile
+            -NonInteractive
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyLocalDesktopRegressionEvidence.ps1"
+            -ToolsRoot "${PROJECT_SOURCE_DIR}/tools/PBRemoteVisualEvidence"
+            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/local-desktop-regression-evidence")
+    set_tests_properties(PBLocalDesktopRegressionEvidenceContracts PROPERTIES
+        LABELS "tools;remote-visual;local-desktop;regression;evidence;file-safety"
+        RUN_SERIAL TRUE
+        TIMEOUT 120)
+
+    add_test(NAME PBRemoteVisualPilotEvidenceContracts
+        COMMAND "${PB_REMOTE_VISUAL_POWERSHELL}"
+            -NoProfile
+            -NonInteractive
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyRemoteVisualPilotEvidence.ps1"
+            -ToolsRoot "${PROJECT_SOURCE_DIR}/tools/PBRemoteVisualEvidence"
+            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/remote-visual-pilot-evidence"
+            -PythonExecutable "${PB_REMOTE_VISUAL_EVIDENCE_PYTHON}")
+    set_tests_properties(PBRemoteVisualPilotEvidenceContracts PROPERTIES
+        LABELS "tools;remote-visual;pilot;remote-ui;plan;resource;evidence;file-safety"
+        RUN_SERIAL TRUE
+        TIMEOUT 120)
+
+    add_test(NAME PBRemoteVisualStep21MatrixEvidenceContracts
+        COMMAND "${PB_REMOTE_VISUAL_POWERSHELL}"
+            -NoProfile
+            -NonInteractive
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyRemoteVisualStep21MatrixEvidence.ps1"
+            -ToolsRoot "${PROJECT_SOURCE_DIR}/tools/PBRemoteVisualEvidence"
+            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/remote-visual-step21-matrix-evidence")
+    set_tests_properties(PBRemoteVisualStep21MatrixEvidenceContracts PROPERTIES
+        LABELS "tools;remote-visual;step21;matrix;failure-classification;evidence;file-safety"
+        RUN_SERIAL TRUE
+        TIMEOUT 180)
 endif()
 
 # Step 01 freezes the annotated "phase1-gate-pass" tag as the boundary between the Phase-1 Gate

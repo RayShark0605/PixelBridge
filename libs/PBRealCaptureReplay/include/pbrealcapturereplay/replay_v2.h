@@ -24,6 +24,8 @@ inline constexpr std::uint32_t kReplayV2DefaultMaximumCaptureFrames = 256;
 inline constexpr std::uint32_t kReplayV2HardMaximumCaptureFrames = 2048;
 inline constexpr std::uint64_t kReplayV2DefaultMaximumFileBytes = 2ULL * 1024 * 1024 * 1024;
 inline constexpr std::uint64_t kReplayV2HardMaximumFileBytes = 16ULL * 1024 * 1024 * 1024;
+inline constexpr std::uint8_t kReplayV2DemodDetailVersion = 1;
+inline constexpr std::uint32_t kReplayV2HardMaximumCodewordsPerObservation = 1024;
 
 enum class ReplayV2RecordType : std::uint32_t
 {
@@ -37,6 +39,39 @@ enum class ReplayV2DemodDisposition : std::uint8_t
     Erasure,
     Rejected,
     Accepted
+};
+
+// These enums are Replay evidence vocabulary rather than dependencies on a
+// particular demodulator implementation. Unavailable is reserved for legacy
+// v2 observations that predate production-detail presence.
+enum class ReplayV2DemodResultKind : std::uint8_t
+{
+    Unavailable,
+    Transport,
+    ControlRecord,
+    ControlFragment,
+    TelemetryOnly
+};
+
+enum class ReplayV2GeometryStatus : std::uint8_t
+{
+    Unavailable,
+    NotApplicable,
+    ExactCanvas,
+    Scaled,
+    Letterboxed,
+    Rejected
+};
+
+enum class ReplayV2TemporalDisposition : std::uint8_t
+{
+    Unavailable,
+    NotApplicable,
+    Unique,
+    DuplicateRefinement,
+    DuplicateSuppressed,
+    Reordered,
+    StaleCompletion
 };
 
 struct ReplayV2Limits
@@ -90,6 +125,57 @@ struct ReplayV2DemodObservationView
     bool transportProduced = false;
     bool receiverAdmitted = false;
     std::uint32_t diagnosticCode = 0;
+
+    // Optional production result detail. Absence preserves the byte-exact v2
+    // layout emitted before Step 15 and means that every following field is
+    // unavailable, not zero. Presence is encoded explicitly in the record
+    // flags so receiver-only evidence never invents sender truth.
+    bool productionDetailAvailable = false;
+    bool layoutAvailable = false;
+    std::uint8_t visualLayoutVersion = 0;
+    ReplayV2DemodResultKind resultKind = ReplayV2DemodResultKind::Unavailable;
+    bool geometryAvailable = false;
+    ReplayV2GeometryStatus geometryStatus = ReplayV2GeometryStatus::Unavailable;
+    double geometryOriginX = 0;
+    double geometryOriginY = 0;
+    double geometryScaleX = 0;
+    double geometryScaleY = 0;
+    ReplayV2TemporalDisposition temporalDisposition = ReplayV2TemporalDisposition::Unavailable;
+    bool evaluationAvailable = false;
+    bool paddingValid = false;
+    bool senderTruthAvailable = false;
+    std::uint32_t codewords = 0;
+    std::uint32_t fecFailures = 0;
+    std::uint32_t crcFailures = 0;
+    std::uint32_t identityFailures = 0;
+    std::uint32_t falseAcceptedCodewords = 0;
+    std::uint32_t acceptedTransportBlocks = 0;
+    std::uint32_t acceptedRemoteControlBlocks = 0;
+    std::uint32_t admittedTransportBlocks = 0;
+    std::uint32_t admittedRemoteControlBlocks = 0;
+    std::uint32_t iterationsTotal = 0;
+    std::uint32_t iterationsMaximum = 0;
+    std::uint64_t comparedCodedBits = 0;
+    std::uint64_t erroneousCodedBits = 0;
+    bool metricSummaryAvailable = false;
+    std::uint32_t metricSamples = 0;
+    std::uint32_t zeroMagnitudeMetrics = 0;
+    double minimumAbsoluteMetric = 0;
+    double meanAbsoluteMetric = 0;
+    std::uint32_t freshnessRegions = 0;
+    std::uint32_t staleRegions = 0;
+    std::uint32_t freshnessTagMismatches = 0;
+    std::uint32_t freshnessTagErasures = 0;
+    std::uint32_t freshnessErasedDataMetrics = 0;
+    std::uint32_t unreliableSymbols = 0;
+    std::uint64_t metricReadbackBytes = 0;
+    bool gpuTimingAvailable = false;
+    std::uint64_t gpuTime100ns = 0;
+    // carrierAccepted reports validation by the existing Receiver pipeline;
+    // receiverStateAdvanced distinguishes a unique state mutation from an
+    // identical duplicate. Legacy receiverAdmitted remains transport-only.
+    bool carrierAccepted = false;
+    bool receiverStateAdvanced = false;
 };
 
 struct ReplayV2Capture

@@ -46,6 +46,7 @@ struct Options
     pbapp::VisualProfile profile = pbapp::VisualProfile::DirectLevels2x2;
     RECT roi{};
     std::uint32_t timeoutSeconds = 120;
+    std::uint32_t noProgressSeconds = 0;
     std::uint32_t replayMaximumFrames = 256;
     std::uint32_t replayMaximumMebibytes = 2048;
     std::uint32_t replayMaximumFramesPerSecond = 0;
@@ -59,6 +60,8 @@ struct Options
     std::wstring remoteMetadataPath;
     std::wstring protectedMonitorDeviceName;
     std::wstring experimentMonitorDeviceName;
+    bool protectedMonitorSpecified = false;
+    bool experimentMonitorSpecified = false;
 };
 
 [[nodiscard]] bool ParseSigned(const std::wstring_view text, LONG& output) noexcept
@@ -283,27 +286,13 @@ struct Options
         else if (option == L"--profile")
         {
             const wchar_t* const value = nextArgument();
-            if (value == nullptr)
+            const std::optional<pbapp::VisualProfile> profile = value == nullptr ? std::nullopt :
+                pbapp::ParseVisualProfileToken(std::wstring_view(value));
+            if (!profile)
             {
                 return false;
             }
-            const std::wstring_view profile(value);
-            if (profile == L"direct")
-            {
-                options.profile = pbapp::VisualProfile::DirectLevels2x2;
-            }
-            else if (profile == L"shape")
-            {
-                options.profile = pbapp::VisualProfile::ShapeChroma;
-            }
-            else if (profile == L"remote")
-            {
-                options.profile = pbapp::VisualProfile::RemoteVisualResilient;
-            }
-            else
-            {
-                return false;
-            }
+            options.profile = *profile;
         }
         else if (option == L"--channel")
         {
@@ -348,20 +337,22 @@ struct Options
         else if (option == L"--protected-monitor")
         {
             const wchar_t* const value = nextArgument();
-            if (value == nullptr)
+            if (value == nullptr || *value == L'\0' || options.protectedMonitorSpecified)
             {
                 return false;
             }
             options.protectedMonitorDeviceName = value;
+            options.protectedMonitorSpecified = true;
         }
         else if (option == L"--experiment-monitor")
         {
             const wchar_t* const value = nextArgument();
-            if (value == nullptr)
+            if (value == nullptr || *value == L'\0' || options.experimentMonitorSpecified)
             {
                 return false;
             }
             options.experimentMonitorDeviceName = value;
+            options.experimentMonitorSpecified = true;
         }
         else if (option == L"--roi")
         {
@@ -386,20 +377,33 @@ struct Options
                 return false;
             }
         }
+        else if (option == L"--no-progress-seconds")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || !ParseUnsigned(value, options.noProgressSeconds) ||
+                options.noProgressSeconds == 0 || options.noProgressSeconds > 600)
+            {
+                return false;
+            }
+        }
         else
         {
             return false;
         }
     }
-    if (!options.channelSpecified && options.profile == pbapp::VisualProfile::RemoteVisualResilient)
+    if (!options.channelSpecified && pbapp::IsRemoteVisualProfile(options.profile))
     {
         options.remoteChannel = true;
+    }
+    if (options.noProgressSeconds > options.timeoutSeconds)
+    {
+        return false;
     }
     if (options.offlineReplay)
     {
         if (options.outputDirectory.empty() || options.replayInputPath.empty() ||
             !options.replayOutputPath.empty() || options.hasRoi || !options.remoteChannel ||
-            options.profile != pbapp::VisualProfile::RemoteVisualResilient ||
+            pbapp::FindVisualProfileOption(options.profile) == nullptr ||
             (options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
             !options.protectedMonitorDeviceName.empty() || !options.experimentMonitorDeviceName.empty() ||
             options.diagnosticCaptureOnly || options.replayEvidenceVisualProfileId || options.replayMaximumFramesPerSecond != 0)
@@ -409,17 +413,20 @@ struct Options
         output = std::move(options);
         return true;
     }
+    const bool productionReplay = !options.replayOutputPath.empty() && options.remoteChannel &&
+        !options.diagnosticCaptureOnly && pbapp::FindVisualProfileOption(options.profile) != nullptr;
+    const bool captureOnlyReplay = !options.replayOutputPath.empty() && options.remoteChannel &&
+        options.profile == pbapp::VisualProfile::RemoteVisualResilient && options.diagnosticCaptureOnly;
     if (options.outputDirectory.empty() || !options.replayInputPath.empty() || !options.hasRoi ||
+        (options.profile == pbapp::VisualProfile::RemoteVisualLowFps && !options.remoteChannel) ||
         (options.remoteChannel && ((options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
             options.protectedMonitorDeviceName.empty() ||
             options.experimentMonitorDeviceName.empty())) ||
         (!options.remoteChannel && !options.remoteMetadataPath.empty()) ||
-        (!options.replayOutputPath.empty() && (!options.remoteChannel ||
-            options.profile != pbapp::VisualProfile::RemoteVisualResilient)) ||
-        (options.diagnosticCaptureOnly && (options.replayOutputPath.empty() || !options.remoteChannel ||
-            options.profile != pbapp::VisualProfile::RemoteVisualResilient)) ||
+        (!options.replayOutputPath.empty() && !productionReplay && !captureOnlyReplay) ||
+        (options.diagnosticCaptureOnly && !captureOnlyReplay) ||
         (options.replayEvidenceVisualProfileId && !options.diagnosticCaptureOnly) ||
-        (options.replayMaximumFramesPerSecond != 0 && !options.diagnosticCaptureOnly))
+        (options.replayMaximumFramesPerSecond != 0 && !options.diagnosticCaptureOnly && !productionReplay))
     {
         return false;
     }
@@ -492,13 +499,15 @@ struct Options
 void Usage()
 {
     std::cerr << "usage: PixelBridgeDecoder --headless-receive --output-dir DIR --backend wgc|dxgi "
-                 "--profile direct|shape|remote --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..600 "
+                 "--profile direct|shape|remote|remote-lf4 --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..600 "
+                 "[--no-progress-seconds 1..timeout] "
                  "[--protected-monitor DEVICE --experiment-monitor DEVICE] "
-                 "[--replay-output NEW_PATH --diagnostic-capture-only --replay-evidence-profile direct|shape|lf4 "
-                 "--replay-frames 1..2048 --replay-max-mib 16..16384 --replay-sample-fps 1..60] "
+                 "[--replay-output NEW_PATH --replay-frames 1..2048 --replay-max-mib 16..16384 "
+                 "[--replay-sample-fps 1..60] [--diagnostic-capture-only --replay-evidence-profile direct|shape|lf4]] "
                  "[--run-id 32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH]\n";
     std::cerr << "       PixelBridgeDecoder --headless-replay --replay-input PATH --output-dir DIR "
-                 "[--remote-provider NAME] [--remote-metadata PATH] [--profile remote] [--timeout 1..600] "
+                 "[--remote-provider NAME] [--remote-metadata PATH] [--profile direct|shape|remote|remote-lf4] [--timeout 1..600] "
+                 "[--no-progress-seconds 1..timeout] "
                  "[--replay-frames 1..2048 --replay-max-mib 16..16384] "
                  "[--run-id MATCHING_32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH]\n";
 }
@@ -560,6 +569,12 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
             region.physicalRect.top;
         const bool strictGeometry = roiWidth == pbapp::phase1CanvasWidth &&
             roiHeight == pbapp::phase1CanvasHeight && region.rotation == DXGI_MODE_ROTATION_IDENTITY;
+        const bool lowFpsGeometry = options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
+            roiWidth >= static_cast<std::int64_t>(pbapp::phase1CanvasWidth / 2) &&
+            roiWidth <= static_cast<std::int64_t>(pbapp::phase1CanvasWidth * 2) &&
+            roiHeight >= static_cast<std::int64_t>(pbapp::phase1CanvasHeight / 2) &&
+            roiHeight <= static_cast<std::int64_t>(pbapp::phase1CanvasHeight * 2) &&
+            region.rotation == DXGI_MODE_ROTATION_IDENTITY;
         config.remoteMetadata.selectedRoiPhysicalRect = pbapp::MetadataPhysicalRect{region.physicalRect.left,
             region.physicalRect.top, region.physicalRect.right, region.physicalRect.bottom};
         config.remoteMetadata.estimatedScaleX = static_cast<double>(roiWidth) / pbapp::phase1CanvasWidth;
@@ -569,7 +584,8 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         config.remoteMetadata.geometryStatus = options.diagnosticCaptureOnly ?
             strictGeometry ? "DiagnosticCaptureOnlyStrictROI; no demod/decode/publish" :
                 "DiagnosticOnlyIncompatibleROI; no resampling/decode/publish" :
-            strictGeometry ? "CompatibleStrictPhysical1:1" : "IncompatiblePhysicalROI; no resampling permitted";
+            lowFpsGeometry ? "BoundedRemoteLf4ROI; continuous locator is authoritative" :
+                strictGeometry ? "CompatibleStrictPhysical1:1" : "IncompatiblePhysicalROI; no resampling permitted";
         config.remoteMetadata.geometryProvenance = pbapp::MetadataProvenance::PixelBridgeObserved;
     }
     if (options.remoteChannel)
@@ -597,7 +613,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         if (options.offlineReplay)
         {
             config.remoteMetadata.geometryStatus =
-                "Sealed Replay v2 capture records require strict 1920x1080, 1:1, identity-rotation validation";
+                "Sealed Replay v2 records are validated before the selected production profile consumes their ROI";
             config.remoteMetadata.geometryProvenance = pbapp::MetadataProvenance::PixelBridgeObserved;
         }
         else
@@ -621,8 +637,18 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
             config.monitorSafety = safetySelection;
             try
             {
-                config.remoteMetadata.protectedMonitorIdentity = WideToUtf8(safetySelection.protectedMonitor.deviceName);
-                config.remoteMetadata.experimentMonitorIdentity = WideToUtf8(safetySelection.experimentMonitor.deviceName);
+                const std::string protectedIdentity = WideToUtf8(safetySelection.protectedMonitor.deviceName);
+                const std::string experimentIdentity = WideToUtf8(safetySelection.experimentMonitor.deviceName);
+                if ((!config.remoteMetadata.protectedMonitorIdentity.empty() &&
+                     config.remoteMetadata.protectedMonitorIdentity != protectedIdentity) ||
+                    (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
+                     config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
+                {
+                    std::cerr << "monitor identities conflict with RemoteVisual metadata preset\n";
+                    return 2;
+                }
+                config.remoteMetadata.protectedMonitorIdentity = protectedIdentity;
+                config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
             }
             catch (const std::exception& exception)
             {
@@ -644,6 +670,10 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         return 2;
     }
     const auto commandStarted = std::chrono::steady_clock::now();
+    auto lastAuthoritativeProgress = commandStarted;
+    bool lastDescriptorKnown = false;
+    std::uint64_t lastTemporallyAdmittedTransportBlocks = 0;
+    std::uint64_t lastVerifiedRawBytes = 0;
     std::unique_ptr<pbapp::RunEvidenceJournal> journal;
     pbapp::RunJournalSnapshot journalSnapshot;
     bool journalCreateAttempted = false;
@@ -667,13 +697,33 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
             journalSnapshot = journal->AppendSample(elapsedMilliseconds,
                 pbapp::BuildDecoderJournalRecord(UnixNowMilliseconds(), snapshot));
         }
-        if (snapshot.state == pbapp::DecoderState::Completed || snapshot.state == pbapp::DecoderState::Failed ||
-            snapshot.state == pbapp::DecoderState::Stopped)
+        const bool replayTailPending = snapshot.state == pbapp::DecoderState::Completed &&
+            !options.replayOutputPath.empty() && snapshot.replayEvidenceValid &&
+            snapshot.replayError.empty() && !snapshot.replayFinalized;
+        if ((!lastDescriptorKnown && snapshot.descriptorKnown) ||
+            snapshot.temporallyAdmittedTransportBlocks > lastTemporallyAdmittedTransportBlocks ||
+            snapshot.verifiedRawBytes > lastVerifiedRawBytes)
+        {
+            lastAuthoritativeProgress = std::chrono::steady_clock::now();
+        }
+        lastDescriptorKnown = snapshot.descriptorKnown;
+        lastTemporallyAdmittedTransportBlocks = snapshot.temporallyAdmittedTransportBlocks;
+        lastVerifiedRawBytes = snapshot.verifiedRawBytes;
+        if ((snapshot.state == pbapp::DecoderState::Completed && !replayTailPending) ||
+            snapshot.state == pbapp::DecoderState::Failed || snapshot.state == pbapp::DecoderState::Stopped)
         {
             break;
         }
-        if (std::chrono::steady_clock::now() >= deadline)
+        if (!replayTailPending && std::chrono::steady_clock::now() >= deadline)
         {
+            runtime.RequestStop();
+            break;
+        }
+        if (!replayTailPending && options.noProgressSeconds != 0 &&
+            std::chrono::steady_clock::now() - lastAuthoritativeProgress >=
+                std::chrono::seconds(options.noProgressSeconds))
+        {
+            std::cerr << "Decoder stopped after the configured interval without descriptor, temporal admission, or verified-byte progress\n";
             runtime.RequestStop();
             break;
         }
@@ -715,6 +765,10 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         return snapshot.state == pbapp::DecoderState::Stopped && snapshot.replayCaptureOnly &&
             snapshot.replayFinalized && snapshot.replayEvidenceValid && snapshot.replayWrittenFrames != 0 ? 0 : 1;
     }
+    const bool replayContractSatisfied = options.replayOutputPath.empty() && options.replayInputPath.empty() ? true :
+        snapshot.replayEvidenceValid && snapshot.replayFinalized && snapshot.replayFileBytes != 0 &&
+            (options.replayInputPath.empty() ? snapshot.replayWrittenFrames != 0 :
+                snapshot.replayOfflineCaptureFrames != 0);
     return snapshot.state == pbapp::DecoderState::Completed && snapshot.wholeFileDigestVerified &&
-        snapshot.finalPublishSucceeded ? 0 : 1;
+        snapshot.finalPublishSucceeded && replayContractSatisfied ? 0 : 1;
 }

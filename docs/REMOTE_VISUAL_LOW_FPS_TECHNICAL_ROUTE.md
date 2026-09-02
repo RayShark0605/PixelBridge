@@ -1,6 +1,6 @@
 # PixelBridge RemoteVisual 低刷新率高密度传输技术路线
 
-状态：**2026-09-01 本轮在 Step 09 停止；Step 01..09 已全部完成，Step 10 保持 `PENDING`。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 选择的 `lf4-default/PiecewiseLookup` 已在 Step 08 与 LF4 raster/mapping/codebook/Bootstrap/4 个 accepted Transport 一起冻结为独立可重建 Golden；Step 09 已把 LF4 四-codeword raster 接入隐藏的 production Encoder candidate，并以 immutable D3D11 source、1..5 Hz 完整替换和显示许可驱动的重复 Present 关闭发送端 Gate。Step 09 后置 120 秒动态 RDP pilot 又证明 production EncoderRuntime raster 可经真实 AweSun/WGC 链路进入有界 Replay，并由 receiver-only Inspector 两次确定性解出 1428 个 Control copy 与 1496 个 Transport block，FEC/CRC/identity failure 全为 0。LF4 仍未接入 GUI/CLI 或 production Decoder admission；这不是 Certified Profile，也不是 Step 20 双机文件传输 field certification。**
+状态：**2026-09-02 Step 01..19 已全部完成，Step 20 保留真实双机文件级人工硬门禁。Step 02 已由 Windows Remote Desktop 上 Direct/Shape/LF4 各一组真实 receiver-only Replay 关闭；Step 07 选择的 `lf4-default/PiecewiseLookup` 已在 Step 08 与 LF4 raster/mapping/codebook/Bootstrap/4 个 accepted Transport 一起冻结为独立可重建 Golden；Step 09 已把 LF4 四-codeword raster 接入隐藏的 production Encoder candidate，并以 immutable D3D11 source、1..5 Hz 完整替换和显示许可驱动的重复 Present 关闭发送端 Gate。Step 09 后置 120 秒动态 RDP pilot 又证明 production EncoderRuntime raster 可经真实 AweSun/WGC 链路进入有界 Replay，并由 receiver-only Inspector 两次确定性解出 1428 个 Control copy 与 1496 个 Transport block，FEC/CRC/identity failure 全为 0。Step 10 增加独立 experimental D3D11 LF4 direct-texture demod后，Step 11 又在 WARP、AMD Radeon与当前枚举出的三个独立 NVIDIA RTX 5090 D LUID上关闭 accepted-Transport parity matrix；Step 12 把同一路径接入 `CaptureDemodulator`与WGC/DXGI共用的`CaptureNormalize` lifetime。Step 13 现已在GPU/Receiver之间关闭 `(CaptureEpoch, SessionTag, FrameSequence, canonical Bootstrap)` duplicate/reorder/gap与bounded refinement：32帧duplicate burst不增加GPU submission、FER、accepted Transport或队列HWM。Step 14 随后让temporally admitted四-codeword进入现有production Receiver/Outer；DirectRepeat与Wirehair V2均经过WholeFileDigest与安全发布恢复external byte-exact文件，raw 6 blocks中只有4个unique slots被admit。Step 15又保持Replay v2旧基础布局并在保留区增加presence-versioned production result，让6-frame LF4 receiver-only Replay在live/offline两次production Decoder中逐项一致、两次WholeFileDigest与安全发布external byte exact；Step 02真实Direct/Shape/LF4各8帧也由同一路径复现无Control descriptor时的Stopped/no-publish分类。Step 16又将冻结容量、Encoder generation、Present、capture/unique、FEC、temporal admission与最终verified goodput拆成权威分母，并让严格merger封印两端exact report后create-only生成JSON/Markdown/CSV。Step 17现已用共享profile catalog向GUI/CLI显式公开独立`remote-lf4`，以Protected/Experiment monitor双重authority、每秒topology watchdog、no-activate右屏Gate和实际WGC像素闭环关闭公开产品入口；最终闭环经过production Receiver、WholeFileDigest与safe publish恢复external byte-exact文件。Step 18又用同一Both-role便携包、完整依赖/SBOM/license清单、CSPRNG source set、共享RunId和双端environment/deployment manifest关闭可反查部署identity。Step 19随后以冻结8 MiB RAW执行WGC/DXGI × Direct/Shape同提交回归：四组WholeFileDigest/publish/external hash全部PASS，goodput相对基线分别提升10.86%、10.01%、19.46%和21.22%，完整Release CTest为200/200 PASS。Step 20期间又在Computer B单物理屏幕条件下按用户选择完成非Gate真实远控静态LF4诊断：首轮匹配sender时段内的8帧exact-ROI WGC Replay经边界舍入修复后确定性得到8/8 Bootstrap、8/8 modulation、8/8 Transport与32 accepted blocks，0 FEC/CRC/identity failure；同一不可变Replay在旧实现中稳定为8/8 Bootstrap、0/8 modulation。随后v2独立sender run实时回显READY，A端首次exact ROI捕获为7/8全链接受加1个MarkersNotFound安全擦除，相同参数bounded repeat为3/3全链接受；两轮共40 accepted blocks、0 FEC/CRC/identity failure，所有接受帧geometry均为exact (0,0,1,1)，不再依赖1 px margin。receiver-only falseAcceptedCodewords仍为Unavailable。该结果只关闭诊断像素链并修复、复验exact-canvas locator边界，不包含文件Receiver、WholeFileDigest或发布。复验后的deployment/pilot evidence contracts为2/2 PASS，最终Release build exit 0、完整CTest 201/201 PASS。Computer B单屏production safety gate仍正确阻止正式运行；provider matrix、真实双机goodput和file Gate仍待后续步骤。这不是Certified Profile，也不是Step 20双机文件传输field certification。**
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
@@ -26,7 +26,7 @@
    - 只有 field replay 证明色度或更密 shape 在特定链路可稳定保留时，才另建 `LF5/LF6` 新 profile；不能在同一 Session 中改变 codebook；
    - GPU production path 必须直接在 PB-owned D3D11 texture 上按连续几何采样，不允许为了赶进度加入隐式 GPU→CPU→GPU fast-path round trip。
 
-当前实现包含三条严格分离的边界：CPU reference/simulator 提供 scale/freshness/FEC/Transport 真值；Step 09 的 production Encoder-only candidate 负责完整 LF4 raster、immutable D3D11 source replacement 和 repeat Present；Step 09 后置 field pilot 只用 WGC diagnostic capture-only Replay 与离线 CPU Inspector 验证动态远控像素链路。第三条边界不是 product Decoder，也没有 production D3D11 demod。LF4 仍未加入 GUI/CLI profile 列表；既有 `RemoteVisualResilient` wire identity、GUI token 与 Decoder 路径保持不变。这样可以在不平行创造第二套协议、不偷换旧 token 的前提下先关闭发送端和第一条动态 field primitive，再由 Step 10/11 关闭 GPU 解调与 truth parity。
+当前实现保持严格分离的执行边界：CPU reference/simulator提供scale/freshness/FEC/Transport真值；Step 09的production Encoder-only candidate负责完整LF4 raster、immutable D3D11 source replacement和repeat Present；Step 09后置field pilot只用WGC diagnostic capture-only Replay与离线CPU Inspector验证动态远控像素链路；Step 10的D3D11 API从PB-owned texture按连续geometry生成compact metrics/freshness，并经现有FEC/Transport对齐CPU accepted blocks；Step 11让同一路径在WARP与全部当前可用AMD/NVIDIA adapter上运行统一corpus；Step 12再将它作为现有`CaptureDemodulator`的两阶段LF4分支接入WGC/DXGI共用的CaptureNormalize owner/lifetime，而没有建立另一套capture或解调实现；Step 13在该single path内完成temporal admission，Step 14仅把admitted indices接到原有`ReceiverPipeline`/`ReceiverIngress`/Outer/PBStorage，不创建LF4专用Receiver；Step 15再让Replay v2 live/offline共享这条production path，旧v2缺少detail时保持presence-aware兼容。Step 17现已让GUI与两端CLI共享同一个只读profile catalog并显式公开独立`remote-lf4`；既有`RemoteVisualResilient` enum/token/wire identity与默认选择保持不变。live Encoder/Decoder都要求Protected/Experiment monitor authority并周期性重验证，public WGC像素闭环已进入同一production Receiver/Outer/WholeFileDigest/publish路径；Step 18现已冻结Both-role便携包、source set、shared metadata、双端environment与deployment identity；Step 19又以同一tested-source包关闭冻结LocalDesktop四组合回归，保留用户左屏并发工作事实并验证最终文件、goodput、CPU/GPU与有界HWM。Step 20必须在真实Computer B/A远控像素链上执行，不能由本地闭环替代。
 
 ---
 
@@ -312,10 +312,10 @@ File
 
 ### 9.2 Step 01 当时明确未完成的项目
 
-本小节保留初始 CPU/reference implementation checkpoint 的历史边界；当前权威状态以第 11 节步骤表和第 15～18 节完成证据为准。
+本小节保留初始 CPU/reference implementation checkpoint 的历史边界；当前权威状态以第 11 节步骤表和第 15～20 节完成证据为准。
 
 - LF4 当时尚未进入 `VisualProfile` product enum/GUI；Step 09 后只新增了 enum 尾部的隐藏 Encoder-only candidate，GUI/CLI 仍未暴露且 Decoder validation 仍拒绝；
-- D3D11 scaled Walsh demod shader 未实现；当前 production RemoteVisual shader 仍是旧 1-bit strict-1:1 path；
+- 当时 D3D11 scaled Walsh demod shader 尚未实现；Step 10 后已有独立 experimental LF4 API，但当前 product `CaptureDemodulator`/Decoder 路径仍只使用既有 profiles，旧 1-bit strict-1:1 RemoteVisual shader未被重解释；
 - 当时未运行真实远控双机、WGC/DXGI 或右侧屏幕 native field Gate；Step 02 后已有一组 Windows Remote Desktop receiver-only Replay，Step 09 后已有右屏 D3D11 sender native Gate，但仍没有 LF4 live production Decoder field Gate；
 - 未证明 1/2/5 Hz 的真实 `VerifiedEncodedGoodput`；
 - 当时未建立 LF4 Golden；Step 08 已冻结独立 manifest/raster/accepted Transport compatibility Gate，但仍不是 Certified Profile；
@@ -381,6 +381,8 @@ File
 - WGC 主矩阵，DXGI 代表性复核；
 - 每组保存 receiver-only Replay v2、两端 report、环境 fingerprint、外部 size/SHA-256。
 
+provider 名称和产品 UI 模式只是现场矩阵的 `NonDecodingOperatorMetadata`，用于区分外部链路条件；Decoder 不得根据这些标签选择阈值或改变任何接受语义。它只能从实际捕获的 ROI pixels、capture timing、固定 PixelBridge profile/backend 中恢复数据，最终仍由 FEC、Receiver、WholeFileDigest 和安全发布语义决定结果。
+
 成功判据不是“画面看起来清楚”，而是：
 
 ```text
@@ -444,16 +446,16 @@ logical FPS <= 5
 | 07 | Soft metric 标定、阈值选择与 false-confidence Gate | DONE | ★★★★★ | ★★★★★ | Validation-only selection、Holdout/External 改善、0 false accepted Transport/control/output |
 | 08 | LF4 Golden/manifest 冻结与兼容性声明 | DONE | ★★★☆☆ | ★★★★★ | 独立 generator/check、canonical raster/hash、4 个 accepted-block manifest |
 | 09 | LF4 D3D11 Encoder raster/immutable texture 接入 | DONE | ★★★★☆ | ★★★★☆ | CPU/GPU source BLAKE3、WARP/hardware immutable/repeat Gate、production carousel/dwell Gate |
-| 10 | LF4 D3D11 scaled Walsh demod shader | PENDING | ★★★★★ | ★★★★★ | bounded metrics/freshness GPU output、无 ROI readback |
-| 11 | CPU/WARP/hardware GPU truth parity | PENDING | ★★★★☆ | ★★★★★ | accepted Transport equivalence、adapter matrix |
-| 12 | CaptureNormalize、geometry、epoch 与 D3D lifetime 收口 | PENDING | ★★★★★ | ★★★★★ | WGC/DXGI epoch/recreate/stale-drain tests |
-| 13 | duplicate/gap/reorder/stall 与 bounded queue 收口 | PARTIAL | ★★★★☆ | ★★★★★ | temporal corpus、HWM、无重复 Outer admission |
-| 14 | 四 codeword Transport/Outer/Receiver production admission | PARTIAL | ★★★★☆ | ★★★★★ | 同帧绑定、unique/duplicate/conflict、digest |
-| 15 | Replay v2 的 LF4 live/offline 一致性 | PARTIAL | ★★★★☆ | ★★★★★ | receiver-only replay、live/offline metric consistency |
-| 16 | LF4 telemetry、RunReport.2 与严格 merger | PARTIAL | ★★★☆☆ | ★★★★★ | authoritative denominators、双端 combined report |
-| 17 | GUI/CLI/profile 暴露与屏幕安全 preflight | PARTIAL | ★★★☆☆ | ★★★★☆ | 1..5 Hz fail-closed、no-activate、right-monitor gate |
-| 18 | 可复现便携包、source set 与环境 fingerprint | PARTIAL | ★★☆☆☆ | ★★★★☆ | package manifest、双端 EXE/DLL hashes |
-| 19 | 同提交 LocalDesktop 回归 | PENDING | ★★★☆☆ | ★★★★★ | WGC/DXGI × Direct/Shape、goodput regression ≤10% |
+| 10 | LF4 D3D11 scaled Walsh demod shader | DONE | ★★★★★ | ★★★★★ | direct PB-owned texture、261,040-byte compact readback、WARP exact/scale/blur/stale、FEC/Transport accepted-block parity |
+| 11 | CPU/WARP/hardware GPU truth parity | DONE | ★★★★☆ | ★★★★★ | WARP + 4 hardware LUID、25 frame/100 block manifests、wrong-LUID/device-recreate/GPU timestamp Gate |
+| 12 | CaptureNormalize、geometry、epoch 与 D3D lifetime 收口 | DONE | ★★★★★ | ★★★★★ | same-ROI staged completion、WGC/DXGI rotation、两epoch recreate、exception/second-continuation与lease/HWM归零 |
+| 13 | duplicate/gap/reorder/stall 与 bounded queue 收口 | DONE | ★★★★☆ | ★★★★★ | temporal corpus、HWM、无重复 Outer admission |
+| 14 | 四 codeword Transport/Outer/Receiver production admission | DONE | ★★★★☆ | ★★★★★ | 同帧绑定、unique/duplicate/conflict、digest |
+| 15 | Replay v2 的 LF4 live/offline 一致性 | DONE | ★★★★☆ | ★★★★★ | receiver-only replay、live/offline metric consistency、三类真实Replay同分类 |
+| 16 | LF4 telemetry、RunReport.2 与严格 merger | DONE | ★★★☆☆ | ★★★★★ | 单 owner authoritative denominators、双端 exact artifact seals、create-only JSON/Markdown/CSV |
+| 17 | GUI/CLI/profile 暴露与屏幕安全 preflight | DONE | ★★★☆☆ | ★★★★☆ | shared catalog、89-case binding Gate、no-activate右屏Gate、WGC pixel-only full publish |
+| 18 | 可复现便携包、source set 与环境 fingerprint | DONE | ★★☆☆☆ | ★★★★☆ | Both-role package/SBOM、source seal、双端 environment、RunId deployment manifest |
+| 19 | 同提交 LocalDesktop 回归 | DONE | ★★★☆☆ | ★★★★★ | 四组合publish/hash PASS、goodput无回退、independent seal verifier、Release 200/200 |
 | 20 | 真实双机 LF4 pilot | MANUAL-GATE | ★★★★☆ | ★★★★★ | 1 MiB、1/2/5 Hz、Replay、external SHA-256 |
 | 21 | 正式 provider-generic RemoteVisual 矩阵 | MANUAL-GATE | ★★★★★ | ★★★★★ | mode/scale/FPS/backend matrix 与 failure classification |
 | 22 | 重复完整文件恢复验收 | MANUAL-GATE | ★★★★☆ | ★★★★★ | 1 MiB 3/3、8 MiB 2/2、ZIP 1/1 |
@@ -551,93 +553,93 @@ logical FPS <= 5
 
 ### 11.12 Step 10：LF4 D3D11 scaled Walsh demod shader
 
-- **状态**：`PENDING`；**难度**：★★★★★；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★★；**重要性**：★★★★★。
 - **目标**：直接从 PB-owned capture texture 按连续 geometry 解调 64,800 soft metrics 和 freshness summary，不回读整张 ROI。
 - **实施要点**：constant buffer 包含 origin/scale/pitch/bounds/policy；one-owner immediate context；bounded slot/ring；GPU 输出仅 compact metrics/counters；shader 与 CPU 使用同一 codebook/mapping constants。
 - **注意事项**：实际 texture pitch/format 必须显式处理；Flush 不是 completion；source lease 在 GPU copy 完成前不能归还；旧 strict-1:1 shader 不得静默解释 LF4 layout。
 - **验收证据**：exact/scale/blur/stale fixtures 的 WARP tests；out-of-bounds/NaN/epoch stale fail closed；无 ROI-sized GPU→CPU readback。
-- **完成出口**：同一 frame 的 GPU metrics 经现有 FEC/Transport 得到与 CPU reference 相同的 accepted blocks。
+- **完成出口**：已关闭。新增独立 `SubmitRemoteVisualLowFps`，普通 `Submit` 明确拒绝 LF4，旧 strict shader 不重解释新 layout。三个 LF4 compute pass 直接采样 PB-owned BGRA8 texture；CPU-built immutable mapping/codebook 和 per-frame logical binding避免复制第二套 interleave；固定回读 64,800 metrics + 16 calibration + 99 freshness/global entries，共 261,040 bytes，`rawPixelReadbackBytes=0`。WARP exact、独立 Area scale、独立 Gaussian blur、previous-sequence stale region、NaN/OOB/policy/work-budget、2-slot ring和 epoch cancellation全部通过；compact metrics 经冻结 candidate 与现有 QC-LDPC/Transport得到与 CPU reference byte-identical 的 accepted blocks。Release、完整 demod regression、CPU `PBRemoteVisualTests` 与 ASan通过。完整实现、命令、资源数学和非认证边界见 `REMOTE_VISUAL_STEP10_D3D11_DEMOD.md` 与第 19 节。
 
 ### 11.13 Step 11：CPU/WARP/hardware GPU truth parity
 
-- **状态**：`PENDING`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：证明 LF4 production GPU path 在跨 adapter/driver 环境下保持协议接受结果一致。
 - **实施要点**：比较 canonical Bootstrap、FrameSequence、FEC disposition、Transport bytes、CRC/identity/padding，而不是 raw float；覆盖 WARP、NVIDIA、AMD 可用 adapter。
 - **注意事项**：硬件不可用只能标记 unavailable，不能由 WARP 代替；adapter LUID 不匹配时不得隐式跨 GPU copy；量化容差必须在 FEC truth boundary 验证。
 - **验收证据**：adapter fingerprint、accepted block manifest、metric summary、GPU timestamps、device-recreate case。
-- **完成出口**：所有可用 adapter 对 corpus 的 accepted Transport 集合完全一致，差异 case 必须 fail closed 而非降级接受。
+- **完成出口**：已关闭。隐藏 `PBRemoteVisualGpuParityTests` 在 WARP、AMD Radeon(TM) Graphics与当前 DXGI枚举出的三个独立 RTX 5090 D LUID上运行 exact、independent Area scale、independent Gaussian blur与 stale-region四场景；每个 backend销毁并重建设备后再跑 exact。generation 0/recreate共25个 GPU frame、100个 accepted Transport block manifest entries全部与 CPU reference byte-identical，FEC/CRC/identity/false accept均为0；10次 wrong-LUID submission均在计数/输出变化前拒绝。25/25 GPU timestamp有效，每帧 compact readback=261,040 bytes、raw pixel readback=0。create-only wrapper独立校验42条 JSON记录并封存 hash；完整矩阵、命令与限制见 `REMOTE_VISUAL_STEP11_GPU_PARITY.md`和第20节。
 
 ### 11.14 Step 12：CaptureNormalize、geometry、epoch 与 lifetime
 
-- **状态**：`PENDING`；**难度**：★★★★★；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★★；**重要性**：★★★★★。
 - **目标**：把 WGC/DXGI ROI、format、ContentSize、monitor/DPI/rotation 和 CaptureEpoch 正确绑定到 LF4 geometry/demod work。
 - **实施要点**：单显示器 physical ROI；WGC lease copy 到 PB texture；epoch change drain；topology fingerprint 变化停止 run；scale/letterbox/crop status 进入 telemetry。
 - **注意事项**：不能访问归还后的 WGC surface；不能跨 epoch combine；未知 geometry 只能 diagnostic replay，不能 publish；不捕获 ProtectedMonitor。
 - **验收证据**：resize/mode/device loss/recreate、epoch rollover、stale completion、DXGI/WGC normalization tests；lease/HWM 回到零。
-- **完成出口**：任何 geometry/lifetime 变化要么安全 rebuild 新 epoch，要么明确终止，不出现 use-after-lease、跨 epoch admission 或无界 backlog。
+- **完成出口**：已关闭。`CaptureConsumerCompletion`允许首个completion callback在owner immediate context上提交恰好一个GPU continuation；runtime保留exact PB-owned ROI并记录第二个query/fence marker，取消始终隐藏texture/context，post-submit exception按可能已有GPU work保守退休，第二continuation有界拒绝并terminal cancel。LF4 `CaptureDemodulator`先从同一ROI staging解析bound Bootstrap/continuous geometry，再在原texture lease内提交Step-10 GPU demod；cropped/unknown geometry只生成`TelemetryOnly/Rejected`，wrong adapter在allocation/admission前拒绝。WGC upright与DXGI raw ROTATE90 facade均通过完整WARP pipeline、epoch 1→2 recreate与CPU accepted-Transport逐字节比对：每epoch 4/4，continuation 2/2/0，最终lease/ROI/pending/queue为0。strict profiles与optional diagnostic fanout保持向后兼容；Release与ASan affected 9-suite均9/9 PASS。完整contract、资源数学、测试和truth boundary见`REMOTE_VISUAL_STEP12_CAPTURE_LIFETIME.md`与第21节。
 
 ### 11.15 Step 13：duplicate/gap/reorder/stall 与 bounded queue
 
-- **状态**：`PARTIAL`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：使远控重复帧、variable cadence、局部停更和恢复跳帧只影响 goodput，不破坏身份和资源上界。
 - **实施要点**：`(CaptureEpoch, FrameSequence)` 去重；reordered 不 admission；gap/skipped 记账；1 s capture/visual stall；capture/demod/result queues 丢 stale 而不积累延迟。
 - **注意事项**：像素相同不一定等价于 Bootstrap identity；同 FrameSequence 失败 observation 是否重试要由 bounded policy 明确；duplicate 不累计 BER/FER/verified bytes。
 - **验收证据**：deterministic temporal corpus；HWM≤配置容量；恢复后继续接受新唯一帧；shutdown drain 完成。
-- **完成出口**：长时间 duplicate/stall 不增加 Outer unique count或内存，恢复后 Receiver 可继续收敛。
+- **完成出口**：已关闭。共享fixed-state `VisualIdentityTracker`以epoch/session/sequence区分unique、duplicate、reorder与gap；LF4 `CaptureDemodulator`再绑定canonical Bootstrap，只保存一个4-slot temporal frame，默认允许一次、hard max四次duplicate refinement。terminal duplicate/reorder不提交GPU；refinement只admit此前缺失slot，旧slot冲突fail closed；duplicate不增加FER/verified frame。44-observation WARP corpus得到6 unique、37 duplicate、1 reorder、1 gap/2 skipped，仅8次GPU submission与20个admitted blocks；32帧burst的result queue HWM为1，恢复新unique和新epoch均成功。1秒capture/visual stall、queue hard bound、epoch stale-drop和shutdown drain保持闭合。完整状态机、资源与验证见`REMOTE_VISUAL_STEP13_TEMPORAL_ADMISSION.md`和第22节。
 
 ### 11.16 Step 14：四 codeword Transport/Outer/Receiver production admission
 
-- **状态**：`PARTIAL`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：把 LF4 同一视觉帧的四个 codeword 作为四个独立、严格验证的 Transport candidates 送入现有 Receiver，而不建立新协议。
 - **实施要点**：同 captured frame/Bootstrap/FrameSequence binding；逐 codeword FEC/padding/CRC/identity；Outer unique/duplicate/conflict；资源拒绝可观测。
 - **注意事项**：四个 codeword 不要求同时成功，但不能来自不同 FrameSequence；same ID conflicting payload 必须 fail closed；duplicate 不增加 progress。
 - **验收证据**：0..4 codeword success matrix、same-frame binding、conflict、orphan cache、resource limit、DirectRepeat/Wirehair tests。
-- **完成出口**：production Receiver 的 verified bytes 只由唯一且完整验证的 encoded mutation 增加，最终仍需 WholeFileDigest。
+- **完成出口**：已关闭。production `ReceiverPipeline`只遍历temporal admitted indices，独立复验每个Transport并调用现有`ReceiverIngress`；LF4四份相同Control Robust copy折叠为一次mutation，mixed/conflicting copy fail closed。headless hidden probe把首个data frame拆为Unique slots 0/1和同sequence refinement slots 2/3，并在Session Control后注入32个suppressed duplicate：两种Outer模式均只从raw 6 blocks admit 4 slots。DirectRepeat 1-byte与Wirehair V2 4096-byte文件分别以Outer unique 1/4达到Completed、WholeFileDigest PASS、publish PASS和external bytes exact；duplicate不增加Outer unique/verified bytes。完整contract、Receiver negatives和验证见`REMOTE_VISUAL_STEP14_RECEIVER_ADMISSION.md`和第23节。
 
 ### 11.17 Step 15：Replay v2 LF4 live/offline 一致性
 
-- **状态**：`PARTIAL`；**难度**：★★★★☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★★☆；**重要性**：★★★★★。
 - **目标**：让每次真实 LF4 失败都能在没有远控软件的情况下重放 Bootstrap、GPU/CPU demod、FEC 和 Receiver。
 - **实施要点**：presence flags 表示 sender truth 缺失；记录 profile/layout、geometry、CaptureEpoch、observation ID、ROI bytes、live result；offline mode 走同一 production decoder。
 - **注意事项**：recorder queue 满只丢样本不阻塞 demod；默认 256 frames/2 GiB，硬上限 2048/16 GiB；`.partial` 和 no-overwrite；只保存 selected ROI。
 - **验收证据**：v1 compatibility、v2 receiver-only、corrupt/truncated/oversize/checksum/no-overwrite、live/offline metric consistency。
-- **完成出口**：至少 Direct/Shape/LF4 各一个真实 dataset 可离线复现其成功或相同失败分类。
+- **完成出口**：已关闭。Replay v2保持旧基础layout与历史reader语义，在reserved header中用显式presence/detail-version记录production layout、continuous geometry、temporal/result、FEC/CRC/identity、raw/admitted carriers、metric/freshness、GPU timing presence和Receiver结果；sender truth缺失继续是unavailable而非0。实际bounded async recorder生成6-frame receiver-only LF4 Replay，2个duplicate suppressed、drop=0；live/offline同一`CaptureDemodulator`/`ReceiverPipeline`得到6/6 observation、0 mismatch、4 admitted Transport、Outer unique 1，并分别WholeFileDigest PASS、safe publish PASS、external 1-byte exact。Step 02真实Direct/Shape/LF4各8帧又分别得到8 Bootstrap、7 duplicate、42/32/4 admitted Transport、0 FEC/CRC/identity，并一致停在descriptor absent/no publish。v1/v2、corrupt/truncated/oversize/checksum/no-overwrite与queue bounds继续通过。完整contract、结果与命令见`REMOTE_VISUAL_STEP15_REPLAY_PRODUCTION.md`和第24节。
 
 ### 11.18 Step 16：LF4 telemetry、RunReport.2 与 merger
 
-- **状态**：`PARTIAL`；**难度**：★★★☆☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★☆☆；**重要性**：★★★★★。
 - **目标**：使 1..5 Hz 下的容量、重复 Present、unique visual、四 codeword 和 verified goodput 各有正确分母。
 - **实施要点**：增加 LF4 symbol unreliable、fresh/stale region、erased metrics、per-codeword FEC、accepted Transport、Outer unique；sender receiver metrics 继续为 null；严格 merge profile/session/source/time。
 - **注意事项**：0 不代表 unavailable；PreFecBER 没 truth 时必须 null；ceiling/generation/presentation/verified goodput 不得混用；journal failure 使 evidence invalid 但不改 acceptance。
 - **验收证据**：unit tests 覆盖 denominator、null semantics、duplicate、time/provider/profile mismatch；combined JSON/Markdown/CSV seal。
-- **完成出口**：成功报告必须同时证明 Decoder Completed、WholeFileDigest、publish、external length/SHA-256，并能追到两端 artifacts。
+- **完成出口**：已关闭。`PBTelemetry` 成为 LF4 signal/FEC 分母的单 owner：每个有效 metric observation 固定贡献 64,800 metrics、16,723 symbols 与 77 freshness regions，unique FEC frame 固定评估 4 个 codeword，raw FEC accepted 与 Receiver-bound temporal admission 分列；无 sender truth 的 PreFEC BER 为 `null`，非零分母上的零错误为数值 0。Encoder `capacityModel` 分列 64,800 raw bits、5,400 Inner-FEC bytes、5,256 Transport payload bytes，以及 nullable generation rate；Decoder report 冻结 profile identity 并记录 signal/FEC/temporal/Outer/verified truth。严格 merger 重新读取并封印两端 exact report artifacts，核对 Session/profile/source/provider/time 与全部 denominator，仅在 Completed、WholeFileDigest、publish、external hash/length、journals、identity、零 conflict 和两端 seals 同时成立时允许 success，并 create-only 发布单次 JSON/Markdown/CSV。Release/ASan telemetry/application Gate、真实 Step 02 Replay 条件 Gate及 23 项 merger tests 均通过；完整 schema、命令与限制见 `REMOTE_VISUAL_STEP16_TELEMETRY_REPORT.md` 和第 25 节。
 
 ### 11.19 Step 17：GUI/CLI/profile 暴露与屏幕安全
 
-- **状态**：`PARTIAL`；**难度**：★★★☆☆；**重要性**：★★★★☆。
+- **状态**：`DONE`；**难度**：★★★☆☆；**重要性**：★★★★☆。
 - **目标**：只有 Gate A-C 通过后才把 LF4 加入 product enum/GUI/CLI，并让非法 FPS/geometry/monitor 配置在启动前失败。
 - **实施要点**：独立 `remote-lf4` profile token；1..5 FPS；metadata preset；ROI physical rect/snap/scale status；no-activate Data Window；topology watchdog。
 - **注意事项**：不能把旧 `remote` token 重解释成 LF4；不自动移动外部远控窗口；不使用全局输入；不显示 receiver progress 于 Encoder。
 - **验收证据**：config/QSettings/CLI parser/GUI model tests；right-monitor containment；ProtectedMonitor intersection fail closed；focus PID 前后不变。
-- **完成出口**：用户可以显式选择 LF4，任何默认值都不会在不知情时改变既有 profile 或 wire identity。
+- **完成出口**：已关闭。GUI与两端CLI使用同一个四项只读profile catalog，独立token `remote-lf4`不重解释旧`remote`；QSettings不持久化profile。LF4严格要求RemoteVisual、1..5 Hz、显式且不同的Protected/Experiment monitor；Encoder固定1920×1080 Data Window与Decoder 0.5x..2.0x单屏ROI在启动前验证，worker启动后才报告PASS并每秒重验topology/identity/geometry。最终no-activate Gate保持前台PID `63784`不变并完成2个Carousel cycles；公开5 Hz CLI为0 dwell violation。首次实际WGC闭环暴露两阶段LF4 completion会使TelemetryOnly越过早期GPU结果，现以固定slot observation barrier与有界结果环最小序交付修复，未放松Telemetry；最终公开CLI pixel-only闭环以4个temporally admitted Transport、Outer unique 1完成WholeFileDigest/publish并恢复external byte exact文件。Release核心6/6、定向parser/model 89/89、report 24/24及MSVC ASan核心6/6通过。完整契约、失败证据、hash和truth boundary见`REMOTE_VISUAL_STEP17_GUI_CLI_SCREEN_SAFETY.md`与第26节。
 
 ### 11.20 Step 18：便携包、source set 与环境 fingerprint
 
-- **状态**：`PARTIAL`；**难度**：★★☆☆☆；**重要性**：★★★★☆。
+- **状态**：`DONE`；**难度**：★★☆☆☆；**重要性**：★★★★☆。
 - **目标**：确保 Computer A/B 实际运行相同 tested tree、依赖和 profile，而不是混用旧包。
 - **实施要点**：create-only package；manifest 包含 commit/tree/compiler/Qt/vcpkg/EXE/DLL hashes；CSPRNG source set；共享 metadata/RunId；endpoint environment fingerprint。
 - **注意事项**：Computer B source 在 Session 中不可变；包不能携带 payload 旁路；manifest hash 必须在复制前后核对；provider UI 信息只作为 metadata。
 - **验收证据**：clean directory package rebuild、hash verify、tamper negative test、两端 packageManifest 完全匹配。
-- **完成出口**：任何正式 run 都能由 RunId 反查唯一 package、source 和 endpoint environment。
+- **完成出口**：已关闭。正式包统一为同一Both-role archive，schema 2 manifest封印HEAD/tree、当前tested-source全清单与指纹、MSVC/SDK/CMake/Qt/vcpkg ABI、LF4常量、全部EXE/DLL/resource、SPDX 2.3 SBOM和完整license notices；独立verifier逐文件/ZIP-entry复算并拒绝tamper、额外路径、reparse和overwrite。CSPRNG source set另以sourceSetId、三个payload、ZIP inner payload及外部seal独立验证。两端environment只能调用verified package内Decoder做无窗口只读probe，并与shared metadata/RunId及package/source exact hashes绑定；deployment manifest要求Encoder/Decoder恰好各一份并独立复算全部artifact/self/deployment fingerprint。任何正式run现可由RunId反查唯一package、source和endpoint environments。完整规范、命令和truth boundary见`REMOTE_VISUAL_STEP18_DEPLOYMENT_REPRODUCIBILITY.md`。
 
 ### 11.21 Step 19：同提交 LocalDesktop 回归
 
-- **状态**：`PENDING`；**难度**：★★★☆☆；**重要性**：★★★★★。
+- **状态**：`DONE`；**难度**：★★★☆☆；**重要性**：★★★★★。
 - **目标**：证明 LF4、scheduler、telemetry 和 GPU 修改没有破坏 frozen LocalDesktop oracle。
 - **实施要点**：相同 8 MiB RAW、同 ROI/显示器、WGC/DXGI × Direct/Shape；replay off；比较 goodput/FER/unique FPS/CPU/GPU/HWM。
 - **注意事项**：必须用最终 tested commit；用户左屏有并发工作则记录，不伪装 clean benchmark；WholeFileDigest/false accept/unbounded queue 直接 BLOCK。
 - **验收证据**：pre/post combined table、external hash、Encoder still broadcasting；goodput regression≤10% 或具有可复现解释。
-- **完成出口**：四组合全部 publish/hash PASS，旧 Golden/Transport 不变，无未解释性能或资源退化。
+- **完成出口**：已关闭。冻结同一8 MiB RAW、ROI/显示器和replay-off条件下，WGC/DXGI × Direct/Shape四组均完成WholeFileDigest、安全发布与external SHA-256；goodput相对基线无回退，Decoder完成时Encoder仍广播，journal证明descriptor建立后resource rejection不再增长且conflict为0。定向7/7与完整Release 200/200均PASS；完整证据见`REMOTE_VISUAL_STEP19_LOCALDESKTOP_REGRESSION.md`。
 
 ### 11.22 Step 20：真实双机 LF4 pilot
 
@@ -646,7 +648,9 @@ logical FPS <= 5
 - **实施要点**：分别跑 1/2/5 Hz；优先 strict 1:1，再跑可定位 scale；WGC；每轮保存 Replay v2、两端 report、remote UI metadata、external hash。
 - **注意事项**：Decoder 成功即 run 成功，Encoder 仍广播后人工 Stop；最长窗口/无进展规则预先固定；不得使用文件传输、clipboard 或任何旁路。
 - **验收证据**：WholeFileDigest、publish、external length/SHA-256、0 false output、Replay offline reproduce。
-- **完成出口**：至少一个 FPS 配置完成一次端到端恢复；失败也必须能归入 geometry/signal/temporal/metric/scheduler 之一。
+- **当前准备状态（非完成证据）**：已增加production Replay采样/资源预检、publish后2秒tail、offline footer完成态延迟、Encoder交互式人工Stop、Decoder固定no-progress；另以create-only工具冻结双端deployment/UI/plan、A/B endpoint启动和最终独立验证。5 Hz strict计划探针复算为1222帧、约9.91 GiB含预留，右屏only UI evidence与adversarial contract已通过。首轮单屏实机诊断证明静态LF4可经真实远控到A端actual WGC pixels并通过32个receiver-only Transport blocks，同时发现并修复exact ROI locator在`-1.45e-5 px`原点处过早`InvalidInput`的问题；随后v2独立B run实时回显READY，A端两轮exact ROI捕获合计11帧，其中10帧全链接受、1帧`MarkersNotFound`安全擦除，共40 accepted blocks且0 FEC/CRC/identity failure，所有接受帧geometry均为exact `(0,0,1,1)`。receiver-only `falseAcceptedCodewords`保持unavailable；同一Replay前后对照、v2 correlation和单屏限制见`REMOTE_VISUAL_STEP20_SINGLE_MONITOR_DIAGNOSTIC.md`。复验后deployment/pilot evidence contracts为2/2 PASS，最终Release build exit 0、完整CTest 201/201 PASS；这些诊断仍没有文件Receiver/WholeFileDigest/publish，不能替代正式双机文件Gate；正式人工步骤见`REMOTE_VISUAL_STEP20_REAL_REMOTE_PILOT.md`。
+- **额外人工硬门禁**：Step 20结束前再次执行Computer B Encoder → 实际远控桌面/视频链路 → Computer A WGC Decoder → WholeFileDigest/safe publish/external SHA-256 →同一Replay offline reproduce完整工作流；Decoder完成后等待冻结的跨机时钟证明窗口再人工停止仍在广播的Encoder。文件传输、clipboard、本地闭环、offline或模拟结果均不能替代。
+- **完成出口**：至少一个 FPS 配置完成一次端到端恢复；失败也必须能归入 geometry/signal/temporal/metric/scheduler 之一。当前单屏诊断已把首轮历史失败归为geometry boundary roundoff并在同一Replay上关闭；v2 的单帧失败又明确归为signal/Bootstrap `MarkersNotFound`安全擦除，相同参数复验3/3通过。但文件级出口尚未满足，状态保持`MANUAL-GATE`。
 
 ### 11.23 Step 21：正式 provider-generic RemoteVisual 矩阵
 
@@ -655,7 +659,8 @@ logical FPS <= 5
 - **实施要点**：1/2/5 Hz；质量优先/自动/受限模式；约 0.75/1.0/1.259/1.5 scale；WGC 主矩阵、DXGI 代表性复核；每组固定 run window 和 cycle 条件。
 - **注意事项**：模式是否真的启用必须来自 UI 可见证据；unknown chroma/latency 不猜值；不同 run 不能合并；非法 geometry 不 silent resample。
 - **验收证据**：per-run endpoint/combined reports、CSV、Replay、environment/package seals、failure classification。
-- **完成出口**：Direct/Shape/LF4 均有成功或失败证据，且 LF4 的提升或退化由权威指标而非截图主观判断支持。
+- **当前准备状态（非完成证据）**：production sampled Replay/live+offline Receiver入口已从LF4单点扩展到Direct/Shape/LF4三个公开profile，仍保持primary demod不受采样节流、Direct/Shape exact 1:1和LF4 locator/0.5x..2.0x边界。PilotPlan.2现冻结profile/backend/UI-visible mode/scale/FPS、双端live monitor identity及每run资源预算；成功与失败均生成统一MatrixRunRecord，失败只有在同一Replay的Inspector及live/offline report确实支持geometry/signal/temporal/metric/scheduler分类且无final output时才可封存。canonical create-only MatrixSpec仍在执行前固定36个LF4/WGC单元、3个DXGI代表点和2个strict-1:1 profile baseline；针对用户明确声明的Computer B两块1920×1080、Computer A两块2560×1440实验条件，又在任何正式run前新增由A端sealed monitor catalog机械派生且不可覆盖的`Dual2560x1440SingleExperimentMonitor` HardwareScope：31个included cell、10个因单屏无法容纳2880×1620 ROI而excluded的1.5× cell。scope importer会重读父41-cell spec与catalog并重算31/10 partition；最终verifier要求恰好31个独立RunId、同package/source、逐run CSV和同条件Direct/Shape/LF4权威指标对照，拒绝缺项、scope外替换、artifact复用、推断latency/chroma或跨run合并，并明确`excludedCellsDoNotCountAsCoverage=true`。原41-run与新31/10 adversarial contract fixture均已通过；完整field run尚未开始。规范见`REMOTE_VISUAL_STEP21_PROVIDER_GENERIC_MATRIX.md`。这些均为readiness，不是现场矩阵结果；31-cell PASS也不会声称1.5×或full-41 coverage。
+- **完成出口**：当前双机硬件范围内31个included cell均有独立成功或受支持的失败证据，hardware-scoped verifier与CSV/summary/seal PASS，Direct/Shape/LF4均被覆盖，且LF4的提升或退化由同条件权威指标而非截图主观判断支持；最终报告同时保留10个未运行1.5× cell的限制。
 
 ### 11.24 Step 22：重复完整文件恢复验收
 
@@ -1040,7 +1045,7 @@ build-p1_5-evidence/20260901-step09-final-production-d/lf4-production-encoder-59
 | cppcheck 2.21.0 | PBRenderD3D/PBPresentationGate 零发现；application/GUI 仅 exact-reviewed baseline，零 new/unreviewed finding |
 | `git diff --check` | PASS |
 
-GPU source readback 不是 capture；WARP 不是 hardware；source-to-back-buffer hash 不是 remote-provider survival。Step 09 没有 LF4 live production Decoder、scaled GPU demod、CaptureEpoch/lease 闭环、Outer/file convergence、WholeFileDigest/final publish、provider matrix、VerifiedEncodedGoodput 或 Certified Profile 结论。Step 10 下一步实现 scaled Walsh D3D11 demod shader，并要求 compact metrics 经现有 FEC/Transport 得到与 CPU reference 相同的 accepted blocks。
+GPU source readback 不是 capture；WARP 不是 hardware；source-to-back-buffer hash 不是 remote-provider survival。按 Step 09 完成时的边界，当时仍没有 LF4 live product Decoder、scaled GPU demod、CaptureEpoch/lease 闭环、Outer/file convergence、WholeFileDigest/final publish、provider matrix、VerifiedEncodedGoodput 或 Certified Profile 结论。后续 Step 10 已关闭独立 experimental scaled Walsh D3D11 demod primitive；这不改变本段对 Step 09 证据本身的限定，也未提前关闭其余边界。
 
 ### 18.5 Step 09 后置动态 Windows RDP receiver-only pilot
 
@@ -1060,4 +1065,303 @@ build-p1_5-evidence/step09-lf4-dynamic-formal-sampled-120s-20260901-225635
 - 一个 SessionTag，FrameSequence 1..395 中有 394 个 distinct、337 个 duplicate observation、1 个显式 gap/skip、0 reorder；FEC/CRC/identity failure 均为 0；
 - Replay SHA-256=`6dbc62308c18a155ac8ae4c1b2fe06db65c0ebadd8407debe10975efb6fd0748`；sealed summary SHA-256=`51bb47f5f40b5bc947fc31876b791e0606322fe47c59794ed013ba15083c1294`。
 
-完整环境、命令、资源数学、验证矩阵、逐项 hash 与 truth boundary 见 `REMOTE_VISUAL_STEP09_DYNAMIC_RDP_PILOT.md`。该 pilot 证明真实动态远控像素、WGC capture、Replay 与离线 LF4/FEC/Transport primitive；它没有 sender expected-byte oracle，`falseAcceptedCodewords` 仍 unavailable；也没有 live production Decoder、Outer/file path、WholeFileDigest、final publish、VerifiedEncodedGoodput 或 Certified Profile。按本轮停止要求，Step 10 保持 `PENDING`。
+完整环境、命令、资源数学、验证矩阵、逐项 hash 与 truth boundary 见 `REMOTE_VISUAL_STEP09_DYNAMIC_RDP_PILOT.md`。该 pilot 证明真实动态远控像素、WGC capture、Replay 与离线 LF4/FEC/Transport primitive；它没有 sender expected-byte oracle，`falseAcceptedCodewords` 仍 unavailable；也没有 live product Decoder、Outer/file path、WholeFileDigest、final publish、VerifiedEncodedGoodput 或 Certified Profile。2026-09-01 的停止点确实保持 Step 10 `PENDING`；2026-09-02 的后续实现已按第 19 节将 Step 10 独立关闭。
+
+---
+
+## 19. Step 10 LF4 D3D11 scaled Walsh demod 完成证据
+
+完整 implementation boundary、shader/resource contract、命令、验证矩阵与限制见 `REMOTE_VISUAL_STEP10_D3D11_DEMOD.md`。
+
+### 19.1 Direct-texture compact pipeline
+
+- 新 LF4 API只接受同一 admitted observation/domain 的 canonical Bootstrap与连续 geometry；普通 `Submit`/`SubmitUnbound` 不会让旧 strict shader解释 LF4。
+- calibration、freshness与 data 三个 compute pass在一个 owner immediate context顺序提交；event query位于 compact copies之后，`Poll(DONOTFLUSH)` ready前不 `Map`，source texture与 caller lease不得提前复用。
+- CPU production constants建立 21,456-entry immutable tile mapping、16-mask codebook与 per-frame logical/freshness binding；compile-time drift shields固定 HLSL role、coded bits、bits/tile与 ladder geometry。
+- GPU回读 `259,200` metric bytes + `256` calibration bytes + `1,584` freshness/global bytes = `261,040` bytes；1920×1080 BGRA8下约为 ROI的 `3.15%`，raw pixel readback为 0。
+- `maximumDataWorkUnits`按 CPU-reference source Pixel read语义保守计入每次双线性 sample最多 4个 texel；2,000,000-unit负例证明 GPU不会用较宽松的“一个 SampleLevel=一个 unit”边界接受 CPU会拒绝的工作。
+
+### 19.2 Authoritative fixtures
+
+| case | 输入 | 结果 |
+| --- | --- | --- |
+| exact | canonical LF4 raster + padded BGRA upload pitch | 4/4 accepted Transport与 CPU byte-identical；zero metrics=0；compact/readback contract PASS |
+| scale | independent Area `1.259375×1.259259...` + fractional origin | CPU/GPU accepted blocks和 freshness/reliability counters一致 |
+| blur | independent fixed 3×3 Gaussian | CPU/GPU accepted blocks和 counters一致 |
+| stale | previous-sequence完整 region替换 current region | exactly 1 stale region；相关 metrics全 zero；FEC仍恢复4/4 Transport |
+| negative/ring/epoch | NaN、OOB、invalid policy、work limit、2-slot saturation、domain invalidation | exact fail closed；2个 pending event完成后 Cancelled；无 premature readback |
+
+Release LF4 4/4、完整 `PBDemodD3D11Tests` 13/13、CPU/reference `PBRemoteVisualTests` 1/1与 ASan LF4/完整 demod suite均通过。三个 HLSL entry以 `fxc /Ges /WX /T cs_5_0`独立编译通过，`git diff --check`通过。
+
+### 19.3 当前 truth boundary
+
+Step 10 的 authoritative endpoint是同 frame CPU/WARP `FrameEvaluation`、FEC disposition和 accepted Transport bytes，而不是 raw float bit equality。Step 10完成时 WARP不是 hardware且没有关闭 adapter matrix；后续 Step 11已按第20节在当前可用 AMD/NVIDIA hardware上关闭 accepted-block parity和 device-recreate，Step 12又按第21节把同一API接入`CaptureDemodulator`与WGC/DXGI共用lifetime。该历史Step-10证据本身仍不包含GUI/CLI exposure、Receiver/Outer/WholeFileDigest/final publish、provider matrix、VerifiedEncodedGoodput、soak或Certified Profile结论。
+
+---
+
+## 20. Step 11 CPU/WARP/hardware GPU truth parity 完成证据
+
+完整 adapter枚举、identity contract、corpus、accepted manifest、GPU timestamp、create-only wrapper、命令、hash与限制见 `REMOTE_VISUAL_STEP11_GPU_PARITY.md`。
+
+### 20.1 当前 adapter matrix
+
+- WARP：Microsoft Basic Render Driver，LUID `00000000:0001895a`；
+- AMD：AMD Radeon(TM) Graphics，LUID `00000000:000189ad`；
+- NVIDIA：三个名称相同但 LUID分别为 `00000000:000172f1`、`00000000:00023612`、`00000000:0002223a`的 RTX 5090 D adapter identity；
+- 四个 hardware candidate全部能创建 D3D11 feature-level 11.1 device并实际运行；NVIDIA=`pass`、AMD=`pass`，没有 hardware unavailable或 WARP替代项。
+
+### 20.2 Protocol truth 与 failure boundary
+
+每个 backend运行 generation-0 exact/scale/blur/stale和 device-recreate exact。Gate逐字段比较 `FrameEvaluation`中的 padding、FEC、CRC、identity、false accept、accepted counts和 coded-bit诊断，并逐字节比较4个 accepted Transport blocks；raw float只进入 metric summary。exact/scale/blur及所有 recreate exact的 accepted-set BLAKE3均为 `1f7fd593d668849ee8d5ac134b2581bb8a2cb20c05bcb1f0fcebe1e18465ae24`；stale set为 `bab7226cc3d954f97c3585aac160db1ee6bdfa9d1b40348de4f7ae7644f94f4a`。任何跨 adapter digest差异使 test失败，不会改用 CPU结果、raw-float容差或部分集合降级接受。
+
+10次 wrong-LUID negative全部返回 `AdapterMismatch`，caller submission和 submitted count不变；25个成功 frame全部有非零 GPU timestamp、261,040-byte compact readback和0 raw-pixel readback。每次 run的 pending/failed/cancelled为0、device removed reason=`S_OK`、shutdown完成。
+
+### 20.3 Sealed evidence 与 truth boundary
+
+Release create-only Gate为1/1 PASS，本次观察为46,733 assertions、50.810秒；ASan专用 adapter matrix为1/1 PASS、121.16秒；Release默认 `PBRemoteVisualTests` + 非隐藏 `PBDemodD3D11Tests`为2/2 PASS。evidence目录为 `build-p1_5-evidence/20260902-011943-step11-gpu-parity-final`：
+
+```text
+0c56409d47f2cc4dd730f40f786dfc7e72fa24488581a839a63afefb8aa23fed  gate.log
+168bbcf20b59eb85ab4f52fc2c1b054fd9a9f66ac5e6bbeb56bc634870d0aadc  evidence.json
+```
+
+封存包含6条 availability、25条 result、10条 run和1条 summary，共42条结构化记录。覆盖写入负测在执行 GPU Gate前拒绝，已有artifact hash不变。
+
+Step 11证明当前 adapter/driver矩阵上的 experimental LF4 GPU protocol truth，不证明未来未测试硬件。后续Step 12已按第21节关闭同observation locator/Bootstrap/geometry、PB-owned WGC/DXGI normalized ROI lease、CaptureEpoch drain/recreate和bounded staged completion；Step 13/14又分别按第22/23节关闭temporal admission与hidden production Receiver/Outer/file publish。这些后续结果不追溯扩大Step-11 adapter evidence本身，也仍不证明GUI/CLI exposure、Replay v2 production一致性、VerifiedEncodedGoodput或Certified Profile。
+
+---
+
+## 21. Step 12 CaptureNormalize / geometry / epoch / lifetime 完成证据
+
+完整staged-completion contract、same-observation LF4 pipeline、resource math、WGC/DXGI integration、exception/fanout semantics、命令与限制见`REMOTE_VISUAL_STEP12_CAPTURE_LIFETIME.md`。
+
+### 21.1 单一CaptureNormalize路径与有界continuation
+
+- `RawRoiConsumer`与`ScreenCaptureConsumer`新增向后兼容的`CompleteStage`；legacy `Completed`默认返回无GPU continuation，既有consumer无需改变；
+- 首个marker退休Bootstrap staging后，LF4 consumer可在同一owner context、同一PB-owned ROI texture上提交一次GPU data stage；runtime记录第二marker并继续持有slot/source lease；
+- cancelled callback只有metadata，texture/context均为null；第二continuation在其work安全退休后fail closed并terminal cancel，不形成无界链；
+- callback抛异常时无法证明尚未提交GPU work，因此D3dRoiRing保守`ClearState`并记录marker，避免post-submit use-after-lease；
+- snapshot以submission/completion/rejection三个saturating counters记录continuation authority。
+
+### 21.2 Bound Bootstrap、geometry 与resource admission
+
+- `LocalDesktopBootstrapBinding` overload只解析冻结LF4 identity，并复用同一continuous locator；错误/未知binding产生`UnsupportedRecord` erasure；
+- LF4 `CaptureDemodulator`先读同一observation的Bootstrap staging，再以得到的canonical record与continuous geometry提交现有`SubmitRemoteVisualLowFps`；adapter LUID/device/context/texture/domain/epoch/slot/generation均逐项绑定；
+- `ExactCanvas`、`Scaled`、`Letterboxed`、`Rejected`进入result和snapshot；1800x1080 crop只产生`TelemetryOnly/Rejected`，data demod submission与accepted Transport均为0；
+- LF4 hard ROI默认3840x2160，Bootstrap staging按`maximumRoiWidth * maximumRoiHeight * 4 * slotCount`在capture allocation前预留；0维、D3D上限、NaN policy、budget少1 byte、actual ROI越界与wrong adapter均原子拒绝；
+- data demod仍只回读261,040 bytes、raw-pixel readback=0；Bootstrap locator当前明确进行一次完整ROI CPU staging readback并单独计数，不能把两者混为“整个pipeline零全帧readback”。
+
+### 21.3 WGC/DXGI、epoch 与truth endpoint
+
+完整integration使用现有WGC/DXGI facade、production CaptureRuntime/NormalizeConsumer/D3dRoiRing和真实WARP device；测试backend只注入immutable source surface。WGC upright 1920x1080与DXGI raw 1080x1920 ROTATE90均归一化为同一upright ROI。每个backend在epoch 1得到4个与CPU reference byte-identical的accepted Transport，随后`RequestRecreate`使旧domain drain/invalidate并进入epoch 2，再得到同一4-block truth。
+
+两epoch结束时每backend continuation submissions/completions/rejections为2/2/0，`frameLeaseHighWater=1`；stop后`busyRoiTextures=0`、`liveFrameLeases=0`、`queuedFrames=0`，capture/demod/result pending均为0且无deferred cleanup。额外negative覆盖wrong texture/context/device identity、canceled non-null objects、post-GPU-submit exception、second continuation、stale epoch与legacy completion。
+
+### 21.4 Optional diagnostic fanout 与验证
+
+product runtime原有optional diagnostic fanout被抽为可测试内部组件；primary仍是唯一capture/protocol authority。diagnostic branch完整计费且最多8个pending identity，只能延长一次ROI marker；其domain/submit/completion failure或exception只进入diagnostic status与一次null-object cancellation，不能覆盖primary truth或发布payload。
+
+Targeted Release结果：staged normalize 73 assertions/2 cases、post-submit exception 22/1、fanout 126/3、LF4 capture demod 89,334/4、full pipeline staged cases 1,077/3，全部PASS。affected Release 9-suite为9/9 PASS、173.34秒；同一ASan 9-suite为9/9 PASS、421.45秒，其中完整17-case WARP `PBDemodD3D11Tests`为300.47秒且无sanitizer finding。instrumented tree的CTest timeout按实测有界设为420秒，Release仍为180秒，断言与失败条件没有放宽。
+
+### 21.5 Truth boundary 与下一步
+
+Step 12证明library-level LF4 capture lifetime与same-observation accepted-Transport truth；后续Step 13已按第22节收口duplicate/gap/reorder/stall与bounded queue，Step 14再按第23节让admitted blocks进入production Receiver/Outer并闭合WholeFileDigest/final publish，Step 15/16又分别关闭Replay一致性与权威report，Step 17关闭公开GUI/CLI exposure和屏幕安全。它们仍未证明真实provider双机文件恢复、goodput或Certified Profile。
+
+---
+
+## 22. Step 13 temporal admission / bounded queue 完成证据
+
+完整identity state machine、bounded retry、queue/stall contract、deterministic corpus、命令与限制见`REMOTE_VISUAL_STEP13_TEMPORAL_ADMISSION.md`。
+
+### 22.1 Fixed-state visual identity
+
+- `PBModulation::VisualIdentityTracker`以`CaptureEpoch + optional SessionTag + FrameSequence`区分unique、duplicate、reordered与gap，不分配、不保存历史帧；epoch/session变化建立新baseline但保留累计run counters；
+- LF4 `CaptureDemodulator`进一步绑定canonical 44-byte Bootstrap，并只保留一个当前temporal frame、4-bit accepted slot mask、最多四个fixed Transport blocks和一个Control block；
+- reordered、terminal duplicate、identity不完全一致或evaluation already pending都在Bootstrap后变成`TelemetryOnly`，不提交GPU；
+- unique FPS只由相邻sequence和正向时间interval组成，gap按distance精确累计skipped，duplicate/reorder不污染分母。
+
+### 22.2 Bounded refinement 与admitted-index contract
+
+默认每sequence只允许一次duplicate refinement，配置0..4；attempt无论是否恢复carrier都会消费额度。completion在固定candidate副本上事务验证：旧slot相同则幂等忽略，旧slot冲突、Control/Transport混合、Control copy冲突或越界均fail closed；只有此前缺失slot写入admitted indices。raw observation仍保留完整诊断结果，但LF4 verified/post-FEC frame只由Unique计数。
+
+44-observation WARP corpus包含6 unique、37 duplicate、1 reorder、1 gap/2 skipped，只触发8次GPU submission；admitted Transport=20、verified/post-FEC=4/2。32帧同sequence burst全部suppressed，pending HWM≤2、result HWM=1、drop=0；新unique和epoch recreate继续接受。0..4 codeword matrix和四Control-copy collapse同步通过。
+
+### 22.3 Stall、资源与验证
+
+现有1,000 ms `ChannelStallTracker`把capture停止与capture持续但unique visual停止分开；domain reset关闭活动interval而不清累计证据。capture/ROI/demod/result均保持固定容量，epoch invalidation把旧结果计入stale drop并drain，shutdown后pending/queue/GPU work归零。
+
+Targeted Release的stall、production LF4 Receiver、CPU temporal与WARP temporal用例均通过。最终affected Release 6-suite为6/6 PASS、137.83秒；同一MSVC ASan 6-suite为6/6 PASS、333.03秒，无sanitizer finding。ASan初次发现的测试栈占用已通过把大result改为显式bounded heap ownership修复，生产语义与断言未放宽。
+
+Step 13只决定“哪些carrier可进入Receiver”，不把中间Transport成功提升为文件成功。Step 14继续以WholeFileDigest和final publish为最终authority。
+
+---
+
+## 23. Step 14 four-codeword Receiver / Outer / publish 完成证据
+
+完整admitted-index consumer contract、Control collapse、DirectRepeat/Wirehair production probe、Receiver negatives、命令与truth boundary见`REMOTE_VISUAL_STEP14_RECEIVER_ADMISSION.md`。
+
+### 23.1 Existing production Receiver only
+
+- `ReceiverPipeline`要求LF4 result携带temporal disposition；suppressed/reordered/stale结果零mutation，duplicate refinement只有新admitted carrier才继续；
+- `ProcessTransport`分别验证raw count、admitted count与每个index的范围/唯一性，只对admitted blocks重新执行canonical Transport parse、SessionTag与payload bounds，再调用原有`ReceiverIngress::ReceiveDataBlock`；
+- strict旧profile仍把全部raw accepted entries映射为admitted entries，wire identity和旧行为不变；
+- 四个LF4 Control Robust copy在底层固定数组中完整承载并要求byte-identical，随后折叠成一次production Control mutation；冲突/mixed carrier fail closed。
+
+### 23.2 Authoritative file convergence
+
+hidden headless production probe从`SenderFrameBuilder`完整LF4 raster开始，经ReferenceChannel truth、production ReceiverPipeline/ReceiverIngress、DirectRepeat或Wirehair V2、PBStorage、WholeFileDigest和publish。它在Session Control后注入32个suppressed duplicate，并把首个data frame拆成Unique admitted slots 0/1与同sequence refinement admitted slots 2/3；第二次raw observation含4 blocks，但只有2个新slot进入Receiver。
+
+| mode | source | processed | raw/admitted Transport | Outer unique | final result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| DirectRepeat | 1 byte | 37 | 6 / 4 | 1 | Completed + digest + publish + external byte exact |
+| Wirehair V2 | 4096 bytes | 37 | 6 / 4 | 4 | Completed + digest + publish + external byte exact |
+
+两例均为33个duplicate sequence observations、1个end-to-end unique data sequence、4个production accepted Transport；Outer conflict/resource rejection为0。唯一data observation记录2个FEC failure；refinement恢复其余slots但不增加FER分母。
+
+### 23.3 Failure boundary 与下一步
+
+完整`PBOuterFecTests`/`PBReceiverTests`继续覆盖same-ID conflict、duplicate、orphan、unknown session、resource limits、Wirehair errors/reservation、resume corruption与cleanup。无效probe输入保持output不变；invalid/repeated admitted index在Receiver mutation前拒绝。最终affected Release/ASan 6-suite分别6/6 PASS。
+
+Step 14证明hidden production Receiver/file semantics，不表示公开Decoder已支持LF4，也不是双机field run。后续Step 15已按第24节让Replay v2 LF4 live/offline进入同一production decoder，并保留v1 compatibility、presence/null truth、recorder bounds、corrupt/truncated/oversize/checksum/no-overwrite语义。
+
+---
+
+## 24. Step 15 Replay v2 production live/offline 完成证据
+
+完整schema、presence/null truth、exact-adapter/two-stage lifetime、async recorder资源、测试矩阵和truth boundary见`REMOTE_VISUAL_STEP15_REPLAY_PRODUCTION.md`。
+
+### 24.1 Versioned production observation
+
+Replay file/version/header/footer大小保持不变；历史observation缺少detail presence时reserved bytes仍必须全0。detail version 1只占用既有demod record reserved区，保存实际恢复的layout、连续geometry、temporal/result、FEC/CRC/identity、raw/admitted blocks、metric/freshness、GPU timing presence与Receiver disposition。receiver-only record的sender raster、canonical Bootstrap与sender truth全部absent；false-accepted/compared/error bits不会因默认0而被冒充为测量结果。
+
+offline adapter只把reader验证后的selected ROI建成PB-owned BGRA8 texture，再走原有production `CaptureDemodulator`/`ReceiverPipeline`/`ReceiverIngress`/Outer/PBStorage。Direct/Shape/旧RemoteVisual保持单阶段；LF4用最多两次`CompleteStage`。每阶段使用新的one-shot `Flush1` event并同时注册device removal，避免reset event与移除信号竞争。记录LUID不存在时只允许当前WARP exact LUID相等，不允许different-adapter fallback。
+
+### 24.2 LF4 authoritative publish replay
+
+headless Gate用实际fixed-slot async recorder生成6-frame receiver-only Replay：Session、Manifest、Segment、Data四个unique视觉帧，加两个Session duplicate。capture/demod observation均为6，queue HWM≤2、drop=0；四个unique observation携带LF4 metric summary，两个duplicate为terminal suppressed。live与offline结果如下：
+
+| 项目 | live | offline |
+| --- | ---: | ---: |
+| observations | 6 | 6 |
+| comparison mismatch | N/A | 0 |
+| duplicate suppressed | 2 | 2 |
+| admitted Transport | 4 | 4 |
+| Outer unique | 1 | 1 |
+| WholeFileDigest / publish | PASS / PASS | PASS / PASS |
+| external output | 1 byte exact | 1 byte exact |
+
+GPU execution duration作为live evidence保留但不要求二次执行数值相同；layout、geometry、temporal、metric/freshness、FEC/CRC/identity、carrier与Receiver result全部精确比较。
+
+### 24.3 Real receiver-only classification
+
+显式只读`PB_REMOTE_VISUAL_REAL_REPLAY_ROOT`指向Step 02 sealed RDP corpus时，production offline Decoder得到：Direct/Shape/LF4均8/8 Bootstrap、7 duplicate、分别42/32/4 admitted Transport，FEC/CRC/identity全0。三者都因capture-only corpus没有Session/Manifest/Segment Control而结束为`Stopped`、descriptor unknown、WholeFileDigest not evaluated、no publish；这与原Inspector分类一致，并且没有把中间Transport成功提升为文件成功。
+
+Release `PBRealCaptureReplayTests`、Step 15 LF4 full-publish Gate与real-corpus Gate均通过；同三项MSVC ASan Gate也无sanitizer finding。最终affected Release 7-suite为7/7 PASS、188.94秒。ASan组合首轮除`PBApplicationTests`外6-suite全部通过，后者只是新增Gate超过历史CTest 60秒外层上限；把保留内部deadline的外层timeout调整为600秒并重新配置Release/ASan后，`PBApplicationTests`在107.73秒PASS，因此7项均有ASan通过证据且没有放宽测试。后续Step 16已按第25节关闭权威telemetry、RunReport.2与strict merger，Step 17又按第26节关闭公开GUI/CLI exposure与屏幕安全。
+
+---
+
+## 25. Step 16 authoritative telemetry、RunReport.2 与严格 merger 完成证据
+
+完整字段定义、分母公式、`null`/0/epoch 语义、双端 artifact seal、验证命令与未认证边界见 `REMOTE_VISUAL_STEP16_TELEMETRY_REPORT.md`。
+
+### 25.1 五类速率不再混用
+
+Encoder 明确记录 LF4 每完整逻辑帧 64,800 raw coded bits、5,400 Inner-FEC information bytes 与 5,256 Transport payload ceiling bytes；1/2/5 Hz 的 5,256/10,512/26,280 bytes/s 只叫理论 ceiling。实际 generation rate、Present rate、Decoder capture/unique rate、FEC/codeword rate和最终 verified goodput 均使用各自的权威分母；Sender 不能观察的 Receiver progress、ETA 与 verified goodput 继续为 `null`。
+
+Decoder 的每个有效 LF4 compact-metric observation 固定贡献 64,800 metrics、16,723 symbols 与 77 freshness regions。只有 temporal `Unique` data frame 增加一次 FEC frame denominator，并固定评估 4 个 codeword；same-sequence refinement 可以增加 signal observation和此前缺失slot的temporal admission，但不重复增加 unique FER/FEC denominator。raw FEC accepted、Receiver-bound temporal admitted 与 Outer unique/duplicate/conflict 分列保存，历史 `acceptedTransportBlocks` 仅作为 temporal admission alias。
+
+没有 sender coded-bit truth 时 `preFecBerEstimate=null`；有非零 comparison denominator 且错误为零时才写数值 0。CaptureEpoch 切换会同时清除 signal、FEC、Bootstrap、capture 与 derived-rate 状态；同序/倒序 observation、非法非有限 metric、分母越界和 counter saturation 均 fail closed。
+
+### 25.2 双端成功证据必须指向 exact artifacts
+
+`PixelBridge.RunReport.2` 分别保存 Encoder capacity/generation/presentation 和 Decoder frozen profile/signal/FEC/temporal/Outer/verified truth。严格 merger 对 LF4 常量、128-bit SessionId、SessionTag、source length/digest、provider metadata、时间窗与全部 numerator/denominator 做独立校验，并重新严格读取、封印两端原始 report 文件，确认传入对象与磁盘 artifact 完全一致。
+
+只合并两个内存对象仍可生成诊断结果，但不能把 `successfulRun` 置为 true。正式成功还必须同时满足 Decoder `Completed`、WholeFileDigest PASS、safe publish PASS、external SHA-256/length exact、两端 journal complete、identity complete、Outer conflict=0 和两端 report seals present。每次 CLI invocation create-only 生成独立 combined JSON、Markdown 与 per-run CSV；已有目标不会被覆盖，跨 run summary CSV 不能代替单次运行 artifact。
+
+### 25.3 自动验证与保留边界
+
+Release `PBTelemetryTests`/`PBApplicationTests` 为 2/2 PASS；最后一次 RunReport basis 字段调整后又单独重建并运行 `PBApplicationTests`，1/1 PASS、27.54秒。显式 Step 02真实Replay条件用例为84 assertions PASS。MSVC ASan对应两套测试2/2 PASS、67.97秒，真实Replay条件用例同为84 assertions PASS且无sanitizer finding。merger单元测试23/23 PASS，`py_compile`和`git diff --check`通过。
+
+上述是Step 16当时的headless验证边界；后续Step 17已在右侧ExperimentMonitor运行no-activate `PBPresentationGate`和public WGC pixel-only full-publish闭环，Step 18又关闭create-only package/source/environment/deployment identity，但仍不证明真实双机goodput、provider matrix、LocalDesktop同提交物理回归、6小时soak或Certified Profile。`certifiedRemoteVisualProfile`继续为`false`；后续Step 19已关闭同提交LocalDesktop回归，Step 20真实双机门禁仍未执行。
+
+
+---
+
+## 26. Step 17 实现与验证：公开 profile、屏幕安全与 pixel-only 闭环
+
+Step 17 的完整实现、参数契约、QSettings边界、显示器authority、首次闭环失败分析、结果排序修复、自动化命令和artifact seals见`REMOTE_VISUAL_STEP17_GUI_CLI_SCREEN_SAFETY.md`。
+
+### 26.1 GUI/CLI 共享同一 identity
+
+`application_model`现在提供唯一四项profile catalog，GUI与UTF-8/UTF-16 CLI parser都从中取得token、display name和默认值。新增`remote-lf4`只映射`PB-RemoteVisual-LF4-X1`的独立ID/layout；旧`remote`、默认Direct选择和全部wire identities不变。profile不写入QSettings，只有本地目录/backend/ROI/最近ProtectedMonitor等UI偏好允许持久化。
+
+### 26.2 启动前与运行期都 fail closed
+
+LF4 Encoder/Decoder要求RemoteVisual、1..5 Hz和显式不同的Protected/Experiment monitor。Encoder固定1920×1080 client RECT必须完全位于ExperimentMonitor；Decoder live ROI必须为同一identity-rotation显示器且X/Y各在0.5x..2.0x，exact geometry仍由captured-pixel locator决定。worker真正重验成功前report状态保持`Pending`；其后每秒重新枚举identity/physical/work RECT/DPI/rotation/refresh，任何漂移或metadata冲突转为`FAIL`并停止，不移动外部窗口、不使用全局输入。
+
+### 26.3 实际屏幕像素闭环发现并修复异步排序缺陷
+
+第一次public本地闭环在Bootstrap成功后被`PBTelemetry`以`ObservationOrder`正确拒绝且没有publish。根因是较晚duplicate的Bootstrap-only `TelemetryOnly`可早于较早observation的GPU demod完成。`CaptureDemodulator`现在用固定slot `pendingCaptureObservations` barrier，在同一mutex内原子退休barrier并入队结果；`TakeResult`只交付当前最小且不存在更早pending的observation。资源容量和drop语义不变，也没有削弱Telemetry。独立WARP回归明确构造2先完成、1后完成并验证最终交付1→2。
+
+最终Release证据`build-p1_5-evidence/step17-final-local-pixel-loop-20260902-080450`从右屏Data Window经WGC实际捕获像素进入production GPU demod/temporal/Receiver/Outer，得到4个temporal admitted Transport、Outer unique 1、WholeFileDigest PASS、safe publish PASS与external SHA-256/length exact；52个duplicate没有造成reorder，result queue HWM为2。前台PID前后均为63784。
+
+### 26.4 Gate 与保留边界
+
+最终no-activate原生Gate位于`build-p1_5-evidence/step17-final-native-20260902-080514`：两个Carousel cycles、9个source replacements、79个repeat Presents，Protected=`\\.\DISPLAY1`、Experiment=`\\.\DISPLAY2`且foreground PID不变。Release核心6/6、定向parser/model 89/89、merger 24/24和MSVC ASan核心6/6均通过。
+
+这仍只是同机屏幕像素与产品绑定证明；后续Step 18已关闭create-only package/source/environment/deployment identity，但仍没有真实Computer B/A provider链、正式goodput matrix、LocalDesktop同提交物理回归、soak或Certified Profile结论。后续Step 19已关闭同提交LocalDesktop回归；Step 20真实双机门禁仍未执行。
+
+---
+
+## 27. Step 18 实现与验证：package/source/environment/deployment identity
+
+完整schema、工具参数、资源边界、复制流程和truth boundary见`REMOTE_VISUAL_STEP18_DEPLOYMENT_REPRODUCIBILITY.md`。
+
+### 27.1 两端共享一个 Both-role 包
+
+`New-PBRemoteVisualPortablePackage.ps1 -Role Both`不再为A/B分别构造可能漂移的包，而是在同一manifest中封印Encoder/Decoder、全部Qt plugin/DLL/resource、HEAD/tree、tested-source全清单、Phase-1 tag、MSVC/SDK/CMake/Qt/vcpkg ABI和LF4 identity。SPDX 2.3 SBOM与THIRD_PARTY_NOTICES覆盖Qt和全部installed vcpkg package。独立verifier复算目录和ZIP中每个entry，拒绝额外/重复/越界/reparse路径、manifest/seal漂移和tamper；validation完成前不保留正式输出。
+
+### 27.2 source set 与共享 RunId
+
+source generator用Windows OS CSPRNG生成1 MiB、8 MiB RAW和内含单一4 MiB `payload.bin`的ZIP，ZIP中间原始文件在发布前删除。manifest/seal绑定128-bit sourceSetId、outer file hashes、inner payload hash和canonical source fingerprint。另一个CSPRNG 128-bit RunId只存在shared RemoteVisual metadata/evidence，不进入wire或acceptance。
+
+### 27.3 双端 environment 和 deployment 反查
+
+environment collector先验证package/source，并强制`--version`/`--list-monitors`来自shared package内Decoder；随后只读收集bounded OS/CPU/GPU/display/monitor metadata。Encoder/Decoder两份schema 2 artifact分别自封印完整持久化JSON，并都绑定相同package/source/metadata SHA。deployment manifest再要求两角色恰好各一份，以logical fingerprint和全部磁盘artifact hash建立RunId→package/source/metadata/endpoints唯一反查。
+
+### 27.4 adversarial Gate 与保留边界
+
+Windows CTest覆盖八脚本parser closure、source generator/verifier、ZIP inner identity、single-byte tamper、错误expected manifest hash、create-only source/metadata/verification和partial cleanup。正式clean Release Gate另外从同一ZIP解压两个干净endpoint目录，要求manifest SHA逐字节一致、packaged CLI只读探测成功，并以DLL single-byte mutation验证package verifier非零且不发布verification artifact；exact输出封存在ignored `build-p1_5-evidence/step18-*`目录。
+
+Step 18没有捕获或发送像素，也不产生Receiver、WholeFileDigest、safe publish、goodput或field结论。本机双endpoint证据只关闭工具与identity链；真实Computer A/B身份和远控像素链仍必须由Step 20正式pilot记录。后续Step 19已用同一tested-source包关闭LocalDesktop四组合回归；Step 20仍必须记录真实Computer A/B身份和远控像素链。
+
+---
+
+## 28. Step 19 同提交 LocalDesktop 回归完成证据
+
+完整输入身份、harness契约、失败轮诊断、四组合结果、资源口径、独立验证命令与artifact hashes见`REMOTE_VISUAL_STEP19_LOCALDESKTOP_REGRESSION.md`。
+
+### 28.1 同一 oracle、同一 tested-source
+
+正式矩阵以Step 18 package manifest SHA-256=`ab1f511be7f46a0b2be590fc618f7085e79d925bf4a2b7bb11bafc501ded2e49`反查同一Both-role package和tested-source fingerprint=`1c0b2ff91ed98b0b1781788a8e6285891aaa224f6d9de7b2d8645150628753bc`。输入继续使用冻结8 MiB RAW，SHA-256=`e02206c8813b212705ce995f49498bfacdd49030f097492a6eb2777ea66a4fe2`；Protected=`\\.\DISPLAY1`、Experiment=`\\.\DISPLAY2`、ROI=`[2880,180]-[4800,1260]`，Replay明确关闭。左屏并发工作记录为`Present`，矩阵前后foreground PID均为63784。
+
+### 28.2 首轮BLOCK揭示的是harness相位偏差
+
+首轮四组均恢复exact文件，但旧harness在Encoder启动3秒后才启动Decoder，使不同profile从任意Carousel中段进入；WGC/Shape与DXGI/Shape因此表观回退10.25%和19.32%，该轮保持`BLOCKED`。正式策略改为Decoder先启动、固定250 ms后启动Encoder，并把冷启动/采集时间留在权威goodput窗口内。每组journal同时证明descriptor已知后的resource rejection增量为0；非零的predescriptor bounded-orphan拒绝没有被隐藏或误判为冲突。
+
+### 28.3 四组合文件与性能出口
+
+| Capture/Profile | Baseline Mbit/s | Post Mbit/s | Change | FER | UniqueVisualFPS | 文件真值 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| WGC / Direct | 9.467 | 10.495 | +10.86% | 0 | 58.978 | digest/publish/hash PASS |
+| DXGI / Direct | 9.633 | 10.597 | +10.01% | 0 | 60.003 | digest/publish/hash PASS |
+| WGC / Shape | 13.665 | 16.324 | +19.46% | 0 | 59.162 | digest/publish/hash PASS |
+| DXGI / Shape | 14.635 | 17.740 | +21.22% | 0 | 60.005 | digest/publish/hash PASS |
+
+四组Decoder完成时Encoder仍广播；Outer conflict均为0；frame lease、demod pending与result queue HWM均在固定容量内。历史baseline没有UniqueVisualFPS、GPU或memory HWM，比较表保持`N/A`而不从其他指标重构。Post GPU/memory、CPU equivalent cores、stale-drop解释和全部资源数值保存在正式summary及专项文档。
+
+### 28.4 Seal、独立验证与保留边界
+
+正式证据根为`build-p1_5-evidence/step19-final-localdesktop-20260902-095359`；`post-summary.json` SHA-256=`0f61eb9d8607f5ba9f408b42f48daf9068678f4e8492c8996f6a90cd552ac07b`，48-artifact `evidence-seal.json` SHA-256=`4588177999c5cf01794bd280cd21e3404ffe7cfa50a01570f660c94b00b653aa`，seal外独立verification SHA-256=`c204b940580a60840bd9c7eddfdc486af64a63aad4df28d6dc1260cc3d703bc1`。定向Golden/Transport/Receiver/证据契约为7/7 PASS，重新configure后的完整Release headless CTest为200/200 PASS、0失败。
+
+这仍是同机LocalDesktop回归，不证明远控provider传输了任何像素。Step 20结束前必须再次执行真实Computer B Encoder → 实际远控桌面/视频链路 → Computer A WGC Decoder → WholeFileDigest/safe publish/external SHA-256/Replay offline reproduce完整工作流；本地、offline或模拟结果不能替代。

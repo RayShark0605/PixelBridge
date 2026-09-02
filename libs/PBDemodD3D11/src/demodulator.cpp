@@ -1,8 +1,10 @@
 #include "pbdemodd3d11/demodulator.h"
 
 #include "demod_shader_source.h"
+#include "remote_visual_low_fps_shader_source.h"
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/remote_visual.h"
+#include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbinterleave/tile_permutation.h"
 #include "pbprotocol/bootstrap_control_codec.h"
@@ -41,10 +43,33 @@ inline constexpr std::uint32_t calibrationPilotCount = 4;
 inline constexpr std::uint32_t calibrationStateCount = 4;
 inline constexpr std::uint32_t calibrationEntries = calibrationPilotCount * calibrationStateCount;
 inline constexpr std::uint32_t calibrationBytes = calibrationEntries * sizeof(float) * 4;
+inline constexpr std::uint32_t remoteVisualLowFpsFreshnessSummaryEntries =
+    pbmodulation::kRemoteVisualFreshnessRegionCount + 1;
+inline constexpr std::uint32_t remoteVisualLowFpsFreshnessSummaryBytes =
+    remoteVisualLowFpsFreshnessSummaryEntries * sizeof(std::uint32_t) * 4;
+inline constexpr std::uint32_t remoteVisualLowFpsTileMappingBytes =
+    pbmodulation::kRemoteVisualTileCount * sizeof(std::uint32_t) * 4;
+inline constexpr std::uint32_t remoteVisualLowFpsFrameBindingBytes = remoteVisualLowFpsTileMappingBytes;
+inline constexpr std::uint32_t remoteVisualLowFpsSymbolMaskBytes =
+    static_cast<std::uint32_t>(pbmodulation::kRemoteVisualLowFpsSymbolMasks.size() * sizeof(std::uint32_t));
+inline constexpr std::uint32_t remoteVisualLowFpsSamplesPerTile = 16 * 5;
+inline constexpr std::uint32_t remoteVisualLowFpsCalibrationSamples = 4 * 2 * 8 * 8;
+inline constexpr std::uint32_t remoteVisualLowFpsMaximumTexelsPerSample = 4;
+static_assert(pbmodulation::kRemoteVisualLowFpsBitsPerTile == 4);
+static_assert(pbmodulation::kRemoteVisualLowFpsSymbolMasks.size() == 16);
+static_assert(pbmodulation::kRemoteVisualLowFpsCodedBits == 64800);
+static_assert(static_cast<std::uint32_t>(pbmodulation::RemoteVisualTileRole::FreshnessTag) == 1);
+static_assert(static_cast<std::uint32_t>(pbmodulation::RemoteVisualTileRole::Data) == 2);
+static_assert(pbmodulation::kRemoteVisualLadders[0].x == 736 && pbmodulation::kRemoteVisualLadders[0].y == 16);
+static_assert(pbmodulation::kRemoteVisualLadders[1].x == 1696 && pbmodulation::kRemoteVisualLadders[1].y == 16);
+static_assert(pbmodulation::kRemoteVisualLadders[2].x == 96 && pbmodulation::kRemoteVisualLadders[2].y == 1000);
+static_assert(pbmodulation::kRemoteVisualLadders[3].x == 1056 && pbmodulation::kRemoteVisualLadders[3].y == 1000);
+static_assert(std::ranges::all_of(pbmodulation::kRemoteVisualLadders,
+    [](const pbmodulation::LocalDesktopRegion& region) { return region.width == 128 && region.height == 64; }));
 
 enum class ProfileMode : std::uint32_t
 {
-    DesktopLevels2 = 1, DesktopLevels4 = 2, ShapeChroma = 3, RemoteVisual = 4
+    DesktopLevels2 = 1, DesktopLevels4 = 2, ShapeChroma = 3, RemoteVisual = 4, RemoteVisualLowFps = 5
 };
 
 struct Binding
@@ -74,8 +99,48 @@ struct alignas(16) FrameConstants
     std::uint32_t metricCount;
     std::uint32_t reserved0;
     std::uint32_t reserved1;
+    float originX;
+    float originY;
+    float scaleX;
+    float scaleY;
+    float sourceTexelPitchX;
+    float sourceTexelPitchY;
+    float minimumEndpointSeparation;
+    float maximumPilotVariance;
+    float maximumPilotSpatialDeviation;
+    float minimumSymbolRms;
+    float maximumSymbolResidual;
+    float minimumSymbolMargin;
+    float minimumFreshnessMetric;
+    std::uint32_t sourceWidth;
+    std::uint32_t sourceHeight;
+    std::uint32_t freshnessRegionCount;
 };
-static_assert(sizeof(FrameConstants) == 32);
+static_assert(sizeof(FrameConstants) == 96);
+
+struct alignas(16) RemoteVisualLowFpsTileMapping
+{
+    std::uint32_t originX = 0;
+    std::uint32_t originY = 0;
+    std::uint32_t role = 0;
+    std::uint32_t regionId = 0;
+};
+static_assert(sizeof(RemoteVisualLowFpsTileMapping) == 16);
+
+struct alignas(16) RemoteVisualLowFpsFrameBinding
+{
+    std::array<std::uint32_t, pbmodulation::kRemoteVisualLowFpsBitsPerTile> logicalBits{};
+};
+static_assert(sizeof(RemoteVisualLowFpsFrameBinding) == 16);
+
+struct alignas(16) RemoteVisualLowFpsFreshnessSummary
+{
+    std::uint32_t mismatches = 0;
+    std::uint32_t erasures = 0;
+    std::uint32_t stale = 0;
+    std::uint32_t erasedDataMetrics = 0;
+};
+static_assert(sizeof(RemoteVisualLowFpsFreshnessSummary) == 16);
 
 bool EqualLuid(const LUID& left, const LUID& right) noexcept
 {
@@ -129,6 +194,11 @@ DemodStatus GetAdapterLuid(ID3D11Device* device, LUID& output) noexcept
 
 DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output) noexcept
 {
+    if (bytes.size() != pbprotocol::kBootstrapRecordBytes)
+    {
+        return DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding,
+            static_cast<std::int32_t>(pbprotocol::ProtocolErrorCode::InvalidRecordSize));
+    }
     const auto parsed = pbprotocol::ParseBootstrapRecord(bytes);
     if (!parsed)
     {
@@ -166,6 +236,19 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
         binding.codewords = pbmodulation::kRemoteVisualCodewords;
         binding.paddingBytes = pbmodulation::kRemoteVisualPaddingBytes;
     }
+    else if (binding.profileId == pbmodulation::kRemoteVisualLowFpsProfileId &&
+        parsed.Value().visualLayoutVersion == pbmodulation::kRemoteVisualLowFpsLayoutVersion)
+    {
+        binding.mode = ProfileMode::RemoteVisualLowFps;
+        binding.tilePixels = pbmodulation::kRemoteVisualTilePixels;
+        binding.tileCount = pbmodulation::kRemoteVisualTileCount;
+        binding.rowTiles = 0;
+        binding.dataBytes = pbmodulation::kRemoteVisualLowFpsDataBytes;
+        binding.metricCount = pbmodulation::kRemoteVisualLowFpsCodedBits;
+        binding.codedMetricCount = pbmodulation::kRemoteVisualLowFpsCodedBits;
+        binding.codewords = pbmodulation::kRemoteVisualLowFpsCodewords;
+        binding.paddingBytes = pbmodulation::kRemoteVisualLowFpsPaddingBytes;
+    }
     else
     {
         const auto* const profile = pbmodulation::GetDesktopLevelsProfile(binding.profileId);
@@ -194,11 +277,12 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
     return {};
 }
 
-DemodStatus CompileShader(ID3D11Device* device, const char* entryPoint, ComPtr<ID3D11ComputeShader>& output) noexcept
+DemodStatus CompileShader(ID3D11Device* device, const char* source, const std::size_t sourceBytes,
+    const char* entryPoint, ComPtr<ID3D11ComputeShader>& output) noexcept
 {
     ComPtr<ID3DBlob> shader;
     ComPtr<ID3DBlob> diagnostics;
-    const HRESULT compile = D3DCompile(detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
+    const HRESULT compile = D3DCompile(source, sourceBytes,
         "PB-Demod-D3D11", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, entryPoint, "cs_5_0",
         D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS, 0, &shader, &diagnostics);
     if (FAILED(compile))
@@ -223,6 +307,28 @@ DemodStatus CreateStructuredBuffer(ID3D11Device* device, const std::uint32_t byt
     return FAILED(result) ? DemodStatus::Failure(DemodError::NativeFailure, DemodStage::Resource, result) : DemodStatus{};
 }
 
+DemodStatus CreateImmutableStructuredBuffer(ID3D11Device* device, const std::uint32_t bytes, const std::uint32_t stride,
+    const void* const data, ComPtr<ID3D11Buffer>& buffer, ComPtr<ID3D11ShaderResourceView>& view) noexcept
+{
+    if (data == nullptr || bytes == 0 || stride == 0 || bytes % stride != 0)
+    {
+        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Resource);
+    }
+    D3D11_BUFFER_DESC description{};
+    description.ByteWidth = bytes;
+    description.Usage = D3D11_USAGE_IMMUTABLE;
+    description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    description.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    description.StructureByteStride = stride;
+    const D3D11_SUBRESOURCE_DATA initial{data, 0, 0};
+    HRESULT result = device->CreateBuffer(&description, &initial, &buffer);
+    if (SUCCEEDED(result))
+    {
+        result = device->CreateShaderResourceView(buffer.Get(), nullptr, &view);
+    }
+    return FAILED(result) ? DemodStatus::Failure(DemodError::NativeFailure, DemodStage::Resource, result) : DemodStatus{};
+}
+
 DemodStatus CreateConstantBuffer(ID3D11Device* device, ComPtr<ID3D11Buffer>& output) noexcept
 {
     D3D11_BUFFER_DESC description{};
@@ -242,7 +348,8 @@ bool FiniteCalibration(const std::array<std::array<float, 4>, calibrationEntries
 }
 
 DemodStatus ValidateCalibration(const ProfileMode mode,
-    const std::array<std::array<float, 4>, calibrationEntries>& calibration) noexcept
+    const std::array<std::array<float, 4>, calibrationEntries>& calibration,
+    const pbmodulation::RemoteVisualLowFpsDecodePolicy* const remoteVisualLowFpsPolicy = nullptr) noexcept
 {
     if (!FiniteCalibration(calibration))
     {
@@ -286,8 +393,18 @@ DemodStatus ValidateCalibration(const ProfileMode mode,
         }
         return minimumSeparation < 16 ? DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration) : DemodStatus{};
     }
-    if (mode == ProfileMode::RemoteVisual)
+    if (mode == ProfileMode::RemoteVisual || mode == ProfileMode::RemoteVisualLowFps)
     {
+        if (mode == ProfileMode::RemoteVisualLowFps && remoteVisualLowFpsPolicy == nullptr)
+        {
+            return DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration);
+        }
+        const double maximumVariance = mode == ProfileMode::RemoteVisualLowFps ?
+            remoteVisualLowFpsPolicy->maximumPilotStandardDeviation * remoteVisualLowFpsPolicy->maximumPilotStandardDeviation : 576;
+        const double minimumSeparation = mode == ProfileMode::RemoteVisualLowFps ?
+            remoteVisualLowFpsPolicy->minimumEndpointSeparation : 96;
+        const double maximumSpatialDeviation = mode == ProfileMode::RemoteVisualLowFps ?
+            remoteVisualLowFpsPolicy->maximumPilotSpatialDeviation : 24;
         std::array<double, 2> centroids{};
         for (std::size_t pilot = 0; pilot < calibrationPilotCount; pilot++)
         {
@@ -295,25 +412,49 @@ DemodStatus ValidateCalibration(const ProfileMode mode,
             {
                 const std::size_t level = endpoint == 0 ? 0 : 3;
                 const auto& entry = calibration[pilot * calibrationStateCount + level];
-                if (entry[1] > 576 || entry[2] != 0 || entry[3] != 0)
+                if (entry[1] > maximumVariance || entry[2] != 0 || entry[3] != 0)
                 {
                     return DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration);
                 }
                 centroids[endpoint] += entry[0] / calibrationPilotCount;
             }
+            if (mode == ProfileMode::RemoteVisualLowFps &&
+                calibration[pilot * calibrationStateCount + 3][0] - calibration[pilot * calibrationStateCount][0] < minimumSeparation)
+            {
+                return DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration);
+            }
         }
         for (std::size_t endpoint = 0; endpoint < 2; endpoint++)
         {
             const std::size_t level = endpoint == 0 ? 0 : 3;
-            for (std::size_t pilot = 0; pilot < calibrationPilotCount; pilot++)
+            if (mode == ProfileMode::RemoteVisualLowFps)
             {
-                if (std::abs(static_cast<double>(calibration[pilot * calibrationStateCount + level][0]) - centroids[endpoint]) > 24)
+                double minimumCentroid = calibration[level][0];
+                double maximumCentroid = minimumCentroid;
+                for (std::size_t pilot = 1; pilot < calibrationPilotCount; pilot++)
+                {
+                    const double centroid = calibration[pilot * calibrationStateCount + level][0];
+                    minimumCentroid = std::min(minimumCentroid, centroid);
+                    maximumCentroid = std::max(maximumCentroid, centroid);
+                }
+                if (maximumCentroid - minimumCentroid > maximumSpatialDeviation)
                 {
                     return DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration);
                 }
             }
+            else
+            {
+                for (std::size_t pilot = 0; pilot < calibrationPilotCount; pilot++)
+                {
+                    if (std::abs(static_cast<double>(calibration[pilot * calibrationStateCount + level][0]) - centroids[endpoint]) >
+                        maximumSpatialDeviation)
+                    {
+                        return DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration);
+                    }
+                }
+            }
         }
-        return centroids[1] - centroids[0] < 96 ?
+        return centroids[1] - centroids[0] < minimumSeparation ?
             DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration) : DemodStatus{};
     }
     std::array<double, calibrationStateCount> centroids{};
@@ -360,6 +501,11 @@ struct Demodulator::Implementation
         ComPtr<ID3D11UnorderedAccessView> calibrationUav;
         ComPtr<ID3D11ShaderResourceView> calibrationSrv;
         ComPtr<ID3D11Buffer> constants;
+        ComPtr<ID3D11Buffer> remoteVisualLowFpsFrameBindings;
+        ComPtr<ID3D11ShaderResourceView> remoteVisualLowFpsFrameBindingsSrv;
+        ComPtr<ID3D11Buffer> remoteVisualLowFpsFreshnessSummary;
+        ComPtr<ID3D11Buffer> remoteVisualLowFpsFreshnessSummaryStaging;
+        ComPtr<ID3D11UnorderedAccessView> remoteVisualLowFpsFreshnessSummaryUav;
         ComPtr<ID3D11Query> completion;
         ComPtr<ID3D11Query> timestampDisjoint;
         ComPtr<ID3D11Query> timestampStart;
@@ -368,6 +514,8 @@ struct Demodulator::Implementation
         ComPtr<ID3D11ShaderResourceView> inputSrv;
         ScreenCaptureFrame frame;
         Binding binding;
+        pbmodulation::LocalDesktopGeometry remoteVisualLowFpsGeometry;
+        pbmodulation::RemoteVisualLowFpsDecodePolicy remoteVisualLowFpsPolicy;
         std::array<std::byte, 44> bootstrapRecord{};
         std::uint64_t generation = 0;
         bool busy = false;
@@ -382,13 +530,23 @@ struct Demodulator::Implementation
     ComPtr<ID3D11ComputeShader> demodShapeChroma;
     ComPtr<ID3D11ComputeShader> demodDesktopLevels;
     ComPtr<ID3D11ComputeShader> demodRemoteVisual;
+    ComPtr<ID3D11ComputeShader> calibrateRemoteVisualLowFps;
+    ComPtr<ID3D11ComputeShader> demodRemoteVisualLowFpsFreshness;
+    ComPtr<ID3D11ComputeShader> demodRemoteVisualLowFps;
+    ComPtr<ID3D11Buffer> remoteVisualLowFpsTileMappings;
+    ComPtr<ID3D11ShaderResourceView> remoteVisualLowFpsTileMappingsSrv;
+    ComPtr<ID3D11Buffer> remoteVisualLowFpsSymbolMasks;
+    ComPtr<ID3D11ShaderResourceView> remoteVisualLowFpsSymbolMasksSrv;
+    ComPtr<ID3D11SamplerState> remoteVisualLowFpsSampler;
     std::array<Slot, maximumSlots> slots;
     std::uint32_t slotCount = 0;
     DWORD ownerThread = 0;
     std::optional<ScreenCaptureDomain> activeDomain;
     std::array<float, maximumMetricCount> cpuMetrics{};
     std::array<float, maximumMetricCount> logicalMetrics{};
+    std::array<RemoteVisualLowFpsFrameBinding, pbmodulation::kRemoteVisualTileCount> remoteVisualLowFpsFrameBindings{};
     std::array<std::byte, pbmodulation::kDesktopLevelsMaximumDataBytes> hard{};
+    std::uint32_t remoteVisualLowFpsActiveTileCount = 0;
     pbdesktoplevels::ReferenceChannel evaluator;
     pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::DiagnosticTruth;
     mutable std::mutex snapshotMutex;
@@ -413,6 +571,9 @@ void RetireSlot(Demodulator::Implementation& state, Demodulator::Implementation:
     slot.inputSrv.Reset();
     slot.inputTexture.Reset();
     slot.frame = {};
+    slot.binding = {};
+    slot.remoteVisualLowFpsGeometry = {};
+    slot.remoteVisualLowFpsPolicy = {};
     slot.busy = false;
     slot.cancelled = false;
     slot.unbound = false;
@@ -427,7 +588,8 @@ void RetireSlot(Demodulator::Implementation& state, Demodulator::Implementation:
     }
 }
 
-DemodStatus ValidateFrame(Demodulator::Implementation& state, const ScreenCaptureFrame& frame) noexcept
+DemodStatus ValidateFrame(Demodulator::Implementation& state, const ScreenCaptureFrame& frame,
+    const bool allowVariableSize) noexcept
 {
     const auto& metadata = frame.metadata;
     const auto physicalWidth = static_cast<std::int64_t>(metadata.physicalRoi.right) - metadata.physicalRoi.left;
@@ -436,8 +598,8 @@ DemodStatus ValidateFrame(Demodulator::Implementation& state, const ScreenCaptur
         metadata.sourceCursorState == pbcapturenormalize::CursorState::SeparatePointer ||
         metadata.sourceCursorState == pbcapturenormalize::CursorState::KnownAbsent;
     if (frame.texture == nullptr || metadata.domain.captureEpoch == 0 || !NonzeroSourceId(metadata.domain) || metadata.captureObservation == 0 ||
-        frame.metadata.sourceGeneration == 0 || frame.metadata.slotGeneration == 0 || frame.metadata.roiSize.width != 1920 ||
-        frame.metadata.roiSize.height != 1080 || frame.metadata.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM ||
+        frame.metadata.sourceGeneration == 0 || frame.metadata.slotGeneration == 0 || frame.metadata.roiSize.width <= 0 ||
+        frame.metadata.roiSize.height <= 0 || frame.metadata.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM ||
         frame.metadata.signalEncoding != CaptureSignalEncoding::SdrRgb || frame.metadata.hdr || !frame.metadata.isCursorExcluded ||
         !cursorProvenAbsent || physicalWidth != metadata.roiSize.width || physicalHeight != metadata.roiSize.height ||
         metadata.sourceContentSize.width <= 0 || metadata.sourceContentSize.height <= 0 ||
@@ -449,13 +611,20 @@ DemodStatus ValidateFrame(Demodulator::Implementation& state, const ScreenCaptur
     {
         return DemodStatus::Failure(DemodError::InvalidFrame, DemodStage::Submission);
     }
+    if ((!allowVariableSize && (frame.metadata.roiSize.width != 1920 || frame.metadata.roiSize.height != 1080)) ||
+        frame.metadata.roiSize.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        frame.metadata.roiSize.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+    {
+        return DemodStatus::Failure(DemodError::InvalidFrame, DemodStage::Submission);
+    }
     if (!EqualLuid(frame.metadata.adapterLuid, state.snapshot.adapterLuid))
     {
         return DemodStatus::Failure(DemodError::AdapterMismatch, DemodStage::Submission);
     }
     D3D11_TEXTURE2D_DESC description{};
     frame.texture->GetDesc(&description);
-    if (description.Width != 1920 || description.Height != 1080 || description.MipLevels != 1 || description.ArraySize != 1 ||
+    if (description.Width != static_cast<std::uint32_t>(metadata.roiSize.width) ||
+        description.Height != static_cast<std::uint32_t>(metadata.roiSize.height) || description.MipLevels != 1 || description.ArraySize != 1 ||
         description.Format != DXGI_FORMAT_B8G8R8A8_UNORM || description.SampleDesc.Count != 1 ||
         description.Usage != D3D11_USAGE_DEFAULT || description.CPUAccessFlags != 0 ||
         (description.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0)
@@ -466,6 +635,68 @@ DemodStatus ValidateFrame(Demodulator::Implementation& state, const ScreenCaptur
     frame.texture->GetDevice(&textureDevice);
     return SameComIdentity(textureDevice.Get(), state.device.Get()) ? DemodStatus{} :
         DemodStatus::Failure(DemodError::WrongDevice, DemodStage::Submission);
+}
+
+DemodStatus ValidateRemoteVisualLowFpsSubmission(const Demodulator::Implementation& state,
+    const ScreenCaptureFrame& frame, const pbmodulation::LocalDesktopGeometry& geometry,
+    const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy,
+    pbmodulation::LocalDesktopGeometry& samplingGeometry) noexcept
+{
+    const auto geometryStatus = pbmodulation::ResolveRemoteVisualLowFpsSamplingGeometry(geometry,
+        frame.metadata.roiSize.width, frame.metadata.roiSize.height, samplingGeometry, policy);
+    if (geometryStatus != pbmodulation::RemoteVisualLowFpsErasure::None)
+    {
+        return DemodStatus::Failure(geometryStatus == pbmodulation::RemoteVisualLowFpsErasure::FrameOutOfBounds ?
+            DemodError::InvalidFrame : DemodError::InvalidBinding, DemodStage::Binding,
+            static_cast<std::int32_t>(geometryStatus));
+    }
+    const auto tileSamples = pbprotocol::CheckedMultiplyUint64(state.remoteVisualLowFpsActiveTileCount,
+        remoteVisualLowFpsSamplesPerTile);
+    const auto totalSamples = tileSamples ?
+        pbprotocol::CheckedAddUint64(tileSamples.Value(), remoteVisualLowFpsCalibrationSamples) : tileSamples;
+    const auto maximumTexelReads = totalSamples ?
+        pbprotocol::CheckedMultiplyUint64(totalSamples.Value(), remoteVisualLowFpsMaximumTexelsPerSample) : totalSamples;
+    // maximumDataWorkUnits is a frozen CPU-reference policy measured in source
+    // Pixel reads. A bilinear SampleLevel may consume four source texels, so the
+    // GPU path conservatively enforces the same worst-case accounting boundary.
+    if (!maximumTexelReads || policy.maximumDataWorkUnits < maximumTexelReads.Value())
+    {
+        return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Binding,
+            static_cast<std::int32_t>(pbmodulation::RemoteVisualLowFpsErasure::WorkBudgetExceeded));
+    }
+    return {};
+}
+
+DemodStatus BuildRemoteVisualLowFpsFrameBindings(Demodulator::Implementation& state, const Binding& binding) noexcept
+{
+    for (std::uint32_t physical = 0; physical < pbmodulation::kRemoteVisualTileCount; physical++)
+    {
+        pbmodulation::RemoteVisualTileMapping mapping;
+        if (!pbmodulation::GetRemoteVisualTileMapping(physical, mapping))
+        {
+            return DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding);
+        }
+        auto& frameBinding = state.remoteVisualLowFpsFrameBindings[physical];
+        frameBinding.logicalBits.fill(pbmodulation::kRemoteVisualLowFpsCodedBits);
+        if (mapping.role == pbmodulation::RemoteVisualTileRole::FreshnessTag)
+        {
+            bool expectedOne = false;
+            if (!pbmodulation::GetRemoteVisualFreshnessBit(binding.sessionTag, binding.frameSequence, physical, expectedOne))
+            {
+                return DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding);
+            }
+            frameBinding.logicalBits[0] = static_cast<std::uint32_t>(expectedOne);
+        }
+        else if (mapping.role == pbmodulation::RemoteVisualTileRole::Data)
+        {
+            for (std::uint32_t plane = 0; plane < pbmodulation::kRemoteVisualLowFpsBitsPerTile; plane++)
+            {
+                frameBinding.logicalBits[plane] =
+                    pbmodulation::GetRemoteVisualLowFpsLogicalBit(mapping.dataOrdinal, plane, binding.frameSequence);
+            }
+        }
+    }
+    return {};
 }
 
 DemodStatus ClassifyNativeFailure(Demodulator::Implementation& state, const HRESULT native,
@@ -499,12 +730,17 @@ DemodStatus CalculateDemodulatorResidentBytes(const DemodConfig& config, std::ui
     }
     const auto metricPairBytes = pbprotocol::CheckedMultiplyUint64(maximumMetricBytes, 2);
     const auto calibrationPairBytes = pbprotocol::CheckedMultiplyUint64(calibrationBytes, 2);
-    if (!metricPairBytes || !calibrationPairBytes)
+    const auto freshnessSummaryPairBytes = pbprotocol::CheckedMultiplyUint64(remoteVisualLowFpsFreshnessSummaryBytes, 2);
+    if (!metricPairBytes || !calibrationPairBytes || !freshnessSummaryPairBytes)
     {
         return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Configuration);
     }
     const auto perSlotFirst = pbprotocol::CheckedAddUint64(metricPairBytes.Value(), calibrationPairBytes.Value());
-    const auto perSlotBytes = perSlotFirst ? pbprotocol::CheckedAddUint64(perSlotFirst.Value(), sizeof(FrameConstants)) : perSlotFirst;
+    const auto perSlotSecond = perSlotFirst ?
+        pbprotocol::CheckedAddUint64(perSlotFirst.Value(), freshnessSummaryPairBytes.Value()) : perSlotFirst;
+    const auto perSlotThird = perSlotSecond ?
+        pbprotocol::CheckedAddUint64(perSlotSecond.Value(), remoteVisualLowFpsFrameBindingBytes) : perSlotSecond;
+    const auto perSlotBytes = perSlotThird ? pbprotocol::CheckedAddUint64(perSlotThird.Value(), sizeof(FrameConstants)) : perSlotThird;
     if (!perSlotBytes)
     {
         return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Configuration);
@@ -516,7 +752,14 @@ DemodStatus CalculateDemodulatorResidentBytes(const DemodConfig& config, std::ui
         pbprotocol::CheckedAddUint64(residentSecond.Value(), pbmodulation::kDesktopLevelsMaximumDataBytes) : residentSecond;
     const auto residentFourth = residentThird ?
         pbprotocol::CheckedAddUint64(residentThird.Value(), pbdesktoplevels::kProcessingReservationBytes) : residentThird;
-    const auto residentBytesResult = residentFourth ? pbprotocol::CheckedAddUint64(residentFourth.Value(), 1024ULL * 1024) : residentFourth;
+    const auto residentFifth = residentFourth ?
+        pbprotocol::CheckedAddUint64(residentFourth.Value(), remoteVisualLowFpsFrameBindingBytes) : residentFourth;
+    const auto residentSixth = residentFifth ?
+        pbprotocol::CheckedAddUint64(residentFifth.Value(), remoteVisualLowFpsTileMappingBytes) : residentFifth;
+    const auto residentSeventh = residentSixth ?
+        pbprotocol::CheckedAddUint64(residentSixth.Value(), remoteVisualLowFpsSymbolMaskBytes) : residentSixth;
+    const auto residentBytesResult = residentSeventh ?
+        pbprotocol::CheckedAddUint64(residentSeventh.Value(), 1024ULL * 1024) : residentSeventh;
     if (!residentBytesResult || residentBytesResult.Value() > config.maximumResidentBytes)
     {
         return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Configuration);
@@ -560,15 +803,83 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
         {
             return status;
         }
-        const std::array<std::pair<const char*, ComPtr<ID3D11ComputeShader>*>, 5> shaders{{
-            {"CalibrateChromaCS", std::addressof(state->calibrateChroma)},
-            {"CalibrateLevelsCS", std::addressof(state->calibrateLevels)},
-            {"DemodShapeChromaCS", std::addressof(state->demodShapeChroma)},
-            {"DemodDesktopLevelsCS", std::addressof(state->demodDesktopLevels)},
-            {"DemodRemoteVisualCS", std::addressof(state->demodRemoteVisual)}}};
+        std::array<RemoteVisualLowFpsTileMapping, pbmodulation::kRemoteVisualTileCount> tileMappings{};
+        std::array<bool, pbmodulation::kRemoteVisualFreshnessRegionCount> eligibleRegions{};
+        for (std::uint32_t physical = 0; physical < tileMappings.size(); physical++)
+        {
+            pbmodulation::LocalDesktopRegion region;
+            pbmodulation::RemoteVisualTileMapping mapping;
+            if (!pbmodulation::GetRemoteVisualTile(physical, region) ||
+                !pbmodulation::GetRemoteVisualTileMapping(physical, mapping) ||
+                mapping.regionId >= pbmodulation::kRemoteVisualFreshnessRegionCount)
+            {
+                return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Resource);
+            }
+            tileMappings[physical] = {region.x, region.y, static_cast<std::uint32_t>(mapping.role), mapping.regionId};
+            state->remoteVisualLowFpsActiveTileCount +=
+                static_cast<std::uint32_t>(mapping.role != pbmodulation::RemoteVisualTileRole::Unused);
+            eligibleRegions[mapping.regionId] = eligibleRegions[mapping.regionId] ||
+                mapping.role != pbmodulation::RemoteVisualTileRole::Unused;
+        }
+        if (std::ranges::count(eligibleRegions, true) != pbmodulation::kRemoteVisualEligibleFreshnessRegions)
+        {
+            return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Resource);
+        }
+        std::array<std::uint32_t, pbmodulation::kRemoteVisualLowFpsSymbolMasks.size()> symbolMasks{};
+        std::transform(pbmodulation::kRemoteVisualLowFpsSymbolMasks.begin(), pbmodulation::kRemoteVisualLowFpsSymbolMasks.end(),
+            symbolMasks.begin(), [](const std::uint16_t mask) { return static_cast<std::uint32_t>(mask); });
+        status = CreateImmutableStructuredBuffer(device, remoteVisualLowFpsTileMappingBytes,
+            sizeof(RemoteVisualLowFpsTileMapping), tileMappings.data(), state->remoteVisualLowFpsTileMappings,
+            state->remoteVisualLowFpsTileMappingsSrv);
+        if (status)
+        {
+            status = CreateImmutableStructuredBuffer(device, remoteVisualLowFpsSymbolMaskBytes, sizeof(std::uint32_t),
+                symbolMasks.data(), state->remoteVisualLowFpsSymbolMasks, state->remoteVisualLowFpsSymbolMasksSrv);
+        }
+        if (!status)
+        {
+            return status;
+        }
+        D3D11_SAMPLER_DESC samplerDescription{};
+        samplerDescription.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        samplerDescription.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDescription.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDescription.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDescription.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        samplerDescription.MinLOD = 0;
+        samplerDescription.MaxLOD = D3D11_FLOAT32_MAX;
+        const HRESULT samplerStatus = device->CreateSamplerState(&samplerDescription, &state->remoteVisualLowFpsSampler);
+        if (FAILED(samplerStatus))
+        {
+            return DemodStatus::Failure(DemodError::NativeFailure, DemodStage::Resource, samplerStatus);
+        }
+        struct ShaderRequest
+        {
+            const char* source;
+            std::size_t sourceBytes;
+            const char* entryPoint;
+            ComPtr<ID3D11ComputeShader>* output;
+        };
+        const std::array<ShaderRequest, 8> shaders{{
+            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
+                "CalibrateChromaCS", std::addressof(state->calibrateChroma)},
+            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
+                "CalibrateLevelsCS", std::addressof(state->calibrateLevels)},
+            {detail::kRemoteVisualLowFpsComputeShader, sizeof(detail::kRemoteVisualLowFpsComputeShader) - 1,
+                "CalibrateRemoteVisualLowFpsCS", std::addressof(state->calibrateRemoteVisualLowFps)},
+            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
+                "DemodShapeChromaCS", std::addressof(state->demodShapeChroma)},
+            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
+                "DemodDesktopLevelsCS", std::addressof(state->demodDesktopLevels)},
+            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
+                "DemodRemoteVisualCS", std::addressof(state->demodRemoteVisual)},
+            {detail::kRemoteVisualLowFpsComputeShader, sizeof(detail::kRemoteVisualLowFpsComputeShader) - 1,
+                "DemodRemoteVisualLowFpsFreshnessCS", std::addressof(state->demodRemoteVisualLowFpsFreshness)},
+            {detail::kRemoteVisualLowFpsComputeShader, sizeof(detail::kRemoteVisualLowFpsComputeShader) - 1,
+                "DemodRemoteVisualLowFpsCS", std::addressof(state->demodRemoteVisualLowFps)}}};
         for (const auto& entry : shaders)
         {
-            status = CompileShader(device, entry.first, *entry.second);
+            status = CompileShader(device, entry.source, entry.sourceBytes, entry.entryPoint, *entry.output);
             if (!status)
             {
                 return status;
@@ -594,6 +905,24 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
                 status = CreateStructuredBuffer(device, calibrationBytes, sizeof(float) * 4, 0, D3D11_USAGE_STAGING,
                     D3D11_CPU_ACCESS_READ, slot.calibrationStaging);
             }
+            if (status)
+            {
+                status = CreateStructuredBuffer(device, remoteVisualLowFpsFrameBindingBytes,
+                    sizeof(RemoteVisualLowFpsFrameBinding), D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0,
+                    slot.remoteVisualLowFpsFrameBindings);
+            }
+            if (status)
+            {
+                status = CreateStructuredBuffer(device, remoteVisualLowFpsFreshnessSummaryBytes,
+                    sizeof(RemoteVisualLowFpsFreshnessSummary), D3D11_BIND_UNORDERED_ACCESS, D3D11_USAGE_DEFAULT, 0,
+                    slot.remoteVisualLowFpsFreshnessSummary);
+            }
+            if (status)
+            {
+                status = CreateStructuredBuffer(device, remoteVisualLowFpsFreshnessSummaryBytes,
+                    sizeof(RemoteVisualLowFpsFreshnessSummary), 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ,
+                    slot.remoteVisualLowFpsFreshnessSummaryStaging);
+            }
             if (!status)
             {
                 return status;
@@ -606,6 +935,16 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
             if (SUCCEEDED(native))
             {
                 native = device->CreateShaderResourceView(slot.calibration.Get(), nullptr, &slot.calibrationSrv);
+            }
+            if (SUCCEEDED(native))
+            {
+                native = device->CreateShaderResourceView(slot.remoteVisualLowFpsFrameBindings.Get(), nullptr,
+                    &slot.remoteVisualLowFpsFrameBindingsSrv);
+            }
+            if (SUCCEEDED(native))
+            {
+                native = device->CreateUnorderedAccessView(slot.remoteVisualLowFpsFreshnessSummary.Get(), nullptr,
+                    &slot.remoteVisualLowFpsFreshnessSummaryUav);
             }
             if (FAILED(native))
             {
@@ -653,14 +992,13 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
     }
 }
 
-DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
-    const std::span<const std::byte> bootstrapRecord, DemodSubmission& output) noexcept
+namespace
 {
-    if (!implementation_)
-    {
-        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Submission);
-    }
-    auto& state = *implementation_;
+DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptureFrame& frame,
+    ID3D11DeviceContext* const context, const std::span<const std::byte> bootstrapRecord,
+    const pbmodulation::LocalDesktopGeometry* const remoteVisualLowFpsGeometry,
+    const pbmodulation::RemoteVisualLowFpsDecodePolicy* const remoteVisualLowFpsPolicy, DemodSubmission& output) noexcept
+{
     auto status = ValidateOwner(state, context, DemodStage::Submission);
     if (!status)
     {
@@ -673,16 +1011,32 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
             return DemodStatus::Failure(DemodError::ShutdownRequired, DemodStage::Submission);
         }
     }
-    status = ValidateFrame(state, frame);
-    if (!status)
-    {
-        return status;
-    }
     Binding binding;
     status = ParseBinding(bootstrapRecord, binding);
     if (!status)
     {
         return status;
+    }
+    const bool remoteVisualLowFps = binding.mode == ProfileMode::RemoteVisualLowFps;
+    const bool remoteVisualLowFpsRequested = remoteVisualLowFpsGeometry != nullptr && remoteVisualLowFpsPolicy != nullptr;
+    if (remoteVisualLowFps != remoteVisualLowFpsRequested)
+    {
+        return DemodStatus::Failure(DemodError::UnsupportedProfile, DemodStage::Binding);
+    }
+    status = ValidateFrame(state, frame, remoteVisualLowFps);
+    if (!status)
+    {
+        return status;
+    }
+    pbmodulation::LocalDesktopGeometry remoteVisualLowFpsSamplingGeometry;
+    if (remoteVisualLowFps)
+    {
+        status = ValidateRemoteVisualLowFpsSubmission(state, frame, *remoteVisualLowFpsGeometry,
+            *remoteVisualLowFpsPolicy, remoteVisualLowFpsSamplingGeometry);
+        if (!status)
+        {
+            return status;
+        }
     }
     if (!state.activeDomain)
     {
@@ -710,44 +1064,115 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     {
         return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Submission);
     }
+    if (remoteVisualLowFps)
+    {
+        status = BuildRemoteVisualLowFpsFrameBindings(state, binding);
+        if (!status)
+        {
+            return status;
+        }
+    }
     ComPtr<ID3D11ShaderResourceView> inputSrv;
     const HRESULT createSrv = state.device->CreateShaderResourceView(frame.texture, nullptr, &inputSrv);
     if (FAILED(createSrv))
     {
         return ClassifyNativeFailure(state, createSrv, DemodStage::Resource, DemodError::NativeFailure);
     }
-    const FrameConstants constants{static_cast<std::uint32_t>(binding.mode), binding.tilePixels, binding.tileCount,
-        binding.rowTiles, binding.interleavePhase, binding.metricCount, binding.codedMetricCount, 0};
+    FrameConstants constants{};
+    constants.mode = static_cast<std::uint32_t>(binding.mode);
+    constants.tilePixels = binding.tilePixels;
+    constants.tileCount = binding.tileCount;
+    constants.rowTiles = binding.rowTiles;
+    constants.interleavePhase = binding.interleavePhase;
+    constants.metricCount = binding.metricCount;
+    constants.reserved0 = binding.codedMetricCount;
+    if (remoteVisualLowFps)
+    {
+        constants.originX = static_cast<float>(remoteVisualLowFpsSamplingGeometry.originX);
+        constants.originY = static_cast<float>(remoteVisualLowFpsSamplingGeometry.originY);
+        constants.scaleX = static_cast<float>(remoteVisualLowFpsSamplingGeometry.scaleX);
+        constants.scaleY = static_cast<float>(remoteVisualLowFpsSamplingGeometry.scaleY);
+        constants.sourceTexelPitchX = 1.0f / static_cast<float>(frame.metadata.roiSize.width);
+        constants.sourceTexelPitchY = 1.0f / static_cast<float>(frame.metadata.roiSize.height);
+        constants.minimumEndpointSeparation = static_cast<float>(remoteVisualLowFpsPolicy->minimumEndpointSeparation);
+        constants.maximumPilotVariance = static_cast<float>(remoteVisualLowFpsPolicy->maximumPilotStandardDeviation *
+            remoteVisualLowFpsPolicy->maximumPilotStandardDeviation);
+        constants.maximumPilotSpatialDeviation = static_cast<float>(remoteVisualLowFpsPolicy->maximumPilotSpatialDeviation);
+        constants.minimumSymbolRms = static_cast<float>(remoteVisualLowFpsPolicy->minimumSymbolRms);
+        constants.maximumSymbolResidual = static_cast<float>(remoteVisualLowFpsPolicy->maximumSymbolResidual);
+        constants.minimumSymbolMargin = static_cast<float>(remoteVisualLowFpsPolicy->minimumSymbolMargin);
+        constants.minimumFreshnessMetric = static_cast<float>(remoteVisualLowFpsPolicy->minimumFreshnessMetric);
+        constants.sourceWidth = static_cast<std::uint32_t>(frame.metadata.roiSize.width);
+        constants.sourceHeight = static_cast<std::uint32_t>(frame.metadata.roiSize.height);
+        constants.freshnessRegionCount = pbmodulation::kRemoteVisualFreshnessRegionCount;
+    }
     context->Begin(slot.timestampDisjoint.Get());
     context->End(slot.timestampStart.Get());
     context->UpdateSubresource(slot.constants.Get(), 0, nullptr, &constants, 0, 0);
+    if (remoteVisualLowFps)
+    {
+        context->UpdateSubresource(slot.remoteVisualLowFpsFrameBindings.Get(), 0, nullptr,
+            state.remoteVisualLowFpsFrameBindings.data(), 0, 0);
+        const UINT clearValues[4]{};
+        context->ClearUnorderedAccessViewUint(slot.metricsUav.Get(), clearValues);
+        context->ClearUnorderedAccessViewUint(slot.remoteVisualLowFpsFreshnessSummaryUav.Get(), clearValues);
+    }
     ID3D11Buffer* constantBuffers[]{slot.constants.Get()};
     context->CSSetConstantBuffers(0, 1, constantBuffers);
-    ID3D11ShaderResourceView* calibrationInputs[]{inputSrv.Get(), nullptr};
-    context->CSSetShaderResources(0, 2, calibrationInputs);
-    ID3D11UnorderedAccessView* calibrationOutputs[]{slot.calibrationUav.Get(), nullptr};
-    context->CSSetUnorderedAccessViews(0, 2, calibrationOutputs, nullptr);
-    context->CSSetShader(binding.mode == ProfileMode::ShapeChroma ? state.calibrateChroma.Get() : state.calibrateLevels.Get(), nullptr, 0);
+    ID3D11ShaderResourceView* calibrationInputs[]{inputSrv.Get(), nullptr, nullptr, nullptr, nullptr};
+    context->CSSetShaderResources(0, 5, calibrationInputs);
+    ID3D11UnorderedAccessView* calibrationOutputs[]{slot.calibrationUav.Get(), nullptr, nullptr};
+    context->CSSetUnorderedAccessViews(0, 3, calibrationOutputs, nullptr);
+    ID3D11ComputeShader* const calibrationShader = binding.mode == ProfileMode::ShapeChroma ? state.calibrateChroma.Get() :
+        remoteVisualLowFps ? state.calibrateRemoteVisualLowFps.Get() : state.calibrateLevels.Get();
+    context->CSSetShader(calibrationShader, nullptr, 0);
     context->Dispatch(1, 1, 1);
 
-    ID3D11UnorderedAccessView* noOutputs[]{nullptr, nullptr};
-    context->CSSetUnorderedAccessViews(0, 2, noOutputs, nullptr);
-    ID3D11ShaderResourceView* demodInputs[]{inputSrv.Get(), slot.calibrationSrv.Get()};
-    context->CSSetShaderResources(0, 2, demodInputs);
-    ID3D11UnorderedAccessView* demodOutputs[]{nullptr, slot.metricsUav.Get()};
-    context->CSSetUnorderedAccessViews(0, 2, demodOutputs, nullptr);
-    ID3D11ComputeShader* const demodShader = binding.mode == ProfileMode::ShapeChroma ? state.demodShapeChroma.Get() :
-        binding.mode == ProfileMode::RemoteVisual ? state.demodRemoteVisual.Get() : state.demodDesktopLevels.Get();
-    context->CSSetShader(demodShader, nullptr, 0);
-    context->Dispatch((binding.tileCount + 63) / 64, 1, 1);
-    context->CSSetUnorderedAccessViews(0, 2, noOutputs, nullptr);
-    ID3D11ShaderResourceView* noInputs[]{nullptr, nullptr};
-    context->CSSetShaderResources(0, 2, noInputs);
+    ID3D11UnorderedAccessView* noOutputs[]{nullptr, nullptr, nullptr};
+    context->CSSetUnorderedAccessViews(0, 3, noOutputs, nullptr);
+    ID3D11ShaderResourceView* demodInputs[]{inputSrv.Get(), slot.calibrationSrv.Get(),
+        remoteVisualLowFps ? state.remoteVisualLowFpsTileMappingsSrv.Get() : nullptr,
+        remoteVisualLowFps ? slot.remoteVisualLowFpsFrameBindingsSrv.Get() : nullptr,
+        remoteVisualLowFps ? state.remoteVisualLowFpsSymbolMasksSrv.Get() : nullptr};
+    context->CSSetShaderResources(0, 5, demodInputs);
+    if (remoteVisualLowFps)
+    {
+        ID3D11SamplerState* samplers[]{state.remoteVisualLowFpsSampler.Get()};
+        context->CSSetSamplers(0, 1, samplers);
+        ID3D11UnorderedAccessView* freshnessOutputs[]{nullptr, nullptr, slot.remoteVisualLowFpsFreshnessSummaryUav.Get()};
+        context->CSSetUnorderedAccessViews(0, 3, freshnessOutputs, nullptr);
+        context->CSSetShader(state.demodRemoteVisualLowFpsFreshness.Get(), nullptr, 0);
+        context->Dispatch((binding.tileCount + 63) / 64, 1, 1);
+        ID3D11UnorderedAccessView* dataOutputs[]{nullptr, slot.metricsUav.Get(), slot.remoteVisualLowFpsFreshnessSummaryUav.Get()};
+        context->CSSetUnorderedAccessViews(0, 3, dataOutputs, nullptr);
+        context->CSSetShader(state.demodRemoteVisualLowFps.Get(), nullptr, 0);
+        context->Dispatch((binding.tileCount + 63) / 64, 1, 1);
+    }
+    else
+    {
+        ID3D11UnorderedAccessView* demodOutputs[]{nullptr, slot.metricsUav.Get(), nullptr};
+        context->CSSetUnorderedAccessViews(0, 3, demodOutputs, nullptr);
+        ID3D11ComputeShader* const demodShader = binding.mode == ProfileMode::ShapeChroma ? state.demodShapeChroma.Get() :
+            binding.mode == ProfileMode::RemoteVisual ? state.demodRemoteVisual.Get() : state.demodDesktopLevels.Get();
+        context->CSSetShader(demodShader, nullptr, 0);
+        context->Dispatch((binding.tileCount + 63) / 64, 1, 1);
+    }
+    context->CSSetUnorderedAccessViews(0, 3, noOutputs, nullptr);
+    ID3D11ShaderResourceView* noInputs[]{nullptr, nullptr, nullptr, nullptr, nullptr};
+    context->CSSetShaderResources(0, 5, noInputs);
+    ID3D11SamplerState* noSamplers[]{nullptr};
+    context->CSSetSamplers(0, 1, noSamplers);
     ID3D11Buffer* noConstants[]{nullptr};
     context->CSSetConstantBuffers(0, 1, noConstants);
     context->CSSetShader(nullptr, nullptr, 0);
     context->CopyResource(slot.calibrationStaging.Get(), slot.calibration.Get());
-    context->CopyResource(slot.metricsStaging.Get(), slot.metrics.Get());
+    const D3D11_BOX metricBox{0, 0, 0, binding.metricCount * sizeof(float), 1, 1};
+    context->CopySubresourceRegion(slot.metricsStaging.Get(), 0, 0, 0, 0, slot.metrics.Get(), 0, &metricBox);
+    if (remoteVisualLowFps)
+    {
+        context->CopyResource(slot.remoteVisualLowFpsFreshnessSummaryStaging.Get(),
+            slot.remoteVisualLowFpsFreshnessSummary.Get());
+    }
     context->End(slot.timestampEnd.Get());
     context->End(slot.timestampDisjoint.Get());
     context->End(slot.completion.Get());
@@ -757,7 +1182,9 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     slot.frame = frame;
     slot.frame.texture = nullptr;
     slot.binding = binding;
-    std::copy(bootstrapRecord.begin(), bootstrapRecord.end(), slot.bootstrapRecord.begin());
+    slot.remoteVisualLowFpsGeometry = remoteVisualLowFps ? *remoteVisualLowFpsGeometry : pbmodulation::LocalDesktopGeometry{};
+    slot.remoteVisualLowFpsPolicy = remoteVisualLowFps ? *remoteVisualLowFpsPolicy : pbmodulation::RemoteVisualLowFpsDecodePolicy{};
+    std::copy_n(bootstrapRecord.begin(), slot.bootstrapRecord.size(), slot.bootstrapRecord.begin());
     slot.generation++;
     slot.busy = true;
     slot.cancelled = false;
@@ -771,6 +1198,29 @@ DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceCon
     }
     output = submission;
     return {};
+}
+} // namespace
+
+DemodStatus Demodulator::Submit(const ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
+    const std::span<const std::byte> bootstrapRecord, DemodSubmission& output) noexcept
+{
+    if (!implementation_)
+    {
+        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Submission);
+    }
+    return SubmitInternal(*implementation_, frame, context, bootstrapRecord, nullptr, nullptr, output);
+}
+
+DemodStatus Demodulator::SubmitRemoteVisualLowFps(const ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
+    const std::span<const std::byte> bootstrapRecord, const pbmodulation::LocalDesktopGeometry& geometry,
+    const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy, DemodSubmission& output) noexcept
+{
+    if (!implementation_)
+    {
+        return DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Submission);
+    }
+    return SubmitInternal(*implementation_, frame, context, bootstrapRecord, std::addressof(geometry),
+        std::addressof(policy), output);
 }
 
 DemodStatus Demodulator::SubmitUnbound(const ScreenCaptureFrame& frame, ID3D11DeviceContext* context,
@@ -933,7 +1383,9 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
     }
     std::memcpy(calibration.data(), mapped.pData, calibrationBytes);
     context->Unmap(slot.calibrationStaging.Get(), 0);
-    status = ValidateCalibration(slot.binding.mode, calibration);
+    const bool remoteVisualLowFps = slot.binding.mode == ProfileMode::RemoteVisualLowFps;
+    status = ValidateCalibration(slot.binding.mode, calibration,
+        remoteVisualLowFps ? std::addressof(slot.remoteVisualLowFpsPolicy) : nullptr);
     if (!status)
     {
         RetireSlot(state, slot, true);
@@ -964,6 +1416,8 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
         return {DemodStatus::Failure(DemodError::NonFiniteMetric, DemodStage::Readback), true};
     }
     pbmodulation::RemoteVisualMetricResolution remoteResolution;
+    pbmodulation::RemoteVisualLowFpsMetricResolution remoteVisualLowFpsResolution;
+    std::uint32_t remoteUnreliableSymbols = 0;
     if (slot.binding.mode == ProfileMode::RemoteVisual)
     {
         remoteResolution = pbmodulation::ResolveRemoteVisualPhysicalMetrics(metrics,
@@ -975,6 +1429,74 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
             return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding), true};
         }
         metrics = std::span(state.logicalMetrics).first(evaluationBinding.codedMetricCount);
+    }
+    else if (remoteVisualLowFps)
+    {
+        std::array<RemoteVisualLowFpsFreshnessSummary, remoteVisualLowFpsFreshnessSummaryEntries> summaries{};
+        mapped = {};
+        native = context->Map(slot.remoteVisualLowFpsFreshnessSummaryStaging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+        if (FAILED(native))
+        {
+            const auto failure = ClassifyNativeFailure(state, native, DemodStage::Readback, DemodError::MapFailure);
+            RetireSlot(state, slot, true);
+            return {failure, true};
+        }
+        if (mapped.pData == nullptr)
+        {
+            context->Unmap(slot.remoteVisualLowFpsFreshnessSummaryStaging.Get(), 0);
+            const auto failure = ClassifyNativeFailure(state, E_FAIL, DemodStage::Readback, DemodError::MapFailure);
+            RetireSlot(state, slot, true);
+            return {failure, true};
+        }
+        std::memcpy(summaries.data(), mapped.pData, remoteVisualLowFpsFreshnessSummaryBytes);
+        context->Unmap(slot.remoteVisualLowFpsFreshnessSummaryStaging.Get(), 0);
+        const auto& globalSummary = summaries[pbmodulation::kRemoteVisualFreshnessRegionCount];
+        if (globalSummary.mismatches != 0 || globalSummary.stale != 0 || globalSummary.erasedDataMetrics != 0)
+        {
+            RetireSlot(state, slot, true);
+            return {DemodStatus::Failure(DemodError::InvalidFrame, DemodStage::Readback,
+                static_cast<std::int32_t>(pbmodulation::RemoteVisualLowFpsErasure::PixelReadFailure)), true};
+        }
+        remoteUnreliableSymbols = globalSummary.erasures;
+        remoteVisualLowFpsResolution.freshnessRegions = pbmodulation::kRemoteVisualEligibleFreshnessRegions;
+        std::uint64_t freshnessTagMismatches = 0;
+        std::uint64_t freshnessTagErasures = 0;
+        std::uint64_t erasedDataMetrics = 0;
+        for (std::uint32_t region = 0; region < pbmodulation::kRemoteVisualFreshnessRegionCount; region++)
+        {
+            const auto& summary = summaries[region];
+            if (summary.stale > 1)
+            {
+                RetireSlot(state, slot, true);
+                return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Readback), true};
+            }
+            freshnessTagMismatches += summary.mismatches;
+            freshnessTagErasures += summary.erasures;
+            erasedDataMetrics += summary.erasedDataMetrics;
+            remoteVisualLowFpsResolution.staleRegions += summary.stale;
+        }
+        if (freshnessTagMismatches > pbmodulation::kRemoteVisualTileCount ||
+            freshnessTagErasures > pbmodulation::kRemoteVisualTileCount ||
+            erasedDataMetrics > pbmodulation::kRemoteVisualLowFpsCodedBits ||
+            remoteVisualLowFpsResolution.staleRegions > pbmodulation::kRemoteVisualEligibleFreshnessRegions)
+        {
+            RetireSlot(state, slot, true);
+            return {DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Readback), true};
+        }
+        remoteVisualLowFpsResolution.freshnessTagMismatches = static_cast<std::uint32_t>(freshnessTagMismatches);
+        remoteVisualLowFpsResolution.freshnessTagErasures = static_cast<std::uint32_t>(freshnessTagErasures);
+        remoteVisualLowFpsResolution.erasedDataMetrics = static_cast<std::uint32_t>(erasedDataMetrics);
+        remoteVisualLowFpsResolution.valid = true;
+        for (float& metric : metrics)
+        {
+            float calibratedMetric = 0;
+            if (!pbmodulation::CalibrateRemoteVisualLowFpsMetric(metric, calibratedMetric))
+            {
+                RetireSlot(state, slot, true);
+                return {DemodStatus::Failure(DemodError::CalibrationFailure, DemodStage::Calibration), true};
+            }
+            metric = calibratedMetric;
+        }
     }
     else if (unboundCall)
     {
@@ -1006,7 +1528,7 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
     const std::size_t firstHardBit = state.evaluationMode == pbdesktoplevels::EvaluationMode::Transport ?
         static_cast<std::size_t>(slot.binding.codewords) * pbdesktoplevels::kCodewordBits : 0;
     const auto evaluationMetrics = metrics.first(evaluationBinding.codedMetricCount);
-    const bool remoteMetricSummaryAvailable = slot.binding.mode == ProfileMode::RemoteVisual;
+    const bool remoteMetricSummaryAvailable = slot.binding.mode == ProfileMode::RemoteVisual || remoteVisualLowFps;
     std::uint32_t remoteZeroMagnitudeMetrics = 0;
     double remoteMinimumAbsoluteMetric = (std::numeric_limits<double>::max)();
     double remoteAbsoluteMetricSum = 0;
@@ -1036,7 +1558,8 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
     DemodFrameResult result;
     result.metadata = metadata;
     result.visualProfileId = evaluationBinding.profileId;
-    result.metricReadbackBytes = metricBytes + calibrationBytes;
+    result.metricReadbackBytes = metricBytes + calibrationBytes +
+        (remoteVisualLowFps ? remoteVisualLowFpsFreshnessSummaryBytes : 0);
     result.gpuTime100ns = gpuTime100ns;
     result.gpuTimingValid = gpuTimingValid;
     result.remoteMetricSummaryAvailable = remoteMetricSummaryAvailable;
@@ -1046,11 +1569,15 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
         remoteMinimumAbsoluteMetric : 0;
     result.remoteMeanAbsoluteMetric = remoteMetricSummaryAvailable && !evaluationMetrics.empty() ?
         remoteAbsoluteMetricSum / static_cast<double>(evaluationMetrics.size()) : 0;
-    result.remoteFreshnessRegions = remoteResolution.freshnessRegions;
-    result.remoteStaleRegions = remoteResolution.staleRegions;
-    result.remoteFreshnessTagMismatches = remoteResolution.freshnessTagMismatches;
-    result.remoteFreshnessTagErasures = remoteResolution.freshnessTagErasures;
-    result.remoteFreshnessErasedDataMetrics = remoteResolution.erasedDataMetrics;
+    result.remoteFreshnessRegions = remoteVisualLowFps ? remoteVisualLowFpsResolution.freshnessRegions : remoteResolution.freshnessRegions;
+    result.remoteStaleRegions = remoteVisualLowFps ? remoteVisualLowFpsResolution.staleRegions : remoteResolution.staleRegions;
+    result.remoteFreshnessTagMismatches = remoteVisualLowFps ?
+        remoteVisualLowFpsResolution.freshnessTagMismatches : remoteResolution.freshnessTagMismatches;
+    result.remoteFreshnessTagErasures = remoteVisualLowFps ?
+        remoteVisualLowFpsResolution.freshnessTagErasures : remoteResolution.freshnessTagErasures;
+    result.remoteFreshnessErasedDataMetrics = remoteVisualLowFps ?
+        remoteVisualLowFpsResolution.erasedDataMetrics : remoteResolution.erasedDataMetrics;
+    result.remoteUnreliableSymbols = remoteUnreliableSymbols;
     result.evaluation = state.evaluator.EvaluateCodewords(evaluationBootstrap,
         std::span(state.hard).first(evaluationBinding.dataBytes), evaluationMetrics, state.evaluationMode);
     const auto accepted = state.evaluator.GetAcceptedTransportBlocks();

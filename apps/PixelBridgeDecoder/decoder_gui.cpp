@@ -451,14 +451,13 @@ private:
         backendCombo_->addItem(QStringLiteral("DXGI Desktop Duplication"), static_cast<int>(pbapp::CaptureBackend::Dxgi));
         backendCombo_->setToolTip(QStringLiteral("显式 backend；当前没有 Auto，也不会 silent fallback。"));
         profileCombo_ = new QComboBox();
-        profileCombo_->addItem(QStringLiteral("Direct-Level 2x2 · Experimental"),
-            static_cast<int>(pbapp::VisualProfile::DirectLevels2x2));
-        profileCombo_->addItem(QStringLiteral("Shape+Chroma · Experimental"),
-            static_cast<int>(pbapp::VisualProfile::ShapeChroma));
-        profileCombo_->addItem(QStringLiteral("RemoteVisual Resilient 8x8 Luma · Experimental"),
-            static_cast<int>(pbapp::VisualProfile::RemoteVisualResilient));
+        for (const pbapp::VisualProfileOption& option : pbapp::GetVisualProfileOptions())
+        {
+            profileCombo_->addItem(QString::fromUtf8(option.displayName.data(),
+                static_cast<int>(option.displayName.size())), static_cast<int>(option.profile));
+        }
         profileCombo_->setToolTip(QStringLiteral(
-            "必须与 Encoder 一致；RemoteVisual X2 使用 8x8 二值亮度、中央采样、128x128 区域新鲜度标签和同帧软擦除，仍不是 Certified Profile。"));
+            "必须与 Encoder 一致；旧 remote 与 remote-lf4 是不同 wire identity。LF4 使用 continuous locator、四 codeword 与 freshness soft erasure，仍不是 Certified Profile。"));
         actualBackendLabel_ = new QLabel(QStringLiteral("Requested: WGC · Actual: —"));
         actualBackendLabel_->setWordWrap(true);
         captureLayout->addRow(QStringLiteral("Requested backend"), backendCombo_);
@@ -467,7 +466,7 @@ private:
         settingsRow->addWidget(captureGroup, 2);
         root->addLayout(settingsRow);
 
-        auto* const roiGroup = new QGroupBox(QStringLiteral("ROI · physical pixels · strict 1:1"));
+        auto* const roiGroup = new QGroupBox(QStringLiteral("ROI · physical pixels · LF4 bounded 0.5x..2.0x"));
         auto* const roiLayout = new QVBoxLayout(roiGroup);
         auto* const roiActions = new QHBoxLayout();
         selectRoiButton_ = new QPushButton(QStringLiteral("输入物理 ROI…"));
@@ -607,7 +606,15 @@ private:
         connect(backendCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &DecoderWindow::UpdateActionButtons);
         connect(profileCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this]() { UpdateRoiDetails(); });
+            [this]()
+            {
+                if (static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt()) ==
+                    pbapp::VisualProfile::RemoteVisualLowFps)
+                {
+                    channelCombo_->setCurrentIndex(1);
+                }
+                UpdateRoiDetails();
+            });
         connect(channelCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this]() { UpdateRoiDetails(); });
         connect(protectedMonitorCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]()
@@ -850,21 +857,29 @@ private:
         }
         const std::int64_t width = static_cast<std::int64_t>(region_.physicalRect.right) - region_.physicalRect.left;
         const std::int64_t height = static_cast<std::int64_t>(region_.physicalRect.bottom) - region_.physicalRect.top;
-        const bool compatible = width == pbapp::phase1CanvasWidth && height == pbapp::phase1CanvasHeight &&
+        const auto profile = static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt());
+        const bool strictGeometry = width == pbapp::phase1CanvasWidth && height == pbapp::phase1CanvasHeight &&
             region_.rotation == DXGI_MODE_ROTATION_IDENTITY;
-        const bool diagnosticCaptureOnlyReady = !compatible && channelCombo_->currentIndex() == 1 &&
-            static_cast<pbapp::VisualProfile>(profileCombo_->currentData().toInt()) ==
-                pbapp::VisualProfile::RemoteVisualResilient && replayCheck_->isChecked() &&
+        const bool lowFpsGeometry = profile == pbapp::VisualProfile::RemoteVisualLowFps &&
+            width >= static_cast<std::int64_t>(pbapp::phase1CanvasWidth / 2) &&
+            width <= static_cast<std::int64_t>(pbapp::phase1CanvasWidth * 2) &&
+            height >= static_cast<std::int64_t>(pbapp::phase1CanvasHeight / 2) &&
+            height <= static_cast<std::int64_t>(pbapp::phase1CanvasHeight * 2) &&
+            region_.rotation == DXGI_MODE_ROTATION_IDENTITY;
+        const bool compatible = strictGeometry || lowFpsGeometry;
+        const bool diagnosticCaptureOnlyReady = !strictGeometry && channelCombo_->currentIndex() == 1 &&
+            profile == pbapp::VisualProfile::RemoteVisualResilient && replayCheck_->isChecked() &&
             !replayPathEdit_->text().isEmpty();
         roiDetailsLabel_->setText(QStringLiteral("Physical RECT: X=%1 Y=%2 · %3x%4 · scale estimate %5x%6 · DPI %7x%8 · rotation %9 · %10")
             .arg(region_.physicalRect.left).arg(region_.physicalRect.top).arg(width).arg(height)
             .arg(static_cast<double>(width) / pbapp::phase1CanvasWidth, 0, 'f', 6)
             .arg(static_cast<double>(height) / pbapp::phase1CanvasHeight, 0, 'f', 6)
             .arg(region_.dpiX).arg(region_.dpiY).arg(RotationText(region_.rotation))
-            .arg(compatible ? QStringLiteral("✓ strict Phase-1 1:1 geometry compatible") :
+            .arg(lowFpsGeometry ? QStringLiteral("✓ remote-lf4 bounded ROI; continuous locator decides exact canvas/scale") :
+                strictGeometry ? QStringLiteral("✓ strict Phase-1 1:1 geometry compatible") :
                 diagnosticCaptureOnlyReady ?
                     QStringLiteral("△ incompatible; bounded replay capture-only is enabled; Bootstrap/demod/FEC/Receiver/publish are disabled") :
-                    QStringLiteral("✕ incompatible; enable RemoteVisual Resilient + receiver-only Replay to capture diagnostics, or select exact 1920x1080; no silent resize")));
+                    QStringLiteral("✕ incompatible; LF4 requires each axis in 0.5x..2.0x, other profiles require exact 1920x1080; no silent resize")));
         roiDetailsLabel_->setStyleSheet(compatible ? QStringLiteral("color:#168a52;") :
             diagnosticCaptureOnlyReady ? QStringLiteral("color:#b54708;") : QStringLiteral("color:#b42318;"));
         reselectRoiButton_->setEnabled(!controller_.IsActive());
@@ -1166,6 +1181,12 @@ private:
         const std::int64_t height = static_cast<std::int64_t>(region_.physicalRect.bottom) - region_.physicalRect.top;
         const bool strictGeometry = width == pbapp::phase1CanvasWidth && height == pbapp::phase1CanvasHeight &&
             region_.rotation == DXGI_MODE_ROTATION_IDENTITY;
+        const bool lowFpsGeometry = config.visualProfile == pbapp::VisualProfile::RemoteVisualLowFps &&
+            width >= static_cast<std::int64_t>(pbapp::phase1CanvasWidth / 2) &&
+            width <= static_cast<std::int64_t>(pbapp::phase1CanvasWidth * 2) &&
+            height >= static_cast<std::int64_t>(pbapp::phase1CanvasHeight / 2) &&
+            height <= static_cast<std::int64_t>(pbapp::phase1CanvasHeight * 2) &&
+            region_.rotation == DXGI_MODE_ROTATION_IDENTITY;
         config.remoteMetadata.estimatedScaleX = static_cast<double>(width) / pbapp::phase1CanvasWidth;
         config.remoteMetadata.estimatedScaleY = static_cast<double>(height) / pbapp::phase1CanvasHeight;
         config.remoteMetadata.letterboxStatus = "Unknown";
@@ -1177,9 +1198,11 @@ private:
         config.diagnosticCaptureOnly = !strictGeometry && !config.replayOutputPath.empty() &&
             config.remoteMetadata.channelType == pbapp::ChannelType::RemoteVisual &&
             config.visualProfile == pbapp::VisualProfile::RemoteVisualResilient;
-        config.remoteMetadata.geometryStatus = strictGeometry ? "CompatibleStrictPhysical1:1" :
-            config.diagnosticCaptureOnly ? "DiagnosticOnlyIncompatibleROI; no resampling/decode/publish" :
-            "IncompatiblePhysicalROI; no resampling permitted";
+        config.remoteMetadata.geometryStatus = lowFpsGeometry ?
+            "BoundedRemoteLf4ROI; continuous locator is authoritative" :
+            strictGeometry ? "CompatibleStrictPhysical1:1" :
+                config.diagnosticCaptureOnly ? "DiagnosticOnlyIncompatibleROI; no resampling/decode/publish" :
+                    "IncompatiblePhysicalROI; no resampling permitted";
 
         MONITORINFOEXW monitorInfo{};
         monitorInfo.cbSize = sizeof(monitorInfo);
@@ -1188,8 +1211,15 @@ private:
             validationError = QStringLiteral("无法读取 ROI 所在显示器 identity");
             return false;
         }
-        config.remoteMetadata.experimentMonitorIdentity =
+        const std::string experimentMonitorIdentity =
             QString::fromWCharArray(monitorInfo.szDevice).toUtf8().toStdString();
+        if (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
+            config.remoteMetadata.experimentMonitorIdentity != experimentMonitorIdentity)
+        {
+            validationError = QStringLiteral("ExperimentMonitor 与 metadata preset 不一致");
+            return false;
+        }
+        config.remoteMetadata.experimentMonitorIdentity = experimentMonitorIdentity;
         config.remoteMetadata.computerADisplayResolution = std::to_string(
             monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left) + "x" +
             std::to_string(monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top);
@@ -1242,9 +1272,15 @@ private:
                 }
             }
             config.monitorSafety = safetySelection;
-            config.remoteMetadata.protectedMonitorIdentity = protectedDeviceName.toUtf8().toStdString();
-            config.remoteMetadata.experimentMonitorIdentity =
-                QString::fromWCharArray(monitorInfo.szDevice).toUtf8().toStdString();
+            const std::string protectedMonitorIdentity = protectedDeviceName.toUtf8().toStdString();
+            if (!config.remoteMetadata.protectedMonitorIdentity.empty() &&
+                config.remoteMetadata.protectedMonitorIdentity != protectedMonitorIdentity)
+            {
+                validationError = QStringLiteral("ProtectedMonitor 与 metadata preset 不一致");
+                return false;
+            }
+            config.remoteMetadata.protectedMonitorIdentity = protectedMonitorIdentity;
+            config.remoteMetadata.experimentMonitorIdentity = experimentMonitorIdentity;
             config.remoteMetadata.computerARefreshRate = safetySelection.experimentMonitor.refreshRate;
         }
         const pbapp::RuntimeStatus status = pbapp::ValidateDecoderConfig(config);

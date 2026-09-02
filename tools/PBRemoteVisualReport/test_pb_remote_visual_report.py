@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import contextlib
 import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -11,6 +13,7 @@ import pb_remote_visual_report as report_tool
 
 
 RUN_ID = "0123456789abcdef0123456789abcdef"
+SESSION_ID = "fedcba9876543210fedcba9876543210"
 DIGEST = "ab" * 32
 
 
@@ -54,12 +57,29 @@ def encoder_report() -> dict:
         "schema": "PixelBridge.RunReport.2",
         "role": "Encoder",
         "runId": RUN_ID,
-        "profile": "RemoteVisual Resilient 8x8 Luma (Experimental)",
+        "profile": report_tool.LF4_PROFILE,
         "runStartedUnixMilliseconds": 1000,
         "runEndedUnixMilliseconds": 5000,
         "fileBytes": 3,
         "wholeFileDigest": DIGEST,
+        "sessionId": SESSION_ID,
         "sessionTag": 77,
+        "visualProfileId": report_tool.LF4_PROFILE_ID,
+        "visualLayoutVersion": report_tool.LF4_LAYOUT_VERSION,
+        "codedDataBytesPerFrame": report_tool.LF4_CODED_DATA_BYTES_PER_FRAME,
+        "codewordsPerFrame": report_tool.LF4_CODEWORDS_PER_FRAME,
+        "configuredLogicalVisualFps": 2,
+        "generatedVisualFramesPerSecond": 2.0,
+        "generatedVisualFramesPerSecondBasis": "interval-authoritative logical source replacements",
+        "generatedPayloadBytesPerSecond": 2000.0,
+        "generatedPayloadBytesPerSecondBasis": "actual Outer-FEC payload bytes per broadcast runtime",
+        "capacityModel": {
+            "rawVisualBitsPerLogicalFrame": report_tool.LF4_RAW_VISUAL_BITS_PER_FRAME,
+            "innerFecInformationBytesPerLogicalFrame": report_tool.LF4_INNER_FEC_INFORMATION_BYTES_PER_FRAME,
+            "transportPayloadCeilingBytesPerLogicalFrame": report_tool.LF4_TRANSPORT_PAYLOAD_CEILING_BYTES_PER_FRAME,
+            "configuredTransportPayloadCeilingBytesPerSecond": 2 * report_tool.LF4_TRANSPORT_PAYLOAD_CEILING_BYTES_PER_FRAME,
+            "basis": "frozen profile constants times configured logical FPS",
+        },
         "state": "Stopped",
         "receiverProgress": None,
         "receiverEta": None,
@@ -82,13 +102,18 @@ def decoder_report() -> dict:
         "schema": "PixelBridge.RunReport.2",
         "role": "Decoder",
         "runId": RUN_ID,
-        "profile": "RemoteVisual Resilient 8x8 Luma (Experimental)",
+        "profile": report_tool.LF4_PROFILE,
         "runStartedUnixMilliseconds": 2000,
         "runEndedUnixMilliseconds": 4000,
         "descriptorKnown": True,
         "originalFileBytes": 3,
         "wholeFileDigest": DIGEST,
+        "sessionId": SESSION_ID,
         "sessionTag": 77,
+        "visualProfileId": report_tool.LF4_PROFILE_ID,
+        "visualLayoutVersion": report_tool.LF4_LAYOUT_VERSION,
+        "codedDataBytesPerFrame": report_tool.LF4_CODED_DATA_BYTES_PER_FRAME,
+        "codewordsPerFrame": report_tool.LF4_CODEWORDS_PER_FRAME,
         "state": "Completed",
         "verifiedRawBytes": 3,
         "remainingRawBytes": 0,
@@ -105,13 +130,60 @@ def decoder_report() -> dict:
         "falseAcceptedCodewordsUnavailableReason": "Production receive has no independent truth oracle",
         "telemetryBootstrapAttempts": 10,
         "telemetryBootstrapSuccesses": 10,
-        "acceptedTransportBlocks": 3,
+        "bootstrapSuccessRate": 1.0,
+        "evaluatedDataFrames": 1,
+        "evaluatedCodewords": 4,
+        "postFecFailedFrames": 0,
+        "fecFailures": 0,
+        "crcFailures": 0,
+        "identityFailures": 0,
+        "fecFrameErrorRate": 0.0,
+        "fecCodewordFailureRate": 0.0,
+        "fecAcceptedTransportBlocks": 4,
+        "fecAcceptedTransportBlockRate": 1.0,
+        "acceptedTransportBlocks": 4,
+        "temporallyAdmittedTransportBlocks": 4,
+        "acceptedTransportBlocksBasis": "Receiver-bound unique temporal admission",
+        "comparedCodedBits": 0,
+        "erroneousCodedBits": 0,
+        "preFecBerEstimate": None,
         "duplicateFrameSequences": 0,
         "reorderedFrameSequences": 0,
         "frameSequenceGapEvents": 0,
         "skippedFrameSequences": 0,
         "endToEndUniqueFrameSequences": 3,
         "captureEpochResets": 0,
+        "remoteMetricTelemetry": {
+            "frames": 1,
+            "samples": report_tool.LF4_METRIC_SAMPLES_PER_FRAME,
+            "zeroMagnitudeMetrics": 0,
+            "zeroMagnitudeRate": 0.0,
+            "minimumAbsoluteMetric": 0.5,
+            "meanAbsoluteMetric": 0.75,
+            "verifiedFrames": 1,
+            "rejectedFrames": 0,
+            "transportEvaluatedFrames": 1,
+            "nonTransportFrames": 0,
+            "symbolSamples": report_tool.LF4_SYMBOL_SAMPLES_PER_FRAME,
+            "unreliableSymbols": 0,
+            "unreliableSymbolRate": 0.0,
+            "verifiedMeanAbsoluteMetric": 0.75,
+            "rejectedMeanAbsoluteMetric": None,
+            "rejectedZeroMagnitudeRate": None,
+            "freshnessRegions": report_tool.LF4_FRESHNESS_REGIONS_PER_FRAME,
+            "freshRegions": report_tool.LF4_FRESHNESS_REGIONS_PER_FRAME,
+            "staleRegions": 0,
+            "staleRegionRate": 0.0,
+            "framesWithStaleRegions": 0,
+            "freshnessTagMismatches": 0,
+            "freshnessTagErasures": 0,
+            "freshnessErasedDataMetrics": 0,
+            "freshnessErasedDataMetricRate": 0.0,
+            "observationBasis": "profile-validated metric-bearing observations",
+            "highConfidenceWrongCodewords": None,
+            "highConfidenceWrongUnavailableReason": "no independent production truth oracle",
+            "unavailableReason": "",
+        },
         "outerAdmission": {"uniqueSymbols": 3, "identicalDuplicateSymbols": 0,
             "recoveryAlreadyReadySymbols": 0, "alreadyCompletedSymbols": 0, "recoveryReadyEvents": 1,
             "resourceRejections": 0, "conflictRejections": 0},
@@ -136,20 +208,94 @@ class RemoteVisualReportTests(unittest.TestCase):
             root = Path(directory)
             source = root / "source.bin"
             output = root / "output.bin"
+            encoder_path = root / "encoder.json"
+            decoder_path = root / "decoder.json"
             source.write_bytes(b"abc")
             output.write_bytes(b"abc")
+            encoder_path.write_text(json.dumps(encoder_report()), encoding="utf-8")
+            decoder_path.write_text(json.dumps(decoder_report()), encoding="utf-8")
             combined = report_tool.merge_reports(encoder_report(), decoder_report(), source_file=source,
-                published_file=output)
+                published_file=output, encoder_report_file=encoder_path, decoder_report_file=decoder_path)
             self.assertTrue(combined["formalMergedRun"])
             self.assertTrue(combined["successfulRun"])
             self.assertTrue(combined["evidenceValid"])
             self.assertTrue(combined["externalVerification"]["match"])
+            self.assertIsNotNone(combined["endpointReports"]["encoder"])
+            self.assertIsNotNone(combined["endpointReports"]["decoder"])
             self.assertFalse(combined["certifiedRemoteVisualProfile"])
 
     def test_identity_mismatch_is_rejected(self) -> None:
         decoder = decoder_report()
         decoder["sessionTag"] = 78
         with self.assertRaisesRegex(report_tool.ReportError, "SessionTag"):
+            report_tool.merge_reports(encoder_report(), decoder)
+
+        decoder = decoder_report()
+        decoder["sessionId"] = "0" * 32
+        with self.assertRaisesRegex(report_tool.ReportError, "SessionId"):
+            report_tool.merge_reports(encoder_report(), decoder)
+
+    def test_current_and_legacy_lf4_labels_are_exact_endpoint_scoped(self) -> None:
+        legacy_profile = next(iter(report_tool.LF4_LEGACY_PROFILES))
+        encoder = encoder_report()
+        decoder = decoder_report()
+        encoder["profile"] = legacy_profile
+        decoder["profile"] = legacy_profile
+        combined = report_tool.merge_reports(encoder, decoder)
+        self.assertEqual(combined["profile"], legacy_profile)
+
+        decoder["profile"] = report_tool.LF4_PROFILE
+        with self.assertRaisesRegex(report_tool.ReportError, "mismatch for profile"):
+            report_tool.merge_reports(encoder, decoder)
+
+    def test_formal_success_requires_both_exact_endpoint_report_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.bin"
+            output = root / "output.bin"
+            encoder_path = root / "encoder.json"
+            decoder_path = root / "decoder.json"
+            source.write_bytes(b"abc")
+            output.write_bytes(b"abc")
+            encoder_path.write_text(json.dumps(encoder_report()), encoding="utf-8")
+            decoder_path.write_text(json.dumps(decoder_report()), encoding="utf-8")
+            without_endpoints = report_tool.merge_reports(encoder_report(), decoder_report(), source_file=source,
+                published_file=output)
+            self.assertFalse(without_endpoints["successfulRun"])
+            self.assertIsNone(without_endpoints["endpointReports"]["encoder"])
+
+            wrong_encoder = encoder_report()
+            wrong_encoder["state"] = "Failed"
+            with self.assertRaisesRegex(report_tool.ReportError, "does not contain the supplied endpoint object"):
+                report_tool.merge_reports(wrong_encoder, decoder_report(), encoder_report_file=encoder_path,
+                    decoder_report_file=decoder_path)
+
+    def test_lf4_frozen_identity_denominators_and_null_semantics_fail_closed(self) -> None:
+        encoder = encoder_report()
+        encoder["capacityModel"]["transportPayloadCeilingBytesPerLogicalFrame"] -= 1
+        with self.assertRaisesRegex(report_tool.ReportError, "Transport payload ceiling"):
+            report_tool.merge_reports(encoder, decoder_report())
+
+        decoder = decoder_report()
+        decoder["evaluatedCodewords"] = 3
+        with self.assertRaisesRegex(report_tool.ReportError, "evaluated codeword denominator"):
+            report_tool.merge_reports(encoder_report(), decoder)
+
+        decoder = decoder_report()
+        decoder["remoteMetricTelemetry"]["samples"] -= 1
+        with self.assertRaisesRegex(report_tool.ReportError, "metric sample denominator"):
+            report_tool.merge_reports(encoder_report(), decoder)
+
+        decoder = decoder_report()
+        decoder["remoteMetricTelemetry"]["unreliableSymbolRate"] = None
+        with self.assertRaisesRegex(report_tool.ReportError, "must be measured"):
+            report_tool.merge_reports(encoder_report(), decoder)
+
+        decoder = decoder_report()
+        decoder["comparedCodedBits"] = 0
+        decoder["erroneousCodedBits"] = 0
+        decoder["preFecBerEstimate"] = 0.0
+        with self.assertRaisesRegex(report_tool.ReportError, "must be null"):
             report_tool.merge_reports(encoder_report(), decoder)
 
     def test_v2_run_id_must_be_128_bit_lowercase_hex(self) -> None:
@@ -365,6 +511,48 @@ class RemoteVisualReportTests(unittest.TestCase):
                 report_tool._write_new(path, b"second")
             self.assertEqual(path.read_bytes(), b"first")
 
+    def test_cli_emits_create_only_combined_markdown_and_per_run_csv_with_endpoint_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            encoder_path = root / "encoder.json"
+            decoder_path = root / "decoder.json"
+            source = root / "source.bin"
+            output = root / "output.bin"
+            output_directory = root / "reports"
+            encoder_path.write_text(json.dumps(encoder_report()), encoding="utf-8")
+            decoder_path.write_text(json.dumps(decoder_report()), encoding="utf-8")
+            source.write_bytes(b"abc")
+            output.write_bytes(b"abc")
+            arguments = ["--encoder", str(encoder_path), "--decoder", str(decoder_path),
+                "--output-dir", str(output_directory), "--source-file", str(source),
+                "--published-file", str(output)]
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                self.assertEqual(report_tool.main(arguments), 0, stderr.getvalue())
+            result = json.loads(stdout.getvalue())
+            combined_path = Path(result["combined"])
+            markdown_path = Path(result["markdown"])
+            csv_path = Path(result["csv"])
+            self.assertTrue(combined_path.is_file())
+            self.assertTrue(markdown_path.is_file())
+            self.assertTrue(csv_path.is_file())
+            combined = json.loads(combined_path.read_text(encoding="utf-8"))
+            self.assertTrue(combined["successfulRun"])
+            self.assertEqual(combined["endpointReports"]["encoder"]["sha256"],
+                hashlib.sha256(encoder_path.read_bytes()).hexdigest())
+            self.assertIn("Endpoint reports sealed | `true`", markdown_path.read_text(encoding="utf-8"))
+            with csv_path.open("r", encoding="utf-8", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["runId"], RUN_ID)
+            self.assertEqual(rows[0]["endpointReportsSealed"], "True")
+            self.assertEqual(rows[0]["transportPayloadCeilingBytesPerLogicalFrame"], "5256")
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(report_tool.main(arguments), 2)
+            self.assertEqual(len(list(output_directory.glob("*"))), 3)
+
     def test_cross_run_csv_preserves_remote_distortion_and_temporal_metrics(self) -> None:
         encoder = encoder_report()
         decoder = decoder_report()
@@ -372,18 +560,28 @@ class RemoteVisualReportTests(unittest.TestCase):
             "presentedVisualFps": 2.0, "presentCallFps": 2.0})
         decoder.update({
             "captureFps": 60.0, "uniqueVisualFps": 2.0, "endToEndUniqueVisualFps": 0.5,
-            "bootstrapSuccessRate": 0.75, "preFecBerEstimate": 0.1, "fecFrameErrorRate": 0.5,
-            "remoteMetricTelemetry": {"zeroMagnitudeRate": 0.2, "meanAbsoluteMetric": 0.8,
-                "rejectedFrames": 6, "rejectedMeanAbsoluteMetric": 0.9, "rejectedZeroMagnitudeRate": 0.1,
-                "freshnessRegions": 770, "staleRegions": 23, "staleRegionRate": 23 / 770,
-                "framesWithStaleRegions": 4, "freshnessTagMismatches": 81, "freshnessTagErasures": 17,
-                "freshnessErasedDataMetrics": 2418},
+            "bootstrapSuccessRate": 0.75,
             "duplicateFrameSequences": 18, "reorderedFrameSequences": 1, "frameSequenceGapEvents": 2,
             "skippedFrameSequences": 9, "captureStall": {"count": 1, "totalMilliseconds": 1200,
                 "maximumMilliseconds": 1200, "active": False}, "visualStall": {"count": 2,
                 "totalMilliseconds": 3500, "maximumMilliseconds": 2500, "active": False},
             "verifiedEncodedGoodputBitsPerSecond": 4096,
             "recoveryRuntimeMilliseconds": 2000,
+        })
+        decoder["remoteMetricTelemetry"].update({
+            "frames": 10, "samples": 10 * report_tool.LF4_METRIC_SAMPLES_PER_FRAME,
+            "zeroMagnitudeMetrics": 2 * report_tool.LF4_METRIC_SAMPLES_PER_FRAME, "zeroMagnitudeRate": 0.2,
+            "meanAbsoluteMetric": 0.8, "verifiedFrames": 4, "rejectedFrames": 6,
+            "transportEvaluatedFrames": 10, "nonTransportFrames": 0,
+            "symbolSamples": 10 * report_tool.LF4_SYMBOL_SAMPLES_PER_FRAME, "unreliableSymbols": 1672,
+            "unreliableSymbolRate": 1672 / (10 * report_tool.LF4_SYMBOL_SAMPLES_PER_FRAME),
+            "verifiedMeanAbsoluteMetric": 0.7, "rejectedMeanAbsoluteMetric": 0.9,
+            "rejectedZeroMagnitudeRate": 0.1,
+            "freshnessRegions": 770, "freshRegions": 747, "staleRegions": 23,
+            "staleRegionRate": 23 / 770, "framesWithStaleRegions": 4,
+            "freshnessTagMismatches": 81, "freshnessTagErasures": 17,
+            "freshnessErasedDataMetrics": 2418,
+            "freshnessErasedDataMetricRate": 2418 / (10 * report_tool.LF4_METRIC_SAMPLES_PER_FRAME),
         })
         encoder["remoteMetadata"].update({"remoteProviderVersion": "x"})
         decoder["remoteMetadata"].update({"remoteProviderVersion": "x", "observedFps": 41.5})

@@ -217,6 +217,16 @@ bool CurrentProcessOwnsForegroundWindow() noexcept
     return processId == GetCurrentProcessId();
 }
 
+DWORD GetForegroundProcessId()
+{
+    const HWND foreground = GetForegroundWindow();
+    Require(foreground != nullptr, "BLOCKED: no foreground window is available for the focus-preservation Gate");
+    DWORD processId = 0;
+    static_cast<void>(GetWindowThreadProcessId(foreground, &processId));
+    Require(processId != 0, "BLOCKED: foreground process identity is unavailable");
+    return processId;
+}
+
 template <typename Predicate>
 pbapp::EncoderSnapshot WaitForEncoder(pbapp::EncoderRuntime& runtime, Predicate predicate, const char* const description,
     const std::chrono::milliseconds timeout = std::chrono::seconds(20))
@@ -255,6 +265,26 @@ const Monitor& GetRightmostCanonicalMonitor(const std::vector<Monitor>& monitors
     Require(width >= pbmodulation::kLocalDesktopCanvasWidth && height >= pbmodulation::kLocalDesktopCanvasHeight,
         "BLOCKED: rightmost monitor cannot contain the canonical LF4 canvas");
     return *rightmost;
+}
+
+const Monitor& GetLeftmostProtectedMonitor(const std::vector<Monitor>& monitors, const Monitor& experimentMonitor)
+{
+    const Monitor* protectedMonitor = nullptr;
+    for (const Monitor& candidate : monitors)
+    {
+        if (candidate.handle == experimentMonitor.handle)
+        {
+            continue;
+        }
+        if (protectedMonitor == nullptr || candidate.info.rcMonitor.left < protectedMonitor->info.rcMonitor.left)
+        {
+            protectedMonitor = &candidate;
+        }
+    }
+    Require(protectedMonitor != nullptr, "BLOCKED: no distinct ProtectedMonitor is available");
+    Require(protectedMonitor->info.rcMonitor.left < experimentMonitor.info.rcMonitor.left,
+        "BLOCKED: right-monitor Gate cannot prove that the ProtectedMonitor remains on the left");
+    return *protectedMonitor;
 }
 
 void CheckInitialContract(const DataWindowSnapshot& snapshot, const DataWindowConfig& config)
@@ -566,7 +596,14 @@ void RunLf4ProductionEncoder(Evidence& evidence)
 {
     constexpr std::uint32_t maximumLf4LogicalFps = 5;
     const auto monitors = GetMonitors();
-    const Monitor& monitor = GetRightmostCanonicalMonitor(monitors);
+    const Monitor& experimentMonitor = GetRightmostCanonicalMonitor(monitors);
+    const Monitor& protectedMonitor = GetLeftmostProtectedMonitor(monitors, experimentMonitor);
+    pbapp::MonitorSafetySelection monitorSafety;
+    const pbapp::MonitorSafetyStatus resolvedSafety = pbapp::ResolveMonitorSafetySelection(
+        protectedMonitor.info.szDevice, experimentMonitor.info.szDevice, monitorSafety);
+    Require(static_cast<bool>(resolvedSafety), std::string("BLOCKED: cannot bind explicit ProtectedMonitor/ExperimentMonitor: ") +
+        pbapp::GetMonitorSafetyErrorName(resolvedSafety.code));
+    const DWORD foregroundProcessIdBefore = GetForegroundProcessId();
     const std::filesystem::path sourcePath = evidence.Directory() / "lf4-production-source.bin";
     const std::array sourceBytes{std::byte{0x53}};
     WriteCreateOnly(sourcePath, sourceBytes);
@@ -574,11 +611,14 @@ void RunLf4ProductionEncoder(Evidence& evidence)
     pbapp::EncoderConfig config;
     config.sourcePath = sourcePath.wstring();
     config.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
-    config.monitorClientOrigin = GetOrigin(monitor, pbapp::phase1CanvasWidth, pbapp::phase1CanvasHeight);
+    config.monitorClientOrigin = GetOrigin(experimentMonitor, pbapp::phase1CanvasWidth, pbapp::phase1CanvasHeight);
+    config.monitorSafety = monitorSafety;
     config.logicalVisualFps = maximumLf4LogicalFps;
     config.controlRepetitions = 1;
     config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
-    config.remoteMetadata.remoteProvider = "Step09NativeGate";
+    config.remoteMetadata.remoteProvider = "Step17NativeGate";
+    config.remoteMetadata.protectedMonitorIdentity = Utf8(protectedMonitor.info.szDevice);
+    config.remoteMetadata.experimentMonitorIdentity = Utf8(experimentMonitor.info.szDevice);
     pbapp::EncoderRuntime runtime;
     const auto started = runtime.Start(config);
     Require(static_cast<bool>(started), "production LF4 EncoderRuntime Start failed: " + started.message);
@@ -599,8 +639,9 @@ void RunLf4ProductionEncoder(Evidence& evidence)
         *broadcasting.configuredLogicalDwellMilliseconds == 200.0 &&
         broadcasting.minimumObservedLogicalDwellMilliseconds &&
         *broadcasting.minimumObservedLogicalDwellMilliseconds >= *broadcasting.configuredLogicalDwellMilliseconds &&
-        broadcasting.logicalDwellViolationCount == 0 && broadcasting.generatedVisualFramesPerSecond > 0 &&
-        broadcasting.generatedVisualFramesPerSecond <= maximumLf4LogicalFps,
+        broadcasting.logicalDwellViolationCount == 0 && broadcasting.generatedVisualFramesPerSecond &&
+        *broadcasting.generatedVisualFramesPerSecond > 0 &&
+        *broadcasting.generatedVisualFramesPerSecond <= maximumLf4LogicalFps,
         "production LF4 EncoderRuntime violated the configured 5 Hz logical dwell");
     Require(broadcasting.dataWindowLeft == config.monitorClientOrigin->x &&
         broadcasting.dataWindowTop == config.monitorClientOrigin->y &&
@@ -608,12 +649,15 @@ void RunLf4ProductionEncoder(Evidence& evidence)
         broadcasting.dataWindowHeight == pbapp::phase1CanvasHeight &&
         broadcasting.candidateContractSatisfied,
         "production LF4 EncoderRuntime did not retain the right-monitor physical Data Window contract");
+    Require(broadcasting.monitorSafetyPreflightPassed && broadcasting.monitorSafetyRevalidationCount != 0 &&
+        broadcasting.monitorSafetyStatus == "PASS",
+        "production LF4 EncoderRuntime did not retain the explicit dual-monitor safety authority");
     Require(broadcasting.repeatedPresentCalls > broadcasting.sourceTextureReplacements &&
         broadcasting.statusMessage.find("receiver completion is visible only on Decoder") != std::string::npos,
         "production LF4 EncoderRuntime did not preserve independent continuous sender broadcast semantics");
     Require(!CurrentProcessOwnsForegroundWindow(), "production LF4 EncoderRuntime stole foreground activation");
 
-    const pbapp::RunReportContext reportContext{"PBPresentationGate", "Step09", "worktree-precommit", GetUtcTimestamp()};
+    const pbapp::RunReportContext reportContext{"PBPresentationGate", "Step17", "worktree-precommit", GetUtcTimestamp()};
     WriteCreateOnly(evidence.Directory() / "encoder-broadcasting-report.json",
         pbapp::BuildEncoderRunReportJson(reportContext, broadcasting) + "\n");
     const std::uint64_t externalCompletionMarkerFrame = broadcasting.frameSequence;
@@ -639,12 +683,17 @@ void RunLf4ProductionEncoder(Evidence& evidence)
         stopped.sourceStable && stopped.pendingFrames == 0 && !stopped.activeFrame && stopped.errorDetail.empty() &&
         stopped.statusMessage.find("no sender-side receiver completion was inferred") != std::string::npos,
         "production LF4 EncoderRuntime did not complete explicit bounded shutdown");
+    const DWORD foregroundProcessIdAfter = GetForegroundProcessId();
+    Require(foregroundProcessIdAfter == foregroundProcessIdBefore,
+        "production LF4 EncoderRuntime changed the foreground process");
     WriteCreateOnly(evidence.Directory() / "encoder-stopped-report.json",
         pbapp::BuildEncoderRunReportJson(reportContext, stopped) + "\n");
     evidence.Note("Production LF4 EncoderRuntime native gate PASS; cycles=" + std::to_string(stopped.cycleCount) +
         " frames=" + std::to_string(stopped.frameSequence) + " sourceReplacements=" +
         std::to_string(stopped.sourceTextureReplacements) + " repeatedPresents=" +
-        std::to_string(stopped.repeatedPresentCalls) + " rightMonitor=" + Utf8(monitor.info.szDevice));
+        std::to_string(stopped.repeatedPresentCalls) + " protectedMonitor=" + Utf8(protectedMonitor.info.szDevice) +
+        " experimentMonitor=" + Utf8(experimentMonitor.info.szDevice) + " foregroundProcessId=" +
+        std::to_string(foregroundProcessIdAfter));
 }
 
 void RunLive(Evidence& evidence)
