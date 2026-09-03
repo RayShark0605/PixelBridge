@@ -312,6 +312,8 @@ if(TARGET PixelBridgeDecoder)
             "--headless-receive"
             "--headless-receive|--output-dir|missing|--backend|auto|--roi|0|0|1920|1080"
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|0|0|1920|1080|--timeout|0"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|0|0|1920|1080|--timeout|3601"
+            "--headless-receive|--output-dir|missing|--backend|wgc|--roi|0|0|1920|1080|--timeout|3600|--no-progress-seconds|601"
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|0|0|2147483648|1080"
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|-2147483649|0|1920|1080"
             "--headless-receive|--output-dir|missing|--backend|wgc|--roi|-|0|1920|1080"
@@ -335,6 +337,13 @@ if(TARGET PixelBridgeDecoder)
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/AssertProcessExit.cmake")
             math(EXPR pbDecoderArgumentIndex "${pbDecoderArgumentIndex} + 1")
         endforeach()
+        add_test(NAME PixelBridgeDecoderAcceptsMaximumTimeout
+            COMMAND "${CMAKE_COMMAND}"
+                "-DPB_TEST_EXECUTABLE=$<TARGET_FILE:PixelBridgeDecoder>"
+                "-DPB_EXPECTED_EXIT=2"
+                "-DPB_EXPECTED_OUTPUT_REGEX=ROI resolution failed:"
+                "-DPB_TEST_ARGS_ENCODED=--headless-receive|--output-dir|missing|--backend|wgc|--profile|remote-lf4|--channel|remote|--remote-provider|test|--roi|2000000000|2000000000|2000000001|2000000001|--timeout|3600|--no-progress-seconds|600|--protected-monitor|protected|--experiment-monitor|experiment"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/AssertProcessExit.cmake")
         add_test(NAME PixelBridgeDecoderHelp COMMAND PixelBridgeDecoder --help)
         add_test(NAME PixelBridgeDecoderBootstrapHelp COMMAND PixelBridgeDecoder --capture-bootstrap --help)
         add_test(NAME PixelBridgeDecoderBootstrapFileSafety
