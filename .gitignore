@@ -2,10 +2,22 @@
 build/
 build-*/
 .vs/
+.idea/
 *.user
+*.suo
+*.VC.db
+*.VC.opendb
 *.obj
 CMakeUserPresets.json
 target-dependency-graph.dot.*
+
+# Accidental in-source CMake/CTest output
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+cmake_install.cmake
+install_manifest.txt
 
 # Source-tree vcpkg manifest state
 /vcpkg_installed/
@@ -17,3 +29,21 @@ target-dependency-graph.dot.*
 
 # Independent modulation oracle imports (not Golden artifacts)
 /tests/PBModulation/__pycache__/
+__pycache__/
+*.py[cod]
+
+# PixelBridge runtime, recovery, evidence, and packaging output
+*.part
+*.resume
+*.partial
+*.tmp
+*.log
+*.zip
+*.7z
+/artifacts/
+/dist/
+/out/
+
+# OS file-manager metadata
+Thumbs.db
+.DS_Store

@@ -1,45 +1,58 @@
 # PixelBridge
 
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
-规范设计文档：`docs/PixelBridge_最终技术路线与总体设计.md`；工程规则见 `AGENTS.md`。
+
+> **开发中，不是最终 Release。** 当前已经具备正式 Descriptor、分段发送、恢复存储和历史视觉链基础，但唯一产品 Profile `PB-Unified-LC4-V1`、最终简化 Qt 界面、可缩放窗口及完整大文件/实屏/远程门禁仍在实施路线中。不要把现有 Phase 1.5 或 RemoteVisual 实验入口当作最终产品。
+
+快速入口：
+
+- [Goal/目标模式统一实施路线](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)
+- [最终技术路线与总体设计](docs/PixelBridge_最终技术路线与总体设计.md)
+- [文档索引与历史证据边界](docs/README.md)
+- [当前过渡 runtime 选项清单](docs/CURRENT_RUNTIME_OPTION_INVENTORY.md)
+- [GitHub 首次发布检查清单](docs/GITHUB_PUBLISH_CHECKLIST.md)
+- [贡献指南](CONTRIBUTING.md)
+- [工程协作与代码规则](AGENTS.md)
 
 ## 目录
 
 | 路径 | 用途 |
 | --- | --- |
-| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder`、`apps/common` | 正式 Qt Widgets GUI、Qt-free application runtime/state/report 层，以及保留的显式诊断 CLI |
-| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver`、`libs/PBStorage` | 核心静态库（禁止依赖 Qt）；PBStorage 负责 `.part`、WholeFileDigest 与 final publish |
+| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | Qt Widgets、CLI adapter 和应用 controller；当前仍含待收敛的 Phase 1.5 选项 |
+| `apps/common` | Qt-free application runtime/model/report、Encoder Session persistence、Decoder resume journal |
+| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver`、`libs/PBStorage` | 核心静态库（禁止依赖 Qt）；PBStorage 负责 `.part`、random verified writes、WholeFileDigest 与 safe publish |
+| `libs/PBModulation`、`libs/PBInnerFec`、`libs/PBInterleave`、`libs/PBDemodD3D11` | CPU 视觉参考、QC-LDPC、交织和 D3D11 Compute 解调；Unified Profile 尚待 G06..G12 完成 |
 | `libs/PBPresentTiming`、`libs/PBRenderD3D` | 有界 DXGI observation 计时与独立原生 D3D11 数据窗口；不依赖 Qt |
-| `libs/PBScreenRegion`、`libs/PBScreenCaptureWgc` | 物理像素选区、Windows Graphics Capture 与 GPU 退休保护的 ROI texture ring；不依赖 Qt |
+| `libs/PBScreenRegion`、`libs/PBScreenCaptureWgc`、`libs/PBScreenCaptureDxgi`、`libs/PBCaptureNormalize` | 物理像素选区、WGC/DXGI、CaptureEpoch 与 GPU 退休保护的 ROI texture ring；不依赖 Qt |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
-| `docs` | 设计文档 |
+| `docs` | 当前路线、总体设计、模块说明、历史 Gate/证据；入口见 [`docs/README.md`](docs/README.md) |
+| `third_party` | vcpkg overlay、固定第三方基线与许可说明，不保存 installed binaries |
 
-## Phase-0 协议状态
+## 当前开发状态
 
-当前 37/110/142/65-byte Session/Segment/Final payload 是 **Phase-0 provisional implementation slice**，不是完整正式 v1 wire 承诺。它仍缺少总体设计要求的 `SessionVisualProfileId` 等固定 Session 绑定，因而不得在后续 Data Plane/backend 接入时被误称为已冻结的正式 canonical v1 schema。当前状态、资源预算与升级前置条件见 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)。
+### 已建立的基础（`1445f9b`）
 
-`PBProtocol` 已实现与 Data Profile 解耦的逻辑字节 envelope：固定 44-byte
-`PB-Bootstrap-1`，以及 `26-byte prefix + payload + 4-byte CRC` 的
-`PB-Control-1`。Control 的 `RecordBytes` 包含整条 record，最大 65,536 bytes；
-低层 parser 零拷贝返回借用 payload，但生产接收入口统一使用
-`ControlPlaneReceiver`，在状态变更前完成 record-type dispatch、Descriptor、资源策略、
-SessionTag cross-check 和 immutable binding。`PB-Control-Fragment-1` 已冻结为
-`20-byte prefix + non-empty payload + 4-byte CRC`，并提供有界 PMR 重组、乱序、幂等重复、
-冲突 tombstone、observation-window 过期和 ControlEpoch reset。该逻辑字节协议步骤为
-**GO**；整体 Phase-0 仍为 **NO-GO**，当前不包含视觉 raster/FEC、物理 Control Block
-容量/映射、重复 cadence、正式 profile binding 或完整文件恢复。
+- Protocol 1.0 Descriptor Schema 1：显式 little-endian、schema/header/total length、内层 CRC、Session Visual Profile、UTF-8 basename、Segment/Manifest 绑定；
+- 旧 37-byte provisional SessionDescriptor 保留为确定拒绝 fixture，返回 `UnsupportedDescriptorSchema`；
+- 8 MiB Segment 流式预扫描，whole/raw/encoded BLAKE3，zstd level 3 无收益回退 RAW；
+- Sender current/next 双 Segment 缓冲、Carousel systematic+repair 和 4,096-ID durable lease；
+- `.part` random verified writes、最多 4 个活动 Outer decoder、`DeferredResourceBusy`；
+- append-only decoder resume journal、completed Segment 重验、whole-file digest、安全发布与 final reopen；
+- 支持 0-byte 协议/存储基础，默认资源 policy 上限为 500 GiB。
 
-`pbreceiver::ReceiverIngress` 是当前唯一的逻辑接收 façade。它按值持有一份已验证的
-`ReceiverResourcePolicy` 和当前 profile 的固定 `OuterBlockBytes`，并独占一个
-`ControlPlaneReceiver`、一个 bounded orphan cache、一个 receiver-wide Outer FEC
-manager 和 active decoder 表。未知 Segment 的逻辑 Data Block 只能进入 orphan cache
-或以明确 quota 状态被拒绝；在 Segment capability 绑定前不会创建 DirectRepeat/Wirehair
-decoder、segment-sized buffer、zstd context 或 output reservation。这里的
-`ReceivedTransportBlock` 表示上游已完成 Inner-FEC/Transport-CRC 检查的内存内值，**不是**
-正式 Transport wire schema。Phase 1.5 application runtime 已通过现有 Transport parser、
-PBReceiver 与 PBStorage 接入 `.part` 创建、WholeFileDigest 和 final publish，并接通
-WGC/DXGI -> CaptureNormalize -> D3D11 demod；这不把 provisional descriptor 提升为正式 v1 wire。
+该基础在提交前只执行了 `PBProtocolTests`、`PBStorageTests`、`PBReceiverTests`、`PBApplicationTests` 的一次定向 Release 检查（4/4 PASS）。它不是 full CTest、ASan、Qt/native、20 GiB 或远程链路证据。
+
+### 尚未完成
+
+- `PB-Unified-LC4-V1` layout 8、17/4/10 Base/Fine/Chroma codewords、mixed Control/Transport slots；
+- Unified CPU oracle、D3D11 accepted-byte parity 与 16 KiB/unique-frame 硬门槛；
+- 0.75x..2.0x resizable/letterboxed Data Window 与低于 0.75x 暂停；
+- WGC 默认、明确失败后 DXGI fallback 的统一状态机；
+- Encoder/Decoder 最终简化 Qt 页面和 >4 GiB 一次性确认；
+- 256 MiB/20 GiB、进程终止注入、完整 Release、DISPLAY2 native 与真实远程 Gate。
+
+完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明仍保留在 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)，但不得作为当前正式 Descriptor 规范引用。
 
 ## Target 与依赖边界
 
@@ -65,33 +78,32 @@ CMake 在配置期审计核心 target 的 Qt 依赖、公共 `src/` 路径和公
 
 ## Windows Qt GUI（Phase 1.5）
 
-Release 构建后的以下程序无参数启动正式 GUI：
+Release 构建后的以下程序无参数启动当前 **Phase 1.5 过渡 GUI**：
 
 ```powershell
 .\build\apps\PixelBridgeEncoder\Release\PixelBridgeEncoder.exe
 .\build\apps\PixelBridgeDecoder\Release\PixelBridgeDecoder.exe
 ```
 
-GUI 是薄 presentation/controller 层，真实传输链仍为现有 Session/Segment、
-Compression、Outer/Inner FEC、D3D11 Data Window、WGC/DXGI、CaptureNormalize、
-D3D11 demod、ReceiverIngress、PBTelemetry 和 PBStorage。Qt 不进入 `libs/`，也不合成数据像素或发布文件。
+GUI 保持 thin presentation/controller：Session/Segment、Compression、Outer/Inner FEC、
+D3D11 Data Window、WGC/DXGI、CaptureNormalize、D3D11 demod、ReceiverIngress、PBTelemetry
+和 PBStorage 都由 Qt-free runtime/core 实现。Qt 不进入 `libs/`，不合成数据像素，也不直接发布文件。
 
-当前产品边界为 Instant LocalDesktop、单 Segment、1 byte..8 MiB、固定 1920×1080
-physical-pixel ROI，以及 Direct-Level 2x2 / Shape+Chroma 两个明确标为 Experimental 的路径。
-原文件名和 Visual Profile 尚未写入 provisional wire，因此 Decoder 需要人工选择同一 profile，
-并安全发布为 `PixelBridge-<SessionTag>.bin`。完整 Runtime Option Inventory、控件绑定、
-状态机、进度定义和限制见 [`docs/GUI_PHASE1_5.md`](docs/GUI_PHASE1_5.md) 与
-[`docs/CURRENT_RUNTIME_OPTION_INVENTORY.md`](docs/CURRENT_RUNTIME_OPTION_INVENTORY.md)。
+该界面仍暴露 Direct/Shape/RemoteVisual、compression/backend 等历史实验选择，窗口和 ROI
+也尚未完成统一路线要求的 resizable/automatic 行为。`1445f9b` 虽已把正式 descriptor、
+多 Segment streaming 和 resume/storage 基础接入 application 层，但尚未完成最终 Qt 产品闭环，
+因此这里不承诺 0-byte、20 GiB、崩溃恢复或 Unified 视觉链已经能通过 GUI 完整使用。
+旧控件和 CLI 的精确清单见 [`docs/GUI_PHASE1_5.md`](docs/GUI_PHASE1_5.md) 与
+[`docs/CURRENT_RUNTIME_OPTION_INVENTORY.md`](docs/CURRENT_RUNTIME_OPTION_INVENTORY.md)；最终替换步骤见路线 G13..G17。
 
 关键语义始终是 **Encoder broadcasts; Decoder converges**：Encoder 完成一轮 Carousel
 后继续广播，直到用户点击“停止广播”；它没有接收端恢复百分比或完成 ETA。Decoder 的
-进度严格为 `verifiedRawBytes / OriginalFileSize`，当前单 Segment 路径以已验证 Segment
-粒度推进；只有 WholeFileDigest PASS 且 PBStorage final publish 成功才显示 Completed。
+进度只能来自已验证 Segment/bytes；只有 WholeFileDigest PASS、PBStorage safe publish 和
+最终文件重新打开复验成功后才允许显示 Completed。
 
-Decoder 主吞吐是 digest/publish-gated `VerifiedEncodedGoodput`；用于 ETA 的 verified raw EMA
-单独命名。生产 D3D11 fast path 不做 raw-pixel readback/digest，因此 `UniqueVisualFPS` 严格显示
-为不可用；FrameSequence cadence 与 duplicate/reordered/gap/skipped 只作为独立 admission 诊断，
-不会冒充像素唯一帧率。
+最终吞吐必须是 digest/publish-gated `VerifiedEncodedBytesPerUniqueFrame`/goodput；用于 ETA 的
+verified raw EMA 单独命名。没有权威唯一帧观测时必须显示 unavailable，不能用 Present、配置 FPS、
+capture callback 或 FrameSequence cadence 冒充 `UniqueVisualFPS`。
 
 为可复现物理桌面 smoke 保留了调用同一 application runtime 的有界自动化入口；它们不建立
 任何 payload IPC：
@@ -238,6 +250,12 @@ manager 的 move/析构必须在停止新 admission 后由 owner 排序，已存
 Profile ID 只选择方程兼容性，不认证发送者。canonical descriptor、CRC、
 `EncodedDigest` 以及任何 in-band whole-file digest 也不能单独提供发送者认证；
 recovered bytes 仍必须经过设计书要求的 Segment、解压与 whole-file 验证流程。
+
+## 获取源码与 GitHub 发布状态
+
+源码 checkout 后无需保存仓库内 build artifact；所有构建均建议使用独立的 `build-*` 目录。项目当前没有配置仓库 URL，也没有选择项目自身 LICENSE；首次推送前请按 [`docs/GITHUB_PUBLISH_CHECKLIST.md`](docs/GITHUB_PUBLISH_CHECKLIST.md) 核对可见性、许可、分支、受管文件、凭据和 remote。
+
+当前仓库的二进制 Golden/最小 fuzz corpus 体积较小，不需要 Git LFS。Replay、MP4、安装包、PDB、20 GiB fixture、`.part` 和现场证据不得直接提交到源码历史。
 
 ## 构建（MSVC x64）
 

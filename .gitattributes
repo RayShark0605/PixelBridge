@@ -1,4 +1,16 @@
+# Keep source and documentation reviewable across Windows and GitHub.
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.cmake text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hlsl text eol=lf
+CMakeLists.txt text eol=lf
+
 # These are protocol/corpus bytes, even when a tiny seed contains no NUL.
+fuzz/corpus/**/*.bin binary
+tests/golden/**/*.bin binary
 fuzz/corpus/desktop-levels/*.bin binary
 tests/golden/desktop-levels/*.bin binary
 tests/golden/desktop-levels/manifest.txt text eol=lf

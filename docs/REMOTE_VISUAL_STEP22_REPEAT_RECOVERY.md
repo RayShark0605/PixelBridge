@@ -1,5 +1,7 @@
 # RemoteVisual Step 22：重复完整文件恢复验收
 
+> **2026-09-03 历史状态：** 本 campaign 被统一视觉/大文件产品路线取代，保留为未执行的 LF4 readiness 证据，不再继续作为当前产品完成条件。`executedRunCount=0`、`successfulRunCount=0` 等原始状态不得改写。当前执行入口见 [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。
+
 ## 1. 当前状态与真值边界
 
 Step 22 保持 `MANUAL-GATE`。当前增量只冻结并验证六轮实机 campaign，尚未执行 Computer B Encoder、Computer A WGC capture、Receiver、WholeFileDigest 或安全发布，因此：
