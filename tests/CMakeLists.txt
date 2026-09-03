@@ -204,6 +204,17 @@ if(MSVC AND TARGET PBProtocol)
     unset(pbProtocolCompileOptions)
 endif()
 
+if(WIN32 AND (TARGET PixelBridgeEncoder OR TARGET PixelBridgeDecoder))
+    execute_process(COMMAND git rev-parse --verify HEAD WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        OUTPUT_VARIABLE pbApplicationGitCommit OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE pbApplicationGitCommitResult ERROR_QUIET)
+    string(LENGTH "${pbApplicationGitCommit}" pbApplicationGitCommitLength)
+    if(NOT pbApplicationGitCommitResult EQUAL 0 OR NOT pbApplicationGitCommitLength EQUAL 40 OR
+        NOT pbApplicationGitCommit MATCHES "^[0-9a-f]+$")
+        message(FATAL_ERROR "Unable to resolve the application build-identity Git commit")
+    endif()
+endif()
+
 if(TARGET PixelBridgeEncoder)
     PbAddExactProcessTest(
         PixelBridgeEncoderSmoke
@@ -211,10 +222,16 @@ if(TARGET PixelBridgeEncoder)
         "PixelBridgeEncoder ${PROJECT_VERSION} (protocol 1.0)"
         "-DPB_TEST_ARGS_ENCODED=--version")
     if(WIN32)
+        PbAddExactProcessTest(
+            PixelBridgeEncoderBuildIdentity
+            PixelBridgeEncoder
+            "{\"schema\":\"PixelBridge.ApplicationBuildIdentity.1\",\"applicationName\":\"PixelBridgeEncoder\",\"applicationVersion\":\"${PROJECT_VERSION}\",\"protocolMajor\":1,\"protocolMinor\":0,\"gitCommit\":\"${pbApplicationGitCommit}\"}"
+            "-DPB_TEST_ARGS_ENCODED=--build-identity")
         add_test(NAME PixelBridgeEncoderGuiSmoke COMMAND PixelBridgeEncoder --gui-smoke)
         set_tests_properties(PixelBridgeEncoderGuiSmoke PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE LABELS "application;gui;encoder")
         set(pbEncoderInvalidArguments
             "--unknown"
+            "--build-identity|extra"
             "--frames|1"
             "--data-window|--frames"
             "--data-window|--frames|0"
@@ -279,9 +296,14 @@ if(TARGET PixelBridgeDecoder)
         "PixelBridgeDecoder ${PROJECT_VERSION} (protocol 1.0)"
         "-DPB_TEST_ARGS_ENCODED=--version")
     if(WIN32)
+        PbAddExactProcessTest(
+            PixelBridgeDecoderBuildIdentity
+            PixelBridgeDecoder
+            "{\"schema\":\"PixelBridge.ApplicationBuildIdentity.1\",\"applicationName\":\"PixelBridgeDecoder\",\"applicationVersion\":\"${PROJECT_VERSION}\",\"protocolMajor\":1,\"protocolMinor\":0,\"gitCommit\":\"${pbApplicationGitCommit}\"}"
+            "-DPB_TEST_ARGS_ENCODED=--build-identity")
         add_test(NAME PixelBridgeDecoderGuiSmoke COMMAND PixelBridgeDecoder --gui-smoke)
         set_tests_properties(PixelBridgeDecoderGuiSmoke PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE LABELS "application;gui;decoder")
-        set(pbDecoderInvalidArguments "--unknown" "--select-region|--select-region" "--select-region|extra" "--help|--select-region" "--select-region|--help"
+        set(pbDecoderInvalidArguments "--unknown" "--build-identity|extra" "--select-region|--select-region" "--select-region|extra" "--help|--select-region" "--select-region|--help"
             "--capture-bootstrap" "--capture-bootstrap|--backend" "--capture-bootstrap|--backend|unknown"
             "--capture-bootstrap|--backend|wgc|--seconds|0" "--capture-bootstrap|--backend|dxgi|--seconds|601"
             "--capture-bootstrap|--backend|wgc|--roi|0|0|1" "--capture-bootstrap|--backend|dxgi|--roi|0|0|2147483648|1"
@@ -325,3 +347,7 @@ if(TARGET PixelBridgeDecoder)
         unset(pbDecoderArguments)
     endif()
 endif()
+
+unset(pbApplicationGitCommit)
+unset(pbApplicationGitCommitLength)
+unset(pbApplicationGitCommitResult)

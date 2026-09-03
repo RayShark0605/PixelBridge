@@ -114,6 +114,55 @@ function Require-Hash
     }
 }
 
+function Get-ApplicationBuildIdentity
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedApplicationName,
+        [Parameter(Mandatory = $true)][string]$ExpectedGitCommit
+    )
+    $output = @(& $ExecutablePath --build-identity 2>&1)
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "$ExpectedApplicationName --build-identity failed with exit code $LASTEXITCODE"
+    }
+    $text = ($output -join "`n").Trim()
+    if ([string]::IsNullOrWhiteSpace($text) -or [System.Text.UTF8Encoding]::new($false).GetByteCount($text) -gt 16KB)
+    {
+        throw "$ExpectedApplicationName --build-identity returned an empty or oversized result"
+    }
+    try
+    {
+        $identity = $text | ConvertFrom-Json -AsHashtable -Depth 8
+    }
+    catch
+    {
+        throw "$ExpectedApplicationName --build-identity did not return valid JSON"
+    }
+    $expectedKeys = @('schema', 'applicationName', 'applicationVersion', 'protocolMajor', 'protocolMinor', 'gitCommit')
+    if ($identity -isnot [System.Collections.IDictionary] -or $identity.Count -ne $expectedKeys.Count)
+    {
+        throw "$ExpectedApplicationName --build-identity has an invalid object shape"
+    }
+    foreach ($key in $expectedKeys)
+    {
+        if (-not $identity.Contains($key))
+        {
+            throw "$ExpectedApplicationName --build-identity is missing $key"
+        }
+    }
+    if ($identity.schema -isnot [string] -or $identity.schema -cne 'PixelBridge.ApplicationBuildIdentity.1' -or
+        $identity.applicationName -isnot [string] -or $identity.applicationName -cne $ExpectedApplicationName -or
+        $identity.applicationVersion -isnot [string] -or [string]::IsNullOrWhiteSpace($identity.applicationVersion) -or
+        $identity.protocolMajor -isnot [Int64] -or $identity.protocolMajor -ne 1 -or
+        $identity.protocolMinor -isnot [Int64] -or $identity.protocolMinor -ne 0 -or
+        $identity.gitCommit -isnot [string] -or $identity.gitCommit -cne $ExpectedGitCommit)
+    {
+        throw "$ExpectedApplicationName runtime build identity does not match package HEAD/protocol"
+    }
+    return $identity
+}
+
 function Test-RelativePath
 {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -392,6 +441,14 @@ foreach ($application in $applications)
         [string]::IsNullOrWhiteSpace([string]$application.versionOutput))
     {
         throw "Application executable binding does not match package inventory: $($application.application)"
+    }
+    $executablePath = Join-Path $resolvedPackage (([string]$application.relativeExecutablePath).Replace('/', '\'))
+    $runtimeIdentity = Get-ApplicationBuildIdentity -ExecutablePath $executablePath `
+        -ExpectedApplicationName ([string]$application.application) -ExpectedGitCommit ([string]$buildIdentity.headCommit)
+    $expectedVersionOutput = "$($application.application) $($runtimeIdentity.applicationVersion) (protocol $($runtimeIdentity.protocolMajor).$($runtimeIdentity.protocolMinor))"
+    if ([string]$application.versionOutput -cne $expectedVersionOutput)
+    {
+        throw "Application version output disagrees with runtime build identity: $($application.application)"
     }
     $qtCorePath = if ($endpointRoles.Count -eq 2) { "$($application.role)/Qt6Core.dll" } else { 'Qt6Core.dll' }
     if (-not $manifestFileMap.ContainsKey($qtCorePath) -or

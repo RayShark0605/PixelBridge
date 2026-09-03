@@ -79,6 +79,55 @@ function Get-FileSha256
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-ApplicationBuildIdentity
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedApplicationName,
+        [Parameter(Mandatory = $true)][string]$ExpectedGitCommit
+    )
+    $output = @(& $ExecutablePath --build-identity 2>&1)
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "$ExpectedApplicationName --build-identity failed with exit code $LASTEXITCODE"
+    }
+    $text = ($output -join "`n").Trim()
+    if ([string]::IsNullOrWhiteSpace($text) -or [System.Text.UTF8Encoding]::new($false).GetByteCount($text) -gt 16KB)
+    {
+        throw "$ExpectedApplicationName --build-identity returned an empty or oversized result"
+    }
+    try
+    {
+        $identity = $text | ConvertFrom-Json -AsHashtable -Depth 8
+    }
+    catch
+    {
+        throw "$ExpectedApplicationName --build-identity did not return valid JSON"
+    }
+    $expectedKeys = @('schema', 'applicationName', 'applicationVersion', 'protocolMajor', 'protocolMinor', 'gitCommit')
+    if ($identity -isnot [System.Collections.IDictionary] -or $identity.Count -ne $expectedKeys.Count)
+    {
+        throw "$ExpectedApplicationName --build-identity has an invalid object shape"
+    }
+    foreach ($key in $expectedKeys)
+    {
+        if (-not $identity.Contains($key))
+        {
+            throw "$ExpectedApplicationName --build-identity is missing $key"
+        }
+    }
+    if ($identity.schema -isnot [string] -or $identity.schema -cne 'PixelBridge.ApplicationBuildIdentity.1' -or
+        $identity.applicationName -isnot [string] -or $identity.applicationName -cne $ExpectedApplicationName -or
+        $identity.applicationVersion -isnot [string] -or [string]::IsNullOrWhiteSpace($identity.applicationVersion) -or
+        $identity.protocolMajor -isnot [Int64] -or $identity.protocolMajor -ne 1 -or
+        $identity.protocolMinor -isnot [Int64] -or $identity.protocolMinor -ne 0 -or
+        $identity.gitCommit -isnot [string] -or $identity.gitCommit -cne $ExpectedGitCommit)
+    {
+        throw "$ExpectedApplicationName runtime build identity does not match current HEAD/protocol"
+    }
+    return $identity
+}
+
 function Get-CanonicalInventoryFingerprint
 {
     param([Parameter(Mandatory = $true)][object[]]$Inventory)
@@ -484,17 +533,25 @@ try
             "$applicationName.exe"
         }
         $copiedExecutable = Join-Path $stagingDirectory ($relativeExecutablePath.Replace('/', '\'))
+        $versionOutput = @(& $copiedExecutable --version)
+        if ($LASTEXITCODE -ne 0)
+        {
+            throw "$applicationName --version failed with exit code $LASTEXITCODE"
+        }
+        $runtimeIdentity = Get-ApplicationBuildIdentity -ExecutablePath $copiedExecutable `
+            -ExpectedApplicationName $applicationName -ExpectedGitCommit $headCommit
+        $expectedVersionOutput = "$applicationName $($runtimeIdentity.applicationVersion) (protocol $($runtimeIdentity.protocolMajor).$($runtimeIdentity.protocolMinor))"
+        if ($versionOutput.Count -ne 1 -or [string]$versionOutput[0] -cne $expectedVersionOutput)
+        {
+            throw "$applicationName --version disagrees with its runtime build identity"
+        }
         $applications += [ordered]@{
             role = $applicationRole
             application = $applicationName
             relativeExecutablePath = $relativeExecutablePath
             size = [UInt64](Get-Item -LiteralPath $copiedExecutable).Length
             sha256 = Get-FileSha256 -Path $copiedExecutable
-            versionOutput = (& $copiedExecutable --version)
-        }
-        if ($LASTEXITCODE -ne 0)
-        {
-            throw "$applicationName --version failed with exit code $LASTEXITCODE"
+            versionOutput = [string]$versionOutput[0]
         }
     }
 

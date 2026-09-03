@@ -1,10 +1,17 @@
 #include "pbcore/build_info.h"
 #include "pbprotocol/protocol_version.h"
 
+#ifdef _WIN32
+#include "application_build_identity.h"
+#endif
+
 #include <iostream>
 #include <string_view>
 
 #ifdef _WIN32
+#ifndef PB_GIT_COMMIT
+#define PB_GIT_COMMIT "unknown"
+#endif
 int RunScreenRegionCommand(int argumentCount, wchar_t* arguments[]);
 int RunCaptureBootstrapCommand(int argumentCount, wchar_t* arguments[]);
 #ifdef PB_ENABLE_APPLICATION_RUNTIME
@@ -27,6 +34,13 @@ int main()
             const pbprotocol::ProtocolVersion protocolVersion = pbprotocol::GetProtocolVersion();
             std::cout << "PixelBridgeDecoder " << buildInfo.version << " (protocol "
                       << protocolVersion.major << "." << protocolVersion.minor << ")" << std::endl;
+            return 0;
+        }
+        if (std::wstring_view(arguments[1]) == L"--build-identity" && argumentCount == 2)
+        {
+            const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
+            const pbprotocol::ProtocolVersion protocolVersion = pbprotocol::GetProtocolVersion();
+            pbapp::WriteApplicationBuildIdentity(std::cout, "PixelBridgeDecoder", buildInfo, protocolVersion, PB_GIT_COMMIT);
             return 0;
         }
 #ifdef PB_ENABLE_QT_GUI
