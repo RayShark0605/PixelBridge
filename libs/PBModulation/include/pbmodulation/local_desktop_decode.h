@@ -59,6 +59,8 @@ struct LocalDesktopDecodePolicy
     double maximumGeometryResidualPixels = 1.25;
 };
 
+[[nodiscard]] bool ValidateLocalDesktopDecodePolicy(const LocalDesktopDecodePolicy& policy) noexcept;
+
 // A refinement iteration is complete once its fitted frame-boundary movement
 // is no greater than this amount. Consumers that sample continuous geometry
 // may use the same bound to snap an exact-canvas fit inward.

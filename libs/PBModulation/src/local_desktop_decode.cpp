@@ -47,7 +47,9 @@ using detail::BytesPerPixel;
 using detail::Read32;
 using detail::LumaReader;
 
-bool ValidPolicy(const LocalDesktopDecodePolicy& policy) noexcept
+} // namespace
+
+bool ValidateLocalDesktopDecodePolicy(const LocalDesktopDecodePolicy& policy) noexcept
 {
     constexpr LocalDesktopDecodePolicy defaults;
     const std::array<double, 11> values{policy.minimumScale, policy.maximumScale, policy.minimumContrast,
@@ -72,6 +74,9 @@ bool ValidPolicy(const LocalDesktopDecodePolicy& policy) noexcept
            policy.maximumMidGrayFraction <= defaults.maximumMidGrayFraction && policy.midGrayBoundary <= defaults.midGrayBoundary &&
            policy.maximumGeometryResidualPixels > 0 && policy.maximumGeometryResidualPixels <= defaults.maximumGeometryResidualPixels;
 }
+
+namespace
+{
 
 struct Run
 {
@@ -952,7 +957,7 @@ LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view,
     {
         return result;
     }
-    if (!ValidPolicy(policy))
+    if (!ValidateLocalDesktopDecodePolicy(policy))
     {
         result.erasure = Erasure::InvalidPolicy;
         return result;
@@ -1065,7 +1070,7 @@ LocalDesktopObservation detail::DecodeLocalDesktopFixedCanvasScaffold(const Luma
     {
         return result;
     }
-    if (!ValidPolicy(policy))
+    if (!ValidateLocalDesktopDecodePolicy(policy))
     {
         result.erasure = Erasure::InvalidPolicy;
         return result;
