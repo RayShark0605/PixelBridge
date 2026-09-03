@@ -15,6 +15,7 @@ public:
     ~EncoderApplicationController() override;
 
     [[nodiscard]] QString Start(const pbapp::EncoderConfig& config);
+    [[nodiscard]] QString SetLogicalVisualFps(std::uint32_t logicalVisualFps) noexcept;
     void RequestStop() noexcept;
     [[nodiscard]] pbapp::EncoderSnapshot GetSnapshot() const;
     [[nodiscard]] bool IsActive() const;

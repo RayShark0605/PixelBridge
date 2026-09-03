@@ -13,26 +13,83 @@
 
 namespace pbrenderd3d
 {
+
+PresentationViewportGeometry ResolvePresentationViewport(const DataWindowConfig& config,
+    const std::uint32_t clientWidth, const std::uint32_t clientHeight) noexcept
+{
+    if (config.width == 0 || config.height == 0 || clientWidth == 0 || clientHeight == 0)
+    {
+        return {};
+    }
+    const std::uint64_t scaledClientWidth = static_cast<std::uint64_t>(clientWidth) * dataWindowMinimumScaleDenominator;
+    const std::uint64_t scaledClientHeight = static_cast<std::uint64_t>(clientHeight) * dataWindowMinimumScaleDenominator;
+    const std::uint64_t minimumWidth = static_cast<std::uint64_t>(config.width) * dataWindowMinimumScaleNumerator;
+    const std::uint64_t minimumHeight = static_cast<std::uint64_t>(config.height) * dataWindowMinimumScaleNumerator;
+    if (scaledClientWidth < minimumWidth || scaledClientHeight < minimumHeight)
+    {
+        return PresentationViewportGeometry{PresentationViewportDisposition::PausedBelowMinimumScale};
+    }
+    const double widthScale = static_cast<double>(clientWidth) / config.width;
+    const double heightScale = static_cast<double>(clientHeight) / config.height;
+    const double availableScale = (std::min)(widthScale, heightScale);
+    const double maximumScale = static_cast<double>(dataWindowMaximumScaleNumerator) / dataWindowMaximumScaleDenominator;
+    const bool clamped = availableScale > maximumScale;
+    const double scale = clamped ? maximumScale : availableScale;
+    const double viewportWidth = config.width * scale;
+    const double viewportHeight = config.height * scale;
+    return {clamped ? PresentationViewportDisposition::ActiveClampedToMaximumScale : PresentationViewportDisposition::Active,
+        (static_cast<double>(clientWidth) - viewportWidth) / 2.0,
+        (static_cast<double>(clientHeight) - viewportHeight) / 2.0, viewportWidth, viewportHeight, scale};
+}
+
+bool CanPresentData(const PresentationViewportDisposition disposition) noexcept
+{
+    return disposition == PresentationViewportDisposition::Active ||
+        disposition == PresentationViewportDisposition::ActiveClampedToMaximumScale;
+}
+
 namespace
 {
 
+[[nodiscard]] bool CanOwnClientBackBuffer(const DataWindowConfig& config, const WindowEnvironment& environment) noexcept
+{
+    if (environment.clientWidth == 0 || environment.clientHeight == 0 || environment.clientWidth > 16384 ||
+        environment.clientHeight > 16384 || !environment.singleMonitor || !environment.adapterAvailable ||
+        environment.minimized || environment.closed)
+    {
+        return false;
+    }
+    const auto pixelCount = pbprotocol::CheckedMultiplyUint64(environment.clientWidth, environment.clientHeight);
+    const auto frameBytes = pixelCount ? pbprotocol::CheckedMultiplyUint64(pixelCount.Value(), 4) : pixelCount;
+    return frameBytes && frameBytes.Value() <= config.maximumFrameBytes;
+}
+
 [[nodiscard]] bool CanDisplay(const DataWindowConfig& config, const WindowEnvironment& environment) noexcept
 {
-    return environment.clientWidth == config.width && environment.clientHeight == config.height && environment.singleMonitor && environment.adapterAvailable &&
-           !environment.minimized && !environment.occluded && !environment.closed;
+    return CanOwnClientBackBuffer(config, environment) && !environment.occluded &&
+        CanPresentData(ResolvePresentationViewport(config, environment.clientWidth, environment.clientHeight).disposition);
+}
+
+[[nodiscard]] bool CanShowNeutralMatte(const DataWindowConfig& config, const WindowEnvironment& environment) noexcept
+{
+    return CanOwnClientBackBuffer(config, environment) && !environment.occluded &&
+        ResolvePresentationViewport(config, environment.clientWidth, environment.clientHeight).disposition ==
+            PresentationViewportDisposition::PausedBelowMinimumScale;
 }
 
 [[nodiscard]] bool CheckContract(const DataWindowConfig& config, const PresentationContract& contract) noexcept
 {
     return contract.bufferCount == config.bufferCount && contract.maximumFrameLatency == config.maximumFrameLatency &&
            contract.flipEffect == config.flipEffect && contract.bgraUnorm && contract.noMsaa && contract.alphaIgnored && contract.scalingNone &&
-           contract.tearingDisabled && contract.latencyWaitable && contract.perMonitorV2;
+           contract.tearingDisabled && contract.latencyWaitable && contract.perMonitorV2 &&
+           contract.resizableChrome == !config.topmost && contract.immutableCanonicalSource && contract.pointSampled &&
+           contract.centeredLetterbox && contract.neutralMatteBelowMinimum;
 }
 
 [[nodiscard]] bool CheckEnvironmentContract(const DataWindowConfig& config, const PresentationContract& contract, const WindowEnvironment& environment) noexcept
 {
-    return CheckContract(config, contract) &&
-           (!CanDisplay(config, environment) || (contract.bufferWidth == config.width && contract.bufferHeight == config.height));
+    return CheckContract(config, contract) && (!CanOwnClientBackBuffer(config, environment) ||
+        (contract.bufferWidth == environment.clientWidth && contract.bufferHeight == environment.clientHeight));
 }
 
 [[nodiscard]] std::optional<pbpresenttiming::EpochReason> FindEnvironmentChange(const WindowEnvironment& previous, const WindowEnvironment& current) noexcept
@@ -154,13 +211,14 @@ struct DataWindow::Implementation
     void PublishBackendLocked() noexcept
     {
         snapshot.contract = backend->GetContract();
+        snapshot.viewport = ResolvePresentationViewport(config, snapshot.environment.clientWidth, snapshot.environment.clientHeight);
         diagnostics = backend->GetDiagnostics();
         snapshot.softwareRasterizer = diagnostics.warp;
         snapshot.swapChainGeneration = diagnostics.swapChainGeneration;
         snapshot.bufferGeneration = diagnostics.bufferGeneration;
         snapshot.candidateContractSatisfied = snapshot.state == WindowState::Running && CanDisplay(config, snapshot.environment) &&
-                                              CheckContract(config, snapshot.contract) && snapshot.contract.bufferWidth == config.width &&
-                                              snapshot.contract.bufferHeight == config.height;
+            CheckContract(config, snapshot.contract) && snapshot.contract.bufferWidth == snapshot.environment.clientWidth &&
+            snapshot.contract.bufferHeight == snapshot.environment.clientHeight;
     }
 
     void FailLocked(const PresentationStatus error) noexcept
@@ -188,6 +246,7 @@ struct DataWindow::Implementation
     {
         DiscardPendingLocked();
         InvalidateActiveLocked();
+        snapshot.neutralMattePending = false;
         if (!timing.BeginEpoch(reason, backend->NowQpc()))
         {
             FailLocked(PresentationStatus::Failure(PresentationErrorCode::InternalError, PresentationStage::Statistics));
@@ -210,7 +269,6 @@ struct DataWindow::Implementation
             return false;
         }
         std::optional<pbpresenttiming::EpochReason> reason;
-        const std::uint64_t previousSwapChain = backend->GetDiagnostics().swapChainGeneration;
         {
             const std::lock_guard lock(stateMutex);
             reason = FindEnvironmentChange(snapshot.environment, current.Value());
@@ -227,6 +285,7 @@ struct DataWindow::Implementation
         }
         if (reason)
         {
+            framePermit = false;
             const auto status = backend->Reconfigure(current.Value());
             if (!status)
             {
@@ -236,10 +295,6 @@ struct DataWindow::Implementation
                 }
                 return false;
             }
-            if (backend->GetDiagnostics().swapChainGeneration != previousSwapChain)
-            {
-                framePermit = false;
-            }
             const std::lock_guard lock(stateMutex);
             if (!CheckEnvironmentContract(config, backend->GetContract(), current.Value()))
             {
@@ -247,6 +302,7 @@ struct DataWindow::Implementation
                 return false;
             }
             snapshot.state = CanDisplay(config, current.Value()) ? WindowState::Running : WindowState::Paused;
+            snapshot.neutralMattePending = CanShowNeutralMatte(config, current.Value());
             timing.SetPaused(snapshot.state == WindowState::Paused);
             PublishBackendLocked();
         }
@@ -390,6 +446,29 @@ struct DataWindow::Implementation
         return true;
     }
 
+    [[nodiscard]] bool PresentNeutralMatteAvailable(bool& framePermit) noexcept
+    {
+        {
+            const std::lock_guard lock(stateMutex);
+            if (!snapshot.neutralMattePending || !framePermit)
+            {
+                return true;
+            }
+        }
+        const auto result = backend->PresentNeutralMatte();
+        framePermit = false;
+        const std::lock_guard lock(stateMutex);
+        snapshot.neutralMattePending = false;
+        pbprotocol::SaturatingIncrementUnsigned(snapshot.neutralMattePresentCalls);
+        PublishBackendLocked();
+        if (!result.error)
+        {
+            FailLocked(result.error);
+            return false;
+        }
+        return true;
+    }
+
     [[nodiscard]] DataWindowSnapshot GetSnapshot() const noexcept
     {
         const std::lock_guard lock(stateMutex);
@@ -411,6 +490,7 @@ struct DataWindow::Implementation
             }
             bool pending = false;
             bool running = false;
+            bool neutralMattePending = false;
             {
                 const std::lock_guard lock(stateMutex);
                 if (snapshot.state == WindowState::Failed)
@@ -419,11 +499,22 @@ struct DataWindow::Implementation
                 }
                 running = snapshot.state == WindowState::Running;
                 pending = snapshot.pendingFrame || (config.repeatActiveFrame && snapshot.activeFrame);
-                if (!pending && !idleNotified)
+                neutralMattePending = snapshot.neutralMattePending;
+                if (!pending && !neutralMattePending && !idleNotified)
                 {
                     timing.BreakCadence();
                     idleNotified = true;
                 }
+            }
+            if (neutralMattePending && framePermit)
+            {
+                idleNotified = false;
+                waitingSince.reset();
+                if (!PresentNeutralMatteAvailable(framePermit))
+                {
+                    break;
+                }
+                continue;
             }
             if (running && pending && framePermit)
             {
@@ -440,7 +531,7 @@ struct DataWindow::Implementation
                 }
                 continue;
             }
-            const bool requestPermit = running && pending && !framePermit;
+            const bool requestPermit = (neutralMattePending || (running && pending)) && !framePermit;
             if (!requestPermit)
             {
                 waitingSince.reset();
@@ -518,6 +609,7 @@ struct DataWindow::Implementation
                     else
                     {
                         snapshot.state = CanDisplay(config, environment.Value()) ? WindowState::Running : WindowState::Paused;
+                        snapshot.neutralMattePending = CanShowNeutralMatte(config, environment.Value());
                         timing.SetPaused(snapshot.state == WindowState::Paused);
                         PublishBackendLocked();
                     }
@@ -556,6 +648,7 @@ struct DataWindow::Implementation
             }
             snapshot.candidateContractSatisfied = false;
             snapshot.inFlightFrame = false;
+            snapshot.neutralMattePending = false;
             DiscardPendingLocked();
             snapshot.activeFrame = false;
             snapshot.activeFrameSequence = 0;

@@ -25,6 +25,12 @@ static_assert(senderCarouselRepairPercentDenominator % senderCarouselRepairPerce
     return true;
 }
 
+[[nodiscard]] std::uint64_t CalculateLogicalFrameIntervalNanoseconds(
+    const std::uint32_t logicalFramesPerSecond) noexcept
+{
+    return 1ULL + (senderLogicalFrameNanosecondsPerSecond - 1ULL) / logicalFramesPerSecond;
+}
+
 [[nodiscard]] SenderCarouselSchedulerStatus CalculateEquationCounts(
     const std::uint32_t systematicBlockCount, const bool wirehair,
     std::uint64_t& scheduledEquationCount, std::uint64_t& repairEquationCount) noexcept
@@ -223,7 +229,8 @@ SenderCarouselSchedulerStatus SenderLogicalFrameClock::Create(
     }
     SenderLogicalFrameClock clock;
     clock.logicalFramesPerSecond_ = logicalFramesPerSecond;
-    clock.startNanoseconds_ = startNanoseconds;
+    clock.requestedLogicalFramesPerSecond_ = logicalFramesPerSecond;
+    clock.anchorNanoseconds_ = startNanoseconds;
     output = clock;
     return {};
 }
@@ -242,11 +249,11 @@ SenderCarouselSchedulerStatus SenderLogicalFrameClock::Acquire(
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
     }
-    if (nowNanoseconds < startNanoseconds_)
+    if (nowNanoseconds < anchorNanoseconds_)
     {
         return {};
     }
-    const std::uint64_t elapsedNanoseconds = nowNanoseconds - startNanoseconds_;
+    const std::uint64_t elapsedNanoseconds = nowNanoseconds - anchorNanoseconds_;
     const std::uint64_t elapsedWholeSeconds = elapsedNanoseconds / senderLogicalFrameNanosecondsPerSecond;
     const std::uint64_t elapsedFractionNanoseconds = elapsedNanoseconds % senderLogicalFrameNanosecondsPerSecond;
     std::uint64_t wholeSecondTicks = 0;
@@ -257,8 +264,10 @@ SenderCarouselSchedulerStatus SenderLogicalFrameClock::Acquire(
     }
     const std::uint64_t fractionTicks =
         elapsedFractionNanoseconds * logicalFramesPerSecond_ / senderLogicalFrameNanosecondsPerSecond;
+    std::uint64_t relativeDueTick = 0;
     std::uint64_t latestDueTick = 0;
-    if (!AssignChecked(pbprotocol::CheckedAddUint64(wholeSecondTicks, fractionTicks), latestDueTick))
+    if (!AssignChecked(pbprotocol::CheckedAddUint64(wholeSecondTicks, fractionTicks), relativeDueTick) ||
+        !AssignChecked(pbprotocol::CheckedAddUint64(anchorLogicalTickOrdinal_, relativeDueTick), latestDueTick))
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
     }
@@ -274,7 +283,41 @@ SenderCarouselSchedulerStatus SenderLogicalFrameClock::Acquire(
     return {};
 }
 
-SenderCarouselSchedulerStatus SenderLogicalFrameClock::Commit() noexcept
+SenderCarouselSchedulerStatus SenderLogicalFrameClock::RequestFramesPerSecond(
+    const std::uint32_t logicalFramesPerSecond, const std::uint64_t nowNanoseconds) noexcept
+{
+    if (logicalFramesPerSecond < senderUnifiedMinimumLogicalFramesPerSecond ||
+        logicalFramesPerSecond > senderUnifiedMaximumLogicalFramesPerSecond)
+    {
+        return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
+    }
+    if (framePending_)
+    {
+        requestedLogicalFramesPerSecond_ = logicalFramesPerSecond;
+        rateChangePending_ = requestedLogicalFramesPerSecond_ != logicalFramesPerSecond_;
+        return {};
+    }
+    if (logicalFramesPerSecond == logicalFramesPerSecond_)
+    {
+        requestedLogicalFramesPerSecond_ = logicalFramesPerSecond;
+        rateChangePending_ = false;
+        return {};
+    }
+    const std::uint64_t intervalNanoseconds = CalculateLogicalFrameIntervalNanoseconds(logicalFramesPerSecond);
+    std::uint64_t nextDeadline = 0;
+    if (!AssignChecked(pbprotocol::CheckedAddUint64(nowNanoseconds, intervalNanoseconds), nextDeadline))
+    {
+        return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
+    }
+    logicalFramesPerSecond_ = logicalFramesPerSecond;
+    requestedLogicalFramesPerSecond_ = logicalFramesPerSecond;
+    anchorNanoseconds_ = nextDeadline;
+    anchorLogicalTickOrdinal_ = nextLogicalTickOrdinal_;
+    rateChangePending_ = false;
+    return {};
+}
+
+SenderCarouselSchedulerStatus SenderLogicalFrameClock::Commit(const std::uint64_t completedAtNanoseconds) noexcept
 {
     if (!framePending_)
     {
@@ -287,17 +330,36 @@ SenderCarouselSchedulerStatus SenderLogicalFrameClock::Commit() noexcept
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
     }
+    std::uint64_t nextAnchorNanoseconds = anchorNanoseconds_;
+    if (rateChangePending_)
+    {
+        const std::uint64_t intervalNanoseconds =
+            CalculateLogicalFrameIntervalNanoseconds(requestedLogicalFramesPerSecond_);
+        if (!AssignChecked(pbprotocol::CheckedAddUint64(
+            completedAtNanoseconds, intervalNanoseconds), nextAnchorNanoseconds))
+        {
+            return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
+        }
+    }
     nextLogicalTickOrdinal_ = nextLogicalTickOrdinal;
     droppedTickCount_ = droppedTickCount;
     pendingLogicalTickOrdinal_ = 0;
     pendingDroppedTickCount_ = 0;
     framePending_ = false;
+    if (rateChangePending_)
+    {
+        logicalFramesPerSecond_ = requestedLogicalFramesPerSecond_;
+        anchorNanoseconds_ = nextAnchorNanoseconds;
+        anchorLogicalTickOrdinal_ = nextLogicalTickOrdinal_;
+        rateChangePending_ = false;
+    }
     return {};
 }
 
 SenderLogicalFrameClockSnapshot SenderLogicalFrameClock::GetSnapshot() const noexcept
 {
-    return {nextLogicalTickOrdinal_, droppedTickCount_, framePending_};
+    return {nextLogicalTickOrdinal_, droppedTickCount_, framePending_, logicalFramesPerSecond_,
+        requestedLogicalFramesPerSecond_, rateChangePending_};
 }
 
 SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(

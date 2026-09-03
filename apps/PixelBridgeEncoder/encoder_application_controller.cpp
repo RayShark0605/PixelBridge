@@ -33,6 +33,20 @@ QString EncoderApplicationController::Start(const pbapp::EncoderConfig& config)
     return status ? QString() : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
 }
 
+QString EncoderApplicationController::SetLogicalVisualFps(const std::uint32_t logicalVisualFps) noexcept
+{
+    const pbapp::RuntimeStatus status = runtime_.SetLogicalVisualFps(logicalVisualFps);
+    try
+    {
+        PollSnapshot();
+        return status ? QString() : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
+    }
+    catch (...)
+    {
+        return status ? QStringLiteral("无法刷新 Encoder FPS 状态") : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
+    }
+}
+
 void EncoderApplicationController::RequestStop() noexcept
 {
     runtime_.RequestStop();
@@ -60,6 +74,7 @@ void EncoderApplicationController::PollSnapshot()
     const pbapp::EncoderSnapshot current = runtime_.GetSnapshot();
     const bool changed = current.runGeneration != lastSnapshot_.runGeneration || current.state != lastSnapshot_.state ||
         current.frameSequence != lastSnapshot_.frameSequence || current.presentationEpoch != lastSnapshot_.presentationEpoch ||
+        current.configuredLogicalVisualFps != lastSnapshot_.configuredLogicalVisualFps ||
         current.statusMessage != lastSnapshot_.statusMessage || current.errorDetail != lastSnapshot_.errorDetail;
     const bool becameTerminal = IsTerminal(current.state) && !IsTerminal(lastSnapshot_.state);
     lastSnapshot_ = current;

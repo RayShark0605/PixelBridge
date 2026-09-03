@@ -139,6 +139,9 @@ struct SenderLogicalFrameClockSnapshot
     std::uint64_t nextLogicalTickOrdinal = 0;
     std::uint64_t droppedTickCount = 0;
     bool framePending = false;
+    std::uint32_t logicalFramesPerSecond = 0;
+    std::uint32_t requestedLogicalFramesPerSecond = 0;
+    bool rateChangePending = false;
 
     bool operator==(const SenderLogicalFrameClockSnapshot&) const = default;
 };
@@ -155,17 +158,25 @@ public:
         SenderLogicalFrameClock& output) noexcept;
     [[nodiscard]] SenderCarouselSchedulerStatus Acquire(
         std::uint64_t nowNanoseconds, SenderLogicalFrameTick& output) noexcept;
-    [[nodiscard]] SenderCarouselSchedulerStatus Commit() noexcept;
+    // A request made while a complete logical frame is pending is committed
+    // only after that frame. Re-anchoring at the completion timestamp prevents
+    // either a partial-frame cadence switch or a catch-up burst.
+    [[nodiscard]] SenderCarouselSchedulerStatus RequestFramesPerSecond(
+        std::uint32_t logicalFramesPerSecond, std::uint64_t nowNanoseconds) noexcept;
+    [[nodiscard]] SenderCarouselSchedulerStatus Commit(std::uint64_t completedAtNanoseconds) noexcept;
     [[nodiscard]] SenderLogicalFrameClockSnapshot GetSnapshot() const noexcept;
 
 private:
     std::uint32_t logicalFramesPerSecond_ = 0;
-    std::uint64_t startNanoseconds_ = 0;
+    std::uint32_t requestedLogicalFramesPerSecond_ = 0;
+    std::uint64_t anchorNanoseconds_ = 0;
+    std::uint64_t anchorLogicalTickOrdinal_ = 0;
     std::uint64_t nextLogicalTickOrdinal_ = 0;
     std::uint64_t pendingLogicalTickOrdinal_ = 0;
     std::uint64_t pendingDroppedTickCount_ = 0;
     std::uint64_t droppedTickCount_ = 0;
     bool framePending_ = false;
+    bool rateChangePending_ = false;
 };
 
 enum class SenderUnifiedTransportSlotDisposition : std::uint8_t

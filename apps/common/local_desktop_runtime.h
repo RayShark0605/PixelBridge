@@ -320,6 +320,7 @@ public:
     EncoderRuntime& operator=(const EncoderRuntime&) = delete;
 
     [[nodiscard]] RuntimeStatus Start(const EncoderConfig& config);
+    [[nodiscard]] RuntimeStatus SetLogicalVisualFps(std::uint32_t logicalVisualFps) noexcept;
     void RequestStop() noexcept;
     void Stop() noexcept;
     [[nodiscard]] EncoderSnapshot GetSnapshot() const;
@@ -331,6 +332,7 @@ private:
     std::thread worker_;
     std::atomic<bool> stopRequested_ = false;
     std::atomic<bool> workerRunning_ = false;
+    std::atomic<std::uint32_t> requestedLogicalVisualFps_ = 0;
     std::uint64_t nextRunGeneration_ = 1;
 };
 

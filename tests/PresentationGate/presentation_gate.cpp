@@ -295,10 +295,27 @@ void CheckInitialContract(const DataWindowSnapshot& snapshot, const DataWindowCo
                 contract.maximumFrameLatency == config.maximumFrameLatency && contract.flipEffect == config.flipEffect,
             "descriptor readback mismatch");
     Require(contract.bgraUnorm && contract.noMsaa && contract.alphaIgnored && contract.scalingNone && contract.tearingDisabled && contract.latencyWaitable &&
-                contract.perMonitorV2,
+                contract.perMonitorV2 && contract.resizableChrome && contract.immutableCanonicalSource && contract.pointSampled &&
+                contract.centeredLetterbox && contract.neutralMatteBelowMinimum,
             "native contract flag mismatch");
     Require(snapshot.environment.clientWidth == config.width && snapshot.environment.clientHeight == config.height && snapshot.environment.singleMonitor,
             "physical geometry readback mismatch");
+}
+
+void ResizeClientArea(const HWND handle, const std::uint32_t width, const std::uint32_t height)
+{
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR style = GetWindowLongPtrW(handle, GWL_STYLE);
+    Require(style != 0 || GetLastError() == ERROR_SUCCESS, "Data Window style readback failed");
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR extendedStyle = GetWindowLongPtrW(handle, GWL_EXSTYLE);
+    Require(extendedStyle != 0 || GetLastError() == ERROR_SUCCESS, "Data Window extended style readback failed");
+    RECT outer{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    Require(AdjustWindowRectExForDpi(&outer, static_cast<DWORD>(style), GetMenu(handle) != nullptr,
+        static_cast<DWORD>(extendedStyle), GetDpiForWindow(handle)) != FALSE,
+        "Data Window client-to-outer size conversion failed");
+    Require(SetWindowPos(handle, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE, "native client resize failed");
 }
 
 void CheckNoActivateWindow(const HWND handle)
@@ -314,28 +331,28 @@ void ResizeAndRestore(DataWindow& window, const DataWindowConfig& config, Eviden
 {
     const HWND handle = reinterpret_cast<HWND>(DataWindowTestAccess::GetWindowToken(window));
     const auto before = window.GetSnapshot();
-    Require(SetWindowPos(handle, nullptr, 0, 0, static_cast<int>(config.width - 1), static_cast<int>(config.height - 1),
-                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE,
-            "native resize failed");
-    const auto paused = WaitFor(
+    const std::uint32_t resizedWidth = config.width - 1;
+    const std::uint32_t resizedHeight = config.height - 1;
+    ResizeClientArea(handle, resizedWidth, resizedHeight);
+    const auto resized = WaitFor(
         window,
-        [&before, &config](const auto& snapshot)
+        [&before, resizedWidth, resizedHeight](const auto& snapshot)
         {
-            return snapshot.state == WindowState::Paused && snapshot.timing.presentationEpoch > before.timing.presentationEpoch &&
-                   snapshot.contract.bufferWidth == config.width - 1;
+            return snapshot.state == WindowState::Running && snapshot.candidateContractSatisfied &&
+                snapshot.timing.presentationEpoch > before.timing.presentationEpoch &&
+                snapshot.contract.bufferWidth == resizedWidth && snapshot.contract.bufferHeight == resizedHeight &&
+                CanPresentData(snapshot.viewport.disposition);
         },
-        "noncanonical resize pause");
-    Require(!paused.candidateContractSatisfied && !paused.timing.presentedVisualFps, "resized pixels incorrectly certified");
-    Require(paused.totalPresentCalls == before.totalPresentCalls, "resize spontaneously presented data");
-    evidence.Record("noncanonical-resize", paused);
-    Require(SetWindowPos(handle, nullptr, 0, 0, static_cast<int>(config.width), static_cast<int>(config.height), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) !=
-                FALSE,
-            "native restore size failed");
+        "resizable aspect-fit presentation");
+    Require(!resized.timing.presentedVisualFps, "resized epoch reused old presentation observations");
+    Require(resized.totalPresentCalls == before.totalPresentCalls, "resize spontaneously presented data");
+    evidence.Record("aspect-fit-resize", resized);
+    ResizeClientArea(handle, config.width, config.height);
     const auto restored = WaitFor(
         window,
-        [&paused](const auto& snapshot)
+        [&resized](const auto& snapshot)
         {
-            return snapshot.candidateContractSatisfied && snapshot.timing.presentationEpoch > paused.timing.presentationEpoch;
+            return snapshot.candidateContractSatisfied && snapshot.timing.presentationEpoch > resized.timing.presentationEpoch;
         },
         "canonical restore");
     Require(restored.bufferGeneration >= before.bufferGeneration + 2, "ResizeBuffers did not rebuild both back buffers");
@@ -552,9 +569,9 @@ void RunLf4Encoder(const bool warp, Evidence& evidence)
     Require(diagnostics.verifiedUploads == canonicalSourceReplacement && diagnostics.immutableSourceCreations == canonicalSourceReplacement &&
         diagnostics.sourceReadbackBlake3Valid && diagnostics.lastSourceReadbackBlake3 == cpuDigest,
         "LF4 immutable source GPU readback does not match the Step 08 CPU raster");
-    Require(diagnostics.sourceCopiesToBackBuffer == diagnostics.presentCalls &&
+    Require(diagnostics.sourceRendersToBackBuffer == diagnostics.presentCalls &&
         diagnostics.presentCalls == repeated.totalPresentCalls,
-        "LF4 Present did not redraw the complete immutable source for every flip");
+        "LF4 Present did not redraw the complete immutable source through the point sampler for every flip");
     Require(GetForegroundWindow() != handle, "LF4 repeated Present activated the Data Window");
     evidence.Record("lf4-step08-source-repeated", repeated);
     evidence.Note("LF4 Step08 CPU/GPU source BLAKE3=" + digestPin + " PASS; immutableSources=" +
@@ -579,7 +596,7 @@ void RunLf4Encoder(const bool warp, Evidence& evidence)
     diagnostics = DataWindowTestAccess::GetDiagnostics(*window);
     Require(diagnostics.verifiedUploads == canonicalSourceReplacement + 1 &&
         diagnostics.immutableSourceCreations == canonicalSourceReplacement + 1 &&
-        diagnostics.sourceCopiesToBackBuffer == diagnostics.presentCalls && diagnostics.debugErrors == 0,
+        diagnostics.sourceRendersToBackBuffer == diagnostics.presentCalls && diagnostics.debugErrors == 0,
         "LF4 replacement lifecycle/readback/debug verification incomplete");
     Require(GetForegroundWindow() != handle, "LF4 replacement activated the Data Window");
     evidence.Record("lf4-next-source-repeated", replaced);

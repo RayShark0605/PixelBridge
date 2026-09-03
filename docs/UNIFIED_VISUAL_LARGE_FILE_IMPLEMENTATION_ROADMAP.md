@@ -619,6 +619,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G13 — 可缩放 Data Window 与 presentation epoch
 
+**状态：** 已完成（2026-09-04）。
 **前置：** G08/G09；建议在 G12 后进行。
 **目的：** 把旧固定画布窗口改为普通 resizable chrome，同时保持规范 raster 完整替换和 cadence 语义。
 
@@ -627,16 +628,18 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] `WS_OVERLAPPEDWINDOW`；允许拖动、最小化和 resize。
-- [ ] canonical `1920x1080` immutable texture；point sampling 等比缩放、居中 letterbox。
-- [ ] 有效 viewport 上限 2.0x，超大窗口仍居中；小于 0.75x 显示 neutral matte。
-- [ ] 小于 0.75x 不生成有效 Bootstrap、不推进 FrameSequence/Carousel，并显示“窗口过小，广播已暂停”。
-- [ ] resize/DPI/monitor/device/swap-chain 变化创建 presentation epoch，排空旧 epoch，后台完成整 raster 后原子替换。
-- [ ] stable dwell 可重复 Present，不产生新 equation。
-- [ ] 运行中 FPS 改变在下一完整逻辑帧应用；过期 tick 丢弃而不积压。
+- [x] `WS_OVERLAPPEDWINDOW`；允许拖动、最小化和 resize。
+- [x] canonical `1920x1080` immutable texture；point sampling 等比缩放、居中 letterbox。
+- [x] 有效 viewport 上限 2.0x，超大窗口仍居中；小于 0.75x 显示 neutral matte。
+- [x] 小于 0.75x 不生成有效 Bootstrap、不推进 FrameSequence/Carousel，并显示“窗口过小，广播已暂停”。
+- [x] resize/DPI/monitor/device/swap-chain 变化创建 presentation epoch，排空旧 epoch，后台完成整 raster 后原子替换。
+- [x] stable dwell 可重复 Present，不产生新 equation。
+- [x] 运行中 FPS 改变在下一完整逻辑帧应用；过期 tick 丢弃而不积压。
 
 **最小验证：** PBRenderD3D headless/mock unit + WARP offscreen；真实 DISPLAY2 resize 只留给 G20。
-**退出：** back-buffer 永不出现半旧半新 raster；暂停/恢复保持同 Session 且 IDs 不回退。
+**验证结果（2026-09-04）：** Release 定向增量构建 `PBRenderD3DTests`、`PBRenderD3DWarpOffscreenTests`、`PBUnifiedSenderSchedulerTests` 和 `PixelBridgeEncoder` 成功；当前 `build-unified-release` 未配置 `PBPresentationGate`，因此另在既有 `build-presentation-release` 自动重配后只编译 `PBPresentationGate` 成功，未运行其中任何实屏模式。`PBRenderD3DTests` headless/mock 20/20（376 assertions）通过：覆盖 0.75/2.0 边界、任意宽高比居中 viewport、resize/DPI/mode/monitor epoch、旧 pending/active/permit 失效、低于阈值只消费一次 neutral-matte permit、恢复后同一 Session 调用方可继续提交且 FrameSequence 4 未回退。新增无 HWND 的 `PBRenderD3DWarpOffscreenTests` 1/1（14 assertions）通过：复用生产 HLSL、immutable 1920x1080 source 与 point sampler，把独立像素 oracle 等比绘制到 2560x1600 的 2560x1440 viewport，80 px 上下 letterbox 及全部 BGRA 字节精确一致；1439x810 小于阈值时没有 source texture/render，整张 target 为 BGRA 128/128/128/255。`PBUnifiedSenderSchedulerTests [application][g13]` 1/1（28 assertions）通过：15→60 Hz 请求保持当前 pending frame 不变，在实际完整帧 commit 后生效；pending 期间 30→1 Hz 只保留最新请求；5 秒停顿交付 tick 7 并计数丢弃 4 个旧 tick，无 catch-up queue；0/61 Hz 原子拒绝。生产 runtime 只在 `SubmitFrame` 成功后推进 builder/FrameSequence 并以实际完成时刻提交动态时钟，暂停时保留完整待提交 raster，不生成或推进下一 equation。未运行完整 CTest、GUI/手工交互、真实硬件窗口、`DISPLAY2` resize/minimize/DPI/跨屏、capture 或 G20 实屏 Gate。
+**退出：** 已满足。每个新逻辑帧先在 CPU 完整生成，再整体创建 immutable canonical source 并通过单 owner D3D11 draw 替换 back buffer；resize/rebuild 前 drain GPU、清除旧 source/back-buffer 引用，所有环境变化都开始新 presentation epoch 并使旧 pending、active 与 frame-latency permit 失效，因此旧 epoch raster 不会进入新 epoch。低于 0.75 时只呈现 neutral matte，runtime 不调用 builder；恢复后 Session store 未重建，调用方使用新 epoch 继续未回退的 FrameSequence/Carousel。此结论仅覆盖 headless/mock 与 WARP offscreen，不构成 G20 的真实 `DISPLAY2` 认证。
+**产物：** viewport/contract/snapshot 公共接口位于 `libs/PBRenderD3D/include/pbrenderd3d/data_window.h`，epoch/mailbox 状态机位于 `libs/PBRenderD3D/src/data_window.cpp`，原生 resizable HWND、immutable source、point-sampled letterbox、neutral matte 和 WARP offscreen seam 位于 `libs/PBRenderD3D/src/native_backend.cpp`。动态逻辑时钟位于 `apps/common/sender_carousel_scheduler.*`，runtime/controller 接口位于 `apps/common/local_desktop_runtime.*` 与 `apps/PixelBridgeEncoder/encoder_application_controller.*`。测试位于 `tests/PBRenderD3D/test_data_window.cpp`、`tests/PBRenderD3D/test_warp_offscreen.cpp`、`tests/PBApplication/test_unified_sender_scheduler.cpp`；本地日志位于 `build-unified-release/tests/PBRenderD3D/g13-headless-mock.txt`、`g13-warp-offscreen.txt` 与 `build-unified-release/tests/PBApplication/g13-dynamic-fps.txt`。
 **提交建议：** `feat(presentation): add resizable atomic data window`
 
 ## G14 — WGC 默认捕获与 DXGI 明确 fallback

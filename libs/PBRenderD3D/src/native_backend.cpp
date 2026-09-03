@@ -5,12 +5,14 @@
 #include <Windows.h>
 #include <d3d11.h>
 #include <d3d11sdklayers.h>
+#include <d3dcompiler.h>
 #include <dxgi1_3.h>
 #include <wrl/client.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cwchar>
 #include <limits>
 
@@ -58,6 +60,165 @@ private:
 [[nodiscard]] PresentationStatus LastWindowsError(const PresentationStage stage) noexcept
 {
     return PresentationStatus::Failure(PresentationErrorCode::NativeFailure, stage, static_cast<std::int32_t>(GetLastError()));
+}
+
+constexpr char presentationShader[] = R"(
+Texture2D<float4> canonicalRaster : register(t0);
+SamplerState pointSampler : register(s0);
+
+struct VertexOutput
+{
+    float4 position : SV_Position;
+    float2 textureCoordinates : TEXCOORD0;
+};
+
+VertexOutput VertexMain(uint vertexId : SV_VertexID)
+{
+    VertexOutput output;
+    const float2 corner = float2((vertexId << 1) & 2, vertexId & 2);
+    output.position = float4(corner.x * 2.0f - 1.0f, 1.0f - corner.y * 2.0f, 0.0f, 1.0f);
+    output.textureCoordinates = corner;
+    return output;
+}
+
+float4 PixelMain(VertexOutput input) : SV_Target
+{
+    return canonicalRaster.Sample(pointSampler, input.textureCoordinates);
+}
+)";
+
+struct RasterPipeline
+{
+    ComPtr<ID3D11VertexShader> vertexShader;
+    ComPtr<ID3D11PixelShader> pixelShader;
+    ComPtr<ID3D11SamplerState> pointSampler;
+};
+
+[[nodiscard]] PresentationStatus CreateRasterPipeline(ID3D11Device* const device, RasterPipeline& output) noexcept
+{
+    if (device == nullptr)
+    {
+        return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Device);
+    }
+    RasterPipeline pipeline;
+    const UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    ComPtr<ID3DBlob> shaderCode;
+    ComPtr<ID3DBlob> diagnostics;
+    HRESULT result = D3DCompile(presentationShader, sizeof(presentationShader) - 1, nullptr, nullptr, nullptr,
+        "VertexMain", "vs_5_0", compileFlags, 0, shaderCode.GetAddressOf(), diagnostics.GetAddressOf());
+    if (FAILED(result))
+    {
+        return NativeError(result, PresentationStage::Device);
+    }
+    result = device->CreateVertexShader(shaderCode->GetBufferPointer(), shaderCode->GetBufferSize(), nullptr,
+        pipeline.vertexShader.GetAddressOf());
+    if (FAILED(result))
+    {
+        return NativeError(result, PresentationStage::Device);
+    }
+    shaderCode.Reset();
+    diagnostics.Reset();
+    result = D3DCompile(presentationShader, sizeof(presentationShader) - 1, nullptr, nullptr, nullptr,
+        "PixelMain", "ps_5_0", compileFlags, 0, shaderCode.GetAddressOf(), diagnostics.GetAddressOf());
+    if (FAILED(result))
+    {
+        return NativeError(result, PresentationStage::Device);
+    }
+    result = device->CreatePixelShader(shaderCode->GetBufferPointer(), shaderCode->GetBufferSize(), nullptr,
+        pipeline.pixelShader.GetAddressOf());
+    if (FAILED(result))
+    {
+        return NativeError(result, PresentationStage::Device);
+    }
+    D3D11_SAMPLER_DESC samplerDescription{};
+    samplerDescription.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    samplerDescription.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDescription.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDescription.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDescription.MaxLOD = D3D11_FLOAT32_MAX;
+    result = device->CreateSamplerState(&samplerDescription, pipeline.pointSampler.GetAddressOf());
+    if (FAILED(result))
+    {
+        return NativeError(result, PresentationStage::Device);
+    }
+    output = std::move(pipeline);
+    return PresentationStatus::Success();
+}
+
+[[nodiscard]] PresentationStatus CreateImmutableCanonicalSource(ID3D11Device* const device,
+    const DataWindowConfig& config, const std::span<const std::byte> pixels,
+    ComPtr<ID3D11Texture2D>& texture, ComPtr<ID3D11ShaderResourceView>& view) noexcept
+{
+    if (device == nullptr || pixels.size() != static_cast<std::size_t>(config.width) * config.height * 4)
+    {
+        return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Upload);
+    }
+    D3D11_TEXTURE2D_DESC description{};
+    description.Width = config.width;
+    description.Height = config.height;
+    description.MipLevels = 1;
+    description.ArraySize = 1;
+    description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.Usage = D3D11_USAGE_IMMUTABLE;
+    description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA initialData{};
+    initialData.pSysMem = pixels.data();
+    initialData.SysMemPitch = config.width * 4;
+    ComPtr<ID3D11Texture2D> candidateTexture;
+    HRESULT result = device->CreateTexture2D(&description, &initialData, candidateTexture.GetAddressOf());
+    if (FAILED(result))
+    {
+        return NativeError(result, PresentationStage::Upload);
+    }
+    ComPtr<ID3D11ShaderResourceView> candidateView;
+    result = device->CreateShaderResourceView(candidateTexture.Get(), nullptr, candidateView.GetAddressOf());
+    if (FAILED(result))
+    {
+        return NativeError(result, PresentationStage::Upload);
+    }
+    texture = std::move(candidateTexture);
+    view = std::move(candidateView);
+    return PresentationStatus::Success();
+}
+
+void BindNeutralMatte(ID3D11DeviceContext* const context, ID3D11RenderTargetView* const targetView) noexcept
+{
+    ID3D11RenderTargetView* const targets[]{targetView};
+    context->OMSetRenderTargets(1, targets, nullptr);
+    constexpr float neutral = static_cast<float>(dataWindowNeutralMatteCodeValue) / 255.0f;
+    constexpr float alpha = static_cast<float>(dataWindowNeutralMatteAlpha) / 255.0f;
+    constexpr std::array<float, 4> matte{neutral, neutral, neutral, alpha};
+    context->ClearRenderTargetView(targetView, matte.data());
+}
+
+[[nodiscard]] PresentationStatus RenderCanonicalRaster(ID3D11DeviceContext* const context,
+    ID3D11RenderTargetView* const targetView, ID3D11ShaderResourceView* const sourceView,
+    const RasterPipeline& pipeline, const PresentationViewportGeometry& viewport) noexcept
+{
+    if (context == nullptr || targetView == nullptr || sourceView == nullptr || !pipeline.vertexShader ||
+        !pipeline.pixelShader || !pipeline.pointSampler || !CanPresentData(viewport.disposition) ||
+        !std::isfinite(viewport.originX) || !std::isfinite(viewport.originY) || !std::isfinite(viewport.width) ||
+        !std::isfinite(viewport.height) || viewport.width <= 0 || viewport.height <= 0)
+    {
+        return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present);
+    }
+    BindNeutralMatte(context, targetView);
+    const D3D11_VIEWPORT nativeViewport{static_cast<float>(viewport.originX), static_cast<float>(viewport.originY),
+        static_cast<float>(viewport.width), static_cast<float>(viewport.height), 0.0f, 1.0f};
+    context->RSSetViewports(1, &nativeViewport);
+    context->IASetInputLayout(nullptr);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(pipeline.vertexShader.Get(), nullptr, 0);
+    context->PSSetShader(pipeline.pixelShader.Get(), nullptr, 0);
+    ID3D11ShaderResourceView* const sourceViews[]{sourceView};
+    context->PSSetShaderResources(0, 1, sourceViews);
+    ID3D11SamplerState* const samplers[]{pipeline.pointSampler.Get()};
+    context->PSSetSamplers(0, 1, samplers);
+    context->Draw(3, 0);
+    ID3D11ShaderResourceView* const emptyViews[]{nullptr};
+    context->PSSetShaderResources(0, 1, emptyViews);
+    return PresentationStatus::Success();
 }
 
 class NativeBackend final : public PresentationBackend
@@ -148,14 +309,66 @@ public:
             origin.x = static_cast<std::int32_t>(static_cast<std::int64_t>(monitorInfo.rcMonitor.left) + (monitorWidth - config_.width) / 2);
             origin.y = static_cast<std::int32_t>(static_cast<std::int64_t>(monitorInfo.rcMonitor.top) + (monitorHeight - config_.height) / 2);
         }
-        const DWORD extendedStyle = WS_EX_NOACTIVATE | (config_.topmost ? WS_EX_TOPMOST : 0U);
-        const HWND window = CreateWindowExW(extendedStyle, className_.data(), L"PixelBridge Data Window", WS_POPUP, origin.x, origin.y, static_cast<int>(config_.width),
-                                            static_cast<int>(config_.height), nullptr, nullptr, instance_, this);
+        windowStyle_ = config_.topmost ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+        windowExtendedStyle_ = WS_EX_NOACTIVATE | (config_.topmost ? WS_EX_TOPMOST : 0U);
+        RECT initialBounds{origin.x, origin.y,
+            static_cast<LONG>(static_cast<std::int64_t>(origin.x) + config_.width),
+            static_cast<LONG>(static_cast<std::int64_t>(origin.y) + config_.height)};
+        if (!config_.topmost)
+        {
+            RECT adjusted{0, 0, static_cast<LONG>(config_.width), static_cast<LONG>(config_.height)};
+            if (!AdjustWindowRectExForDpi(&adjusted, windowStyle_, FALSE, windowExtendedStyle_, GetDpiForSystem()))
+            {
+                return LastWindowsError(PresentationStage::Window);
+            }
+            const std::int64_t outerWidth = static_cast<std::int64_t>(adjusted.right) - adjusted.left;
+            const std::int64_t outerHeight = static_cast<std::int64_t>(adjusted.bottom) - adjusted.top;
+            const std::int64_t outerLeft = static_cast<std::int64_t>(origin.x) + adjusted.left;
+            const std::int64_t outerTop = static_cast<std::int64_t>(origin.y) + adjusted.top;
+            const std::int64_t outerRight = outerLeft + outerWidth;
+            const std::int64_t outerBottom = outerTop + outerHeight;
+            if (outerWidth <= 0 || outerHeight <= 0 || outerWidth > (std::numeric_limits<int>::max)() ||
+                outerHeight > (std::numeric_limits<int>::max)() || outerLeft < (std::numeric_limits<LONG>::min)() ||
+                outerLeft > (std::numeric_limits<LONG>::max)() || outerTop < (std::numeric_limits<LONG>::min)() ||
+                outerTop > (std::numeric_limits<LONG>::max)() || outerRight < (std::numeric_limits<LONG>::min)() ||
+                outerRight > (std::numeric_limits<LONG>::max)() || outerBottom < (std::numeric_limits<LONG>::min)() ||
+                outerBottom > (std::numeric_limits<LONG>::max)())
+            {
+                return PresentationStatus::Failure(PresentationErrorCode::InvalidConfiguration, PresentationStage::Window);
+            }
+            initialBounds = {static_cast<LONG>(outerLeft), static_cast<LONG>(outerTop),
+                static_cast<LONG>(outerRight), static_cast<LONG>(outerBottom)};
+        }
+        const int initialWidth = static_cast<int>(static_cast<std::int64_t>(initialBounds.right) - initialBounds.left);
+        const int initialHeight = static_cast<int>(static_cast<std::int64_t>(initialBounds.bottom) - initialBounds.top);
+        const HWND window = CreateWindowExW(windowExtendedStyle_, className_.data(), L"PixelBridge Data Window",
+            windowStyle_, initialBounds.left, initialBounds.top, initialWidth, initialHeight,
+            nullptr, nullptr, instance_, this);
         if (window == nullptr)
         {
             return LastWindowsError(PresentationStage::Window);
         }
         window_.store(window);
+        if (!config_.topmost)
+        {
+            RECT adjusted{0, 0, static_cast<LONG>(config_.width), static_cast<LONG>(config_.height)};
+            if (!AdjustWindowRectExForDpi(&adjusted, windowStyle_, FALSE, windowExtendedStyle_, GetDpiForWindow(window)))
+            {
+                return LastWindowsError(PresentationStage::Window);
+            }
+            const std::int64_t correctedLeft = static_cast<std::int64_t>(origin.x) + adjusted.left;
+            const std::int64_t correctedTop = static_cast<std::int64_t>(origin.y) + adjusted.top;
+            if (correctedLeft < (std::numeric_limits<int>::min)() || correctedLeft > (std::numeric_limits<int>::max)() ||
+                correctedTop < (std::numeric_limits<int>::min)() || correctedTop > (std::numeric_limits<int>::max)())
+            {
+                return PresentationStatus::Failure(PresentationErrorCode::InvalidConfiguration, PresentationStage::Window);
+            }
+            if (!SetWindowPos(window, nullptr, static_cast<int>(correctedLeft), static_cast<int>(correctedTop),
+                adjusted.right - adjusted.left, adjusted.bottom - adjusted.top, SWP_NOACTIVATE | SWP_NOZORDER))
+            {
+                return LastWindowsError(PresentationStage::Window);
+            }
+        }
         if (ShouldFail(PresentationStage::Window))
         {
             return InjectedFailure(PresentationStage::Window);
@@ -203,8 +416,20 @@ public:
         {
             const RECT suggested = *suggestedDpiRect_;
             suggestedDpiRect_.reset();
-            if (!SetWindowPos(window, nullptr, suggested.left, suggested.top, static_cast<int>(config_.width), static_cast<int>(config_.height),
-                              SWP_NOACTIVATE | SWP_NOZORDER))
+            const std::int64_t suggestedWidth64 = config_.topmost ? config_.width :
+                static_cast<std::int64_t>(suggested.right) - suggested.left;
+            const std::int64_t suggestedHeight64 = config_.topmost ? config_.height :
+                static_cast<std::int64_t>(suggested.bottom) - suggested.top;
+            if (suggestedWidth64 <= 0 || suggestedHeight64 <= 0 ||
+                suggestedWidth64 > (std::numeric_limits<int>::max)() ||
+                suggestedHeight64 > (std::numeric_limits<int>::max)())
+            {
+                return Result::Failure(PresentationStatus::Failure(
+                    PresentationErrorCode::ContractViolation, PresentationStage::Environment));
+            }
+            if (!SetWindowPos(window, nullptr, suggested.left, suggested.top,
+                static_cast<int>(suggestedWidth64), static_cast<int>(suggestedHeight64),
+                SWP_NOACTIVATE | SWP_NOZORDER))
             {
                 return Result::Failure(LastWindowsError(PresentationStage::Environment));
             }
@@ -226,6 +451,16 @@ public:
         environment.clientHeight = static_cast<std::uint32_t>(height);
         environment.dpi = GetDpiForWindow(window);
         environment.minimized = IsIconic(window) != FALSE;
+        const bool undersized = ResolvePresentationViewport(config_, environment.clientWidth,
+            environment.clientHeight).disposition == PresentationViewportDisposition::PausedBelowMinimumScale;
+        if (undersized != undersizedWindowTitle_)
+        {
+            if (!SetWindowTextW(window, undersized ? L"窗口过小，广播已暂停" : L"PixelBridge Data Window"))
+            {
+                return Result::Failure(LastWindowsError(PresentationStage::Window));
+            }
+            undersizedWindowTitle_ = undersized;
+        }
         environment.modeChangeSerial = modeChangeSerial_;
         environment.dpiChangeSerial = dpiChangeSerial_;
         const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
@@ -287,6 +522,11 @@ public:
 
     [[nodiscard]] PresentationStatus Reconfigure(const WindowEnvironment& environment) noexcept override
     {
+        const auto drained = DrainGpu();
+        if (!drained)
+        {
+            return drained;
+        }
         if (environment.minimized || environment.clientWidth == 0 || environment.clientHeight == 0 || !environment.adapterAvailable ||
             !environment.singleMonitor)
         {
@@ -302,32 +542,19 @@ public:
         const bool adapterChanged = deviceMonitorLuid_.LowPart != environment.adapterLuidLow || deviceMonitorLuid_.HighPart != environment.adapterLuidHigh;
         if (adapterChanged)
         {
-            const auto status = DrainGpu();
-            if (!status)
-            {
-                return status;
-            }
             ReleaseGraphics();
             return CreateGraphics(environment);
         }
         if (environment.clientWidth == contract_.bufferWidth && environment.clientHeight == contract_.bufferHeight)
         {
-            const auto drained = DrainGpu();
-            if (!drained)
-            {
-                return drained;
-            }
+            sourceView_.Reset();
             sourceTexture_.Reset();
             return RefreshContract();
         }
-        auto status = DrainGpu();
-        if (!status)
-        {
-            return status;
-        }
         context_->ClearState();
+        sourceView_.Reset();
         sourceTexture_.Reset();
-        staging_.Reset();
+        backBufferView_.Reset();
         backBuffer_.Reset();
         context_->Flush();
         const HRESULT resized = swapChain_->ResizeBuffers(config_.bufferCount, environment.clientWidth, environment.clientHeight, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -336,7 +563,7 @@ public:
         {
             return DeviceError(resized, PresentationStage::Resize);
         }
-        status = CreateBackBuffer();
+        const auto status = CreateBackBuffer();
         return status ? RefreshContract() : status;
     }
 
@@ -351,8 +578,12 @@ public:
         result.liveOwnedHandles = static_cast<std::uint64_t>(wake_.Get() != nullptr) + static_cast<std::uint64_t>(frameLatency_.Get() != nullptr);
         result.liveGraphicsObjects = static_cast<std::uint64_t>(factory_ != nullptr) + static_cast<std::uint64_t>(device_ != nullptr) +
                                      static_cast<std::uint64_t>(context_ != nullptr) + static_cast<std::uint64_t>(swapChain_ != nullptr) +
-                                     static_cast<std::uint64_t>(backBuffer_ != nullptr) + static_cast<std::uint64_t>(sourceTexture_ != nullptr) +
-                                     static_cast<std::uint64_t>(staging_ != nullptr) +
+                                     static_cast<std::uint64_t>(backBuffer_ != nullptr) + static_cast<std::uint64_t>(backBufferView_ != nullptr) +
+                                     static_cast<std::uint64_t>(sourceTexture_ != nullptr) + static_cast<std::uint64_t>(sourceView_ != nullptr) +
+                                     static_cast<std::uint64_t>(sourceStaging_ != nullptr) +
+                                     static_cast<std::uint64_t>(rasterPipeline_.vertexShader != nullptr) +
+                                     static_cast<std::uint64_t>(rasterPipeline_.pixelShader != nullptr) +
+                                     static_cast<std::uint64_t>(rasterPipeline_.pointSampler != nullptr) +
                                      static_cast<std::uint64_t>(completion_ != nullptr) + static_cast<std::uint64_t>(infoQueue_ != nullptr);
         return result;
     }
@@ -387,44 +618,45 @@ public:
 
     [[nodiscard]] PresentationStatus Upload(const std::span<const std::byte> pixels) noexcept override
     {
-        if (!device_ || !context_ || !backBuffer_ || contract_.bufferWidth != config_.width || contract_.bufferHeight != config_.height ||
+        if (!device_ || !context_ || !backBuffer_ ||
             pixels.size() != static_cast<std::size_t>(config_.width) * config_.height * 4)
         {
             return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Upload);
         }
-        D3D11_TEXTURE2D_DESC description{};
-        description.Width = config_.width;
-        description.Height = config_.height;
-        description.MipLevels = 1;
-        description.ArraySize = 1;
-        description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        description.SampleDesc.Count = 1;
-        description.Usage = D3D11_USAGE_IMMUTABLE;
-        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        D3D11_SUBRESOURCE_DATA initialData{};
-        initialData.pSysMem = pixels.data();
-        initialData.SysMemPitch = config_.width * 4;
         ComPtr<ID3D11Texture2D> sourceTexture;
-        const HRESULT created = device_->CreateTexture2D(&description, &initialData, sourceTexture.GetAddressOf());
-        if (FAILED(created))
+        ComPtr<ID3D11ShaderResourceView> sourceView;
+        const PresentationStatus created = CreateImmutableCanonicalSource(device_.Get(), config_, pixels,
+            sourceTexture, sourceView);
+        if (!created)
         {
-            return DeviceError(created, PresentationStage::Upload);
+            return created;
         }
         pbprotocol::SaturatingIncrementUnsigned(diagnostics_.immutableSourceCreations);
         if (options_.verifyUploads)
         {
-            if (!staging_)
+            if (!sourceStaging_)
             {
-                return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Readback);
+                D3D11_TEXTURE2D_DESC stagingDescription{};
+                sourceTexture->GetDesc(&stagingDescription);
+                stagingDescription.Usage = D3D11_USAGE_STAGING;
+                stagingDescription.BindFlags = 0;
+                stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                stagingDescription.MiscFlags = 0;
+                const HRESULT stagingCreated = device_->CreateTexture2D(&stagingDescription, nullptr,
+                    sourceStaging_.GetAddressOf());
+                if (FAILED(stagingCreated))
+                {
+                    return DeviceError(stagingCreated, PresentationStage::Readback);
+                }
             }
-            context_->CopyResource(staging_.Get(), sourceTexture.Get());
+            context_->CopyResource(sourceStaging_.Get(), sourceTexture.Get());
             const auto drained = DrainGpu();
             if (!drained)
             {
                 return drained;
             }
             D3D11_MAPPED_SUBRESOURCE mapped{};
-            const HRESULT mappedResult = context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+            const HRESULT mappedResult = context_->Map(sourceStaging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
             if (FAILED(mappedResult))
             {
                 return DeviceError(mappedResult, PresentationStage::Readback);
@@ -438,7 +670,7 @@ public:
                 identical = std::equal(gpuRow, gpuRow + rowBytes, pixels.data() + row * rowBytes);
                 hasher.Update(std::span(gpuRow, rowBytes));
             }
-            context_->Unmap(staging_.Get(), 0);
+            context_->Unmap(sourceStaging_.Get(), 0);
             if (!identical)
             {
                 return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Readback);
@@ -453,18 +685,26 @@ public:
             return debug;
         }
         sourceTexture_ = std::move(sourceTexture);
+        sourceView_ = std::move(sourceView);
         return PresentationStatus::Success();
     }
 
     [[nodiscard]] BackendPresentResult Present() noexcept override
     {
-        if (!context_ || !swapChain_ || !backBuffer_ || !sourceTexture_)
+        if (!context_ || !swapChain_ || !backBufferView_ || !sourceTexture_ || !sourceView_)
         {
             return {PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present),
                 pbpresenttiming::PresentOutcome::Failure, std::nullopt};
         }
-        context_->CopyResource(backBuffer_.Get(), sourceTexture_.Get());
-        pbprotocol::SaturatingIncrementUnsigned(diagnostics_.sourceCopiesToBackBuffer);
+        const PresentationViewportGeometry viewport = ResolvePresentationViewport(
+            config_, contract_.bufferWidth, contract_.bufferHeight);
+        const PresentationStatus rendered = RenderCanonicalRaster(context_.Get(), backBufferView_.Get(),
+            sourceView_.Get(), rasterPipeline_, viewport);
+        if (!rendered)
+        {
+            return {rendered, pbpresenttiming::PresentOutcome::Failure, std::nullopt};
+        }
+        pbprotocol::SaturatingIncrementUnsigned(diagnostics_.sourceRendersToBackBuffer);
         pbprotocol::SaturatingIncrementUnsigned(diagnostics_.presentCalls);
         const HRESULT result = swapChain_->Present(1, 0);
         if (result == DXGI_STATUS_OCCLUDED)
@@ -486,6 +726,29 @@ public:
         const auto debug = CheckDebugLayer();
         return {debug, pbpresenttiming::PresentOutcome::Success, SUCCEEDED(idResult) ? std::optional<std::uint32_t>{presentId} : std::nullopt,
                 static_cast<std::int32_t>(idResult)};
+    }
+
+    [[nodiscard]] BackendPresentResult PresentNeutralMatte() noexcept override
+    {
+        if (!context_ || !swapChain_ || !backBufferView_)
+        {
+            return {PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present),
+                pbpresenttiming::PresentOutcome::Failure, std::nullopt};
+        }
+        BindNeutralMatte(context_.Get(), backBufferView_.Get());
+        pbprotocol::SaturatingIncrementUnsigned(diagnostics_.neutralMattePresentCalls);
+        const HRESULT result = swapChain_->Present(1, 0);
+        if (result == DXGI_STATUS_OCCLUDED)
+        {
+            occluded_ = true;
+            return {{}, pbpresenttiming::PresentOutcome::Occluded, std::nullopt};
+        }
+        if (FAILED(result))
+        {
+            return {DeviceError(result, PresentationStage::Present), pbpresenttiming::PresentOutcome::Failure, std::nullopt};
+        }
+        const auto debug = CheckDebugLayer();
+        return {debug, pbpresenttiming::PresentOutcome::Success, std::nullopt};
     }
 
     [[nodiscard]] BackendStatistics GetStatistics() noexcept override
@@ -715,6 +978,11 @@ private:
         {
             return InjectedFailure(PresentationStage::Device);
         }
+        const PresentationStatus pipelineStatus = CreateRasterPipeline(device_.Get(), rasterPipeline_);
+        if (!pipelineStatus)
+        {
+            return pipelineStatus;
+        }
         D3D11_QUERY_DESC queryDescription{};
         queryDescription.Query = D3D11_QUERY_EVENT;
         result = device_->CreateQuery(&queryDescription, completion_.GetAddressOf());
@@ -784,26 +1052,17 @@ private:
         {
             return DeviceError(result, PresentationStage::BackBuffer);
         }
+        result = device_->CreateRenderTargetView(backBuffer_.Get(), nullptr, backBufferView_.GetAddressOf());
+        if (FAILED(result))
+        {
+            return DeviceError(result, PresentationStage::BackBuffer);
+        }
         const auto generation = pbprotocol::CheckedAddUnsigned(diagnostics_.bufferGeneration, std::uint64_t{1});
         if (!generation)
         {
             return PresentationStatus::Failure(PresentationErrorCode::InternalError, PresentationStage::BackBuffer);
         }
         diagnostics_.bufferGeneration = generation.Value();
-        if (options_.verifyUploads)
-        {
-            D3D11_TEXTURE2D_DESC description{};
-            backBuffer_->GetDesc(&description);
-            description.Usage = D3D11_USAGE_STAGING;
-            description.BindFlags = 0;
-            description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            description.MiscFlags = 0;
-            result = device_->CreateTexture2D(&description, nullptr, staging_.GetAddressOf());
-            if (FAILED(result))
-            {
-                return NativeError(result, PresentationStage::Readback);
-            }
-        }
         return ShouldFail(PresentationStage::BackBuffer) ? InjectedFailure(PresentationStage::BackBuffer) : PresentationStatus::Success();
     }
 
@@ -834,6 +1093,14 @@ private:
         contract_.latencyWaitable = (description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0 && frameLatency_.Get() != nullptr;
         contract_.perMonitorV2 =
             AreDpiAwarenessContextsEqual(GetWindowDpiAwarenessContext(window_.load()), DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE;
+        SetLastError(ERROR_SUCCESS);
+        const LONG_PTR style = GetWindowLongPtrW(window_.load(), GWL_STYLE);
+        const bool styleReadable = style != 0 || GetLastError() == ERROR_SUCCESS;
+        contract_.resizableChrome = styleReadable && (style & WS_OVERLAPPEDWINDOW) == WS_OVERLAPPEDWINDOW;
+        contract_.immutableCanonicalSource = true;
+        contract_.pointSampled = rasterPipeline_.pointSampler != nullptr;
+        contract_.centeredLetterbox = true;
+        contract_.neutralMatteBelowMinimum = true;
         if (description.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD && description.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)
         {
             return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::SwapChain);
@@ -924,9 +1191,12 @@ private:
         {
             context_->ClearState();
         }
+        sourceView_.Reset();
         sourceTexture_.Reset();
-        staging_.Reset();
+        sourceStaging_.Reset();
+        backBufferView_.Reset();
         backBuffer_.Reset();
+        rasterPipeline_ = {};
         completion_.Reset();
         // No wait is active here: all waits and teardown share the owner.
         frameLatency_.Reset();
@@ -956,6 +1226,9 @@ private:
     bool classRegistered_ = false;
     bool closeRequested_ = false;
     bool occluded_ = false;
+    bool undersizedWindowTitle_ = false;
+    DWORD windowStyle_ = 0;
+    DWORD windowExtendedStyle_ = 0;
     std::optional<RECT> suggestedDpiRect_;
     std::uint64_t modeChangeSerial_ = 0;
     std::uint64_t dpiChangeSerial_ = 0;
@@ -965,8 +1238,11 @@ private:
     ComPtr<ID3D11DeviceContext> context_;
     ComPtr<IDXGISwapChain2> swapChain_;
     ComPtr<ID3D11Texture2D> backBuffer_;
+    ComPtr<ID3D11RenderTargetView> backBufferView_;
     ComPtr<ID3D11Texture2D> sourceTexture_;
-    ComPtr<ID3D11Texture2D> staging_;
+    ComPtr<ID3D11ShaderResourceView> sourceView_;
+    ComPtr<ID3D11Texture2D> sourceStaging_;
+    RasterPipeline rasterPipeline_;
     ComPtr<ID3D11Query> completion_;
     ComPtr<ID3D11InfoQueue> infoQueue_;
     PresentationContract contract_;
@@ -978,6 +1254,150 @@ private:
 std::unique_ptr<PresentationBackend> MakeNativeBackend(const NativeBackendTestOptions& options)
 {
     return std::make_unique<NativeBackend>(options);
+}
+
+PresentationResult<WarpOffscreenRenderResult> RenderWarpOffscreenForTest(const DataWindowConfig& config,
+    const std::span<const std::byte> canonicalPixels, const std::uint32_t targetWidth,
+    const std::uint32_t targetHeight, const bool neutralMatte) noexcept
+{
+    using Result = PresentationResult<WarpOffscreenRenderResult>;
+    try
+    {
+        const PresentationStatus configStatus = ValidateDataWindowConfig(config);
+        if (!configStatus)
+        {
+            return Result::Failure(configStatus);
+        }
+        const auto targetPixelCount = pbprotocol::CheckedMultiplyUnsigned(
+            static_cast<std::size_t>(targetWidth), static_cast<std::size_t>(targetHeight));
+        const auto targetBytes = targetPixelCount ?
+            pbprotocol::CheckedMultiplyUnsigned(targetPixelCount.Value(), std::size_t{4}) : targetPixelCount;
+        if (targetWidth == 0 || targetHeight == 0 || targetWidth > 16384 || targetHeight > 16384 ||
+            !targetBytes || targetBytes.Value() > config.maximumFrameBytes)
+        {
+            return Result::Failure(PresentationStatus::Failure(
+                PresentationErrorCode::ResourceLimit, PresentationStage::BackBuffer));
+        }
+        WarpOffscreenRenderResult output;
+        output.viewport = ResolvePresentationViewport(config, targetWidth, targetHeight);
+        if ((!neutralMatte && !CanPresentData(output.viewport.disposition)) ||
+            (neutralMatte && output.viewport.disposition != PresentationViewportDisposition::PausedBelowMinimumScale))
+        {
+            return Result::Failure(PresentationStatus::Failure(
+                PresentationErrorCode::ContractViolation, PresentationStage::Environment));
+        }
+        const std::array<D3D_FEATURE_LEVEL, 2> featureLevels{D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+        D3D_FEATURE_LEVEL selectedLevel{};
+        ComPtr<ID3D11Device> device;
+        ComPtr<ID3D11DeviceContext> context;
+        HRESULT nativeResult = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels.data(), static_cast<UINT>(featureLevels.size()),
+            D3D11_SDK_VERSION, device.GetAddressOf(), &selectedLevel, context.GetAddressOf());
+        if (FAILED(nativeResult))
+        {
+            return Result::Failure(NativeError(nativeResult, PresentationStage::Device));
+        }
+        static_cast<void>(selectedLevel);
+        RasterPipeline pipeline;
+        const PresentationStatus pipelineStatus = CreateRasterPipeline(device.Get(), pipeline);
+        if (!pipelineStatus)
+        {
+            return Result::Failure(pipelineStatus);
+        }
+        D3D11_TEXTURE2D_DESC targetDescription{};
+        targetDescription.Width = targetWidth;
+        targetDescription.Height = targetHeight;
+        targetDescription.MipLevels = 1;
+        targetDescription.ArraySize = 1;
+        targetDescription.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        targetDescription.SampleDesc.Count = 1;
+        targetDescription.Usage = D3D11_USAGE_DEFAULT;
+        targetDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
+        ComPtr<ID3D11Texture2D> target;
+        nativeResult = device->CreateTexture2D(&targetDescription, nullptr, target.GetAddressOf());
+        if (FAILED(nativeResult))
+        {
+            return Result::Failure(NativeError(nativeResult, PresentationStage::BackBuffer));
+        }
+        ComPtr<ID3D11RenderTargetView> targetView;
+        nativeResult = device->CreateRenderTargetView(target.Get(), nullptr, targetView.GetAddressOf());
+        if (FAILED(nativeResult))
+        {
+            return Result::Failure(NativeError(nativeResult, PresentationStage::BackBuffer));
+        }
+        output.diagnostics.warp = true;
+        if (neutralMatte)
+        {
+            BindNeutralMatte(context.Get(), targetView.Get());
+            output.diagnostics.neutralMattePresentCalls = 1;
+        }
+        else
+        {
+            ComPtr<ID3D11Texture2D> sourceTexture;
+            ComPtr<ID3D11ShaderResourceView> sourceView;
+            const PresentationStatus sourceStatus = CreateImmutableCanonicalSource(device.Get(), config,
+                canonicalPixels, sourceTexture, sourceView);
+            if (!sourceStatus)
+            {
+                return Result::Failure(sourceStatus);
+            }
+            output.diagnostics.immutableSourceCreations = 1;
+            const PresentationStatus renderStatus = RenderCanonicalRaster(context.Get(), targetView.Get(),
+                sourceView.Get(), pipeline, output.viewport);
+            if (!renderStatus)
+            {
+                return Result::Failure(renderStatus);
+            }
+            output.diagnostics.sourceRendersToBackBuffer = 1;
+        }
+        D3D11_TEXTURE2D_DESC stagingDescription = targetDescription;
+        stagingDescription.Usage = D3D11_USAGE_STAGING;
+        stagingDescription.BindFlags = 0;
+        stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ComPtr<ID3D11Texture2D> staging;
+        nativeResult = device->CreateTexture2D(&stagingDescription, nullptr, staging.GetAddressOf());
+        if (FAILED(nativeResult))
+        {
+            return Result::Failure(NativeError(nativeResult, PresentationStage::Readback));
+        }
+        output.pixels.resize(targetBytes.Value());
+        context->CopyResource(staging.Get(), target.Get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        nativeResult = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+        if (FAILED(nativeResult))
+        {
+            return Result::Failure(NativeError(nativeResult, PresentationStage::Readback));
+        }
+        if (mapped.pData == nullptr || mapped.RowPitch < static_cast<std::size_t>(targetWidth) * 4)
+        {
+            context->Unmap(staging.Get(), 0);
+            return Result::Failure(NativeError(E_FAIL, PresentationStage::Readback));
+        }
+        const std::size_t targetRowBytes = static_cast<std::size_t>(targetWidth) * 4;
+        for (std::size_t row = 0; row < targetHeight; row++)
+        {
+            const auto* const sourceRow = static_cast<const std::byte*>(mapped.pData) + row * mapped.RowPitch;
+            std::copy_n(sourceRow, targetRowBytes, output.pixels.data() + row * targetRowBytes);
+        }
+        context->Unmap(staging.Get(), 0);
+        const HRESULT removalReason = device->GetDeviceRemovedReason();
+        if (FAILED(removalReason))
+        {
+            return Result::Failure(PresentationStatus::Failure(
+                PresentationErrorCode::DeviceLost, PresentationStage::Readback, static_cast<std::int32_t>(removalReason)));
+        }
+        return Result::Success(std::move(output));
+    }
+    catch (const std::bad_alloc&)
+    {
+        return Result::Failure(PresentationStatus::Failure(
+            PresentationErrorCode::OutOfMemory, PresentationStage::Readback));
+    }
+    catch (...)
+    {
+        return Result::Failure(PresentationStatus::Failure(
+            PresentationErrorCode::InternalError, PresentationStage::Readback));
+    }
 }
 
 }

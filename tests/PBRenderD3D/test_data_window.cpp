@@ -40,6 +40,7 @@ struct FakeControl
     unsigned int shutdowns = 0;
     unsigned int uploads = 0;
     unsigned int presents = 0;
+    unsigned int mattePresents = 0;
     unsigned int consumedPermits = 0;
     unsigned int reconfigurations = 0;
     unsigned int wrongOwnerCalls = 0;
@@ -90,8 +91,24 @@ public:
         control_->environment.singleMonitor = true;
         control_->environment.adapterAvailable = true;
         control_->environment.monitorIdentity = 1;
-        control_->contract = {config.width, config.height, config.bufferCount,        config.maximumFrameLatency, config.flipEffect, true, true, true, true,
-                              true,         true,          !control_->corruptContract};
+        control_->contract = {};
+        control_->contract.bufferWidth = config.width;
+        control_->contract.bufferHeight = config.height;
+        control_->contract.bufferCount = config.bufferCount;
+        control_->contract.maximumFrameLatency = config.maximumFrameLatency;
+        control_->contract.flipEffect = config.flipEffect;
+        control_->contract.bgraUnorm = true;
+        control_->contract.noMsaa = true;
+        control_->contract.alphaIgnored = true;
+        control_->contract.scalingNone = true;
+        control_->contract.tearingDisabled = true;
+        control_->contract.latencyWaitable = true;
+        control_->contract.perMonitorV2 = !control_->corruptContract;
+        control_->contract.resizableChrome = !config.topmost;
+        control_->contract.immutableCanonicalSource = true;
+        control_->contract.pointSampled = true;
+        control_->contract.centeredLetterbox = true;
+        control_->contract.neutralMatteBelowMinimum = true;
         if (control_->mismatchedBuffer)
         {
             control_->contract.bufferWidth++;
@@ -207,9 +224,18 @@ public:
         const std::lock_guard lock(control_->mutex);
         CheckOwner();
         control_->presents++;
+        control_->diagnostics.sourceRendersToBackBuffer++;
         control_->diagnostics.presentCalls++;
         control_->presentId++;
         return {control_->presentStatus, control_->presentOutcome, control_->presentId};
+    }
+    BackendPresentResult PresentNeutralMatte() noexcept override
+    {
+        const std::lock_guard lock(control_->mutex);
+        CheckOwner();
+        control_->mattePresents++;
+        control_->diagnostics.neutralMattePresentCalls++;
+        return {control_->presentStatus, control_->presentOutcome, std::nullopt};
     }
     BackendStatistics GetStatistics() noexcept override
     {
@@ -369,6 +395,32 @@ TEST_CASE("Presentation configuration and frame spans enforce independent exact 
     REQUIRE(static_cast<bool>(ValidateDataWindowConfig(config)));
     config.clientOrigin = PhysicalPoint{-4000, -1000};
     REQUIRE(static_cast<bool>(ValidateDataWindowConfig(config)));
+}
+
+TEST_CASE("Viewport geometry preserves aspect ratio, centers letterbox and enforces the product scale interval")
+{
+    DataWindowConfig config;
+    config.width = 8;
+    config.height = 4;
+    REQUIRE(ResolvePresentationViewport(config, 8, 4) == PresentationViewportGeometry{
+        PresentationViewportDisposition::Active, 0, 0, 8, 4, 1});
+    REQUIRE(ResolvePresentationViewport(config, 8, 6) == PresentationViewportGeometry{
+        PresentationViewportDisposition::Active, 0, 1, 8, 4, 1});
+    REQUIRE(ResolvePresentationViewport(config, 12, 4) == PresentationViewportGeometry{
+        PresentationViewportDisposition::Active, 2, 0, 8, 4, 1});
+    REQUIRE(ResolvePresentationViewport(config, 6, 3) == PresentationViewportGeometry{
+        PresentationViewportDisposition::Active, 0, 0, 6, 3, 0.75});
+    REQUIRE(ResolvePresentationViewport(config, 20, 12) == PresentationViewportGeometry{
+        PresentationViewportDisposition::ActiveClampedToMaximumScale, 2, 2, 16, 8, 2});
+    REQUIRE(ResolvePresentationViewport(config, 5, 3).disposition ==
+        PresentationViewportDisposition::PausedBelowMinimumScale);
+    REQUIRE(ResolvePresentationViewport(config, 6, 2).disposition ==
+        PresentationViewportDisposition::PausedBelowMinimumScale);
+    REQUIRE(ResolvePresentationViewport(config, 0, 4).disposition ==
+        PresentationViewportDisposition::InvalidClientArea);
+    REQUIRE_FALSE(CanPresentData(PresentationViewportDisposition::PausedBelowMinimumScale));
+    REQUIRE(CanPresentData(PresentationViewportDisposition::Active));
+    REQUIRE(CanPresentData(PresentationViewportDisposition::ActiveClampedToMaximumScale));
 }
 
 TEST_CASE("The first render needs a frame permit and ordinary wakeups cannot forge one")
@@ -550,7 +602,7 @@ TEST_CASE("Only the last row's actual pixels are required, never its trailing pa
                         }));
 }
 
-TEST_CASE("Resize pauses rather than scaling and old epoch frames cannot re-enter")
+TEST_CASE("Resize starts epochs, scales complete rasters and presents only neutral matte below the minimum")
 {
     Fixture fixture;
     fixture.Start();
@@ -564,32 +616,73 @@ TEST_CASE("Resize pauses rather than scaling and old epoch frames cannot re-ente
     REQUIRE(WaitUntil(
         [&]
         {
-            return fixture.window->GetSnapshot().state == WindowState::Paused;
+            const auto snapshot = fixture.window->GetSnapshot();
+            return snapshot.state == WindowState::Running &&
+                snapshot.viewport == PresentationViewportGeometry{
+                    PresentationViewportDisposition::Active, 0.5, 0, 8, 4, 1};
         }));
     REQUIRE(fixture.window->GetSnapshot().discardedEpochFrames == 1);
     REQUIRE(fixture.window->GetSnapshot().totalPresentCalls == 0);
     REQUIRE(fixture.window->SubmitFrame({fixture.pixels, 8, 4, 32, 2, oldEpoch}).code == PresentationErrorCode::EpochMismatch);
-    REQUIRE(fixture.Submit(3).code == PresentationErrorCode::Paused);
-    fixture.Change(
-        [](FakeControl& state)
-        {
-            state.environment.clientWidth = 8;
-        });
-    REQUIRE(WaitUntil(
-        [&]
-        {
-            return fixture.window->GetSnapshot().state == WindowState::Running;
-        }));
-    REQUIRE(fixture.window->GetSnapshot().timing.presentationEpoch == oldEpoch + 2);
-    REQUIRE(static_cast<bool>(fixture.Submit(4)));
+    REQUIRE(static_cast<bool>(fixture.Submit(3)));
     fixture.Permit();
     REQUIRE(WaitUntil(
         [&]
         {
             return fixture.window->GetSnapshot().totalPresentCalls == 1;
         }));
+    const auto scaledEpoch = fixture.window->GetSnapshot().timing.presentationEpoch;
+    fixture.Change(
+        [](FakeControl& state)
+        {
+            state.environment.clientWidth = 5;
+            state.environment.clientHeight = 3;
+        });
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            const auto snapshot = fixture.window->GetSnapshot();
+            return snapshot.state == WindowState::Paused && snapshot.neutralMattePending &&
+                snapshot.viewport.disposition == PresentationViewportDisposition::PausedBelowMinimumScale;
+        }));
+    const auto paused = fixture.window->GetSnapshot();
+    REQUIRE(paused.timing.presentationEpoch == oldEpoch + 2);
+    REQUIRE(fixture.window->SubmitFrame({fixture.pixels, 8, 4, 32, 4, scaledEpoch}).code ==
+        PresentationErrorCode::EpochMismatch);
+    REQUIRE(fixture.Submit(4).code == PresentationErrorCode::Paused);
+    fixture.Permit();
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            const auto snapshot = fixture.window->GetSnapshot();
+            return snapshot.neutralMattePresentCalls == 1 && !snapshot.neutralMattePending;
+    }));
+    REQUIRE(fixture.window->GetSnapshot().totalPresentCalls == 1);
+    fixture.Change(
+        [](FakeControl& state)
+        {
+            state.environment.clientWidth = 20;
+            state.environment.clientHeight = 12;
+        });
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            const auto snapshot = fixture.window->GetSnapshot();
+            return snapshot.state == WindowState::Running &&
+                snapshot.viewport.disposition == PresentationViewportDisposition::ActiveClampedToMaximumScale;
+        }));
+    REQUIRE(fixture.window->GetSnapshot().timing.presentationEpoch == oldEpoch + 3);
+    REQUIRE(static_cast<bool>(fixture.Submit(4)));
+    fixture.Permit();
+    REQUIRE(WaitUntil(
+        [&]
+        {
+            return fixture.window->GetSnapshot().totalPresentCalls == 2;
+        }));
+    REQUIRE(fixture.window->GetSnapshot().activeFrameSequence == 4);
     fixture.window->Stop();
-    REQUIRE(fixture.control->reconfigurations == 2);
+    REQUIRE(fixture.control->mattePresents == 1);
+    REQUIRE(fixture.control->reconfigurations == 3);
 }
 
 TEST_CASE("Monitor, DPI and mode serial transitions start distinct epochs")
@@ -636,7 +729,7 @@ TEST_CASE("Monitor, DPI and mode serial transitions start distinct epochs")
     fixture.window->Stop();
 }
 
-TEST_CASE("Environment changes during upload discard the old raster without wasting a same-chain permit")
+TEST_CASE("Environment changes during upload discard the old raster and invalidate the epoch-bound permit")
 {
     Fixture fixture;
     fixture.control->holdUpload = true;
@@ -662,13 +755,16 @@ TEST_CASE("Environment changes during upload discard the old raster without wast
         }));
     REQUIRE(fixture.window->GetSnapshot().totalPresentCalls == 0);
     REQUIRE(static_cast<bool>(fixture.Submit(2)));
+    std::this_thread::sleep_for(20ms);
+    REQUIRE(fixture.window->GetSnapshot().totalPresentCalls == 0);
+    fixture.Permit();
     REQUIRE(WaitUntil(
         [&]
         {
             return fixture.window->GetSnapshot().totalPresentCalls == 1;
-        }));
+    }));
     fixture.window->Stop();
-    REQUIRE(fixture.control->consumedPermits == 1);
+    REQUIRE(fixture.control->consumedPermits == 2);
 }
 
 TEST_CASE("Statistics disjoint resets timing but never recreates the graphics backend")

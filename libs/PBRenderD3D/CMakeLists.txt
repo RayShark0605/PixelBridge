@@ -9,7 +9,7 @@ target_include_directories(PBRenderD3D PUBLIC
     $<INSTALL_INTERFACE:include>)
 target_link_libraries(PBRenderD3D
     PUBLIC PB::PBPresentTiming
-    PRIVATE PB::CompilerSettings PB::PBProtocol d3d11 dxgi user32)
+    PRIVATE PB::CompilerSettings PB::PBProtocol d3d11 dxgi d3dcompiler user32)
 target_compile_features(PBRenderD3D PUBLIC cxx_std_20)
 target_compile_definitions(PBRenderD3D PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE _WIN32_WINNT=0x0A00)
 if(MSVC)
