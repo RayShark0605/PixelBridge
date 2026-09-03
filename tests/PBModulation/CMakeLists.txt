@@ -84,6 +84,17 @@ target_compile_definitions(PBUnifiedVisualCpuTests PRIVATE
     PB_UNIFIED_CPU_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-lc4-cpu-oracle")
 set_tests_properties(PBUnifiedVisualCpuTests PROPERTIES LABELS "control;fec;golden;modulation;transport;unified" TIMEOUT 240)
 
+PbAddUnitTest(PBUnifiedTransformCorpusTests test_unified_transform_corpus.cpp)
+target_link_libraries(PBUnifiedTransformCorpusTests PRIVATE
+    PB::PBModulation
+    PB::PBRemoteVisualSimulator
+    PB::PBProtocol
+    PB::PBInnerFec)
+target_compile_definitions(PBUnifiedTransformCorpusTests PRIVATE
+    PB_UNIFIED_TRANSFORM_MANIFEST="${PROJECT_SOURCE_DIR}/tests/golden/unified-transform-corpus/manifest.json"
+    PB_UNIFIED_TRANSFORM_REPORT="${CMAKE_CURRENT_BINARY_DIR}/g10-unified-transform-corpus.actual.json")
+set_tests_properties(PBUnifiedTransformCorpusTests PROPERTIES LABELS "corpus;modulation;remote-visual;transform;unified" TIMEOUT 600)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

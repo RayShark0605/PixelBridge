@@ -201,6 +201,11 @@ struct ColorTransferTransform
 
 struct ChromaSubsample420Transform
 {
+    // The 2x2 reconstruction grid is anchored at (-phaseX,-phaseY). Values 0
+    // and 1 cover the two possible luma-grid phases on each axis.
+    std::uint8_t phaseX = 0;
+    std::uint8_t phaseY = 0;
+
     bool operator==(const ChromaSubsample420Transform&) const = default;
 };
 

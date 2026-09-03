@@ -463,6 +463,35 @@ TEST_CASE("RemoteVisual impairment primitives preserve exact invariant cases",
     REQUIRE(blendResult.Value().output.pixels == reference.pixels);
 }
 
+TEST_CASE("RemoteVisual chroma 4:2:0 phase is explicit deterministic and validated",
+    "[remote-visual][simulator][chroma][phase][manifest]")
+{
+    const PaddedImage source = MakePatternImage(7, 5, 3, 0x4204204204204204ULL);
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> centered{
+        pbremotevisualsimulator::ChromaSubsample420Transform{0, 0}};
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> misaligned{
+        pbremotevisualsimulator::ChromaSubsample420Transform{1, 1}};
+    const auto centeredResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(source.View(), std::nullopt,
+        {0x4200, centered});
+    const auto firstMisalignedResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(source.View(), std::nullopt,
+        {0x4200, misaligned});
+    const auto secondMisalignedResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(source.View(), std::nullopt,
+        {0x4200, misaligned});
+    REQUIRE(centeredResult);
+    REQUIRE(firstMisalignedResult);
+    REQUIRE(secondMisalignedResult);
+    REQUIRE(centeredResult.Value().output.pixels != firstMisalignedResult.Value().output.pixels);
+    REQUIRE(firstMisalignedResult.Value().output.pixels == secondMisalignedResult.Value().output.pixels);
+    REQUIRE(firstMisalignedResult.Value().manifestBlake3 == secondMisalignedResult.Value().manifestBlake3);
+    REQUIRE(centeredResult.Value().canonicalManifestJson.find(
+        "\"parameters\":{\"matrix\":\"bt709-integer\",\"phaseX\":0,\"phaseY\":0,"
+        "\"siting\":\"centered-2x2\"}") != std::string::npos);
+    REQUIRE(firstMisalignedResult.Value().canonicalManifestJson.find(
+        "\"parameters\":{\"matrix\":\"bt709-integer\",\"phaseX\":1,\"phaseY\":1,"
+        "\"siting\":\"centered-2x2\"}") != std::string::npos);
+    REQUIRE(centeredResult.Value().canonicalManifestJson != firstMisalignedResult.Value().canonicalManifestJson);
+}
+
 TEST_CASE("RemoteVisual channel transforms reject malformed geometry and resource excess before publishing output",
     "[remote-visual][simulator][negative][resource]")
 {
@@ -532,6 +561,10 @@ TEST_CASE("RemoteVisual channel transforms reject malformed geometry and resourc
         pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
     RequireTransformError(pbremotevisualsimulator::ChannelQuantizationTransform{
         pbremotevisualsimulator::kMaximumQuantizationBitsPerChannel + 1},
+        pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
+    RequireTransformError(pbremotevisualsimulator::ChromaSubsample420Transform{2, 0},
+        pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
+    RequireTransformError(pbremotevisualsimulator::ChromaSubsample420Transform{0, 2},
         pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
     RequireTransformError(pbremotevisualsimulator::ResampleTransform{8193, 1, 1, 1, 0, 0},
         pbremotevisualsimulator::ChannelTransformErrorCode::DimensionLimitExceeded);
