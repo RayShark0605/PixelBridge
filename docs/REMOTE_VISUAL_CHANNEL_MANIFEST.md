@@ -13,7 +13,7 @@ v2 是严格的 schema 升级；只要 plan 中出现以下任一种新 transfor
 
 - `kernel-3x3`：固定 box blur、Gaussian blur 或 sharpen/ringing proxy，1..8 passes；
 - `color-transfer`：固定顺序的 gain/bias/gamma；
-- `chroma-420`：固定 integer BT.709-like luma 与 centered 2×2 chroma averaging；
+- `chroma-420`：固定 integer BT.709-like luma、显式 `phaseX`/`phaseY` 与 centered 2×2 chroma averaging；
 - `crop`：显式裁剪矩形；
 - `solid-overlay`：显式矩形、BGRA 和 opacity；
 - `reference-blend`：current/reference 的全帧确定性时间混合。
@@ -57,7 +57,7 @@ UTF-8/ASCII "PixelBridge.RemoteVisualChannelImage.1" including its trailing NUL
 - `originXBinary64`；
 - `originYBinary64`。
 
-v2 的 color transfer 另包括 `gainBinary64`、`biasBinary64` 和 `gammaBinary64`。
+v2 的 color transfer 另包括 `gainBinary64`、`biasBinary64` 和 `gammaBinary64`。`chroma-420` 另包括十进制整数 `phaseX`、`phaseY`，两者都只能为 0 或 1。
 
 `-0.0` 在序列化前规范化为 `+0.0`。NaN、Infinity、非正 scale、超出 policy 的 scale/origin 在任何 output publish 前拒绝。
 
@@ -81,7 +81,7 @@ y = originY + scaleY * v
 - `bicubic-catmull-rom-q16` 使用 output-center 反投影和 edge-clamp 4×4 support。fractional phase 先以 `llround(fraction*65536)` 固定为 Q16；四个 Catmull-Rom 权重以 Q20 signed integer 表示，最后一个权重吸收舍入余数以保证权重和严格为 `1<<20`；横纵组合以 Q40 累加，最后做 signed half-away division、clamp 到 `[0,255]`。logical extent 外整像素使用 `borderBgra`。精确 identity 仍走 bit-exact fast path。每个输出像素按 16 个 source sample 计入 work policy。
 - `kernel-3x3` 使用 edge-clamp。Box 权重全 1/divisor 9；Gaussian 权重为 `[1,2,1;2,4,2;1,2,1]`/16；Sharpen 为 `[0,-1,0;-1,5,-1;0,-1,0]`。B/G/R 独立计算并 clamp，alpha 使用中心像素原值。
 - `color-transfer` 对每个 B/G/R channel 执行 `pow(clamp((value*gain+bias)/255), gamma)*255`，alpha 不变。硬范围为 gain 0..4、bias -255..255、gamma 0.25..4。
-- `chroma-420` 先用整数权重 `(54R+183G+19B+128)/256` 计算逐像素 luma，再对 centered 2×2 block 平均 `B-Y` 和 `R-Y`，随后以共享 chroma 重建；奇数边缘只平均存在的像素，alpha 不变。这是可重复的 codec proxy，不宣称等同任一具体 H.264/HEVC 实现。
+- `chroma-420` 先用整数权重 `(54R+183G+19B+128)/256` 计算逐像素 luma，再对 centered 2×2 block 平均 `B-Y` 和 `R-Y`，随后以共享 chroma 重建。采样网格锚定在 `(-phaseX,-phaseY)`，两轴的 0/1 取值覆盖相对 luma grid 的两种相位；越过图像边界的 block 只平均实际存在的像素，alpha 不变。这是可重复的 codec proxy，不宣称等同任一具体 H.264/HEVC 实现。
 - `crop` 生成紧密 BGRA 输出，矩形必须完全位于当前阶段图像内。
 - `solid-overlay` 使用 `round((current*(255-opacity)+overlay*opacity)/255)` 混合四个 BGRA channel。
 - `reference-blend` 使用同一整数公式对 current/reference 四个 channel 全帧混合；weight 0 保留 current，255 选择 reference。

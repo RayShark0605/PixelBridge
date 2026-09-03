@@ -548,17 +548,20 @@ ctest --test-dir build-unified-release -C Release `
 
 **必须集合：**
 
-- chroma 完全中和；
-- 4:2:0 类色度降采样/错位；
-- 0.75x、0.85x、1.0x、1.5x、2.0x；
-- fractional origin 与任意宽高比 letterbox；
-- moderate blur 与 quantization；
-- duplicate/drop/light reorder；
-- 局部旧新帧混合；
-- crop/bootstrap identity 冲突 negative cases。
+- [x] chroma 完全中和；
+- [x] 4:2:0 类色度降采样/错位；
+- [x] 0.75x、0.85x、1.0x、1.5x、2.0x；
+- [x] fractional origin 与任意宽高比 letterbox；
+- [x] moderate blur 与 quantization；
+- [x] duplicate/drop/light reorder；
+- [x] 局部旧新帧混合；
+- [x] crop/bootstrap identity 冲突 negative cases。
 
 **最小验证：** 仅 CPU transform corpus；每个样本记录 accepted bytes、lane erasure、FEC/CRC、conflict、false acceptance。
-**退出：** mandatory corpus false accepted 为 0，冲突输出为 0；chroma-neutralized 的 Base Luma 有能力达到 `>=16 KiB/unique logical frame`。若 0.75x 失败，立即回到产品决策，不能降低门槛、改 provider 参数或偷偷提高最小尺度。
+**退出标准：** mandatory corpus false accepted 为 0，冲突输出为 0；chroma-neutralized 的 Base Luma 有能力达到 `>=16 KiB/unique logical frame`。若 0.75x 失败，立即回到产品决策，不能降低门槛、改 provider 参数或偷偷提高最小尺度。
+**验证结果（2026-09-03）：** 在 0.75x 初始探针证明通用 locator 能定位、但当时产品 Unified oracle 仍被固定 1:1 scaffold 限制后，已按产品决策明确选择接入连续几何；未降低既有 0.75x 最小尺度、未修改 Wire/Profile ID/Transport payload 或公开解码函数签名。新增 18-record、全 `1314`-byte Transport payload 的 provider-generic synthetic corpus：0.75/0.85/1.0/1.5/2.0 五种尺度和 fractional-origin 2560x1600 letterbox 均精确接受 31/31；错位 `phaseX=1,phaseY=1` 的 4:2:0 类变换接受 31/31；`0.75x + neutral-chroma` 只擦除 Chroma，Base/Fine 分别接受 17/4 slots，其中 Base payload 为 `22,338 bytes`；Gaussian 1-pass + 6-bit quantization 在默认阈值下 fail-closed 擦除 Base/Fine phase pilots，只输出 10 个逐字节正确的 Chroma blocks；中心旧新混合只令一个 freshness region 失效，接受 21 个逐字节正确的 Base/Fine blocks；crop、Bootstrap copy conflict、caller identity conflict 均输出 0。时序序列 `50,50,52,51,54` 的统计为 unique 3、duplicate 1、reordered 1、gap events 2、skipped sequences 2。每个样本冻结 Simulator canonical manifest/output digest、几何 binary64、lane erasure、accepted wire/payload bytes、erased/hard-error metrics、FEC/CRC/slot disposition、conflict 与内部+独立 truth-compare false acceptance；aggregate false accepted 与 conflict output 均为 0。Release corpus 两次各 1/1（9,042,035 assertions）通过并逐字节命中 Golden；Simulator 9/9（361 assertions）、既有 Unified CPU 10/10（1,022,588 assertions）和 locator/bootstrap 47/47（12,608,085 assertions）回归通过。未运行完整 CTest、GPU/D3D11、capture、GUI 或实屏 Gate；这些 synthetic CPU 结果不构成任何真实远控 provider 认证。
+**退出：** 已满足。最小尺度仍为 0.75x；其全载荷 Base Luma 17/17 且整帧 31/31。更强的 chroma-neutralized 0.75x 组合仍给出每个 unique logical frame `22,338` Base payload bytes，超过 `16,384` 硬门槛；18 个 mandatory records 的内部 false acceptance、独立逐字节 truth mismatch 与冲突输出均为 0。
+**产物：** 连续几何-aware Unified CPU oracle 位于 `libs/PBModulation/src/unified_visual.cpp`，Unified 通用 locator binding 位于 `libs/PBModulation/src/local_desktop_decode.cpp`；可显式记录 4:2:0 luma-grid phase 的 Simulator 合同/实现/规范位于 `libs/PBRemoteVisualSimulator/include/pbremotevisualsimulator/channel_transform.h`、`libs/PBRemoteVisualSimulator/src/channel_transform.cpp`、`docs/REMOTE_VISUAL_CHANNEL_MANIFEST.md`。Corpus test 与冻结报告位于 `tests/PBModulation/test_unified_transform_corpus.cpp`、`tests/golden/unified-transform-corpus/manifest.json`，Golden SHA-256 为 `22DC01010CF05CE473F0E7ACC59A6BDE5914FB2ADF7A4F1742CDA3D15B0B32E6`；本地实际报告与日志位于 `build-unified-release/tests/PBModulation/g10-unified-transform-corpus.actual.json`、`g10-transform-corpus-run1.txt`、`g10-transform-corpus-run2.txt`、`g10-unified-cpu-regression.txt`、`g10-locator-regression.txt` 以及 `build-unified-release/tests/PBRemoteVisualSimulator/g10-simulator-regression.txt`。
 **提交建议：** `test(modulation): close unified transform corpus`
 
 ## G11 — D3D11 Compute 统一解调

@@ -901,6 +901,12 @@ bool ResolveLocalDesktopBinding(const LocalDesktopBootstrapBinding& binding,
         output = detail::LocalDesktopBinding::RemoteVisualLowFps;
         return true;
     }
+    if (binding == LocalDesktopBootstrapBinding{kUnifiedVisualProfile.productProfile.visualProfileId,
+        kUnifiedVisualProfile.productProfile.visualLayoutVersion})
+    {
+        output = detail::LocalDesktopBinding::UnifiedVisual;
+        return true;
+    }
     return false;
 }
 

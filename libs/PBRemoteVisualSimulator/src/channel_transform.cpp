@@ -654,23 +654,35 @@ void ApplyColorTransfer(BgraImage& image, const ColorTransferTransform& transfor
         (numerator - denominator / 2) / denominator;
 }
 
-void ApplyChroma420(BgraImage& image) noexcept
+void ApplyChroma420(BgraImage& image, const ChromaSubsample420Transform& transform) noexcept
 {
-    for (std::uint32_t blockY = 0; blockY < image.height; blockY += 2)
+    for (std::int64_t blockY = -static_cast<std::int64_t>(transform.phaseY);
+        blockY < static_cast<std::int64_t>(image.height); blockY += 2)
     {
-        for (std::uint32_t blockX = 0; blockX < image.width; blockX += 2)
+        for (std::int64_t blockX = -static_cast<std::int64_t>(transform.phaseX);
+            blockX < static_cast<std::int64_t>(image.width); blockX += 2)
         {
             std::array<int, 4> luma{};
             std::array<std::byte*, 4> pixels{};
             std::size_t count = 0;
             int blueDeltaSum = 0;
             int redDeltaSum = 0;
-            for (std::uint32_t localY = 0; localY < 2 && blockY + localY < image.height; localY++)
+            for (std::int64_t localY = 0; localY < 2; localY++)
             {
-                for (std::uint32_t localX = 0; localX < 2 && blockX + localX < image.width; localX++)
+                const std::int64_t pixelY = blockY + localY;
+                if (pixelY < 0 || pixelY >= static_cast<std::int64_t>(image.height))
                 {
-                    std::byte* pixel = image.pixels.data() + static_cast<std::size_t>(blockY + localY) * image.rowPitch +
-                        static_cast<std::size_t>(blockX + localX) * 4;
+                    continue;
+                }
+                for (std::int64_t localX = 0; localX < 2; localX++)
+                {
+                    const std::int64_t pixelX = blockX + localX;
+                    if (pixelX < 0 || pixelX >= static_cast<std::int64_t>(image.width))
+                    {
+                        continue;
+                    }
+                    std::byte* const pixel = image.pixels.data() + static_cast<std::size_t>(pixelY) * image.rowPitch +
+                        static_cast<std::size_t>(pixelX) * 4;
                     const int blue = std::to_integer<int>(pixel[0]);
                     const int green = std::to_integer<int>(pixel[1]);
                     const int red = std::to_integer<int>(pixel[2]);
@@ -1011,8 +1023,11 @@ void AppendTransformParameters(std::string& output, const ChannelTransform& tran
         }
         else if constexpr (std::is_same_v<TransformType, ChromaSubsample420Transform>)
         {
-            static_cast<void>(typedTransform);
-            output.append("{\"matrix\":\"bt709-integer\",\"siting\":\"centered-2x2\"}");
+            output.append("{\"matrix\":\"bt709-integer\",\"phaseX\":");
+            AppendUnsigned(output, typedTransform.phaseX);
+            output.append(",\"phaseY\":");
+            AppendUnsigned(output, typedTransform.phaseY);
+            output.append(",\"siting\":\"centered-2x2\"}");
         }
         else if constexpr (std::is_same_v<TransformType, NeutralChromaTransform>)
         {
@@ -1331,8 +1346,13 @@ ChannelTransformResult<ChannelTransformExecution> ExecuteChannelTransformPlan(co
                 ApplyColorTransfer(*currentReference, *color);
             }
         }
-        else if (std::holds_alternative<ChromaSubsample420Transform>(transform))
+        else if (const auto* chroma = std::get_if<ChromaSubsample420Transform>(&transform))
         {
+            if (chroma->phaseX > 1 || chroma->phaseY > 1)
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::InvalidParameter, transformIndex);
+            }
             const auto pixelsResult = pbprotocol::CheckedMultiplyUint64(current.width, current.height);
             const auto workResult = pixelsResult ? pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), 8) : pixelsResult;
             if (!workResult || !TryAccumulateWork(workResult.Value(), currentReference.has_value(), totalWorkUnits, policy))
@@ -1340,10 +1360,10 @@ ChannelTransformResult<ChannelTransformExecution> ExecuteChannelTransformPlan(co
                 return ChannelTransformResult<ChannelTransformExecution>::Failure(
                     ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
             }
-            ApplyChroma420(current);
+            ApplyChroma420(current, *chroma);
             if (currentReference)
             {
-                ApplyChroma420(*currentReference);
+                ApplyChroma420(*currentReference, *chroma);
             }
         }
         else if (std::holds_alternative<NeutralChromaTransform>(transform))
