@@ -69,10 +69,12 @@ TEST_CASE("Independent PB-Bootstrap-1 corpus seed has exact semantics",
     REQUIRE(serialized == bytes);
 }
 
-TEST_CASE("Independent PB-Control-1 corpus seed wraps the provisional Session payload",
+TEST_CASE("Independent PB-Control-1 corpus seed wraps the formal Session payload",
           "[pbprotocol][control][corpus][conformance]")
 {
-    constexpr std::size_t controlGoldenBytes = 67;
+    constexpr std::size_t controlGoldenBytes =
+        pbprotocol::kMinimumControlRecordBytes +
+        pbprotocol::kSessionDescriptorPayloadBytes;
     const auto bytes = ReadCorpusFile<controlGoldenBytes>(
         "valid-control-session.bin");
     const auto parsedResult = pbprotocol::ParseControlRecord(bytes);
@@ -100,6 +102,22 @@ TEST_CASE("Independent PB-Control-1 corpus seed wraps the provisional Session pa
         parsedResult.Value(),
         serialized));
     REQUIRE(serialized == bytes);
+}
+
+TEST_CASE("PB-Control-1 can parse a historical envelope while formal descriptor admission rejects its payload",
+          "[pbprotocol][control][corpus][legacy][regression]")
+{
+    constexpr std::size_t legacyControlBytes = 67;
+    const auto bytes = ReadCorpusFile<legacyControlBytes>(
+        "legacy-phase0-control-session.bin");
+    const auto controlResult = pbprotocol::ParseControlRecord(bytes);
+    REQUIRE(controlResult);
+    const auto descriptorResult = pbprotocol::ParseSessionDescriptor(
+        controlResult.Value().payload,
+        pbprotocol::test::MakeResourcePolicy());
+    REQUIRE_FALSE(descriptorResult);
+    REQUIRE(descriptorResult.Error().code ==
+        pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
 }
 
 TEST_CASE("Independent corrupted Bootstrap and Control corpus seeds fail CRC",

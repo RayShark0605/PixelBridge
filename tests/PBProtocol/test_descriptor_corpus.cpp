@@ -200,5 +200,60 @@ TEST_CASE("Independent overflow corpus seed reports the exact arithmetic error",
         parsedResult.Error() ==
         pbprotocol::ProtocolError{
             pbprotocol::ProtocolErrorCode::LengthOverflow,
-            16});
+            pbprotocol::kFormalWireSegmentDescriptorRawOffsetOffset});
+}
+
+TEST_CASE("Independent Wirehair V2 corpus seed has canonical formal schema",
+          "[pbprotocol][descriptor][corpus][wirehair][conformance]")
+{
+    const auto payload = ReadCorpusFile<
+        pbprotocol::kWirehairV2SegmentDescriptorPayloadBytes>(
+            "valid-wirehair-segment.bin");
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        MakeCorpusResourcePolicy();
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        MakeFixedSessionDescriptor();
+    const pbprotocol::RawDigest rawDigest{};
+    const pbprotocol::SegmentDescriptor expected{
+        pbprotocol::DeriveSessionTag(sessionDescriptor.sessionId),
+        0,
+        0,
+        16,
+        16,
+        pbprotocol::CompressionCodec::Raw,
+        pbprotocol::OuterFecMode::WirehairV2,
+        8,
+        rawDigest,
+        pbprotocol::EncodedDigest{rawDigest.bytes},
+        pbprotocol::test::MakeWirehairProfile(16, 8),
+        0};
+
+    const auto parsedResult = pbprotocol::ParseSegmentDescriptor(
+        payload,
+        sessionDescriptor,
+        resourcePolicy);
+    REQUIRE(parsedResult);
+    REQUIRE(parsedResult.Value() == expected);
+}
+
+TEST_CASE("Historical Phase-0 descriptor fixtures are rejected as unsupported schema",
+          "[pbprotocol][descriptor][corpus][legacy][regression]")
+{
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        MakeCorpusResourcePolicy();
+    const pbprotocol::SessionDescriptor sessionDescriptor =
+        MakeFixedSessionDescriptor();
+    const auto legacySession = ReadCorpusFile<37>("legacy-phase0-session.bin");
+    const auto legacySegment = ReadCorpusFile<110>("legacy-phase0-direct-segment.bin");
+    const auto legacyManifest = ReadCorpusFile<65>("legacy-phase0-final-manifest.bin");
+
+    const auto sessionResult = pbprotocol::ParseSessionDescriptor(legacySession, resourcePolicy);
+    const auto segmentResult = pbprotocol::ParseSegmentDescriptor(legacySegment, sessionDescriptor, resourcePolicy);
+    const auto manifestResult = pbprotocol::ParseFinalManifest(legacyManifest, sessionDescriptor, resourcePolicy);
+    REQUIRE_FALSE(sessionResult);
+    REQUIRE_FALSE(segmentResult);
+    REQUIRE_FALSE(manifestResult);
+    REQUIRE(sessionResult.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+    REQUIRE(segmentResult.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+    REQUIRE(manifestResult.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
 }

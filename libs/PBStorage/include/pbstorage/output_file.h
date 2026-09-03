@@ -24,7 +24,10 @@ enum class StorageErrorCode : std::uint8_t
     DigestMismatch,
     AlreadyPublished,
     OutOfMemory,
-    InternalError
+    InternalError,
+    ResumeMismatch,
+    OverlappingRange,
+    IncompleteFile
 };
 
 enum class StorageStage : std::uint8_t
@@ -38,7 +41,8 @@ enum class StorageStage : std::uint8_t
     Flush,
     Digest,
     Publish,
-    Cleanup
+    Cleanup,
+    Resume
 };
 
 struct StorageStatus
@@ -69,6 +73,9 @@ struct OutputFileConfig
     pbprotocol::SessionTag sessionTag{};
     std::uint64_t fileBytes = 0;
     std::uint64_t maximumFileBytes = 0;
+    // Empty retains the diagnostic PixelBridge-<SessionTag>.bin name. Formal
+    // product sessions pass the already validated descriptor basename here.
+    std::string originalFileNameUtf8;
 };
 
 struct OutputFileSnapshot
@@ -77,23 +84,25 @@ struct OutputFileSnapshot
     std::wstring partPath;
     std::uint64_t fileBytes = 0;
     std::uint64_t writtenBytes = 0;
+    std::uint64_t verifiedBytes = 0;
+    bool resumed = false;
+    bool hasPendingWrite = false;
     bool published = false;
 };
 
 [[nodiscard]] const char* GetStorageErrorName(StorageErrorCode code) noexcept;
 [[nodiscard]] const char* GetStorageStageName(StorageStage stage) noexcept;
 
-// Owns a newly created same-directory .part reservation. It never overwrites
-// an existing .part or final path. Publish first verifies the exact sequential
-// BLAKE3 digest, then performs a write-through same-directory rename and
-// re-verifies the final artifact. A failed final verification attempts to
-// remove the just-renamed artifact and reports cleanup failure explicitly.
-// Destruction removes only this instance's unpublished .part file; a
-// successfully published final artifact is never deleted.
+// Owns or resumes a same-directory PixelBridge-<SessionTag>.part reservation.
+// Verified Segment writes may arrive out of order but never overlap. A write is
+// not counted as verified until FlushVerifiedSegment succeeds. Destruction
+// preserves unpublished .part data for crash/process restart recovery.
 class OutputFile
 {
 public:
     [[nodiscard]] static StorageStatus Create(const OutputFileConfig& config,
+        std::unique_ptr<OutputFile>& output) noexcept;
+    [[nodiscard]] static StorageStatus CreateOrResume(const OutputFileConfig& config,
         std::unique_ptr<OutputFile>& output) noexcept;
 
     ~OutputFile();
@@ -102,11 +111,24 @@ public:
 
     [[nodiscard]] StorageStatus Write(std::uint64_t rawOffset,
         std::span<const std::byte> rawBytes) noexcept;
+    [[nodiscard]] StorageStatus WriteVerifiedSegment(std::uint64_t rawOffset,
+        std::span<const std::byte> rawBytes) noexcept;
+    [[nodiscard]] StorageStatus ReadRange(std::uint64_t rawOffset,
+        std::span<std::byte> output) noexcept;
+    // Marks a range verified only after the caller has re-read it and checked
+    // the bound Segment RawDigest. No data is rewritten.
+    [[nodiscard]] StorageStatus AdoptVerifiedSegment(std::uint64_t rawOffset,
+        std::uint64_t rawSize) noexcept;
+    [[nodiscard]] StorageStatus FlushVerifiedSegment() noexcept;
+    [[nodiscard]] StorageStatus Checkpoint() noexcept;
     [[nodiscard]] StorageStatus Publish(const pbprotocol::WholeFileDigest& expectedDigest) noexcept;
+    [[nodiscard]] StorageStatus Discard() noexcept;
     [[nodiscard]] OutputFileSnapshot GetSnapshot() const;
 
 private:
     struct Implementation;
+    [[nodiscard]] static StorageStatus CreateInternal(const OutputFileConfig& config,
+        bool allowResume, std::unique_ptr<OutputFile>& output) noexcept;
     explicit OutputFile(std::unique_ptr<Implementation> implementation) noexcept;
     std::unique_ptr<Implementation> implementation_;
 };

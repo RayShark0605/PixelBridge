@@ -6,6 +6,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <filesystem>
@@ -103,7 +104,7 @@ TEST_CASE("PBStorage preserves protocol-valid zero SessionTag identity", "[stora
     REQUIRE(output->GetSnapshot().published);
 }
 
-TEST_CASE("PBStorage digest failure never publishes and destruction removes its part", "[storage][errors]")
+TEST_CASE("PBStorage digest failure never publishes and destruction preserves its resumable part", "[storage][errors][resume]")
 {
     ScratchDirectory scratch(L"digest-failure");
     const std::vector<std::byte> bytes = MakeBytes(1024);
@@ -128,7 +129,7 @@ TEST_CASE("PBStorage digest failure never publishes and destruction removes its 
         REQUIRE(std::filesystem::exists(partPath));
         REQUIRE_FALSE(std::filesystem::exists(finalPath));
     }
-    REQUIRE_FALSE(std::filesystem::exists(partPath));
+    REQUIRE(std::filesystem::exists(partPath));
     REQUIRE_FALSE(std::filesystem::exists(finalPath));
 }
 
@@ -193,6 +194,7 @@ TEST_CASE("PBStorage never deletes a pre-existing part file that it did not crea
     std::unique_ptr<pbstorage::OutputFile> probe;
     REQUIRE(pbstorage::OutputFile::Create(config, probe));
     const std::wstring partPath = probe->GetSnapshot().partPath;
+    REQUIRE(probe->Discard());
     probe.reset();
     const HANDLE foreignPart = CreateFileW(partPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -204,5 +206,131 @@ TEST_CASE("PBStorage never deletes a pre-existing part file that it did not crea
     REQUIRE_FALSE(status);
     REQUIRE(status.code == pbstorage::StorageErrorCode::TargetExists);
     REQUIRE(conflict == nullptr);
+    REQUIRE(std::filesystem::exists(partPath));
+}
+
+TEST_CASE("PBStorage accepts flushed verified Segments out of order and rejects overlap",
+    "[storage][random-write][segment]")
+{
+    ScratchDirectory scratch(L"random-write");
+    const std::vector<std::byte> bytes = MakeBytes(96);
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {17};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    config.originalFileNameUtf8 = "restored.bin";
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, output));
+
+    REQUIRE(output->WriteVerifiedSegment(32, std::span(bytes).subspan(32, 32)));
+    REQUIRE(output->GetSnapshot().hasPendingWrite);
+    REQUIRE_FALSE(output->Publish(pbprotocol::WholeFileDigest{}));
+    REQUIRE(output->FlushVerifiedSegment());
+    REQUIRE(output->GetSnapshot().verifiedBytes == 32);
+    REQUIRE_FALSE(output->WriteVerifiedSegment(48, std::span(bytes).subspan(48, 16)));
+
+    REQUIRE(output->WriteVerifiedSegment(64, std::span(bytes).subspan(64, 32)));
+    REQUIRE(output->FlushVerifiedSegment());
+    REQUIRE(output->WriteVerifiedSegment(0, std::span(bytes).first(32)));
+    REQUIRE(output->FlushVerifiedSegment());
+    REQUIRE(output->GetSnapshot().verifiedBytes == bytes.size());
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    REQUIRE(output->Publish(digest));
+    REQUIRE(output->GetSnapshot().finalPath.ends_with(L"restored.bin"));
+}
+
+TEST_CASE("PBStorage resumes the internal part and republishes only after revalidation",
+    "[storage][resume][restart]")
+{
+    ScratchDirectory scratch(L"resume-restart");
+    const std::vector<std::byte> bytes = MakeBytes(64);
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {19};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    config.originalFileNameUtf8 = "session.dat";
+
+    std::wstring partPath;
+    {
+        std::unique_ptr<pbstorage::OutputFile> first;
+        REQUIRE(pbstorage::OutputFile::CreateOrResume(config, first));
+        REQUIRE_FALSE(first->GetSnapshot().resumed);
+        REQUIRE(first->WriteVerifiedSegment(0, std::span(bytes).first(32)));
+        REQUIRE(first->FlushVerifiedSegment());
+        partPath = first->GetSnapshot().partPath;
+    }
+    REQUIRE(std::filesystem::exists(partPath));
+
+    std::unique_ptr<pbstorage::OutputFile> resumed;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, resumed));
+    REQUIRE(resumed->GetSnapshot().resumed);
+    std::vector<std::byte> restoredFirstSegment(32);
+    REQUIRE(resumed->ReadRange(0, restoredFirstSegment));
+    REQUIRE(std::ranges::equal(restoredFirstSegment, std::span(bytes).first(32)));
+    // Adoption is legal only after the application has re-read this range and
+    // verified the bound Segment RawDigest. PBStorage never trusts allocation
+    // contents or a stale journal on its own.
+    REQUIRE(resumed->AdoptVerifiedSegment(0, restoredFirstSegment.size()));
+    REQUIRE(resumed->WriteVerifiedSegment(32, std::span(bytes).subspan(32)));
+    REQUIRE(resumed->FlushVerifiedSegment());
+    REQUIRE_FALSE(resumed->AdoptVerifiedSegment(16, 32));
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    REQUIRE(resumed->Publish(digest));
+}
+
+TEST_CASE("PBStorage publishes a verified zero-byte file and uses deterministic collision naming",
+    "[storage][empty][filename][collision]")
+{
+    ScratchDirectory scratch(L"empty-file");
+    const std::filesystem::path existingPath = scratch.GetPath() / L"empty.txt";
+    const HANDLE existing = CreateFileW(existingPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(existing != INVALID_HANDLE_VALUE);
+    REQUIRE(CloseHandle(existing));
+
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0xAB};
+    config.fileBytes = 0;
+    config.maximumFileBytes = 1024;
+    config.originalFileNameUtf8 = "empty.txt";
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, output));
+    REQUIRE(output->GetSnapshot().finalPath.ends_with(L"empty (PixelBridge-00000000000000ab).txt"));
+    REQUIRE(output->Publish(pbprotocol::GetEmptyBlake3WholeFileDigest()));
+    REQUIRE(std::filesystem::file_size(output->GetSnapshot().finalPath) == 0);
+    REQUIRE(std::filesystem::exists(existingPath));
+}
+
+TEST_CASE("PBStorage rejects a resumed part whose length conflicts with the descriptor",
+    "[storage][resume][conflict]")
+{
+    ScratchDirectory scratch(L"resume-size-conflict");
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {23};
+    config.fileBytes = 16;
+    config.maximumFileBytes = 64;
+    std::unique_ptr<pbstorage::OutputFile> first;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, first));
+    const std::wstring partPath = first->GetSnapshot().partPath;
+    first.reset();
+
+    const HANDLE partHandle = CreateFileW(partPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(partHandle != INVALID_HANDLE_VALUE);
+    LARGE_INTEGER wrongLength{};
+    wrongLength.QuadPart = 8;
+    REQUIRE(SetFilePointerEx(partHandle, wrongLength, nullptr, FILE_BEGIN));
+    REQUIRE(SetEndOfFile(partHandle));
+    REQUIRE(CloseHandle(partHandle));
+
+    std::unique_ptr<pbstorage::OutputFile> resumed;
+    const auto status = pbstorage::OutputFile::CreateOrResume(config, resumed);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::ResumeMismatch);
+    REQUIRE(resumed == nullptr);
     REQUIRE(std::filesystem::exists(partPath));
 }

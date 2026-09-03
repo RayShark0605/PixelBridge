@@ -3,6 +3,7 @@
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/control_fragment_codec.h"
 #include "pbprotocol/control_plane_receiver.h"
+#include "pbprotocol/crc32c.h"
 #include "pbprotocol/descriptor_codec.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -83,6 +84,19 @@ private:
     bool failAllocation_ = false;
     std::size_t bytesInUse_ = 0;
 };
+
+void RefreshDescriptorCrc(const std::span<std::byte> bytes)
+{
+    REQUIRE(bytes.size() >= pbprotocol::kDescriptorCrcBytes);
+    const std::size_t crcOffset = bytes.size() - pbprotocol::kDescriptorCrcBytes;
+    const std::uint32_t crc = pbprotocol::ComputeCrc32c(
+        std::span<const std::byte>(bytes).first(crcOffset));
+    for (std::size_t byteIndex = 0; byteIndex < sizeof(crc); byteIndex++)
+    {
+        bytes[crcOffset + byteIndex] = Byte(static_cast<std::uint8_t>(
+            (crc >> static_cast<unsigned int>(byteIndex * 8U)) & 0xFFU));
+    }
+}
 
 [[nodiscard]] std::vector<std::byte> WrapControlPayload(
     const pbprotocol::ControlRecordType recordType,
@@ -473,7 +487,8 @@ TEST_CASE("ControlPlaneReceiver is the authoritative typed admission boundary",
         std::vector<std::byte> wrongSegmentPayload(
             segmentEnvelopeResult.Value().payload.begin(),
             segmentEnvelopeResult.Value().payload.end());
-        wrongSegmentPayload[0] ^= Byte(0x01);
+        wrongSegmentPayload[pbprotocol::kFormalWireSegmentDescriptorSessionTagOffset] ^= Byte(0x01);
+        RefreshDescriptorCrc(wrongSegmentPayload);
         const std::vector<std::byte> wrongSegmentRecord = WrapControlPayload(
             pbprotocol::ControlRecordType::SegmentDescriptor,
             10,
@@ -491,7 +506,8 @@ TEST_CASE("ControlPlaneReceiver is the authoritative typed admission boundary",
         std::vector<std::byte> wrongManifestPayload(
             manifestEnvelopeResult.Value().payload.begin(),
             manifestEnvelopeResult.Value().payload.end());
-        wrongManifestPayload[0] ^= Byte(0x01);
+        wrongManifestPayload[pbprotocol::kFormalWireFinalManifestSessionIdOffset] ^= Byte(0x01);
+        RefreshDescriptorCrc(wrongManifestPayload);
         const std::vector<std::byte> wrongManifestRecord = WrapControlPayload(
             pbprotocol::ControlRecordType::FinalManifest,
             11,
@@ -528,7 +544,7 @@ TEST_CASE("ControlPlaneReceiver is the authoritative typed admission boundary",
         const auto result = receiver.ReceiveControlRecord(mismatchedRecord);
         REQUIRE_FALSE(result);
         REQUIRE(result.Error().code ==
-            pbprotocol::ProtocolErrorCode::TrailingBytes);
+            pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
         REQUIRE(receiver.ActiveSessionCount() == 0);
         REQUIRE(receiver.ReservedDescriptorStateBytes() == 0);
 
@@ -549,7 +565,7 @@ TEST_CASE("ControlPlaneReceiver is the authoritative typed admission boundary",
             segmentWithSessionPayload);
         REQUIRE_FALSE(segmentMismatchResult);
         REQUIRE(segmentMismatchResult.Error().code ==
-            pbprotocol::ProtocolErrorCode::TruncatedInput);
+            pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
 
         const std::vector<std::byte> manifestWithSegmentPayload =
             WrapControlPayload(
@@ -561,7 +577,7 @@ TEST_CASE("ControlPlaneReceiver is the authoritative typed admission boundary",
             manifestWithSegmentPayload);
         REQUIRE_FALSE(manifestMismatchResult);
         REQUIRE(manifestMismatchResult.Error().code ==
-            pbprotocol::ProtocolErrorCode::TrailingBytes);
+            pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
         const auto segmentCountResult = receiver.BoundSegmentCount(sessionTag);
         REQUIRE(segmentCountResult);
         REQUIRE(segmentCountResult.Value() == 0);
@@ -612,7 +628,7 @@ TEST_CASE("ControlPlaneReceiver reassembles out of order and submits each ID onc
         sessionDescriptor,
         resourcePolicy,
         20);
-    const auto fragments = MakeFragments(record, 0x1111222233334444ULL);
+    const auto fragments = MakeFragments(record, 0x1111222233334444ULL, 40);
     REQUIRE(fragments.size() == 3);
 
     auto receiver = MakeReceiver(resourcePolicy);
@@ -665,7 +681,8 @@ TEST_CASE("ControlPlaneReceiver reassembles out of order and submits each ID onc
 
     const auto repeatedFragments = MakeFragments(
         record,
-        0x5555666677778888ULL);
+        0x5555666677778888ULL,
+        40);
     pbprotocol::ProtocolResult<pbprotocol::ControlFragmentReceiveResult>
         repeatedResult = receiver.ReceiveControlFragment(
             repeatedFragments[0],

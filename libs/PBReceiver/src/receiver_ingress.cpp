@@ -130,6 +130,7 @@ struct ReceiverIngressImplementation
     // Capture-epoch reset snapshots them here before replacing the component.
     std::uint64_t priorControlRejectedCount = 0;
     std::uint64_t priorOuterFecQuotaExceededCount = 0;
+    std::uint64_t deferredResourceBusyCount = 0;
     std::uint64_t priorOrphanAdmittedCount = 0;
     std::uint64_t priorOrphanDroppedCount = 0;
     std::uint64_t priorOrphanResourceExhaustedCount = 0;
@@ -411,6 +412,12 @@ void ClearLastTerminalControlSessionData(
         errorCode == pbouterfec::OuterFecErrorCode::CsprngFailure;
 }
 
+[[nodiscard]] bool IsOuterFecDecoderQuotaError(
+    const pbouterfec::OuterFecError& error) noexcept
+{
+    return error.code == pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded;
+}
+
 template <typename ValueType>
 [[nodiscard]] ReceiverResult<ValueType> FailDecoderCreationForSession(
     detail::ReceiverIngressImplementation& implementation,
@@ -620,6 +627,15 @@ DecodeBlock(
                 std::get_if<pbouterfec::OuterFecError>(
                     &activeDecoderResult.Error()))
         {
+            if (IsOuterFecDecoderQuotaError(*outerFecError))
+            {
+                pbprotocol::SaturatingIncrementUnsigned(implementation.deferredResourceBusyCount);
+                return ReceiverResult<ReceiverDataAdmission>::Success(
+                    ReceiverDataAdmission{
+                        ReceiverDataDisposition::DeferredResourceBusy,
+                        std::nullopt,
+                        ReceiverOuterSymbolAdmission::DeferredResourceBusy});
+            }
             return FailDecoderCreationForSession<ReceiverDataAdmission>(
                 implementation,
                 descriptor.sessionTag,
@@ -753,6 +769,11 @@ ProcessOrphanBlocks(
                     std::get_if<pbouterfec::OuterFecError>(
                         &activeDecoderResult.Error()))
             {
+                if (IsOuterFecDecoderQuotaError(*outerFecError))
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(implementation.deferredResourceBusyCount);
+                    return ReceiverResult<std::optional<ReceiverCompletedSegment>>::Success(std::nullopt);
+                }
                 return FailDecoderCreationForSession<
                     std::optional<ReceiverCompletedSegment>>(
                         implementation,
@@ -1321,6 +1342,16 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
                     std::move(orphanResult).Value(),
                     outerAdmission});
         }
+        if (implementation_->orphanCache.HasCachedKey(
+                transportBlock.sessionTag,
+                transportBlock.segmentOrdinal))
+        {
+            return ReceiverResult<ReceiverDataAdmission>::Success(
+                ReceiverDataAdmission{
+                    ReceiverDataDisposition::DeferredResourceBusy,
+                    std::nullopt,
+                    ReceiverOuterSymbolAdmission::DeferredResourceBusy});
+        }
         return ReceiverResult<ReceiverDataAdmission>::Success(
             ReceiverDataAdmission{
                 ReceiverDataDisposition::AcceptedNeedMore,
@@ -1811,6 +1842,7 @@ ReceiverResourceTelemetrySnapshot ReceiverIngress::GetTelemetry() const
         pbprotocol::SaturatingAddUnsigned(
         implementation_->priorOuterFecQuotaExceededCount,
         implementation_->outerFecResourceManager.GetQuotaExceededCount());
+    telemetry.deferredResourceBusyCount = implementation_->deferredResourceBusyCount;
     telemetry.orphanAdmittedBlockCount =
         pbprotocol::SaturatingAddUnsigned(
         implementation_->priorOrphanAdmittedCount,

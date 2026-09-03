@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace pbprotocol {
 
@@ -84,6 +86,16 @@ enum class OuterFecMode : std::uint8_t
     DirectRepeat = 2
 };
 
+enum class CompressionPolicy : std::uint8_t
+{
+    AutomaticZstandardLevel3RawFallback = 1
+};
+
+inline constexpr std::uint64_t kUnifiedVisualProfileId =
+    0x5042554E494C4331ULL;
+inline constexpr std::uint32_t kDefaultSourceSegmentTargetBytes =
+    8U * 1024U * 1024U;
+
 struct SessionDescriptor
 {
     ProtocolVersion protocolVersion{};
@@ -91,6 +103,14 @@ struct SessionDescriptor
     std::uint64_t originalFileSize = 0;
     std::uint64_t segmentCount = 0;
     DigestAlgorithm digestAlgorithm = static_cast<DigestAlgorithm>(0);
+    std::uint64_t sessionVisualProfileId = kUnifiedVisualProfileId;
+    std::uint32_t sourceSegmentTargetBytes = kDefaultSourceSegmentTargetBytes;
+    CompressionPolicy compressionPolicy = CompressionPolicy::AutomaticZstandardLevel3RawFallback;
+    std::uint64_t featureFlags = 0;
+    std::string fileNameUtf8 = "payload.bin";
+    // Canonical encoded TLVs following FileNameUtf8. Unknown optional TLVs are
+    // retained byte-for-byte so descriptor equality cannot erase a conflict.
+    std::vector<std::byte> optionalExtensions;
 
     bool operator==(const SessionDescriptor&) const = default;
 };
@@ -108,6 +128,7 @@ struct SegmentDescriptor
     RawDigest rawDigest{};
     EncodedDigest encodedDigest{};
     std::optional<WirehairV2SerializedProfile> wirehairV2SerializedProfile;
+    std::uint64_t flags = 0;
 
     bool operator==(const SegmentDescriptor&) const = default;
 };

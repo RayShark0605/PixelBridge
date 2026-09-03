@@ -4,6 +4,8 @@ add_library(PB::PBApplication ALIAS PBApplication)
 target_sources(PBApplication
     PRIVATE
         application_model.cpp
+        decoder_resume_store.cpp
+        encoder_session_store.cpp
         evidence_journal.cpp
         local_desktop_runtime.cpp
         optional_diagnostic_fanout.cpp
@@ -13,6 +15,8 @@ target_sources(PBApplication
         run_report.cpp
     PUBLIC
         application_model.h
+        decoder_resume_store.h
+        encoder_session_store.h
         evidence_journal.h
         local_desktop_runtime.h
         monitor_catalog.h

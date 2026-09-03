@@ -140,7 +140,8 @@ TEST_CASE("Receiver resource policy is finite and rejects impossible Session sha
     REQUIRE(
         impossibleStatus.Error().code ==
         pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
-    REQUIRE(impossibleStatus.Error().offset == 28);
+    REQUIRE(impossibleStatus.Error().offset ==
+        pbprotocol::kFormalWireSessionDescriptorSegmentCountOffset);
 
     pbprotocol::ReceiverResourcePolicy unboundedPolicy{};
     unboundedPolicy.maxAcceptedFileBytes =
@@ -592,7 +593,8 @@ TEST_CASE("DirectRepeat block-count policy is inclusive and checked in descripto
     REQUIRE_FALSE(status);
     REQUIRE(status.Error().code ==
         pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
-    REQUIRE(status.Error().offset == 42);
+    REQUIRE(status.Error().offset ==
+        pbprotocol::kFormalWireSegmentDescriptorOuterBlockBytesOffset);
 }
 
 TEST_CASE("Every receiver resource limit is inclusive and checked before use",
@@ -750,7 +752,8 @@ TEST_CASE("SegmentDescriptor checks identity ranges resources and RAW invariants
             sessionDescriptor,
             resourcePolicy);
         REQUIRE_FALSE(status);
-        REQUIRE(status.Error().offset == 78);
+        REQUIRE(status.Error().offset ==
+            pbprotocol::kFormalWireSegmentDescriptorEncodedDigestOffset);
     }
     SECTION("DirectRepeat carries Wirehair bytes")
     {
@@ -1055,5 +1058,6 @@ TEST_CASE("FinalManifest binds session metadata and empty digest",
     REQUIRE(
         mismatchStatus.Error().code ==
         pbprotocol::ProtocolErrorCode::SessionMismatch);
-    REQUIRE(mismatchStatus.Error().offset == 16);
+    REQUIRE(mismatchStatus.Error().offset ==
+        pbprotocol::kFormalWireFinalManifestOriginalFileSizeOffset);
 }

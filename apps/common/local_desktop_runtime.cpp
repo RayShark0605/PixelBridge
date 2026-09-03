@@ -1,10 +1,13 @@
 #include "local_desktop_runtime.h"
 
+#include "decoder_resume_store.h"
+#include "encoder_session_store.h"
 #include "optional_diagnostic_fanout.h"
 #include "remote_visual_replay_recorder.h"
 #include "run_report.h"
 
 #include "pbinnerfec/qc_ldpc_codec.h"
+#include "pbcore/build_info.h"
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/local_desktop_bootstrap.h"
 #include "pbmodulation/reference_raster.h"
@@ -41,6 +44,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -665,7 +669,8 @@ struct SourceFile
 {
     UniqueHandle handle;
     BY_HANDLE_FILE_INFORMATION identity{};
-    std::vector<std::byte> bytes;
+    std::wstring path;
+    std::uint64_t fileBytes = 0;
 };
 
 [[nodiscard]] SourceFile ReadSourceFile(const std::wstring& path)
@@ -676,27 +681,41 @@ struct SourceFile
     Require(static_cast<bool>(source.handle), "无法以只读方式打开源文件，Win32=" + std::to_string(GetLastError()));
     Require(GetFileInformationByHandle(source.handle.Get(), &source.identity) != FALSE,
         "无法读取源文件身份，Win32=" + std::to_string(GetLastError()));
-    const std::uint64_t fileBytes = (static_cast<std::uint64_t>(source.identity.nFileSizeHigh) << 32U) |
+    source.fileBytes = (static_cast<std::uint64_t>(source.identity.nFileSizeHigh) << 32U) |
         source.identity.nFileSizeLow;
-    Require(fileBytes >= minimumInstantFileBytes && fileBytes <= maximumInstantFileBytes,
-        "当前单 Segment production path 仅支持 1 byte 到 8 MiB，源文件不会被截断");
-    source.bytes.resize(static_cast<std::size_t>(fileBytes));
-    std::size_t offset = 0;
-    while (offset < source.bytes.size())
-    {
-        const DWORD chunk = static_cast<DWORD>((std::min)(source.bytes.size() - offset,
-            static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
-        DWORD readBytes = 0;
-        Require(ReadFile(source.handle.Get(), source.bytes.data() + offset, chunk, &readBytes, nullptr) != FALSE,
-            "读取源文件失败，Win32=" + std::to_string(GetLastError()));
-        Require(readBytes != 0 && readBytes <= chunk, "源文件在 Session 准备期间提前结束");
-        offset += readBytes;
-    }
-    std::byte extra{};
-    DWORD extraBytes = 0;
-    Require(ReadFile(source.handle.Get(), &extra, 1, &extraBytes, nullptr) != FALSE && extraBytes == 0,
-        "源文件大小在 Session 准备期间发生变化");
+    const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    Require(source.fileBytes <= policy.maxAcceptedFileBytes,
+        "源文件超过当前 ReceiverResourcePolicy 的最大文件大小");
+    source.path = path;
     return source;
+}
+
+[[nodiscard]] std::vector<std::byte> ReadSourceRange(SourceFile& source, const std::uint64_t offset,
+    const std::uint64_t byteCount)
+{
+    const auto endOffset = pbprotocol::CheckedAddUint64(offset, byteCount);
+    RequireResult(endOffset, "源文件读取区间溢出");
+    Require(endOffset.Value() <= source.fileBytes && byteCount <= pbprotocol::kDefaultSourceSegmentTargetBytes,
+        "源文件读取区间超过已冻结的文件身份或 Segment 上限");
+    LARGE_INTEGER fileOffset{};
+    Require(offset <= static_cast<std::uint64_t>((std::numeric_limits<LONGLONG>::max)()),
+        "源文件偏移超过 Win32 signed file-position 范围");
+    fileOffset.QuadPart = static_cast<LONGLONG>(offset);
+    Require(SetFilePointerEx(source.handle.Get(), fileOffset, nullptr, FILE_BEGIN) != FALSE,
+        "定位源文件 Segment 失败，Win32=" + std::to_string(GetLastError()));
+    std::vector<std::byte> bytes(static_cast<std::size_t>(byteCount));
+    std::size_t bytesRead = 0;
+    while (bytesRead < bytes.size())
+    {
+        const DWORD chunk = static_cast<DWORD>((std::min)(bytes.size() - bytesRead,
+            static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
+        DWORD currentReadBytes = 0;
+        Require(ReadFile(source.handle.Get(), bytes.data() + bytesRead, chunk, &currentReadBytes, nullptr) != FALSE,
+            "读取源文件失败，Win32=" + std::to_string(GetLastError()));
+        Require(currentReadBytes != 0 && currentReadBytes <= chunk, "源文件在 Session 准备期间提前结束");
+        bytesRead += currentReadBytes;
+    }
+    return bytes;
 }
 
 [[nodiscard]] bool IsSourceStable(const SourceFile& source) noexcept
@@ -712,6 +731,16 @@ struct SourceFile
         current.nFileSizeHigh == source.identity.nFileSizeHigh &&
         current.nFileSizeLow == source.identity.nFileSizeLow &&
         CompareFileTime(&current.ftLastWriteTime, &source.identity.ftLastWriteTime) == 0;
+}
+
+[[nodiscard]] EncoderSourceIdentity GetEncoderSourceIdentity(const SourceFile& source) noexcept
+{
+    return {source.identity.dwVolumeSerialNumber,
+        static_cast<std::uint64_t>(source.identity.nFileIndexLow) |
+            (static_cast<std::uint64_t>(source.identity.nFileIndexHigh) << 32U),
+        source.fileBytes,
+        static_cast<std::uint64_t>(source.identity.ftLastWriteTime.dwLowDateTime) |
+            (static_cast<std::uint64_t>(source.identity.ftLastWriteTime.dwHighDateTime) << 32U)};
 }
 
 struct ProfileBinding
@@ -749,12 +778,18 @@ struct ProfileBinding
 struct TransferDescription
 {
     pbprotocol::SessionDescriptor session;
-    pbprotocol::SegmentDescriptor segment;
     pbprotocol::FinalManifest manifest;
-    pbcompression::EncodedSegment encoded;
     std::vector<std::byte> sessionControl;
     std::vector<std::byte> manifestControl;
-    std::vector<std::byte> segmentControl;
+    struct Segment
+    {
+        pbprotocol::SegmentDescriptor descriptor;
+        std::vector<std::byte> control;
+        // Populated only by bounded in-memory test seams. Production file
+        // preparation discards encoded bytes after freezing their digest.
+        std::vector<std::byte> inMemoryEncodedBytes;
+    };
+    std::vector<Segment> segments;
 };
 
 [[nodiscard]] std::vector<std::byte> WrapControlRecord(const pbprotocol::ControlRecordType recordType,
@@ -772,14 +807,10 @@ struct TransferDescription
     return bytes;
 }
 
-[[nodiscard]] TransferDescription DescribeSource(const std::span<const std::byte> rawBytes,
-    const bool compressionEnabled, const int compressionLevel)
+[[nodiscard]] TransferDescription::Segment PrepareSegmentDescription(const pbprotocol::SessionDescriptor& session,
+    const pbprotocol::SessionTag sessionTag, const std::uint64_t segmentOrdinal, const std::uint64_t rawOffset,
+    const std::span<const std::byte> rawBytes, const bool compressionEnabled, const int compressionLevel)
 {
-    const auto sessionId = pbprotocol::GenerateRandomSessionId();
-    RequireResult(sessionId, "OS CSPRNG SessionId generation failed");
-    const pbprotocol::SessionDescriptor session{pbprotocol::GetProtocolVersion(), sessionId.Value(),
-        rawBytes.size(), 1, pbprotocol::DigestAlgorithm::Blake3_256};
-    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(session.sessionId);
     auto prepared = PrepareEncodedSegment(rawBytes, compressionEnabled, compressionLevel);
     RequireResult(prepared, "Segment compression/RAW preparation failed");
     pbcompression::EncodedSegment encoded = std::move(prepared).Value();
@@ -787,8 +818,8 @@ struct TransferDescription
     RequireResult(selectedMode, "Outer FEC mode selection failed");
     pbprotocol::SegmentDescriptor segment;
     segment.sessionTag = sessionTag;
-    segment.segmentOrdinal = 0;
-    segment.rawOffset = 0;
+    segment.segmentOrdinal = segmentOrdinal;
+    segment.rawOffset = rawOffset;
     segment.rawSize = rawBytes.size();
     segment.encodedSize = encoded.bytes.size();
     segment.compressionCodec = encoded.codec;
@@ -807,33 +838,206 @@ struct TransferDescription
         const auto encoder = pbouterfec::DirectRepeatEncoder::Create(encoded.bytes, outerBlockBytes);
         RequireResult(encoder, "DirectRepeat descriptor validation failed");
     }
-    const pbprotocol::FinalManifest manifest{session.sessionId, rawBytes.size(), 1,
-        pbprotocol::WholeFileDigest{pbprotocol::ComputeBlake3Digest(rawBytes)},
-        pbprotocol::DigestAlgorithm::Blake3_256};
     const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
-    std::array<std::byte, pbprotocol::kSessionDescriptorPayloadBytes> sessionPayload{};
-    RequireResult(pbprotocol::SerializeSessionDescriptor(session, policy, sessionPayload),
-        "SessionDescriptor serialization failed");
-    std::array<std::byte, pbprotocol::kFinalManifestPayloadBytes> manifestPayload{};
-    RequireResult(pbprotocol::SerializeFinalManifest(manifest, session, policy, manifestPayload),
-        "FinalManifest serialization failed");
     const auto segmentSize = pbprotocol::GetSerializedSize(segment);
     RequireResult(segmentSize, "SegmentDescriptor size calculation failed");
     std::vector<std::byte> segmentPayload(segmentSize.Value());
     RequireResult(pbprotocol::SerializeSegmentDescriptor(segment, session, policy, segmentPayload),
         "SegmentDescriptor serialization failed");
-    TransferDescription description;
-    description.session = session;
-    description.segment = segment;
-    description.manifest = manifest;
-    description.encoded = std::move(encoded);
+    TransferDescription::Segment preparedSegment;
+    preparedSegment.descriptor = segment;
+    preparedSegment.control = WrapControlRecord(pbprotocol::ControlRecordType::SegmentDescriptor,
+        3 + segmentOrdinal, sessionTag, segmentPayload);
+    preparedSegment.inMemoryEncodedBytes = std::move(encoded.bytes);
+    return preparedSegment;
+}
+
+void FinalizeTransferControls(TransferDescription& description)
+{
+    const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    const auto sessionSize = pbprotocol::GetSerializedSize(description.session);
+    RequireResult(sessionSize, "SessionDescriptor size calculation failed");
+    std::vector<std::byte> sessionPayload(sessionSize.Value());
+    RequireResult(pbprotocol::SerializeSessionDescriptor(description.session, policy, sessionPayload),
+        "SessionDescriptor serialization failed");
+    std::array<std::byte, pbprotocol::kFinalManifestPayloadBytes> manifestPayload{};
+    RequireResult(pbprotocol::SerializeFinalManifest(description.manifest, description.session, policy, manifestPayload),
+        "FinalManifest serialization failed");
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
     description.sessionControl = WrapControlRecord(pbprotocol::ControlRecordType::SessionDescriptor, 1,
         sessionTag, sessionPayload);
     description.manifestControl = WrapControlRecord(pbprotocol::ControlRecordType::FinalManifest, 2,
         sessionTag, manifestPayload);
-    description.segmentControl = WrapControlRecord(pbprotocol::ControlRecordType::SegmentDescriptor, 3,
-        sessionTag, segmentPayload);
+}
+
+void AppendDescriptorBundleRecord(std::vector<std::byte>& bundle, const std::span<const std::byte> record)
+{
+    Require(record.size() <= (std::numeric_limits<std::uint32_t>::max)(),
+        "descriptor bundle record exceeds uint32 length");
+    const auto newSize = pbprotocol::CheckedAddUnsigned(bundle.size(), std::size_t{4});
+    RequireResult(newSize, "descriptor bundle length prefix overflow");
+    const auto finalSize = pbprotocol::CheckedAddUnsigned(newSize.Value(), record.size());
+    RequireResult(finalSize, "descriptor bundle record overflow");
+    const std::size_t oldSize = bundle.size();
+    bundle.resize(finalSize.Value());
+    pbprotocol::ByteWriter writer(std::span(bundle).subspan(oldSize));
+    RequireResult(writer.WriteUint32(static_cast<std::uint32_t>(record.size())),
+        "descriptor bundle length serialization failed");
+    RequireResult(writer.WriteBytes(record), "descriptor bundle record serialization failed");
+}
+
+[[nodiscard]] std::vector<std::byte> BuildDescriptorBundle(const TransferDescription& description)
+{
+    std::vector<std::byte> bundle;
+    bundle.reserve(description.sessionControl.size() + description.manifestControl.size() +
+        description.segments.size() * 180ULL + 32ULL);
+    static constexpr std::array<std::byte, 4> magic{
+        std::byte{'P'}, std::byte{'B'}, std::byte{'D'}, std::byte{'B'}};
+    bundle.insert(bundle.end(), magic.begin(), magic.end());
+    const std::size_t headerOffset = bundle.size();
+    bundle.resize(bundle.size() + 12);
+    pbprotocol::ByteWriter headerWriter(std::span(bundle).subspan(headerOffset));
+    RequireResult(headerWriter.WriteUint16(1), "descriptor bundle version serialization failed");
+    RequireResult(headerWriter.WriteUint16(0), "descriptor bundle reserved serialization failed");
+    RequireResult(headerWriter.WriteUint64(description.segments.size()),
+        "descriptor bundle SegmentCount serialization failed");
+    AppendDescriptorBundleRecord(bundle, description.sessionControl);
+    AppendDescriptorBundleRecord(bundle, description.manifestControl);
+    for (const TransferDescription::Segment& segment : description.segments)
+    {
+        AppendDescriptorBundleRecord(bundle, segment.control);
+    }
+    return bundle;
+}
+
+void SetTransferSessionId(TransferDescription& description, const pbprotocol::SessionId& sessionId)
+{
+    description.session.sessionId = sessionId;
+    description.manifest.sessionId = sessionId;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(sessionId);
+    const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    for (TransferDescription::Segment& segment : description.segments)
+    {
+        segment.descriptor.sessionTag = sessionTag;
+        const auto segmentSize = pbprotocol::GetSerializedSize(segment.descriptor);
+        RequireResult(segmentSize, "retagged SegmentDescriptor size calculation failed");
+        std::vector<std::byte> payload(segmentSize.Value());
+        RequireResult(pbprotocol::SerializeSegmentDescriptor(segment.descriptor, description.session, policy, payload),
+            "retagged SegmentDescriptor serialization failed");
+        segment.control = WrapControlRecord(pbprotocol::ControlRecordType::SegmentDescriptor,
+            3 + segment.descriptor.segmentOrdinal, sessionTag, payload);
+    }
+    FinalizeTransferControls(description);
+}
+
+[[nodiscard]] std::uint64_t CalculateSegmentCount(const std::uint64_t fileBytes)
+{
+    if (fileBytes == 0)
+    {
+        return 0;
+    }
+    const auto roundedBytes = pbprotocol::CheckedAddUint64(fileBytes,
+        pbprotocol::kDefaultSourceSegmentTargetBytes - 1ULL);
+    RequireResult(roundedBytes, "SegmentCount 计算溢出");
+    return roundedBytes.Value() / pbprotocol::kDefaultSourceSegmentTargetBytes;
+}
+
+[[nodiscard]] pbprotocol::SessionDescriptor MakeSessionDescriptor(const pbprotocol::SessionId& sessionId,
+    const std::uint64_t fileBytes, const std::uint64_t segmentCount, const std::uint64_t visualProfileId,
+    std::string fileNameUtf8)
+{
+    pbprotocol::SessionDescriptor session;
+    session.protocolVersion = pbprotocol::GetProtocolVersion();
+    session.sessionId = sessionId;
+    session.originalFileSize = fileBytes;
+    session.segmentCount = segmentCount;
+    session.digestAlgorithm = pbprotocol::DigestAlgorithm::Blake3_256;
+    session.sessionVisualProfileId = visualProfileId;
+    session.sourceSegmentTargetBytes = pbprotocol::kDefaultSourceSegmentTargetBytes;
+    session.compressionPolicy = pbprotocol::CompressionPolicy::AutomaticZstandardLevel3RawFallback;
+    session.fileNameUtf8 = std::move(fileNameUtf8);
+    const auto fileNameStatus = pbprotocol::ValidateFileNameUtf8(session.fileNameUtf8);
+    RequireResult(fileNameStatus, "源文件名不是正式 Descriptor 允许的 UTF-8 basename");
+    return session;
+}
+
+[[nodiscard]] TransferDescription DescribeSource(const std::span<const std::byte> rawBytes,
+    const bool compressionEnabled, const int compressionLevel, const std::uint64_t visualProfileId)
+{
+    const auto sessionId = pbprotocol::GenerateRandomSessionId();
+    RequireResult(sessionId, "OS CSPRNG SessionId generation failed");
+    TransferDescription description;
+    const std::uint64_t segmentCount = CalculateSegmentCount(rawBytes.size());
+    description.session = MakeSessionDescriptor(sessionId.Value(), rawBytes.size(), segmentCount,
+        visualProfileId, "payload.bin");
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
+    for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < segmentCount; segmentOrdinal++)
+    {
+        const std::uint64_t rawOffset = segmentOrdinal * pbprotocol::kDefaultSourceSegmentTargetBytes;
+        const std::uint64_t remainingBytes = rawBytes.size() - rawOffset;
+        const std::size_t rawSize = static_cast<std::size_t>((std::min)(remainingBytes,
+            static_cast<std::uint64_t>(pbprotocol::kDefaultSourceSegmentTargetBytes)));
+        description.segments.push_back(PrepareSegmentDescription(description.session, sessionTag, segmentOrdinal,
+            rawOffset, rawBytes.subspan(static_cast<std::size_t>(rawOffset), rawSize), compressionEnabled, compressionLevel));
+    }
+    description.manifest = {description.session.sessionId, rawBytes.size(), segmentCount,
+        pbprotocol::WholeFileDigest{pbprotocol::ComputeBlake3Digest(rawBytes)},
+        pbprotocol::DigestAlgorithm::Blake3_256};
+    FinalizeTransferControls(description);
     return description;
+}
+
+[[nodiscard]] TransferDescription DescribeSource(SourceFile& source, const bool compressionEnabled,
+    const int compressionLevel, const std::uint64_t visualProfileId, const pbprotocol::SessionId& sessionId,
+    const std::atomic<bool>& stopRequested)
+{
+    const std::filesystem::path sourcePath(source.path);
+    const std::string fileNameUtf8 = Utf8FromWide(sourcePath.filename().wstring());
+    const std::uint64_t segmentCount = CalculateSegmentCount(source.fileBytes);
+    const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    Require(segmentCount <= policy.maxSegmentCount, "源文件 SegmentCount 超过 ReceiverResourcePolicy");
+    TransferDescription description;
+    description.session = MakeSessionDescriptor(sessionId, source.fileBytes, segmentCount,
+        visualProfileId, fileNameUtf8);
+    description.segments.reserve(static_cast<std::size_t>(segmentCount));
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
+    pbprotocol::Blake3Hasher wholeFileHasher;
+    for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < segmentCount; segmentOrdinal++)
+    {
+        Require(!stopRequested, "Stopped during source preparation");
+        const std::uint64_t rawOffset = segmentOrdinal * pbprotocol::kDefaultSourceSegmentTargetBytes;
+        const std::uint64_t rawSize = (std::min)(source.fileBytes - rawOffset,
+            static_cast<std::uint64_t>(pbprotocol::kDefaultSourceSegmentTargetBytes));
+        const std::vector<std::byte> rawBytes = ReadSourceRange(source, rawOffset, rawSize);
+        wholeFileHasher.Update(rawBytes);
+        TransferDescription::Segment segment = PrepareSegmentDescription(description.session, sessionTag,
+            segmentOrdinal, rawOffset, rawBytes, compressionEnabled, compressionLevel);
+        std::vector<std::byte>().swap(segment.inMemoryEncodedBytes);
+        description.segments.push_back(std::move(segment));
+    }
+    Require(IsSourceStable(source), "源文件在完整预扫描期间发生变化");
+    description.manifest = {description.session.sessionId, source.fileBytes, segmentCount,
+        pbprotocol::WholeFileDigest{wholeFileHasher.Finalize()}, pbprotocol::DigestAlgorithm::Blake3_256};
+    FinalizeTransferControls(description);
+    return description;
+}
+
+[[nodiscard]] std::vector<std::byte> LoadEncodedSegment(SourceFile& source,
+    const TransferDescription::Segment& segment, const bool compressionEnabled, const int compressionLevel)
+{
+    const pbprotocol::SegmentDescriptor& descriptor = segment.descriptor;
+    Require(IsSourceStable(source), "源文件身份在 Segment 重建前发生变化");
+    const std::vector<std::byte> rawBytes = ReadSourceRange(source, descriptor.rawOffset, descriptor.rawSize);
+    Require(pbprotocol::ComputeBlake3Digest(rawBytes) == descriptor.rawDigest.bytes,
+        "重新读取的 Segment RawDigest 与预扫描结果不一致");
+    auto prepared = PrepareEncodedSegment(rawBytes, compressionEnabled, compressionLevel);
+    RequireResult(prepared, "广播阶段 Segment 重新压缩失败");
+    pbcompression::EncodedSegment encoded = std::move(prepared).Value();
+    Require(encoded.codec == descriptor.compressionCodec && encoded.bytes.size() == descriptor.encodedSize &&
+        pbprotocol::ComputeBlake3Digest(encoded.bytes) == descriptor.encodedDigest.bytes,
+        "广播阶段 Segment 编码结果与预扫描冻结描述不一致");
+    Require(IsSourceStable(source), "源文件身份在 Segment 重建期间发生变化");
+    return std::move(encoded.bytes);
 }
 
 enum class FrameKind : std::uint8_t
@@ -847,50 +1051,35 @@ enum class FrameKind : std::uint8_t
 class SenderFrameBuilder
 {
 public:
-    SenderFrameBuilder(ProfileBinding profile, const TransferDescription& description, const std::uint32_t controlRepetitions)
+    using SegmentLoader = std::function<std::vector<std::byte>(std::uint64_t)>;
+    using RepairIdStartProvider = std::function<std::uint32_t(std::uint64_t, std::uint32_t)>;
+    using RepairLeaseCallback = std::function<void(std::uint64_t, std::uint64_t)>;
+
+    SenderFrameBuilder(ProfileBinding profile, const TransferDescription& description,
+        const std::uint32_t controlRepetitions, SegmentLoader segmentLoader = {},
+        RepairIdStartProvider repairIdStartProvider = {}, RepairLeaseCallback repairLeaseCallback = {},
+        const std::uint64_t initialCarouselPass = 0, const std::uint64_t initialSegmentOrdinal = 0)
         : profile_(profile), description_(description), data_(profile.dataBytes),
-          pixels_(pbmodulation::kLocalDesktopFrameBgraBytes), controlRepetitions_(controlRepetitions)
+          pixels_(pbmodulation::kLocalDesktopFrameBgraBytes), segmentLoader_(std::move(segmentLoader)),
+          repairIdStartProvider_(std::move(repairIdStartProvider)), repairLeaseCallback_(std::move(repairLeaseCallback)),
+          nextRepairIds_(description.segments.size(), 0), currentSegmentOrdinal_(initialSegmentOrdinal),
+          carouselPass_(initialCarouselPass), controlRepetitions_(controlRepetitions)
     {
-        if (description_.segment.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
+        Require(profile_.codewords != 0 && controlRepetitions_ != 0,
+            "Profile or Control repetition count is empty");
+        Require(description_.segments.empty() ? currentSegmentOrdinal_ == 0 :
+            currentSegmentOrdinal_ < description_.segments.size(), "initial Carousel Segment ordinal is out of bounds");
+        if (!description_.segments.empty())
         {
-            auto encoder = pbouterfec::WirehairV2Encoder::Recreate(description_.encoded.bytes,
-                description_.segment);
-            RequireResult(encoder, "Wirehair V2 sender recreation failed");
-            wirehair_ = std::make_unique<pbouterfec::WirehairV2Encoder>(std::move(encoder).Value());
-            blockCount_ = wirehair_->GetBlockCount();
-            const std::uint64_t repairAllowance = (std::max)(4096ULL,
-                static_cast<std::uint64_t>(blockCount_) / 2ULL);
-            const auto blocksPerCycle = pbprotocol::CheckedAddUint64(blockCount_, repairAllowance);
-            RequireResult(blocksPerCycle, "Wirehair carousel block count overflow");
-            targetBlocksPerCycle_ = blocksPerCycle.Value();
+            currentEncodedBytes_ = LoadSegmentBytes(currentSegmentOrdinal_);
+            PreloadNextSegment();
         }
-        else
-        {
-            auto encoder = pbouterfec::DirectRepeatEncoder::Recreate(description_.encoded.bytes,
-                description_.segment);
-            RequireResult(encoder, "DirectRepeat sender recreation failed");
-            directRepeat_ = std::make_unique<pbouterfec::DirectRepeatEncoder>(std::move(encoder).Value());
-            Require(directRepeat_->GetBlockCount() > 0 &&
-                directRepeat_->GetBlockCount() <= (std::numeric_limits<std::uint32_t>::max)(),
-                "DirectRepeat block count is invalid");
-            blockCount_ = static_cast<std::uint32_t>(directRepeat_->GetBlockCount());
-            targetBlocksPerCycle_ = blockCount_;
-        }
-        Require(profile_.codewords != 0 && targetBlocksPerCycle_ != 0,
-            "Profile or outer FEC produced an empty carousel");
-        const auto rounded = pbprotocol::CheckedAddUint64(targetBlocksPerCycle_, profile_.codewords - 1U);
-        RequireResult(rounded, "Carousel frame count overflow");
-        const std::uint64_t dataFrames = rounded.Value() / profile_.codewords;
-        const std::uint32_t controlFramesPerCycle = 3 * controlRepetitions_;
-        Require(dataFrames <= (std::numeric_limits<std::uint32_t>::max)() - controlFramesPerCycle,
-            "Carousel frame count exceeds the bounded UI model");
-        cycleFrameCount_ = controlFramesPerCycle + static_cast<std::uint32_t>(dataFrames);
-        Require(carousel_.Reset(cycleFrameCount_), "Carousel counter initialization failed");
+        InitializeCurrentSegment();
     }
 
     [[nodiscard]] FrameKind GetCurrentKind() const noexcept
     {
-        const std::uint32_t position = carousel_.GetSnapshot().cyclePosition;
+        const std::uint32_t position = cyclePosition_;
         if (position < controlRepetitions_)
         {
             return FrameKind::SessionControl;
@@ -898,6 +1087,10 @@ public:
         if (position < 2U * controlRepetitions_)
         {
             return FrameKind::ManifestControl;
+        }
+        if (description_.segments.empty())
+        {
+            return FrameKind::SessionControl;
         }
         if (position < 3U * controlRepetitions_)
         {
@@ -914,7 +1107,7 @@ public:
         {
             const std::vector<std::byte>& control = kind == FrameKind::SessionControl ?
                 description_.sessionControl : kind == FrameKind::ManifestControl ?
-                description_.manifestControl : description_.segmentControl;
+                description_.manifestControl : description_.segments[currentSegmentOrdinal_].control;
             if (profile_.profile == VisualProfile::RemoteVisualLowFps)
             {
                 Require(control.size() <= pbmodulation::kReferenceControlWindowBytes,
@@ -969,35 +1162,51 @@ public:
 
     void Advance()
     {
-        if (GetCurrentKind() == FrameKind::Data)
+        const bool completedDataRound = !description_.segments.empty() &&
+            cyclePosition_ + 1U == cycleFrameCount_;
+        if (completedDataRound && wirehair_)
         {
-            if (wirehair_)
-            {
-                const std::uint64_t next = static_cast<std::uint64_t>(nextOuterBlockId_) + profile_.codewords;
-                Require(next <= (std::numeric_limits<std::uint32_t>::max)(),
-                    "Wirehair repair ID space exhausted; start a new Session");
-                nextOuterBlockId_ = static_cast<std::uint32_t>(next);
-            }
-            else
-            {
-                nextOuterBlockId_ = static_cast<std::uint32_t>(
-                    (static_cast<std::uint64_t>(nextOuterBlockId_) + profile_.codewords) % blockCount_);
-            }
+            const std::uint64_t repairIdsUsed = equationSlotsPerRound_ - blockCount_;
+            const auto nextRepairId = pbprotocol::CheckedAddUint64(nextRepairIds_[currentSegmentOrdinal_],
+                repairIdsUsed);
+            RequireResult(nextRepairId, "Wirehair repair ID high-water overflow");
+            Require(nextRepairId.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Wirehair repair ID space exhausted; start a new Session");
+            nextRepairIds_[currentSegmentOrdinal_] = static_cast<std::uint32_t>(nextRepairId.Value());
         }
-        Require(carousel_.Advance(), "Carousel counter overflow");
+        Require(cyclePosition_ < cycleFrameCount_, "Carousel position is outside its current cycle");
+        cyclePosition_++;
+        if (cyclePosition_ == cycleFrameCount_)
+        {
+            cyclePosition_ = 0;
+            if (description_.segments.empty())
+            {
+                Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
+                carouselPass_++;
+                return;
+            }
+            currentSegmentOrdinal_++;
+            if (currentSegmentOrdinal_ == description_.segments.size())
+            {
+                currentSegmentOrdinal_ = 0;
+                Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
+                carouselPass_++;
+            }
+            ActivateNextSegment();
+        }
     }
 
     [[nodiscard]] CarouselSnapshot GetCarouselSnapshot() const noexcept
     {
-        return carousel_.GetSnapshot();
+        return {carouselPass_, cyclePosition_, cycleFrameCount_};
     }
     [[nodiscard]] const std::vector<std::byte>& GetBuiltPixels() const noexcept
     {
         return pixels_;
     }
-    [[nodiscard]] std::uint32_t GetCurrentOuterBlockId() const noexcept
+    [[nodiscard]] std::uint32_t GetCurrentOuterBlockId() const
     {
-        return nextOuterBlockId_;
+        return GetCurrentKind() == FrameKind::Data ? CalculateOuterBlockId(0) : 0;
     }
     [[nodiscard]] std::uint32_t GetBlockCount() const noexcept
     {
@@ -1007,6 +1216,10 @@ public:
     {
         return generatedPayloadBytesInFrame_;
     }
+    [[nodiscard]] std::uint64_t GetCurrentSegmentOrdinal() const noexcept
+    {
+        return currentSegmentOrdinal_;
+    }
 
 private:
     [[nodiscard]] std::array<std::byte, pbprotocol::kBootstrapRecordBytes> MakeBootstrap(
@@ -1014,7 +1227,7 @@ private:
     {
         const pbprotocol::BootstrapRecord record{pbprotocol::kBootstrapVersion,
             pbprotocol::GetProtocolVersion(), profile_.layoutVersion, profile_.visualProfileId,
-            description_.segment.sessionTag, frameSequence, 0, 0};
+            pbprotocol::DeriveSessionTag(description_.session.sessionId), frameSequence, 0, 0};
         std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bytes{};
         RequireResult(pbprotocol::SerializeBootstrapRecord(record, bytes), "Bootstrap serialization failed");
         return bytes;
@@ -1026,11 +1239,7 @@ private:
         generatedPayloadBytesInFrame_ = 0;
         for (std::uint32_t slot = 0; slot < profile_.codewords; slot++)
         {
-            const std::uint64_t candidate = static_cast<std::uint64_t>(nextOuterBlockId_) + slot;
-            Require(!wirehair_ || candidate <= (std::numeric_limits<std::uint32_t>::max)(),
-                "Wirehair repair ID space exhausted inside a visual frame");
-            const std::uint32_t blockId = wirehair_ ? static_cast<std::uint32_t>(candidate) :
-                static_cast<std::uint32_t>(candidate % blockCount_);
+            const std::uint32_t blockId = CalculateOuterBlockId(slot);
             std::fill(outerPayload_.begin(), outerPayload_.end(), std::byte{0});
             const auto encoded = wirehair_ ? wirehair_->EncodeBlock(blockId, outerPayload_) :
                 directRepeat_->EncodeBlock(blockId, outerPayload_);
@@ -1039,7 +1248,9 @@ private:
                 encoded.Value() <= (std::numeric_limits<std::uint16_t>::max)(),
                 "Outer FEC produced an invalid payload length");
             const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData,
-                pbprotocol::kTransportProtocolMinor, 0, description_.segment.sessionTag, 0, blockId,
+                pbprotocol::kTransportProtocolMinor, 0,
+                description_.segments[currentSegmentOrdinal_].descriptor.sessionTag,
+                currentSegmentOrdinal_, blockId,
                 static_cast<std::uint16_t>(encoded.Value())};
             const std::size_t serializedBytes = pbprotocol::GetTransportSerializedSize(header);
             Require(serializedBytes <= transport_.size(), "Transport block exceeds the robust information block");
@@ -1055,6 +1266,143 @@ private:
         }
     }
 
+    [[nodiscard]] std::vector<std::byte> LoadSegmentBytes(const std::uint64_t segmentOrdinal) const
+    {
+        Require(segmentOrdinal < description_.segments.size(), "Segment loader ordinal is out of bounds");
+        const TransferDescription::Segment& segment = description_.segments[static_cast<std::size_t>(segmentOrdinal)];
+        std::vector<std::byte> bytes;
+        if (!segment.inMemoryEncodedBytes.empty())
+        {
+            bytes = segment.inMemoryEncodedBytes;
+        }
+        else
+        {
+            Require(static_cast<bool>(segmentLoader_), "Production Segment loader is unavailable");
+            bytes = segmentLoader_(segmentOrdinal);
+        }
+        Require(bytes.size() == segment.descriptor.encodedSize &&
+            pbprotocol::ComputeBlake3Digest(bytes) == segment.descriptor.encodedDigest.bytes,
+            "Segment loader bytes disagree with the frozen descriptor");
+        return bytes;
+    }
+
+    void PreloadNextSegment()
+    {
+        nextEncodedBytes_.clear();
+        nextEncodedSegmentOrdinal_.reset();
+        if (description_.segments.size() <= 1)
+        {
+            return;
+        }
+        const std::uint64_t nextOrdinal = (currentSegmentOrdinal_ + 1ULL) % description_.segments.size();
+        nextEncodedBytes_ = LoadSegmentBytes(nextOrdinal);
+        nextEncodedSegmentOrdinal_ = nextOrdinal;
+    }
+
+    void ActivateNextSegment()
+    {
+        if (nextEncodedSegmentOrdinal_ && *nextEncodedSegmentOrdinal_ == currentSegmentOrdinal_)
+        {
+            currentEncodedBytes_ = std::move(nextEncodedBytes_);
+        }
+        else
+        {
+            currentEncodedBytes_ = LoadSegmentBytes(currentSegmentOrdinal_);
+        }
+        PreloadNextSegment();
+        InitializeCurrentSegment();
+    }
+
+    void InitializeCurrentSegment()
+    {
+        wirehair_.reset();
+        directRepeat_.reset();
+        blockCount_ = 0;
+        equationSlotsPerRound_ = 0;
+        const std::uint32_t controlFrames = static_cast<std::uint32_t>(
+            (description_.segments.empty() ? 2U : 3U) * controlRepetitions_);
+        if (description_.segments.empty())
+        {
+            cycleFrameCount_ = controlFrames;
+            return;
+        }
+        const pbprotocol::SegmentDescriptor& descriptor =
+            description_.segments[currentSegmentOrdinal_].descriptor;
+        if (descriptor.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
+        {
+            auto encoder = pbouterfec::WirehairV2Encoder::Recreate(currentEncodedBytes_, descriptor);
+            RequireResult(encoder, "Wirehair V2 sender recreation failed");
+            wirehair_ = std::make_unique<pbouterfec::WirehairV2Encoder>(std::move(encoder).Value());
+            blockCount_ = wirehair_->GetBlockCount();
+            if (nextRepairIds_[currentSegmentOrdinal_] == 0)
+            {
+                nextRepairIds_[currentSegmentOrdinal_] = repairIdStartProvider_ ?
+                    repairIdStartProvider_(currentSegmentOrdinal_, blockCount_) : blockCount_;
+            }
+            Require(nextRepairIds_[currentSegmentOrdinal_] >= blockCount_,
+                "persisted Wirehair repair high-water precedes the systematic range");
+            const auto scaledRepairBlocks = pbprotocol::CheckedMultiplyUint64(blockCount_, 20);
+            RequireResult(scaledRepairBlocks, "Wirehair repair allowance overflow");
+            const std::uint64_t repairAllowance = (std::max)(16ULL,
+                (scaledRepairBlocks.Value() + 99ULL) / 100ULL);
+            const auto equationCount = pbprotocol::CheckedAddUint64(blockCount_, repairAllowance);
+            RequireResult(equationCount, "Wirehair carousel equation count overflow");
+            const auto roundedEquationCount = pbprotocol::CheckedAddUint64(equationCount.Value(),
+                profile_.codewords - 1U);
+            RequireResult(roundedEquationCount, "Wirehair carousel frame rounding overflow");
+            equationSlotsPerRound_ = roundedEquationCount.Value() / profile_.codewords * profile_.codewords;
+            const auto requiredRepairHighWater = pbprotocol::CheckedAddUint64(
+                nextRepairIds_[currentSegmentOrdinal_], equationSlotsPerRound_ - blockCount_);
+            RequireResult(requiredRepairHighWater, "Wirehair repair durable lease request overflow");
+            Require(requiredRepairHighWater.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Wirehair repair durable lease exceeds uint32");
+            if (repairLeaseCallback_)
+            {
+                repairLeaseCallback_(currentSegmentOrdinal_, requiredRepairHighWater.Value());
+            }
+        }
+        else
+        {
+            auto encoder = pbouterfec::DirectRepeatEncoder::Recreate(currentEncodedBytes_, descriptor);
+            RequireResult(encoder, "DirectRepeat sender recreation failed");
+            directRepeat_ = std::make_unique<pbouterfec::DirectRepeatEncoder>(std::move(encoder).Value());
+            Require(directRepeat_->GetBlockCount() > 0 &&
+                directRepeat_->GetBlockCount() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "DirectRepeat block count is invalid");
+            blockCount_ = static_cast<std::uint32_t>(directRepeat_->GetBlockCount());
+            const auto roundedEquationCount = pbprotocol::CheckedAddUint64(blockCount_, profile_.codewords - 1U);
+            RequireResult(roundedEquationCount, "DirectRepeat carousel frame rounding overflow");
+            equationSlotsPerRound_ = roundedEquationCount.Value() / profile_.codewords * profile_.codewords;
+        }
+        const std::uint64_t dataFrameCount = equationSlotsPerRound_ / profile_.codewords;
+        Require(dataFrameCount <= (std::numeric_limits<std::uint32_t>::max)() - controlFrames,
+            "Carousel frame count exceeds the bounded UI model");
+        cycleFrameCount_ = controlFrames + static_cast<std::uint32_t>(dataFrameCount);
+    }
+
+    [[nodiscard]] std::uint32_t CalculateOuterBlockId(const std::uint32_t slot) const
+    {
+        if (description_.segments.empty() || GetCurrentKind() != FrameKind::Data || blockCount_ == 0)
+        {
+            return 0;
+        }
+        const std::uint64_t dataFrameIndex = cyclePosition_ - 3ULL * controlRepetitions_;
+        const std::uint64_t equationIndex = dataFrameIndex * profile_.codewords + slot;
+        if (!wirehair_)
+        {
+            return static_cast<std::uint32_t>(equationIndex % blockCount_);
+        }
+        if (equationIndex < blockCount_)
+        {
+            return static_cast<std::uint32_t>(equationIndex);
+        }
+        const std::uint64_t repairId = static_cast<std::uint64_t>(nextRepairIds_[currentSegmentOrdinal_]) +
+            equationIndex - blockCount_;
+        Require(repairId <= (std::numeric_limits<std::uint32_t>::max)(),
+            "Wirehair repair ID space exhausted inside a visual frame");
+        return static_cast<std::uint32_t>(repairId);
+    }
+
     ProfileBinding profile_;
     const TransferDescription& description_;
     std::unique_ptr<pbouterfec::WirehairV2Encoder> wirehair_;
@@ -1066,11 +1414,19 @@ private:
     std::array<std::byte, outerBlockBytes> outerPayload_{};
     std::array<std::byte, informationBytes> transport_{};
     std::array<std::byte, informationBytes> information_{};
-    CarouselCounter carousel_;
+    SegmentLoader segmentLoader_;
+    RepairIdStartProvider repairIdStartProvider_;
+    RepairLeaseCallback repairLeaseCallback_;
+    std::vector<std::uint32_t> nextRepairIds_;
+    std::vector<std::byte> currentEncodedBytes_;
+    std::vector<std::byte> nextEncodedBytes_;
+    std::optional<std::uint64_t> nextEncodedSegmentOrdinal_;
+    std::uint64_t currentSegmentOrdinal_ = 0;
+    std::uint64_t carouselPass_ = 0;
     std::uint32_t blockCount_ = 0;
-    std::uint64_t targetBlocksPerCycle_ = 0;
+    std::uint64_t equationSlotsPerRound_ = 0;
     std::uint32_t cycleFrameCount_ = 0;
-    std::uint32_t nextOuterBlockId_ = 0;
+    std::uint32_t cyclePosition_ = 0;
     std::uint64_t generatedPayloadBytesInFrame_ = 0;
     const std::uint32_t controlRepetitions_;
 };
@@ -2041,6 +2397,14 @@ public:
     {
     }
 
+    ~ReceiverPipeline()
+    {
+        if (resumeStore_ && !published_)
+        {
+            static_cast<void>(resumeStore_->Checkpoint());
+        }
+    }
+
     [[nodiscard]] ReceiverProcessResult Process(const pbdemodd3d11::CaptureDemodulatorResult& result)
     {
         RecordCaptureTelemetry(result);
@@ -2184,13 +2548,6 @@ public:
     void CaptureEpochReset(const std::uint64_t monotonicMilliseconds)
     {
         telemetry_.EndCaptureEpoch();
-        receiverSessionBound_ = false;
-        storage_.reset();
-        session_.reset();
-        segment_.reset();
-        manifest_.reset();
-        stored_ = false;
-        storedEncodedBytes_ = 0;
         acceptedTransportBlocks_ = 0;
         identityFailures_ = 0;
         falseAcceptedCodewords_ = 0;
@@ -2202,7 +2559,6 @@ public:
         outerResourceRejections_ = 0;
         outerConflictRejections_ = 0;
         remoteRefinement_.ResetEpoch();
-        progress_.ResetForCaptureEpoch(monotonicMilliseconds);
         channelStalls_.ResetDomain(monotonicMilliseconds, lastCaptureObservationsForStall_,
             visualRate_.GetSnapshot().uniqueFrames);
         snapshot_.Update([this](DecoderSnapshot& value)
@@ -2214,27 +2570,12 @@ public:
             pbprotocol::SaturatingIncrementUnsigned(value.captureEpochResets);
             if (value.state != DecoderState::Stopping)
             {
-                value.state = DecoderState::WaitingForBootstrap;
+                value.state = session_ ? DecoderState::Receiving : DecoderState::WaitingForBootstrap;
             }
-            value.descriptorKnown = false;
-            value.originalFileBytes = 0;
-            value.verifiedRawBytes = 0;
-            value.remainingRawBytes = 0;
-            value.recoveryProgress.reset();
             value.instantVerifiedRawGoodputBytesPerSecond = 0;
             value.smoothedVerifiedRawGoodputBytesPerSecond = 0;
-            value.averageVerifiedRawGoodputBytesPerSecond = 0;
-            value.verifiedEncodedBytes = 0;
             value.verifiedEncodedGoodputBitsPerSecond.reset();
             value.etaMilliseconds.reset();
-            value.sessionIdHex.clear();
-            value.sessionTag = 0;
-            value.segmentCount = 0;
-            value.currentSegmentOrdinal = 0;
-            value.outputPath.clear();
-            value.wholeFileDigestHex.clear();
-            value.wholeFileDigestVerified = false;
-            value.finalPublishSucceeded = false;
             value.telemetryCapturedFrames = 0;
             value.telemetryDroppedFrames = 0;
             value.fingerprintedFrames = 0;
@@ -2479,7 +2820,7 @@ private:
             throw RuntimeFailure("ReceiverIngress rejected ControlRecord: " +
                 DescribeReceiverError(admission.Error()));
         }
-        HandleControlAdmission(admission.Value(), record, timestamp100ns);
+        HandleControlAdmission(admission.Value(), record, timestamp100ns, bytes);
         return true;
     }
 
@@ -2505,7 +2846,8 @@ private:
     }
 
     void HandleControlAdmission(pbreceiver::ReceiverControlAdmission& admission,
-        const std::optional<pbprotocol::ControlRecordView> record, const std::int64_t timestamp100ns)
+        const std::optional<pbprotocol::ControlRecordView> record, const std::int64_t timestamp100ns,
+        const std::span<const std::byte> rawControlRecord)
     {
         if (record)
         {
@@ -2521,22 +2863,32 @@ private:
                 if (!session_)
                 {
                     session_ = parsed.Value();
-                    Require(session_->segmentCount == 1 &&
-                        session_->originalFileSize >= minimumInstantFileBytes &&
-                        session_->originalFileSize <= maximumInstantFileBytes,
-                        "received Session is outside the current one-Segment 1 byte..8 MiB product boundary");
+                    const ProfileBinding expectedProfile = GetProfileBinding(visualProfile_);
+                    Require(session_->sessionVisualProfileId == expectedProfile.visualProfileId,
+                        "SessionDescriptor VisualProfileId disagrees with the active pixel profile");
+                    Require(session_->originalFileSize <= policy_.maxAcceptedFileBytes &&
+                        session_->segmentCount <= policy_.maxSegmentCount,
+                        "received Session exceeds the active ReceiverResourcePolicy");
                     Require(progress_.BindDescriptor(session_->originalFileSize, ElapsedMilliseconds(started_)),
                         "Decoder progress descriptor binding failed");
+                    segments_.resize(static_cast<std::size_t>(session_->segmentCount));
+                    storedSegments_.resize(static_cast<std::size_t>(session_->segmentCount), false);
                     pbstorage::OutputFileConfig storageConfig;
                     storageConfig.outputDirectory = outputDirectory_;
                     storageConfig.sessionTag = record->sessionTag;
                     storageConfig.fileBytes = session_->originalFileSize;
-                    storageConfig.maximumFileBytes = maximumInstantFileBytes;
-                    const auto storageStatus = pbstorage::OutputFile::Create(storageConfig, storage_);
+                    storageConfig.maximumFileBytes = policy_.maxAcceptedFileBytes;
+                    storageConfig.originalFileNameUtf8 = session_->fileNameUtf8;
+                    const auto storageStatus = pbstorage::OutputFile::CreateOrResume(storageConfig, storage_);
                     Require(static_cast<bool>(storageStatus), "PBStorage output reservation failed: " +
                         DescribeStorageStatus(storageStatus));
+                    Require(!rawControlRecord.empty(), "SessionDescriptor has no canonical ControlRecord bytes");
+                    DecoderResumeLoadedState loadedResume;
+                    const DecoderResumeStoreStatus resumeStatus = DecoderResumeStore::Open(outputDirectory_,
+                        record->sessionTag, rawControlRecord, policy_, resumeStore_, loadedResume);
+                    Require(static_cast<bool>(resumeStatus), "Decoder resume journal open failed: " + resumeStatus.message);
                     const auto storageSnapshot = storage_->GetSnapshot();
-                    snapshot_.Update([this, &storageSnapshot](DecoderSnapshot& value)
+                    snapshot_.Update([this, &storageSnapshot, &loadedResume](DecoderSnapshot& value)
                     {
                         if (value.runGeneration != runGeneration_)
                         {
@@ -2546,13 +2898,24 @@ private:
                         value.descriptorKnown = true;
                         value.originalFileBytes = session_->originalFileSize;
                         value.remainingRawBytes = session_->originalFileSize;
-                        value.recoveryProgress = 0.0;
+                        value.recoveryProgress = session_->originalFileSize == 0 ? 1.0 : 0.0;
                         value.sessionIdHex = SessionIdHex(session_->sessionId);
                         value.sessionTag = pbprotocol::DeriveSessionTag(session_->sessionId).value;
                         value.segmentCount = session_->segmentCount;
                         value.outputPath = Utf8FromWide(storageSnapshot.finalPath);
-                        value.statusMessage = "Session Descriptor accepted; receiving Control";
+                        value.resumeStateLoaded = loadedResume.resumed;
+                        value.resumeStateTruncatedTail = loadedResume.hadTruncatedTail;
+                        value.resumeStateGeneration = loadedResume.generation;
+                        value.resumeStateBytes = resumeStore_->GetFileBytes();
+                        value.resumeStatePath = Utf8FromWide(resumeStore_->GetPath().wstring());
+                        value.statusMessage = loadedResume.resumed ?
+                            "Session Descriptor accepted; verifying resumable state" :
+                            "Session Descriptor accepted; receiving Control";
                     });
+                    if (loadedResume.resumed)
+                    {
+                        RestoreResumeState(loadedResume, timestamp100ns);
+                    }
                 }
                 else
                 {
@@ -2568,25 +2931,39 @@ private:
                 Require(admission.controlAdmission.boundSegmentDescriptor &&
                     admission.controlAdmission.boundSegmentDescriptor->GetDescriptor() == parsed.Value(),
                     "Receiver binding differs from independently parsed SegmentDescriptor");
-                if (!segment_)
+                Require(parsed.Value().segmentOrdinal < segments_.size(),
+                    "SegmentDescriptor ordinal is outside Session SegmentCount");
+                std::optional<pbprotocol::SegmentDescriptor>& existing =
+                    segments_[static_cast<std::size_t>(parsed.Value().segmentOrdinal)];
+                if (!existing)
                 {
-                    segment_ = parsed.Value();
-                    snapshot_.Update([this](DecoderSnapshot& value)
+                    existing = parsed.Value();
+                    if (!restoringResume_)
+                    {
+                        Require(resumeStore_ && !rawControlRecord.empty(),
+                            "SegmentDescriptor has no active resume journal or canonical bytes");
+                        const DecoderResumeStoreStatus resumeStatus =
+                            resumeStore_->RecordSegmentControl(rawControlRecord);
+                        Require(static_cast<bool>(resumeStatus),
+                            "SegmentDescriptor resume checkpoint failed: " + resumeStatus.message);
+                    }
+                    const pbprotocol::SegmentDescriptor snapshotDescriptor = *existing;
+                    snapshot_.Update([this, &snapshotDescriptor](DecoderSnapshot& value)
                     {
                         if (value.runGeneration != runGeneration_)
                         {
                             return;
                         }
                         value.state = DecoderState::Receiving;
-                        value.currentSegmentOrdinal = segment_->segmentOrdinal;
-                        value.compressionCodec = segment_->compressionCodec;
-                        value.outerFecMode = segment_->outerFecMode;
+                        value.currentSegmentOrdinal = snapshotDescriptor.segmentOrdinal;
+                        value.compressionCodec = snapshotDescriptor.compressionCodec;
+                        value.outerFecMode = snapshotDescriptor.outerFecMode;
                         value.statusMessage = "Segment Descriptor accepted; receiving verified Transport blocks";
                     });
                 }
                 else
                 {
-                    Require(*segment_ == parsed.Value(), "conflicting repeated SegmentDescriptor");
+                    Require(*existing == parsed.Value(), "conflicting repeated SegmentDescriptor");
                 }
             }
             else if (record->recordType == pbprotocol::ControlRecordType::FinalManifest)
@@ -2597,6 +2974,15 @@ private:
                 if (!manifest_)
                 {
                     manifest_ = parsed.Value();
+                    if (!restoringResume_)
+                    {
+                        Require(resumeStore_ && !rawControlRecord.empty(),
+                            "FinalManifest has no active resume journal or canonical bytes");
+                        const DecoderResumeStoreStatus resumeStatus =
+                            resumeStore_->RecordManifestControl(rawControlRecord);
+                        Require(static_cast<bool>(resumeStatus),
+                            "FinalManifest resume checkpoint failed: " + resumeStatus.message);
+                    }
                 }
                 else
                 {
@@ -2693,6 +3079,20 @@ private:
             case pbreceiver::ReceiverOuterSymbolAdmission::Unique:
                 pbprotocol::SaturatingIncrementUnsigned(outerUniqueSymbols_);
                 processing.uniqueAdmission = true;
+                // Orphan Transport can be accepted into the Receiver's bounded
+                // pre-descriptor cache. It is intentionally not durable until
+                // a formal SessionDescriptor has bound the journal identity.
+                if (resumeStore_ && session_)
+                {
+                    DecoderResumeAcceptedBlock cachedBlock;
+                    cachedBlock.segmentOrdinal = transport.header.segmentOrdinal;
+                    cachedBlock.outerBlockId = transport.header.outerBlockId;
+                    cachedBlock.declaredPayloadBytes = transport.header.payloadBytes;
+                    cachedBlock.paddedPayload.assign(paddedPayload_.begin(), paddedPayload_.end());
+                    const DecoderResumeStoreStatus resumeStatus = resumeStore_->RecordAcceptedBlock(cachedBlock);
+                    Require(static_cast<bool>(resumeStatus),
+                        "accepted Outer block resume append failed: " + resumeStatus.message);
+                }
                 break;
             case pbreceiver::ReceiverOuterSymbolAdmission::IdenticalDuplicate:
                 pbprotocol::SaturatingIncrementUnsigned(outerIdenticalDuplicateSymbols_);
@@ -2702,6 +3102,9 @@ private:
                 break;
             case pbreceiver::ReceiverOuterSymbolAdmission::AlreadyCompleted:
                 pbprotocol::SaturatingIncrementUnsigned(outerAlreadyCompletedSymbols_);
+                break;
+            case pbreceiver::ReceiverOuterSymbolAdmission::DeferredResourceBusy:
+                processing.carrierAccepted = false;
                 break;
             case pbreceiver::ReceiverOuterSymbolAdmission::NotApplicable:
                 throw RuntimeFailure("ReceiverIngress returned a successful Transport admission without Outer identity classification");
@@ -2715,6 +3118,20 @@ private:
                 StoreCompleted(std::move(*admission.Value().completedSegment),
                     result.metadata.timestamp.monotonic100ns);
             }
+        }
+        if (resumeStore_ && std::chrono::steady_clock::now() >= nextResumeCheckpoint_)
+        {
+            const DecoderResumeStoreStatus resumeStatus = resumeStore_->Checkpoint();
+            Require(static_cast<bool>(resumeStatus), "periodic Decoder resume checkpoint failed: " + resumeStatus.message);
+            nextResumeCheckpoint_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            snapshot_.Update([this](DecoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration_)
+                {
+                    value.resumeStateGeneration = resumeStore_->GetGeneration();
+                    value.resumeStateBytes = resumeStore_->GetFileBytes();
+                }
+            });
         }
         snapshot_.Update([this, &processing](DecoderSnapshot& value)
         {
@@ -2758,9 +3175,100 @@ private:
         });
     }
 
+    void RestoreResumeState(const DecoderResumeLoadedState& loadedResume, const std::int64_t timestamp100ns)
+    {
+        Require(resumeStore_ && storage_ && session_, "resume restoration started before Session/storage binding");
+        restoringResume_ = true;
+        try
+        {
+            for (const std::vector<std::byte>& controlBytes : loadedResume.segmentControlRecords)
+            {
+                const auto record = pbprotocol::ParseControlRecord(controlBytes);
+                RequireResult(record, "persisted SegmentDescriptor ControlRecord parse failed");
+                auto admission = receiver_.ReceiveControlRecord(controlBytes);
+                RequireResult(admission, "persisted SegmentDescriptor Receiver replay failed");
+                HandleControlAdmission(admission.Value(), record.Value(), timestamp100ns, controlBytes);
+            }
+            if (!loadedResume.manifestControlRecord.empty())
+            {
+                const auto record = pbprotocol::ParseControlRecord(loadedResume.manifestControlRecord);
+                RequireResult(record, "persisted FinalManifest ControlRecord parse failed");
+                auto admission = receiver_.ReceiveControlRecord(loadedResume.manifestControlRecord);
+                RequireResult(admission, "persisted FinalManifest Receiver replay failed");
+                HandleControlAdmission(admission.Value(), record.Value(), timestamp100ns,
+                    loadedResume.manifestControlRecord);
+            }
+            for (const pbprotocol::ResumeCompletedSegmentRecord& completedRecord : loadedResume.completedSegments)
+            {
+                Require(completedRecord.segmentOrdinal < segments_.size() &&
+                    segments_[static_cast<std::size_t>(completedRecord.segmentOrdinal)].has_value(),
+                    "persisted completed Segment has no restored descriptor");
+                const auto rawSize = pbprotocol::CheckedUint64ToSize(completedRecord.rawSize);
+                RequireResult(rawSize, "persisted completed Segment raw size is not addressable");
+                std::vector<std::byte> rawBytes(rawSize.Value());
+                const auto readStatus = storage_->ReadRange(completedRecord.rawOffset, rawBytes);
+                Require(static_cast<bool>(readStatus), "persisted .part Segment read failed: " +
+                    DescribeStorageStatus(readStatus));
+                auto verified = receiver_.VerifyResumedStoredSegment(completedRecord, std::move(rawBytes));
+                RequireResult(verified, "persisted .part Segment RawDigest verification failed");
+                const auto adoptStatus = storage_->AdoptVerifiedSegment(completedRecord.rawOffset,
+                    completedRecord.rawSize);
+                Require(static_cast<bool>(adoptStatus), "persisted .part Segment adoption failed: " +
+                    DescribeStorageStatus(adoptStatus));
+                auto committed = receiver_.CommitStoredSegment(std::move(verified).Value());
+                RequireResult(committed, "persisted Segment Receiver commit failed");
+                Require(committed.Value() == pbreceiver::ReceiverSegmentCommitDisposition::Committed,
+                    "persisted Segment was not a new Receiver commit");
+                const std::size_t segmentIndex = static_cast<std::size_t>(completedRecord.segmentOrdinal);
+                storedSegments_[segmentIndex] = true;
+                completedSegmentCount_++;
+                const auto rawTotal = pbprotocol::CheckedAddUint64(totalVerifiedRawBytes_, completedRecord.rawSize);
+                const auto encodedTotal = pbprotocol::CheckedAddUint64(storedEncodedBytes_,
+                    segments_[segmentIndex]->encodedSize);
+                RequireResult(rawTotal, "persisted verified raw-byte accounting overflow");
+                RequireResult(encodedTotal, "persisted verified encoded-byte accounting overflow");
+                totalVerifiedRawBytes_ = rawTotal.Value();
+                storedEncodedBytes_ = encodedTotal.Value();
+            }
+            Require(progress_.ObserveVerifiedRawBytes(totalVerifiedRawBytes_, ElapsedMilliseconds(started_)),
+                "persisted progress restoration failed");
+            ApplyProgress();
+            for (const DecoderResumeAcceptedBlock& cachedBlock : loadedResume.activeBlocks)
+            {
+                const pbreceiver::ReceivedTransportBlock block{pbprotocol::DeriveSessionTag(session_->sessionId),
+                    cachedBlock.segmentOrdinal, cachedBlock.outerBlockId, cachedBlock.declaredPayloadBytes,
+                    cachedBlock.paddedPayload};
+                auto admission = receiver_.ReceiveDataBlock(block);
+                RequireResult(admission, "persisted active Outer block replay failed");
+                Require(admission.Value().disposition != pbreceiver::ReceiverDataDisposition::DeferredResourceBusy,
+                    "persisted active Outer block exceeded the restored four-decoder budget");
+                if (admission.Value().completedSegment)
+                {
+                    StoreCompleted(std::move(*admission.Value().completedSegment), timestamp100ns);
+                }
+            }
+            restoringResume_ = false;
+        }
+        catch (...)
+        {
+            restoringResume_ = false;
+            throw;
+        }
+        snapshot_.Update([this](DecoderSnapshot& value)
+        {
+            if (value.runGeneration == runGeneration_)
+            {
+                value.resumeStateLoaded = true;
+                value.resumeStateGeneration = resumeStore_->GetGeneration();
+                value.resumeStateBytes = resumeStore_->GetFileBytes();
+                value.statusMessage = "Resume state verified; continuing pixel reception";
+            }
+        });
+        TryPublish(timestamp100ns);
+    }
+
     void StoreCompleted(pbreceiver::ReceiverCompletedSegment&& completed, const std::int64_t timestamp100ns)
     {
-        Require(!stored_, "Receiver emitted a duplicate completed Segment after authoritative storage");
         const std::uint64_t encodedBytes = completed.encodedBytes.size();
         snapshot_.Update([this](DecoderSnapshot& value)
         {
@@ -2775,20 +3283,41 @@ private:
         pbreceiver::ReceiverVerifiedSegment verifiedSegment = std::move(verified).Value();
         const pbprotocol::SegmentDescriptor& descriptor =
             verifiedSegment.GetBoundSegmentDescriptor().GetDescriptor();
-        Require(storage_ && session_ && descriptor.rawOffset == 0 &&
-            descriptor.rawSize == verifiedSegment.GetRawBytes().size() &&
-            descriptor.rawSize == session_->originalFileSize && encodedBytes == descriptor.encodedSize,
+        Require(storage_ && session_ && descriptor.segmentOrdinal < storedSegments_.size() &&
+            !storedSegments_[static_cast<std::size_t>(descriptor.segmentOrdinal)] &&
+            descriptor.rawSize == verifiedSegment.GetRawBytes().size() && encodedBytes == descriptor.encodedSize,
             "verified Segment does not match the bounded output reservation");
-        const auto writeStatus = storage_->Write(descriptor.rawOffset, verifiedSegment.GetRawBytes());
+        const auto writeStatus = storage_->WriteVerifiedSegment(descriptor.rawOffset, verifiedSegment.GetRawBytes());
         Require(static_cast<bool>(writeStatus), "PBStorage Segment write failed: " +
             DescribeStorageStatus(writeStatus));
+        const auto flushStatus = storage_->FlushVerifiedSegment();
+        Require(static_cast<bool>(flushStatus), "PBStorage Segment flush failed: " +
+            DescribeStorageStatus(flushStatus));
+        const auto checkpointStatus = storage_->Checkpoint();
+        Require(static_cast<bool>(checkpointStatus), "PBStorage checkpoint failed: " +
+            DescribeStorageStatus(checkpointStatus));
+        Require(static_cast<bool>(resumeStore_), "verified Segment has no active resume journal");
+        pbprotocol::ResumeCompletedSegmentRecord completedRecord;
+        completedRecord.sessionId = session_->sessionId;
+        completedRecord.segmentOrdinal = descriptor.segmentOrdinal;
+        completedRecord.rawOffset = descriptor.rawOffset;
+        completedRecord.rawSize = descriptor.rawSize;
+        completedRecord.rawDigest = descriptor.rawDigest;
+        const DecoderResumeStoreStatus resumeStatus = resumeStore_->RecordCompletedSegment(completedRecord);
+        Require(static_cast<bool>(resumeStatus), "completed Segment resume commit failed: " + resumeStatus.message);
         const auto committed = receiver_.CommitStoredSegment(std::move(verifiedSegment));
         RequireResult(committed, "Receiver stored Segment commit failed");
         Require(committed.Value() == pbreceiver::ReceiverSegmentCommitDisposition::Committed,
-            "first stored Segment commit was not Committed");
-        stored_ = true;
-        storedEncodedBytes_ = encodedBytes;
-        Require(progress_.ObserveVerifiedRawBytes(descriptor.rawSize, ElapsedMilliseconds(started_)),
+            "new stored Segment commit was not Committed");
+        storedSegments_[static_cast<std::size_t>(descriptor.segmentOrdinal)] = true;
+        completedSegmentCount_++;
+        const auto verifiedRawBytes = pbprotocol::CheckedAddUint64(totalVerifiedRawBytes_, descriptor.rawSize);
+        const auto verifiedEncodedBytes = pbprotocol::CheckedAddUint64(storedEncodedBytes_, encodedBytes);
+        RequireResult(verifiedRawBytes, "verified raw byte accounting overflow");
+        RequireResult(verifiedEncodedBytes, "verified encoded byte accounting overflow");
+        totalVerifiedRawBytes_ = verifiedRawBytes.Value();
+        storedEncodedBytes_ = verifiedEncodedBytes.Value();
+        Require(progress_.ObserveVerifiedRawBytes(totalVerifiedRawBytes_, ElapsedMilliseconds(started_)),
             "verified raw-byte progress update failed");
         ApplyProgress();
         TryPublish(timestamp100ns);
@@ -2796,11 +3325,13 @@ private:
 
     void TryPublish(const std::int64_t timestamp100ns)
     {
-        if (published_ || !stored_ || !segment_ || !manifest_ || !storage_)
+        if (published_ || !session_ || !manifest_ || !storage_ ||
+            completedSegmentCount_ != session_->segmentCount)
         {
             return;
         }
-        const auto finalized = receiver_.PrepareFinalization(segment_->sessionTag);
+        const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(session_->sessionId);
+        const auto finalized = receiver_.PrepareFinalization(sessionTag);
         RequireResult(finalized, "Receiver finalization was not authoritative after stored commit");
         Require(finalized.Value() == *manifest_, "Receiver returned a different FinalManifest");
         snapshot_.Update([this](DecoderSnapshot& value)
@@ -2817,14 +3348,19 @@ private:
         const auto publishStatus = storage_->Publish(manifest_->wholeFileDigest);
         Require(static_cast<bool>(publishStatus), "WholeFileDigest/final publish failed: " +
             DescribeStorageStatus(publishStatus));
+        Require(static_cast<bool>(resumeStore_), "final publish has no active resume journal");
+        const DecoderResumeStoreStatus resumeStatus = resumeStore_->RemoveAfterPublish();
+        Require(static_cast<bool>(resumeStatus), "published file resume cleanup failed: " + resumeStatus.message);
         completion_.outputPath = std::move(outputPath);
         completion_.wholeFileDigestHex = std::move(wholeFileDigestHex);
         completion_.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started_);
         completion_.published = true;
         published_ = true;
-        Require(storedEncodedBytes_ != 0, "published Segment has no verified encoded-byte accounting");
-        RequireTelemetry(telemetry_.RecordVerifiedEncodedBytes(storedEncodedBytes_, timestamp100ns),
-            "PBTelemetry RecordVerifiedEncodedBytes");
+        if (storedEncodedBytes_ != 0)
+        {
+            RequireTelemetry(telemetry_.RecordVerifiedEncodedBytes(storedEncodedBytes_, timestamp100ns),
+                "PBTelemetry RecordVerifiedEncodedBytes");
+        }
         UpdateTelemetrySnapshot();
         snapshot_.Update([this](DecoderSnapshot& value)
         {
@@ -3001,8 +3537,10 @@ private:
     VisualProfile visualProfile_ = VisualProfile::DirectLevels2x2;
     bool deferCompletedState_ = false;
     std::unique_ptr<pbstorage::OutputFile> storage_;
+    std::unique_ptr<DecoderResumeStore> resumeStore_;
     std::optional<pbprotocol::SessionDescriptor> session_;
-    std::optional<pbprotocol::SegmentDescriptor> segment_;
+    std::vector<std::optional<pbprotocol::SegmentDescriptor>> segments_;
+    std::vector<bool> storedSegments_;
     std::optional<pbprotocol::FinalManifest> manifest_;
     std::array<std::byte, outerBlockBytes> paddedPayload_{};
     DecoderProgressTracker progress_;
@@ -3012,6 +3550,8 @@ private:
     RemoteDuplicateRefinementGate remoteRefinement_;
     pbtelemetry::TelemetryAccumulator telemetry_;
     std::uint64_t storedEncodedBytes_ = 0;
+    std::uint64_t totalVerifiedRawBytes_ = 0;
+    std::uint64_t completedSegmentCount_ = 0;
     std::uint64_t pendingDroppedFrames_ = 0;
     std::uint64_t lastCaptureDroppedFrames_ = 0;
     std::uint64_t lastResultQueueDrops_ = 0;
@@ -3027,8 +3567,10 @@ private:
     std::uint64_t outerRecoveryReadyEvents_ = 0;
     std::uint64_t outerResourceRejections_ = 0;
     std::uint64_t outerConflictRejections_ = 0;
+    std::chrono::steady_clock::time_point nextResumeCheckpoint_ =
+        std::chrono::steady_clock::time_point::min();
+    bool restoringResume_ = false;
     bool receiverSessionBound_ = false;
-    bool stored_ = false;
     bool published_ = false;
 };
 
@@ -3214,7 +3756,7 @@ void ApplyOfflineDemodSnapshot(const pbdemodd3d11::CaptureDemodulatorSnapshot& d
 }
 
 void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::ReplayV2Reader& reader,
-    const ProfileBinding& profile, pbreceiver::ReceiverIngress& receiver, ReceiverPipeline& pipeline,
+    const ProfileBinding& profile, ReceiverPipeline& pipeline,
     const std::shared_ptr<pbdemodd3d11::CaptureDemodulator>& demodulator,
     SnapshotStore<DecoderSnapshot>& snapshot, const std::uint64_t runGeneration,
     const std::chrono::steady_clock::time_point started, ProcessResourceSampler& resourceSampler,
@@ -3291,9 +3833,6 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
                 Require(recordedDomain.captureEpoch > activeDomain->captureEpoch,
                     "Replay capture domain changed without a strictly newer CaptureEpoch");
                 demodulator->DomainInvalidated(*activeDomain);
-                const auto reset = receiver.ResetCaptureEpoch(outerBlockBytes);
-                RequireResult(reset, "ReceiverIngress offline Replay CaptureEpoch reset failed");
-                Require(reset.Value(), "ReceiverIngress offline Replay CaptureEpoch reset made no state transition");
                 pipeline.CaptureEpochReset(ElapsedMilliseconds(started));
             }
             const auto environment = MakeReplayCaptureEnvironment(record.capture);
@@ -3422,8 +3961,8 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const st
     }
     try
     {
-        const TransferDescription description = DescribeSource(rawBytes, false, 3);
         const ProfileBinding profile = GetProfileBinding(VisualProfile::RemoteVisualLowFps);
+        const TransferDescription description = DescribeSource(rawBytes, false, 3, profile.visualProfileId);
         SenderFrameBuilder builder(profile, description, controlRepetitions);
         const CarouselSnapshot initial = builder.GetCarouselSnapshot();
         const auto markerFrameCount = pbprotocol::CheckedMultiplyUint64(initial.cycleFrameCount,
@@ -3462,7 +4001,7 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const st
             {
                 const std::vector<std::byte>& expected = kind == FrameKind::SessionControl ?
                     description.sessionControl : kind == FrameKind::ManifestControl ?
-                    description.manifestControl : description.segmentControl;
+                    description.manifestControl : description.segments[builder.GetCurrentSegmentOrdinal()].control;
                 const auto acceptedControls = channel.GetAcceptedRemoteControlBlocks();
                 Require(observation.evaluation.acceptedRemoteControlBlocks == profile.codewords &&
                     acceptedControls.size() == profile.codewords && observation.evaluation.fecFailures == 0 &&
@@ -3546,8 +4085,8 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReceiver(const st
         std::error_code directoryError;
         Require(std::filesystem::is_directory(outputDirectory, directoryError) && !directoryError,
             "RemoteVisual LF4 Receiver probe output directory is unavailable");
-        const TransferDescription description = DescribeSource(rawBytes, false, 3);
         const ProfileBinding profile = GetProfileBinding(VisualProfile::RemoteVisualLowFps);
+        const TransferDescription description = DescribeSource(rawBytes, false, 3, profile.visualProfileId);
         SenderFrameBuilder builder(profile, description, 1);
         auto channelResult = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
         RequireResult(channelResult, "RemoteVisual LF4 Receiver probe channel creation failed");
@@ -3576,7 +4115,7 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReceiver(const st
         domain.sourceId[0] = std::byte{0x6F};
         domain.captureEpoch = 1;
         DecoderAdmissionProbeSnapshot probe;
-        probe.outerFecMode = description.segment.outerFecMode;
+        probe.outerFecMode = description.segments.front().descriptor.outerFecMode;
         std::uint64_t captureObservation = 0;
         const auto Stamp = [&](pbdemodd3d11::CaptureDemodulatorResult& result)
         {
@@ -3747,8 +4286,8 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReplay(const std:
         std::error_code directoryError;
         Require(std::filesystem::is_directory(outputDirectory, directoryError) && !directoryError,
             "RemoteVisual LF4 Replay probe output directory is unavailable");
-        const TransferDescription description = DescribeSource(rawBytes, false, 3);
         const ProfileBinding profile = GetProfileBinding(VisualProfile::RemoteVisualLowFps);
+        const TransferDescription description = DescribeSource(rawBytes, false, 3, profile.visualProfileId);
         SenderFrameBuilder builder(profile, description, 1);
         const std::uint32_t maximumCaptureFrames = builder.GetCarouselSnapshot().cycleFrameCount + duplicateFrames;
         Require(maximumCaptureFrames > duplicateFrames && maximumCaptureFrames <= 12,
@@ -4018,7 +4557,7 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     if (IsRemoteVisualProfile(config.visualProfile) &&
         (config.logicalVisualFps == 0 || config.logicalVisualFps > maximumRemoteVisualLogicalFps))
     {
-        return RuntimeStatus::Failure("RemoteVisual Logical Visual FPS 必须为 1..5；0 会恢复高频 presentation-driven 更新，已禁止");
+        return RuntimeStatus::Failure("历史 RemoteVisual Profile 的 Logical Visual FPS 必须为 1..5；统一 Profile 将独立使用 1..60");
     }
     if (config.visualProfile != VisualProfile::RemoteVisualLowFps && config.singleMonitorFullscreen)
     {
@@ -4109,9 +4648,9 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
             return RuntimeStatus::Failure("源文件不存在或不是常规文件");
         }
         const std::uint64_t fileBytes = std::filesystem::file_size(path, error);
-        if (error || fileBytes < minimumInstantFileBytes || fileBytes > maximumInstantFileBytes)
+        if (error || fileBytes > maximumInstantFileBytes)
         {
-            return RuntimeStatus::Failure("当前单 Segment production path 仅支持 1 byte 到 8 MiB");
+            return RuntimeStatus::Failure("源文件超过当前 ReceiverResourcePolicy 的 500 GiB 上限");
         }
     }
     catch (...)
@@ -4564,8 +5103,60 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             });
             return;
         }
-        const TransferDescription description = DescribeSource(source.bytes, config.compressionEnabled,
-            config.compressionLevel);
+        const ProfileBinding profile = GetProfileBinding(config.visualProfile);
+        std::filesystem::path sessionStateRoot;
+        const EncoderSessionStoreStatus rootStatus = ResolveEncoderSessionRoot(config.sessionStateRoot, sessionStateRoot);
+        Require(static_cast<bool>(rootStatus), "Encoder session root resolution failed: " + rootStatus.message);
+        const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
+        const std::string buildIdentity = buildInfo.productName + "-" + buildInfo.version;
+        const std::string compressionIdentity = pbcompression::GetZstandardBaselineIdentity();
+        const std::string outerFecIdentity = "wirehair-v2-profile-" +
+            std::to_string(pbouterfec::kWirehairV2CertifiedProfileId) + ";outer-block-" +
+            std::to_string(outerBlockBytes);
+        const EncoderSourceIdentity sourceIdentity = GetEncoderSourceIdentity(source);
+        std::unique_ptr<EncoderSessionStore> sessionStore;
+        bool foundPersistedSession = false;
+        const EncoderSessionStoreStatus findStatus = EncoderSessionStore::FindMatching(sessionStateRoot,
+            sourceIdentity, buildIdentity, compressionIdentity, outerFecIdentity, sessionStore, foundPersistedSession);
+        Require(static_cast<bool>(findStatus), "Encoder persisted session load failed: " + findStatus.message);
+        pbprotocol::SessionId selectedSessionId{};
+        if (foundPersistedSession)
+        {
+            selectedSessionId = sessionStore->GetSessionId();
+        }
+        else
+        {
+            const auto generatedSessionId = pbprotocol::GenerateRandomSessionId();
+            RequireResult(generatedSessionId, "OS CSPRNG SessionId generation failed");
+            selectedSessionId = generatedSessionId.Value();
+        }
+        TransferDescription description = DescribeSource(source, config.compressionEnabled,
+            config.compressionLevel, profile.visualProfileId, selectedSessionId, stopRequested_);
+        std::vector<std::byte> descriptorBundle = BuildDescriptorBundle(description);
+        if (foundPersistedSession && !sessionStore->MatchesDescriptorBundle(descriptorBundle))
+        {
+            sessionStore.reset();
+            foundPersistedSession = false;
+            const auto replacementSessionId = pbprotocol::GenerateRandomSessionId();
+            RequireResult(replacementSessionId, "replacement OS CSPRNG SessionId generation failed");
+            SetTransferSessionId(description, replacementSessionId.Value());
+            descriptorBundle = BuildDescriptorBundle(description);
+        }
+        if (!foundPersistedSession)
+        {
+            EncoderSessionStoreCreateConfig stateConfig;
+            stateConfig.rootDirectory = sessionStateRoot;
+            stateConfig.sourceIdentity = sourceIdentity;
+            stateConfig.sourcePathUtf8 = Utf8FromWide(source.path);
+            stateConfig.buildIdentity = buildIdentity;
+            stateConfig.compressionIdentity = compressionIdentity;
+            stateConfig.outerFecIdentity = outerFecIdentity;
+            stateConfig.sessionId = description.session.sessionId;
+            stateConfig.segmentCount = description.session.segmentCount;
+            stateConfig.descriptorBundle = descriptorBundle;
+            const EncoderSessionStoreStatus createStatus = EncoderSessionStore::Create(stateConfig, sessionStore);
+            Require(static_cast<bool>(createStatus), "Encoder persisted session creation failed: " + createStatus.message);
+        }
         if (stopRequested_)
         {
             snapshot_.Update([runGeneration](EncoderSnapshot& value)
@@ -4579,8 +5170,23 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             });
             return;
         }
-        const ProfileBinding profile = GetProfileBinding(config.visualProfile);
-        SenderFrameBuilder builder(profile, description, config.controlRepetitions);
+        SenderFrameBuilder builder(profile, description, config.controlRepetitions,
+            [&source, &description, &config](const std::uint64_t segmentOrdinal)
+            {
+                Require(segmentOrdinal < description.segments.size(), "广播 Segment ordinal 越界");
+                return LoadEncodedSegment(source, description.segments[segmentOrdinal],
+                    config.compressionEnabled, config.compressionLevel);
+            },
+            [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint32_t systematicBlockCount)
+            {
+                return sessionStore->GetRepairIdStart(segmentOrdinal, systematicBlockCount);
+            },
+            [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint64_t requiredExclusive)
+            {
+                const EncoderSessionStoreStatus leaseStatus = sessionStore->EnsureRepairIdLease(
+                    segmentOrdinal, requiredExclusive);
+                Require(static_cast<bool>(leaseStatus), "Encoder repair ID durable lease failed: " + leaseStatus.message);
+            }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal());
         const std::string runId = config.runId.empty() ? GenerateRunId() : config.runId;
         const CarouselSnapshot initialCarousel = builder.GetCarouselSnapshot();
         const auto rawVisualBits = pbprotocol::CheckedMultiplyUint64(profile.dataBytes, 8);
@@ -4605,7 +5211,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             }
             value.runId = runId;
             value.remoteMetadata.runId = runId;
-            value.sourceBytes = source.bytes.size();
+            value.sourceBytes = source.fileBytes;
             value.visualProfileId = profile.visualProfileId;
             value.visualLayoutVersion = profile.layoutVersion;
             value.codedDataBytesPerFrame = profile.dataBytes;
@@ -4615,13 +5221,20 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.transportPayloadCeilingBytesPerLogicalFrame = transportPayloadCeiling.Value();
             value.configuredTransportPayloadCeilingBytesPerSecond = configuredTransportPayloadCeiling;
             value.sessionIdHex = SessionIdHex(description.session.sessionId);
-            value.sessionTag = description.segment.sessionTag.value;
+            value.sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId).value;
             value.wholeFileDigestHex = DigestHex(description.manifest.wholeFileDigest.bytes);
-            value.compressionCodec = description.segment.compressionCodec;
-            value.outerFecMode = description.segment.outerFecMode;
+            value.resumedSession = sessionStore->WasResumed();
+            value.sessionStateDirectory = Utf8FromWide(sessionStore->GetSessionDirectory().wstring());
+            value.sessionStateGeneration = sessionStore->GetGeneration();
+            value.durableFrameSequenceLeaseEnd = sessionStore->GetFrameSequenceLeaseEnd();
+            value.durableRepairIdLeaseEnd = sessionStore->GetRepairIdLeaseEnd(builder.GetCurrentSegmentOrdinal());
+            value.compressionCodec = description.segments.empty() ? pbprotocol::CompressionCodec::Raw :
+                description.segments.front().descriptor.compressionCodec;
+            value.outerFecMode = description.segments.empty() ? pbprotocol::OuterFecMode::DirectRepeat :
+                description.segments.front().descriptor.outerFecMode;
             value.outerBlockCount = builder.GetBlockCount();
             value.cycleFrameCount = initialCarousel.cycleFrameCount;
-            value.segmentCount = 1;
+            value.segmentCount = description.session.segmentCount;
             value.statusMessage = "Creating the production D3D11 Data Window";
         });
         if (stopRequested_)
@@ -4666,7 +5279,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             throw RuntimeFailure("DataWindow creation failed: " + DescribePresentationStatus(created.Error()));
         }
         std::unique_ptr<pbrenderd3d::DataWindow> window = std::move(created).Value();
-        std::uint64_t frameSequence = 0;
+        std::uint64_t frameSequence = sessionStore->GetFrameSequenceStart();
+        std::uint64_t generatedLogicalFrameCount = 0;
         std::uint64_t generatedPayloadBytes = 0;
         bool frameBuilt = false;
         bool broadcastStarted = false;
@@ -4786,6 +5400,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 !frameBuilt;
             if (canBuild)
             {
+                Require(frameSequence != (std::numeric_limits<std::uint64_t>::max)(), "FrameSequence exhausted");
+                const EncoderSessionStoreStatus frameLeaseStatus = sessionStore->EnsureFrameSequenceLease(frameSequence + 1);
+                Require(static_cast<bool>(frameLeaseStatus),
+                    "Encoder FrameSequence durable lease failed: " + frameLeaseStatus.message);
                 static_cast<void>(builder.Build(frameSequence));
                 if (config.singleMonitorFullscreen)
                 {
@@ -4826,13 +5444,22 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                         builder.GetGeneratedPayloadBytesInFrame());
                     RequireResult(nextGeneratedPayloadBytes, "generated payload telemetry overflow");
                     generatedPayloadBytes = nextGeneratedPayloadBytes.Value();
-                    Require(frameSequence != (std::numeric_limits<std::uint64_t>::max)(),
-                        "FrameSequence exhausted");
+                    const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                    const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
                     builder.Advance();
                     frameSequence++;
+                    generatedLogicalFrameCount++;
                     frameBuilt = false;
                     nextLogicalFrameAt = now + logicalFrameInterval;
                     const CarouselSnapshot carouselAfter = builder.GetCarouselSnapshot();
+                    if (carouselAfter.cycleCount != previousCarouselPass ||
+                        builder.GetCurrentSegmentOrdinal() != previousSegmentOrdinal)
+                    {
+                        const EncoderSessionStoreStatus positionStatus = sessionStore->UpdateCarouselPosition(
+                            carouselAfter.cycleCount, builder.GetCurrentSegmentOrdinal());
+                        Require(static_cast<bool>(positionStatus),
+                            "Encoder Carousel position checkpoint failed: " + positionStatus.message);
+                    }
                     Require(broadcastStartedAt.has_value(), "stable presentation has no broadcast start timestamp");
                     const std::uint64_t broadcastMilliseconds = ElapsedMilliseconds(*broadcastStartedAt);
                     const double elapsedSeconds = static_cast<double>(broadcastMilliseconds) / 1000.0;
@@ -4849,10 +5476,24 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                         value.cyclePosition = carouselAfter.cyclePosition;
                         value.cycleFrameCount = carouselAfter.cycleFrameCount;
                         value.currentOuterBlockId = outerBlockId;
+                        value.currentSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                        value.outerBlockCount = builder.GetBlockCount();
+                        if (!description.segments.empty())
+                        {
+                            const auto& activeDescriptor =
+                                description.segments[builder.GetCurrentSegmentOrdinal()].descriptor;
+                            value.compressionCodec = activeDescriptor.compressionCodec;
+                            value.outerFecMode = activeDescriptor.outerFecMode;
+                        }
                         value.frameSequence = frameSequence;
+                        value.sessionStateGeneration = sessionStore->GetGeneration();
+                        value.durableFrameSequenceLeaseEnd = sessionStore->GetFrameSequenceLeaseEnd();
+                        value.durableRepairIdLeaseEnd =
+                            sessionStore->GetRepairIdLeaseEnd(builder.GetCurrentSegmentOrdinal());
                         ApplyEncoderPresentationSnapshot(windowSnapshot, value);
-                        value.generatedVisualFramesPerSecond = frameSequence > 1 && logicalObservationSeconds > 0 ?
-                            std::optional<double>(static_cast<double>(frameSequence - 1) / logicalObservationSeconds) : std::nullopt;
+                        value.generatedVisualFramesPerSecond = generatedLogicalFrameCount > 1 && logicalObservationSeconds > 0 ?
+                            std::optional<double>(static_cast<double>(generatedLogicalFrameCount - 1) /
+                                logicalObservationSeconds) : std::nullopt;
                         value.generatedPayloadBytesPerSecond = elapsedSeconds > 0 ?
                             std::optional<double>(static_cast<double>(generatedPayloadBytes) / elapsedSeconds) : std::nullopt;
                         value.minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds;
@@ -5228,7 +5869,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
 
         if (replayReader)
         {
-            RunOfflineReplayDataset(config, *replayReader, profile, receiver, pipeline, demodulator,
+            RunOfflineReplayDataset(config, *replayReader, profile, pipeline, demodulator,
                 snapshot_, runGeneration, started, resourceSampler, stopRequested_);
             return;
         }
@@ -5353,9 +5994,6 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                     "stale CaptureEpoch result escaped the bounded CaptureDemodulator queue");
                 if (resultEpoch > receiverCaptureEpoch)
                 {
-                    const auto reset = receiver.ResetCaptureEpoch(outerBlockBytes);
-                    RequireResult(reset, "ReceiverIngress CaptureEpoch reset failed");
-                    Require(reset.Value(), "ReceiverIngress CaptureEpoch reset made no state transition");
                     receiverCaptureEpoch = resultEpoch;
                     pipeline.CaptureEpochReset(ElapsedMilliseconds(started));
                 }

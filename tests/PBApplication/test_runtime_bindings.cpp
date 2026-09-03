@@ -93,7 +93,8 @@ TEST_CASE("Compression enabled uses existing zstd and RAW fallback binding", "[a
     REQUIRE(fallback.Value().bytes == tiny);
 }
 
-TEST_CASE("Encoder validation rejects missing empty and over-limit files without truncation", "[application][validation]")
+TEST_CASE("Encoder validation accepts empty files and rejects missing or over-limit files without truncation",
+    "[application][validation]")
 {
     pbapp::EncoderConfig config;
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
@@ -102,7 +103,7 @@ TEST_CASE("Encoder validation rejects missing empty and over-limit files without
     std::ofstream(empty, std::ios::binary).close();
     config.sourcePath = empty.wstring();
     config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{};
-    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
     const auto tooLarge = scratch.Path() / L"large.bin";
     const HANDLE file = CreateFileW(tooLarge.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);
