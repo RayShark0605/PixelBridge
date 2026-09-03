@@ -9,11 +9,14 @@
 #include "pbmodulation/remote_visual.h"
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
+#include "pbmodulation/unified_visual.h"
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/transport_block_codec.h"
+#include "pbremotevisualsimulator/channel_transform.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -137,6 +140,58 @@ std::vector<std::byte> MakeRemoteVisualLowFpsControlData(const std::span<const s
                 pbdesktoplevels::kCodewordBytes)));
     }
     return data;
+}
+
+struct UnifiedFixture
+{
+    std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bootstrap{};
+    std::array<std::vector<std::byte>, pbmodulation::kUnifiedCodewordCount> blocks;
+    std::vector<std::byte> pixels;
+};
+
+UnifiedFixture MakeUnifiedFixture(const std::uint64_t sequence)
+{
+    UnifiedFixture fixture;
+    constexpr std::uint64_t sessionTagValue = 0x1122334455667788ULL;
+    fixture.bootstrap = MakeRecord(pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion, sequence, sessionTagValue);
+    const pbprotocol::SessionTag sessionTag{sessionTagValue};
+    const std::array<std::byte, 9> controlPayload{std::byte{1}, std::byte{3}, std::byte{5},
+        std::byte{7}, std::byte{9}, std::byte{11}, std::byte{13}, std::byte{15}, std::byte{17}};
+    const pbprotocol::ControlRecordView controlRecord{pbprotocol::kControlVersion,
+        pbprotocol::ControlRecordType::SessionDescriptor, 77, sessionTag, controlPayload};
+    const auto controlSize = pbprotocol::GetSerializedSize(controlRecord);
+    REQUIRE(controlSize);
+    fixture.blocks[0].resize(controlSize.Value());
+    REQUIRE(pbprotocol::SerializeControlRecord(controlRecord, fixture.blocks[0]));
+    for (std::uint32_t slot = 1; slot < pbmodulation::kUnifiedCodewordCount; slot++)
+    {
+        std::vector<std::byte> payload(48 + slot % 13);
+        for (std::size_t index = 0; index < payload.size(); index++)
+        {
+            payload[index] = static_cast<std::byte>((slot * 37 + index * 11 + 5) & 255U);
+        }
+        const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData,
+            pbprotocol::kTransportProtocolMinor, 0, sessionTag, 900 + slot, 1000 + slot,
+            static_cast<std::uint16_t>(payload.size())};
+        fixture.blocks[slot].resize(pbprotocol::GetTransportSerializedSize(header));
+        REQUIRE(pbprotocol::SerializeTransportBlock(header, payload, fixture.blocks[slot]));
+    }
+    std::array<pbmodulation::UnifiedFrameSlotInput, pbmodulation::kUnifiedCodewordCount> inputs{};
+    for (std::uint32_t slot = 0; slot < inputs.size(); slot++)
+    {
+        inputs[slot].assignment.codewordSlot = slot;
+        inputs[slot].assignment.kind = slot == 0 ? pbmodulation::UnifiedSlotKind::Control :
+            pbmodulation::UnifiedSlotKind::Transport;
+        inputs[slot].assignment.controlPriority = slot == 0 ?
+            pbmodulation::UnifiedControlPriority::SessionDescriptor :
+            pbmodulation::UnifiedControlPriority::NotApplicable;
+        inputs[slot].active = true;
+        inputs[slot].block = fixture.blocks[slot];
+    }
+    fixture.pixels.resize(pbmodulation::kUnifiedFrameBgraBytes);
+    REQUIRE(pbmodulation::EncodeUnifiedVisualFrame({fixture.bootstrap, inputs}, fixture.pixels));
+    return fixture;
 }
 
 pbmodulation::LumaView MakeView(const std::span<const std::byte> pixels)
@@ -1804,6 +1859,103 @@ TEST_CASE("Capture demodulator stages same-frame LF4 Bootstrap geometry before d
     }
 }
 
+TEST_CASE("Capture demodulator retains one Unified ROI across Bootstrap and metric retirement and cancels it on epoch invalidation",
+    "[demod][d3d11][capture][unified][warp][staged-completion][epoch][lifetime]")
+{
+    auto environment = CreateWarpEnvironment();
+    const auto fixture = MakeUnifiedFixture(42);
+    pbdemodd3d11::CaptureDemodulatorConfig consumerConfig;
+    consumerConfig.visualProfileId = pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId;
+    consumerConfig.slotCount = 2;
+    consumerConfig.maximumFrameAgeMilliseconds = 60000;
+    consumerConfig.resultQueueCapacity = 2;
+    consumerConfig.maximumRoiWidth = pbmodulation::kUnifiedVisualProfile.canvasWidth;
+    consumerConfig.maximumRoiHeight = pbmodulation::kUnifiedVisualProfile.canvasHeight;
+    pbdemodd3d11::CaptureDemodulatorBudget budget;
+    REQUIRE(pbdemodd3d11::CalculateCaptureDemodulatorBudget(consumerConfig, budget));
+    consumerConfig.maximumResidentBytes = budget.totalBytes;
+    REQUIRE(pbdemodd3d11::CalculateCaptureDemodulatorBudget(consumerConfig, budget));
+    std::shared_ptr<pbdemodd3d11::CaptureDemodulator> consumer;
+    REQUIRE(pbdemodd3d11::CaptureDemodulator::Create(consumerConfig, consumer));
+    REQUIRE(consumer->ReservedBytes() == budget.totalBytes);
+    REQUIRE(budget.referenceScratchBytes == 0);
+    const auto captureConfig = MakeCaptureConfig(consumerConfig.slotCount,
+        consumerConfig.maximumFrameAgeMilliseconds);
+    REQUIRE(consumer->ValidateConfiguration(captureConfig));
+
+    pbcapturenormalize::ScreenCaptureDomain domain;
+    domain.sourceId[0] = std::byte{0x7D};
+    domain.captureEpoch = 81;
+    REQUIRE(consumer->DomainStarted(domain, MakeCaptureEnvironment(environment.adapterLuid),
+        environment.device.Get()));
+    const auto texture = UploadBgraTexture(environment.device.Get(), fixture.pixels,
+        pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4);
+    auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, 1);
+    frame.metadata.slotIndex = 0;
+    StampCurrent(frame);
+    REQUIRE(consumer->Submit(frame, environment.context.Get()));
+    WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
+    const auto bootstrapStage = consumer->CompleteStage(
+        frame.metadata, texture.Get(), environment.context.Get(), false);
+    REQUIRE(bootstrapStage.status);
+    REQUIRE(bootstrapStage.gpuWorkSubmitted);
+    pbdemodd3d11::CaptureDemodulatorResult result;
+    REQUIRE_FALSE(consumer->TakeResult(result));
+    auto snapshot = consumer->GetSnapshot();
+    REQUIRE(snapshot.pendingFrames == 1);
+    REQUIRE(snapshot.stagedGpuSubmissions == 1);
+    REQUIRE(snapshot.stagedGpuCompletions == 0);
+    REQUIRE(snapshot.demodulator.pendingFrames == 1);
+
+    WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
+    const auto dataStage = consumer->CompleteStage(frame.metadata, texture.Get(), environment.context.Get(), false);
+    REQUIRE(dataStage.status);
+    REQUIRE_FALSE(dataStage.gpuWorkSubmitted);
+    REQUIRE(consumer->TakeResult(result));
+    REQUIRE(result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame);
+    REQUIRE(result.metadata.domain == domain);
+    REQUIRE(result.bootstrap.IsAccepted());
+    REQUIRE(result.bootstrap.canonical44 == fixture.bootstrap);
+    REQUIRE(result.geometryStatus == pbdemodd3d11::CaptureDemodulatorGeometryStatus::ExactCanvas);
+    REQUIRE(result.temporalDisposition == pbdemodd3d11::CaptureDemodulatorTemporalDisposition::NotApplicable);
+    REQUIRE(result.demodulation.unifiedObservation.IsFrameAvailable());
+    REQUIRE(result.demodulation.acceptedUnifiedBlockCount == pbmodulation::kUnifiedCodewordCount);
+    REQUIRE_FALSE(consumer->TakeResult(result));
+    snapshot = consumer->GetSnapshot();
+    REQUIRE(snapshot.completedFrames == 1);
+    REQUIRE(snapshot.verifiedFrames == 1);
+    REQUIRE(snapshot.acceptedUnifiedBlocks == pbmodulation::kUnifiedCodewordCount);
+    REQUIRE(snapshot.pendingFrames == 0);
+    REQUIRE(snapshot.demodulator.rawPixelReadbackBytes == 0);
+
+    frame.metadata.captureObservation = 2;
+    frame.metadata.slotGeneration = 2;
+    StampCurrent(frame);
+    REQUIRE(consumer->Submit(frame, environment.context.Get()));
+    WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
+    const auto secondBootstrapStage = consumer->CompleteStage(
+        frame.metadata, texture.Get(), environment.context.Get(), false);
+    REQUIRE(secondBootstrapStage.status);
+    REQUIRE(secondBootstrapStage.gpuWorkSubmitted);
+    REQUIRE(consumer->GetSnapshot().demodulator.pendingFrames == 1);
+    consumer->DomainInvalidated(domain);
+    WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
+    const auto cancelledStage = consumer->CompleteStage(frame.metadata, nullptr, nullptr, true);
+    REQUIRE(cancelledStage.status);
+    REQUIRE_FALSE(cancelledStage.gpuWorkSubmitted);
+    REQUIRE_FALSE(consumer->TakeResult(result));
+    snapshot = consumer->GetSnapshot();
+    REQUIRE_FALSE(snapshot.active);
+    REQUIRE(snapshot.invalidations == 1);
+    REQUIRE(snapshot.cancelledFrames == 1);
+    REQUIRE(snapshot.pendingFrames == 0);
+    REQUIRE(snapshot.staleResultDrops == 0);
+    REQUIRE(snapshot.demodulator.pendingFrames == 0);
+    REQUIRE(snapshot.demodulator.shutdown);
+    REQUIRE(snapshot.demodulator.rawPixelReadbackBytes == 0);
+}
+
 TEST_CASE("Capture demodulator bounds LF4 duplicate refinement and admits only newly recovered codeword slots",
     "[demod][d3d11][capture][remote-visual][low-fps][temporal][duplicate][bounded][warp]")
 {
@@ -2836,4 +2988,263 @@ TEST_CASE("D3D11 demod configuration is bounded and failure leaves output owners
     REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, output));
     REQUIRE(output->GetSnapshot().residentBytes == exactResidentBytes);
     REQUIRE(output->Shutdown(environment.context.Get()));
+}
+
+TEST_CASE("Unified layout-8 D3D11 demod hands compact same-frame metrics to the canonical mixed-block gate",
+    "[demod][d3d11][unified][warp][fec][transport][control][lifetime]")
+{
+    auto environment = CreateWarpEnvironment();
+    const auto fixture = MakeUnifiedFixture(40);
+    const pbmodulation::LumaView view{fixture.pixels, pbmodulation::kUnifiedVisualProfile.canvasWidth,
+        pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4,
+        pbmodulation::LumaPixelFormat::Bgra8};
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
+    const auto bootstrap = pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, binding);
+    REQUIRE(bootstrap.IsAccepted());
+
+    pbdemodd3d11::DemodConfig config;
+    config.readbackSlotCount = 2;
+    std::uint64_t residentBytes = 0;
+    REQUIRE(pbdemodd3d11::CalculateDemodulatorResidentBytes(config, residentBytes));
+    config.maximumResidentBytes = residentBytes;
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, demodulator));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x72}}, 1};
+    const auto texture = UploadBgraTexture(environment.device.Get(), fixture.pixels,
+        pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4);
+    const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, 1);
+    pbdemodd3d11::DemodSubmission submission;
+    REQUIRE(demodulator->Submit(frame, environment.context.Get(), fixture.bootstrap, submission).code ==
+        pbdemodd3d11::DemodError::UnsupportedProfile);
+    auto invalidPolicy = pbmodulation::UnifiedVisualDecodePolicy{};
+    invalidPolicy.minimumLumaLevelGap = 0;
+    REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, invalidPolicy, submission).code ==
+        pbdemodd3d11::DemodError::InvalidBinding);
+    REQUIRE(demodulator->GetSnapshot().submittedFrames == 0);
+    REQUIRE(demodulator->GetSnapshot().pendingFrames == 0);
+    REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, {}, submission));
+    const auto result = PollUntilReady(*demodulator, environment.context.Get(), submission);
+    REQUIRE(result.visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId);
+    REQUIRE(result.unifiedObservation.IsFrameAvailable());
+    REQUIRE(result.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedCodewordCount);
+    REQUIRE(result.unifiedObservation.acceptedControlRecords == 1);
+    REQUIRE(result.unifiedObservation.acceptedTransportBlocks == pbmodulation::kUnifiedCodewordCount - 1);
+    REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedCodewordCount);
+    for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
+    {
+        const auto& accepted = result.acceptedUnifiedBlocks[index];
+        REQUIRE(accepted.codewordSlot == index);
+        REQUIRE(accepted.kind == (index == 0 ? pbmodulation::UnifiedSlotKind::Control :
+            pbmodulation::UnifiedSlotKind::Transport));
+        REQUIRE(accepted.size == fixture.blocks[index].size());
+        REQUIRE(std::equal(fixture.blocks[index].begin(), fixture.blocks[index].end(), accepted.bytes.begin()));
+    }
+    REQUIRE(result.remoteMetricSummaryAvailable);
+    REQUIRE(result.remoteMetricSamples == pbmodulation::kUnifiedSoftMetricCount);
+    REQUIRE(result.remoteFreshnessRegions == pbmodulation::kUnifiedFreshnessRegionCount);
+    REQUIRE(result.remoteStaleRegions == 0);
+    REQUIRE(result.remoteFreshnessErasedDataMetrics == 0);
+    REQUIRE(result.remoteUnreliableSymbols == 0);
+    constexpr std::uint64_t expectedReadbackBytes = pbmodulation::kUnifiedSoftMetricCount * sizeof(float) +
+        36 * sizeof(float) * 4 + pbmodulation::kUnifiedVisualProfile.dataTileCount * sizeof(std::uint32_t) +
+        pbmodulation::kUnifiedFreshnessRegionCount * sizeof(float) * 4 + 16 * sizeof(float) * 4;
+    REQUIRE(result.metricReadbackBytes == expectedReadbackBytes);
+    REQUIRE(result.metricReadbackBytes < pbmodulation::kUnifiedFrameBgraBytes);
+    const auto snapshot = demodulator->GetSnapshot();
+    REQUIRE(snapshot.completedFrames == 1);
+    REQUIRE(snapshot.pendingFrames == 0);
+    REQUIRE(snapshot.metricReadbackBytes == result.metricReadbackBytes);
+    REQUIRE(snapshot.rawPixelReadbackBytes == 0);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+}
+
+TEST_CASE("Unified layout-8 D3D11 demod preserves mixed blocks at bounded scale and fractional letterbox geometry",
+    "[demod][d3d11][unified][warp][geometry][letterbox][scale]")
+{
+    auto environment = CreateWarpEnvironment();
+    const auto fixture = MakeUnifiedFixture(41);
+    pbdemodd3d11::DemodConfig config;
+    config.readbackSlotCount = 2;
+    std::uint64_t residentBytes = 0;
+    REQUIRE(pbdemodd3d11::CalculateDemodulatorResidentBytes(config, residentBytes));
+    config.maximumResidentBytes = residentBytes;
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, demodulator));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x73}}, 1};
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
+    const pbmodulation::UnifiedVisualDecodePolicy policy;
+    struct GeometryCase
+    {
+        std::uint32_t width;
+        std::uint32_t height;
+        double scale;
+        double originX;
+        double originY;
+        std::uint32_t expectedAcceptedBlocks;
+        pbmodulation::UnifiedErasureReason expectedBaseLumaReason;
+        pbmodulation::UnifiedErasureReason expectedFineLumaReason;
+        pbmodulation::UnifiedErasureReason expectedChromaReason;
+    };
+    const std::array cases{
+        GeometryCase{1476, 840, 0.75, 17.25, 13.5, 10,
+            pbmodulation::UnifiedErasureReason::BaseLumaPilotFailure,
+            pbmodulation::UnifiedErasureReason::FineLumaPilotFailure,
+            pbmodulation::UnifiedErasureReason::None},
+        GeometryCase{3840, 2160, 2.0, 0.0, 0.0, pbmodulation::kUnifiedCodewordCount,
+            pbmodulation::UnifiedErasureReason::None, pbmodulation::UnifiedErasureReason::None,
+            pbmodulation::UnifiedErasureReason::None}};
+    std::uint64_t observation = 1;
+    for (const GeometryCase& geometryCase : cases)
+    {
+        const pbremotevisualsimulator::ResampleTransform resample{geometryCase.width, geometryCase.height,
+            geometryCase.scale, geometryCase.scale, geometryCase.originX, geometryCase.originY,
+            pbremotevisualsimulator::ResampleFilter::Area,
+            {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}};
+        const std::array<pbremotevisualsimulator::ChannelTransform, 1> transforms{resample};
+        const pbremotevisualsimulator::BgraImageView source{fixture.pixels,
+            pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,
+            static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4};
+        auto transformedResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(source, std::nullopt,
+            {0x12340000ULL + observation, transforms});
+        REQUIRE(transformedResult);
+        auto transformed = std::move(transformedResult).Value().output;
+        const pbmodulation::LumaView transformedView{transformed.pixels, transformed.width, transformed.height,
+            transformed.rowPitch, pbmodulation::LumaPixelFormat::Bgra8};
+        const auto bootstrap = pbmodulation::DecodeLocalDesktopBootstrap(transformedView, binding, policy.locator);
+        CAPTURE(geometryCase.scale, geometryCase.originX, geometryCase.originY, bootstrap.erasure,
+            bootstrap.geometry.originX, bootstrap.geometry.originY, bootstrap.geometry.scaleX,
+            bootstrap.geometry.scaleY);
+        REQUIRE(bootstrap.IsAccepted());
+        REQUIRE(bootstrap.geometry.scaleX >= 0.75 - 1e-12);
+        REQUIRE(bootstrap.geometry.scaleX <= 2.0 + 1e-12);
+        auto cpuOracleResult = pbmodulation::UnifiedVisualCpuOracle::Create(
+            pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
+        REQUIRE(cpuOracleResult);
+        auto cpuOracle = std::move(cpuOracleResult).Value();
+        const auto cpuObservation = cpuOracle.DecodeMixedFrame(transformedView);
+        const std::vector<pbmodulation::UnifiedAcceptedBlock> cpuAccepted(
+            cpuOracle.GetAcceptedBlocks().begin(), cpuOracle.GetAcceptedBlocks().end());
+        CAPTURE(cpuObservation.acceptedBlocks, cpuObservation.baseLuma.erasureReason,
+            cpuObservation.fineLuma.erasureReason, cpuObservation.chroma.erasureReason);
+        REQUIRE(cpuObservation.acceptedBlocks == geometryCase.expectedAcceptedBlocks);
+        REQUIRE(cpuObservation.baseLuma.erasureReason == geometryCase.expectedBaseLumaReason);
+        REQUIRE(cpuObservation.fineLuma.erasureReason == geometryCase.expectedFineLumaReason);
+        REQUIRE(cpuObservation.chroma.erasureReason == geometryCase.expectedChromaReason);
+        const auto texture = UploadBgraTexture(environment.device.Get(), transformed.pixels,
+            transformed.width, transformed.height, transformed.rowPitch);
+        const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, observation);
+        pbdemodd3d11::DemodSubmission submission;
+        REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, policy, submission));
+        const auto result = PollUntilReady(*demodulator, environment.context.Get(), submission);
+        CAPTURE(result.unifiedObservation.acceptedBlocks,
+            result.unifiedObservation.baseLuma.erasureReason,
+            result.unifiedObservation.fineLuma.erasureReason,
+            result.unifiedObservation.chroma.erasureReason,
+            result.remoteStaleRegions, result.remoteUnreliableSymbols,
+            result.remoteZeroMagnitudeMetrics, result.remoteMinimumAbsoluteMetric);
+        REQUIRE(result.unifiedObservation.IsFrameAvailable());
+        REQUIRE(result.unifiedObservation.acceptedBlocks == cpuObservation.acceptedBlocks);
+        REQUIRE(result.unifiedObservation.baseLuma == cpuObservation.baseLuma);
+        REQUIRE(result.unifiedObservation.fineLuma == cpuObservation.fineLuma);
+        REQUIRE(result.unifiedObservation.chroma == cpuObservation.chroma);
+        for (std::size_t region = 0; region < result.unifiedObservation.freshness.size(); region++)
+        {
+            REQUIRE(result.unifiedObservation.freshness[region].current == cpuObservation.freshness[region].current);
+            REQUIRE(result.unifiedObservation.freshness[region].bitErrors == cpuObservation.freshness[region].bitErrors);
+            REQUIRE(result.unifiedObservation.freshness[region].residual ==
+                Catch::Approx(cpuObservation.freshness[region].residual).margin(1e-5));
+        }
+        REQUIRE(result.acceptedUnifiedBlockCount == cpuAccepted.size());
+        REQUIRE(result.acceptedUnifiedBlockCount > 0);
+        for (std::size_t acceptedIndex = 0; acceptedIndex < cpuAccepted.size(); acceptedIndex++)
+        {
+            const auto& cpuBlock = cpuAccepted[acceptedIndex];
+            const auto& gpuBlock = result.acceptedUnifiedBlocks[acceptedIndex];
+            REQUIRE(cpuBlock.codewordSlot < fixture.blocks.size());
+            const auto& expectedBlock = fixture.blocks[cpuBlock.codewordSlot];
+            REQUIRE(cpuBlock.size == expectedBlock.size());
+            REQUIRE(std::equal(expectedBlock.begin(), expectedBlock.end(), cpuBlock.bytes.begin()));
+            REQUIRE(gpuBlock.codewordSlot == cpuBlock.codewordSlot);
+            REQUIRE(gpuBlock.kind == cpuBlock.kind);
+            REQUIRE(gpuBlock.size == cpuBlock.size);
+            REQUIRE(std::equal(expectedBlock.begin(), expectedBlock.end(), gpuBlock.bytes.begin()));
+        }
+        REQUIRE(result.remoteStaleRegions == 0);
+        REQUIRE(result.remoteUnreliableSymbols == 0);
+        observation++;
+    }
+    const auto snapshot = demodulator->GetSnapshot();
+    REQUIRE(snapshot.submittedFrames == cases.size());
+    REQUIRE(snapshot.completedFrames == cases.size());
+    REQUIRE(snapshot.pendingFrames == 0);
+    REQUIRE(snapshot.rawPixelReadbackBytes == 0);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+}
+
+TEST_CASE("Unified layout-8 D3D11 demod completes one headless hardware-adapter smoke",
+    "[.unified-hardware-smoke]")
+{
+    auto candidates = EnumerateHardwareAdapters();
+    const auto selected = std::ranges::find_if(candidates,
+        [](const HardwareAdapterCandidate& candidate) { return SUCCEEDED(candidate.deviceCreateStatus); });
+    REQUIRE(selected != candidates.end());
+    D3DEnvironment environment;
+    REQUIRE(SUCCEEDED(CreateHardwareEnvironment(selected->adapter.Get(), environment)));
+    const auto fingerprint = GetEnvironmentFingerprint(environment, "hardware",
+        selected->fingerprint.adapterIndex, false);
+    const auto fixture = MakeUnifiedFixture(43);
+    const pbmodulation::LumaView view{fixture.pixels, pbmodulation::kUnifiedVisualProfile.canvasWidth,
+        pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4,
+        pbmodulation::LumaPixelFormat::Bgra8};
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
+    const auto bootstrap = pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, binding);
+    REQUIRE(bootstrap.IsAccepted());
+    pbdemodd3d11::DemodConfig config;
+    config.readbackSlotCount = 2;
+    std::uint64_t residentBytes = 0;
+    REQUIRE(pbdemodd3d11::CalculateDemodulatorResidentBytes(config, residentBytes));
+    config.maximumResidentBytes = residentBytes;
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, demodulator));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x7E}}, 91};
+    const auto texture = UploadBgraTexture(environment.device.Get(), fixture.pixels,
+        pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4);
+    const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, 1);
+    pbdemodd3d11::DemodSubmission submission;
+    REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, {}, submission));
+    const auto result = PollUntilReady(*demodulator, environment.context.Get(), submission);
+    REQUIRE(result.unifiedObservation.IsFrameAvailable());
+    REQUIRE(result.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedCodewordCount);
+    REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedCodewordCount);
+    for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
+    {
+        const auto& accepted = result.acceptedUnifiedBlocks[index];
+        REQUIRE(accepted.codewordSlot == index);
+        REQUIRE(accepted.size == fixture.blocks[index].size());
+        REQUIRE(std::equal(fixture.blocks[index].begin(), fixture.blocks[index].end(), accepted.bytes.begin()));
+    }
+    const auto snapshot = demodulator->GetSnapshot();
+    REQUIRE(snapshot.completedFrames == 1);
+    REQUIRE(snapshot.pendingFrames == 0);
+    REQUIRE(snapshot.rawPixelReadbackBytes == 0);
+    REQUIRE(environment.device->GetDeviceRemovedReason() == S_OK);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+    std::cout << "PB_UNIFIED_HARDWARE_SMOKE_JSON={\"schema\":\"PixelBridge.UnifiedHardwareSmoke.1\""
+              << ",\"adapter\":" << AdapterJson(fingerprint)
+              << ",\"featureLevel\":" << static_cast<std::uint32_t>(environment.featureLevel)
+              << ",\"acceptedBlocks\":" << result.acceptedUnifiedBlockCount
+              << ",\"metricReadbackBytes\":" << result.metricReadbackBytes
+              << ",\"rawPixelReadbackBytes\":" << snapshot.rawPixelReadbackBytes
+              << ",\"deviceRemovedHresult\":\"0x00000000\""
+              << ",\"shutdownCompleted\":true}\n";
 }

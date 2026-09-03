@@ -566,6 +566,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G11 — D3D11 Compute 统一解调
 
+**状态：** 已完成（2026-09-04）。
 **前置：** G10。
 **目的：** 从 PB-owned capture texture 直接产生 compact lane metrics，复用 CPU FEC/Transport/Receiver。
 
@@ -575,16 +576,18 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] 输入必须是当前 CaptureEpoch 的 PB-owned texture，不能在 WGC frame lease 归还后访问 source surface。
-- [ ] scale/origin aware sampling 支持 0.75x..2.0x、fractional origin、letterbox。
-- [ ] 输出 compact Base/Fine/Chroma metrics、freshness mask、pilot/erasure reason。
-- [ ] D3D11 immediate context 保持单 owner thread。
-- [ ] resize/device/capture epoch 变化排空旧 GPU work；结果携带 epoch 并在 admission 再核对。
-- [ ] query/fence 语义证明 GPU 完成；`Flush` 不当 completion。
-- [ ] shader/resource 数量有界，失败明确回到等待/重建而非 silent CPU pixel fallback。
+- [x] 输入必须是当前 CaptureEpoch 的 PB-owned texture，不能在 WGC frame lease 归还后访问 source surface。
+- [x] scale/origin aware sampling 支持 0.75x..2.0x、fractional origin、letterbox。
+- [x] 输出 compact Base/Fine/Chroma metrics、freshness mask、pilot/erasure reason。
+- [x] D3D11 immediate context 保持单 owner thread。
+- [x] resize/device/capture epoch 变化排空旧 GPU work；结果携带 epoch 并在 admission 再核对。
+- [x] query/fence 语义证明 GPU 完成；`Flush` 不当 completion。
+- [x] shader/resource 数量有界，失败明确回到等待/重建而非 silent CPU pixel fallback。
 
 **最小验证：** WARP 离屏 unit/integration + 一个当前硬件 adapter smoke；不打开 Data Window。
-**退出：** 对固定 corpus 产出可供 CPU FEC 的 metrics；无 lease/use-after-return、跨 epoch admission 或隐式 readback。
+**验证结果（2026-09-04）：** Release 增量构建 `PBDemodD3D11Tests`、`PBCapturePipelineTests` 成功。WARP 离屏 `[unified]` 定向组 3/3（本次 788 assertions，计数包含异步 query 轮询）通过：exact canvas 与 2.0x 分别接受 31/31 个逐字节正确的 mixed blocks；0.75x、fractional origin、letterbox 固定样本中 CPU/GPU 均 fail-closed 擦除 Base/Fine phase pilot，并接受相同的 10 个逐字节正确 Chroma blocks；same-ROI Bootstrap→GPU 两阶段、CaptureEpoch 失效后取消/退休旧 work、无跨 epoch 结果发布、非法 policy 无状态变更、Unified 经旧 generic `Submit` 显式拒绝均通过。既有 LF4 compact-readback 邻接回归 1/1（74 assertions）通过，旧路径仍只复制并统计 16 个 calibration entries。当前机器第一块非软件适配器 `NVIDIA GeForce RTX 5090 D` 的 headless smoke 1/1（本次 186 assertions，计数包含异步 query 轮询）通过，31/31 blocks 均逐字节正确，`metricReadbackBytes=2356528`、`rawPixelReadbackBytes=0`、device-removed HRESULT 为 0 且 shutdown 完成。未打开 Data Window，未执行完整 CTest、GUI、真实 capture/实屏 Gate、全 mandatory transform corpus、多适配器/AMD 矩阵、性能门槛、Receiver 或最终文件发布；这些属于 G12 或后续目标。
+**退出：** 已满足。Unified shader 从被 CaptureDemodulator 跨 Bootstrap 与 GPU completion 持有的当前 PB-owned ROI 直接采样，只在 event query 以 `D3D11_ASYNC_GETDATA_DONOTFLUSH` 证明完成后读回有界 metrics/calibration/freshness/phase/tile-failure buffer；CPU 复用同一 QC-LDPC、mixed Control/Transport、padding、CRC 与 identity admission。slot ring、shader buffer 和 scratch 全部由 checked resident budget 限定；epoch/device/resize invalidation 先取消并等待外部完成再退休，不发布 stale result，也没有 raw ROI readback 或 silent CPU pixel fallback。此结论仅关闭 G11 固定用例和单块当前 NVIDIA adapter，不替代 G12 mandatory corpus 的完整 CPU/GPU accepted-byte parity 与性能门槛。
+**产物：** Unified HLSL 与嵌入模板位于 `libs/PBDemodD3D11/src/unified_visual_compute.hlsl`、`libs/PBDemodD3D11/src/unified_visual_shader_source.h.in`；GPU submission/result 与 CaptureEpoch 集成位于 `libs/PBDemodD3D11/include/pbdemodd3d11/`、`libs/PBDemodD3D11/src/`；共享 prepared-metric CPU admission 位于 `libs/PBModulation/include/pbmodulation/unified_visual.h`、`libs/PBModulation/src/unified_visual.cpp`。本地日志位于 `build-unified-release/tests/PBDemodD3D11/g11-unified-warp.txt`、`g11-lf4-compatibility.txt` 与 `g11-unified-hardware-smoke.txt`。
 **提交建议：** `feat(demod): add unified d3d11 compute path`
 
 ## G12 — CP-B：CPU/GPU 语义 parity 与性能门槛

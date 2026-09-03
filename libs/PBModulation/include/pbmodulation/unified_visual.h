@@ -156,6 +156,28 @@ struct UnifiedVisualObservation
     }
 };
 
+// Compact, same-frame handoff from a pixel demodulation backend into the
+// canonical CPU FEC/protocol gate. logicalMetrics are already in global
+// codeword-bit order. tileSamplingFailures contains one 0/1 entry for every
+// physical data tile; it never carries pixels or sender-side slot metadata.
+struct UnifiedPreparedMetricFrame
+{
+    LocalDesktopObservation bootstrap;
+    std::span<const float> logicalMetrics;
+    std::span<const std::uint8_t> tileSamplingFailures;
+    std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount> freshness;
+    UnifiedBaseLumaObservation baseLuma;
+    UnifiedFineLumaObservation fineLuma;
+    UnifiedChromaObservation chroma;
+};
+
+[[nodiscard]] bool ValidateUnifiedVisualDecodePolicy(const UnifiedVisualDecodePolicy& policy) noexcept;
+[[nodiscard]] bool ResolveUnifiedVisualSamplingGeometry(const LocalDesktopGeometry& geometry,
+    std::uint32_t frameWidth, std::uint32_t frameHeight, const UnifiedVisualDecodePolicy& policy,
+    LocalDesktopGeometry& output) noexcept;
+[[nodiscard]] bool BuildUnifiedFreshnessBits(std::span<const std::byte> canonicalRecord,
+    std::uint32_t freshnessRegion, std::span<std::uint8_t> output) noexcept;
+
 // Each logical slot is explicitly typed before any protocol packing or Inner
 // FEC encoding occurs. block is one exact PB-Control-1 or Transport Block wire
 // object when active is true. Their existing canonical prefixes are mutually
@@ -224,6 +246,13 @@ public:
     [[nodiscard]] UnifiedVisualObservation DecodeMixedFrame(const LumaView& view,
         const UnifiedExpectedFrameIdentity& expectedIdentity = {},
         const UnifiedVisualDecodePolicy& policy = {}) noexcept;
+    // Product GPU handoff. The same canonical Bootstrap observation that
+    // selected geometry must accompany the compact metrics. This function
+    // applies lane/local erasures and then reuses the exact DecodeMixedFrame
+    // QC-LDPC and protocol-admission backend.
+    [[nodiscard]] UnifiedVisualObservation DecodePreparedMixedFrame(const UnifiedPreparedMetricFrame& input,
+        const UnifiedExpectedFrameIdentity& expectedIdentity = {},
+        const UnifiedVisualDecodePolicy& policy = {}) noexcept;
     // Explicit-plan oracle retained for mapping/negative tests. Product
     // application ingress should use DecodeMixedFrame.
     [[nodiscard]] UnifiedVisualObservation Decode(const LumaView& view,
@@ -236,6 +265,9 @@ private:
     [[nodiscard]] UnifiedVisualObservation DecodeInternal(const LumaView& view,
         std::span<const UnifiedSlotAssignment> slotPlan, bool inferSlotKinds,
         const UnifiedExpectedFrameIdentity& expectedIdentity,
+        const UnifiedVisualDecodePolicy& policy) noexcept;
+    [[nodiscard]] UnifiedVisualObservation FinalizeDecodedMetrics(UnifiedVisualObservation observation,
+        std::span<const UnifiedSlotAssignment> slotPlan, bool inferSlotKinds,
         const UnifiedVisualDecodePolicy& policy) noexcept;
 
     struct Implementation;

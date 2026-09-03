@@ -1,6 +1,6 @@
 PbAddUnitTest(PBDemodD3D11Tests test_demodulator.cpp)
 target_link_libraries(PBDemodD3D11Tests PRIVATE PB::PBDemodD3D11 PB::PBModulation PB::PBProtocol
-    PB::PBDesktopLevelsReference PB::PBInnerFec d3d11 dxgi)
+    PB::PBDesktopLevelsReference PB::PBInnerFec PB::PBRemoteVisualSimulator d3d11 dxgi)
 target_compile_definitions(PBDemodD3D11Tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 PbInstrumentPresentationTest(PBDemodD3D11Tests)
 set(pbDemodD3D11TestTimeout 180)
@@ -19,5 +19,12 @@ add_test(NAME PBRemoteVisualGpuParityTests
     COMMAND PBDemodD3D11Tests "[.gpu-parity]" --reporter console --durations yes)
 set_tests_properties(PBRemoteVisualGpuParityTests PROPERTIES
     LABELS "demod;d3d11;remote-visual;gpu-parity;hardware"
+    RUN_SERIAL TRUE
+    TIMEOUT 300)
+
+add_test(NAME PBUnifiedVisualHardwareSmokeTests
+    COMMAND PBDemodD3D11Tests "[.unified-hardware-smoke]" --reporter console --durations yes)
+set_tests_properties(PBUnifiedVisualHardwareSmokeTests PROPERTIES
+    LABELS "demod;d3d11;unified;hardware-smoke"
     RUN_SERIAL TRUE
     TIMEOUT 300)

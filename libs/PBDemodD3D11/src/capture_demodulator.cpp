@@ -112,6 +112,11 @@ CaptureStatus ValidateDeviceAdapter(ID3D11Device* const device, const LUID& expe
 
 bool ResolveBinding(const std::uint64_t visualProfileId, pbmodulation::LocalDesktopBootstrapBinding& output) noexcept
 {
+    if (visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId)
+    {
+        output = {visualProfileId, pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
+        return true;
+    }
     if (visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId)
     {
         output = {visualProfileId, pbmodulation::kRemoteVisualLowFpsLayoutVersion};
@@ -140,6 +145,16 @@ bool IsRemoteVisualLowFps(const std::uint64_t visualProfileId) noexcept
     return visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId;
 }
 
+bool IsUnifiedVisual(const std::uint64_t visualProfileId) noexcept
+{
+    return visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId;
+}
+
+bool IsStagedVisual(const std::uint64_t visualProfileId) noexcept
+{
+    return IsRemoteVisualLowFps(visualProfileId) || IsUnifiedVisual(visualProfileId);
+}
+
 pbmodulation::LocalDesktopObservation DecodeRemoteVisualLowFpsBootstrap(const pbmodulation::LumaView& view,
     const pbmodulation::LocalDesktopBootstrapBinding& expectedBinding,
     const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy) noexcept
@@ -161,6 +176,34 @@ pbmodulation::LocalDesktopObservation DecodeRemoteVisualLowFpsBootstrap(const pb
             {
                 observation.erasure = pbmodulation::LocalDesktopErasureReason::InvalidGeometry;
             }
+        }
+    }
+    if (!observation.IsAccepted())
+    {
+        observation.canonical44.fill(std::byte{0});
+        observation.quality = 0;
+    }
+    return observation;
+}
+
+pbmodulation::LocalDesktopObservation DecodeUnifiedBootstrap(const pbmodulation::LumaView& view,
+    const pbmodulation::LocalDesktopBootstrapBinding& expectedBinding,
+    const pbmodulation::UnifiedVisualDecodePolicy& policy) noexcept
+{
+    auto observation = pbmodulation::DecodeLocalDesktopBootstrap(view, expectedBinding, policy.locator);
+    if (observation.IsAccepted())
+    {
+        const auto parsed = pbprotocol::ParseBootstrapRecord(observation.canonical44);
+        pbmodulation::LocalDesktopGeometry samplingGeometry;
+        if (!parsed || parsed.Value().visualProfileId != expectedBinding.visualProfileId ||
+            parsed.Value().visualLayoutVersion != expectedBinding.visualLayoutVersion)
+        {
+            observation.erasure = pbmodulation::LocalDesktopErasureReason::UnsupportedRecord;
+        }
+        else if (!pbmodulation::ResolveUnifiedVisualSamplingGeometry(observation.geometry,
+            view.width, view.height, policy, samplingGeometry))
+        {
+            observation.erasure = pbmodulation::LocalDesktopErasureReason::InvalidGeometry;
         }
     }
     if (!observation.IsAccepted())
@@ -316,7 +359,7 @@ struct CaptureDemodulator::Implementation
     Implementation(const CaptureDemodulatorConfig& configured, const CaptureDemodulatorBudget& reserved,
         const pbmodulation::LocalDesktopBootstrapBinding expectedBinding, const std::int64_t frequency)
         : config(configured), binding(expectedBinding), qpcFrequency(frequency),
-          referenceScratch(IsRemoteVisualLowFps(configured.visualProfileId) ? 0 : pbmodulation::kReferenceFrameBgraBytes),
+          referenceScratch(IsStagedVisual(configured.visualProfileId) ? 0 : pbmodulation::kReferenceFrameBgraBytes),
           results(configured.resultQueueCapacity)
     {
         snapshot.reservation = reserved;
@@ -654,6 +697,8 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
 {
     pbmodulation::LocalDesktopBootstrapBinding binding;
     const bool remoteVisualLowFps = IsRemoteVisualLowFps(config.visualProfileId);
+    const bool unifiedVisual = IsUnifiedVisual(config.visualProfileId);
+    const bool stagedVisual = remoteVisualLowFps || unifiedVisual;
     const pbmodulation::LocalDesktopGeometry policyProbe{0, 0, 1, 1, 0};
     if (!ResolveBinding(config.visualProfileId, binding) || config.slotCount < 2 ||
         config.slotCount > maximumDemodulatorSlots || config.maximumFrameAgeMilliseconds == 0 ||
@@ -664,6 +709,7 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
         (remoteVisualLowFps && config.maximumDuplicateRefinementAttempts > maximumCaptureDemodDuplicateRefinementAttempts) ||
         (remoteVisualLowFps && pbmodulation::ValidateRemoteVisualLowFpsGeometry(policyProbe, config.remoteVisualLowFpsPolicy) ==
             pbmodulation::RemoteVisualLowFpsErasure::InvalidPolicy) ||
+        (unifiedVisual && !pbmodulation::ValidateUnifiedVisualDecodePolicy(config.unifiedVisualPolicy)) ||
         (config.evaluationMode != pbdesktoplevels::EvaluationMode::DiagnosticTruth &&
          config.evaluationMode != pbdesktoplevels::EvaluationMode::Transport))
     {
@@ -679,14 +725,14 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
     {
         return FromDemodStatus(demodStatus, CaptureStage::Configuration);
     }
-    const auto maximumPixels = remoteVisualLowFps ? pbprotocol::CheckedMultiplyUint64(config.maximumRoiWidth, config.maximumRoiHeight) :
+    const auto maximumPixels = stagedVisual ? pbprotocol::CheckedMultiplyUint64(config.maximumRoiWidth, config.maximumRoiHeight) :
         pbprotocol::ProtocolResult<std::uint64_t>::Success(static_cast<std::uint64_t>(canvasWidth) * canvasHeight);
     const auto maximumFrameBytes = maximumPixels ? pbprotocol::CheckedMultiplyUint64(maximumPixels.Value(), 4) : maximumPixels;
     const auto staging = maximumFrameBytes ? pbprotocol::CheckedMultiplyUint64(maximumFrameBytes.Value(), config.slotCount) : maximumFrameBytes;
     const auto queue = pbprotocol::CheckedMultiplyUint64(sizeof(CaptureDemodulatorResult), config.resultQueueCapacity);
     const auto first = staging && queue ? pbprotocol::CheckedAddUint64(budget.demodulatorBytes, staging.Value()) :
         pbprotocol::ProtocolResult<std::uint64_t>::Failure(pbprotocol::ProtocolErrorCode::LengthOverflow, 0);
-    const std::uint64_t referenceScratchBytes = remoteVisualLowFps ? 0 : canvasBytes;
+    const std::uint64_t referenceScratchBytes = stagedVisual ? 0 : canvasBytes;
     const auto second = first ? pbprotocol::CheckedAddUint64(first.Value(), referenceScratchBytes) : first;
     const auto third = second ? pbprotocol::CheckedAddUint64(second.Value(), queue.Value()) : second;
     const auto total = third ? pbprotocol::CheckedAddUint64(third.Value(), fixedOverheadBytes) : third;
@@ -760,8 +806,8 @@ CaptureStatus CaptureDemodulator::ValidateConfiguration(const pbcapturenormalize
     const auto& rectangle = config.region.physicalRect;
     const auto width = static_cast<std::int64_t>(rectangle.right) - rectangle.left;
     const auto height = static_cast<std::int64_t>(rectangle.bottom) - rectangle.top;
-    const bool remoteVisualLowFps = IsRemoteVisualLowFps(implementation_->config.visualProfileId);
-    const bool validSize = remoteVisualLowFps ? width > 0 && height > 0 &&
+    const bool stagedVisual = IsStagedVisual(implementation_->config.visualProfileId);
+    const bool validSize = stagedVisual ? width > 0 && height > 0 &&
         width <= implementation_->config.maximumRoiWidth && height <= implementation_->config.maximumRoiHeight :
         width == canvasWidth && height == canvasHeight;
     if (!validSize || config.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM ||
@@ -780,8 +826,8 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     const auto& rectangle = environment.region.physicalRect;
     const auto width = static_cast<std::int64_t>(rectangle.right) - rectangle.left;
     const auto height = static_cast<std::int64_t>(rectangle.bottom) - rectangle.top;
-    const bool remoteVisualLowFps = IsRemoteVisualLowFps(state.config.visualProfileId);
-    const bool validSize = remoteVisualLowFps ? width > 0 && height > 0 &&
+    const bool stagedVisual = IsStagedVisual(state.config.visualProfileId);
+    const bool validSize = stagedVisual ? width > 0 && height > 0 &&
         width <= state.config.maximumRoiWidth && height <= state.config.maximumRoiHeight :
         width == canvasWidth && height == canvasHeight;
     if (device == nullptr || !NonzeroSourceId(domain) || domain.captureEpoch == 0 || state.active ||
@@ -973,8 +1019,8 @@ CaptureStatus CaptureDemodulator::Submit(const ScreenCaptureFrame& frame, ID3D11
     }
     auto& pending = state.pending[frame.metadata.slotIndex];
     DemodSubmission submission;
-    const bool remoteVisualLowFps = IsRemoteVisualLowFps(state.config.visualProfileId);
-    if (!remoteVisualLowFps)
+    const bool stagedVisual = IsStagedVisual(state.config.visualProfileId);
+    if (!stagedVisual)
     {
         DemodStatus status;
         {
@@ -1001,7 +1047,7 @@ CaptureStatus CaptureDemodulator::Submit(const ScreenCaptureFrame& frame, ID3D11
         state.snapshot.pendingHighWater = std::max(state.snapshot.pendingHighWater, state.snapshot.pendingFrames);
     }
     pending.active = true;
-    pending.hasDemodulation = !remoteVisualLowFps;
+    pending.hasDemodulation = !stagedVisual;
     pending.metadata = frame.metadata;
     pending.borrowedTexture = frame.texture;
     pending.submission = submission;
@@ -1050,7 +1096,9 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
             DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion);
     };
     const bool remoteVisualLowFps = IsRemoteVisualLowFps(state.config.visualProfileId);
-    if (remoteVisualLowFps && pending.hasDemodulation)
+    const bool unifiedVisual = IsUnifiedVisual(state.config.visualProfileId);
+    const bool stagedVisual = remoteVisualLowFps || unifiedVisual;
+    if (stagedVisual && pending.hasDemodulation)
     {
         const std::lock_guard lock(state.mutex);
         pbprotocol::SaturatingIncrementUnsigned(state.snapshot.stagedGpuCompletions);
@@ -1069,7 +1117,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
     }
     if (GetCurrentThreadId() != state.ownerThread || !state.active || metadata.domain != state.domain ||
         !SameComIdentity(context, state.context.Get()) ||
-        (remoteVisualLowFps && allowContinuation && (texture == nullptr || texture != pending.borrowedTexture)))
+        (stagedVisual && allowContinuation && (texture == nullptr || texture != pending.borrowedTexture)))
     {
         const auto retired = RetireExternally();
         state.SetDemodStatus(retired);
@@ -1142,11 +1190,12 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         const pbmodulation::LumaView view{mappedPixels, state.roiWidth, state.roiHeight, mapped.RowPitch,
             pbmodulation::LumaPixelFormat::Bgra8};
         bootstrap = remoteVisualLowFps ? DecodeRemoteVisualLowFpsBootstrap(view, state.binding,
-            state.config.remoteVisualLowFpsPolicy) : pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, state.binding);
+            state.config.remoteVisualLowFpsPolicy) : unifiedVisual ? DecodeUnifiedBootstrap(view, state.binding,
+                state.config.unifiedVisualPolicy) : pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, state.binding);
         bool referenceCandidate = false;
         bool referenceAccepted = false;
         ExtractedControl extractedControl;
-        if (!remoteVisualLowFps && !bootstrap.IsAccepted() && mappedPixels.size() >= 4 && mappedPixels[0] == std::byte{0} &&
+        if (!stagedVisual && !bootstrap.IsAccepted() && mappedPixels.size() >= 4 && mappedPixels[0] == std::byte{0} &&
             mappedPixels[1] == std::byte{0} && mappedPixels[2] == std::byte{0} && mappedPixels[3] == std::byte{255})
         {
             referenceCandidate = true;
@@ -1199,7 +1248,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
                 pbprotocol::SaturatingIncrementUnsigned(state.snapshot.cpuTimingUnavailable);
             }
         }
-        const auto observedGeometryStatus = remoteVisualLowFps ? state.RecordGeometry(bootstrap) :
+        const auto observedGeometryStatus = stagedVisual ? state.RecordGeometry(bootstrap) :
             CaptureDemodulatorGeometryStatus::NotApplicable;
         if (!bootstrap.IsAccepted())
         {
@@ -1261,7 +1310,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         pending.bootstrapReady = true;
     }
 
-    if (remoteVisualLowFps && !pending.hasDemodulation)
+    if (stagedVisual && !pending.hasDemodulation)
     {
         if (!allowContinuation || texture == nullptr || texture != pending.borrowedTexture)
         {
@@ -1270,11 +1319,15 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
             state.SetError(failure);
             return failure;
         }
-        bool shouldSubmit = false;
-        const auto temporalStatus = state.BeginTemporalAttempt(pending, effectiveTimestamp, shouldSubmit);
+        bool shouldSubmit = unifiedVisual;
+        const auto temporalStatus = remoteVisualLowFps ?
+            state.BeginTemporalAttempt(pending, effectiveTimestamp, shouldSubmit) : CaptureStatus{};
         if (!temporalStatus)
         {
-            state.temporalFrame = {};
+            if (remoteVisualLowFps)
+            {
+                state.temporalFrame = {};
+            }
             state.FinishPending(metadata.slotIndex);
             state.SetError(temporalStatus);
             return temporalStatus;
@@ -1301,14 +1354,20 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         DemodStatus submitStatus;
         {
             const std::lock_guard lock(state.demodulatorMutex);
-            submitStatus = state.demodulator ? state.demodulator->SubmitRemoteVisualLowFps(frame, context,
-                pending.bootstrap.canonical44, pending.bootstrap.geometry, state.config.remoteVisualLowFpsPolicy, submission) :
-                DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Submission);
+            submitStatus = state.demodulator ? (remoteVisualLowFps ?
+                state.demodulator->SubmitRemoteVisualLowFps(frame, context, pending.bootstrap.canonical44,
+                    pending.bootstrap.geometry, state.config.remoteVisualLowFpsPolicy, submission) :
+                state.demodulator->SubmitUnifiedVisual(frame, context, pending.bootstrap,
+                    state.config.unifiedVisualPolicy, submission)) :
+                    DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Submission);
         }
         if (!submitStatus)
         {
             state.SetDemodStatus(submitStatus);
-            state.temporalFrame = {};
+            if (remoteVisualLowFps)
+            {
+                state.temporalFrame = {};
+            }
             state.FinishPending(metadata.slotIndex);
             const auto failure = FromDemodStatus(submitStatus, CaptureStage::Completion);
             state.SetError(failure);
@@ -1333,7 +1392,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
     DemodPollResult poll;
     {
         const std::lock_guard lock(state.demodulatorMutex);
-        poll = state.demodulator ? (remoteVisualLowFps ? state.demodulator->Poll(context, pending.submission, demodulation) :
+        poll = state.demodulator ? (stagedVisual ? state.demodulator->Poll(context, pending.submission, demodulation) :
             state.demodulator->PollUnbound(context, pending.submission, bootstrap.canonical44, demodulation)) :
             DemodPollResult{DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion), true};
     }
@@ -1381,7 +1440,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
             pbprotocol::SaturatingIncrementUnsigned(state.snapshot.demodulationRejectedFrames);
         }
         const bool visualErasure = poll.status.code == DemodError::InvalidBinding || poll.status.code == DemodError::NonFiniteMetric ||
-            poll.status.code == DemodError::CalibrationFailure || (remoteVisualLowFps && poll.status.code == DemodError::InvalidFrame);
+            poll.status.code == DemodError::CalibrationFailure || (stagedVisual && poll.status.code == DemodError::InvalidFrame);
         if (visualErasure)
         {
             CaptureDemodulatorResult result;
@@ -1389,7 +1448,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
             result.metadata = metadata;
             result.bootstrapRecord = bootstrap.canonical44;
             result.bootstrap = bootstrap;
-            result.geometryStatus = remoteVisualLowFps ? ClassifyGeometry(bootstrap, state.roiWidth, state.roiHeight) :
+            result.geometryStatus = stagedVisual ? ClassifyGeometry(bootstrap, state.roiWidth, state.roiHeight) :
                 CaptureDemodulatorGeometryStatus::NotApplicable;
             const auto temporalStatus = remoteVisualLowFps ? state.CompleteTemporalAttempt(pending, demodulation, result) :
                 CaptureStatus{};
@@ -1421,7 +1480,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
     result.metadata = metadata;
     result.bootstrapRecord = bootstrap.canonical44;
     result.bootstrap = bootstrap;
-    result.geometryStatus = remoteVisualLowFps ? ClassifyGeometry(bootstrap, state.roiWidth, state.roiHeight) :
+    result.geometryStatus = stagedVisual ? ClassifyGeometry(bootstrap, state.roiWidth, state.roiHeight) :
         CaptureDemodulatorGeometryStatus::NotApplicable;
     result.demodulation = demodulation;
     CaptureStatus temporalStatus;
@@ -1429,7 +1488,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
     {
         temporalStatus = state.CompleteTemporalAttempt(pending, demodulation, result);
     }
-    else
+    else if (!unifiedVisual)
     {
         result.admittedTransportBlockCount = demodulation.acceptedTransportBlockCount;
         for (std::uint32_t index = 0; index < result.admittedTransportBlockCount; index++)
@@ -1449,11 +1508,12 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         state.SetError(temporalStatus);
         return temporalStatus;
     }
-    const bool remoteControl = result.admittedRemoteControlBlockCount == 1;
-    result.kind = remoteControl ? CaptureDemodulatorResultKind::ControlRecord :
-        (!remoteVisualLowFps || result.temporalDisposition == CaptureDemodulatorTemporalDisposition::Unique ||
-            result.admittedTransportBlockCount != 0 ? CaptureDemodulatorResultKind::Transport :
-                CaptureDemodulatorResultKind::TelemetryOnly);
+    const bool remoteControl = !unifiedVisual && result.admittedRemoteControlBlockCount == 1;
+    result.kind = unifiedVisual ? CaptureDemodulatorResultKind::UnifiedFrame :
+        remoteControl ? CaptureDemodulatorResultKind::ControlRecord :
+            (!remoteVisualLowFps || result.temporalDisposition == CaptureDemodulatorTemporalDisposition::Unique ||
+                result.admittedTransportBlockCount != 0 ? CaptureDemodulatorResultKind::Transport :
+                    CaptureDemodulatorResultKind::TelemetryOnly);
     if (remoteControl)
     {
         const auto controlIndex = result.admittedRemoteControlBlockIndices[0];
@@ -1467,7 +1527,21 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         pbprotocol::SaturatingIncrementUnsigned(state.snapshot.completedFrames);
         state.snapshot.acceptedTransportBlocks = pbprotocol::SaturatingAddUnsigned(state.snapshot.acceptedTransportBlocks,
             static_cast<std::uint64_t>(result.admittedTransportBlockCount));
-        if (remoteControl)
+        state.snapshot.acceptedUnifiedBlocks = pbprotocol::SaturatingAddUnsigned(state.snapshot.acceptedUnifiedBlocks,
+            static_cast<std::uint64_t>(demodulation.acceptedUnifiedBlockCount));
+        if (unifiedVisual)
+        {
+            if (demodulation.unifiedObservation.IsFrameAvailable() &&
+                demodulation.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedCodewordCount)
+            {
+                pbprotocol::SaturatingIncrementUnsigned(state.snapshot.verifiedFrames);
+            }
+            else
+            {
+                pbprotocol::SaturatingIncrementUnsigned(state.snapshot.postFecFailedFrames);
+            }
+        }
+        else if (remoteControl)
         {
             pbprotocol::SaturatingIncrementUnsigned(state.snapshot.controlFrames);
         }

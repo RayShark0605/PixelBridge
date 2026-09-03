@@ -286,22 +286,6 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
         sample.red <= 0 || sample.red >= 255;
 }
 
-[[nodiscard]] bool ValidPolicy(const UnifiedVisualDecodePolicy& policy) noexcept
-{
-    const std::array<double, 5> values{policy.minimumLumaLevelGap, policy.maximumPilotDeviation,
-        policy.minimumChromaSeparation, policy.maximumPhasePilotResidual,
-        policy.maximumTimingBitErrorFraction};
-    return std::ranges::all_of(values, [](const double value)
-    {
-        return std::isfinite(value) && value >= 0;
-    }) && policy.minimumLumaLevelGap >= 16 && policy.minimumLumaLevelGap <= 96 &&
-        policy.maximumPilotDeviation <= 16 && policy.minimumChromaSeparation >= 8 &&
-        policy.minimumChromaSeparation <= 128 && policy.maximumPhasePilotResidual <= 0.5 &&
-        policy.maximumTimingBitErrorFraction <= 0.25 && policy.minimumDecisionMetric >= 0 &&
-        policy.maximumFecIterations >= pbinnerfec::kQcLdpcMinIterations &&
-        policy.maximumFecIterations <= pbinnerfec::kQcLdpcMaxIterations;
-}
-
 [[nodiscard]] double GetUnifiedMinimumScale() noexcept
 {
     return static_cast<double>(kUnifiedVisualProfile.presentation.minimumScaleNumerator) /
@@ -322,23 +306,29 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     return locator;
 }
 
-[[nodiscard]] bool ResolveUnifiedSamplingGeometry(const LocalDesktopGeometry& geometry,
+[[nodiscard]] bool ResolveUnifiedSamplingGeometryInternal(const LocalDesktopGeometry& geometry,
     const std::uint32_t frameWidth, const std::uint32_t frameHeight,
     const LocalDesktopDecodePolicy& locatorPolicy, LocalDesktopGeometry& output) noexcept
 {
     const std::array<double, 5> values{geometry.originX, geometry.originY, geometry.scaleX, geometry.scaleY,
         geometry.markerResidualPixels};
+    const double scaleTolerance = kLocalDesktopGeometryRefinementConvergencePixels /
+        static_cast<double>(std::min(kUnifiedVisualProfile.canvasWidth, kUnifiedVisualProfile.canvasHeight));
     if (frameWidth == 0 || frameHeight == 0 || !std::ranges::all_of(values, [](const double value)
         {
             return std::isfinite(value);
-        }) || geometry.scaleX < GetUnifiedMinimumScale() || geometry.scaleX > GetUnifiedMaximumScale() ||
-        geometry.scaleY < GetUnifiedMinimumScale() || geometry.scaleY > GetUnifiedMaximumScale() ||
+        }) || geometry.scaleX < GetUnifiedMinimumScale() - scaleTolerance ||
+        geometry.scaleX > GetUnifiedMaximumScale() + scaleTolerance ||
+        geometry.scaleY < GetUnifiedMinimumScale() - scaleTolerance ||
+        geometry.scaleY > GetUnifiedMaximumScale() + scaleTolerance ||
         geometry.markerResidualPixels < 0)
     {
         return false;
     }
 
     LocalDesktopGeometry candidate = geometry;
+    candidate.scaleX = std::clamp(candidate.scaleX, GetUnifiedMinimumScale(), GetUnifiedMaximumScale());
+    candidate.scaleY = std::clamp(candidate.scaleY, GetUnifiedMinimumScale(), GetUnifiedMaximumScale());
     // Candidate residual tolerance must not become crop tolerance. Only absorb
     // sub-pixel refinement noise at a frame edge; even a one-pixel crop remains
     // a decisive CanvasClipped failure.
@@ -978,6 +968,42 @@ void EvaluateAcceptedInformation(const std::uint32_t slot, const UnifiedSlotAssi
 
 } // namespace
 
+bool ValidateUnifiedVisualDecodePolicy(const UnifiedVisualDecodePolicy& policy) noexcept
+{
+    const std::array<double, 5> values{policy.minimumLumaLevelGap, policy.maximumPilotDeviation,
+        policy.minimumChromaSeparation, policy.maximumPhasePilotResidual,
+        policy.maximumTimingBitErrorFraction};
+    return ValidateLocalDesktopDecodePolicy(policy.locator) &&
+        std::ranges::all_of(values, [](const double value)
+    {
+        return std::isfinite(value) && value >= 0;
+    }) && policy.minimumLumaLevelGap >= 16 && policy.minimumLumaLevelGap <= 96 &&
+        policy.maximumPilotDeviation <= 16 && policy.minimumChromaSeparation >= 8 &&
+        policy.minimumChromaSeparation <= 128 && policy.maximumPhasePilotResidual <= 0.5 &&
+        policy.maximumTimingBitErrorFraction <= 0.25 && policy.minimumDecisionMetric >= 0 &&
+        policy.maximumFecIterations >= pbinnerfec::kQcLdpcMinIterations &&
+        policy.maximumFecIterations <= pbinnerfec::kQcLdpcMaxIterations;
+}
+
+bool ResolveUnifiedVisualSamplingGeometry(const LocalDesktopGeometry& geometry,
+    const std::uint32_t frameWidth, const std::uint32_t frameHeight,
+    const UnifiedVisualDecodePolicy& policy, LocalDesktopGeometry& output) noexcept
+{
+    if (!ValidateUnifiedVisualDecodePolicy(policy))
+    {
+        return false;
+    }
+    return ResolveUnifiedSamplingGeometryInternal(
+        geometry, frameWidth, frameHeight, GetUnifiedLocatorPolicy(policy), output);
+}
+
+bool BuildUnifiedFreshnessBits(const std::span<const std::byte> canonicalRecord,
+    const std::uint32_t freshnessRegion, const std::span<std::uint8_t> output) noexcept
+{
+    return freshnessRegion < kUnifiedFreshnessRegionCount && output.size() == kLocalDesktopTimingBits &&
+        detail::BuildTimingBits(canonicalRecord, freshnessRegion, output);
+}
+
 UnifiedDataTile GetUnifiedDataTile(std::uint32_t tileOrdinal) noexcept
 {
     LocalDesktopRegion historicalTile;
@@ -1272,6 +1298,99 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeMixedFrame(const LumaView
     return DecodeInternal(view, {}, true, expectedIdentity, policy);
 }
 
+UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const UnifiedPreparedMetricFrame& input,
+    const UnifiedExpectedFrameIdentity& expectedIdentity, const UnifiedVisualDecodePolicy& policy) noexcept
+{
+    UnifiedVisualObservation observation;
+    if (!implementation_)
+    {
+        return observation;
+    }
+    Implementation& state = *implementation_;
+    state.acceptedCount = 0;
+    state.decodedInformationValid.fill(false);
+    state.metricsValid = false;
+    InitializeMetrics(0, UnifiedErasureReason::CanvasClipped, state.metrics);
+    state.metricsValid = true;
+    const bool metricsValid = input.logicalMetrics.size() == kUnifiedSoftMetricCount &&
+        std::ranges::all_of(input.logicalMetrics, [](const float value) { return std::isfinite(value); });
+    const bool samplingValid = input.tileSamplingFailures.size() == kUnifiedVisualProfile.dataTileCount &&
+        std::ranges::all_of(input.tileSamplingFailures, [](const std::uint8_t value) { return value <= 1; });
+    const bool lanesValid = ValidateUnifiedLaneObservation(input.baseLuma) &&
+        ValidateUnifiedLaneObservation(input.fineLuma) && ValidateUnifiedLaneObservation(input.chroma);
+    bool freshnessValid = true;
+    for (const UnifiedFreshnessObservation& freshness : input.freshness)
+    {
+        const bool thresholdsPass = static_cast<double>(freshness.bitErrors) / kLocalDesktopTimingBits <=
+            policy.maximumTimingBitErrorFraction && freshness.residual <= policy.locator.maximumTimingResidual;
+        freshnessValid = freshnessValid && freshness.bitErrors <= kLocalDesktopTimingBits &&
+            std::isfinite(freshness.residual) && freshness.residual >= 0 && freshness.current == thresholdsPass;
+    }
+    if (!ValidateUnifiedVisualDecodePolicy(policy) || !input.bootstrap.IsAccepted() || !metricsValid ||
+        !samplingValid || !lanesValid || !freshnessValid)
+    {
+        return observation;
+    }
+    const auto parsedBootstrap = pbprotocol::ParseBootstrapRecord(input.bootstrap.canonical44);
+    if (!parsedBootstrap ||
+        parsedBootstrap.Value().visualProfileId != kUnifiedVisualProfile.productProfile.visualProfileId ||
+        parsedBootstrap.Value().visualLayoutVersion != kUnifiedVisualProfile.productProfile.visualLayoutVersion)
+    {
+        return observation;
+    }
+    observation.inputValid = true;
+    observation.bootstrap = input.bootstrap;
+    observation.bootstrapRecord = parsedBootstrap.Value();
+    if ((expectedIdentity.requireSessionTag && expectedIdentity.sessionTag != observation.bootstrapRecord.sessionTag) ||
+        (expectedIdentity.requireFrameSequence && expectedIdentity.frameSequence != observation.bootstrapRecord.frameSequence))
+    {
+        observation.frameErasure = UnifiedErasureReason::IdentityConflict;
+        InitializeMetrics(observation.bootstrapRecord.frameSequence, observation.frameErasure, state.metrics);
+        return observation;
+    }
+    observation.frameErasure = UnifiedErasureReason::None;
+    observation.freshness = input.freshness;
+    observation.baseLuma = input.baseLuma;
+    observation.fineLuma = input.fineLuma;
+    observation.chroma = input.chroma;
+    InitializeMetrics(observation.bootstrapRecord.frameSequence, UnifiedErasureReason::LocalSamplingFailure,
+        state.metrics);
+    for (std::size_t globalBit = 0; globalBit < state.metrics.size(); globalBit++)
+    {
+        UnifiedSoftMetric& metric = state.metrics[globalBit];
+        const UnifiedLaneCapacity capacity = GetUnifiedLaneCapacity(metric.lane);
+        const std::uint32_t logicalBit = static_cast<std::uint32_t>(globalBit -
+            static_cast<std::size_t>(capacity.firstCodewordSlot) * kUnifiedVisualProfile.innerCodewordBits);
+        const UnifiedPhysicalCarrierSite site = GetUnifiedPhysicalCarrierSite(
+            metric.lane, logicalBit, observation.bootstrapRecord.frameSequence);
+        const std::int16_t value = QuantizeMetric(input.logicalMetrics[globalBit]);
+        if (!site.valid || !LaneAvailable(metric.lane, observation.baseLuma, observation.fineLuma, observation.chroma))
+        {
+            metric.erasureReason = site.valid ? LaneReason(
+                metric.lane, observation.baseLuma, observation.fineLuma, observation.chroma) :
+                UnifiedErasureReason::LocalSamplingFailure;
+        }
+        else if (!observation.freshness[metric.freshnessRegion].current)
+        {
+            metric.erasureReason = UnifiedErasureReason::LocalStaleRegion;
+        }
+        else if (input.tileSamplingFailures[site.tileOrdinal] != 0)
+        {
+            metric.erasureReason = UnifiedErasureReason::LocalSamplingFailure;
+        }
+        else if (std::abs(static_cast<std::int32_t>(value)) < policy.minimumDecisionMetric)
+        {
+            metric.erasureReason = UnifiedErasureReason::LocalLowDecisionMargin;
+        }
+        else
+        {
+            metric.value = value;
+            metric.erasureReason = UnifiedErasureReason::None;
+        }
+    }
+    return FinalizeDecodedMetrics(std::move(observation), {}, true, policy);
+}
+
 UnifiedVisualObservation UnifiedVisualCpuOracle::Decode(const LumaView& view,
     const std::span<const UnifiedSlotAssignment> slotPlan,
     const UnifiedExpectedFrameIdentity& expectedIdentity,
@@ -1296,7 +1415,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     state.metricsValid = false;
     InitializeMetrics(0, UnifiedErasureReason::CanvasClipped, state.metrics);
     state.metricsValid = true;
-    if (!ValidPolicy(policy) || (!inferSlotKinds && !ValidateUnifiedMixedSlotPlan(slotPlan)) ||
+    if (!ValidateUnifiedVisualDecodePolicy(policy) || (!inferSlotKinds && !ValidateUnifiedMixedSlotPlan(slotPlan)) ||
         ValidateLumaView(view) != LocalDesktopErasureReason::None || view.pixelFormat != LumaPixelFormat::Bgra8)
     {
         return observation;
@@ -1361,7 +1480,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     InitializeMetrics(observation.bootstrapRecord.frameSequence, UnifiedErasureReason::LocalSamplingFailure,
         state.metrics);
     LocalDesktopGeometry samplingGeometry;
-    if (!ResolveUnifiedSamplingGeometry(observation.bootstrap.geometry, view.width, view.height,
+    if (!ResolveUnifiedSamplingGeometryInternal(observation.bootstrap.geometry, view.width, view.height,
         locatorPolicy, samplingGeometry))
     {
         observation.frameErasure = UnifiedErasureReason::CanvasClipped;
@@ -1410,6 +1529,33 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     }
     DecodeDataTiles(view, samplingGeometry, observation.bootstrapRecord.frameSequence, calibration, policy,
         observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, state.metrics);
+
+    return FinalizeDecodedMetrics(std::move(observation), slotPlan, inferSlotKinds, policy);
+}
+
+UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedVisualObservation observation,
+    const std::span<const UnifiedSlotAssignment> slotPlan, const bool inferSlotKinds,
+    const UnifiedVisualDecodePolicy& policy) noexcept
+{
+    Implementation& state = *implementation_;
+    state.acceptedCount = 0;
+    state.decodedInformationValid.fill(false);
+    std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> assignmentsBySlot{};
+    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    {
+        assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
+        UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        const UnifiedLaneContract* const lane = FindUnifiedLaneForCodewordSlot(slot);
+        slotObservation.lane = lane == nullptr ? UnifiedLane::BaseLuma : lane->lane;
+    }
+    if (!inferSlotKinds)
+    {
+        for (const UnifiedSlotAssignment& assignment : slotPlan)
+        {
+            assignmentsBySlot[assignment.codewordSlot] = assignment;
+            observation.slots[assignment.codewordSlot].kind = assignment.kind;
+        }
+    }
 
     const pbinnerfec::InnerFecDecodeOptions decodeOptions{policy.maximumFecIterations, 1, 2048, 3, 4};
     for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)

@@ -21,7 +21,7 @@ inline constexpr std::size_t localDesktopErasureCount =
 
 enum class CaptureDemodulatorResultKind : std::uint8_t
 {
-    Transport, ControlRecord, ControlFragment, TelemetryOnly
+    Transport = 0, ControlRecord = 1, ControlFragment = 2, TelemetryOnly = 3, UnifiedFrame = 4
 };
 
 enum class CaptureDemodulatorGeometryStatus : std::uint8_t
@@ -46,9 +46,10 @@ struct CaptureDemodulatorResult
     CaptureDemodulatorTemporalDisposition temporalDisposition = CaptureDemodulatorTemporalDisposition::NotApplicable;
     DemodFrameResult demodulation;
     // Indices into demodulation.acceptedTransportBlocks that are newly admitted
-    // by the bounded LF4 temporal gate. Strict profiles expose every accepted
-    // block here. Consumers must not infer temporal admission from the raw
-    // observation count in DemodFrameResult.
+    // by the bounded LF4 temporal gate. Non-Unified strict profiles expose
+    // every accepted Transport block here. Unified accepted blocks remain in
+    // demodulation.acceptedUnifiedBlocks. Consumers must not infer temporal
+    // admission from the raw observation count in DemodFrameResult.
     std::array<std::uint32_t, pbdesktoplevels::kMaximumCodewords> admittedTransportBlockIndices{};
     std::uint32_t admittedTransportBlockCount = 0;
     std::array<std::uint32_t, pbmodulation::kRemoteVisualLowFpsCodewords> admittedRemoteControlBlockIndices{};
@@ -63,15 +64,16 @@ struct CaptureDemodulatorConfig
     std::uint32_t resultQueueCapacity = 64;
     std::uint64_t maximumResidentBytes = 128ULL * 1024 * 1024;
     pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::Transport;
-    // LF4 only: the reservation is calculated from these hard bounds before
-    // CaptureNormalize allocates its pool/ring. Strict 1:1 profiles continue to
-    // reserve and require exactly the canonical 1920x1080 canvas.
+    // LF4 and Unified only: the reservation is calculated from these hard
+    // bounds before CaptureNormalize allocates its pool/ring. Historical strict
+    // 1:1 profiles continue to reserve and require the canonical canvas.
     std::uint32_t maximumRoiWidth = 3840;
     std::uint32_t maximumRoiHeight = 2160;
     pbmodulation::RemoteVisualLowFpsDecodePolicy remoteVisualLowFpsPolicy;
     // LF4 only. A duplicate may re-evaluate missing codeword slots this many
     // times after the first observation. Zero suppresses every duplicate.
     std::uint32_t maximumDuplicateRefinementAttempts = 1;
+    pbmodulation::UnifiedVisualDecodePolicy unifiedVisualPolicy;
 };
 
 struct CaptureDemodulatorBudget
@@ -144,6 +146,7 @@ struct CaptureDemodulatorSnapshot
     std::uint32_t pendingHighWater = 0;
     std::uint32_t queuedResults = 0;
     std::uint32_t resultQueueHighWater = 0;
+    std::uint64_t acceptedUnifiedBlocks = 0;
 };
 
 // Calculates every fixed allocation before capture pool/ring creation. Failure
@@ -152,13 +155,14 @@ struct CaptureDemodulatorSnapshot
     const CaptureDemodulatorConfig& config, CaptureDemodulatorBudget& output) noexcept;
 
 // Same-frame LocalDesktop Bootstrap plus D3D11 metric/FEC consumer. Strict 1:1
-// profiles queue Bootstrap staging and GPU demodulation in Submit. LF4 queues
-// only Bootstrap staging there; its first staged completion resolves continuous
-// geometry and then submits direct-texture GPU work while the exact ROI remains
-// leased. Results enter a fixed ring after a retirement marker. TelemetryOnly
-// reports a Bootstrap/signal erasure or a frame without protocol payload, while
-// Transport carries only blocks that passed QC-LDPC, canonical framing/CRC, and
-// Bootstrap SessionTag validation.
+// profiles queue Bootstrap staging and GPU demodulation in Submit. LF4 and
+// Unified layout 8 queue only Bootstrap staging there; their first staged
+// completion resolves continuous geometry and then submits direct-texture GPU
+// work while the exact ROI remains leased. Results enter a fixed ring after a
+// retirement marker. TelemetryOnly reports a Bootstrap/signal erasure or a
+// frame without protocol payload, while Transport carries only blocks that
+// passed QC-LDPC, canonical framing/CRC, and Bootstrap SessionTag validation;
+// UnifiedFrame exposes the corresponding mixed Control/Transport result.
 class CaptureDemodulator final : public pbcapturenormalize::ScreenCaptureConsumer
 {
 public:

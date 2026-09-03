@@ -3,6 +3,7 @@
 #include "pbcapturenormalize/screen_capture_frame.h"
 #include "pbdesktoplevels/reference_channel.h"
 #include "pbmodulation/remote_visual_low_fps.h"
+#include "pbmodulation/unified_visual.h"
 
 #include <array>
 #include <cstddef>
@@ -79,9 +80,9 @@ struct DemodFrameResult
     // not CPU submission time or the upstream ROI-copy duration.
     std::uint64_t gpuTime100ns = 0;
     bool gpuTimingValid = false;
-    // RemoteVisual metric/freshness diagnostics. The resolver can replace all
-    // data metrics from a stale region with zero before the unchanged FEC
-    // gate; these counters only report that fail-closed erasure decision.
+    // RemoteVisual/Unified metric and freshness diagnostics. A stale region can
+    // erase its data metrics before the unchanged FEC gate; these counters only
+    // report that fail-closed decision.
     bool remoteMetricSummaryAvailable = false;
     std::uint32_t remoteMetricSamples = 0;
     std::uint32_t remoteZeroMagnitudeMetrics = 0;
@@ -93,6 +94,9 @@ struct DemodFrameResult
     std::uint32_t remoteFreshnessTagErasures = 0;
     std::uint32_t remoteFreshnessErasedDataMetrics = 0;
     std::uint32_t remoteUnreliableSymbols = 0;
+    pbmodulation::UnifiedVisualObservation unifiedObservation;
+    std::array<pbmodulation::UnifiedAcceptedBlock, pbmodulation::kUnifiedCodewordCount> acceptedUnifiedBlocks{};
+    std::uint32_t acceptedUnifiedBlockCount = 0;
 };
 
 struct DemodPollResult
@@ -156,6 +160,13 @@ public:
         ID3D11DeviceContext* context, std::span<const std::byte> bootstrapRecord,
         const pbmodulation::LocalDesktopGeometry& geometry,
         const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy, DemodSubmission& output) noexcept;
+    // Unified layout-8 path. bootstrap must be the accepted observation
+    // recovered from this exact ROI lease. The GPU reads that PB-owned texture
+    // directly and hands only compact observations to the canonical CPU
+    // QC-LDPC/mixed Control+Transport gate.
+    [[nodiscard]] DemodStatus SubmitUnifiedVisual(const pbcapturenormalize::ScreenCaptureFrame& frame,
+        ID3D11DeviceContext* context, const pbmodulation::LocalDesktopObservation& bootstrap,
+        const pbmodulation::UnifiedVisualDecodePolicy& policy, DemodSubmission& output) noexcept;
     // Fixed-profile first stage for a same-frame Bootstrap readback pipeline.
     // The profile selects only GPU geometry; no sender identity or sequence is
     // trusted here. PollUnbound must later receive the canonical Bootstrap
