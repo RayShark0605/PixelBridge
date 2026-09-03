@@ -34,6 +34,7 @@
 | [`PROTOCOL_1_DESCRIPTOR_SCHEMA.md`](PROTOCOL_1_DESCRIPTOR_SCHEMA.md) | 正式 Protocol 1.0 Descriptor Schema 1 字节表、TLV/文件名/资源边界与 Golden manifest | 当前正式 Descriptor 规范 |
 | [`ENCODER_STREAMING_CAROUSEL.md`](ENCODER_STREAMING_CAROUSEL.md) | Encoder 预扫描、双 Segment Carousel、durable ID lease、状态 schema 与 headless report | G02 当前实现规范；不等于视觉/接收 Gate |
 | [`DECODER_RESUMABLE_RECOVERY.md`](DECODER_RESUMABLE_RECOVERY.md) | Decoder journal、乱序 `.part`、重启重验、状态转换与故障分类 | G03 当前实现规范；post-rename crash 留给 G05 |
+| [`UNIFIED_VISUAL_CP_A_HEADLESS.md`](UNIFIED_VISUAL_CP_A_HEADLESS.md) | 正式 Descriptor/Outer/Receiver/journal/storage/publish 的 9-case 多 Segment 无屏幕闭环与 working-set 证据 | G04 CP-A；明确 `visualChainCovered=false` |
 | [`GOLDEN_VECTOR_HARNESS.md`](GOLDEN_VECTOR_HARNESS.md) | Golden 生成、验证与工具边界 | Golden 变更时阅读；不能无理由重生成 |
 | [`PHASE0_GATE_REPORT.md`](PHASE0_GATE_REPORT.md) | Phase-0 Gate 的既有证据和限制 | 只支持报告中列出的 commit/路径，不等于新产品完成 |
 

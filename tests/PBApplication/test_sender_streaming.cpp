@@ -100,6 +100,22 @@ private:
     return text;
 }
 
+[[nodiscard]] std::vector<std::byte> ReadFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    REQUIRE(input);
+    const std::streamoff fileBytes = input.tellg();
+    REQUIRE(fileBytes >= 0);
+    input.seekg(0, std::ios::beg);
+    std::vector<std::byte> bytes(static_cast<std::size_t>(fileBytes));
+    if (!bytes.empty())
+    {
+        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        REQUIRE(input.good());
+    }
+    return bytes;
+}
+
 void WriteHeadlessReport(const pbapp::EncoderStreamingCarouselProbeSnapshot& snapshot)
 {
     const std::filesystem::path reportPath = std::filesystem::path(PB_TEST_SCRATCH_ROOT) /
@@ -327,4 +343,43 @@ TEST_CASE("Streaming sender prescans a multi-Segment file and resumes monotonic 
     REQUIRE(snapshot.scheduledSystematicEquations == expectedSystematicEquations);
     REQUIRE(snapshot.scheduledRepairEquations == expectedRepairEquations);
     WriteHeadlessReport(snapshot);
+}
+
+TEST_CASE("Headless application checkpoint reuses production Transport Receiver and publish state machines",
+    "[application][headless][checkpoint][receiver][storage]")
+{
+    ScratchDirectory scratch(L"g04-headless-application-unit");
+    const std::filesystem::path sourcePath = scratch.GetPath() / L"source.bin";
+    const std::filesystem::path sessionRoot = scratch.GetPath() / L"sessions";
+    const std::filesystem::path outputDirectory = scratch.GetPath() / L"output";
+    REQUIRE(std::filesystem::create_directory(outputDirectory));
+    constexpr std::uint64_t sourceBytes = 4096;
+    const std::array<std::byte, pbprotocol::kDigestBytes> sourceDigest =
+        WriteDeterministicSource(sourcePath, sourceBytes);
+
+    pbapp::ApplicationHeadlessProbeOptions options;
+    options.compressionEnabled = false;
+    pbapp::ApplicationHeadlessProbeSnapshot snapshot;
+    const pbapp::RuntimeStatus status = pbapp::ApplicationRuntimeTestAccess::ProbeHeadlessMultiSegmentFile(
+        sourcePath.wstring(), sessionRoot, outputDirectory.wstring(), options, snapshot);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(snapshot.sourceBytes == sourceBytes);
+    REQUIRE(snapshot.segmentCount == 1);
+    REQUIRE(snapshot.wholeFileDigest == sourceDigest);
+    REQUIRE(snapshot.authoritativePublish);
+    REQUIRE(snapshot.decoder.state == pbapp::DecoderState::Completed);
+    REQUIRE(snapshot.decoder.wholeFileDigestVerified);
+    REQUIRE(snapshot.decoder.finalPublishSucceeded);
+    REQUIRE(snapshot.preDescriptorOrphanBlocks == 1);
+    REQUIRE(snapshot.exactDuplicateSegmentDescriptors == 1);
+    REQUIRE(snapshot.repeatedControlRecords >= 1);
+    REQUIRE(snapshot.submittedRepairBlocks >= 1);
+    REQUIRE(snapshot.intentionallySkippedSystematicBlocks == 1);
+    REQUIRE(snapshot.peakSenderResidentEncodedSegmentCount == 1);
+    REQUIRE(snapshot.peakSenderResidentEncodedSegmentBytes == sourceBytes);
+    REQUIRE(snapshot.peakReceiverActiveOuterFecDecoderCount == 1);
+    REQUIRE(snapshot.peakReceiverResumeResidentPayloadBytes > 0);
+    REQUIRE(std::filesystem::file_size(snapshot.publishedPath) == sourceBytes);
+    REQUIRE(ReadFileBytes(snapshot.publishedPath) == ReadFileBytes(sourcePath));
 }

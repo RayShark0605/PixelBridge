@@ -385,6 +385,7 @@ ctest --test-dir build-unified-release -C Release -R '^PBProtocolTests$' --outpu
 
 ## G04 — CP-A：多 Segment headless 端到端检查点
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G01..G03。
 **目的：** 用真实 application controller/runtime 在无屏幕路径证明正式 descriptor、Outer、Receiver、storage/publish 的窄闭环。
 
@@ -393,13 +394,13 @@ ctest --test-dir build-unified-release -C Release -R '^PBProtocolTests$' --outpu
 
 **用例：**
 
-- [ ] 0-byte。
-- [ ] 1 byte。
-- [ ] `8 MiB-1`、`8 MiB`、`8 MiB+1`。
-- [ ] 至少一个 24..32 MiB CSPRNG RAW 文件。
-- [ ] 压缩有收益与无收益各一个小 fixture。
-- [ ] descriptor 乱序、重复、repair、4-active busy 后重试。
-- [ ] 最终文件外部长度、SHA-256、BLAKE3 与源一致。
+- [x] 0-byte。
+- [x] 1 byte。
+- [x] `8 MiB-1`、`8 MiB`、`8 MiB+1`。
+- [x] 至少一个 24..32 MiB CSPRNG RAW 文件。
+- [x] 压缩有收益与无收益各一个小 fixture。
+- [x] descriptor 乱序、重复、repair、4-active busy 后重试。
+- [x] 最终文件外部长度、SHA-256、BLAKE3 与源一致。
 
 **测试命令：**
 
@@ -412,7 +413,9 @@ ctest --test-dir build-unified-release -C Release `
 ```
 
 再运行一次专用 headless multi-segment executable/test；不得额外运行 full CTest。
+**验证结果（2026-09-03）：** Release 精确构建五个规定目标成功；规定 CTest 正则命中 5 个测试，5/5 通过，0 失败（31.94 秒）。专用 `PBHeadlessMultiSegmentCheckpoint` 目标构建成功，专用 CTest 1/1 通过（16.98 秒），内部 9/9 fixture 全部 authoritative publish 且 byte-exact。Python 3.12.9 `hashlib` + `blake3 1.0.9` 对全部 source/output 与 JSON 记录再次独立复验，9/9 通过。未运行 full CTest、raster、Inner FEC、modulation、GPU、capture、GUI 或屏幕链。
 **退出：** 上述用例发布 byte-exact；峰值 sender/receiver working set 符合 active-segment 预算；CP-A 报告注明未覆盖视觉链。
+**产物：** [`UNIFIED_VISUAL_CP_A_HEADLESS.md`](UNIFIED_VISUAL_CP_A_HEADLESS.md) 记录实际 application-runtime 闭环、用例、working-set 高水位、证据哈希和边界；本地报告为 `build-unified-release/tests/PBApplication/g04-cp-a-headless-report.json`，其中 `visualChainCovered=false`。
 **提交建议：** `test(application): prove headless multi segment recovery`
 
 ## G05 — 大输出确认与 rename 后恢复

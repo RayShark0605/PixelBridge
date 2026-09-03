@@ -208,6 +208,60 @@ struct DecoderReplayProbeSnapshot
     std::uint32_t recorderQueueHighWater = 0;
 };
 
+struct ApplicationHeadlessSegmentProbeSnapshot
+{
+    std::uint64_t segmentOrdinal = 0;
+    std::uint64_t rawBytes = 0;
+    std::uint64_t encodedBytes = 0;
+    pbprotocol::CompressionCodec compressionCodec = pbprotocol::CompressionCodec::Raw;
+    pbprotocol::OuterFecMode outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
+    std::uint32_t systematicBlockCount = 0;
+    std::uint64_t submittedSystematicBlocks = 0;
+    std::uint64_t submittedRepairBlocks = 0;
+    std::uint64_t intentionallySkippedSystematicBlocks = 0;
+};
+
+struct ApplicationHeadlessProbeOptions
+{
+    bool compressionEnabled = false;
+    int compressionLevel = 3;
+    bool exerciseFourActiveBusy = false;
+};
+
+struct ApplicationHeadlessProbeSnapshot
+{
+    std::uint64_t sourceBytes = 0;
+    std::uint64_t segmentCount = 0;
+    pbprotocol::SessionId sessionId{};
+    std::array<std::byte, pbprotocol::kDigestBytes> wholeFileDigest{};
+    std::filesystem::path publishedPath;
+    std::uint64_t processedControlRecords = 0;
+    std::uint64_t repeatedControlRecords = 0;
+    std::uint64_t reversedSegmentDescriptors = 0;
+    std::uint64_t exactDuplicateSegmentDescriptors = 0;
+    std::uint64_t preDescriptorOrphanBlocks = 0;
+    std::uint64_t submittedSystematicBlocks = 0;
+    std::uint64_t submittedRepairBlocks = 0;
+    std::uint64_t intentionallySkippedSystematicBlocks = 0;
+    std::uint64_t deferredResourceBusyCount = 0;
+    std::uint64_t successfulBusyRetryCount = 0;
+    std::uint32_t peakSenderResidentEncodedSegmentCount = 0;
+    std::uint64_t peakSenderResidentEncodedSegmentBytes = 0;
+    std::uint64_t peakReceiverActiveOuterFecDecoderCount = 0;
+    std::uint64_t peakReceiverReservedOuterFecDecoderBytes = 0;
+    std::uint64_t peakReceiverOrphanCachedBytes = 0;
+    std::uint64_t peakReceiverResumeActivePayloadBytes = 0;
+    std::uint64_t peakReceiverResumePendingPayloadBytes = 0;
+    std::uint64_t peakReceiverResumeResidentPayloadBytes = 0;
+    std::uint64_t receiverActiveOuterFecDecoderLimit = 0;
+    std::uint64_t receiverTotalOuterFecDecoderByteLimit = 0;
+    std::uint64_t receiverResumeByteLimit = 0;
+    bool sourceStable = false;
+    bool authoritativePublish = false;
+    DecoderSnapshot decoder;
+    std::vector<ApplicationHeadlessSegmentProbeSnapshot> segments;
+};
+
 // Narrow headless seam over the production LF4 SenderFrameBuilder,
 // ReferenceChannel truth boundary, ReceiverPipeline, ReceiverIngress,
 // WholeFileDigest verification, and PBStorage publish path. This seam remains
@@ -225,6 +279,18 @@ public:
     [[nodiscard]] static RuntimeStatus ProbeRemoteVisualLowFpsReplay(std::span<const std::byte> rawBytes,
         const std::wstring& replayPath, const std::wstring& outputDirectory,
         std::uint32_t duplicateFrames, DecoderReplayProbeSnapshot& output) noexcept;
+};
+
+// Narrow no-raster checkpoint seam over the same durable Sender preparation,
+// SenderFrameBuilder Transport serialization, ReceiverPipeline, ReceiverIngress,
+// resume journal, PBStorage and authoritative publish used by the application.
+// It does not encode, display, capture or demodulate pixels.
+class ApplicationRuntimeTestAccess
+{
+public:
+    [[nodiscard]] static RuntimeStatus ProbeHeadlessMultiSegmentFile(const std::wstring& sourcePath,
+        const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
+        const ApplicationHeadlessProbeOptions& options, ApplicationHeadlessProbeSnapshot& output) noexcept;
 };
 
 // Qt-free application controller. Start launches one bounded worker and

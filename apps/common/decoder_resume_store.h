@@ -78,6 +78,7 @@ public:
     [[nodiscard]] const std::filesystem::path& GetPath() const noexcept;
     [[nodiscard]] std::uint64_t GetGeneration() const noexcept;
     [[nodiscard]] std::uint64_t GetFileBytes() const noexcept;
+    [[nodiscard]] std::size_t GetActiveBlockCount() const noexcept;
     [[nodiscard]] std::size_t GetPendingBlockCount() const noexcept;
     [[nodiscard]] bool WasResumed() const noexcept;
     [[nodiscard]] bool HadTruncatedTail() const noexcept;
