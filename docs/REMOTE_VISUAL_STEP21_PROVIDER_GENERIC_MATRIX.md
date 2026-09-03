@@ -1,8 +1,8 @@
-# RemoteVisual Step 21：provider-generic 正式矩阵、失败归因与逐 run 封存
+# RemoteVisual Step 21：用户授权单次实机关闭与未执行的 provider-generic 扩展矩阵
 
 ## 1. 状态、目标与完成真值
 
-Step 21 的状态保持 `MANUAL-GATE`，直到预先冻结的验收范围被彼此独立的真实远控 run 完整覆盖并通过最终 verifier。canonical MatrixSpec 仍固定 41 个 cell；本次经用户明确授权的 `Dual2560x1440SingleExperimentMonitor` hardware scope 在任何正式 run 前仅按 Computer A 封存 monitor catalog 的单屏 ROI containment 机械选出 31 个可执行 cell，并明确排除 10 个 1.5× cell。工具、production Replay 绑定、scope 和契约测试通过只代表 readiness，不能替代 Computer B 可见像素 → 任意远控桌面/视频链路 → Computer A 实际 WGC/DXGI 捕获 → production demod/Receiver 的现场证据；31-cell PASS 也不声称 1.5× 已覆盖。
+Step 21 现为 `DONE`。用户在矩阵执行前明确取消跨品牌、跨模式测试，并把完成出口重新冻结为“一次新的完整文件真实 Computer B→Computer A 像素链成功恢复”；在 live Receiver、WholeFileDigest、安全发布、external byte-exact 和同 Replay production offline reproduce 全部通过后，用户再次明确确认本次结果可以通过 Step 21。下文原 canonical 41-cell MatrixSpec、31-cell HardwareScope、失败归因和逐 run 工具继续保留为**未执行的扩展计划**，不再是本步关闭前提，也不能被误读为已覆盖。
 
 本步回答三个问题：
 
@@ -313,4 +313,18 @@ verifier 会：
 
 当前 create-only campaign 位于 `build-p1_5-evidence/step21-matrix-freeze-6309b44`。MatrixSpec / A catalog / HardwareScope SHA-256 分别为 `fa1f269016a1ab782e4e78516564e32caa1616e53021e76b8f29b892267db8d0`、`d225bebdc3d0a23d4dd7ece6292343578167e09d64219a3a98d463e7c368ba98`、`b7f52190f214a5c4283ca6f81e239d8c29fe154902982e07e0738ff13ee452cc`。`run-ledger` 的 JSON / CSV / seal SHA-256 为 `f0c847feb947e75953ef9f582a4aa3ac08ee02b0b9dcf575e85dc4af58f6a7c0`、`1977d6e1dd6ff6fec30bfa6f0116c768cff9df4c5ed2af08926ce4e72e0be2c1`、`4cb06ff21e3b54d48d6c4521cc90e6f966adfd05af161f80bcdf28d9efb2f4b6`。B 端回传并规范化的 catalog SHA-256 为 `19b6ccf010eea2f7ca9aca9222ecde54cd5225e1cf35ae3228242afa4340711d`；其 raw UTF-16LE identity 与 normalization provenance 仍保存在原始 field-kit。`endpoint-scope` JSON / seal SHA-256 为 `5a94208e8eba1bfd48f888b31e805664f17d66d954aec3909559a83ea847b93e` 与 `db7932c100209465333228a2ad7647ffb5335c58ddd355e7c0d592316f5fdc2a`。这些 hash 只固定 readiness 输入，不改变零现场 cell 的事实。
 
-因此，production telemetry、Plan.3、Record.2、Evidence/Seal.3 和验证工具已达到执行正式矩阵的代码 readiness；Step 21 状态仍为 `MANUAL-GATE`，唯一完成出口仍是第 8 节规定的 31 个彼此独立的真实双机 included-cell 证据。
+因此，production telemetry、Plan.3、Record.2、Evidence/Seal.3 和验证工具仍保留矩阵执行 readiness，但矩阵没有执行且已从当前任务范围取消。Step 21 的 `DONE` 只来自下述用户授权单次实机合同，不声称第 8 节的 31-cell、full-41、跨品牌、跨模式、1.5× 或 Certified Profile 覆盖。
+
+## 10. 2026-09-03 用户授权单次实机验收结果
+
+- runtime commit：`6718fa391a3bcc2eec83ca00f5dbcaad1f52fbe2`；B 端一键包使用运行时 `primary` selector，不再跨机器硬编码 `DISPLAYn`；
+- B evidence RunId：`7563967ef6474bf188b5547176de1c4c`；A live/offline evidence RunId：`60437c515cfd46189c3bd0ce395746e5`。二者不同的原因是 B 端 RunId 被全屏表面遮挡而 A 必须及时启动；原始 report 均保留，未改写 RunId；
+- wire identity：SessionId `b292a8baf19562607ac0f0be2248fa24`、SessionTag `7468735986349695028`、WholeFileDigest `5d744255878ccecc8c85c68857448c28d8b29d7049beaec8045469f28e0318ff`，B/live/offline 三者完全一致；
+- source/live/offline：均为 1048576 bytes，SHA-256 均为 `c83e8a733a7df243f63f2d69e53cb3e8dbb477f771c771d4cfdce48740d5d6a3`；
+- live：Computer A `\\.\DISPLAY2` 的 `[2560,0]..[5120,1440]` WGC pixels，242 个 accepted Locator samples，实测 origin `(320,180)`、scale `(1,1)`、residual `0`；800 accepted Transport、799 Outer unique，243136 ms 后 Receiver `Completed`、WholeFileDigest PASS、safe publish PASS；
+- Replay/offline：4187901723 bytes、284 frames、0 drop、SHA-256 `687272d4319ea4fc579c4bca96ffe8f5e42dca5f0b20320c6e3e7ff5f166823d`；offline 284/284 production demod、0 observation mismatch、812 accepted Transport、799 Outer unique，31651 ms 后再次 digest/publish/byte-exact PASS；
+- B sender：2 Hz configured、约 1.9736 generated visual FPS、0 dwell violation、source stable、manual Stop，264 个 journal samples 完整封口；live observed UniqueVisualFPS 约 1.9611；
+- 三端 FEC/CRC/identity/resource/conflict closed failure 均为 0；production false-acceptance oracle 仍正确记录为 unavailable，不伪装成 0；
+- 最终 verifier：`tools/PBRemoteVisualEvidence/Test-PBRemoteVisualStep21SingleRunAcceptance.ps1` 从原始 kit/source、route decision、B report/journal、A live/offline report/journal/exit、Replay 和两个发布文件重新验证并 create-only 输出 `PixelBridge.RemoteVisualStep21SingleRunAcceptance.1`。最终 artifact 位于 `build-p1_5-evidence/step21-user-single-run-a-60437c515cfd46189c3bd0ce395746e5/step21-single-run-acceptance-final.json`，SHA-256 `b37d3e38ed9bc7a41b8bc42c53c4f07f5970b688d2af2d6154f390752c45a976`。
+
+最终 truth boundary：`step21Status=DONE`，但 `formalProviderGenericMatrixAccepted=false`、`crossBrandCoverageClaimed=false`、`crossModeCoverageClaimed=false`、`arbitraryGeometryCertified=false`、`certifiedRemoteVisualProfile=false`。Step 22 必须另行完成 1 MiB 3/3、8 MiB 2/2 和含 4 MiB random payload ZIP 1/1 的六次重复文件级验收，不能把本次单个成功 run 重复计数。
