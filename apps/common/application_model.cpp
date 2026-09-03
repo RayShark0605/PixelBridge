@@ -756,6 +756,7 @@ const char* GetCaptureBackendName(const CaptureBackend backend) noexcept
     {
     case CaptureBackend::Wgc: return "WGC";
     case CaptureBackend::Dxgi: return "DXGI Desktop Duplication";
+    case CaptureBackend::Auto: return "Auto";
     }
     return "Unknown";
 }

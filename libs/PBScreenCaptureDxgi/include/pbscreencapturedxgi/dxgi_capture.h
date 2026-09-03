@@ -30,9 +30,12 @@ class DxgiCaptureTestAccess;
 class DxgiCapture
 {
 public:
+    // Optional failure evidence is sampled after Stop joins the owner. A
+    // deferred/failed drain is not authorization to create another backend.
     [[nodiscard]] static CaptureStatus Create(const pbcapturenormalize::CaptureNormalizeConfig& config,
                                               std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer,
-                                              std::unique_ptr<DxgiCapture>& output) noexcept;
+                                              std::unique_ptr<DxgiCapture>& output,
+                                                        pbcapturenormalize::CaptureSnapshot* failedStartSnapshot = nullptr) noexcept;
     ~DxgiCapture();
     DxgiCapture(const DxgiCapture&) = delete;
     DxgiCapture& operator=(const DxgiCapture&) = delete;

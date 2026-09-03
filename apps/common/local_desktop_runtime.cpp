@@ -1,6 +1,7 @@
 #include "local_desktop_runtime.h"
 
 #include "decoder_resume_store.h"
+#include "decoder_capture_controller.h"
 #include "encoder_session_store.h"
 #include "optional_diagnostic_fanout.h"
 #include "remote_visual_replay_recorder.h"
@@ -1591,66 +1592,6 @@ void ApplyEncoderPresentationSnapshot(const pbrenderd3d::DataWindowSnapshot& sou
     }
 }
 
-class NativeCaptureSession
-{
-public:
-    NativeCaptureSession(const CaptureBackend backend,
-        const pbcapturenormalize::CaptureNormalizeConfig& config,
-        const std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer>& consumer)
-        : backend_(backend)
-    {
-        const pbcapturenormalize::CaptureStatus status = backend == CaptureBackend::Wgc ?
-            pbscreencapturewgc::WgcCapture::CreateNormalized(config, consumer, wgc_) :
-            pbscreencapturedxgi::DxgiCapture::Create(config, consumer, dxgi_);
-        Require(static_cast<bool>(status), std::string(GetCaptureBackendName(backend)) +
-            " capture creation failed: " + DescribeCaptureStatus(status));
-    }
-
-    ~NativeCaptureSession()
-    {
-        static_cast<void>(Stop());
-    }
-    NativeCaptureSession(const NativeCaptureSession&) = delete;
-    NativeCaptureSession& operator=(const NativeCaptureSession&) = delete;
-
-    [[nodiscard]] pbcapturenormalize::CaptureSnapshot GetSnapshot() const noexcept
-    {
-        return wgc_ ? wgc_->GetSnapshot() : dxgi_->GetSnapshot();
-    }
-    [[nodiscard]] pbcapturenormalize::CaptureNormalizeSnapshot GetNormalizationSnapshot() const noexcept
-    {
-        return wgc_ ? wgc_->GetNormalizationSnapshot() : dxgi_->GetNormalizationSnapshot();
-    }
-    void RequestStop() noexcept
-    {
-        if (wgc_)
-        {
-            wgc_->RequestStop();
-        }
-        else if (dxgi_)
-        {
-            dxgi_->RequestStop();
-        }
-    }
-    [[nodiscard]] pbcapturenormalize::CaptureStatus Stop() noexcept
-    {
-        if (stopped_)
-        {
-            return stopStatus_;
-        }
-        stopStatus_ = wgc_ ? wgc_->Stop() : dxgi_->Stop();
-        stopped_ = true;
-        return stopStatus_;
-    }
-
-private:
-    CaptureBackend backend_ = CaptureBackend::Wgc;
-    std::unique_ptr<pbscreencapturewgc::WgcCapture> wgc_;
-    std::unique_ptr<pbscreencapturedxgi::DxgiCapture> dxgi_;
-    pbcapturenormalize::CaptureStatus stopStatus_;
-    bool stopped_ = false;
-};
-
 [[nodiscard]] std::int64_t GetUtcFileTime100ns() noexcept
 {
     FILETIME fileTime{};
@@ -2307,9 +2248,7 @@ private:
     }
     auto remainingCaptureConfig = captureConfig.capture;
     remainingCaptureConfig.maximumCaptureBytes -= consumerReservation.Value();
-    const auto nativeStatus = config.captureBackend == CaptureBackend::Wgc ?
-        pbscreencapturewgc::ValidateWgcCaptureConfig(remainingCaptureConfig) :
-        pbscreencapturedxgi::ValidateDxgiCaptureConfig(remainingCaptureConfig);
+    const auto nativeStatus = ValidateDecoderCapturePolicy(config.captureBackend, remainingCaptureConfig);
     if (!nativeStatus)
     {
         return RuntimeStatus::Failure("RemoteVisual production Replay leaves insufficient bounded native capture budget: " +
@@ -2366,13 +2305,9 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
     Require(static_cast<bool>(recorderStatus), "Replay recorder creation failed: " +
         DescribeCaptureStatus(recorderStatus));
 
-    auto captureConfig = MakeCaptureConfig(config);
+    const auto captureConfig = MakeCaptureConfig(config);
     const std::uint64_t samplingInterval100ns = CalculateReplaySamplingInterval100ns(
         config.replayMaximumCaptureFramesPerSecond);
-    if (samplingInterval100ns != 0 && config.captureBackend == CaptureBackend::Wgc)
-    {
-        captureConfig.capture.minUpdateInterval100ns = static_cast<std::int64_t>(samplingInterval100ns);
-    }
     pbcapturenormalize::DiagnosticReadbackConfig readbackConfig;
     readbackConfig.maximumRoiSize = {static_cast<std::int32_t>(roiWidth), static_cast<std::int32_t>(roiHeight)};
     readbackConfig.stagingTextureCount = captureConfig.capture.roiTextureCount;
@@ -2381,20 +2316,31 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
     readbackConfig.processingReservedBytes = replayRecorder->ProcessingReservedBytes();
     readbackConfig.minimumSubmissionInterval100ns = samplingInterval100ns;
     std::shared_ptr<pbcapturenormalize::DiagnosticCpuReadback> replayReadback;
-    const auto readbackStatus = pbcapturenormalize::DiagnosticCpuReadback::Create(
-        readbackConfig, replayRecorder, replayReadback);
-    Require(static_cast<bool>(readbackStatus), "Replay diagnostic readback creation failed: " +
-        DescribeCaptureStatus(readbackStatus));
-
-    NativeCaptureSession capture(config.captureBackend, captureConfig, replayReadback);
+    DecoderCaptureController capture(config.captureBackend, captureConfig,
+        [&](std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer>& output)
+        {
+            if (replayReadback)
+            {
+                const auto stopped = replayReadback->Stop();
+                if (!stopped)
+                {
+                    return stopped;
+                }
+                replayReadback.reset();
+            }
+            const auto status = pbcapturenormalize::DiagnosticCpuReadback::Create(readbackConfig, replayRecorder, replayReadback);
+            output = replayReadback;
+            return status;
+        });
+    const auto captureStartStatus = capture.Start();
     snapshot.Update([&](DecoderSnapshot& value)
     {
         if (value.runGeneration == runGeneration)
         {
-            value.actualBackend = config.captureBackend;
-            value.backendReason = "Explicit backend selected for bounded replay capture-only; no demodulation or fallback";
+            capture.ApplyBinding(value);
         }
     });
+    Require(static_cast<bool>(captureStartStatus), "Capture policy startup failed: " + DescribeCaptureStatus(captureStartStatus));
     auto nextMonitorSafetyCheck = started;
     ChannelStallTracker captureOnlyStalls;
     bool captureLimitReached = false;
@@ -2419,6 +2365,20 @@ void RunRemoteVisualDiagnosticCapture(const DecoderConfig& config, const Profile
             nextMonitorSafetyCheck = now + std::chrono::seconds(1);
         }
         resourceSampler.Sample(ElapsedMilliseconds(started));
+        if (stopRequested.load())
+        {
+            capture.RequestStop();
+            break;
+        }
+        const auto capturePolicyStatus = capture.Poll();
+        snapshot.Update([&](DecoderSnapshot& value)
+        {
+            if (value.runGeneration == runGeneration)
+            {
+                capture.ApplyBinding(value);
+            }
+        });
+        Require(static_cast<bool>(capturePolicyStatus), "Capture policy failed: " + DescribeCaptureStatus(capturePolicyStatus));
         const pbcapturenormalize::CaptureSnapshot captureSnapshot = capture.GetSnapshot();
         const pbcapturenormalize::DiagnosticReadbackSnapshot readbackSnapshot = replayReadback->GetSnapshot();
         const RemoteVisualReplayRecorderSnapshot recorderSnapshot = replayRecorder->GetSnapshot();
@@ -2835,7 +2795,7 @@ public:
             value.remoteFreshnessTagErasures = 0;
             value.remoteFreshnessErasedDataMetrics = 0;
             value.remoteFreshnessErasedDataMetricRate.reset();
-            value.statusMessage = "CaptureEpoch changed; discarded unpublished state and waiting for authoritative descriptor rebind";
+            value.statusMessage = "CaptureEpoch changed; stale visual work discarded, verified Receiver and file state preserved";
         });
     }
 
@@ -6172,7 +6132,7 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
         }
         return {};
     }
-    if ((config.captureBackend != CaptureBackend::Wgc && config.captureBackend != CaptureBackend::Dxgi) ||
+    if ((config.captureBackend != CaptureBackend::Auto && config.captureBackend != CaptureBackend::Wgc && config.captureBackend != CaptureBackend::Dxgi) ||
         (config.visualProfile != VisualProfile::DirectLevels2x2 && config.visualProfile != VisualProfile::ShapeChroma &&
          config.visualProfile != VisualProfile::RemoteVisualResilient &&
          config.visualProfile != VisualProfile::RemoteVisualLowFps))
@@ -6297,9 +6257,7 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
     {
         return replayResourceStatus;
     }
-    const auto captureStatus = config.captureBackend == CaptureBackend::Wgc ?
-        pbscreencapturewgc::ValidateWgcCaptureConfig(captureConfig.capture) :
-        pbscreencapturedxgi::ValidateDxgiCaptureConfig(captureConfig.capture);
+    const auto captureStatus = ValidateDecoderCapturePolicy(config.captureBackend, captureConfig.capture);
     if (!captureStatus)
     {
         return RuntimeStatus::Failure(std::string(GetCaptureBackendName(config.captureBackend)) +
@@ -7147,7 +7105,9 @@ RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
     }
     else
     {
-        initial.backendReason = "Starting the explicitly requested backend; no fallback policy is enabled";
+        initial.backendReason = config.captureBackend == CaptureBackend::Auto ?
+            "Starting Auto policy: WGC preferred, typed failure only DXGI fallback" :
+            "Starting the explicitly requested backend; automatic fallback disabled";
         initial.roiLeft = config.region.physicalRect.left;
         initial.roiTop = config.region.physicalRect.top;
         initial.roiWidth = static_cast<std::uint32_t>(static_cast<std::int64_t>(config.region.physicalRect.right) -
@@ -7423,7 +7383,6 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         }
 
         const auto captureConfig = MakeCaptureConfig(config);
-        std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer = demodulator;
         std::shared_ptr<RemoteVisualReplayRecorder> replayRecorder;
         std::shared_ptr<pbcapturenormalize::DiagnosticCpuReadback> replayReadback;
         std::shared_ptr<OptionalDiagnosticFanout> replayFanout;
@@ -7476,18 +7435,44 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 readbackConfig, replayRecorder, replayReadback);
             Require(static_cast<bool>(readbackStatus), "Replay diagnostic readback creation failed: " +
                 DescribeCaptureStatus(readbackStatus));
-            replayFanout = std::make_shared<OptionalDiagnosticFanout>(demodulator, replayReadback);
-            consumer = replayFanout;
         }
-        NativeCaptureSession capture(config.captureBackend, captureConfig, consumer);
+        bool firstCaptureConsumer = true;
+        DecoderCaptureController capture(config.captureBackend, captureConfig,
+            [&](std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer>& output)
+            {
+                replayFanout.reset();
+                if (!firstCaptureConsumer)
+                {
+                    demodulator.reset();
+                    const auto status = pbdemodd3d11::CaptureDemodulator::Create(demodConfig, demodulator);
+                    if (!status)
+                    {
+                        return status;
+                    }
+                }
+                firstCaptureConsumer = false;
+                if (replayReadback)
+                {
+                    // DiagnosticCpuReadback supports drained DomainStarted on a
+                    // new owner; CaptureDemodulator deliberately does not.
+                    replayFanout = std::make_shared<OptionalDiagnosticFanout>(demodulator, replayReadback);
+                    output = replayFanout;
+                }
+                else
+                {
+                    output = demodulator;
+                }
+                return pbcapturenormalize::CaptureStatus{};
+            });
+        const auto captureStartStatus = capture.Start();
         snapshot_.Update([&](DecoderSnapshot& value)
         {
             if (value.runGeneration == runGeneration)
             {
-                value.actualBackend = config.captureBackend;
-                value.backendReason = "Explicit backend selected; no fallback policy was used";
+                capture.ApplyBinding(value);
             }
         });
+        Require(static_cast<bool>(captureStartStatus), "Capture policy startup failed: " + DescribeCaptureStatus(captureStartStatus));
         std::uint64_t receiverCaptureEpoch = 1;
         auto nextMonitorSafetyCheck = started;
         std::optional<std::chrono::steady_clock::time_point> replayTailDeadline;
@@ -7534,6 +7519,23 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 capture.RequestStop();
                 break;
             }
+            // Switch on this Receiver thread before taking any results. Stop
+            // invalidates and retires the old queue/consumer before replacement.
+            const auto capturePolicyStatus = capture.Poll();
+            snapshot_.Update([&](DecoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration)
+                {
+                    capture.ApplyBinding(value);
+                }
+            });
+            Require(static_cast<bool>(capturePolicyStatus), "Capture policy failed: " + DescribeCaptureStatus(capturePolicyStatus));
+            const auto currentCapture = capture.GetSnapshot();
+            if (currentCapture.captureEpoch > receiverCaptureEpoch)
+            {
+                receiverCaptureEpoch = currentCapture.captureEpoch;
+                pipeline.CaptureEpochReset(ElapsedMilliseconds(started));
+            }
             std::uint32_t drained = 0;
             pbdemodd3d11::CaptureDemodulatorResult result;
             while (!stopRequested_ && drained < pbdemodd3d11::maximumCaptureDemodResultQueue &&
@@ -7542,6 +7544,11 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 if (stopRequested_)
                 {
                     break;
+                }
+                drained++;
+                if (!capture.CanAdmit(result.metadata, CurrentQpc100ns()))
+                {
+                    continue;
                 }
                 const std::uint64_t resultEpoch = result.metadata.domain.captureEpoch;
                 Require(resultEpoch >= receiverCaptureEpoch,
@@ -7562,7 +7569,6 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                     replayRecorder->RecordDemodObservation(
                         MakeReplayDemodObservation(result, profile.visualProfileId, processResult));
                 }
-                drained++;
                 if (pipeline.IsCompleted())
                 {
                     if (!replayRecorder)
@@ -7582,20 +7588,15 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
             const pbdemodd3d11::CaptureDemodulatorSnapshot demodSnapshot = demodulator->GetSnapshot();
             pipeline.ObserveDroppedFrames(captureSnapshot.droppedFrames,
                 demodSnapshot.resultQueueDrops, demodSnapshot.staleResultDrops);
-            if (captureSnapshot.state == pbcapturenormalize::CaptureState::Failed ||
-                (demodSnapshot.error.code != pbcapturenormalize::CaptureError::None &&
-                 captureSnapshot.state != pbcapturenormalize::CaptureState::Recreating))
-            {
-                throw RuntimeFailure("capture/demod entered terminal failure: capture=" +
-                    DescribeCaptureStatus(captureSnapshot.error) + " consumer=" +
-                    DescribeCaptureStatus(demodSnapshot.error));
-            }
+            // The capture owner propagates consumer errors and classifies
+            // recovery. Its next policy poll, not an old demod error, is final.
             snapshot_.Update([&](DecoderSnapshot& value)
             {
                 if (value.runGeneration != runGeneration)
                 {
                     return;
                 }
+                capture.ApplyBinding(value);
                 ApplyCaptureComponentSnapshot(captureSnapshot, value);
                 value.bootstrapAcceptedFrames = demodSnapshot.bootstrapAcceptedFrames;
                 value.bootstrapRejectedFrames = demodSnapshot.bootstrapRejectedFrames;
@@ -7785,7 +7786,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 {
                     value.monitorSafetyStatus = "FAIL";
                 }
-                if (!value.actualBackend)
+                if (!value.actualBackend && value.captureBackendAttempts == 0)
                 {
                     value.backendReason = config.replayInputPath.empty() ?
                         std::string(GetCaptureBackendName(value.requestedBackend)) +

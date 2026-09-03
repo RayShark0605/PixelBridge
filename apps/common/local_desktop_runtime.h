@@ -52,7 +52,7 @@ struct EncoderConfig
 struct DecoderConfig
 {
     std::wstring outputDirectory;
-    CaptureBackend captureBackend = CaptureBackend::Wgc;
+    CaptureBackend captureBackend = CaptureBackend::Auto;
     VisualProfile visualProfile = VisualProfile::DirectLevels2x2;
     pbscreenregion::ScreenCaptureRegion region;
     std::string runId;

@@ -252,6 +252,10 @@ struct CaptureSnapshot
     std::uint64_t consumerContinuationSubmissions = 0;
     std::uint64_t consumerContinuationCompletions = 0;
     std::uint64_t consumerContinuationRejections = 0;
+    // Separate lifecycle evidence from the triggering capture error. Auto may
+    // replace a backend only after synchronous retirement, never after a timeout.
+    CaptureStatus shutdownStatus;
+    bool deviceRebuildFailed = false;
 };
 
 enum class CaptureFrameAgeDisposition : std::uint8_t

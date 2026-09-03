@@ -52,11 +52,17 @@ pbcapturenormalize::CaptureNormalizeSnapshot WgcCapture::GetNormalizationSnapsho
 }
 
 CaptureStatus WgcCapture::CreateNormalized(const pbcapturenormalize::CaptureNormalizeConfig& config,
-                                          std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer, std::unique_ptr<WgcCapture>& output) noexcept
+                                          std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer, std::unique_ptr<WgcCapture>& output,
+                                          pbcapturenormalize::CaptureSnapshot* const failedStartSnapshot) noexcept
 {
+    if (failedStartSnapshot)
+    {
+        *failedStartSnapshot = {};
+        failedStartSnapshot->shutdownComplete = true;
+    }
     try
     {
-        return WgcCaptureTestAccess::CreateNormalized(config, std::move(consumer), detail::MakeNativeCaptureBackend(), output);
+        return WgcCaptureTestAccess::CreateNormalized(config, std::move(consumer), detail::MakeNativeCaptureBackend(), output, failedStartSnapshot);
     }
     catch (const std::bad_alloc&)
     {
@@ -70,8 +76,14 @@ CaptureStatus WgcCapture::CreateNormalized(const pbcapturenormalize::CaptureNorm
 
 CaptureStatus WgcCaptureTestAccess::CreateNormalized(const pbcapturenormalize::CaptureNormalizeConfig& config,
                                                     std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer,
-                                                    std::unique_ptr<detail::CaptureBackend> backend, std::unique_ptr<WgcCapture>& output) noexcept
+                                                    std::unique_ptr<detail::CaptureBackend> backend, std::unique_ptr<WgcCapture>& output,
+                                                    pbcapturenormalize::CaptureSnapshot* const failedStartSnapshot) noexcept
 {
+    if (failedStartSnapshot)
+    {
+        *failedStartSnapshot = {};
+        failedStartSnapshot->shutdownComplete = true;
+    }
     try
     {
         const auto implementation = std::make_shared<WgcCapture::Implementation>();
@@ -81,13 +93,13 @@ CaptureStatus WgcCaptureTestAccess::CreateNormalized(const pbcapturenormalize::C
         {
             return normalized;
         }
+        auto created = std::unique_ptr<WgcCapture>(new WgcCapture(implementation));
         const auto status = detail::CaptureRuntime::Create(implementation->normalizer->GetRuntimeConfig(), implementation->normalizer,
-                                                           std::move(backend), implementation->runtime);
+                                                           std::move(backend), implementation->runtime, failedStartSnapshot);
         if (!status)
         {
             return status;
         }
-        auto created = std::unique_ptr<WgcCapture>(new WgcCapture(implementation));
         output = std::move(created);
         return {};
     }

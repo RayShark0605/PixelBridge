@@ -37,7 +37,8 @@ public:
     [[nodiscard]] static CaptureStatus CreateNormalized(const pbcapturenormalize::CaptureNormalizeConfig& config,
                                                         std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer,
                                                         std::unique_ptr<pbcapturenormalize::detail::CaptureBackend> backend,
-                                                        std::unique_ptr<DxgiCapture>& output) noexcept;
+                                                        std::unique_ptr<DxgiCapture>& output,
+                                                        pbcapturenormalize::CaptureSnapshot* failedStartSnapshot = nullptr) noexcept;
     static void RequestRecreate(DxgiCapture& capture) noexcept;
 };
 

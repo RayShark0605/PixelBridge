@@ -2,6 +2,44 @@
 
 using namespace dxgitest;
 
+TEST_CASE("G14 DXGI normalized startup failure returns retirement proof without a display")
+{
+    class NormalizedConsumer final : public ScreenCaptureConsumer
+    {
+    public:
+        CaptureStatus DomainStarted(const ScreenCaptureDomain&, const CaptureEnvironment&, ID3D11Device*) override
+        {
+            return {};
+        }
+        void DomainInvalidated(const ScreenCaptureDomain&) noexcept override
+        {
+        }
+        CaptureStatus Submit(const ScreenCaptureFrame&, ID3D11DeviceContext*) override
+        {
+            return {};
+        }
+    };
+    const auto control = std::make_shared<Control>();
+    CaptureNormalizeConfig config;
+    config.capture = MakeConfig();
+    config.capture.initialCaptureEpoch = 9;
+    config.capture.maximumFrameAgeMilliseconds = 250;
+    std::unique_ptr<DxgiCapture> capture;
+    CaptureSnapshot failedStart;
+    // The non-display OS seam supplies no D3D device; Normalize must reject it
+    // rather than delivering raw pixels. Cleanup still completes synchronously.
+    REQUIRE(DxgiCaptureTestAccess::CreateNormalized(config, std::make_shared<NormalizedConsumer>(),
+        std::make_unique<Backend>(control), capture, &failedStart).code == CaptureError::InvalidFrame);
+    REQUIRE_FALSE(capture);
+    REQUIRE(failedStart.captureEpoch == 9);
+    REQUIRE(failedStart.shutdownComplete);
+    REQUIRE_FALSE(failedStart.deferredCleanup);
+    REQUIRE(failedStart.shutdownStatus);
+    REQUIRE(failedStart.liveFrameLeases == 0);
+    REQUIRE(failedStart.busyRoiTextures == 0);
+    REQUIRE_FALSE(failedStart.deviceRebuildFailed);
+}
+
 TEST_CASE("DXGI shared owner retires the one source before reacquiring while consumer work remains bounded")
 {
     const auto control = std::make_shared<Control>();

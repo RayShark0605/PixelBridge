@@ -448,8 +448,13 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
     {
         ReleaseSlots();
         const auto status = backend->Shutdown();
+        working.shutdownStatus = status;
         SetError(status);
         const HRESULT closeError = inbox->counters->closeError.load();
+        if (working.shutdownStatus)
+        {
+            working.shutdownStatus = FromHresult(closeError, CaptureStage::Shutdown);
+        }
         SetError(FromHresult(closeError, CaptureStage::Shutdown));
         consumer.reset();
         working.shutdownComplete = true;
@@ -542,6 +547,7 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
                 working.lastDeviceLoss = lost;
                 if (working.deviceRecoveries == config.maximumDeviceRecoveries)
                 {
+                    working.deviceRebuildFailed = true;
                     SetError(lost);
                     static_cast<void>(AdvanceEpoch());
                     break;
@@ -576,6 +582,7 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
                 SetError(status);
                 if (!status)
                 {
+                    working.deviceRebuildFailed = true;
                     break;
                 }
                 working.state = backend->WaitingForEnvironment() ? CaptureState::WaitingForEnvironment : CaptureState::Running;
@@ -740,8 +747,14 @@ CaptureStatus CaptureRuntime::Stop() noexcept
 }
 
 CaptureStatus CaptureRuntime::Create(const CaptureConfig& config, std::shared_ptr<RawRoiConsumer> consumer,
-                                         std::unique_ptr<CaptureBackend> backend, std::unique_ptr<CaptureRuntime>& output) noexcept
+                                         std::unique_ptr<CaptureBackend> backend, std::unique_ptr<CaptureRuntime>& output,
+                                         CaptureSnapshot* const failedStartSnapshot) noexcept
 {
+    if (failedStartSnapshot)
+    {
+        *failedStartSnapshot = {};
+        failedStartSnapshot->shutdownComplete = true;
+    }
     const auto validation = ValidateCaptureConfig(config, backend ? backend->Kind() : CaptureBackendKind::Wgc);
     if (!validation)
     {
@@ -755,6 +768,10 @@ CaptureStatus CaptureRuntime::Create(const CaptureConfig& config, std::shared_pt
     {
         const auto implementation = std::make_shared<CaptureRuntime::Implementation>(config, std::move(consumer), std::move(backend));
         auto capture = std::unique_ptr<CaptureRuntime>(new CaptureRuntime(implementation));
+        if (failedStartSnapshot)
+        {
+            failedStartSnapshot->shutdownComplete = false;
+        }
         implementation->owner = std::thread([implementation]
         {
             implementation->Run();
@@ -771,6 +788,11 @@ CaptureStatus CaptureRuntime::Create(const CaptureConfig& config, std::shared_pt
         }
         if (!status)
         {
+            static_cast<void>(capture->Stop());
+            if (failedStartSnapshot)
+            {
+                *failedStartSnapshot = capture->GetSnapshot();
+            }
             return status;
         }
         output = std::move(capture);

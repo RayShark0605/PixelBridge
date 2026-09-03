@@ -283,7 +283,7 @@ CaptureStatus FromHresult(const HRESULT result, const CaptureStage stage) noexce
         return {};
     }
     const auto error = result == E_OUTOFMEMORY ? CaptureError::OutOfMemory :
-                       result == E_ACCESSDENIED ? CaptureError::AccessLost : CaptureError::NativeFailure;
+                       result == E_ACCESSDENIED || result == DXGI_ERROR_ACCESS_LOST ? CaptureError::AccessLost : CaptureError::NativeFailure;
     return CaptureStatus::Failure(error, stage, static_cast<std::int32_t>(result));
 }
 

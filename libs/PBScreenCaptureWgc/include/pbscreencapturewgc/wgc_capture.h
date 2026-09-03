@@ -36,9 +36,12 @@ public:
                                               std::unique_ptr<WgcCapture>& output) noexcept;
     // Explicit strict boundary. Cursor ambiguity/age are observable erasures;
     // this overload never falls back to raw ROI delivery or another backend.
+    // Optional failure evidence is sampled after Stop joins the owner. A
+    // deferred/failed drain is not authorization to create another backend.
     [[nodiscard]] static CaptureStatus CreateNormalized(const pbcapturenormalize::CaptureNormalizeConfig& config,
                                                         std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer,
-                                                        std::unique_ptr<WgcCapture>& output) noexcept;
+                                                        std::unique_ptr<WgcCapture>& output,
+                                                        pbcapturenormalize::CaptureSnapshot* failedStartSnapshot = nullptr) noexcept;
     ~WgcCapture();
     WgcCapture(const WgcCapture&) = delete;
     WgcCapture& operator=(const WgcCapture&) = delete;
