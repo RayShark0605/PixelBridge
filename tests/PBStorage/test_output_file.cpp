@@ -56,6 +56,18 @@ private:
     return bytes;
 }
 
+[[nodiscard]] std::uint64_t GetAllocationBytes(const std::wstring& path)
+{
+    const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(handle != INVALID_HANDLE_VALUE);
+    FILE_STANDARD_INFO standardInfo{};
+    REQUIRE(GetFileInformationByHandleEx(handle, FileStandardInfo, &standardInfo, sizeof(standardInfo)));
+    REQUIRE(standardInfo.AllocationSize.QuadPart >= 0);
+    REQUIRE(CloseHandle(handle));
+    return static_cast<std::uint64_t>(standardInfo.AllocationSize.QuadPart);
+}
+
 } // namespace
 
 TEST_CASE("PBStorage publishes only an exact whole-file digest", "[storage][publish]")
@@ -406,4 +418,189 @@ TEST_CASE("PBStorage rejects a resumed part whose length conflicts with the desc
     REQUIRE(status.code == pbstorage::StorageErrorCode::ResumeMismatch);
     REQUIRE(resumed == nullptr);
     REQUIRE(std::filesystem::exists(partPath));
+}
+
+TEST_CASE("PBStorage reports independently queried allocation and filesystem semantics",
+    "[storage][allocation][g05]")
+{
+    ScratchDirectory scratch(L"allocation-facts");
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0x501};
+    config.fileBytes = 4097;
+    config.maximumFileBytes = 8192;
+    config.originalFileNameUtf8 = "allocation.bin";
+    pbstorage::OutputFileReservation reservation;
+    REQUIRE(pbstorage::OutputFile::PlanReservation(config, reservation));
+    REQUIRE(reservation.finalFileNameUtf8 == "allocation.bin");
+
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, std::nullopt, output));
+    const pbstorage::OutputFileSnapshot snapshot = output->GetSnapshot();
+    REQUIRE(snapshot.preallocationAttempted);
+    REQUIRE(snapshot.requestedAllocationBytes == config.fileBytes);
+    REQUIRE(snapshot.actualAllocationBytes == GetAllocationBytes(snapshot.partPath));
+    REQUIRE(snapshot.preallocationFullyAllocated ==
+        (snapshot.actualAllocationBytes >= snapshot.requestedAllocationBytes));
+    REQUIRE(snapshot.availableBytesBeforeReservation >= snapshot.actualAllocationBytes);
+    REQUIRE_FALSE(snapshot.fileSparse);
+}
+
+TEST_CASE("PBStorage recovers an exact final after rename and keeps replay operations idempotent",
+    "[storage][publish][recovery][g05]")
+{
+    ScratchDirectory scratch(L"post-rename-recovery");
+    const std::vector<std::byte> bytes = MakeBytes(257);
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0x502};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    config.originalFileNameUtf8 = "published.bin";
+    pbstorage::OutputFileReservation reservation;
+    REQUIRE(pbstorage::OutputFile::PlanReservation(config, reservation));
+
+    std::wstring finalPath;
+    std::wstring partPath;
+    {
+        std::unique_ptr<pbstorage::OutputFile> output;
+        REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, std::nullopt, output));
+        REQUIRE(output->Write(0, bytes));
+        finalPath = output->GetSnapshot().finalPath;
+        partPath = output->GetSnapshot().partPath;
+        REQUIRE(output->Publish(digest));
+    }
+    REQUIRE(std::filesystem::exists(finalPath));
+    REQUIRE_FALSE(std::filesystem::exists(partPath));
+
+    std::unique_ptr<pbstorage::OutputFile> recovered;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, digest, recovered));
+    const pbstorage::OutputFileSnapshot recoveredSnapshot = recovered->GetSnapshot();
+    REQUIRE(recoveredSnapshot.published);
+    REQUIRE(recoveredSnapshot.recoveredPublished);
+    REQUIRE(recoveredSnapshot.verifiedBytes == bytes.size());
+    REQUIRE(recovered->Publish(digest));
+    pbprotocol::WholeFileDigest wrongDigest{};
+    const pbstorage::StorageStatus conflictingReplay = recovered->Publish(wrongDigest);
+    REQUIRE_FALSE(conflictingReplay);
+    REQUIRE(conflictingReplay.code == pbstorage::StorageErrorCode::DigestMismatch);
+    REQUIRE(std::filesystem::exists(finalPath));
+    REQUIRE_FALSE(std::filesystem::exists(partPath));
+}
+
+TEST_CASE("PBStorage never treats conflicting post-rename artifacts as its committed output",
+    "[storage][publish][recovery][conflict][g05]")
+{
+    ScratchDirectory scratch(L"post-rename-conflict");
+    const std::vector<std::byte> bytes = MakeBytes(97);
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0x503};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    config.originalFileNameUtf8 = "conflict.bin";
+    pbstorage::OutputFileReservation reservation;
+    REQUIRE(pbstorage::OutputFile::PlanReservation(config, reservation));
+
+    std::wstring finalPath;
+    std::wstring partPath;
+    {
+        std::unique_ptr<pbstorage::OutputFile> output;
+        REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, std::nullopt, output));
+        REQUIRE(output->Write(0, bytes));
+        finalPath = output->GetSnapshot().finalPath;
+        partPath = output->GetSnapshot().partPath;
+        REQUIRE(output->Publish(digest));
+    }
+    const HANDLE conflictingPart = CreateFileW(partPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(conflictingPart != INVALID_HANDLE_VALUE);
+    REQUIRE(CloseHandle(conflictingPart));
+
+    std::unique_ptr<pbstorage::OutputFile> conflict;
+    const pbstorage::StorageStatus status =
+        pbstorage::OutputFile::CreateOrResume(config, reservation, digest, conflict);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::ResumeMismatch);
+    REQUIRE_FALSE(conflict);
+    REQUIRE(std::filesystem::exists(finalPath));
+    REQUIRE(std::filesystem::exists(partPath));
+}
+
+TEST_CASE("PBStorage leaves a digest-mismatched post-rename final untouched",
+    "[storage][publish][recovery][digest-mismatch][g05]")
+{
+    ScratchDirectory scratch(L"post-rename-digest-mismatch");
+    const std::vector<std::byte> bytes = MakeBytes(113);
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0x505};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    config.originalFileNameUtf8 = "digest-conflict.bin";
+    pbstorage::OutputFileReservation reservation;
+    REQUIRE(pbstorage::OutputFile::PlanReservation(config, reservation));
+    std::wstring finalPath;
+    {
+        std::unique_ptr<pbstorage::OutputFile> output;
+        REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, std::nullopt, output));
+        REQUIRE(output->Write(0, bytes));
+        finalPath = output->GetSnapshot().finalPath;
+        REQUIRE(output->Publish(digest));
+    }
+    const HANDLE finalHandle = CreateFileW(finalPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(finalHandle != INVALID_HANDLE_VALUE);
+    const std::byte corruption{0xA5};
+    DWORD writtenBytes = 0;
+    REQUIRE(WriteFile(finalHandle, &corruption, 1, &writtenBytes, nullptr));
+    REQUIRE(writtenBytes == 1);
+    REQUIRE(FlushFileBuffers(finalHandle));
+    REQUIRE(CloseHandle(finalHandle));
+
+    std::unique_ptr<pbstorage::OutputFile> recovered;
+    const pbstorage::StorageStatus status =
+        pbstorage::OutputFile::CreateOrResume(config, reservation, digest, recovered);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::DigestMismatch);
+    REQUIRE(status.stage == pbstorage::StorageStage::Resume);
+    REQUIRE_FALSE(recovered);
+    REQUIRE(std::filesystem::exists(finalPath));
+    REQUIRE(std::filesystem::file_size(finalPath) == bytes.size());
+    REQUIRE_FALSE(std::filesystem::exists(scratch.GetPath() / L"PixelBridge-0000000000000505.part"));
+}
+
+TEST_CASE("PBStorage planned reservation loses a pre-create target race without side effects",
+    "[storage][reservation][no-overwrite][g05]")
+{
+    ScratchDirectory scratch(L"planned-reservation-race");
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0x504};
+    config.fileBytes = 64;
+    config.maximumFileBytes = 64;
+    config.originalFileNameUtf8 = "planned.bin";
+    pbstorage::OutputFileReservation reservation;
+    REQUIRE(pbstorage::OutputFile::PlanReservation(config, reservation));
+    const std::filesystem::path finalPath = scratch.GetPath() / L"planned.bin";
+    const HANDLE foreignFinal = CreateFileW(finalPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(foreignFinal != INVALID_HANDLE_VALUE);
+    const std::byte marker{0x7B};
+    DWORD writtenBytes = 0;
+    REQUIRE(WriteFile(foreignFinal, &marker, 1, &writtenBytes, nullptr));
+    REQUIRE(writtenBytes == 1);
+    REQUIRE(CloseHandle(foreignFinal));
+
+    std::unique_ptr<pbstorage::OutputFile> output;
+    const pbstorage::StorageStatus status =
+        pbstorage::OutputFile::CreateOrResume(config, reservation, std::nullopt, output);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::TargetExists);
+    REQUIRE_FALSE(output);
+    REQUIRE(std::filesystem::file_size(finalPath) == 1);
+    REQUIRE_FALSE(std::filesystem::exists(scratch.GetPath() / L"PixelBridge-0000000000000504.part"));
 }

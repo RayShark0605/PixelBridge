@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -46,6 +47,8 @@ struct DecoderResumeLoadedState
     std::vector<std::byte> manifestControlRecord;
     std::vector<pbprotocol::ResumeCompletedSegmentRecord> completedSegments;
     std::vector<DecoderResumeAcceptedBlock> activeBlocks;
+    std::optional<std::string> outputReservationFileNameUtf8;
+    std::optional<pbprotocol::WholeFileDigest> publishIntent;
     bool resumed = false;
     bool hadTruncatedTail = false;
     std::uint64_t generation = 0;
@@ -69,10 +72,13 @@ public:
 
     [[nodiscard]] DecoderResumeStoreStatus RecordSegmentControl(std::span<const std::byte> controlRecord) noexcept;
     [[nodiscard]] DecoderResumeStoreStatus RecordManifestControl(std::span<const std::byte> controlRecord) noexcept;
+    [[nodiscard]] DecoderResumeStoreStatus RecordOutputReservation(std::string finalFileNameUtf8) noexcept;
     [[nodiscard]] DecoderResumeStoreStatus RecordAcceptedBlock(const DecoderResumeAcceptedBlock& block) noexcept;
     [[nodiscard]] DecoderResumeStoreStatus Checkpoint() noexcept;
     [[nodiscard]] DecoderResumeStoreStatus RecordCompletedSegment(
         const pbprotocol::ResumeCompletedSegmentRecord& completedRecord) noexcept;
+    [[nodiscard]] DecoderResumeStoreStatus RecordPublishIntent(
+        const pbprotocol::WholeFileDigest& wholeFileDigest) noexcept;
     [[nodiscard]] DecoderResumeStoreStatus RemoveAfterPublish() noexcept;
 
     [[nodiscard]] const std::filesystem::path& GetPath() const noexcept;

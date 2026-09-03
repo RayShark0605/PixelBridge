@@ -120,9 +120,11 @@ struct ResumeFixture
     pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
     pbprotocol::SessionDescriptor session;
     pbprotocol::SegmentDescriptor segment;
+    pbprotocol::FinalManifest manifest;
     std::vector<std::byte> rawBytes = MakeBytes(64);
     std::vector<std::byte> sessionControl;
     std::vector<std::byte> segmentControl;
+    std::vector<std::byte> manifestControl;
 
     ResumeFixture()
     {
@@ -145,6 +147,11 @@ struct ResumeFixture
         segment.outerBlockBytes = 16;
         segment.rawDigest = pbprotocol::RawDigest{digest};
         segment.encodedDigest = pbprotocol::EncodedDigest{digest};
+        manifest.sessionId = session.sessionId;
+        manifest.originalFileSize = session.originalFileSize;
+        manifest.segmentCount = session.segmentCount;
+        manifest.wholeFileDigest = pbprotocol::WholeFileDigest{digest};
+        manifest.digestAlgorithm = session.digestAlgorithm;
 
         const auto sessionSize = pbprotocol::GetSerializedSize(session);
         REQUIRE(sessionSize);
@@ -159,6 +166,13 @@ struct ResumeFixture
         REQUIRE(pbprotocol::SerializeSegmentDescriptor(segment, session, policy, segmentPayload));
         segmentControl = WrapControl(pbprotocol::ControlRecordType::SegmentDescriptor, 3,
             sessionTag, segmentPayload);
+
+        const auto manifestSize = pbprotocol::GetSerializedSize(manifest);
+        REQUIRE(manifestSize != 0);
+        std::vector<std::byte> manifestPayload(manifestSize);
+        REQUIRE(pbprotocol::SerializeFinalManifest(manifest, session, policy, manifestPayload));
+        manifestControl = WrapControl(pbprotocol::ControlRecordType::FinalManifest, 2,
+            sessionTag, manifestPayload);
     }
 };
 
@@ -585,4 +599,69 @@ TEST_CASE("Decoder restart revalidates completed part bytes before storage adopt
             pbprotocol::ProtocolErrorCode::DigestMismatch);
         REQUIRE(storage->GetSnapshot().verifiedBytes == 0);
     }
+}
+
+TEST_CASE("Decoder durable publish intent recovers the rename-before-journal-delete crash window",
+    "[application][decoder][resume][publish-recovery][g05]")
+{
+    ScratchDirectory scratch(L"decoder-post-rename-recovery");
+    ResumeFixture fixture;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    pbstorage::OutputFileConfig storageConfig;
+    storageConfig.outputDirectory = scratch.GetPath().wstring();
+    storageConfig.sessionTag = sessionTag;
+    storageConfig.fileBytes = fixture.session.originalFileSize;
+    storageConfig.maximumFileBytes = fixture.policy.maxAcceptedFileBytes;
+    storageConfig.originalFileNameUtf8 = fixture.session.fileNameUtf8;
+    pbstorage::OutputFileReservation reservation;
+    REQUIRE(pbstorage::OutputFile::PlanReservation(storageConfig, reservation));
+
+    pbapp::DecoderResumeLoadedState loaded;
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl,
+        fixture.policy, store, loaded));
+    REQUIRE_FALSE(store->RecordPublishIntent(fixture.manifest.wholeFileDigest));
+    REQUIRE(store->RecordOutputReservation(reservation.finalFileNameUtf8));
+    REQUIRE(store->RecordOutputReservation(reservation.finalFileNameUtf8));
+    REQUIRE(store->RecordSegmentControl(fixture.segmentControl));
+    REQUIRE(store->RecordManifestControl(fixture.manifestControl));
+
+    std::unique_ptr<pbstorage::OutputFile> storage;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(storageConfig, reservation, std::nullopt, storage));
+    REQUIRE(storage->WriteVerifiedSegment(fixture.segment.rawOffset, fixture.rawBytes));
+    REQUIRE(storage->FlushVerifiedSegment());
+    REQUIRE(storage->Checkpoint());
+    pbprotocol::ResumeCompletedSegmentRecord completed;
+    completed.sessionId = fixture.session.sessionId;
+    completed.segmentOrdinal = fixture.segment.segmentOrdinal;
+    completed.rawOffset = fixture.segment.rawOffset;
+    completed.rawSize = fixture.segment.rawSize;
+    completed.rawDigest = fixture.segment.rawDigest;
+    REQUIRE(store->RecordCompletedSegment(completed));
+    REQUIRE(store->RecordPublishIntent(fixture.manifest.wholeFileDigest));
+    REQUIRE(store->RecordPublishIntent(fixture.manifest.wholeFileDigest));
+    const std::filesystem::path journalPath = store->GetPath();
+    const std::wstring finalPath = storage->GetSnapshot().finalPath;
+    const std::wstring partPath = storage->GetSnapshot().partPath;
+    REQUIRE(storage->Publish(fixture.manifest.wholeFileDigest));
+    REQUIRE(std::filesystem::exists(finalPath));
+    REQUIRE_FALSE(std::filesystem::exists(partPath));
+    storage.reset();
+    store.reset();
+
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl,
+        fixture.policy, store, loaded));
+    REQUIRE(loaded.resumed);
+    REQUIRE(loaded.outputReservationFileNameUtf8 == reservation.finalFileNameUtf8);
+    REQUIRE(loaded.publishIntent == fixture.manifest.wholeFileDigest);
+    REQUIRE(loaded.completedSegments.size() == 1);
+    REQUIRE(loaded.manifestControlRecord == fixture.manifestControl);
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(storageConfig, reservation, loaded.publishIntent, storage));
+    REQUIRE(storage->GetSnapshot().published);
+    REQUIRE(storage->GetSnapshot().recoveredPublished);
+    REQUIRE(storage->Publish(fixture.manifest.wholeFileDigest));
+    REQUIRE(store->RemoveAfterPublish());
+    REQUIRE_FALSE(std::filesystem::exists(journalPath));
+    REQUIRE(std::filesystem::exists(finalPath));
+    REQUIRE_FALSE(std::filesystem::exists(partPath));
 }

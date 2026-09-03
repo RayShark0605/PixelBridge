@@ -59,6 +59,7 @@ enum class DecoderState : std::uint8_t
 {
     Idle,
     WaitingForBootstrap,
+    AwaitingLargeOutputConfirmation,
     ReceivingControl,
     Receiving,
     Recovering,
@@ -115,6 +116,43 @@ struct RuntimeCapabilities
     bool offlineMp4 = false;
     bool multiSegment = true;
     bool automaticCaptureFallback = false;
+};
+
+enum class LargeOutputConfirmationState : std::uint8_t
+{
+    NotRequired,
+    AwaitingDecision,
+    Accepted,
+    Rejected
+};
+
+struct LargeOutputConfirmationSnapshot
+{
+    LargeOutputConfirmationState state = LargeOutputConfirmationState::NotRequired;
+    std::uint64_t runGeneration = 0;
+    std::uint64_t requestId = 0;
+    pbprotocol::SessionId sessionId{};
+    pbprotocol::SessionTag sessionTag{};
+    std::uint64_t originalFileBytes = 0;
+    std::string fileNameUtf8;
+};
+
+// Thread-safe Qt-free request/response boundary. The worker publishes one
+// immutable request identity per Session; UI responses must echo both the run
+// generation and request ID so stale callbacks cannot authorize allocation.
+class LargeOutputConfirmationController
+{
+public:
+    [[nodiscard]] TransitionResult BeginRun(std::uint64_t runGeneration) noexcept;
+    [[nodiscard]] TransitionResult Request(std::uint64_t runGeneration,
+        const pbprotocol::SessionDescriptor& session, pbprotocol::SessionTag sessionTag);
+    [[nodiscard]] TransitionResult Resolve(std::uint64_t runGeneration,
+        std::uint64_t requestId, bool accepted) noexcept;
+    [[nodiscard]] LargeOutputConfirmationSnapshot GetSnapshot() const;
+
+private:
+    mutable std::mutex mutex_;
+    LargeOutputConfirmationSnapshot snapshot_;
 };
 
 enum class WindowCloseAction : std::uint8_t
@@ -284,6 +322,20 @@ struct DecoderSnapshot
     std::uint32_t codewordsPerFrame = 0;
     bool descriptorKnown = false;
     std::uint64_t originalFileBytes = 0;
+    LargeOutputConfirmationState largeOutputConfirmationState = LargeOutputConfirmationState::NotRequired;
+    std::uint64_t largeOutputConfirmationRequestId = 0;
+    std::string largeOutputConfirmationFileNameUtf8;
+    std::uint64_t outputAvailableBytesBeforeReservation = 0;
+    std::uint64_t outputRequestedAllocationBytes = 0;
+    std::uint64_t outputActualAllocationBytes = 0;
+    bool outputPreallocationAttempted = false;
+    bool outputPreallocationFullyAllocated = false;
+    bool outputFileSparse = false;
+    bool outputFileCompressed = false;
+    bool outputVolumeSupportsSparseFiles = false;
+    bool outputVolumeSupportsCompression = false;
+    bool outputVolumeCompressed = false;
+    bool outputRecoveredAfterPublish = false;
     std::uint64_t verifiedRawBytes = 0;
     std::uint64_t remainingRawBytes = 0;
     std::optional<double> recoveryProgress;
@@ -669,6 +721,7 @@ private:
 
 [[nodiscard]] const char* GetEncoderStateName(EncoderState state) noexcept;
 [[nodiscard]] const char* GetDecoderStateName(DecoderState state) noexcept;
+[[nodiscard]] const char* GetLargeOutputConfirmationStateName(LargeOutputConfirmationState state) noexcept;
 [[nodiscard]] std::span<const VisualProfileOption> GetVisualProfileOptions() noexcept;
 [[nodiscard]] const VisualProfileOption* FindVisualProfileOption(VisualProfile profile) noexcept;
 [[nodiscard]] std::optional<VisualProfile> ParseVisualProfileToken(std::string_view token) noexcept;

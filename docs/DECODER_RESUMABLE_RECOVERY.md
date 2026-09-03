@@ -1,17 +1,17 @@
-# Decoder 可恢复乱序写入与 journal
+# Decoder 可恢复乱序写入、确认门与 publish commit
 
-本文记录 G03 的当前实现合同：正式 Descriptor 绑定后的 Outer block 持久化、乱序 Segment 写入、completed Segment 重启重验，以及 WholeFileDigest 后的安全发布。权威代码入口是：
+本文记录 G03 与 G05 的当前实现合同：正式 Descriptor 绑定后的 Outer block 持久化、乱序 Segment 写入、completed Segment 重启重验、大输出确认门，以及 WholeFileDigest 后可跨进程恢复的安全发布。权威代码入口是：
 
 - `apps/common/decoder_resume_store.h/.cpp`；
 - `apps/common/local_desktop_runtime.cpp`；
 - `libs/PBReceiver/include/pbreceiver/receiver_ingress.h`；
 - `libs/PBStorage/include/pbstorage/output_file.h`。
 
-本文不改变 Protocol 1.0 wire，不把 journal 当作 Sender 数据，也不宣称完成 UI、真实 capture、20 GiB、进程终止注入或 G05 的 rename 后崩溃恢复。
+本文不改变 Protocol 1.0 wire，不把 journal 当作 Sender 数据，也不宣称完成 Qt 对话框、真实 capture、20 GiB 或真实进程终止注入。G05 使用小 fixture 对同一 durable marker 状态进行确定性析构/重启模拟；Qt 具体交互属于 G16。
 
 ## 1. 文件身份与本地命名
 
-收到并通过 `ReceiverResourcePolicy` 校验的正式 `SessionDescriptor` 后，Decoder 才建立本地输出状态：
+收到并通过 `ReceiverResourcePolicy` 校验的正式 `SessionDescriptor` 后，Decoder 才考虑建立本地输出状态。若 `OriginalFileSize > MaxOutputPreallocationBytesWithoutPrompt`（产品默认 4 GiB），Qt-free controller 先公开 `AwaitingLargeOutputConfirmation`、`RunGeneration` 与 `RequestId`。确认前不创建/扩展 `.part`、不创建 `.resume`，也不把 Segment Control 或 Outer payload 送入 Receiver；同一 Session 的重复 descriptor 只对应同一个请求。拒绝后进入带原因的 `Stopped`，接受后才继续以下流程：
 
 ```text
 <selected-output-directory>/PixelBridge-<SessionTag-16-lower-hex>.part
@@ -25,7 +25,9 @@
 1. 已验证的原始 basename；
 2. `<stem> (PixelBridge-<SessionTag>).<extension>`。
 
-首个候选已存在时选择第二个；第二个也存在时返回 `TargetExists/Reservation`，不覆盖、不删除，也不创建 `.part`。publish 前再次执行存在性检查，随后使用不带 replace 的同卷 `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)`，因此检查与 rename 之间的竞态也只能失败，不能覆盖。
+首个候选已存在时选择第二个；第二个也存在时返回 `TargetExists/Reservation`，不覆盖、不删除，也不创建 `.part`。选中的 UTF-8 basename 先作为 `OutputReservation` flush 到 journal，随后 PBStorage 才创建 `.part`；重启必须重新验证它确实是该 Session 唯一合法的 primary/collision 候选，因此目录状态变化不会偷偷改名。publish 前再次执行存在性检查，随后使用不带 replace 的同卷 `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)`，因此检查与 rename 之间的竞态也只能失败，不能覆盖。
+
+创建/恢复输出时同时查询目标卷可用空间、`FILE_STANDARD_INFO.AllocationSize`、文件 sparse/compressed 属性以及卷的 sparse/compression capability。快照分别记录 logical/requested bytes 与 actual allocation bytes，`PreallocationFullyAllocated` 只由实际 allocation 比较得出，不从逻辑长度推断。
 
 ## 2. PBJH/PBJR journal schema
 
@@ -68,6 +70,8 @@ RecordType：
 | 2 | ManifestControl | 完整 canonical `FinalManifest` ControlRecord |
 | 3 | AcceptedBlock | 下述 20-byte header + fixed padded payload |
 | 4 | CompletedSegment | 下述固定 72 bytes |
+| 5 | OutputReservation | 已校验并绑定到该 Session 合法候选的 UTF-8 最终 basename |
+| 6 | PublishIntent | 固定 32-byte WholeFileDigest；只能在 reservation、manifest 与全部 completed records 耐久后出现 |
 
 `AcceptedBlock` payload：
 
@@ -127,10 +131,12 @@ Segment completed 或 journal 达到 16 MiB 时，构建仅含当前 authoritati
 
 ```text
 PBJH
++ output reservation（存在时）
 + unique SegmentControl records
 + optional FinalManifest
 + completed Segment records
 + only incomplete active accepted blocks
++ publish intent（存在时，必须为最后的 authoritative 状态）
 ```
 
 snapshot 写入同目录 `.resume.tmp`，完成 write、`FlushFileBuffers`、close 后，使用 `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH` 原子替换 journal；generation 不回退。旧 journal 在替换成功前仍是 authoritative state。
@@ -162,14 +168,20 @@ PBStorage 支持 Segment 任意顺序写入，但 verified ranges 不得重叠�
 | `.part` flush 后、completed record 前 | active block records + 未承诺的磁盘 bytes | 不盲信该范围；重放恢复后重新验证/写入 |
 | completed record flush 后、`CommitStoredSegment` 前 | completed record + flushed `.part` | 读取精确范围并重算 RawDigest，通过后 adopt/commit |
 | compact temp flush 后、atomic replace 前 | 旧 `.resume` | 旧 journal 仍有效；`.tmp` 不是 authoritative state |
-| final rename 后、journal 删除前 | 已验证 final + 旧 journal | G05 的 post-rename recovery marker/识别范围；G03 不宣称已关闭 |
+| publish intent flush 后、final rename 前 | intent + 完整 `.part` | 重启复验 completed `.part`，重复 intent 幂等，再次执行安全 publish |
+| final rename 后或 final reopen 前、journal 删除前 | intent + 仅 final | 以绑定路径独占读取，重算长度/WholeFileDigest；一致则 Completed 并删除 journal |
+| intent 状态下 `.part` 与 final 同时存在、两者都不存在或 final 摘要不符 | 冲突状态 | fail closed；不覆盖、不删除、不重建为可信输出 |
 
 ## 5. 重启恢复状态机
 
 ```text
 validate SessionDescriptor
 → bounded load/validate journal
-→ CreateOrResume exact-size internal .part
+→ validate/reuse durable OutputReservation
+→ if PublishIntent + final only:
+     lock/read final and verify exact length + WholeFileDigest
+     mark recovered publish, then remove journal
+→ else CreateOrResume exact-size internal .part
 → replay stored SegmentDescriptor/FinalManifest controls
 → for each completed record:
      bounded ReadRange(.part)
@@ -191,21 +203,22 @@ completed record 从不让 Decoder 盲信 `.part`。长度、offset、descriptor
 全部 Segment durable commit 且 FinalManifest 已绑定后：
 
 1. PBReceiver `PrepareFinalization` 再确认所有 Segment completed；
-2. PBStorage flush/close `.part`；
-3. 以 1 MiB bounded buffer 顺序扫描整个 `.part`，计算 BLAKE3 并比较文件长度与 WholeFileDigest；
-4. publish 前再次确认最终候选不存在；
-5. 同卷安全 rename；
-6. 重新打开最终文件，再次验证长度与 WholeFileDigest；
-7. 只有上述步骤都成功才删除 `.resume` 并报告完成。
+2. journal append+flush `PublishIntent(WholeFileDigest)`；该记录要求 OutputReservation、FinalManifest 与全部 completed records 已存在；
+3. PBStorage flush/close `.part`；
+4. 以 1 MiB bounded buffer 顺序扫描整个 `.part`，计算 BLAKE3 并比较文件长度与 WholeFileDigest；
+5. publish 前再次确认持久绑定的最终候选不存在；
+6. 同卷安全 rename；
+7. 重新打开最终文件，再次验证长度与 WholeFileDigest；
+8. 此时先把内存 completion 设为 published，再删除 `.resume`；删除失败只形成 post-publish cleanup warning，不把已经验证的 final 降格或覆盖。
 
-final reopen 失败或摘要不一致时尝试把最终文件移回内部 `.part`；任何 cleanup 失败以独立错误返回。rename 已成功但 journal 尚未删除时的跨进程识别属于路线 G05，G03 不声称关闭该 crash window。
+当前进程中 final reopen 失败或摘要不一致时尝试把最终文件移回内部 `.part`；任何 cleanup 失败以独立错误返回。跨进程重启若发现 durable intent、`.part` 已消失且绑定 final 的长度/摘要一致，则把它视为 rename 已成功并安全清理 journal。重复 `Publish` 只有摘要完全相同时幂等成功；不同摘要、错误候选、双文件并存和 final 摘要不一致均保留现场并 fail closed。
 
 ## 7. 故障分类
 
 | 分类 | 例子 | 行为 |
 | --- | --- | --- |
 | 可由 Carousel 重试 | `DeferredResourceBusy`、orphan quota 对新块的 drop | 不分配第五个 decoder、不终止 Session；等待重复 descriptor/Data |
-| 可由重启恢复 | 合法 PBJR 截断尾、`.part` 已 flush 且 completed record durable | 修复尾部；逐 Segment 重算 RawDigest 后 adopt |
+| 可由重启恢复 | 合法 PBJR 截断尾、`.part` 已 flush 且 completed record durable、intent 后仅存在匹配 final | 修复尾部并逐 Segment 重算，或复验 final 后完成 publish commit |
 | 当前进程停止、持久数据保留 | disk/flush/compact/publish native failure、WholeFileDigest mismatch | 不提前 commit、不覆盖最终文件；保留可诊断状态 |
 | Session fail closed | descriptor conflict、同 OuterBlockId 不同 payload、encoded/raw digest mismatch | 不 latest-wins，不发布 |
 | journal fail closed | header/record CRC、length、generation、unknown type、内部截断、cache 超限 | 不采用任何部分解析结果 |

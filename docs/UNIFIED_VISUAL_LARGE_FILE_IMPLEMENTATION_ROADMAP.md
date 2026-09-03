@@ -420,6 +420,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G05 — 大输出确认与 rename 后恢复
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G04。
 **目的：** 关闭两个会影响大文件产品安全的状态机缺口。
 
@@ -428,14 +429,16 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] `OriginalFileSize > 4 GiB` 时进入 `AwaitingLargeOutputConfirmation`，且一个 Session 只询问一次。
-- [ ] 确认前不创建/扩展 `.part`，不接收 Outer payload；拒绝后保持可解释终态。
-- [ ] 检查目标卷可用空间与实际 allocation/preallocation 结果；稀疏/压缩卷语义要记录，不把逻辑长度当已分配空间。
-- [ ] rename 成功、journal 删除前崩溃时，重启能识别已发布且摘要一致的最终文件，并安全清理状态；冲突或摘要不一致则 fail closed。
-- [ ] rename 前、rename 后、final reopen 前后的重复操作保持幂等且不覆盖已有文件。
+- [x] `OriginalFileSize > 4 GiB` 时进入 `AwaitingLargeOutputConfirmation`，且一个 Session 只询问一次。
+- [x] 确认前不创建/扩展 `.part`，不接收 Outer payload；拒绝后保持可解释终态。
+- [x] 检查目标卷可用空间与实际 allocation/preallocation 结果；稀疏/压缩卷语义要记录，不把逻辑长度当已分配空间。
+- [x] rename 成功、journal 删除前崩溃时，重启能识别已发布且摘要一致的最终文件，并安全清理状态；冲突或摘要不一致则 fail closed。
+- [x] rename 前、rename 后、final reopen 前后的重复操作保持幂等且不覆盖已有文件。
 
 **最小验证：** application/storage 定向状态测试，使用小 fixture 模拟阈值和 crash marker；不创建真实 4 GiB 文件。
+**验证结果（2026-09-03）：** Release 增量构建 `PBStorageTests`、`PBApplicationTests` 成功。固定 seed 直接执行 PBStorage 全部 17/17（219 assertions）；Application G05 3/3（99 assertions）、既有 decoder resume 5/5（284 assertions）、decoder-state 3/3（43 assertions）、G04 headless checkpoint 1/1（31 assertions）、decoder report 1/1（112 assertions）全部通过。确认门使用 4,097-byte fixture 与 4,096-byte policy 阈值，不创建真实 4 GiB 文件；未运行 full CTest、GPU、capture、GUI、实屏或真实进程终止注入。
 **退出：** 大输出确认有明确公共状态；post-rename crash 可恢复；现有文件永不被覆盖/删除。
+**产物：** [`DECODER_RESUMABLE_RECOVERY.md`](DECODER_RESUMABLE_RECOVERY.md) 已加入 Qt-free 确认门、`OutputReservation`/`PublishIntent` PBJR 记录、allocation 事实和 post-rename 重启分支；本地测试日志为 `build-unified-release/tests/PBStorage/g05-storage-tests.txt` 与 `build-unified-release/tests/PBApplication/g05-application-tests.txt`。
 **提交建议：** `feat(storage): gate large output and recover publish commit`
 
 ## G06 — Unified Profile 常量与 lane 合同

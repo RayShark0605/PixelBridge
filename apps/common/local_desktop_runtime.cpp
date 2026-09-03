@@ -2500,11 +2500,12 @@ public:
         AuthoritativeCompletion& completion, const std::uint64_t runGeneration,
         const std::chrono::steady_clock::time_point started, const VisualProfile visualProfile,
         const bool deferCompletedState = false, const bool captureTelemetryAvailable = true,
-        const bool collectResourceHighWater = false)
+        const bool collectResourceHighWater = false,
+        LargeOutputConfirmationController* const largeOutputConfirmation = nullptr)
         : receiver_(receiver), outputDirectory_(std::move(outputDirectory)), policy_(policy), snapshot_(snapshot),
           completion_(completion), runGeneration_(runGeneration), started_(started), visualProfile_(visualProfile),
           deferCompletedState_(deferCompletedState), captureTelemetryAvailable_(captureTelemetryAvailable),
-          collectResourceHighWater_(collectResourceHighWater)
+          collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation)
     {
     }
 
@@ -2518,6 +2519,11 @@ public:
 
     [[nodiscard]] ReceiverProcessResult Process(const pbdemodd3d11::CaptureDemodulatorResult& result)
     {
+        ApplyLargeOutputConfirmation(result.metadata.timestamp.monotonic100ns);
+        if (largeOutputRejected_ || published_)
+        {
+            return {};
+        }
         RecordCaptureTelemetry(result);
         RecordRemoteMetricTelemetry(result);
         if (!result.bootstrap.IsAccepted())
@@ -2738,7 +2744,8 @@ public:
             pbprotocol::SaturatingIncrementUnsigned(value.captureEpochResets);
             if (value.state != DecoderState::Stopping)
             {
-                value.state = session_ ? DecoderState::Receiving : DecoderState::WaitingForBootstrap;
+                value.state = session_ ? DecoderState::Receiving : pendingSession_ ?
+                    DecoderState::AwaitingLargeOutputConfirmation : DecoderState::WaitingForBootstrap;
             }
             value.instantVerifiedRawGoodputBytesPerSecond = 0;
             value.smoothedVerifiedRawGoodputBytesPerSecond = 0;
@@ -2863,6 +2870,57 @@ public:
         return published_;
     }
 
+    void ApplyLargeOutputConfirmation(const std::int64_t timestamp100ns)
+    {
+        if (!pendingSession_ || largeOutputRejected_)
+        {
+            return;
+        }
+        Require(largeOutputConfirmation_ != nullptr,
+            "pending large output Session has no Qt-free confirmation controller");
+        const LargeOutputConfirmationSnapshot confirmation = largeOutputConfirmation_->GetSnapshot();
+        Require(confirmation.runGeneration == runGeneration_ && confirmation.sessionId == pendingSession_->sessionId &&
+            confirmation.sessionTag == pendingSessionTag_ &&
+            confirmation.originalFileBytes == pendingSession_->originalFileSize &&
+            confirmation.fileNameUtf8 == pendingSession_->fileNameUtf8,
+            "large output confirmation identity changed while awaiting a decision");
+        if (confirmation.state == LargeOutputConfirmationState::AwaitingDecision)
+        {
+            return;
+        }
+        if (confirmation.state == LargeOutputConfirmationState::Rejected)
+        {
+            largeOutputRejected_ = true;
+            snapshot_.Update([this](DecoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration_)
+                {
+                    value.state = DecoderState::Stopped;
+                    value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                    value.largeOutputConfirmationState = LargeOutputConfirmationState::Rejected;
+                    value.statusMessage = "Large output was rejected; no .part file, resume journal, or Outer payload state was created";
+                }
+            });
+            return;
+        }
+        Require(confirmation.state == LargeOutputConfirmationState::Accepted,
+            "large output confirmation entered an invalid state");
+        InitializeSession(*pendingSession_, pendingSessionTag_, pendingSessionControl_, timestamp100ns,
+            LargeOutputConfirmationState::Accepted);
+        pendingSession_.reset();
+        pendingSessionControl_.clear();
+    }
+
+    [[nodiscard]] bool IsAwaitingLargeOutputConfirmation() const noexcept
+    {
+        return pendingSession_.has_value() && !largeOutputRejected_;
+    }
+
+    [[nodiscard]] bool IsLargeOutputRejected() const noexcept
+    {
+        return largeOutputRejected_;
+    }
+
 private:
     static void RequireTelemetry(const pbtelemetry::TelemetryStatus status, const char* const operation)
     {
@@ -2972,11 +3030,21 @@ private:
     [[nodiscard]] bool ProcessControlRecord(const std::span<const std::byte> bytes,
         const pbprotocol::SessionTag bootstrapSessionTag, const std::int64_t timestamp100ns)
     {
+        ApplyLargeOutputConfirmation(timestamp100ns);
         const auto parsedRecord = pbprotocol::ParseControlRecord(bytes);
         RequireResult(parsedRecord, "captured ControlRecord failed an independent parse");
         const pbprotocol::ControlRecordView& record = parsedRecord.Value();
         Require(record.sessionTag == bootstrapSessionTag,
             "captured ControlRecord SessionTag disagrees with the same-frame Bootstrap");
+        if (published_)
+        {
+            return true;
+        }
+        if (largeOutputRejected_ || (pendingSession_ &&
+            record.recordType != pbprotocol::ControlRecordType::SessionDescriptor))
+        {
+            return false;
+        }
         auto admission = receiver_.ReceiveControlRecord(bytes);
         if (!admission)
         {
@@ -2996,6 +3064,10 @@ private:
     [[nodiscard]] bool ProcessControlFragment(const std::span<const std::byte> bytes,
         const std::uint64_t captureObservation)
     {
+        if (pendingSession_ || largeOutputRejected_ || published_)
+        {
+            return false;
+        }
         auto fragment = receiver_.ReceiveControlFragment(bytes, captureObservation);
         if (!fragment)
         {
@@ -3014,6 +3086,159 @@ private:
         return true;
     }
 
+    static void ApplyOutputAllocationSnapshot(const pbstorage::OutputFileSnapshot& storage,
+        DecoderSnapshot& output) noexcept
+    {
+        output.outputAvailableBytesBeforeReservation = storage.availableBytesBeforeReservation;
+        output.outputRequestedAllocationBytes = storage.requestedAllocationBytes;
+        output.outputActualAllocationBytes = storage.actualAllocationBytes;
+        output.outputPreallocationAttempted = storage.preallocationAttempted;
+        output.outputPreallocationFullyAllocated = storage.preallocationFullyAllocated;
+        output.outputFileSparse = storage.fileSparse;
+        output.outputFileCompressed = storage.fileCompressed;
+        output.outputVolumeSupportsSparseFiles = storage.volumeSupportsSparseFiles;
+        output.outputVolumeSupportsCompression = storage.volumeSupportsCompression;
+        output.outputVolumeCompressed = storage.volumeCompressed;
+        output.outputRecoveredAfterPublish = storage.recoveredPublished;
+    }
+
+    void CompleteRecoveredPublish(const DecoderResumeLoadedState& loadedResume,
+        const pbstorage::OutputFileSnapshot& storageSnapshot)
+    {
+        Require(session_ && resumeStore_ && storage_ && storageSnapshot.published &&
+            storageSnapshot.recoveredPublished && loadedResume.publishIntent &&
+            loadedResume.outputReservationFileNameUtf8 &&
+            loadedResume.completedSegments.size() == session_->segmentCount &&
+            !loadedResume.manifestControlRecord.empty(),
+            "post-rename recovery lacks a complete durable commit marker");
+        const auto manifestControl = pbprotocol::ParseControlRecord(loadedResume.manifestControlRecord);
+        RequireResult(manifestControl, "post-rename FinalManifest ControlRecord parse failed");
+        const auto parsedManifest = pbprotocol::ParseFinalManifest(manifestControl.Value().payload, *session_, policy_);
+        RequireResult(parsedManifest, "post-rename FinalManifest payload parse failed");
+        Require(parsedManifest.Value().wholeFileDigest == *loadedResume.publishIntent,
+            "post-rename publish intent conflicts with FinalManifest");
+        manifest_ = parsedManifest.Value();
+        completedSegmentCount_ = session_->segmentCount;
+        totalVerifiedRawBytes_ = session_->originalFileSize;
+        Require(progress_.ObserveVerifiedRawBytes(totalVerifiedRawBytes_, ElapsedMilliseconds(started_)),
+            "post-rename progress restoration failed");
+        ApplyProgress();
+
+        completion_.outputPath = Utf8FromWide(storageSnapshot.finalPath);
+        completion_.outputPathWide = storageSnapshot.finalPath;
+        completion_.wholeFileDigestHex = DigestHex(loadedResume.publishIntent->bytes);
+        completion_.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started_);
+        completion_.published = true;
+        published_ = true;
+        snapshot_.Update([this, &storageSnapshot](DecoderSnapshot& value)
+        {
+            if (value.runGeneration != runGeneration_)
+            {
+                return;
+            }
+            value.state = deferCompletedState_ ? DecoderState::Publishing : DecoderState::Completed;
+            value.runEndedUnixMilliseconds = deferCompletedState_ ? 0 : GetUnixTimeMilliseconds();
+            value.verifiedRawBytes = session_->originalFileSize;
+            value.remainingRawBytes = 0;
+            value.recoveryProgress = 1.0;
+            value.wholeFileDigestVerified = true;
+            value.finalPublishSucceeded = true;
+            value.wholeFileDigestHex = completion_.wholeFileDigestHex;
+            value.outputPath = completion_.outputPath;
+            value.resumeStateLoaded = true;
+            value.outputRecoveredAfterPublish = true;
+            value.recoveryRuntimeMilliseconds = completion_.recoveryRuntimeMilliseconds;
+            ApplyOutputAllocationSnapshot(storageSnapshot, value);
+            value.statusMessage = deferCompletedState_ ?
+                "已验证 rename 后最终文件；正在消费 Replay 尾部" :
+                "检测到 rename 后崩溃窗口；最终文件摘要匹配并已安全完成恢复";
+        });
+        const DecoderResumeStoreStatus cleanupStatus = resumeStore_->RemoveAfterPublish();
+        Require(static_cast<bool>(cleanupStatus),
+            "post-rename published resume cleanup failed: " + cleanupStatus.message);
+    }
+
+    void InitializeSession(const pbprotocol::SessionDescriptor& session,
+        const pbprotocol::SessionTag sessionTag, const std::span<const std::byte> sessionControlRecord,
+        const std::int64_t timestamp100ns, const LargeOutputConfirmationState confirmationState)
+    {
+        Require(!session_ && !storage_ && !resumeStore_, "Session output state was initialized more than once");
+        session_ = session;
+        Require(progress_.BindDescriptor(session_->originalFileSize, ElapsedMilliseconds(started_)),
+            "Decoder progress descriptor binding failed");
+        segments_.resize(static_cast<std::size_t>(session_->segmentCount));
+        storedSegments_.resize(static_cast<std::size_t>(session_->segmentCount), false);
+
+        DecoderResumeLoadedState loadedResume;
+        const DecoderResumeStoreStatus resumeStatus = DecoderResumeStore::Open(outputDirectory_, sessionTag,
+            sessionControlRecord, policy_, resumeStore_, loadedResume);
+        Require(static_cast<bool>(resumeStatus), "Decoder resume journal open failed: " + resumeStatus.message);
+
+        pbstorage::OutputFileConfig storageConfig;
+        storageConfig.outputDirectory = outputDirectory_;
+        storageConfig.sessionTag = sessionTag;
+        storageConfig.fileBytes = session_->originalFileSize;
+        storageConfig.maximumFileBytes = policy_.maxAcceptedFileBytes;
+        storageConfig.originalFileNameUtf8 = session_->fileNameUtf8;
+        pbstorage::OutputFileReservation reservation;
+        if (loadedResume.outputReservationFileNameUtf8)
+        {
+            reservation.finalFileNameUtf8 = *loadedResume.outputReservationFileNameUtf8;
+        }
+        else
+        {
+            const auto planStatus = pbstorage::OutputFile::PlanReservation(storageConfig, reservation);
+            Require(static_cast<bool>(planStatus), "PBStorage output reservation plan failed: " +
+                DescribeStorageStatus(planStatus));
+            const DecoderResumeStoreStatus reservationStatus =
+                resumeStore_->RecordOutputReservation(reservation.finalFileNameUtf8);
+            Require(static_cast<bool>(reservationStatus),
+                "Decoder output reservation checkpoint failed: " + reservationStatus.message);
+        }
+        const auto storageStatus = pbstorage::OutputFile::CreateOrResume(storageConfig, reservation,
+            loadedResume.publishIntent, storage_);
+        Require(static_cast<bool>(storageStatus), "PBStorage output reservation/recovery failed: " +
+            DescribeStorageStatus(storageStatus));
+        UpdateResumeResourceHighWater();
+        const pbstorage::OutputFileSnapshot storageSnapshot = storage_->GetSnapshot();
+        snapshot_.Update([this, &storageSnapshot, &loadedResume, confirmationState](DecoderSnapshot& value)
+        {
+            if (value.runGeneration != runGeneration_)
+            {
+                return;
+            }
+            value.state = DecoderState::ReceivingControl;
+            value.descriptorKnown = true;
+            value.originalFileBytes = session_->originalFileSize;
+            value.remainingRawBytes = session_->originalFileSize;
+            value.recoveryProgress = session_->originalFileSize == 0 ? 1.0 : 0.0;
+            value.sessionIdHex = SessionIdHex(session_->sessionId);
+            value.sessionTag = pbprotocol::DeriveSessionTag(session_->sessionId).value;
+            value.segmentCount = session_->segmentCount;
+            value.outputPath = Utf8FromWide(storageSnapshot.finalPath);
+            value.largeOutputConfirmationState = confirmationState;
+            value.largeOutputConfirmationFileNameUtf8 = session_->fileNameUtf8;
+            value.resumeStateLoaded = loadedResume.resumed;
+            value.resumeStateTruncatedTail = loadedResume.hadTruncatedTail;
+            value.resumeStateGeneration = resumeStore_->GetGeneration();
+            value.resumeStateBytes = resumeStore_->GetFileBytes();
+            value.resumeStatePath = Utf8FromWide(resumeStore_->GetPath().wstring());
+            ApplyOutputAllocationSnapshot(storageSnapshot, value);
+            value.statusMessage = storageSnapshot.recoveredPublished ?
+                "Publish intent found; verifying the already-renamed final file" : loadedResume.resumed ?
+                "Session Descriptor accepted; verifying resumable state" :
+                "Session Descriptor accepted; receiving Control";
+        });
+        if (storageSnapshot.recoveredPublished)
+        {
+            CompleteRecoveredPublish(loadedResume, storageSnapshot);
+        }
+        else if (loadedResume.resumed)
+        {
+            RestoreResumeState(loadedResume, timestamp100ns);
+        }
+    }
+
     void HandleControlAdmission(pbreceiver::ReceiverControlAdmission& admission,
         const std::optional<pbprotocol::ControlRecordView> record, const std::int64_t timestamp100ns,
         const std::span<const std::byte> rawControlRecord)
@@ -3026,70 +3251,63 @@ private:
                 RequireResult(parsed, "SessionDescriptor independent parse failed");
                 Require(pbprotocol::DeriveSessionTag(parsed.Value().sessionId) == record->sessionTag,
                     "SessionDescriptor tag mismatch");
-                Require(admission.outputReservationDecision &&
-                    *admission.outputReservationDecision == pbprotocol::OutputReservationDecision::AutoAccept,
-                    "current bounded output reservation was not AutoAccept");
-                if (!session_)
+                Require(admission.outputReservationDecision.has_value(),
+                    "SessionDescriptor admission omitted its output reservation decision");
+                const ProfileBinding expectedProfile = GetProfileBinding(visualProfile_);
+                Require(parsed.Value().sessionVisualProfileId == expectedProfile.visualProfileId,
+                    "SessionDescriptor VisualProfileId disagrees with the active pixel profile");
+                Require(parsed.Value().originalFileSize <= policy_.maxAcceptedFileBytes &&
+                    parsed.Value().segmentCount <= policy_.maxSegmentCount,
+                    "received Session exceeds the active ReceiverResourcePolicy");
+                Require(!rawControlRecord.empty(), "SessionDescriptor has no canonical ControlRecord bytes");
+                if (session_)
                 {
-                    session_ = parsed.Value();
-                    const ProfileBinding expectedProfile = GetProfileBinding(visualProfile_);
-                    Require(session_->sessionVisualProfileId == expectedProfile.visualProfileId,
-                        "SessionDescriptor VisualProfileId disagrees with the active pixel profile");
-                    Require(session_->originalFileSize <= policy_.maxAcceptedFileBytes &&
-                        session_->segmentCount <= policy_.maxSegmentCount,
-                        "received Session exceeds the active ReceiverResourcePolicy");
-                    Require(progress_.BindDescriptor(session_->originalFileSize, ElapsedMilliseconds(started_)),
-                        "Decoder progress descriptor binding failed");
-                    segments_.resize(static_cast<std::size_t>(session_->segmentCount));
-                    storedSegments_.resize(static_cast<std::size_t>(session_->segmentCount), false);
-                    pbstorage::OutputFileConfig storageConfig;
-                    storageConfig.outputDirectory = outputDirectory_;
-                    storageConfig.sessionTag = record->sessionTag;
-                    storageConfig.fileBytes = session_->originalFileSize;
-                    storageConfig.maximumFileBytes = policy_.maxAcceptedFileBytes;
-                    storageConfig.originalFileNameUtf8 = session_->fileNameUtf8;
-                    const auto storageStatus = pbstorage::OutputFile::CreateOrResume(storageConfig, storage_);
-                    Require(static_cast<bool>(storageStatus), "PBStorage output reservation failed: " +
-                        DescribeStorageStatus(storageStatus));
-                    Require(!rawControlRecord.empty(), "SessionDescriptor has no canonical ControlRecord bytes");
-                    DecoderResumeLoadedState loadedResume;
-                    const DecoderResumeStoreStatus resumeStatus = DecoderResumeStore::Open(outputDirectory_,
-                        record->sessionTag, rawControlRecord, policy_, resumeStore_, loadedResume);
-                    Require(static_cast<bool>(resumeStatus), "Decoder resume journal open failed: " + resumeStatus.message);
-                    UpdateResumeResourceHighWater();
-                    const auto storageSnapshot = storage_->GetSnapshot();
-                    snapshot_.Update([this, &storageSnapshot, &loadedResume](DecoderSnapshot& value)
+                    Require(*session_ == parsed.Value(), "conflicting repeated SessionDescriptor");
+                }
+                else if (pendingSession_)
+                {
+                    Require(*pendingSession_ == parsed.Value(), "conflicting repeated pending SessionDescriptor");
+                    ApplyLargeOutputConfirmation(timestamp100ns);
+                }
+                else if (*admission.outputReservationDecision == pbprotocol::OutputReservationDecision::AutoAccept)
+                {
+                    InitializeSession(parsed.Value(), record->sessionTag, rawControlRecord, timestamp100ns,
+                        LargeOutputConfirmationState::NotRequired);
+                }
+                else
+                {
+                    Require(*admission.outputReservationDecision ==
+                        pbprotocol::OutputReservationDecision::RequiresUserConfirmation,
+                        "SessionDescriptor returned an unknown output reservation decision");
+                    Require(largeOutputConfirmation_ != nullptr,
+                        "large output Session has no Qt-free confirmation controller");
+                    pendingSession_ = parsed.Value();
+                    pendingSessionTag_ = record->sessionTag;
+                    pendingSessionControl_.assign(rawControlRecord.begin(), rawControlRecord.end());
+                    const TransitionResult requestResult = largeOutputConfirmation_->Request(
+                        runGeneration_, *pendingSession_, pendingSessionTag_);
+                    Require(requestResult == TransitionResult::Applied || requestResult == TransitionResult::NoChange,
+                        "large output confirmation request was stale or conflicted");
+                    const LargeOutputConfirmationSnapshot confirmation = largeOutputConfirmation_->GetSnapshot();
+                    snapshot_.Update([this, &confirmation](DecoderSnapshot& value)
                     {
                         if (value.runGeneration != runGeneration_)
                         {
                             return;
                         }
-                        value.state = DecoderState::ReceivingControl;
+                        value.state = DecoderState::AwaitingLargeOutputConfirmation;
                         value.descriptorKnown = true;
-                        value.originalFileBytes = session_->originalFileSize;
-                        value.remainingRawBytes = session_->originalFileSize;
-                        value.recoveryProgress = session_->originalFileSize == 0 ? 1.0 : 0.0;
-                        value.sessionIdHex = SessionIdHex(session_->sessionId);
-                        value.sessionTag = pbprotocol::DeriveSessionTag(session_->sessionId).value;
-                        value.segmentCount = session_->segmentCount;
-                        value.outputPath = Utf8FromWide(storageSnapshot.finalPath);
-                        value.resumeStateLoaded = loadedResume.resumed;
-                        value.resumeStateTruncatedTail = loadedResume.hadTruncatedTail;
-                        value.resumeStateGeneration = loadedResume.generation;
-                        value.resumeStateBytes = resumeStore_->GetFileBytes();
-                        value.resumeStatePath = Utf8FromWide(resumeStore_->GetPath().wstring());
-                        value.statusMessage = loadedResume.resumed ?
-                            "Session Descriptor accepted; verifying resumable state" :
-                            "Session Descriptor accepted; receiving Control";
+                        value.originalFileBytes = pendingSession_->originalFileSize;
+                        value.remainingRawBytes = pendingSession_->originalFileSize;
+                        value.recoveryProgress = pendingSession_->originalFileSize == 0 ? 1.0 : 0.0;
+                        value.sessionIdHex = SessionIdHex(pendingSession_->sessionId);
+                        value.sessionTag = pendingSessionTag_.value;
+                        value.segmentCount = pendingSession_->segmentCount;
+                        value.largeOutputConfirmationState = confirmation.state;
+                        value.largeOutputConfirmationRequestId = confirmation.requestId;
+                        value.largeOutputConfirmationFileNameUtf8 = confirmation.fileNameUtf8;
+                        value.statusMessage = "Large output requires confirmation before any .part, resume, or Outer payload state is created";
                     });
-                    if (loadedResume.resumed)
-                    {
-                        RestoreResumeState(loadedResume, timestamp100ns);
-                    }
-                }
-                else
-                {
-                    Require(*session_ == parsed.Value(), "conflicting repeated SessionDescriptor");
                 }
                 receiverSessionBound_ = true;
             }
@@ -3201,6 +3419,11 @@ private:
     [[nodiscard]] ReceiverProcessResult ProcessTransport(
         const pbdemodd3d11::CaptureDemodulatorResult& result, const bool countEvaluation)
     {
+        ApplyLargeOutputConfirmation(result.metadata.timestamp.monotonic100ns);
+        if (pendingSession_ || largeOutputRejected_ || published_)
+        {
+            return {};
+        }
         Require(result.demodulation.acceptedTransportBlockCount <=
             result.demodulation.acceptedTransportBlocks.size(),
             "CaptureDemodulator accepted Transport block count is out of bounds");
@@ -3582,18 +3805,20 @@ private:
         std::string outputPath = Utf8FromWide(storageSnapshot.finalPath);
         std::wstring outputPathWide = storageSnapshot.finalPath;
         std::string wholeFileDigestHex = DigestHex(manifest_->wholeFileDigest.bytes);
+        Require(static_cast<bool>(resumeStore_), "final publish has no active resume journal");
+        const DecoderResumeStoreStatus intentStatus = resumeStore_->RecordPublishIntent(manifest_->wholeFileDigest);
+        Require(static_cast<bool>(intentStatus), "durable publish intent failed: " + intentStatus.message);
         const auto publishStatus = storage_->Publish(manifest_->wholeFileDigest);
         Require(static_cast<bool>(publishStatus), "WholeFileDigest/final publish failed: " +
             DescribeStorageStatus(publishStatus));
-        Require(static_cast<bool>(resumeStore_), "final publish has no active resume journal");
-        const DecoderResumeStoreStatus resumeStatus = resumeStore_->RemoveAfterPublish();
-        Require(static_cast<bool>(resumeStatus), "published file resume cleanup failed: " + resumeStatus.message);
         completion_.outputPath = std::move(outputPath);
         completion_.outputPathWide = std::move(outputPathWide);
         completion_.wholeFileDigestHex = std::move(wholeFileDigestHex);
         completion_.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started_);
         completion_.published = true;
         published_ = true;
+        const DecoderResumeStoreStatus resumeStatus = resumeStore_->RemoveAfterPublish();
+        Require(static_cast<bool>(resumeStatus), "published file resume cleanup failed: " + resumeStatus.message);
         // CP-A can inject canonical Transport without fabricating a capture
         // epoch. Digest, storage and publish gates above remain authoritative;
         // only capture-time goodput telemetry is unavailable in that mode.
@@ -3779,9 +4004,13 @@ private:
     bool deferCompletedState_ = false;
     bool captureTelemetryAvailable_ = true;
     bool collectResourceHighWater_ = false;
+    LargeOutputConfirmationController* largeOutputConfirmation_ = nullptr;
     std::unique_ptr<pbstorage::OutputFile> storage_;
     std::unique_ptr<DecoderResumeStore> resumeStore_;
     std::optional<pbprotocol::SessionDescriptor> session_;
+    std::optional<pbprotocol::SessionDescriptor> pendingSession_;
+    pbprotocol::SessionTag pendingSessionTag_{};
+    std::vector<std::byte> pendingSessionControl_;
     std::vector<std::optional<pbprotocol::SegmentDescriptor>> segments_;
     std::vector<bool> storedSegments_;
     std::optional<pbprotocol::FinalManifest> manifest_;
@@ -3821,6 +4050,7 @@ private:
     bool restoringResume_ = false;
     bool receiverSessionBound_ = false;
     bool published_ = false;
+    bool largeOutputRejected_ = false;
 };
 
 [[nodiscard]] pbcapturenormalize::CaptureEnvironment MakeReplayCaptureEnvironment(
@@ -4028,6 +4258,17 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
             stoppedEarly = true;
             break;
         }
+        pipeline.ApplyLargeOutputConfirmation(CurrentQpc100ns());
+        if (pipeline.IsAwaitingLargeOutputConfirmation())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        if (pipeline.IsLargeOutputRejected())
+        {
+            stoppedEarly = true;
+            break;
+        }
         pbrealcapturereplay::ReplayV2Record record;
         const auto readStatus = reader.ReadNext(record);
         if (!readStatus)
@@ -4189,7 +4430,9 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
             value.state = DecoderState::Stopped;
             value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
             value.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started);
-            value.statusMessage = stoppedEarly ?
+            value.statusMessage = pipeline.IsLargeOutputRejected() ||
+                value.largeOutputConfirmationState == LargeOutputConfirmationState::Rejected ?
+                "Large output was rejected; no final file was published" : stoppedEarly ?
                 "Offline Replay stopped by user; no final file was published" :
                 "Offline Replay exhausted; no final file was published";
         }
@@ -5100,6 +5343,129 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeHeadlessMultiSegmentFile(const 
     catch (...)
     {
         return RuntimeStatus::Failure("Headless application probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeLargeOutputConfirmation(
+    const std::span<const std::byte> rawBytes, const std::wstring& outputDirectory, const bool accepted,
+    ApplicationLargeOutputConfirmationProbeSnapshot& output) noexcept
+{
+    output = {};
+    if (rawBytes.size() < 2 || rawBytes.size() > 64ULL * 1024ULL || outputDirectory.empty())
+    {
+        return RuntimeStatus::Failure("Large output confirmation probe input is outside its bounded contract");
+    }
+    try
+    {
+        std::error_code directoryError;
+        Require(std::filesystem::is_directory(outputDirectory, directoryError) && !directoryError,
+            "large output confirmation probe directory is unavailable");
+        const ProfileBinding profile = GetProfileBinding(VisualProfile::RemoteVisualLowFps);
+        const TransferDescription description = DescribeSource(rawBytes, false, 3, profile.visualProfileId);
+        pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+        policy.maxOutputPreallocationBytesWithoutPrompt = rawBytes.size() - 1;
+        auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, outerBlockBytes);
+        RequireResult(receiverResult, "large output confirmation ReceiverIngress creation failed");
+        pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
+        constexpr std::uint64_t runGeneration = 1;
+        SnapshotStore<DecoderSnapshot> snapshot;
+        snapshot.Update([&](DecoderSnapshot& value)
+        {
+            value.state = DecoderState::WaitingForBootstrap;
+            value.runGeneration = runGeneration;
+            value.visualProfile = VisualProfile::RemoteVisualLowFps;
+            value.visualProfileId = profile.visualProfileId;
+        });
+        LargeOutputConfirmationController confirmation;
+        Require(confirmation.BeginRun(runGeneration) == TransitionResult::Applied,
+            "large output confirmation probe controller initialization failed");
+        AuthoritativeCompletion completion;
+        const auto started = std::chrono::steady_clock::now();
+        ReceiverPipeline pipeline(receiver, outputDirectory, policy, snapshot, completion, runGeneration,
+            started, VisualProfile::RemoteVisualLowFps, false, false, false, &confirmation);
+        std::int64_t timestamp100ns = 1;
+        Require(pipeline.ProcessHeadlessControlRecord(description.sessionControl, timestamp100ns),
+            "large output SessionDescriptor was not admitted into the confirmation state");
+        timestamp100ns++;
+        Require(pipeline.ProcessHeadlessControlRecord(description.sessionControl, timestamp100ns),
+            "repeated large output SessionDescriptor was not idempotent");
+        timestamp100ns++;
+        Require(pipeline.ProcessHeadlessControlRecord(description.sessionControl, timestamp100ns),
+            "second repeated large output SessionDescriptor was not idempotent");
+
+        ApplicationLargeOutputConfirmationProbeSnapshot result;
+        result.awaitingDecision = snapshot.Get();
+        const LargeOutputConfirmationSnapshot request = confirmation.GetSnapshot();
+        Require(result.awaitingDecision.state == DecoderState::AwaitingLargeOutputConfirmation &&
+            result.awaitingDecision.largeOutputConfirmationState == LargeOutputConfirmationState::AwaitingDecision &&
+            result.awaitingDecision.largeOutputConfirmationRequestId == request.requestId && request.requestId != 0,
+            "large output request was not exposed as one stable public confirmation state");
+
+        SenderFrameBuilder builder(profile, description, 1);
+        while (builder.GetCurrentKind() != FrameKind::Data)
+        {
+            builder.Advance();
+        }
+        std::vector<std::byte> transportBytes(informationBytes);
+        std::uint32_t payloadBytes = 0;
+        const std::size_t serializedBytes = builder.BuildTransportBlockForSlot(0, transportBytes, payloadBytes);
+        Require(payloadBytes != 0 && serializedBytes <= transportBytes.size(),
+            "large output confirmation probe Transport serialization failed");
+        transportBytes.resize(serializedBytes);
+        const ReceiverProcessResult suppressed = pipeline.ProcessHeadlessTransportBlock(
+            transportBytes, 1, timestamp100ns++);
+        result.transportSuppressedBeforeDecision = !suppressed.hasDataAdmission && !suppressed.carrierAccepted;
+        result.orphanCachedBytesBeforeDecision = receiver.GetTelemetry().orphanCachedBytes;
+
+        const auto CountStateFiles = [&]()
+        {
+            std::pair<bool, bool> stateFiles{};
+            for (const std::filesystem::directory_entry& entry :
+                std::filesystem::directory_iterator(std::filesystem::path(outputDirectory)))
+            {
+                stateFiles.first = stateFiles.first || entry.path().extension() == L".part";
+                stateFiles.second = stateFiles.second || entry.path().extension() == L".resume";
+            }
+            return stateFiles;
+        };
+        const auto beforeDecision = CountStateFiles();
+        result.partExistedBeforeDecision = beforeDecision.first;
+        result.resumeExistedBeforeDecision = beforeDecision.second;
+        Require(confirmation.Resolve(runGeneration, request.requestId, accepted) == TransitionResult::Applied,
+            "large output confirmation probe decision failed");
+        timestamp100ns++;
+        pipeline.ApplyLargeOutputConfirmation(timestamp100ns);
+        result.afterDecision = snapshot.Get();
+        const auto afterDecision = CountStateFiles();
+        result.partExistsAfterDecision = afterDecision.first;
+        result.resumeExistsAfterDecision = afterDecision.second;
+        Require(result.transportSuppressedBeforeDecision && result.orphanCachedBytesBeforeDecision == 0 &&
+            !result.partExistedBeforeDecision && !result.resumeExistedBeforeDecision,
+            "large output confirmation had a pre-decision storage or Outer payload side effect");
+        if (accepted)
+        {
+            Require(result.afterDecision.state == DecoderState::ReceivingControl &&
+                result.afterDecision.largeOutputConfirmationState == LargeOutputConfirmationState::Accepted &&
+                result.partExistsAfterDecision && result.resumeExistsAfterDecision,
+                "accepted large output did not enter bounded output reservation");
+        }
+        else
+        {
+            Require(result.afterDecision.state == DecoderState::Stopped &&
+                result.afterDecision.largeOutputConfirmationState == LargeOutputConfirmationState::Rejected &&
+                !result.partExistsAfterDecision && !result.resumeExistsAfterDecision,
+                "rejected large output did not remain a side-effect-free terminal state");
+        }
+        output = std::move(result);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Large output confirmation probe failed with an unknown error");
     }
 }
 
@@ -6612,6 +6978,10 @@ RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
         return RuntimeStatus::Failure("run generation exhausted");
     }
     const std::uint64_t runGeneration = nextRunGeneration_++;
+    if (largeOutputConfirmation_.BeginRun(runGeneration) != TransitionResult::Applied)
+    {
+        return RuntimeStatus::Failure("无法初始化大输出确认控制器");
+    }
     stopRequested_ = false;
     DecoderSnapshot initial;
     initial.state = DecoderState::WaitingForBootstrap;
@@ -6705,6 +7075,56 @@ RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
         return RuntimeStatus::Failure("无法创建 Decoder worker thread");
     }
     return {};
+}
+
+RuntimeStatus DecoderRuntime::ResolveLargeOutputConfirmation(const std::uint64_t runGeneration,
+    const std::uint64_t requestId, const bool accepted) noexcept
+{
+    try
+    {
+        const TransitionResult result = largeOutputConfirmation_.Resolve(runGeneration, requestId, accepted);
+        if (result == TransitionResult::Stale)
+        {
+            return RuntimeStatus::Failure("大输出确认回调属于已过期的 Decoder run");
+        }
+        if (result == TransitionResult::Rejected)
+        {
+            return RuntimeStatus::Failure("大输出确认回调的请求标识无效或与已有决定冲突");
+        }
+        snapshot_.Update([runGeneration, requestId, accepted](DecoderSnapshot& value)
+        {
+            if (value.runGeneration != runGeneration || value.largeOutputConfirmationRequestId != requestId ||
+                value.state != DecoderState::AwaitingLargeOutputConfirmation)
+            {
+                return;
+            }
+            value.largeOutputConfirmationState = accepted ? LargeOutputConfirmationState::Accepted :
+                LargeOutputConfirmationState::Rejected;
+            if (accepted)
+            {
+                value.statusMessage = "Large output confirmed; validating disk allocation before creating .part";
+            }
+            else
+            {
+                value.state = DecoderState::Stopped;
+                value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                value.statusMessage = "Large output was rejected; no .part file, resume journal, or Outer payload state was created";
+            }
+        });
+        if (!accepted)
+        {
+            stopRequested_ = true;
+        }
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(std::string("大输出确认回调失败：") + exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("大输出确认回调失败");
+    }
 }
 
 void DecoderRuntime::RequestStop() noexcept
@@ -6839,7 +7259,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
         ReceiverPipeline pipeline(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
-            started, config.visualProfile, replayReader != nullptr);
+            started, config.visualProfile, replayReader != nullptr, true, false, &largeOutputConfirmation_);
 
         const pbdemodd3d11::CaptureDemodulatorConfig demodConfig = MakeCaptureDemodulatorConfig(
             config, profile, replayReader != nullptr);
@@ -6927,6 +7347,12 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         for (;;)
         {
             const auto now = std::chrono::steady_clock::now();
+            pipeline.ApplyLargeOutputConfirmation(CurrentQpc100ns());
+            if (pipeline.IsLargeOutputRejected())
+            {
+                capture.RequestStop();
+                break;
+            }
             if (replayTailDeadline && now >= *replayTailDeadline)
             {
                 capture.RequestStop();
@@ -7156,6 +7582,14 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
             {
                 if (value.runGeneration == runGeneration)
                 {
+                    if (value.largeOutputConfirmationState == LargeOutputConfirmationState::Rejected)
+                    {
+                        value.state = DecoderState::Stopped;
+                        value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                        value.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started);
+                        value.statusMessage = "Large output was rejected; no final file was published";
+                        return;
+                    }
                     value.state = DecoderState::Stopped;
                     value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
                     value.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started);

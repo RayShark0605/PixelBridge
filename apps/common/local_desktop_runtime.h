@@ -262,6 +262,18 @@ struct ApplicationHeadlessProbeSnapshot
     std::vector<ApplicationHeadlessSegmentProbeSnapshot> segments;
 };
 
+struct ApplicationLargeOutputConfirmationProbeSnapshot
+{
+    DecoderSnapshot awaitingDecision;
+    DecoderSnapshot afterDecision;
+    std::uint64_t orphanCachedBytesBeforeDecision = 0;
+    bool transportSuppressedBeforeDecision = false;
+    bool partExistedBeforeDecision = false;
+    bool resumeExistedBeforeDecision = false;
+    bool partExistsAfterDecision = false;
+    bool resumeExistsAfterDecision = false;
+};
+
 // Narrow headless seam over the production LF4 SenderFrameBuilder,
 // ReferenceChannel truth boundary, ReceiverPipeline, ReceiverIngress,
 // WholeFileDigest verification, and PBStorage publish path. This seam remains
@@ -291,6 +303,9 @@ public:
     [[nodiscard]] static RuntimeStatus ProbeHeadlessMultiSegmentFile(const std::wstring& sourcePath,
         const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
         const ApplicationHeadlessProbeOptions& options, ApplicationHeadlessProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeLargeOutputConfirmation(std::span<const std::byte> rawBytes,
+        const std::wstring& outputDirectory, bool accepted,
+        ApplicationLargeOutputConfirmationProbeSnapshot& output) noexcept;
 };
 
 // Qt-free application controller. Start launches one bounded worker and
@@ -328,6 +343,8 @@ public:
     DecoderRuntime& operator=(const DecoderRuntime&) = delete;
 
     [[nodiscard]] RuntimeStatus Start(const DecoderConfig& config);
+    [[nodiscard]] RuntimeStatus ResolveLargeOutputConfirmation(std::uint64_t runGeneration,
+        std::uint64_t requestId, bool accepted) noexcept;
     void RequestStop() noexcept;
     void Stop() noexcept;
     [[nodiscard]] DecoderSnapshot GetSnapshot() const;
@@ -339,6 +356,7 @@ private:
     std::thread worker_;
     std::atomic<bool> stopRequested_ = false;
     std::atomic<bool> workerRunning_ = false;
+    LargeOutputConfirmationController largeOutputConfirmation_;
     std::uint64_t nextRunGeneration_ = 1;
 };
 

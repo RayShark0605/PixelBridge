@@ -366,6 +366,22 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     stream << ",\"sessionTag\":" << snapshot.sessionTag
            << ",\"descriptorKnown\":" << snapshot.descriptorKnown
            << ",\"originalFileBytes\":" << snapshot.originalFileBytes
+           << ",\"largeOutputConfirmationState\":";
+    WriteEscaped(stream, GetLargeOutputConfirmationStateName(snapshot.largeOutputConfirmationState));
+    stream << ",\"largeOutputConfirmationRequestId\":" << snapshot.largeOutputConfirmationRequestId
+           << ",\"largeOutputConfirmationFileNameUtf8\":";
+    WriteEscaped(stream, snapshot.largeOutputConfirmationFileNameUtf8);
+    stream << ",\"outputAvailableBytesBeforeReservation\":" << snapshot.outputAvailableBytesBeforeReservation
+           << ",\"outputRequestedAllocationBytes\":" << snapshot.outputRequestedAllocationBytes
+           << ",\"outputActualAllocationBytes\":" << snapshot.outputActualAllocationBytes
+           << ",\"outputPreallocationAttempted\":" << snapshot.outputPreallocationAttempted
+           << ",\"outputPreallocationFullyAllocated\":" << snapshot.outputPreallocationFullyAllocated
+           << ",\"outputFileSparse\":" << snapshot.outputFileSparse
+           << ",\"outputFileCompressed\":" << snapshot.outputFileCompressed
+           << ",\"outputVolumeSupportsSparseFiles\":" << snapshot.outputVolumeSupportsSparseFiles
+           << ",\"outputVolumeSupportsCompression\":" << snapshot.outputVolumeSupportsCompression
+           << ",\"outputVolumeCompressed\":" << snapshot.outputVolumeCompressed
+           << ",\"outputRecoveredAfterPublish\":" << snapshot.outputRecoveredAfterPublish
            << ",\"verifiedRawBytes\":" << snapshot.verifiedRawBytes
            << ",\"remainingRawBytes\":" << snapshot.remainingRawBytes
            << ",\"recoveryProgress\":";
@@ -669,6 +685,13 @@ std::string BuildDecoderDiagnostics(const DecoderSnapshot& snapshot)
         stream << "not established";
     }
     stream << " actual\nVerified raw bytes: " << snapshot.verifiedRawBytes << '/' << snapshot.originalFileBytes
+           << "\nLarge output confirmation: " << GetLargeOutputConfirmationStateName(
+               snapshot.largeOutputConfirmationState)
+           << " requestId=" << snapshot.largeOutputConfirmationRequestId
+           << "\nOutput allocation: requested=" << snapshot.outputRequestedAllocationBytes
+           << " actual=" << snapshot.outputActualAllocationBytes
+           << " sparse=" << (snapshot.outputFileSparse ? "true" : "false")
+           << " compressed=" << (snapshot.outputFileCompressed ? "true" : "false")
            << "\nSmoothed verified raw goodput B/s (ETA basis): " << snapshot.smoothedVerifiedRawGoodputBytesPerSecond
            << "\nVerified encoded bytes: " << snapshot.verifiedEncodedBytes << " goodput bit/s=";
     if (snapshot.verifiedEncodedGoodputBitsPerSecond)
