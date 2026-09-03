@@ -7,6 +7,8 @@
 #include "pbprotocol/transport_block_codec.h"
 #include "pbremotevisualsimulator/channel_transform.h"
 
+#include "unified_transform_corpus_cases.h"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -38,8 +40,8 @@ using namespace pbremotevisualsimulator;
 #error PB_UNIFIED_TRANSFORM_REPORT must name the generated Unified transform corpus report
 #endif
 
-constexpr pbprotocol::SessionTag kCorpusSessionTag{0x4754313053455353ULL};
-constexpr std::uint64_t kCorpusCaptureEpoch = 1;
+using unifiedtransformtest::kCorpusCaptureEpoch;
+using unifiedtransformtest::kCorpusSessionTag;
 constexpr std::size_t kLaneCount = 3;
 constexpr std::size_t kSlotRejectionCount = static_cast<std::size_t>(UnifiedSlotRejection::IdentityFailure) + 1;
 constexpr std::size_t kCorpusPayloadBytes = kUnifiedInformationBytes - pbprotocol::kTransportMinimumBlockBytes;
@@ -166,17 +168,6 @@ std::string HexBinary64(const double value)
     return output;
 }
 
-std::uint64_t MakeSeed(const std::string_view name, const std::uint64_t sequence) noexcept
-{
-    std::uint64_t seed = 1469598103934665603ULL;
-    for (const char character : name)
-    {
-        seed ^= static_cast<std::uint8_t>(character);
-        seed *= 1099511628211ULL;
-    }
-    return seed ^ sequence;
-}
-
 const char* GetUnifiedErasureName(const UnifiedErasureReason reason) noexcept
 {
     switch (reason)
@@ -216,7 +207,7 @@ CorpusRecord RunCase(UnifiedVisualCpuOracle& oracle, const std::string& name, co
     const std::optional<BgraImageView> referenceView = reference == nullptr ? std::nullopt :
         std::optional<BgraImageView>{MakeBgraView(*reference)};
     const auto executionResult = ExecuteChannelTransformPlan(MakeBgraView(source), referenceView,
-        {MakeSeed(name, source.sequence), transforms});
+        {unifiedtransformtest::MakeCorpusSeed(name, source.sequence), transforms});
     INFO(name);
     INFO(GetChannelTransformErrorName(executionResult.Error().code));
     REQUIRE(executionResult);
@@ -571,128 +562,90 @@ TEST_CASE("Unified provider-generic transform corpus closes CPU admission and ca
     UnifiedVisualCpuOracle oracle = std::move(createdOracle).Value();
     const FrameFixture frame40 = BuildFrame(40);
     const FrameFixture frame41 = BuildFrame(41);
+    const std::vector<unifiedtransformtest::MandatoryTransformCase> transformCases =
+        unifiedtransformtest::MakeMandatoryTransformCases();
     std::vector<CorpusRecord> records;
-    records.reserve(18);
-
-    const auto AddFullRecoveryCase = [&records](CorpusRecord record)
-    {
-        RequireFullRecovery(record);
-        records.push_back(std::move(record));
-    };
-
-    {
-        const std::array<ChannelTransform, 1> transforms{ResampleTransform{1920, 1080, 0.75, 0.75, 240, 135,
-            ResampleFilter::Area, {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}}};
-        AddFullRecoveryCase(RunCase(oracle, "scale-075-area-centered", frame41, transforms));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{ResampleTransform{1920, 1080, 0.85, 0.85, 144, 81,
-            ResampleFilter::Area, {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}}};
-        AddFullRecoveryCase(RunCase(oracle, "scale-085-area-centered", frame41, transforms));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{ResampleTransform{1920, 1080, 1, 1, 0, 0,
-            ResampleFilter::Area, {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}}};
-        AddFullRecoveryCase(RunCase(oracle, "scale-100-area", frame41, transforms));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{ResampleTransform{2880, 1620, 1.5, 1.5, 0, 0,
-            ResampleFilter::Bilinear, {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}}};
-        AddFullRecoveryCase(RunCase(oracle, "scale-150-bilinear", frame41, transforms));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{ResampleTransform{3840, 2160, 2, 2, 0, 0,
-            ResampleFilter::Bilinear, {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}}};
-        AddFullRecoveryCase(RunCase(oracle, "scale-200-bilinear", frame41, transforms));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{ResampleTransform{2560, 1600, 1.25, 1.25, 80.25, 125.5,
-            ResampleFilter::Bilinear, {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}}};
-        AddFullRecoveryCase(RunCase(oracle, "fractional-origin-arbitrary-letterbox", frame41, transforms));
-    }
-    {
-        const std::array<ChannelTransform, 2> transforms{Kernel3x3Transform{FixedKernel3x3::GaussianBlur, 1},
-            ChannelQuantizationTransform{6}};
-        CorpusRecord record = RunCase(oracle, "moderate-gaussian-blur-quant6", frame41, transforms);
-        RequireNoFalseAcceptance(record);
-        RequireFrameAvailable(record);
-        REQUIRE(record.acceptedSlots == std::array<std::uint32_t, kLaneCount>{0, 0, 10});
-        REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::BaseLuma)] ==
-            UnifiedErasureReason::BaseLumaPilotFailure);
-        REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::FineLuma)] ==
-            UnifiedErasureReason::FineLumaPilotFailure);
-        records.push_back(std::move(record));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{ChromaSubsample420Transform{1, 1}};
-        CorpusRecord record = RunCase(oracle, "chroma420-misaligned-phase-11", frame41, transforms);
-        RequireBaseCapacity(record);
-        records.push_back(std::move(record));
-    }
-    {
-        const std::array<ChannelTransform, 2> transforms{ResampleTransform{1920, 1080, 0.75, 0.75, 240, 135,
-            ResampleFilter::Area, {std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}},
-            NeutralChromaTransform{}};
-        CorpusRecord record = RunCase(oracle, "neutral-chroma-scale-075", frame41, transforms);
-        RequireBaseCapacity(record);
-        REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::Chroma)] == UnifiedErasureReason::ChromaPilotFailure);
-        records.push_back(std::move(record));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{BlockReplacementTransform{560, 382, 800, 316}};
-        CorpusRecord record = RunCase(oracle, "localized-old-new-center", frame41, transforms, &frame40);
-        RequireNoFalseAcceptance(record);
-        RequireFrameAvailable(record);
-        REQUIRE(record.acceptedBlocks > 0);
-        REQUIRE(record.acceptedBlocks < kUnifiedCodewordCount);
-        REQUIRE(record.freshnessCurrentRegions < kUnifiedFreshnessRegionCount);
-        records.push_back(std::move(record));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{CropTransform{0, 0, 1800, 1080}};
-        CorpusRecord record = RunCase(oracle, "crop-right-locator-negative", frame41, transforms);
-        RequireNoOutput(record);
-        records.push_back(std::move(record));
-    }
-    {
-        const std::array<ChannelTransform, 1> transforms{BlockReplacementTransform{96, 16, 608, 64}};
-        const UnifiedExpectedFrameIdentity identity{true, kCorpusSessionTag, true, frame41.sequence};
-        CorpusRecord record = RunCase(oracle, "bootstrap-copy-conflict-negative", frame41, transforms,
-            &frame40, identity, true);
-        RequireNoOutput(record);
-        REQUIRE((record.frameErasure == UnifiedErasureReason::BootstrapFailure ||
-            record.frameErasure == UnifiedErasureReason::IdentityConflict));
-        records.push_back(std::move(record));
-    }
-    {
-        const std::array<ChannelTransform, 0> transforms{};
-        const UnifiedExpectedFrameIdentity identity{true, pbprotocol::SessionTag{kCorpusSessionTag.value ^ 1},
-            true, frame41.sequence};
-        CorpusRecord record = RunCase(oracle, "caller-identity-conflict-negative", frame41, transforms,
-            nullptr, identity, true);
-        RequireNoOutput(record);
-        REQUIRE(record.frameErasure == UnifiedErasureReason::IdentityConflict);
-        records.push_back(std::move(record));
-    }
-
+    records.reserve(transformCases.size());
     VisualIdentityTracker temporalTracker;
-    const std::array<std::uint64_t, 5> temporalSequences{50, 50, 52, 51, 54};
-    const std::array<std::string, 5> temporalNames{"temporal-sequence-50-unique", "temporal-sequence-50-duplicate",
-        "temporal-sequence-52-gap", "temporal-sequence-51-reordered", "temporal-sequence-54-gap"};
-    const std::array<VisualIdentityDisposition, 5> expectedDispositions{VisualIdentityDisposition::Unique,
-        VisualIdentityDisposition::Duplicate, VisualIdentityDisposition::Unique, VisualIdentityDisposition::Reordered,
-        VisualIdentityDisposition::Unique};
-    for (std::size_t index = 0; index < temporalSequences.size(); index++)
+    std::size_t temporalObservationIndex = 0;
+    for (const unifiedtransformtest::MandatoryTransformCase& transformCase : transformCases)
     {
-        const FrameFixture frame = BuildFrame(temporalSequences[index]);
-        const VisualIdentityDisposition disposition = temporalTracker.Observe(frame.sequence, kCorpusCaptureEpoch,
-            static_cast<std::int64_t>(index + 1) * 10000000, kCorpusSessionTag.value);
-        REQUIRE(disposition == expectedDispositions[index]);
-        const std::array<ChannelTransform, 0> transforms{};
-        AddFullRecoveryCase(RunCase(oracle, temporalNames[index], frame, transforms, nullptr, {}, false, disposition));
+        std::optional<FrameFixture> dynamicFrame;
+        const FrameFixture* source = nullptr;
+        if (transformCase.sequence == frame40.sequence)
+        {
+            source = &frame40;
+        }
+        else if (transformCase.sequence == frame41.sequence)
+        {
+            source = &frame41;
+        }
+        else
+        {
+            dynamicFrame.emplace(BuildFrame(transformCase.sequence));
+            source = &*dynamicFrame;
+        }
+        const FrameFixture* reference = transformCase.referenceSequence ? &frame40 : nullptr;
+        const bool invalidReference = transformCase.referenceSequence.has_value() &&
+            *transformCase.referenceSequence != frame40.sequence;
+        REQUIRE_FALSE(invalidReference);
+
+        std::optional<VisualIdentityDisposition> temporalDisposition;
+        if (transformCase.expectedTemporalDisposition)
+        {
+            temporalDisposition = temporalTracker.Observe(source->sequence, kCorpusCaptureEpoch,
+                static_cast<std::int64_t>(temporalObservationIndex + 1) * 10000000, kCorpusSessionTag.value);
+            REQUIRE(temporalDisposition == transformCase.expectedTemporalDisposition);
+            temporalObservationIndex++;
+        }
+        CorpusRecord record = RunCase(oracle, std::string(transformCase.name), *source, transformCase.transforms,
+            reference, transformCase.expectedIdentity, transformCase.conflictExpected, temporalDisposition);
+        switch (transformCase.expectation)
+        {
+        case unifiedtransformtest::MandatoryTransformExpectation::FullRecovery:
+            RequireFullRecovery(record);
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::BlurQuantized:
+            RequireNoFalseAcceptance(record);
+            RequireFrameAvailable(record);
+            REQUIRE(record.acceptedSlots == std::array<std::uint32_t, kLaneCount>{0, 0, 10});
+            REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::BaseLuma)] ==
+                UnifiedErasureReason::BaseLumaPilotFailure);
+            REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::FineLuma)] ==
+                UnifiedErasureReason::FineLumaPilotFailure);
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::BaseCapacity:
+            RequireBaseCapacity(record);
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::NeutralChromaBaseCapacity:
+            RequireBaseCapacity(record);
+            REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::Chroma)] ==
+                UnifiedErasureReason::ChromaPilotFailure);
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::LocalizedStale:
+            RequireNoFalseAcceptance(record);
+            RequireFrameAvailable(record);
+            REQUIRE(record.acceptedBlocks > 0);
+            REQUIRE(record.acceptedBlocks < kUnifiedCodewordCount);
+            REQUIRE(record.freshnessCurrentRegions < kUnifiedFreshnessRegionCount);
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::CropNoOutput:
+            RequireNoOutput(record);
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::BootstrapConflictNoOutput:
+            RequireNoOutput(record);
+            REQUIRE((record.frameErasure == UnifiedErasureReason::BootstrapFailure ||
+                record.frameErasure == UnifiedErasureReason::IdentityConflict));
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::CallerIdentityNoOutput:
+            RequireNoOutput(record);
+            REQUIRE(record.frameErasure == UnifiedErasureReason::IdentityConflict);
+            break;
+        }
+        records.push_back(std::move(record));
     }
 
-    REQUIRE(records.size() == 18);
+    REQUIRE(records.size() == unifiedtransformtest::kMandatoryTransformCaseCount);
     const VisualIdentitySnapshot temporalSnapshot = temporalTracker.GetSnapshot();
     REQUIRE(temporalSnapshot.uniqueFrames == 3);
     REQUIRE(temporalSnapshot.duplicateFrames == 1);
