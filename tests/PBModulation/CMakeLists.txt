@@ -78,6 +78,12 @@ target_compile_definitions(PBUnifiedVisualMappingTests PRIVATE
     PB_UNIFIED_LC4_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-lc4")
 set_tests_properties(PBUnifiedVisualMappingTests PROPERTIES LABELS "golden;mapping;modulation;unified" TIMEOUT 120)
 
+PbAddUnitTest(PBUnifiedVisualCpuTests test_unified_visual.cpp)
+target_link_libraries(PBUnifiedVisualCpuTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
+target_compile_definitions(PBUnifiedVisualCpuTests PRIVATE
+    PB_UNIFIED_CPU_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-lc4-cpu-oracle")
+set_tests_properties(PBUnifiedVisualCpuTests PROPERTIES LABELS "control;fec;golden;modulation;transport;unified" TIMEOUT 240)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

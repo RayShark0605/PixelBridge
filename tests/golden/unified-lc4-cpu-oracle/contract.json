@@ -1,0 +1,71 @@
+{
+  "artifact": "PB-Unified-LC4-V1 CPU oracle Golden",
+  "canvas": {
+    "height": 1080,
+    "pixelFormat": "BGRA8_UNORM_SDR",
+    "width": 1920
+  },
+  "codewords": {
+    "bytesEach": 2025,
+    "count": 31,
+    "informationBytesEach": 1350,
+    "innerFecProfile": "DVB-S2-Short-N16200-K10800"
+  },
+  "data": {
+    "highLuma": 176,
+    "lowLuma": 80,
+    "neutralLuma": 128,
+    "tilePixels": 4,
+    "tiles": 86688
+  },
+  "freshnessPartition": {
+    "columnBoundaries": [
+      560,
+      1360
+    ],
+    "rowBoundaries": [
+      382,
+      698
+    ]
+  },
+  "independentRebuild": "tests/PBModulation/generate_unified_visual_cpu_golden.py --check",
+  "pilots": {
+    "chromaRows": 32,
+    "lumaLevels": [
+      32,
+      80,
+      176,
+      224
+    ],
+    "lumaRows": 24,
+    "neutralRows": 8
+  },
+  "rasterBlake3": {
+    "base-neutralized": "732c97c1ba2f40611fee005febd9963d925cbc7065c241463ab8ac28b5e33983",
+    "chroma-neutralized": "b596de436ea2f80408106a56aeaac8e191b24912e4cce1375c77c31c5f035b45",
+    "clean": "4b3adcad67bbb50e86828abf984d11503b83c440877f616e3546d3c1d0e0b23c",
+    "fine-neutralized": "d78ebdd55413710a01333eae10291c4f7d7a721af18138d98a0cd9fb1a77fe2d",
+    "localized-stale": "13b440e85161c147d5d13266b9d858d57e691d92513cc1b75770c0a6428ae32c",
+    "wrong-sequence": "c3b41f859a3a21745ed65252a17026cfbf768a2288f5c0542ad5dc5fae0f1449"
+  },
+  "slotPlan": {
+    "slot0": "Control/SessionDescriptor",
+    "slots1To30": "Transport"
+  },
+  "variantTransforms": {
+    "base-neutralized": "replace top 128x64 phase checker by neutral 128",
+    "chroma-neutralized": "replace every BGR triple by rounded BT.709 luma",
+    "clean": "sequence41 canonical raster",
+    "fine-neutralized": "replace bottom 128x64 phase checker by neutral 128",
+    "localized-stale": "copy sequence40 center timing patch and freshness-region-4 data tiles",
+    "wrong-sequence": "copy every sequence40 data rectangle under sequence41 Bootstrap and pilots"
+  },
+  "variants": [
+    "clean",
+    "chroma-neutralized",
+    "base-neutralized",
+    "fine-neutralized",
+    "localized-stale",
+    "wrong-sequence"
+  ]
+}

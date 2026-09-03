@@ -13,3 +13,7 @@ target_link_libraries(PBInnerFecTests
     PRIVATE
         PB::PBInnerFec
         PB::PBProtocol)
+
+PbAddUnitTest(PBInnerFecUnifiedTests test_inner_fec_unified.cpp)
+target_link_libraries(PBInnerFecUnifiedTests PRIVATE PB::PBInnerFec PB::PBProtocol)
+set_tests_properties(PBInnerFecUnifiedTests PROPERTIES LABELS "inner-fec;unified" TIMEOUT 30)

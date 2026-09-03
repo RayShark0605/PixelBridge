@@ -21,6 +21,7 @@ target_sources(PBModulation
         src/remote_visual.cpp
         src/remote_visual_low_fps.cpp
         src/unified_visual_profile.cpp
+        src/unified_visual.cpp
         src/visual_temporal.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -38,6 +39,7 @@ target_sources(PBModulation
             include/pbmodulation/remote_visual_low_fps.h
             include/pbmodulation/unified_visual_profile.h
             include/pbmodulation/unified_visual_mapping.h
+            include/pbmodulation/unified_visual.h
             include/pbmodulation/visual_temporal.h)
 
 target_include_directories(PBModulation

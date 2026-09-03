@@ -499,17 +499,19 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] 实现规范 raster encoder，使用冻结 mask/labels/pilots。
-- [ ] 为三 lane 使用不同的 `FrameSequence` 派生 permutation，提供正反映射。
-- [ ] soft metric 输出带 lane、slot、region 与 erasure reason。
-- [ ] chroma pilot 失败仅擦除 Chroma；Fine 失败不清空 Base。
-- [ ] 扩展 freshness region：局部旧新混合仅清零受影响 metrics；禁止跨 sequence 拼帧。
-- [ ] bootstrap/locator 裁切或身份冲突才整帧擦除。
-- [ ] CPU accepted output 只有 Inner FEC/padding/Transport CRC/identity 全通过才产生。
-- [ ] 对每个 lane 建立 clean、neutralized、localized stale、wrong-sequence negative Golden。
+- [x] 实现规范 raster encoder，使用冻结 mask/labels/pilots。
+- [x] 为三 lane 使用不同的 `FrameSequence` 派生 permutation，提供正反映射。
+- [x] soft metric 输出带 lane、slot、region 与 erasure reason。
+- [x] chroma pilot 失败仅擦除 Chroma；Fine 失败不清空 Base。
+- [x] 扩展 freshness region：局部旧新混合仅清零受影响 metrics；禁止跨 sequence 拼帧。
+- [x] bootstrap/locator 裁切或身份冲突才整帧擦除。
+- [x] CPU accepted output 只有 Inner FEC/padding/Transport CRC/identity 全通过才产生。
+- [x] 对每个 lane 建立 clean、neutralized、localized stale、wrong-sequence negative Golden。
 
 **最小验证：** PBModulation、PBInnerFec 的 Unified test subset；一次 independent Golden regeneration compare。
-**退出：** CPU oracle 对 mandatory synthetic transforms 无 false accepted Control/Transport；lane erasure 互不拖累。
+**验证结果（2026-09-03）：** 新增规范 1920x1080 BGRA8 CPU renderer/oracle，完整映射 31 个 Robust codewords（502,200 soft metrics），固定 Data `80/176`、neutral `128`、四级 Luma pilot `32/80/176/224`、四 Chroma states、Base/Fine phase checker，以及以列边界 `560/1360`、行边界 `382/698` 划分的九个 freshness neighborhoods。clean mixed-slot Golden 精确回收 31/31（1 Control + 30 Transport）；Chroma/Base/Fine 单 lane pilot 失效分别保留 21/14/27 个其余 lane blocks。localized-stale 同时替换上一 sequence 的中心 timing patch 与其负责的 Data tiles，只有该区 metrics 归零；current Bootstrap + previous-sequence 全 Data 接受 0。有效 LDPC 后的 Control CRC、Transport padding、Transport CRC、SessionTag 四类独立损坏均被对应 gate 拒绝。Release Unified CTest 标签子集 5/5 通过；`PBUnifiedVisualCpuTests` 8 cases / 1,022,380 assertions（含 16 个 mapping phases 与单 raster-bit LDPC recovery）、独立 `PBInnerFecUnifiedTests` 1 case / 124 assertions、历史 `PBLocalDesktopBootstrapTests` 1/1 通过；独立 Python Golden 重建逐字节一致且 4/4 对抗测试通过。未运行产品 GUI、完整 CTest、D3D11/GPU、真实 capture 或实屏 Gate。
+**退出：** 已满足。mandatory synthetic clean/Chroma-neutralized/Base-neutralized/Fine-neutralized/localized-stale/wrong-sequence 六类 raster 均由不读取 C++/不调用产品可执行文件的 Python oracle 独立生成并冻结；clean raster BLAKE3 为 `4b3adcad67bbb50e86828abf984d11503b83c440877f616e3546d3c1d0e0b23c`。CPU oracle 不持有上一帧 metrics，wrong-sequence 与所有 CRC/padding/identity negatives 无 false accepted Control/Transport，三 lane erasure 不互相清空。
+**产物：** 公共 raster/metric/admission 合同位于 `libs/PBModulation/include/pbmodulation/unified_visual.h`，CPU 实现位于 `libs/PBModulation/src/unified_visual.cpp`；独立重建器与 drift tests 位于 `tests/PBModulation/generate_unified_visual_cpu_golden.py`、`tests/PBModulation/test_generate_unified_visual_cpu_golden.py`，六类 raster digest、独立 mixed codewords 与 accepted stream 位于 `tests/golden/unified-lc4-cpu-oracle/`。本地日志位于 `build-unified-release/tests/PBModulation/g08-unified-subset.txt`、`g08-unified-cpu-tests.txt`、`g08-independent-golden.txt`、`g08-independent-golden-unittest.txt`、`g08-local-desktop-regression.txt` 与 `build-unified-release/tests/PBInnerFec/g08-unified-inner-fec-tests.txt`。
 **提交建议：** `feat(modulation): implement unified cpu oracle`
 
 ## G09 — mixed Control/Transport 帧调度
