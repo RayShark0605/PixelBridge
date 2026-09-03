@@ -3,6 +3,7 @@
 
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/bootstrap_control_codec.h"
+#include "pbprotocol/byte_io.h"
 #include "pbprotocol/descriptor_codec.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -60,6 +61,20 @@ private:
     return sessionId;
 }
 
+[[nodiscard]] pbapp::EncoderSourceIdentity MakeSourceIdentity(const std::uint64_t volumeSerialNumber,
+    const std::uint8_t fileIdSeed, const std::uint64_t fileBytes, const std::uint64_t lastWriteTime) noexcept
+{
+    pbapp::EncoderSourceIdentity identity;
+    identity.volumeSerialNumber = volumeSerialNumber;
+    for (std::size_t index = 0; index < identity.fileId.size(); index++)
+    {
+        identity.fileId[index] = static_cast<std::byte>(fileIdSeed + static_cast<std::uint8_t>(index));
+    }
+    identity.fileBytes = fileBytes;
+    identity.lastWriteTime = lastWriteTime;
+    return identity;
+}
+
 [[nodiscard]] std::vector<std::byte> MakeBytes(const std::size_t count)
 {
     std::vector<std::byte> bytes(count);
@@ -67,6 +82,19 @@ private:
     {
         bytes[index] = static_cast<std::byte>((index * 53U + 19U) & 0xFFU);
     }
+    return bytes;
+}
+
+[[nodiscard]] std::vector<std::byte> ReadAllBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    REQUIRE(input);
+    const std::streamoff byteCount = input.tellg();
+    REQUIRE(byteCount >= 0);
+    input.seekg(0, std::ios::beg);
+    std::vector<std::byte> bytes(static_cast<std::size_t>(byteCount));
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(input.good());
     return bytes;
 }
 
@@ -156,12 +184,13 @@ void CorruptLastByte(const std::filesystem::path& path)
 } // namespace
 
 TEST_CASE("Encoder session store leases IDs durably and resumes only exact source and codec identities",
-    "[application][encoder][resume][durable-lease]")
+    "[application][encoder][sender][session][persistence][resume][durable-lease]")
 {
     ScratchDirectory scratch(L"encoder-session-store");
     pbapp::EncoderSessionStoreCreateConfig config;
     config.rootDirectory = scratch.GetPath();
-    config.sourceIdentity = {0x12345678U, 0x1122334455667788ULL, 17, 0x0102030405060708ULL};
+    config.sourceIdentity = MakeSourceIdentity(0x0123456789ABCDEFULL, 0x30, 17,
+        0x0102030405060708ULL);
     config.sourcePathUtf8 = "D:/fixtures/source.bin";
     config.buildIdentity = "PixelBridge-0.1.0";
     config.compressionIdentity = "zstd-1.5.7";
@@ -181,6 +210,26 @@ TEST_CASE("Encoder session store leases IDs durably and resumes only exact sourc
     REQUIRE(store->EnsureRepairIdLease(1, 301));
     REQUIRE(store->GetRepairIdLeaseEnd(1) == pbapp::encoderDurableIdLeaseSize);
     REQUIRE(store->UpdateCarouselPosition(7, 1));
+    const std::vector<std::byte> descriptorStateBytes = ReadAllBytes(
+        store->GetSessionDirectory() / L"descriptors.bin");
+    pbprotocol::ByteReader descriptorReader(descriptorStateBytes);
+    REQUIRE(descriptorReader.ReadFixedBytes<4>().Value() == std::array<std::byte, 4>{
+        std::byte{'P'}, std::byte{'B'}, std::byte{'E'}, std::byte{'D'}});
+    REQUIRE(descriptorReader.ReadUint16().Value() == 2);
+    REQUIRE(descriptorReader.ReadUint16().Value() == 0);
+    REQUIRE(descriptorReader.ReadUint64().Value() == descriptorStateBytes.size());
+    REQUIRE(descriptorReader.ReadFixedBytes<pbprotocol::kSessionIdBytes>().Value() == config.sessionId.bytes);
+    REQUIRE(descriptorReader.ReadUint64().Value() == config.sourceIdentity.volumeSerialNumber);
+    REQUIRE(descriptorReader.ReadFixedBytes<16>().Value() == config.sourceIdentity.fileId);
+    REQUIRE(descriptorReader.ReadUint64().Value() == config.sourceIdentity.fileBytes);
+    REQUIRE(descriptorReader.ReadUint64().Value() == config.sourceIdentity.lastWriteTime);
+    REQUIRE(descriptorReader.ReadUint64().Value() == config.segmentCount);
+    REQUIRE(descriptorReader.ReadUint32().Value() == config.sourcePathUtf8.size());
+    REQUIRE(descriptorReader.ReadUint32().Value() == config.buildIdentity.size());
+    REQUIRE(descriptorReader.ReadUint32().Value() == config.compressionIdentity.size());
+    REQUIRE(descriptorReader.ReadUint32().Value() == config.outerFecIdentity.size());
+    REQUIRE(descriptorReader.ReadUint64().Value() == config.descriptorBundle.size());
+    REQUIRE(descriptorReader.Position() == 104);
     const std::filesystem::path runtimePath = store->GetSessionDirectory() / L"runtime.state";
 
     std::unique_ptr<pbapp::EncoderSessionStore> collision;
@@ -204,6 +253,30 @@ TEST_CASE("Encoder session store leases IDs durably and resumes only exact sourc
 
     REQUIRE(pbapp::EncoderSessionStore::FindMatching(config.rootDirectory, config.sourceIdentity,
         "different-build", config.compressionIdentity, config.outerFecIdentity, store, found));
+    REQUIRE_FALSE(found);
+    REQUIRE_FALSE(store);
+
+    REQUIRE(pbapp::EncoderSessionStore::FindMatching(config.rootDirectory, config.sourceIdentity,
+        config.buildIdentity, "different-compression", config.outerFecIdentity, store, found));
+    REQUIRE_FALSE(found);
+    REQUIRE_FALSE(store);
+
+    REQUIRE(pbapp::EncoderSessionStore::FindMatching(config.rootDirectory, config.sourceIdentity,
+        config.buildIdentity, config.compressionIdentity, "different-outer-fec", store, found));
+    REQUIRE_FALSE(found);
+    REQUIRE_FALSE(store);
+
+    pbapp::EncoderSourceIdentity changedSource = config.sourceIdentity;
+    changedSource.fileBytes++;
+    REQUIRE(pbapp::EncoderSessionStore::FindMatching(config.rootDirectory, changedSource,
+        config.buildIdentity, config.compressionIdentity, config.outerFecIdentity, store, found));
+    REQUIRE_FALSE(found);
+    REQUIRE_FALSE(store);
+
+    changedSource = config.sourceIdentity;
+    changedSource.lastWriteTime++;
+    REQUIRE(pbapp::EncoderSessionStore::FindMatching(config.rootDirectory, changedSource,
+        config.buildIdentity, config.compressionIdentity, config.outerFecIdentity, store, found));
     REQUIRE_FALSE(found);
     REQUIRE_FALSE(store);
 

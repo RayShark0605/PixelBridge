@@ -327,6 +327,7 @@ ctest --test-dir build-unified-release -C Release -R '^PBProtocolTests$' --outpu
 
 ## G02 — 流式 Encoder 与 durable Carousel 收口
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G01。
 **目的：** 完成不随总文件大小增长的预扫描/广播/恢复发送器，证明 ID 不回退且 equation 可复现。
 
@@ -336,20 +337,21 @@ ctest --test-dir build-unified-release -C Release -R '^PBProtocolTests$' --outpu
 
 **实现清单：**
 
-- [ ] 稳定 Win32 文件句柄禁止 write/delete sharing，记录 volume serial、file ID、size、last-write。
-- [ ] 逐 8 MiB Segment 扫描，累计 whole BLAKE3，计算 raw/encoded digest，zstd level 3 无收益回退 RAW。
-- [ ] 预扫描仅保存 descriptor table；广播只保存 current/next 两个 Segment。
-- [ ] 重新压缩必须与预扫描 `EncodedDigest` 相同后才 `WirehairV2Encoder::Recreate`。
-- [ ] 每轮发送 systematic `[0,K)` 与 `max(16, ceil(K*20%))` repair；后续轮使用新 repair IDs。
-- [ ] DirectRepeat 保留 tiny/small 决策且重复语义固定。
-- [ ] Session/Manifest 约 10 秒重复，SegmentDescriptor 在 Segment 开始和期间重复；调度接口先独立于最终 mixed slot 物理布局。
-- [ ] 4,096-ID lease 必须先原子持久化终点再使用；重启跳过未用 ID。
-- [ ] 仅当 source、digest、descriptor、build/zstd/Wirehair identity 全一致才恢复旧 Session。
-- [ ] 预扫描/广播过程中检测源身份变化并停止，不创建“继续但内容变了”的 Session。
+- [x] 稳定 Win32 文件句柄禁止 write/delete sharing，记录 volume serial、file ID、size、last-write。
+- [x] 逐 8 MiB Segment 扫描，累计 whole BLAKE3，计算 raw/encoded digest，zstd level 3 无收益回退 RAW。
+- [x] 预扫描仅保存 descriptor table；广播只保存 current/next 两个 Segment。
+- [x] 重新压缩必须与预扫描 `EncodedDigest` 相同后才 `WirehairV2Encoder::Recreate`。
+- [x] 每轮发送 systematic `[0,K)` 与 `max(16, ceil(K*20%))` repair；后续轮使用新 repair IDs。
+- [x] DirectRepeat 保留 tiny/small 决策且重复语义固定。
+- [x] Session/Manifest 约 10 秒重复，SegmentDescriptor 在 Segment 开始和期间重复；调度接口先独立于最终 mixed slot 物理布局。
+- [x] 4,096-ID lease 必须先原子持久化终点再使用；重启跳过未用 ID。
+- [x] 仅当 source、digest、descriptor、build/zstd/Wirehair identity 全一致才恢复旧 Session。
+- [x] 预扫描/广播过程中检测源身份变化并停止，不创建“继续但内容变了”的 Session。
 
 **最小验证：** 只构建/运行 `PBApplicationTests` 中 sender/session/persistence 标签；增加一个 >8 MiB headless scheduler 测试，不运行屏幕链。
+**验证结果（2026-09-03）：** `PBApplicationTests` Release 目标构建成功；直接执行 `[sender]` 标签命中 zstd/RAW、scheduler、session persistence、既有 sender raster 回归和 25,169,920-byte/4-Segment headless 五个测试，5/5 通过。未创建 Data Window，未执行屏幕链。
 **退出：** 三个以上 Segment 可持续轮播；内存是双 Segment；重启后 FrameSequence/repair ID 单调；相同输入 equation 可复现。
-**产物：** sender 状态 schema、lease crash-window 表、headless report。
+**产物：** [`ENCODER_STREAMING_CAROUSEL.md`](ENCODER_STREAMING_CAROUSEL.md) 中的 sender 状态 schema、lease crash-window 表与报告说明；本地生成 `build-unified-release/tests/PBApplication/g02-sender-headless-report.json`。
 **提交建议：** `feat(sender): finish streaming carousel persistence`
 
 ## G03 — Decoder journal、乱序存储与恢复收口

@@ -24,6 +24,17 @@ std::string GetZstandardBaselineIdentity()
     return std::string("zstd-") + ZSTD_versionString();
 }
 
+std::string GetSegmentCompressionIdentity(const bool compressionEnabled,
+    const CompressionSettings& settings)
+{
+    return GetZstandardBaselineIdentity() + ";enabled=" + (compressionEnabled ? "1" : "0") +
+        ";level=" + std::to_string(settings.compressionLevel) +
+        ";window-log=" + std::to_string(settings.maxWindowLog) +
+        ";max-output=" + std::to_string(settings.maxOutputBytes) +
+        ";framing-margin=" + std::to_string(settings.framingMarginBytes) +
+        ";content-size=1;checksum=1;workers=0";
+}
+
 namespace {
 
 [[nodiscard]] bool FitsByteVector(const std::uint64_t byteCount) noexcept
@@ -333,6 +344,20 @@ CompressionResult<SegmentCompressor> SegmentCompressor::Create(
     if (ZSTD_isError(windowResult))
     {
         return mapFailure(windowResult);
+    }
+
+    const std::size_t workerResult = ZSTD_CCtx_setParameter(
+        compressContext.get(), ZSTD_c_nbWorkers, 0);
+    if (ZSTD_isError(workerResult))
+    {
+        return mapFailure(workerResult);
+    }
+
+    const std::size_t contentSizeResult = ZSTD_CCtx_setParameter(
+        compressContext.get(), ZSTD_c_contentSizeFlag, 1);
+    if (ZSTD_isError(contentSizeResult))
+    {
+        return mapFailure(contentSizeResult);
     }
 
     // A 32-bit frame checksum makes single-bit corruption fail

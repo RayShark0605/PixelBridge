@@ -24,8 +24,8 @@ inline constexpr std::array<std::byte, 4> descriptorMagic{
     std::byte{'P'}, std::byte{'B'}, std::byte{'E'}, std::byte{'D'}};
 inline constexpr std::array<std::byte, 4> runtimeMagic{
     std::byte{'P'}, std::byte{'B'}, std::byte{'E'}, std::byte{'R'}};
-inline constexpr std::uint16_t storeVersion = 1;
-inline constexpr std::size_t descriptorHeaderBytes = 96;
+inline constexpr std::uint16_t storeVersion = 2;
+inline constexpr std::size_t descriptorHeaderBytes = 104;
 inline constexpr std::size_t runtimeHeaderBytes = 104;
 inline constexpr std::uint64_t maximumDescriptorFileBytes = 32ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t maximumRuntimeFileBytes = 2ULL * 1024ULL * 1024ULL;
@@ -116,10 +116,21 @@ struct ParsedRuntimeState
 
 [[nodiscard]] std::wstring SourceIdentityKey(const EncoderSourceIdentity& identity)
 {
-    wchar_t text[40]{};
-    const int count = swprintf_s(text, L"%08x-%016llx", identity.volumeSerialNumber,
-        static_cast<unsigned long long>(identity.fileId));
-    return count > 0 ? std::wstring(text, static_cast<std::size_t>(count)) : std::wstring{};
+    static constexpr wchar_t digits[] = L"0123456789abcdef";
+    std::wstring value(16 + 1 + identity.fileId.size() * 2, L'0');
+    for (std::size_t index = 0; index < 16; index++)
+    {
+        const std::uint32_t shift = static_cast<std::uint32_t>((15 - index) * 4);
+        value[index] = digits[(identity.volumeSerialNumber >> shift) & 0x0FULL];
+    }
+    value[16] = L'-';
+    for (std::size_t index = 0; index < identity.fileId.size(); index++)
+    {
+        const std::uint8_t byte = std::to_integer<std::uint8_t>(identity.fileId[index]);
+        value[17 + index * 2] = digits[byte >> 4U];
+        value[17 + index * 2 + 1] = digits[byte & 0x0FU];
+    }
+    return value;
 }
 
 [[nodiscard]] EncoderSessionStoreStatus ReadFileBounded(const std::filesystem::path& path,
@@ -265,9 +276,8 @@ struct ParsedRuntimeState
     valid = valid && WriteStatus(writer, writer.WriteUint16(0));
     valid = valid && WriteStatus(writer, writer.WriteUint64(totalBytes.Value()));
     valid = valid && WriteStatus(writer, writer.WriteFixedBytes(config.sessionId.bytes));
-    valid = valid && WriteStatus(writer, writer.WriteUint32(config.sourceIdentity.volumeSerialNumber));
-    valid = valid && WriteStatus(writer, writer.WriteUint32(0));
-    valid = valid && WriteStatus(writer, writer.WriteUint64(config.sourceIdentity.fileId));
+    valid = valid && WriteStatus(writer, writer.WriteUint64(config.sourceIdentity.volumeSerialNumber));
+    valid = valid && WriteStatus(writer, writer.WriteFixedBytes(config.sourceIdentity.fileId));
     valid = valid && WriteStatus(writer, writer.WriteUint64(config.sourceIdentity.fileBytes));
     valid = valid && WriteStatus(writer, writer.WriteUint64(config.sourceIdentity.lastWriteTime));
     valid = valid && WriteStatus(writer, writer.WriteUint64(config.segmentCount));
@@ -306,9 +316,8 @@ struct ParsedRuntimeState
     const auto reserved = reader.ReadUint16();
     const auto totalBytes = reader.ReadUint64();
     const auto sessionId = reader.ReadFixedBytes<pbprotocol::kSessionIdBytes>();
-    const auto volumeSerial = reader.ReadUint32();
-    const auto reserved2 = reader.ReadUint32();
-    const auto fileId = reader.ReadUint64();
+    const auto volumeSerial = reader.ReadUint64();
+    const auto fileId = reader.ReadFixedBytes<16>();
     const auto fileBytes = reader.ReadUint64();
     const auto lastWriteTime = reader.ReadUint64();
     const auto segmentCount = reader.ReadUint64();
@@ -317,10 +326,10 @@ struct ParsedRuntimeState
     const auto compressionBytes = reader.ReadUint32();
     const auto outerFecBytes = reader.ReadUint32();
     const auto descriptorBytes = reader.ReadUint64();
-    if (!magic || !version || !reserved || !totalBytes || !sessionId || !volumeSerial || !reserved2 ||
+    if (!magic || !version || !reserved || !totalBytes || !sessionId || !volumeSerial ||
         !fileId || !fileBytes || !lastWriteTime || !segmentCount || !sourcePathBytes || !buildBytes ||
         !compressionBytes || !outerFecBytes || !descriptorBytes || magic.Value() != descriptorMagic ||
-        version.Value() != storeVersion || reserved.Value() != 0 || reserved2.Value() != 0 ||
+        version.Value() != storeVersion || reserved.Value() != 0 ||
         totalBytes.Value() != bytes.size() || reader.Position() != descriptorHeaderBytes ||
         sourcePathBytes.Value() > maximumIdentityStringBytes || buildBytes.Value() > maximumIdentityStringBytes ||
         compressionBytes.Value() > maximumIdentityStringBytes || outerFecBytes.Value() > maximumIdentityStringBytes)
@@ -611,9 +620,16 @@ EncoderSessionStoreStatus EncoderSessionStore::FindMatching(const std::filesyste
         {
             return status;
         }
-        if (descriptor.sessionId != indexedSessionId || descriptor.sourceIdentity != sourceIdentity)
+        if (descriptor.sessionId != indexedSessionId ||
+            descriptor.sourceIdentity.volumeSerialNumber != sourceIdentity.volumeSerialNumber ||
+            descriptor.sourceIdentity.fileId != sourceIdentity.fileId)
         {
             return EncoderSessionStoreStatus::Failure("Encoder source index conflicts with persisted source identity");
+        }
+        if (descriptor.sourceIdentity.fileBytes != sourceIdentity.fileBytes ||
+            descriptor.sourceIdentity.lastWriteTime != sourceIdentity.lastWriteTime)
+        {
+            return {};
         }
         if (descriptor.buildIdentity != buildIdentity || descriptor.compressionIdentity != compressionIdentity ||
             descriptor.outerFecIdentity != outerFecIdentity)

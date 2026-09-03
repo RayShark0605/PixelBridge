@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 
 namespace pbouterfec {
 
@@ -21,6 +22,8 @@ inline constexpr std::uint64_t kWirehairV2MixedMix2ProfileId =
     0x20A4F27A870612A2ULL;
 inline constexpr std::uint32_t kWirehairV2MinimumBlockCount = 2;
 inline constexpr std::uint32_t kWirehairV2MaximumBlockCount = 64000;
+inline constexpr std::string_view kWirehairV2ImplementationIdentity =
+    "wirehair-2.0.0;revision=067ca7cdb66aed424ec23f97557429bf791c6f0c";
 
 namespace detail {
 struct WirehairV2DecoderImplementation;
