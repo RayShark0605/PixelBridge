@@ -796,6 +796,78 @@ TEST_CASE("PB-Control-1 serializer preserves output on all validation failures",
     }
 }
 
+TEST_CASE("PB-Control-1 information framing is bounded canonical and atomic",
+          "[pbprotocol][control][framing][g09]")
+{
+    constexpr std::size_t informationBytes = 1350;
+    std::array<std::byte, informationBytes> information{};
+    information.fill(Byte(0xA5));
+    REQUIRE(pbprotocol::FrameControlRecordIntoInfoBlock(
+        kControlGolden, information.size(), information));
+    REQUIRE(std::ranges::equal(
+        std::span<const std::byte>(information).first(kControlGolden.size()),
+        kControlGolden));
+    REQUIRE(std::ranges::all_of(
+        std::span<const std::byte>(information).subspan(kControlGolden.size()),
+        [](const std::byte value) { return value == std::byte{0}; }));
+
+    const auto extracted = pbprotocol::ExtractControlRecordFromInfoBlock(information);
+    REQUIRE(extracted);
+    REQUIRE(std::ranges::equal(extracted.Value(), kControlGolden));
+
+    SECTION("non-canonical padding and Control CRC fail independently")
+    {
+        auto dirtyPadding = information;
+        dirtyPadding[kControlGolden.size()] = Byte(0x01);
+        const auto paddingResult = pbprotocol::ExtractControlRecordFromInfoBlock(dirtyPadding);
+        REQUIRE_FALSE(paddingResult);
+        REQUIRE(paddingResult.Error() == pbprotocol::ProtocolError{
+            pbprotocol::ProtocolErrorCode::NonCanonicalPadding, kControlGolden.size()});
+
+        auto dirtyCrc = information;
+        dirtyCrc[kControlGolden.size() - 1] ^= Byte(0x01);
+        const auto crcResult = pbprotocol::ExtractControlRecordFromInfoBlock(dirtyCrc);
+        REQUIRE_FALSE(crcResult);
+        REQUIRE(crcResult.Error().code == pbprotocol::ProtocolErrorCode::CrcMismatch);
+    }
+
+    SECTION("invalid sizes preserve the destination")
+    {
+        std::array<std::byte, informationBytes - 1> mismatchedOutput{};
+        mismatchedOutput.fill(Byte(0x3C));
+        const auto originalOutput = mismatchedOutput;
+        const auto mismatchStatus = pbprotocol::FrameControlRecordIntoInfoBlock(
+            kControlGolden, informationBytes, mismatchedOutput);
+        REQUIRE_FALSE(mismatchStatus);
+        REQUIRE(mismatchStatus.Error().code == pbprotocol::ProtocolErrorCode::OutputBufferTooSmall);
+        REQUIRE(mismatchedOutput == originalOutput);
+
+        std::array<std::byte, kControlGolden.size() - 1> tooSmall{};
+        tooSmall.fill(Byte(0x5A));
+        const auto originalTooSmall = tooSmall;
+        const auto smallStatus = pbprotocol::FrameControlRecordIntoInfoBlock(
+            kControlGolden, tooSmall.size(), tooSmall);
+        REQUIRE_FALSE(smallStatus);
+        REQUIRE(smallStatus.Error().code == pbprotocol::ProtocolErrorCode::LengthLimitExceeded);
+        REQUIRE(tooSmall == originalTooSmall);
+    }
+
+    SECTION("overlap is rejected before one byte is written")
+    {
+        std::array<std::byte, informationBytes + 16> storage{};
+        storage.fill(Byte(0xC3));
+        std::copy(kControlGolden.begin(), kControlGolden.end(), storage.begin());
+        const auto originalStorage = storage;
+        const std::span<const std::byte> record = std::span<const std::byte>(storage).first(kControlGolden.size());
+        const std::span<std::byte> overlappingOutput = std::span<std::byte>(storage).subspan(8, informationBytes);
+        const auto status = pbprotocol::FrameControlRecordIntoInfoBlock(
+            record, informationBytes, overlappingOutput);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == pbprotocol::ProtocolErrorCode::OverlappingSpans);
+        REQUIRE(storage == originalStorage);
+    }
+}
+
 TEST_CASE("PB-Control-1 composes with every existing descriptor parser",
           "[pbprotocol][control][descriptor][integration]")
 {

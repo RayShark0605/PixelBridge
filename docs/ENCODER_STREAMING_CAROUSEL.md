@@ -1,8 +1,8 @@
 # Encoder 流式预扫描、Carousel 与持久状态
 
-> 状态：G02 已实现并通过无屏幕定向验证（2026-09-03）
-> 性质：Encoder 本地实现/持久状态规范；不是 wire protocol，也不是实屏、吞吐或最终 Unified mapping 证据
-> 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`
+> 状态：G02 流式状态与 G09 Unified mixed-slot 调度均已实现并通过无屏幕定向验证（2026-09-03）
+> 性质：Encoder 本地实现/持久状态及 Unified scheduler/reference-raster 规范；不是实屏、吞吐或产品运行时接线证据
+> 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`、`libs/PBModulation/src/unified_visual.cpp`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`
 
 ## 1. 已关闭的发送端合同
 
@@ -13,9 +13,20 @@
 5. 广播时先验证重新读取的 `RawDigest`，再重新编码并验证 codec、encoded size 和 `EncodedDigest`；全部一致后才调用 `WirehairV2Encoder::Recreate`。
 6. Wirehair 每个 Segment round 精确调度 `K` 个 systematic equations 和 `max(16, ceil(K*20/100))` 个 repair equations。物理尾帧的空余 slot 复用 systematic ID，不增加 repair ID，也不推进 repair high-water。
 7. 后续 round 从进程内的精确 repair high-water 继续；崩溃恢复则从已经持久化的 lease endpoint 继续，因此允许跳号但不允许回退或重用。
-8. 调度器只认识 Control 类型、equation 顺序、每帧 slot 数与逻辑 FPS，不认识像素、lane 或最终 mixed-slot mapping。每个 Segment 开始有一组 Session/Manifest/Segment Control；长 round 以整个 Control burst 的起点计时。当 burst 短于 10 秒时，下一个 burst 起点精确间隔 `logicalFps * 10` 个逻辑帧；若 burst 自身已经占满该预算，则至少插入一个 Data frame 后再开始下一组，避免数据饥饿。
+8. G02 的历史整帧调度器只认识 Control 类型、equation 顺序、每帧 slot 数与逻辑 FPS，不认识像素、lane 或最终 mixed-slot mapping。每个 Segment 开始有一组 Session/Manifest/Segment Control；长 round 以整个 Control burst 的起点计时。当 burst 短于 10 秒时，下一个 burst 起点精确间隔 `logicalFps * 10` 个逻辑帧；若 burst 自身已经占满该预算，则至少插入一个 Data frame 后再开始下一组，避免数据饥饿。G09 的产品 Unified 调度合同如下节所述，不再生成整帧 Control。
 
 DirectRepeat 仍由 `ChooseOuterFecMode` 决定。它只调度固定 `[0,K)`，尾部物理 slot 同样只重复已有 systematic ID，不生成 repair ID。
+
+### 1.1 G09 Unified mixed-slot 调度合同
+
+1. 每个 `PB-Unified-LC4-V1` 逻辑帧固定含 31 个显式 slot：Base Luma 17、Fine Luma 4、Chroma 10。Control 只能占用 Base Luma 的前部连续 slots，最多 16 个，因此任何帧都至少保留 15 个 Transport slots；不存在整帧 Control 分支。
+2. 一轮默认 Control burst 按优先级放置 4 份 SessionDescriptor、4 份 FinalManifest、4 份当前 SegmentDescriptor，即 cadence 帧为 12 Control + 19 Transport；长 Segment 从 burst 首帧起每 `logicalFps * 10` ticks 再发一轮。零字节 Session 不存在 SegmentDescriptor，只发送 4 份 Session 与 4 份 Manifest。
+3. PB-Control-1 原始记录进入 1,350-byte Robust Inner-FEC information block 时只增加规范零尾部，不修改 Control envelope 或 wire CRC。FEC 成功后，Decoder 依据原有互斥规范前缀自分类：Control 从 `PBCR` 开始，Transport 从固定 BlockType 开始；因此不需要 sender slot plan、ACK 或其他隐藏信道，也没有压缩 1,314-byte Transport payload。
+4. `PrepareFrame(logicalTick)` 冻结同一 tick 的完整 31-slot 计划且重复调用逐值一致；它不推进任何 Carousel 状态。调用方只有在整张规范 raster 已成功构建后才能调用 `CommitPreparedFrame()`，该提交才一次性推进帧计数、Control offset 与真正新调度的 equation IDs。Control 与尾帧 systematic duplicates 均不分配新 ID。
+5. `SenderLogicalFrameClock` 只接受 1..60 Hz。一次 `Acquire(now)` 最多返回已经到期的最新 tick，并显式计数中间错过的 ticks；旧 tick 直接丢弃，不进入 catch-up queue。Scheduler 自身仅持有一个 prepared frame 和固定 31-slot 数组。
+6. 零字节 Session 的剩余 Transport slots 使用显式 inactive disposition，并编码为确定性全零 information word。它们不能形成有效 Transport Block；Session/Manifest 仍走既有 `ControlPlaneReceiver`，未扩大 control record、reassembly 或其他 receiver resource policy。
+
+G09 只关闭 scheduler、protocol packing 与 CPU reference-raster 合同；把该路径接入产品 Encoder/Decoder 生命周期、GUI 和真实显示/capture 仍由后续路线图目标完成。
 
 ## 2. 恢复身份
 
@@ -109,6 +120,8 @@ FrameSequence 和每段 repair ID 使用相同的 4,096 对齐 exclusive endpoin
 
 ## 6. 无屏幕验证报告
 
+### 6.1 G02 流式预扫描与持久状态
+
 定向命令：
 
 ```powershell
@@ -135,3 +148,26 @@ cmake --build build-unified-release --config Release --target PBApplicationTests
 三个完整 8 MiB Segment 均为 RAW、`K=6,385`、每轮 `R=1,277`；pass 0 首个 repair ID 为 6,385，pass 1 为 7,662，落盘/restart 起点为 12,288。最后 4 KiB Segment 为 RAW、`K=4`、`R=16`，两轮首个 repair ID 为 4/20，落盘/restart 起点为 4,096。
 
 测试使用现有四-slot carrier 参数只为覆盖生产 `SenderFrameBuilder` 接线，但从未调用 raster `Build()`。它不能证明最终 `PB-Unified-LC4-V1` mixed-slot mapping、Data Window、真实显示、接收端恢复、20 GiB/500 GiB 长运行、吞吐或断电一致性；这些仍分别属于后续 G04、G05、G06..G14、G18..G22。
+
+### 6.2 G09 Unified mixed-slot scheduler/reference raster
+
+定向构建与执行：
+
+```powershell
+cmake --build build-unified-release --config Release --target PBUnifiedSenderSchedulerTests PBUnifiedVisualCpuTests PBProtocolTests --parallel 2
+& 'D:\MyProjects\PixelBridge\build-unified-release\tests\PBApplication\Release\PBUnifiedSenderSchedulerTests.exe' --rng-seed 9092026 --durations yes
+& 'D:\MyProjects\PixelBridge\build-unified-release\tests\PBModulation\Release\PBUnifiedVisualCpuTests.exe' '[g09]' --rng-seed 9092026 --durations yes
+& 'D:\MyProjects\PixelBridge\build-unified-release\tests\PBModulation\Release\PBUnifiedVisualCpuTests.exe' '[unified][cpu][admission]' --rng-seed 9092026 --durations yes
+& 'D:\MyProjects\PixelBridge\build-unified-release\tests\PBProtocol\Release\PBProtocolTests.exe' '[g09]' --rng-seed 9092026 --durations yes
+```
+
+| 子集 | 本次结果 |
+| --- | ---: |
+| Unified scheduler/clock/zero-byte raster | 4 cases / 332,630 assertions |
+| Unified explicit mixed frame input | 2 cases / 366 assertions |
+| 既有 Unified admission 回归 | 2 cases / 383 assertions |
+| PB-Control fixed-info framing | 1 case / 28 assertions |
+
+30 秒模拟在 1、15、60 Hz 均观察到 tick 0、10 秒、20 秒的三轮 Control burst；默认 cadence 帧为 12 Control + 19 Transport，其他帧为 31 Transport。60 Hz 的 5 秒停顿只生成 tick 300 的一帧并丢弃 299 ticks。零字节 raster 在不传 sender slot plan 的条件下接受 8 个 Control、0 个 Transport，ControlPlaneReceiver 插入 Session/Manifest 各一份并将另外六份判为相同重复，完成空 Segment map 与 FinalManifest；资源重组计数与字节保持 0。
+
+本地可再生日志为 `build-unified-release/tests/PBApplication/g09-unified-scheduler-tests.txt`、`build-unified-release/tests/PBModulation/g09-unified-frame-input-tests.txt`、`build-unified-release/tests/PBModulation/g09-unified-admission-regression.txt` 与 `build-unified-release/tests/PBProtocol/g09-control-framing-tests.txt`，均不提交。此验证不包含完整 CTest、产品 GUI、GPU、capture、实屏、长文件吞吐或后续产品生命周期接线。

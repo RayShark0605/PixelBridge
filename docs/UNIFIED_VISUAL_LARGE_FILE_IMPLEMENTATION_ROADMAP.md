@@ -524,16 +524,18 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] slot 类型明确标识 Control/Transport，不允许 ambiguity。
-- [ ] 优先级：Session/Manifest/当前 SegmentDescriptor；其余 slots 继续 Transport。
-- [ ] Session/Manifest 约每 10 秒，SegmentDescriptor 在开始与传输中重复。
-- [ ] 控制重组/resource budget 不因 mixed slots 放宽。
-- [ ] Control 重复不推进 Carousel payload ID；逻辑帧只在完整 raster ready 后推进一次。
-- [ ] 1、15、60 Hz 的调度以逻辑 frame tick 为上限，错过 tick 丢弃而不排队追赶。
-- [ ] 对 0-byte Session 仍能发送 Session+Manifest 并被恢复。
+- [x] slot 类型明确标识 Control/Transport，不允许 ambiguity。
+- [x] 优先级：Session/Manifest/当前 SegmentDescriptor；其余 slots 继续 Transport。
+- [x] Session/Manifest 约每 10 秒，SegmentDescriptor 在开始与传输中重复。
+- [x] 控制重组/resource budget 不因 mixed slots 放宽。
+- [x] Control 重复不推进 Carousel payload ID；逻辑帧只在完整 raster ready 后推进一次。
+- [x] 1、15、60 Hz 的调度以逻辑 frame tick 为上限，错过 tick 丢弃而不排队追赶。
+- [x] 对 0-byte Session 仍能发送 Session+Manifest 并被恢复。
 
 **最小验证：** scheduler/reference raster tests；用 1 Hz 模拟 30 秒，确认 Control cadence 和 Transport 占用。
-**退出：** 每帧 slot accounting 精确；无整帧 Control 特例；0-byte 和多 Segment 均可收敛。
+**验证结果（2026-09-03）：** Release 增量构建 `PBProtocolTests`、`PBUnifiedSenderSchedulerTests` 与 `PBUnifiedVisualCpuTests` 成功；最终定向执行统一使用固定 Catch2 seed `9092026`。调度测试 4/4（332,630 assertions）通过：分别在 1/15/60 Hz 模拟 30 秒，默认重复数 4 时逻辑 tick 0/10/20 秒各出现一个 12-Control + 19-Transport mixed frame，其余帧均为 31 Transport；60 Hz 停顿 5 秒只交付最新 tick 300，计数并丢弃 299 个旧 tick，没有 catch-up queue。两个独立 `K=33` Segment round 均用两帧提交 33 个连续 equation，尾部 17 slots 只重复 systematic ID；Control 未分配或推进 equation ID。64 次超长重复仍保证每帧至少 15 个 Transport slots，并以 12 帧完成一轮 Control。PBModulation G09 reference-raster 2/2（366 assertions）通过，新的显式 frame input 与 G08 frozen coded bytes/raster 逐字节一致；receiver 在 Inner FEC 后以既有互斥前缀自分类，不接收发送端 slot plan，并拒绝 17 个 Base Control 或跨入 Fine Luma 的非法 Control。既有 Unified admission 回归 2/2（383 assertions）通过；PB-Control fixed-info framing 1/1（28 assertions）覆盖规范零填充、脏填充、CRC、长度和重叠 span 原子拒绝。0-byte Session 的一张 raster 含 4 份 Session + 4 份 Manifest 和 23 个 inactive Transport fillers，mixed decoder 接受 8 个 Control、0 个 Transport，`ControlPlaneReceiver` 插入 2/重复 6，完成空 Segment map 和 FinalManifest；control reassembly 计数/字节均为 0，默认资源上限未修改。未运行完整 CTest、产品 GUI、D3D11/GPU、capture 或实屏 Gate。
+**退出：** 已满足。每个已提交帧都具有精确 31-slot accounting，Base Luma 最多 16 个 Control，至少保留 15 个全帧 Transport slots，且不存在整帧 Control 模式。`PrepareFrame` 冻结并可重复读取计划，只有完整 raster ready 后由调用方执行的 `CommitPreparedFrame` 才推进帧与 equation 状态；失败/遗漏 commit 不产生进度。PB-Control-1 envelope/CRC 与 Transport payload 容量未改变，Control fixed-info extraction 仍要求规范零尾部，接收端无需 ACK 或隐藏计划；0-byte 与多 Segment scheduler round 均收敛。
+**产物：** 调度/逻辑时钟合同位于 `apps/common/sender_carousel_scheduler.*`，显式 mixed frame input 与无计划自分类位于 `libs/PBModulation/include/pbmodulation/unified_visual.h`、`libs/PBModulation/src/unified_visual.cpp`，Control fixed-info framing 位于 `libs/PBProtocol/include/pbprotocol/bootstrap_control_codec.h`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`。本地日志位于 `build-unified-release/tests/PBApplication/g09-unified-scheduler-tests.txt`、`build-unified-release/tests/PBModulation/g09-unified-frame-input-tests.txt`、`g09-unified-admission-regression.txt` 与 `build-unified-release/tests/PBProtocol/g09-control-framing-tests.txt`。
 **提交建议：** `feat(application): mix control and transport slots`
 
 ## G10 — provider-generic transform corpus 检查点

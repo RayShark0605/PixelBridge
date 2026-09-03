@@ -8,6 +8,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 #include <new>
 #include <span>
 #include <stdexcept>
@@ -29,6 +31,32 @@ constexpr std::size_t kControlMagicOffset = 0;
 constexpr std::size_t kControlVersionOffset = 4;
 constexpr std::size_t kControlRecordTypeOffset = 5;
 constexpr std::size_t kControlRecordBytesOffset = 22;
+
+[[nodiscard]] bool SpansOverlap(
+    const std::span<const std::byte> first,
+    const std::span<const std::byte> second) noexcept
+{
+    if (first.empty() || second.empty())
+    {
+        return false;
+    }
+    const std::byte* const firstBegin = first.data();
+    const std::byte* const firstEnd = firstBegin + first.size();
+    const std::byte* const secondBegin = second.data();
+    const std::byte* const secondEnd = secondBegin + second.size();
+    const std::less<const std::byte*> addressLess;
+    return addressLess(firstBegin, secondEnd) && addressLess(secondBegin, firstEnd);
+}
+
+[[nodiscard]] std::uint32_t ReadUint32LittleEndian(
+    const std::span<const std::byte> input,
+    const std::size_t offset) noexcept
+{
+    return std::to_integer<std::uint32_t>(input[offset]) |
+        (std::to_integer<std::uint32_t>(input[offset + 1]) << 8U) |
+        (std::to_integer<std::uint32_t>(input[offset + 2]) << 16U) |
+        (std::to_integer<std::uint32_t>(input[offset + 3]) << 24U);
+}
 
 template <typename ValueType>
 [[nodiscard]] ProtocolResult<ValueType> FailureFrom(
@@ -610,6 +638,80 @@ ProtocolResult<ControlRecordView> ParseControlRecord(
     }
 
     return ProtocolResult<ControlRecordView>::Success(record);
+}
+
+ProtocolStatus FrameControlRecordIntoInfoBlock(
+    const std::span<const std::byte> serializedRecord,
+    const std::size_t infoSize,
+    const std::span<std::byte> outInfoBlock) noexcept
+{
+    if (infoSize < kMinimumControlRecordBytes || infoSize > kMaximumControlRecordBytes)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidRecordSize, 0);
+    }
+    if (outInfoBlock.size() != infoSize)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::OutputBufferTooSmall, 0);
+    }
+    if (serializedRecord.size() > infoSize)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::LengthLimitExceeded, serializedRecord.size());
+    }
+    if (SpansOverlap(serializedRecord, outInfoBlock))
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::OverlappingSpans, 0);
+    }
+    const auto parsedRecord = ParseControlRecord(serializedRecord);
+    if (!parsedRecord)
+    {
+        return ProtocolStatus::Failure(parsedRecord.Error().code, parsedRecord.Error().offset);
+    }
+    std::memset(outInfoBlock.data(), 0, infoSize);
+    std::memcpy(outInfoBlock.data(), serializedRecord.data(), serializedRecord.size());
+    return ProtocolStatus::Success();
+}
+
+ProtocolResult<std::span<const std::byte>> ExtractControlRecordFromInfoBlock(
+    const std::span<const std::byte> infoBlock) noexcept
+{
+    if (infoBlock.size() < kMinimumControlRecordBytes)
+    {
+        return ProtocolResult<std::span<const std::byte>>::Failure(
+            ProtocolErrorCode::TruncatedInput, infoBlock.size());
+    }
+    const std::size_t recordBytes = ReadUint32LittleEndian(infoBlock, kControlRecordBytesOffset);
+    if (recordBytes < kMinimumControlRecordBytes)
+    {
+        return ProtocolResult<std::span<const std::byte>>::Failure(
+            ProtocolErrorCode::InvalidRecordSize, kControlRecordBytesOffset);
+    }
+    if (recordBytes > kMaximumControlRecordBytes)
+    {
+        return ProtocolResult<std::span<const std::byte>>::Failure(
+            ProtocolErrorCode::LengthLimitExceeded, kControlRecordBytesOffset);
+    }
+    if (recordBytes > infoBlock.size())
+    {
+        return ProtocolResult<std::span<const std::byte>>::Failure(
+            ProtocolErrorCode::TruncatedInput, infoBlock.size());
+    }
+    const std::span<const std::byte> record = infoBlock.first(recordBytes);
+    const auto parsedRecord = ParseControlRecord(record);
+    if (!parsedRecord)
+    {
+        return ProtocolResult<std::span<const std::byte>>::Failure(
+            parsedRecord.Error().code, parsedRecord.Error().offset);
+    }
+    const std::span<const std::byte> padding = infoBlock.subspan(recordBytes);
+    for (std::size_t byteIndex = 0; byteIndex < padding.size(); byteIndex++)
+    {
+        if (padding[byteIndex] != std::byte{0})
+        {
+            return ProtocolResult<std::span<const std::byte>>::Failure(
+                ProtocolErrorCode::NonCanonicalPadding, recordBytes + byteIndex);
+        }
+    }
+    return ProtocolResult<std::span<const std::byte>>::Success(record);
 }
 
 } // namespace pbprotocol

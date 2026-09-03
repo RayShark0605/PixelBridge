@@ -375,6 +375,120 @@ TEST_CASE("Unified CPU oracle recovers every clean mixed Control and Transport s
     }));
 }
 
+TEST_CASE("Unified frame input packs explicit slot kinds into the frozen reference raster",
+    "[unified][g09][frame-input][control][transport]")
+{
+    const Fixture& fixture = GetFixture41();
+    std::array<UnifiedFrameSlotInput, kUnifiedCodewordCount> inputs{};
+    for (std::size_t slotIndex = 0; slotIndex < inputs.size(); slotIndex++)
+    {
+        inputs[slotIndex] = {fixture.plan[slotIndex], true, fixture.expected[slotIndex]};
+    }
+    const UnifiedVisualFrameInput frameInput{fixture.bootstrap, inputs};
+    std::array<std::byte, kUnifiedCodedFrameBytes> packed{};
+    REQUIRE(PackUnifiedVisualFrame(frameInput, packed));
+    REQUIRE(packed == fixture.coded);
+
+    const std::vector<std::byte> expectedPixels = Render(fixture);
+    std::vector<std::byte> actualPixels(kUnifiedFrameBgraBytes);
+    REQUIRE(EncodeUnifiedVisualFrame(frameInput, actualPixels));
+    REQUIRE(actualPixels == expectedPixels);
+    UnifiedVisualCpuOracle mixedOracle = MakeOracle();
+    const UnifiedExpectedFrameIdentity identity{true, pbprotocol::SessionTag{0x1122334455667788ULL}, true, 41};
+    const UnifiedVisualObservation mixedObservation = mixedOracle.DecodeMixedFrame(View(actualPixels), identity);
+    REQUIRE(mixedObservation.IsFrameAvailable());
+    REQUIRE(mixedObservation.acceptedControlRecords == 1);
+    REQUIRE(mixedObservation.acceptedTransportBlocks == kUnifiedCodewordCount - 1);
+    for (std::size_t slotIndex = 0; slotIndex < fixture.plan.size(); slotIndex++)
+    {
+        REQUIRE(mixedObservation.slots[slotIndex].kind == fixture.plan[slotIndex].kind);
+    }
+
+    std::swap(inputs[0], inputs[30]);
+    std::fill(packed.begin(), packed.end(), std::byte{0});
+    REQUIRE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
+    REQUIRE(packed == fixture.coded);
+
+    SECTION("priority and wire type must agree before output mutation")
+    {
+        inputs[30].assignment.controlPriority = UnifiedControlPriority::FinalManifest;
+        std::fill(packed.begin(), packed.end(), std::byte{0x5A});
+        const auto unchanged = packed;
+        REQUIRE_FALSE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
+        REQUIRE(packed == unchanged);
+    }
+
+    SECTION("inactive is explicit and is legal only for a Transport slot")
+    {
+        inputs[30].active = false;
+        inputs[30].block = {};
+        std::fill(packed.begin(), packed.end(), std::byte{0});
+        REQUIRE_FALSE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
+
+        inputs[30].assignment = {0, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
+        inputs[30].active = false;
+        std::fill(packed.begin(), packed.end(), std::byte{0});
+        REQUIRE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
+        REQUIRE(std::ranges::all_of(std::span(packed).first(kUnifiedCodewordBytes),
+            [](const std::byte value) { return value == std::byte{0}; }));
+    }
+
+    SECTION("Control CRC remains authoritative")
+    {
+        std::vector<std::byte> corruptedControl = fixture.expected[0];
+        corruptedControl.back() ^= std::byte{0x01};
+        inputs[30].block = corruptedControl;
+        std::fill(packed.begin(), packed.end(), std::byte{0x3C});
+        const auto unchanged = packed;
+        const ModulationStatus status = PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == ModulationErrorCode::CrcMismatch);
+        REQUIRE(packed == unchanged);
+    }
+}
+
+TEST_CASE("Unified mixed decoder infers canonical slot types and rejects illegal Control placement",
+    "[unified][g09][frame-input][control][negative]")
+{
+    const Fixture& fixture = GetFixture41();
+    const auto bootstrapRecord = pbprotocol::ParseBootstrapRecord(fixture.bootstrap);
+    REQUIRE(bootstrapRecord);
+    const std::vector<std::byte> control = MakeControl(bootstrapRecord.Value().sessionTag);
+    std::array<std::byte, kUnifiedInformationBytes> information{};
+    REQUIRE(pbprotocol::FrameControlRecordIntoInfoBlock(control, information.size(), information));
+
+    SECTION("all seventeen Base slots cannot become Control")
+    {
+        std::array<std::byte, kUnifiedCodedFrameBytes> coded = fixture.coded;
+        for (std::uint32_t slot = 0; slot < 17; slot++)
+        {
+            EncodeInformation(information, slot, coded);
+        }
+        std::vector<std::byte> pixels(kUnifiedFrameBgraBytes);
+        REQUIRE(EncodeUnifiedVisualFrame(fixture.bootstrap, coded, pixels));
+        UnifiedVisualCpuOracle oracle = MakeOracle();
+        const UnifiedVisualObservation observation = oracle.DecodeMixedFrame(View(pixels));
+        REQUIRE(observation.IsFrameAvailable());
+        REQUIRE(observation.acceptedControlRecords == 0);
+        REQUIRE(observation.acceptedTransportBlocks == 14);
+        REQUIRE(observation.acceptedBlocks == 14);
+    }
+
+    SECTION("Control cannot cross into Fine Luma")
+    {
+        std::array<std::byte, kUnifiedCodedFrameBytes> coded = fixture.coded;
+        EncodeInformation(information, 17, coded);
+        std::vector<std::byte> pixels(kUnifiedFrameBgraBytes);
+        REQUIRE(EncodeUnifiedVisualFrame(fixture.bootstrap, coded, pixels));
+        UnifiedVisualCpuOracle oracle = MakeOracle();
+        const UnifiedVisualObservation observation = oracle.DecodeMixedFrame(View(pixels));
+        REQUIRE(observation.IsFrameAvailable());
+        REQUIRE(observation.acceptedControlRecords == 0);
+        REQUIRE(observation.acceptedTransportBlocks == 29);
+        REQUIRE(observation.acceptedBlocks == 29);
+    }
+}
+
 TEST_CASE("Unified CPU raster round-trips all 16 FrameSequence mapping phases", "[unified][cpu][mapping]")
 {
     Fixture fixture = GetFixture41();

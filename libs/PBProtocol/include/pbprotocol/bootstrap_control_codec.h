@@ -92,6 +92,22 @@ struct ControlRecordView
 [[nodiscard]] ProtocolResult<ControlRecordView> ParseControlRecord(
     std::span<const std::byte> input) noexcept;
 
+// Copies one complete PB-Control-1 record into a fixed-size Inner-FEC
+// information block and zero-fills the unused tail. This does not alter or
+// replace the Control envelope CRC: the complete record is parsed before any
+// output is written. The input and output spans must not overlap.
+[[nodiscard]] ProtocolStatus FrameControlRecordIntoInfoBlock(
+    std::span<const std::byte> serializedRecord,
+    std::size_t infoSize,
+    std::span<std::byte> outInfoBlock) noexcept;
+
+// Recovers one complete PB-Control-1 record from a fixed-size information
+// block and verifies that every byte after RecordBytes is canonical zero
+// padding. The returned view borrows infoBlock.
+[[nodiscard]] ProtocolResult<std::span<const std::byte>>
+    ExtractControlRecordFromInfoBlock(
+        std::span<const std::byte> infoBlock) noexcept;
+
 template <typename InputRange>
     requires(
         !std::ranges::borrowed_range<InputRange> &&
