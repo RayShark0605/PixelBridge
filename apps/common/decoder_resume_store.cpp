@@ -34,6 +34,86 @@ inline constexpr std::uint16_t manifestControlRecordType = 2;
 inline constexpr std::uint16_t acceptedBlockRecordType = 3;
 inline constexpr std::uint16_t completedSegmentRecordType = 4;
 
+[[nodiscard]] bool IsKnownRecordType(const std::uint16_t recordType) noexcept
+{
+    return recordType == segmentControlRecordType || recordType == manifestControlRecordType ||
+        recordType == acceptedBlockRecordType || recordType == completedSegmentRecordType;
+}
+
+template <typename Integer>
+[[nodiscard]] Integer ReadLittleEndian(const std::span<const std::byte> bytes, const std::size_t offset) noexcept
+{
+    Integer value = 0;
+    for (std::size_t index = 0; index < sizeof(Integer); index++)
+    {
+        value = static_cast<Integer>(value | static_cast<Integer>(
+            static_cast<Integer>(std::to_integer<std::uint8_t>(bytes[offset + index])) << (index * 8U)));
+    }
+    return value;
+}
+
+[[nodiscard]] bool MatchesFixedPrefix(const std::span<const std::byte> bytes, const std::size_t offset,
+    const std::span<const std::byte> expected) noexcept
+{
+    if (bytes.size() <= offset)
+    {
+        return true;
+    }
+    const std::size_t availableBytes = (std::min)(bytes.size() - offset, expected.size());
+    return std::ranges::equal(bytes.subspan(offset, availableBytes), expected.first(availableBytes));
+}
+
+[[nodiscard]] bool IsClearlyTruncatedRecordTail(const std::span<const std::byte> tail,
+    const std::uint64_t previousGeneration) noexcept
+{
+    const std::array<std::byte, 2> versionBytes{
+        static_cast<std::byte>(journalVersion & 0xFFU), static_cast<std::byte>((journalVersion >> 8U) & 0xFFU)};
+    if (tail.empty() || !MatchesFixedPrefix(tail, 0, journalRecordMagic) ||
+        !MatchesFixedPrefix(tail, journalRecordMagic.size(), versionBytes))
+    {
+        return false;
+    }
+    if (tail.size() > 6)
+    {
+        const std::uint8_t typeLowByte = std::to_integer<std::uint8_t>(tail[6]);
+        if (typeLowByte < segmentControlRecordType || typeLowByte > completedSegmentRecordType ||
+            (tail.size() > 7 && tail[7] != std::byte{0}))
+        {
+            return false;
+        }
+    }
+    if (tail.size() >= 16)
+    {
+        const std::uint32_t totalBytes = ReadLittleEndian<std::uint32_t>(tail, 8);
+        const std::uint32_t payloadBytes = ReadLittleEndian<std::uint32_t>(tail, 12);
+        if (totalBytes < journalRecordMinimumBytes || payloadBytes != totalBytes - journalRecordMinimumBytes)
+        {
+            return false;
+        }
+    }
+    if (tail.size() >= 24 && ReadLittleEndian<std::uint64_t>(tail, 16) <= previousGeneration)
+    {
+        return false;
+    }
+    if (tail.size() > 24)
+    {
+        const std::size_t availableReservedBytes = (std::min)(tail.size() - 24, static_cast<std::size_t>(8));
+        for (std::size_t index = 0; index < availableReservedBytes; index++)
+        {
+            if (tail[24 + index] != std::byte{0})
+            {
+                return false;
+            }
+        }
+    }
+    if (tail.size() >= journalRecordHeaderBytes)
+    {
+        const std::uint32_t totalBytes = ReadLittleEndian<std::uint32_t>(tail, 8);
+        return totalBytes > tail.size();
+    }
+    return true;
+}
+
 [[nodiscard]] std::string NativeFailure(const char* operation, const DWORD error)
 {
     return std::string(operation) + " failed; win32=" + std::to_string(error);
@@ -57,13 +137,21 @@ inline constexpr std::uint16_t completedSegmentRecordType = 4;
         return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal open", GetLastError()));
     }
     LARGE_INTEGER size{};
-    if (GetFileSizeEx(file, &size) == FALSE || size.QuadPart < 0 ||
-        static_cast<std::uint64_t>(size.QuadPart) > maximumBytes)
+    if (GetFileSizeEx(file, &size) == FALSE)
     {
         const DWORD error = GetLastError();
         CloseHandle(file);
-        return DecoderResumeStoreStatus::Failure(error == ERROR_SUCCESS ?
-            "resume journal exceeds maxResumeBytes" : NativeFailure("resume journal size", error));
+        return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal size", error));
+    }
+    if (size.QuadPart < 0)
+    {
+        CloseHandle(file);
+        return DecoderResumeStoreStatus::Failure("resume journal size is invalid");
+    }
+    if (static_cast<std::uint64_t>(size.QuadPart) > maximumBytes)
+    {
+        CloseHandle(file);
+        return DecoderResumeStoreStatus::Failure("resume journal exceeds maxResumeBytes");
     }
     try
     {
@@ -522,6 +610,12 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                 const std::size_t remaining = document.size() - position;
                 if (remaining < journalRecordMinimumBytes)
                 {
+                    if (!IsClearlyTruncatedRecordTail(std::span(document).subspan(position),
+                        implementation->generation))
+                    {
+                        return DecoderResumeStoreStatus::Failure(
+                            "resume journal tail is not a valid truncated record prefix");
+                    }
                     implementation->hadTruncatedTail = true;
                     break;
                 }
@@ -537,17 +631,22 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                 {
                     return DecoderResumeStoreStatus::Failure("resume journal record header is truncated");
                 }
-                if (totalBytes.Value() > remaining)
-                {
-                    implementation->hadTruncatedTail = true;
-                    break;
-                }
                 if (magic.Value() != journalRecordMagic || version.Value() != journalVersion ||
                     reserved.Value() != 0 || totalBytes.Value() < journalRecordMinimumBytes ||
                     payloadBytes.Value() != totalBytes.Value() - journalRecordMinimumBytes ||
                     generation.Value() <= implementation->generation)
                 {
                     return DecoderResumeStoreStatus::Failure("resume journal record header is invalid or non-monotonic");
+                }
+                if (!IsKnownRecordType(type.Value()))
+                {
+                    return DecoderResumeStoreStatus::Failure(
+                        "resume journal contains an unknown mandatory record type");
+                }
+                if (totalBytes.Value() > remaining)
+                {
+                    implementation->hadTruncatedTail = true;
+                    break;
                 }
                 const std::span<const std::byte> record = std::span(document).subspan(position, totalBytes.Value());
                 const std::span<const std::byte> payload = record.subspan(journalRecordHeaderBytes,
@@ -611,6 +710,13 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                         return status ? DecoderResumeStoreStatus::Failure(
                             "resume accepted block lacks a live bound SegmentDescriptor") : status;
                     }
+                    const pbprotocol::SegmentDescriptor& descriptor =
+                        *parsedSegments[static_cast<std::size_t>(block.segmentOrdinal)];
+                    if (block.paddedPayload.size() != descriptor.outerBlockBytes)
+                    {
+                        return DecoderResumeStoreStatus::Failure(
+                            "resume accepted block size conflicts with its SegmentDescriptor");
+                    }
                     const auto existing = std::ranges::find_if(implementation->activeBlocks, [&block](const auto& value)
                     {
                         return value.segmentOrdinal == block.segmentOrdinal && value.outerBlockId == block.outerBlockId;
@@ -659,10 +765,6 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                     {
                         return block.segmentOrdinal == completed.segmentOrdinal;
                     });
-                }
-                else
-                {
-                    return DecoderResumeStoreStatus::Failure("resume journal contains an unknown mandatory record type");
                 }
                 if (CountActiveSegments(implementation->activeBlocks) > resourcePolicy.maxActiveOuterFecDecoders)
                 {

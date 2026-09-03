@@ -222,6 +222,7 @@ TEST_CASE("PBStorage accepts flushed verified Segments out of order and rejects 
     config.originalFileNameUtf8 = "restored.bin";
     std::unique_ptr<pbstorage::OutputFile> output;
     REQUIRE(pbstorage::OutputFile::CreateOrResume(config, output));
+    REQUIRE(output->GetSnapshot().partPath.ends_with(L"PixelBridge-0000000000000011.part"));
 
     REQUIRE(output->WriteVerifiedSegment(32, std::span(bytes).subspan(32, 32)));
     REQUIRE(output->GetSnapshot().hasPendingWrite);
@@ -302,6 +303,78 @@ TEST_CASE("PBStorage publishes a verified zero-byte file and uses deterministic 
     REQUIRE(output->Publish(pbprotocol::GetEmptyBlake3WholeFileDigest()));
     REQUIRE(std::filesystem::file_size(output->GetSnapshot().finalPath) == 0);
     REQUIRE(std::filesystem::exists(existingPath));
+}
+
+TEST_CASE("PBStorage stops when both deterministic final-name candidates already exist",
+    "[storage][filename][collision][no-overwrite]")
+{
+    ScratchDirectory scratch(L"second-collision");
+    const std::filesystem::path primaryPath = scratch.GetPath() / L"report.bin";
+    const std::filesystem::path collisionPath =
+        scratch.GetPath() / L"report (PixelBridge-00000000000000cd).bin";
+    const auto createExisting = [](const std::filesystem::path& path)
+    {
+        const HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        REQUIRE(handle != INVALID_HANDLE_VALUE);
+        REQUIRE(CloseHandle(handle));
+    };
+    createExisting(primaryPath);
+    createExisting(collisionPath);
+
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0xCD};
+    config.fileBytes = 32;
+    config.maximumFileBytes = 32;
+    config.originalFileNameUtf8 = "report.bin";
+    std::unique_ptr<pbstorage::OutputFile> output;
+    const pbstorage::StorageStatus status = pbstorage::OutputFile::CreateOrResume(config, output);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::TargetExists);
+    REQUIRE(status.stage == pbstorage::StorageStage::Reservation);
+    REQUIRE_FALSE(output);
+    REQUIRE(std::filesystem::exists(primaryPath));
+    REQUIRE(std::filesystem::exists(collisionPath));
+    REQUIRE_FALSE(std::filesystem::exists(scratch.GetPath() / L"PixelBridge-00000000000000cd.part"));
+}
+
+TEST_CASE("PBStorage publish loses a late final-name race without overwriting either file",
+    "[storage][publish][collision][no-overwrite]")
+{
+    ScratchDirectory scratch(L"late-publish-collision");
+    const std::vector<std::byte> bytes = MakeBytes(64);
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0xEF};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    config.originalFileNameUtf8 = "late.bin";
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, output));
+    REQUIRE(output->WriteVerifiedSegment(0, bytes));
+    REQUIRE(output->FlushVerifiedSegment());
+    const pbstorage::OutputFileSnapshot beforePublish = output->GetSnapshot();
+
+    const HANDLE lateTarget = CreateFileW(beforePublish.finalPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(lateTarget != INVALID_HANDLE_VALUE);
+    const std::byte marker{0x5A};
+    DWORD writtenBytes = 0;
+    REQUIRE(WriteFile(lateTarget, &marker, 1, &writtenBytes, nullptr));
+    REQUIRE(writtenBytes == 1);
+    REQUIRE(CloseHandle(lateTarget));
+
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    const pbstorage::StorageStatus publishStatus = output->Publish(digest);
+    REQUIRE_FALSE(publishStatus);
+    REQUIRE(publishStatus.code == pbstorage::StorageErrorCode::TargetExists);
+    REQUIRE(publishStatus.stage == pbstorage::StorageStage::Reservation);
+    REQUIRE(std::filesystem::exists(beforePublish.partPath));
+    REQUIRE(std::filesystem::file_size(beforePublish.partPath) == bytes.size());
+    REQUIRE(std::filesystem::exists(beforePublish.finalPath));
+    REQUIRE(std::filesystem::file_size(beforePublish.finalPath) == 1);
+    REQUIRE_FALSE(output->GetSnapshot().published);
 }
 
 TEST_CASE("PBStorage rejects a resumed part whose length conflicts with the descriptor",

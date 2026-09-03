@@ -387,6 +387,15 @@ TEST_CASE("ReceiverIngress DirectRepeat orphan flow is authoritative end to end"
             resourcePolicy));
     REQUIRE(segmentResult);
     REQUIRE(segmentResult.Value().completedSegment.has_value());
+    REQUIRE(segmentResult.Value().replayedOrphanBlocks.size() == blocks.size());
+    for (std::size_t blockIndex = 0; blockIndex < blocks.size(); blockIndex++)
+    {
+        const pbprotocol::OrphanTransportBlockEntry& replayed =
+            segmentResult.Value().replayedOrphanBlocks[blockIndex];
+        REQUIRE(replayed.outerBlockId == blocks[blockIndex].outerBlockId);
+        REQUIRE(replayed.declaredPayloadBytes == blocks[blockIndex].declaredPayloadBytes);
+        REQUIRE(replayed.paddedPayload == blocks[blockIndex].paddedPayload);
+    }
     REQUIRE(segmentResult.Value().completedSegment->encodedBytes == message);
     REQUIRE(segmentResult.Value().completedSegment->boundSegmentDescriptor.
         GetDescriptor() == segmentDescriptor);
@@ -1143,6 +1152,15 @@ TEST_CASE("ReceiverIngress Wirehair orphan replay recovers without sender metada
             resourcePolicy));
     REQUIRE(segmentResult);
     REQUIRE(segmentResult.Value().completedSegment.has_value());
+    REQUIRE(segmentResult.Value().replayedOrphanBlocks.size() == blocks.size());
+    for (std::size_t blockIndex = 0; blockIndex < blocks.size(); blockIndex++)
+    {
+        const pbprotocol::OrphanTransportBlockEntry& replayed =
+            segmentResult.Value().replayedOrphanBlocks[blockIndex];
+        REQUIRE(replayed.outerBlockId == blocks[blockIndex].outerBlockId);
+        REQUIRE(replayed.declaredPayloadBytes == blocks[blockIndex].declaredPayloadBytes);
+        REQUIRE(replayed.paddedPayload == blocks[blockIndex].paddedPayload);
+    }
     REQUIRE(segmentResult.Value().completedSegment->encodedBytes == message);
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
     auto verifiedResult = receiver.VerifyRecoveredSegment(std::move(*segmentResult.Value().completedSegment));
@@ -1239,6 +1257,7 @@ TEST_CASE("ReceiverIngress enforces one receiver-wide decoder quota without fall
         secondDescriptorRecord);
     REQUIRE(quotaResult);
     REQUIRE_FALSE(quotaResult.Value().completedSegment);
+    REQUIRE(quotaResult.Value().replayedOrphanBlocks.empty());
     pbreceiver::ReceiverResourceTelemetrySnapshot telemetry =
         receiver.GetTelemetry();
     REQUIRE(telemetry.activeOuterFecDecoderCount == 1);
@@ -1272,17 +1291,24 @@ TEST_CASE("ReceiverIngress enforces one receiver-wide decoder quota without fall
     REQUIRE(receiver.CommitStoredSegment(std::move(firstVerified).Value()));
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 0);
 
-    const auto retryDescriptorResult = receiver.ReceiveControlRecord(
-        secondDescriptorRecord);
-    REQUIRE(retryDescriptorResult);
-    REQUIRE_FALSE(retryDescriptorResult.Value().completedSegment);
-    REQUIRE(receiver.GetTelemetry().orphanCachedBlockCount == 0);
-    REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
+    // A later Carousel Data observation retries the already-bound Segment,
+    // drains both cached equations after capacity is released, and exposes
+    // exactly the accepted blocks for durable application checkpointing.
     auto secondReady = receiver.ReceiveDataBlock(
         MakeReceivedBlock(secondDescriptor.sessionTag, 1, secondBlocks[1]));
     REQUIRE(secondReady);
     REQUIRE(secondReady.Value().completedSegment.has_value());
+    REQUIRE(secondReady.Value().replayedOrphanBlocks.size() == secondBlocks.size());
+    for (std::size_t blockIndex = 0; blockIndex < secondBlocks.size(); blockIndex++)
+    {
+        const pbprotocol::OrphanTransportBlockEntry& replayed =
+            secondReady.Value().replayedOrphanBlocks[blockIndex];
+        REQUIRE(replayed.outerBlockId == secondBlocks[blockIndex].outerBlockId);
+        REQUIRE(replayed.declaredPayloadBytes == secondBlocks[blockIndex].declaredPayloadBytes);
+        REQUIRE(replayed.paddedPayload == secondBlocks[blockIndex].paddedPayload);
+    }
     REQUIRE(secondReady.Value().completedSegment->encodedBytes == secondMessage);
+    REQUIRE(receiver.GetTelemetry().orphanCachedBlockCount == 0);
     REQUIRE(receiver.GetTelemetry().activeOuterFecDecoderCount == 1);
     auto secondVerified = receiver.VerifyRecoveredSegment(std::move(*secondReady.Value().completedSegment));
     REQUIRE(secondVerified);

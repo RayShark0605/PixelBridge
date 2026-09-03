@@ -356,6 +356,7 @@ ctest --test-dir build-unified-release -C Release -R '^PBProtocolTests$' --outpu
 
 ## G03 — Decoder journal、乱序存储与恢复收口
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G01、G02 的 descriptor/carousel 合同。
 **目的：** 完成无序 Segment 恢复、持久 checkpoint、重启重放和最终发布的核心状态机。
 
@@ -365,20 +366,21 @@ ctest --test-dir build-unified-release -C Release -R '^PBProtocolTests$' --outpu
 
 **实现清单：**
 
-- [ ] `.part` 固定内部名 `PixelBridge-<SessionTag>.part`，不直接使用不可信文件名。
-- [ ] descriptor 通过资源/区间校验后才能分配、创建 codec、写 journal 或预分配。
-- [ ] activity 满 4 个时返回 `DeferredResourceBusy`，不分配、不驱逐、不使 Session 失败。
-- [ ] 完成顺序固定为 encoded digest → bounded decompress → raw digest → random write → `FlushFileBuffers` → completed journal flush → `CommitStoredSegment`。
-- [ ] active accepted blocks 每 1 秒或 Segment 完成 checkpoint；同 key 冲突 payload fail closed。
-- [ ] record 带 generation/length/CRC；只忽略最后一个明确截断尾 record，内部损坏拒绝。
-- [ ] journal 到 16 MiB 或 Segment 完成时 compact snapshot，temp flush 后原子替换。
-- [ ] 重启重验 `.part` 中 completed Segment 的 raw digest，再 adopt；最多重建 4 个 decoder 并重放 block cache。
-- [ ] 全 Segment 完成后顺序 whole BLAKE3、安全 rename、重新打开复验长度/摘要，再删 journal。
-- [ ] 最终 basename 冲突采用确定性 SessionTag 候选；第二候选也存在时停止且不覆盖。
+- [x] `.part` 固定内部名 `PixelBridge-<SessionTag>.part`，不直接使用不可信文件名。
+- [x] descriptor 通过资源/区间校验后才能分配、创建 codec、写 journal 或预分配。
+- [x] activity 满 4 个时返回 `DeferredResourceBusy`，不分配、不驱逐、不使 Session 失败。
+- [x] 完成顺序固定为 encoded digest → bounded decompress → raw digest → random write → `FlushFileBuffers` → completed journal flush → `CommitStoredSegment`。
+- [x] active accepted blocks 每 1 秒或 Segment 完成 checkpoint；同 key 冲突 payload fail closed。
+- [x] record 带 generation/length/CRC；只忽略最后一个明确截断尾 record，内部损坏拒绝。
+- [x] journal 到 16 MiB 或 Segment 完成时 compact snapshot，temp flush 后原子替换。
+- [x] 重启重验 `.part` 中 completed Segment 的 raw digest，再 adopt；最多重建 4 个 decoder 并重放 block cache。
+- [x] 全 Segment 完成后顺序 whole BLAKE3、安全 rename、重新打开复验长度/摘要，再删 journal。
+- [x] 最终 basename 冲突采用确定性 SessionTag 候选；第二候选也存在时停止且不覆盖。
 
 **最小验证：** `PBReceiverTests`、`PBStorageTests`、`PBApplicationTests` 中 resume 标签；不跑 modulation/native。
+**验证结果（2026-09-03）：** Release 增量构建三个目标成功；固定 seed 直接执行 `PBReceiverTests` 36/36（1,696 assertions）、`PBStorageTests` 12/12（144 assertions）、`PBApplicationTests [resume]` 5/5（275 assertions）全部通过。未创建窗口，未运行 modulation、GPU、capture、native 或完整 CTest。
 **退出：** torn tail 可恢复；内部 CRC/长度/cache 超限拒绝；completed segment 重启重验；活动 decoder 资源满后可由后续 Carousel 重试。
-**产物：** journal schema、状态转换表、故障分类。
+**产物：** [`DECODER_RESUMABLE_RECOVERY.md`](DECODER_RESUMABLE_RECOVERY.md) 中的 PBJH/PBJR schema、checkpoint/compaction 与 Segment/publish 状态转换、crash-window 边界和故障分类；本地测试日志为 `build-unified-release/tests/PBReceiver/g03-pbreceiver-tests.txt`、`build-unified-release/tests/PBStorage/g03-pbstorage-tests.txt`、`build-unified-release/tests/PBApplication/g03-resume-tests.txt`。
 **提交建议：** `feat(receiver): close resumable random access recovery`
 
 ## G04 — CP-A：多 Segment headless 端到端检查点

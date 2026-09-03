@@ -13,6 +13,7 @@
 #include <new>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -518,28 +519,39 @@ StorageStatus OutputFile::FlushVerifiedSegment() noexcept
     }
 
     const VerifiedRange pending = *implementation_->pendingRange;
-    const auto position = std::lower_bound(implementation_->verifiedRanges.begin(),
-        implementation_->verifiedRanges.end(), pending.begin,
-        [](const VerifiedRange& existing, const std::uint64_t begin)
-        {
-            return existing.begin < begin;
-        });
-    auto inserted = implementation_->verifiedRanges.insert(position, pending);
-    if (inserted != implementation_->verifiedRanges.begin())
+    try
     {
-        auto previous = std::prev(inserted);
-        if (previous->end == inserted->begin)
+        const auto position = std::lower_bound(implementation_->verifiedRanges.begin(),
+            implementation_->verifiedRanges.end(), pending.begin,
+            [](const VerifiedRange& existing, const std::uint64_t begin)
+            {
+                return existing.begin < begin;
+            });
+        auto inserted = implementation_->verifiedRanges.insert(position, pending);
+        if (inserted != implementation_->verifiedRanges.begin())
         {
-            previous->end = inserted->end;
-            inserted = implementation_->verifiedRanges.erase(inserted);
-            inserted = previous;
+            auto previous = std::prev(inserted);
+            if (previous->end == inserted->begin)
+            {
+                previous->end = inserted->end;
+                inserted = implementation_->verifiedRanges.erase(inserted);
+                inserted = previous;
+            }
+        }
+        const auto next = std::next(inserted);
+        if (next != implementation_->verifiedRanges.end() && inserted->end == next->begin)
+        {
+            inserted->end = next->end;
+            implementation_->verifiedRanges.erase(next);
         }
     }
-    const auto next = std::next(inserted);
-    if (next != implementation_->verifiedRanges.end() && inserted->end == next->begin)
+    catch (const std::bad_alloc&)
     {
-        inserted->end = next->end;
-        implementation_->verifiedRanges.erase(next);
+        return StorageStatus::Failure(StorageErrorCode::OutOfMemory, StorageStage::Flush);
+    }
+    catch (const std::length_error&)
+    {
+        return StorageStatus::Failure(StorageErrorCode::ResourceLimit, StorageStage::Flush);
     }
     implementation_->verifiedBytes += pending.end - pending.begin;
     implementation_->pendingRange.reset();
@@ -628,6 +640,10 @@ StorageStatus OutputFile::AdoptVerifiedSegment(const std::uint64_t rawOffset, co
     catch (const std::bad_alloc&)
     {
         return StorageStatus::Failure(StorageErrorCode::OutOfMemory, StorageStage::Resume);
+    }
+    catch (const std::length_error&)
+    {
+        return StorageStatus::Failure(StorageErrorCode::ResourceLimit, StorageStage::Resume);
     }
     implementation_->verifiedBytes += rawSize;
     return StorageStatus::Success();
