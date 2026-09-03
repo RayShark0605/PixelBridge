@@ -20,6 +20,7 @@ target_sources(PBModulation
         src/shape_chroma_internal.h
         src/remote_visual.cpp
         src/remote_visual_low_fps.cpp
+        src/unified_visual_profile.cpp
         src/visual_temporal.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -35,6 +36,7 @@ target_sources(PBModulation
             include/pbmodulation/shape_chroma.h
             include/pbmodulation/remote_visual.h
             include/pbmodulation/remote_visual_low_fps.h
+            include/pbmodulation/unified_visual_profile.h
             include/pbmodulation/visual_temporal.h)
 
 target_include_directories(PBModulation
@@ -47,9 +49,11 @@ target_compile_features(PBModulation
         cxx_std_20)
 
 target_link_libraries(PBModulation
+    PUBLIC
+        PB::PBProtocol
     PRIVATE
         PB::CompilerSettings
-        PB::PBProtocol
+        PB::PBInnerFec
         PB::PBInterleave
         PNG::PNG)
 

@@ -452,16 +452,18 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] 固定 ID、layout 8、canvas、BGRA8 SDR、tile count、31 codewords、lane 容量。
-- [ ] 定义 locator/bootstrap/control/pilot/data 保留区，checked capacity 必须一致。
-- [ ] 定义 Base/Fine/Chroma observation 与 erasure reason 类型。
-- [ ] 定义 mixed slot 的抽象类型和优先级，不让 Control 占满整帧。
-- [ ] 定义 0.75x..2.0x 和 letterbox/viewport 几何合同。
-- [ ] application product admission 只接受 Unified；历史 profile 仍可由内部工具显式调用。
-- [ ] 为每个常量添加 compile-time/static contract tests，避免 magic number 分散。
+- [x] 固定 ID、layout 8、canvas、BGRA8 SDR、tile count、31 codewords、lane 容量。
+- [x] 定义 locator/bootstrap/control/pilot/data 保留区，checked capacity 必须一致。
+- [x] 定义 Base/Fine/Chroma observation 与 erasure reason 类型。
+- [x] 定义 mixed slot 的抽象类型和优先级，不让 Control 占满整帧。
+- [x] 定义 0.75x..2.0x 和 letterbox/viewport 几何合同。
+- [x] application product admission 只接受 Unified；历史 profile 仍可由内部工具显式调用。
+- [x] 为每个常量添加 compile-time/static contract tests，避免 magic number 分散。
 
 **最小验证：** PBModulation/PBProtocol profile contract tests；不跑历史 transform matrix。
-**退出：** 所有模块共享一个 manifest/constant source；容量恰好可证明且无跨 lane codeword。
+**验证结果（2026-09-03）：** `cmake -S . -B build-unified-release` 重新配置成功；Release 增量构建 `PBProductVisualProfileTests`、`PBUnifiedVisualProfileTests` 成功。固定 seed `6062026` 直接执行 PBProtocol 产品准入 3/3（16 assertions）与 PBModulation Unified 合同 8/8（749 assertions）全部通过；精确 CTest 正则仅命中这两个目标并 2/2 通过。覆盖唯一产品目录、历史 profile 的显式内部通路、31-entry canvas region catalog 与 Base control slot region、data-grid 独立像素分区、checked overflow/impossible packing、非法 FEC/carrier 合同、lane 边界、全 Base-Control/跨 lane Control/错误优先级负例、0.75x/2.0x viewport 边界及 lane-local/whole-frame erasure 范围。未运行历史 transform matrix、完整 CTest、GPU、capture、GUI 或实屏测试。
+**退出：** `kUnifiedVisualProfile` 是唯一权威 manifest，PBModulation catalog 仅保存指向该对象的单一指针；PBProtocol 产品目录仅接受 Unified ID/layout，而通用 Descriptor 仍只要求非零 profile。独立容量证明为 86,688 tiles、520,128 raw bits、502,200 coded bits、17,928 reserved bits；31 个完整 codeword 按 17/4/10 分区且无跨 lane codeword，最大 Transport payload 为 22,338/5,256/13,140 B，总计 40,734 B。
+**产物：** 公共合同位于 `libs/PBModulation/include/pbmodulation/unified_visual_profile.h` 与 `libs/PBProtocol/include/pbprotocol/product_visual_profile.h`；本地测试日志为 `build-unified-release/tests/PBProtocol/g06-product-profile-tests.txt` 与 `build-unified-release/tests/PBModulation/g06-unified-profile-tests.txt`。
 **提交建议：** `feat(modulation): define unified lc4 profile contract`
 
 ## G07 — 确定性 codebook/mapping 搜索与冻结

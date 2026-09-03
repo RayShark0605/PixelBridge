@@ -39,6 +39,7 @@ target_sources(PBProtocol
             include/pbprotocol/feature_flags.h
             include/pbprotocol/orphan_transport_block_cache.h
             include/pbprotocol/output_reservation.h
+            include/pbprotocol/product_visual_profile.h
             include/pbprotocol/protocol_result.h
             include/pbprotocol/protocol_types.h
             include/pbprotocol/protocol_version.h
