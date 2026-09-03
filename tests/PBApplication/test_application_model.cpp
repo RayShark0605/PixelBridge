@@ -470,14 +470,14 @@ TEST_CASE("Window close defers exactly one stop while active and accepts after t
     REQUIRE(pbapp::GetWindowCloseAction(false, true) == pbapp::WindowCloseAction::Accept);
 }
 
-TEST_CASE("Application capability model exposes multi-Segment while keeping offline and automatic fallback unavailable",
-    "[application][capabilities][offline]")
+TEST_CASE("Application capability model exposes multi-Segment and capture Auto while offline remains unavailable",
+    "[application][capabilities][offline][g14]")
 {
     const pbapp::RuntimeCapabilities capabilities = pbapp::GetRuntimeCapabilities();
     REQUIRE(capabilities.instantLocalDesktop);
     REQUIRE_FALSE(capabilities.offlineMp4);
     REQUIRE(capabilities.multiSegment);
-    REQUIRE_FALSE(capabilities.automaticCaptureFallback);
+    REQUIRE(capabilities.automaticCaptureFallback);
 }
 
 TEST_CASE("Progress reaching one does not force Decoder success after digest failure", "[application][digest-failure]")

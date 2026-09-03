@@ -27,7 +27,8 @@ public:
                                               std::unique_ptr<detail::CaptureBackend> backend, std::unique_ptr<WgcCapture>& output) noexcept;
     [[nodiscard]] static CaptureStatus CreateNormalized(const pbcapturenormalize::CaptureNormalizeConfig& config,
                                                         std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> consumer,
-                                                        std::unique_ptr<detail::CaptureBackend> backend, std::unique_ptr<WgcCapture>& output) noexcept;
+                                                        std::unique_ptr<detail::CaptureBackend> backend, std::unique_ptr<WgcCapture>& output,
+                                                        pbcapturenormalize::CaptureSnapshot* failedStartSnapshot = nullptr) noexcept;
     static void RequestRecreate(WgcCapture& capture) noexcept;
 };
 

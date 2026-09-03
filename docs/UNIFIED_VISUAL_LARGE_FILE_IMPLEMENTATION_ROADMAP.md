@@ -644,6 +644,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G14 — WGC 默认捕获与 DXGI 明确 fallback
 
+**状态：** 已完成（2026-09-04）。
 **前置：** G11/G12。
 **目的：** 用户不选 backend，由 controller 执行可解释、有 epoch 边界的自动策略。
 
@@ -652,15 +653,17 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] 首选 WGC；只在初始化失败、AccessLost 或设备重建失败时切换 DXGI。
-- [ ] 每次切换创建新 CaptureEpoch，停止/排空旧 backend 和 GPU work。
-- [ ] UI/report 记录 requested policy=Auto、actual backend、切换原因和时间。
-- [ ] 两者均失败才进入 Failed；临时无可解码画面只是 Waiting/Stalled。
-- [ ] 相同 FrameSequence 去重、轻微乱序有界处理、stale capture 丢弃。
-- [ ] capture 可用速率独立于 Encoder FPS，不做人为 FPS 节流。
+- [x] 首选 WGC；只在初始化失败、AccessLost 或设备重建失败时切换 DXGI。
+- [x] 每次切换创建新 CaptureEpoch，停止/排空旧 backend 和 GPU work。
+- [x] UI/report 记录 requested policy=Auto、actual backend、切换原因和时间。
+- [x] 两者均失败才进入 Failed；临时无可解码画面只是 Waiting/Stalled。
+- [x] 相同 FrameSequence 去重、轻微乱序有界处理、stale capture 丢弃。
+- [x] capture 可用速率独立于 Encoder FPS，不做人为 FPS 节流。
 
 **最小验证：** mocked backend failure state tests + WGC/DXGI non-display unit tests；不启动选区器。
-**退出：** fallback 只发生于冻结条件；跨 epoch 结果无法进入 Receiver；状态/报告可解释。
+**验证结果（2026-09-04）：** 已核对 G11 `1459c86`、G12 `3044f23` 为当前 HEAD 祖先，且 G11 WARP 日志、G12 parity 与最终发布指标证据仍存在。Release 定向构建 `PBApplicationTests`、`PBScreenCaptureWgcTests`、`PBScreenCaptureDxgiTests` 与 `PixelBridgeDecoder` 成功。`PBApplicationTests [application][g14] --rng-seed 14092026` 12/12（178 assertions）通过：Auto 默认值与旧 WGC=0/DXGI=1 兼容、双 backend 资源预检、初始化失败/AccessLost/明确设备重建失败三个触发、普通等待/无帧/超时计数/重建过程不切换、旧 consumer 释放后才创建新 consumer、旧 epoch/source 与过期结果拒收、仅一次 WGC→DXGI、两个 backend 失败与显式请求不 fallback、deferred cleanup/未退完 lease/清理失败/epoch 溢出 fail-closed，以及报告 reason/epoch/时间、固定状态的 FrameSequence duplicate/reorder/gap 处理均通过。fallback 时间通过注入时钟证明是在旧 backend 排空后读取，而非复用启动/轮询前时间。`PBScreenCaptureWgcTests --rng-seed 14092026` 19/19（592 assertions）与 `PBScreenCaptureDxgiTests --rng-seed 14092026` 25/25（641 assertions）通过，覆盖共同 owner 的源 lease 与 consumer GPU 两阶段退休、AccessLost/recreate、过期帧、bounded inbox、初始化失败的同步/延迟清理证据，以及 WGC 设备重建失败的明确标记。时钟修正仅重建应用并重跑 G14 应用组，未重复已通过且未受影响的 capture 单测。Qt 部署步骤提示 `VCINSTALLDIR` 未设置，但定向构建退出码为 0；本次不声明打包复验通过。
+**退出：** 已满足。Auto 首先使用 WGC，只在冻结的三类 backend 失败且旧 owner 已 join、Normalize 已失效、source lease/ROI slot 全部退完、无 deferred cleanup 后尝试一次 DXGI；新实例的 OS-random source identity 与严格递增 CaptureEpoch 共同隔离旧结果。policy 切换与 Receiver 处理在同一 controller 线程串行执行，取出结果后还核对当前 Normalize domain、actual backend 与有效帧龄；GPU demodulator 不迁移 owner，而是在旧消费链退出后重建，Receiver/存储的已验证状态不因 fallback 清空。临时无可解码画面继续 Waiting/Stalled；协议/资源/清理不变量违反仍立即 fail-closed，不为“尝试两个 backend”而重叠旧 GPU work。产品 UI 固定 Auto 并显示实际绑定和切换原因/时间，旧显式诊断入口保留；capture 不继承 Encoder FPS 或 Replay 采样节流，Replay 的限速仍只作用于诊断 readback。未运行完整 CTest、WARP/GPU parity 重跑、GUI smoke/选区器、实屏、DISPLAY2、远程 provider 或 G20 门禁；本结论仅为 G14 mock/non-display 验证，不构成真实 WGC→DXGI 现场认证，也不包含 G16 的统一 Profile GUI 收敛。
+**产物：** policy/session seam 与 admission 位于 `apps/common/decoder_capture_controller.*`，生产及诊断接线位于 `apps/common/local_desktop_runtime.cpp`，Auto 与报告字段位于 `apps/common/application_model.*`、`apps/common/run_report.cpp`，最小 UI 绑定位于 `apps/PixelBridgeDecoder/decoder_gui.cpp` 与 controller。共享启动清理证据/设备重建标记位于 `libs/PBCaptureNormalize`，WGC/DXGI normalized Create 保持失败时 output 不变，并新增可选失败清理快照；无 wire/Profile/Golden 变更。测试位于 `tests/PBApplication/test_capture_fallback.cpp`、`tests/PBApplication/test_application_model.cpp`、`tests/PBScreenCaptureWgc/test_capture.cpp`、`tests/PBScreenCaptureDxgi/test_runtime.cpp`。本地构建日志为 `build-unified-release/g14-build-final.txt`、`g14-build-clock.txt`；验证日志为 `build-unified-release/tests/PBApplication/g14-capture-policy.txt`、`build-unified-release/tests/PBScreenCaptureWgc/g14-nondisplay.txt`、`build-unified-release/tests/PBScreenCaptureDxgi/g14-nondisplay.txt`。
 **提交建议：** `feat(capture): add explicit wgc to dxgi fallback`
 
 ## G15 — Encoder Qt 产品收敛

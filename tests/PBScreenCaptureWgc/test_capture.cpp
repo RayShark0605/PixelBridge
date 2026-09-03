@@ -445,6 +445,7 @@ TEST_CASE("WGC device removal is authoritative, recovery is bounded and advances
     }));
     REQUIRE(capture->GetSnapshot().captureEpoch == 2);
     REQUIRE(capture->GetSnapshot().lastDeviceLoss.nativeError == DXGI_ERROR_DEVICE_REMOVED);
+    REQUIRE_FALSE(capture->GetSnapshot().deviceRebuildFailed);
     REQUIRE(capture->GetSnapshot().liveFrameLeases == 0);
     control->deviceRemoved = true;
     REQUIRE(WaitFor([&]
@@ -452,6 +453,7 @@ TEST_CASE("WGC device removal is authoritative, recovery is bounded and advances
         return capture->GetSnapshot().shutdownComplete;
     }));
     REQUIRE(capture->Stop().code == CaptureError::DeviceLost);
+    REQUIRE(capture->GetSnapshot().deviceRebuildFailed);
     REQUIRE(control->initializes == 2);
     REQUIRE(capture->GetSnapshot().captureEpoch == 3);
 }
@@ -648,5 +650,77 @@ TEST_CASE("WGC epoch overflow and failed device recovery fail closed without ret
         }));
         REQUIRE(capture->Stop().code == CaptureError::NativeFailure);
         REQUIRE(control->initializes == 2);
+        REQUIRE(capture->GetSnapshot().deviceRebuildFailed);
     }
+}
+
+TEST_CASE("G14 WGC failed startup reports joined retirement separately from its trigger")
+{
+    for (const bool deferred : {false, true})
+    {
+        const auto control = std::make_shared<Control>();
+        control->initializeError = CaptureStatus::Failure(CaptureError::AccessLost, CaptureStage::Session, E_ACCESSDENIED);
+        control->callbacksIdle = !deferred;
+        auto config = MakeConfig();
+        config.initialCaptureEpoch = 7;
+        config.gpuTimeoutMilliseconds = 20;
+        std::unique_ptr<CaptureRuntime> capture;
+        pbcapturenormalize::CaptureSnapshot failedStart;
+        REQUIRE(CaptureRuntime::Create(config, std::make_shared<Consumer>(control), std::make_unique<Backend>(control),
+            capture, &failedStart) == control->initializeError);
+        REQUIRE_FALSE(capture);
+        REQUIRE(failedStart.captureEpoch == 7);
+        REQUIRE(failedStart.shutdownComplete == !deferred);
+        REQUIRE(failedStart.deferredCleanup == deferred);
+        REQUIRE(failedStart.liveFrameLeases == 0);
+        REQUIRE(failedStart.busyRoiTextures == 0);
+        REQUIRE_FALSE(failedStart.deviceRebuildFailed);
+        if (deferred)
+        {
+            REQUIRE(control->shutdowns == 0);
+            control->callbacksIdle = true;
+            control->CompleteDeferred();
+        }
+        else
+        {
+            REQUIRE(failedStart.shutdownStatus);
+        }
+        REQUIRE(control->shutdowns == 1);
+    }
+    REQUIRE(FromHresult(DXGI_ERROR_ACCESS_LOST, CaptureStage::CaptureItem).code == CaptureError::AccessLost);
+    REQUIRE(FromHresult(DXGI_ERROR_WAIT_TIMEOUT, CaptureStage::Callback).code != CaptureError::AccessLost);
+}
+
+TEST_CASE("G14 WGC normalized creation exposes startup cleanup without changing output-on-failure")
+{
+    class NormalizedConsumer final : public pbcapturenormalize::ScreenCaptureConsumer
+    {
+    public:
+        CaptureStatus DomainStarted(const pbcapturenormalize::ScreenCaptureDomain&, const CaptureEnvironment&, ID3D11Device*) override
+        {
+            return {};
+        }
+        void DomainInvalidated(const pbcapturenormalize::ScreenCaptureDomain&) noexcept override
+        {
+        }
+        CaptureStatus Submit(const pbcapturenormalize::ScreenCaptureFrame&, ID3D11DeviceContext*) override
+        {
+            return {};
+        }
+    };
+    const auto control = std::make_shared<Control>();
+    control->initializeError = CaptureStatus::Failure(CaptureError::Unsupported, CaptureStage::CaptureItem);
+    pbcapturenormalize::CaptureNormalizeConfig config;
+    config.capture = MakeConfig();
+    config.capture.maximumFrameAgeMilliseconds = 250;
+    std::unique_ptr<WgcCapture> capture;
+    pbcapturenormalize::CaptureSnapshot failedStart;
+    REQUIRE(WgcCaptureTestAccess::CreateNormalized(config, std::make_shared<NormalizedConsumer>(),
+        std::make_unique<Backend>(control), capture, &failedStart) == control->initializeError);
+    REQUIRE_FALSE(capture);
+    REQUIRE(failedStart.shutdownComplete);
+    REQUIRE_FALSE(failedStart.deferredCleanup);
+    REQUIRE(failedStart.shutdownStatus);
+    REQUIRE(failedStart.error == control->initializeError);
+    REQUIRE(control->shutdowns == 1);
 }

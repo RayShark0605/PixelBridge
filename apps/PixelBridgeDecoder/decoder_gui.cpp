@@ -447,9 +447,9 @@ private:
         auto* const captureGroup = new QGroupBox(QStringLiteral("Capture / Profile"));
         auto* const captureLayout = new QFormLayout(captureGroup);
         backendCombo_ = new QComboBox();
-        backendCombo_->addItem(QStringLiteral("WGC"), static_cast<int>(pbapp::CaptureBackend::Wgc));
-        backendCombo_->addItem(QStringLiteral("DXGI Desktop Duplication"), static_cast<int>(pbapp::CaptureBackend::Dxgi));
-        backendCombo_->setToolTip(QStringLiteral("显式 backend；当前没有 Auto，也不会 silent fallback。"));
+        backendCombo_->addItem(QStringLiteral("Auto（WGC 优先）"), static_cast<int>(pbapp::CaptureBackend::Auto));
+        backendCombo_->setEnabled(false);
+        backendCombo_->setToolTip(QStringLiteral("自动策略：仅 WGC 初始化失败、AccessLost 或设备重建失败时，排空旧 epoch 后切换 DXGI。"));
         profileCombo_ = new QComboBox();
         for (const pbapp::VisualProfileOption& option : pbapp::GetVisualProfileOptions())
         {
@@ -458,9 +458,9 @@ private:
         }
         profileCombo_->setToolTip(QStringLiteral(
             "必须与 Encoder 一致；旧 remote 与 remote-lf4 是不同 wire identity。LF4 使用 continuous locator、四 codeword 与 freshness soft erasure，仍不是 Certified Profile。"));
-        actualBackendLabel_ = new QLabel(QStringLiteral("Requested: WGC · Actual: —"));
+        actualBackendLabel_ = new QLabel(QStringLiteral("Requested policy: Auto · Actual: —"));
         actualBackendLabel_->setWordWrap(true);
-        captureLayout->addRow(QStringLiteral("Requested backend"), backendCombo_);
+        captureLayout->addRow(QStringLiteral("Capture policy"), backendCombo_);
         captureLayout->addRow(QStringLiteral("Visual Profile"), profileCombo_);
         captureLayout->addRow(QStringLiteral("Binding"), actualBackendLabel_);
         settingsRow->addWidget(captureGroup, 2);
@@ -661,7 +661,8 @@ private:
         restoreGeometry(settings.value(QStringLiteral("ui/windowGeometry")).toByteArray());
         outputDirectoryEdit_->setText(settings.value(QStringLiteral("ui/lastOutputDirectory"),
             QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).toString());
-        backendCombo_->setCurrentIndex(settings.value(QStringLiteral("ui/backend"), 0).toInt() == 1 ? 1 : 0);
+        // Historical explicit-backend preferences remain persisted, but do not
+        // override the product Auto policy. Explicit diagnostic CLI is unchanged.
         advancedGroup_->setChecked(settings.value(QStringLiteral("ui/advancedExpanded"), false).toBool());
         UpdateOutputValidation();
     }
@@ -671,7 +672,6 @@ private:
         QSettings settings;
         settings.setValue(QStringLiteral("ui/windowGeometry"), saveGeometry());
         settings.setValue(QStringLiteral("ui/lastOutputDirectory"), outputDirectoryEdit_->text());
-        settings.setValue(QStringLiteral("ui/backend"), backendCombo_->currentIndex());
         settings.setValue(QStringLiteral("ui/advancedExpanded"), advancedGroup_->isChecked());
     }
 
@@ -906,7 +906,7 @@ private:
             QMessageBox::warning(this, QStringLiteral("无法开始接收"), error);
             return;
         }
-        AppendLog(QStringLiteral("Start accepted; explicit capture backend is starting."));
+        AppendLog(QStringLiteral("Start accepted; Auto capture policy is starting with WGC."));
         UpdateSnapshot();
     }
 
@@ -916,7 +916,7 @@ private:
         stateLabel_->setText(QString::fromLatin1(pbapp::GetDecoderStateName(snapshot.state)));
         stateLabel_->setStyleSheet(QStringLiteral("padding:8px 14px;border-radius:6px;background:%1;color:white;font-weight:600;")
             .arg(StateColor(snapshot)));
-        actualBackendLabel_->setText(QStringLiteral("Requested: %1 · Actual: %2\n%3")
+        actualBackendLabel_->setText(QStringLiteral("Requested policy: %1 · Actual: %2\n%3")
             .arg(QString::fromLatin1(pbapp::GetCaptureBackendName(snapshot.requestedBackend)))
             .arg(snapshot.actualBackend ? QString::fromLatin1(pbapp::GetCaptureBackendName(*snapshot.actualBackend)) : QStringLiteral("—"))
             .arg(FromUtf8(snapshot.backendReason)));
@@ -1081,7 +1081,7 @@ private:
     {
         outputDirectoryEdit_->setEnabled(enabled);
         chooseOutputButton_->setEnabled(enabled);
-        backendCombo_->setEnabled(enabled);
+        backendCombo_->setEnabled(false);
         profileCombo_->setEnabled(enabled);
         selectRoiButton_->setEnabled(enabled);
         reselectRoiButton_->setEnabled(enabled && hasRegion_);

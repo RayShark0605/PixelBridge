@@ -42,7 +42,8 @@ struct VisualProfileOption
 enum class CaptureBackend : std::uint8_t
 {
     Wgc,
-    Dxgi
+    Dxgi,
+    Auto
 };
 
 enum class EncoderState : std::uint8_t
@@ -115,7 +116,7 @@ struct RuntimeCapabilities
     bool instantLocalDesktop = true;
     bool offlineMp4 = false;
     bool multiSegment = true;
-    bool automaticCaptureFallback = false;
+    bool automaticCaptureFallback = true;
 };
 
 enum class LargeOutputConfirmationState : std::uint8_t
@@ -312,9 +313,14 @@ struct DecoderSnapshot
     std::string runId;
     std::uint64_t runStartedUnixMilliseconds = 0;
     std::optional<std::uint64_t> runEndedUnixMilliseconds;
-    CaptureBackend requestedBackend = CaptureBackend::Wgc;
+    CaptureBackend requestedBackend = CaptureBackend::Auto;
     std::optional<CaptureBackend> actualBackend;
     std::string backendReason;
+    std::uint32_t captureBackendAttempts = 0;
+    std::string captureFallbackReason = "None";
+    std::optional<std::uint64_t> captureFallbackUnixMilliseconds;
+    std::uint64_t captureFallbackEpoch = 0;
+    std::uint64_t captureAdmissionDrops = 0;
     VisualProfile visualProfile = VisualProfile::DirectLevels2x2;
     std::uint64_t visualProfileId = 0;
     std::uint8_t visualLayoutVersion = 0;

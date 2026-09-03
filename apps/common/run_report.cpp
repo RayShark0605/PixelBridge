@@ -355,6 +355,13 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     }
     stream << ",\"backendReason\":";
     WriteEscaped(stream, snapshot.backendReason);
+    stream << ",\"captureBackendAttempts\":" << snapshot.captureBackendAttempts
+           << ",\"captureFallbackReason\":";
+    WriteEscaped(stream, snapshot.captureFallbackReason);
+    stream << ",\"captureFallbackUnixMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.captureFallbackUnixMilliseconds);
+    stream << ",\"captureFallbackEpoch\":" << snapshot.captureFallbackEpoch
+           << ",\"captureAdmissionDrops\":" << snapshot.captureAdmissionDrops;
     stream << ",\"profile\":";
     WriteEscaped(stream, GetVisualProfileName(snapshot.visualProfile));
     stream << ",\"visualProfileId\":" << snapshot.visualProfileId
@@ -684,7 +691,11 @@ std::string BuildDecoderDiagnostics(const DecoderSnapshot& snapshot)
     {
         stream << "not established";
     }
-    stream << " actual\nVerified raw bytes: " << snapshot.verifiedRawBytes << '/' << snapshot.originalFileBytes
+    stream << " actual\nBackend policy: " << snapshot.backendReason
+           << "\nCapture fallback: " << snapshot.captureFallbackReason << " epoch=" << snapshot.captureFallbackEpoch << " unixMs=";
+    WriteOptionalNumber(stream, snapshot.captureFallbackUnixMilliseconds);
+    stream << "\nCapture admission drops: " << snapshot.captureAdmissionDrops
+           << "\nVerified raw bytes: " << snapshot.verifiedRawBytes << '/' << snapshot.originalFileBytes
            << "\nLarge output confirmation: " << GetLargeOutputConfirmationStateName(
                snapshot.largeOutputConfirmationState)
            << " requestId=" << snapshot.largeOutputConfirmationRequestId

@@ -4,6 +4,7 @@ add_library(PB::PBApplication ALIAS PBApplication)
 target_sources(PBApplication
     PRIVATE
         application_model.cpp
+        decoder_capture_controller.cpp
         decoder_resume_store.cpp
         encoder_session_store.cpp
         evidence_journal.cpp
@@ -16,6 +17,7 @@ target_sources(PBApplication
         sender_carousel_scheduler.cpp
     PUBLIC
         application_model.h
+        decoder_capture_controller.h
         decoder_resume_store.h
         encoder_session_store.h
         evidence_journal.h

@@ -173,7 +173,8 @@ class CaptureRuntime
 {
 public:
     [[nodiscard]] static CaptureStatus Create(const CaptureConfig& config, std::shared_ptr<RawRoiConsumer> consumer,
-                                              std::unique_ptr<CaptureBackend> backend, std::unique_ptr<CaptureRuntime>& output) noexcept;
+                                              std::unique_ptr<CaptureBackend> backend, std::unique_ptr<CaptureRuntime>& output,
+                                              CaptureSnapshot* failedStartSnapshot = nullptr) noexcept;
     ~CaptureRuntime();
     [[nodiscard]] CaptureSnapshot GetSnapshot() const noexcept;
     void RequestStop() noexcept;

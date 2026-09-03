@@ -22,13 +22,19 @@ DxgiCapture::DxgiCapture(std::unique_ptr<CaptureRuntime> runtime, std::shared_pt
 DxgiCapture::~DxgiCapture() = default;
 
 CaptureStatus DxgiCapture::Create(const CaptureNormalizeConfig& config, std::shared_ptr<ScreenCaptureConsumer> consumer,
-                                 std::unique_ptr<DxgiCapture>& output) noexcept
+                                 std::unique_ptr<DxgiCapture>& output,
+                                 pbcapturenormalize::CaptureSnapshot* const failedStartSnapshot) noexcept
 {
+    if (failedStartSnapshot)
+    {
+        *failedStartSnapshot = {};
+        failedStartSnapshot->shutdownComplete = true;
+    }
     try
     {
         detail::NativeDxgiOptions options;
         options.normalizeConfiguredFormat = true;
-        return DxgiCaptureTestAccess::CreateNormalized(config, std::move(consumer), detail::MakeNativeDxgiBackend(options), output);
+        return DxgiCaptureTestAccess::CreateNormalized(config, std::move(consumer), detail::MakeNativeDxgiBackend(options), output, failedStartSnapshot);
     }
     catch (const std::bad_alloc&)
     {
@@ -41,8 +47,14 @@ CaptureStatus DxgiCapture::Create(const CaptureNormalizeConfig& config, std::sha
 }
 
 CaptureStatus DxgiCaptureTestAccess::CreateNormalized(const CaptureNormalizeConfig& config, std::shared_ptr<ScreenCaptureConsumer> consumer,
-                                                     std::unique_ptr<CaptureBackend> backend, std::unique_ptr<DxgiCapture>& output) noexcept
+                                                     std::unique_ptr<CaptureBackend> backend, std::unique_ptr<DxgiCapture>& output,
+                                                     pbcapturenormalize::CaptureSnapshot* const failedStartSnapshot) noexcept
 {
+    if (failedStartSnapshot)
+    {
+        *failedStartSnapshot = {};
+        failedStartSnapshot->shutdownComplete = true;
+    }
     try
     {
         std::shared_ptr<NormalizeConsumer> normalizer;
@@ -57,13 +69,12 @@ CaptureStatus DxgiCaptureTestAccess::CreateNormalized(const CaptureNormalizeConf
         {
             return validation;
         }
-        std::unique_ptr<CaptureRuntime> runtime;
-        const auto status = CaptureRuntime::Create(runtimeConfig, normalizer, std::move(backend), runtime);
+        auto created = std::unique_ptr<DxgiCapture>(new DxgiCapture(nullptr, normalizer));
+        const auto status = CaptureRuntime::Create(runtimeConfig, normalizer, std::move(backend), created->runtime_, failedStartSnapshot);
         if (!status)
         {
             return status;
         }
-        auto created = std::unique_ptr<DxgiCapture>(new DxgiCapture(std::move(runtime), std::move(normalizer)));
         output = std::move(created);
         return {};
     }

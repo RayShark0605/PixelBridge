@@ -61,6 +61,7 @@ void DecoderApplicationController::PollSnapshot()
     const pbapp::DecoderSnapshot current = runtime_.GetSnapshot();
     const bool changed = current.runGeneration != lastSnapshot_.runGeneration || current.state != lastSnapshot_.state ||
         current.captureDeliveredFrames != lastSnapshot_.captureDeliveredFrames ||
+        current.actualBackend != lastSnapshot_.actualBackend || current.backendReason != lastSnapshot_.backendReason ||
         current.verifiedRawBytes != lastSnapshot_.verifiedRawBytes || current.captureEpoch != lastSnapshot_.captureEpoch ||
         current.statusMessage != lastSnapshot_.statusMessage || current.errorDetail != lastSnapshot_.errorDetail;
     const bool becameTerminal = IsTerminal(current.state) && !IsTerminal(lastSnapshot_.state);
