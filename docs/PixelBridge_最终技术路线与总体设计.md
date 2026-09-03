@@ -7,12 +7,58 @@
 > 核心输入模型：Decoder 对用户指定的**屏幕矩形区域进行高速桌面捕获**，不使用摄像头  
 > 支持模式：**即时视觉流模式**、**离线 MP4 模式**  
 > 设计日期：2026-08-21  
-> 文档状态：**总体架构可行，可进入 Phase 0～1 原型验证；协议语义可先冻结，LocalDesktop 物理层、Visual Profile 常量与性能承诺必须在 Pixel Round-Trip / Capture / Video Gate Benchmark 通过后冻结**
+> 文档状态：**通用架构与安全不变量继续有效；2026-09-03 起，当前产品合同和实施顺序以第 0 节及 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 为准。旧 ChannelClass、Phase 1.5 与 RemoteVisual 路线保留为历史设计/证据。**
+
+---
+
+# 0. 2026-09-03 产品路线冻结与旧章节解释规则
+
+## 0.1 当前产品合同
+
+从 2026-09-03 起，PixelBridge 的正式 Windows 产品路线冻结为：
+
+- 交付 `PixelBridgeEncoder.exe` 与 `PixelBridgeDecoder.exe` 两个 Qt Widgets 程序；
+- 正式产品只公开一个视觉 Profile：`PB-Unified-LC4-V1`，`VisualProfileId=0x5042554E494C4331`，`VisualLayoutVersion=8`；
+- 规范画布固定为 1920×1080 BGRA8 SDR，使用 Base Luma、Fine Luma、Chroma 三个可独立擦除的 lane；颜色损坏不能拖累必选 Base Luma；
+- Encoder 逻辑刷新率为 1..60 Hz，默认 15 Hz；重复 Present 不产生新 equation，不推进 FrameSequence 或 Carousel；
+- Data Window 是普通可缩放窗口，规范 raster 通过 point sampling 等比缩放并 letterbox；正式可解码尺度为 0.75×..2.0×，小于 0.75×时暂停逻辑广播；
+- Control 与 Transport 可在同一逻辑帧的不同 Base Luma slots 中复用，避免低刷新率下整帧 Control；
+- 文件固定按 8 MiB Segment 流式处理，支持 0-byte 和至少 20 GiB 的真实能力验证，不设置 20 GB 产品硬上限；默认资源上限仍为 500 GiB；
+- Encoder 预扫描、双 Segment 广播缓冲和 durable ID lease 必须支持崩溃恢复；
+- Decoder 自动使用 WGC，只有明确初始化/AccessLost/设备重建失败时才切换 DXGI；其 `.part`、最多四个活动 decoder、256 MiB resume budget、whole-file BLAKE3 与安全发布必须支持跨进程恢复；
+- 正式产品只接受 Protocol 1.0 Descriptor Schema 1；旧 37-byte provisional SessionDescriptor 必须明确返回 `UnsupportedDescriptorSchema`；
+- 远控 provider 名称、品牌和画质档位只能进入 `NonDecodingOperatorMetadata`，不能进入 wire、阈值、Profile 或解码分支；
+- 不引入 sockets、pipe、共享内存、COM、剪贴板、临时文件交换或任何 payload 旁路。
+
+字段、lane 容量、阶段目标、最小测试预算和最终门禁的可执行定义见 [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。后续 Goal/目标模式必须按该文档的 G00..G22 顺序执行。
+
+## 0.2 旧章节的保留与取代范围
+
+本文原有第 1..46 节不整体删除：其中关于显式序列化、checked arithmetic、FEC、摘要、安全发布、Windows GPU/capture 生命周期、线程/队列、资源上限、Golden 和真实性指标的通用约束继续有效。
+
+但以下旧内容只作为历史候选、Phase 1.5 现状或实验依据，不再定义最终产品：
+
+- “上层统一、产品按 ChannelClass 提供多个模式/Profile”的用户产品路线；
+- Local/Remote、Direct/Shape/LF4 的产品级选择；
+- RemoteVisual 只允许 1..5 Hz 的产品刷新率；
+- 固定不可缩放 1920×1080 Data Window，或旧 LF4 的 0.5×最小尺度；
+- 单 Segment、1 byte..8 MiB、Decoder 手选 Profile/backend、没有双端持久恢复的 Phase 1.5 边界；
+- Phase-0 37/110/142/65-byte provisional descriptor 作为正式 v1 schema 的描述；
+- Step 22 六轮 LF4 campaign 作为新产品完成前置条件。
+
+这些历史内容可用于解释现有代码、复用算法和回归旧 fixture，但不能覆盖第 0.1 节的新合同。若某一旧章节与新路线冲突，以第 0 节和统一实施路线为准；若未冲突，则继续作为详细架构背景。
+
+## 0.3 当前实现事实边界
+
+代码提交 `1445f9b` 已建立正式 Descriptor、流式多 Segment sender、durable lease、random-access `.part`、decoder resume journal 和 `DeferredResourceBusy` 的基础实现，并通过 PBProtocol/PBStorage/PBReceiver/PBApplication 的一次定向检查。
+
+这不代表统一产品已完成：layout 8 lane mapping、mixed slots、Unified CPU/GPU 解调、0.75× 可缩放窗口、自动 capture fallback、最终 Qt 页面、20 GiB/进程故障注入、完整 Release CTest、DISPLAY2 native 和真实远程门禁仍未关闭。精确状态见统一实施路线第 2 节。
 
 ---
 
 ## 目录
 
+0. [2026-09-03 产品路线冻结与旧章节解释规则](#0-2026-09-03-产品路线冻结与旧章节解释规则)
 1. [总体设计结论与关键架构约束](#1-总体设计结论与关键架构约束)
 2. [项目愿景与最终目标](#2-项目愿景与最终目标)
 3. [系统边界：PixelBridge 不是什么](#3-系统边界pixelbridge-不是什么)

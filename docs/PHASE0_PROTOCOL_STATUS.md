@@ -1,5 +1,7 @@
 # PixelBridge Phase-0 protocol implementation status
 
+> **2026-09-03 历史状态说明：** 本文件记录 Phase-0 provisional 协议切片及当时的 Gate 结论，不再是当前正式 Descriptor 规范。提交 `1445f9b` 已实现 Protocol 1.0 Descriptor Schema 1 的显式 schema/header/total-length/CRC、Session Visual Profile/文件名/Segment 绑定，并将旧 37-byte SessionDescriptor 及旧 Segment/Manifest 保存为“必须拒绝”的历史 fixtures。当前合同与收口步骤见 [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) 的 G01；下面的尺寸、缺失字段和 NO-GO 描述必须按其原始 Phase-0 时间点阅读，不能覆盖新实现。
+
 ## Status decision
 
 The descriptor codec currently implemented by `PBProtocol` is a **Phase-0

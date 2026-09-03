@@ -1,5 +1,9 @@
 # PixelBridge Phase 1.5 Current Runtime Option Inventory
 
+> **2026-09-03 状态说明：本文件现为过渡/历史实现清单。** 下面的表格主要记录统一产品路线冻结前、截至 `bb5f0b1` 附近可到达的 Phase 1.5 GUI/CLI 与 RemoteVisual 实验入口。提交 `1445f9b` 已加入 Protocol 1.0 Descriptor Schema 1、流式多 Segment sender、durable ID lease、random-access `.part` 和 decoder resume journal 基础，因此本文关于 provisional descriptor、单 Segment 和“无协议状态恢复”的部分不再描述最新核心能力；但产品 GUI 仍未完成统一 Profile、自动 backend、1..60 Hz 与简化页面收敛。
+>
+> 当前产品合同、真实完成状态和后续执行顺序以 [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) 为准。下面内容用于定位仍需重构/隐藏的旧选项及复用入口，不得据此声称 `PB-Unified-LC4-V1` 或最终大文件产品已经完成。
+
 Status: implementation inventory for the first Windows GUI. This document records only options that are reachable through the current worktree's real public bindings, layered on pre-GUI baseline HEAD `80699813b595bcf6db64047b50d31056872e33e1`. The frozen annotated `phase1-gate-pass` tag object remains `fde56c4c4e7124e8ffe29a0dcb619f8236781ebb` and still peels to that same baseline commit. This is not a profile certification statement.
 
 ## Product boundary used by the GUI
