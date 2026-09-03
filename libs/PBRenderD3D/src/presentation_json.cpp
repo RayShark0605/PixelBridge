@@ -74,6 +74,9 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
            << snapshot.environment.modeWidth << ',' << snapshot.environment.modeHeight << ',' << snapshot.environment.modeFrequency
            << "],\"singleMonitor\":" << snapshot.environment.singleMonitor << ",\"monitorIdentity\":" << snapshot.environment.monitorIdentity
            << ",\"modeChangeSerial\":" << snapshot.environment.modeChangeSerial << ",\"dpiChangeSerial\":" << snapshot.environment.dpiChangeSerial
+           << ",\"viewportDisposition\":" << static_cast<unsigned int>(snapshot.viewport.disposition)
+           << ",\"viewport\":[" << snapshot.viewport.originX << ',' << snapshot.viewport.originY << ',' << snapshot.viewport.width << ','
+           << snapshot.viewport.height << "],\"viewportScale\":" << snapshot.viewport.scale
            << ",\"candidateContractSatisfied\":" << snapshot.candidateContractSatisfied << ",\"softwareRasterizer\":" << snapshot.softwareRasterizer
            << ",\"swapChainGeneration\":" << snapshot.swapChainGeneration << ",\"bufferGeneration\":" << snapshot.bufferGeneration
            << ",\"bufferCount\":" << snapshot.contract.bufferCount << ",\"maximumFrameLatency\":" << snapshot.contract.maximumFrameLatency
@@ -81,14 +84,20 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
            << "\",\"bgraUnorm\":" << snapshot.contract.bgraUnorm << ",\"noMsaa\":" << snapshot.contract.noMsaa
            << ",\"alphaIgnored\":" << snapshot.contract.alphaIgnored << ",\"scalingNone\":" << snapshot.contract.scalingNone
            << ",\"tearingDisabled\":" << snapshot.contract.tearingDisabled << ",\"latencyWaitable\":" << snapshot.contract.latencyWaitable
-           << ",\"perMonitorV2\":" << snapshot.contract.perMonitorV2 << ",\"submittedFrames\":" << snapshot.submittedFrames
+           << ",\"perMonitorV2\":" << snapshot.contract.perMonitorV2 << ",\"resizableChrome\":" << snapshot.contract.resizableChrome
+           << ",\"immutableCanonicalSource\":" << snapshot.contract.immutableCanonicalSource
+           << ",\"pointSampled\":" << snapshot.contract.pointSampled << ",\"centeredLetterbox\":" << snapshot.contract.centeredLetterbox
+           << ",\"neutralMatteBelowMinimum\":" << snapshot.contract.neutralMatteBelowMinimum
+           << ",\"submittedFrames\":" << snapshot.submittedFrames
            << ",\"replacedPendingFrames\":" << snapshot.replacedPendingFrames << ",\"discardedEpochFrames\":" << snapshot.discardedEpochFrames
            << ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements << ",\"repeatedPresentCalls\":" << snapshot.repeatedPresentCalls
            << ",\"invalidatedActiveFrames\":" << snapshot.invalidatedActiveFrames << ",\"activeFrame\":" << snapshot.activeFrame
            << ",\"activeFrameSequence\":" << snapshot.activeFrameSequence
            << ",\"activeFramePresentationEpoch\":" << snapshot.activeFramePresentationEpoch
            << ",\"totalPresentCalls\":" << snapshot.totalPresentCalls << ",\"totalSuccessfulPresents\":" << snapshot.totalSuccessfulPresents
+           << ",\"neutralMattePresentCalls\":" << snapshot.neutralMattePresentCalls
            << ",\"pendingFrame\":" << snapshot.pendingFrame << ",\"inFlightFrame\":" << snapshot.inFlightFrame
+           << ",\"neutralMattePending\":" << snapshot.neutralMattePending
            << ",\"epochPresentCalls\":" << timing.presentCalls << ",\"epochSuccessfulPresents\":" << timing.successfulPresents
            << ",\"epochFailedPresents\":" << timing.failedPresents << ",\"epochOccludedPresents\":" << timing.occludedPresents
            << ",\"observedPresents\":" << timing.observedPresents << ",\"observedUniqueVisuals\":" << timing.observedUniqueVisuals

@@ -2,6 +2,8 @@
 
 #include "pbrenderd3d/data_window.h"
 
+#include <vector>
+
 namespace pbrenderd3d
 {
 
@@ -41,7 +43,8 @@ struct BackendDiagnostics
     std::uint64_t bufferGeneration = 0;
     std::uint64_t verifiedUploads = 0;
     std::uint64_t immutableSourceCreations = 0;
-    std::uint64_t sourceCopiesToBackBuffer = 0;
+    std::uint64_t sourceRendersToBackBuffer = 0;
+    std::uint64_t neutralMattePresentCalls = 0;
     std::uint64_t debugErrors = 0;
     std::uint64_t framePermits = 0;
     std::uint64_t presentCalls = 0;
@@ -68,6 +71,7 @@ public:
     [[nodiscard]] virtual BackendWaitResult Wait(bool requestFramePermit, std::uint32_t timeoutMilliseconds) noexcept = 0;
     [[nodiscard]] virtual PresentationStatus Upload(std::span<const std::byte> pixels) noexcept = 0;
     [[nodiscard]] virtual BackendPresentResult Present() noexcept = 0;
+    [[nodiscard]] virtual BackendPresentResult PresentNeutralMatte() noexcept = 0;
     [[nodiscard]] virtual BackendStatistics GetStatistics() noexcept = 0;
     // Wake/Cancel are the only backend calls made off-owner; their event
     // remains alive until the owner is joined and the backend is destroyed.
@@ -87,6 +91,19 @@ struct NativeBackendTestOptions
 };
 
 [[nodiscard]] std::unique_ptr<PresentationBackend> MakeNativeBackend(const NativeBackendTestOptions& options = {});
+
+struct WarpOffscreenRenderResult
+{
+    PresentationViewportGeometry viewport;
+    BackendDiagnostics diagnostics;
+    std::vector<std::byte> pixels;
+};
+
+// Private test seam. It uses the same shader creation and draw helpers as the
+// HWND backend, but targets a WARP texture and never creates or shows a window.
+[[nodiscard]] PresentationResult<WarpOffscreenRenderResult> RenderWarpOffscreenForTest(
+    const DataWindowConfig& config, std::span<const std::byte> canonicalPixels,
+    std::uint32_t targetWidth, std::uint32_t targetHeight, bool neutralMatte) noexcept;
 
 class DataWindowTestAccess
 {

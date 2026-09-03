@@ -230,7 +230,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
             REQUIRE_FALSE(pendingStatus);
             REQUIRE(pendingStatus.code == pbapp::SenderCarouselSchedulerError::FrameAlreadyPrepared);
             REQUIRE(scheduler.CommitPreparedFrame());
-            REQUIRE(clock.Commit());
+            REQUIRE(clock.Commit(deadline));
         }
         const pbapp::SenderUnifiedCarouselSnapshot snapshot = scheduler.GetSnapshot();
         REQUIRE_FALSE(snapshot.complete);
@@ -242,7 +242,8 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
             logicalTickCount * pbapp::senderUnifiedCodewordSlotCount);
         REQUIRE(snapshot.committedEquationCount == expectedEquationIndex);
         REQUIRE(snapshot.committedEquationCount == snapshot.transportSlotCount);
-        REQUIRE(clock.GetSnapshot() == pbapp::SenderLogicalFrameClockSnapshot{logicalTickCount, 0, false});
+        REQUIRE(clock.GetSnapshot() == pbapp::SenderLogicalFrameClockSnapshot{
+            logicalTickCount, 0, false, logicalFramesPerSecond, logicalFramesPerSecond, false});
     }
 
     pbapp::SenderLogicalFrameClock clock;
@@ -256,7 +257,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
     REQUIRE(firstFrame.firstEquationIndex == 0);
     REQUIRE(firstFrame.scheduledEquationCount == 19);
     REQUIRE(scheduler.CommitPreparedFrame());
-    REQUIRE(clock.Commit());
+    REQUIRE(clock.Commit(startNanoseconds));
 
     REQUIRE(clock.Acquire(startNanoseconds + 5 * pbapp::senderLogicalFrameNanosecondsPerSecond, tick));
     REQUIRE(tick.logicalTickOrdinal == 300);
@@ -267,11 +268,57 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
     REQUIRE(afterStall.firstEquationIndex == 19);
     REQUIRE(afterStall.scheduledEquationCount == 31);
     REQUIRE(scheduler.CommitPreparedFrame());
-    REQUIRE(clock.Commit());
+    REQUIRE(clock.Commit(startNanoseconds + 5 * pbapp::senderLogicalFrameNanosecondsPerSecond));
     REQUIRE(clock.GetSnapshot().droppedTickCount == 299);
     pbapp::SenderLogicalFrameTick noCatchUp;
     REQUIRE(clock.Acquire(startNanoseconds + 5 * pbapp::senderLogicalFrameNanosecondsPerSecond, noCatchUp));
     REQUIRE(noCatchUp.disposition == pbapp::SenderLogicalFrameTickDisposition::NotDue);
+}
+
+TEST_CASE("Unified logical FPS changes apply after the pending complete frame and never create a catch-up queue",
+    "[application][g13][scheduler][clock][dynamic-fps]")
+{
+    constexpr std::uint64_t startNanoseconds = 9000000000ULL;
+    pbapp::SenderLogicalFrameClock clock;
+    REQUIRE(pbapp::SenderLogicalFrameClock::Create(15, startNanoseconds, clock));
+    pbapp::SenderLogicalFrameTick tick;
+    REQUIRE(clock.Acquire(startNanoseconds, tick));
+    REQUIRE(tick.logicalTickOrdinal == 0);
+
+    REQUIRE(clock.RequestFramesPerSecond(60, startNanoseconds + 1000000ULL));
+    REQUIRE(clock.GetSnapshot() == pbapp::SenderLogicalFrameClockSnapshot{0, 0, true, 15, 60, true});
+    pbapp::SenderLogicalFrameTick samePending;
+    REQUIRE(clock.Acquire(startNanoseconds + 5000000ULL, samePending));
+    REQUIRE(samePending == tick);
+
+    constexpr std::uint64_t firstCompletion = startNanoseconds + 10000000ULL;
+    REQUIRE(clock.Commit(firstCompletion));
+    REQUIRE(clock.GetSnapshot() == pbapp::SenderLogicalFrameClockSnapshot{1, 0, false, 60, 60, false});
+    constexpr std::uint64_t sixtyHertzInterval = 16666667ULL;
+    REQUIRE(clock.Acquire(firstCompletion + sixtyHertzInterval - 1, tick));
+    REQUIRE(tick.disposition == pbapp::SenderLogicalFrameTickDisposition::NotDue);
+    REQUIRE(clock.Acquire(firstCompletion + sixtyHertzInterval, tick));
+    REQUIRE(tick.logicalTickOrdinal == 1);
+
+    REQUIRE(clock.RequestFramesPerSecond(30, firstCompletion + sixtyHertzInterval));
+    REQUIRE(clock.RequestFramesPerSecond(1, firstCompletion + sixtyHertzInterval));
+    constexpr std::uint64_t secondCompletion = firstCompletion + sixtyHertzInterval + 2000000ULL;
+    REQUIRE(clock.Commit(secondCompletion));
+    REQUIRE(clock.GetSnapshot() == pbapp::SenderLogicalFrameClockSnapshot{2, 0, false, 1, 1, false});
+    REQUIRE(clock.Acquire(secondCompletion + pbapp::senderLogicalFrameNanosecondsPerSecond - 1, tick));
+    REQUIRE(tick.disposition == pbapp::SenderLogicalFrameTickDisposition::NotDue);
+    const std::uint64_t oneHertzDeadline = secondCompletion + pbapp::senderLogicalFrameNanosecondsPerSecond;
+    REQUIRE(clock.Acquire(oneHertzDeadline, tick));
+    REQUIRE(tick.logicalTickOrdinal == 2);
+    REQUIRE(clock.Commit(oneHertzDeadline));
+
+    REQUIRE(clock.Acquire(oneHertzDeadline + 5 * pbapp::senderLogicalFrameNanosecondsPerSecond, tick));
+    REQUIRE(tick.logicalTickOrdinal == 7);
+    REQUIRE(tick.droppedTickCount == 4);
+    const auto beforeInvalidRequest = clock.GetSnapshot();
+    REQUIRE_FALSE(clock.RequestFramesPerSecond(0, oneHertzDeadline));
+    REQUIRE_FALSE(clock.RequestFramesPerSecond(61, oneHertzDeadline));
+    REQUIRE(clock.GetSnapshot() == beforeInvalidRequest);
 }
 
 TEST_CASE("Unified mixed scheduler converges independent Segment rounds without allocating IDs to Control",
@@ -373,7 +420,7 @@ TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Con
 
     pbapp::SenderLogicalFrameClock clock;
     REQUIRE(pbapp::SenderLogicalFrameClock::Create(15, 0, clock));
-    REQUIRE_FALSE(clock.Commit());
+    REQUIRE_FALSE(clock.Commit(0));
     REQUIRE_FALSE(pbapp::SenderLogicalFrameClock::Create(0, 0, clock));
     REQUIRE_FALSE(pbapp::SenderLogicalFrameClock::Create(61, 0, clock));
 }

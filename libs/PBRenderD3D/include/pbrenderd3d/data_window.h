@@ -163,6 +163,33 @@ struct DataWindowConfig
     std::optional<PhysicalPoint> clientOrigin;
 };
 
+inline constexpr std::uint32_t dataWindowMinimumScaleNumerator = 3;
+inline constexpr std::uint32_t dataWindowMinimumScaleDenominator = 4;
+inline constexpr std::uint32_t dataWindowMaximumScaleNumerator = 2;
+inline constexpr std::uint32_t dataWindowMaximumScaleDenominator = 1;
+inline constexpr std::uint8_t dataWindowNeutralMatteCodeValue = 128;
+inline constexpr std::uint8_t dataWindowNeutralMatteAlpha = 255;
+
+enum class PresentationViewportDisposition : std::uint8_t
+{
+    InvalidClientArea,
+    PausedBelowMinimumScale,
+    Active,
+    ActiveClampedToMaximumScale
+};
+
+struct PresentationViewportGeometry
+{
+    PresentationViewportDisposition disposition = PresentationViewportDisposition::InvalidClientArea;
+    double originX = 0;
+    double originY = 0;
+    double width = 0;
+    double height = 0;
+    double scale = 0;
+
+    bool operator==(const PresentationViewportGeometry&) const = default;
+};
+
 struct CanonicalBgraFrameView
 {
     std::span<const std::byte> pixels;
@@ -214,6 +241,11 @@ struct PresentationContract
     bool tearingDisabled = false;
     bool latencyWaitable = false;
     bool perMonitorV2 = false;
+    bool resizableChrome = false;
+    bool immutableCanonicalSource = false;
+    bool pointSampled = false;
+    bool centeredLetterbox = false;
+    bool neutralMatteBelowMinimum = false;
 };
 
 enum class WindowState : std::uint8_t
@@ -231,6 +263,7 @@ struct DataWindowSnapshot
     PresentationStatus error;
     WindowEnvironment environment;
     PresentationContract contract;
+    PresentationViewportGeometry viewport;
     pbpresenttiming::TimingSnapshot timing;
     std::uint64_t submittedFrames = 0;
     std::uint64_t replacedPendingFrames = 0;
@@ -240,11 +273,13 @@ struct DataWindowSnapshot
     std::uint64_t invalidatedActiveFrames = 0;
     std::uint64_t totalPresentCalls = 0;
     std::uint64_t totalSuccessfulPresents = 0;
+    std::uint64_t neutralMattePresentCalls = 0;
     std::uint64_t swapChainGeneration = 0;
     std::uint64_t bufferGeneration = 0;
     std::int32_t lastPresentIdNativeStatus = 0;
     bool pendingFrame = false;
     bool inFlightFrame = false;
+    bool neutralMattePending = false;
     bool activeFrame = false;
     std::uint64_t activeFrameSequence = 0;
     std::uint64_t activeFramePresentationEpoch = 0;
@@ -256,6 +291,9 @@ struct DataWindowSnapshot
 
 [[nodiscard]] PresentationStatus ValidateDataWindowConfig(const DataWindowConfig& config) noexcept;
 [[nodiscard]] PresentationStatus ValidateCanonicalBgraFrame(const DataWindowConfig& config, const CanonicalBgraFrameView& frame) noexcept;
+[[nodiscard]] PresentationViewportGeometry ResolvePresentationViewport(
+    const DataWindowConfig& config, std::uint32_t clientWidth, std::uint32_t clientHeight) noexcept;
+[[nodiscard]] bool CanPresentData(PresentationViewportDisposition disposition) noexcept;
 [[nodiscard]] const char* GetPresentationErrorName(PresentationErrorCode code) noexcept;
 [[nodiscard]] const char* GetPresentationStageName(PresentationStage stage) noexcept;
 // Writes one bounded diagnostic object, never pixels or protocol payload.

@@ -2,14 +2,14 @@
 
 ## 范围与契约
 
-对应总体设计 §16.3、§21、§37 的呈现部分。本轮交付独立原生数据窗口、
-有界计时状态机和 Encoder 呈现验证入口。**Certified candidate 不等于完整
-LocalDesktop 物理链路认证。** 没有增加 Capture 后端、GPU 调制或 texture 输入接口；
-不改 Bootstrap、Visual Profile、Transport/FEC、Golden pins 或 Decoder 文件恢复语义。
+对应总体设计 §16.3、§21、§37 的呈现部分。本模块提供独立原生数据窗口、
+有界计时状态机和 Encoder 呈现验证入口。G13 在不改变 canonical raster、Bootstrap、
+Visual Profile、Transport/FEC、Golden pins 或 Decoder 文件恢复语义的前提下加入可缩放
+presentation。**Headless/WARP 通过不等于完整 LocalDesktop 物理链路认证。**
 
 | 项目 | 默认值 / 检查 |
 | --- | --- |
-| 窗口 | 无 Qt 合成的 borderless top-level HWND；1920×1080 physical client |
+| 窗口 | 默认无 Qt 合成的 `WS_OVERLAPPEDWINDOW` top-level HWND，可拖动、最小化和 resize；初始 1920×1080 physical client；显式 fullscreen sender 配置仍使用无激活 popup |
 | DPI | Encoder 和真实显示 Gate 的 manifest 声明 PMv2；库验证，不修改进程 awareness |
 | Device | 目标 monitor 所在硬件 adapter；D3D11 feature level 11.0 或以上；不自动 WARP fallback |
 | Swap effect | `DXGI_SWAP_EFFECT_FLIP_DISCARD` |
@@ -17,11 +17,13 @@ LocalDesktop 物理链路认证。** 没有增加 Capture 后端、GPU 调制或
 | 帧延迟 | waitable object；`SetMaximumFrameLatency(1)`，回读验证 |
 | Present | 每次都是 `Present(1, 0)`；tearing 创建和 Present flags 均关闭 |
 | 格式 | `B8G8R8A8_UNORM`，非 SRGB；sample count 1、quality 0；alpha ignore |
-| 像素 | 完整 `UpdateSubresource` 上传；没有 sampler、blending、MSAA、缩放 shader；`DXGI_SCALING_NONE` |
+| 像素 | 每个完整逻辑帧创建一张 canonical 1920×1080 `D3D11_USAGE_IMMUTABLE` BGRA texture；point sampler 等比缩放到居中 viewport；其余区域清为 BGRA 128/128/128/255；无 blending/MSAA；swap-chain 仍为 `DXGI_SCALING_NONE` |
 | 对照项 | `FLIP_SEQUENTIAL`、MaximumFrameLatency 2 只作为显式配置，不自动退回 |
 
-创建与重建后检查实际 descriptor、latency、physical client 和 DPI awareness。
-不满足契约就报错或暂停，不通过 blt、非 waitable swap chain、拉伸/裁剪或 tearing 掩盖问题。
+创建与重建后检查实际 descriptor、latency、physical client、窗口 chrome 和 DPI awareness。
+viewport scale 为 `min(clientWidth/1920, clientHeight/1080, 2.0)`，居中并保留宽高比；
+任一方向不足 canonical 的 0.75 倍时只呈现 neutral matte，并显示“窗口过小，广播已暂停”。
+不满足契约就报错或暂停，不通过 blt、非 waitable swap chain、非等比拉伸/裁剪或 tearing 掩盖问题。
 首次上传/Present 也必须获得 frame-latency permit。
 [waitable-object 契约](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject)
 
@@ -34,24 +36,28 @@ LocalDesktop 物理链路认证。** 没有增加 Capture 后端、GPU 调制或
 - `CanonicalBgraFrameView`：尺寸、row pitch、像素 span、`FrameSequence`、预期
   `PresentationEpoch`。`SubmitFrame` 返回前逐行复制有效像素，不保留调用者指针。
   调用方须在这次调用期间保持输入 span 稳定，返回后可立即复用。
-- geometry 在实例生命周期内固定。改变 canonical geometry 必须由上层重新建立
-  窗口及相应 Session/profile，不把普通 resize 解释为协议配置变更。
+- canonical source geometry 在实例生命周期内固定。改变 canonical geometry 必须由上层重新建立
+  窗口及相应 Session/profile；普通客户区 resize 只改变 presentation viewport/back buffer，
+  不解释为协议配置变更。
 - 调用方必须保证 `FrameSequence` 与 raster 身份一致。相同序号表示同一视觉帧；
   renderer 不解析像素中的 Bootstrap，也不通过计算 hash 来认证这个生产端声明。
   序号回退会失效精确 observation coverage；相同序号不会重复增加 unique visual 计数。
 - `PresentTiming` 本身不提供并发访问；`DataWindow` 同步 mailbox 与快照。
   提交、读取、多个 `Stop` 可并发；**对象析构不得与任何成员调用并发**。
 
-资源上界：两个预分配 CPU 帧槽（active + latest-pending）、256 条固定 Present
-关联记录。新 pending 替换旧 pending 时累计计数；没有数据时不重复 Present 来制造吞吐。
-单帧默认预算 64 MiB，另受 D3D11 尺寸上限限制；帧尺寸、stride、最小 span 长度和
-双槽总量先验证再分配。正常路径没有 GPU readback，也没有 GPU→CPU→GPU 回读中转。
+资源上界：两个预分配 canonical CPU 帧槽（active + latest-pending）、一张当前 immutable
+source texture、客户区 back buffer 和 256 条固定 Present 关联记录。新 pending 替换旧
+pending 时累计计数；`repeatActiveFrame` 只重复绘制同一完整 source/FrameSequence，
+不构造新 equation。canonical 帧和客户区 back buffer 分别受默认 64 MiB 预算及 D3D11
+尺寸上限限制；尺寸、stride、最小 span 长度和双槽总量先验证再分配。正常路径没有
+GPU readback，也没有 GPU→CPU→GPU 回读中转。
 
 HWND、immediate context、Present、resize/rebuild 和销毁属于同一专用线程。
 WndProc 只登记状态，GPU 工作在消息分派外执行。停止事件可打断库自己的等待；
 owner 退出等待后才关闭 frame-latency handle，wake handle 保留到线程 join 之后。
 GPU drain 使用 event query、可取消的短等待和配置超时，不无限重试。
-已取得但尚未用于 Present 的 permit 只可在同一 swap chain 内保留，不能跨 device/swap-chain 重建。
+frame-latency permit 绑定当前 presentation epoch；resize、DPI、monitor、mode、occlusion、
+device/swap-chain 变化均使未消费 permit 失效，即使同一 swap chain 可原地 `ResizeBuffers`。
 
 ## 状态和 PresentationEpoch
 
@@ -60,19 +66,21 @@ GPU drain 使用 event query、可取消的短等待和配置超时，不无限�
 
 | 事件 | 行为 |
 | --- | --- |
-| 非 canonical resize | 暂停数据 Present；在预算内重建 back buffer，不拉伸为有效数据 |
+| scale 0.75..2.0 的 resize | drain 旧 GPU work，创建新 epoch/back buffer；等待新的完整 canonical raster，然后 point-sampled aspect-fit |
+| 超过 2.0 的 resize | viewport clamp 到 2.0 并保持居中，窗口其余区域为 neutral matte |
+| 小于 0.75 的 resize | 清除 pending/active 与旧 permit；暂停 admission，只提交一次 neutral matte；不生成 Bootstrap、不推进 FrameSequence/Carousel |
 | minimize / zero client | 暂停；不对零尺寸调用 `ResizeBuffers` |
-| 精确尺寸恢复 | 重验契约；等待新的完整 raster；重新暖机 |
+| 有效尺寸恢复 | 新 epoch；重验契约；等待新的完整 raster；Session 不变且 FrameSequence 不回退 |
 | 跨屏过渡 | `singleMonitor=false` 时暂停 admission，不抢先做跨 adapter 分配 |
 | 完全进入新 monitor | 查询 monitor、adapter、DPI、client；新 epoch；不同 adapter 时 drain、释放并重建 |
-| `WM_DPICHANGED` | 记录事件，owner 使用建议位置并保持 canonical physical size，重新验证 |
+| `WM_DPICHANGED` | 记录事件；普通窗口采用系统建议 outer rect，fullscreen popup 保持配置尺寸；新 epoch 后重新验证 |
 | `WM_DISPLAYCHANGE` / 实际模式变化 | 记录 serial/实际模式，清掉旧基线；即使通知前后模式恰好相同也有 epoch |
 | statistics disjoint | 只换 timing epoch，**不重建 swap chain** |
 | 不支持 / 查询失败 / 不推进的 refresh clock | 显示继续，相关 timing 不可用；计时恢复后重新建立 epoch/基线 |
 | occluded | 与失败/成功 Present 分开计数；恢复探测使用 `DXGI_PRESENT_TEST`，不计入数据调用数 |
 | device loss / wait / rebuild 失败 | 终止性 Failed，保留阶段、native status、可获得的 device removed reason；不无限重试 |
 
-`ResizeBuffers` 前先 drain、`ClearState`、释放 staging/back-buffer 直接和间接引用并 Flush。
+`ResizeBuffers` 前先 drain、`ClearState`、释放 source/staging/back-buffer 直接和间接引用并 Flush。
 重建完成才重新发布有效契约。
 [ResizeBuffers 引用释放要求](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-resizebuffers)
 
@@ -94,7 +102,7 @@ PresentRefreshCount 和 SyncRefreshCount 不推进（包括持续为零）。此
 
 | 指标 | 计算与有效性 |
 | --- | --- |
-| `PresentCallFPS` | epoch 内实际数据 Present 尝试次数 / `(sampleQpc - epochStartQpc) / frequency`；成功、失败、occluded 分列；不含 Present TEST |
+| `PresentCallFPS` | epoch 内实际数据 Present 尝试次数 / `(sampleQpc - epochStartQpc) / frequency`；成功、失败、occluded 分列；不含 neutral-matte Present 或 Present TEST |
 | `PresentedVisualFPS` | 仅对当前 epoch 的成功 Present ID 与 FrameSequence 关联；至少两个连续有效时钟样本、完整 ID coverage；`(uniqueObserved - 1) / elapsedDisplayedSeconds` |
 | `ObservedVisualFPSLowerBound` | 已确认序号集合的保守下界率；有关联缺口时不补算丢失 ID 对应的视觉帧；时钟无效/陈旧时同样不可用 |
 | `PresentRefreshCountExtended` | epoch 内 32-bit refresh counter 的 checked 延展；正常 wrap 可接受；半区间歧义、倒退、加法溢出重新建立基线 |
@@ -136,10 +144,17 @@ D:\MyProjects\PixelBridge\build-presentation-release\apps\PixelBridgeEncoder\Rel
 省略 `--frames` 时用窗口中的 Escape 结束；有限运行 10 秒无进展则报错。
 遥测使用 `CREATE_NEW`，拒绝覆盖；最多 16 MiB，达到上限明确终止，不无限写日志。
 
+产品 runtime/controller 的 `SetLogicalVisualFps` 仅接受统一时钟的 1..60 Hz；历史
+RemoteVisual profile 继续限制为 1..5 Hz。若请求到达时已有完整逻辑帧待提交，最新请求
+只在该帧成功提交后生效，并以实际完成时刻建立下一 deadline；停顿期间过期 tick 计数后
+丢弃，不排成 catch-up queue。低于 0.75 的 presentation 暂停期间不构帧或提交，恢复后
+沿用同一 Session 并从未回退的 FrameSequence 继续。
+
 ## 构建和验证
 
 普通默认 CTest 运行 PBPresentTiming、共用 owner loop 的 fake-backend 生命周期测试、
-没有 PMv2 manifest 的负向 host probe，以及原有回归/Golden；不会弹窗或切模式。
+无 HWND 的 WARP offscreen point-sampling/readback 测试、没有 PMv2 manifest 的负向 host
+probe，以及原有回归/Golden；不会弹窗或切模式。
 
 ```powershell
 cmake -S D:\MyProjects\PixelBridge -B D:\MyProjects\PixelBridge\build-presentation-release -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake -DPB_BUILD_APPS=ON -DPB_BUILD_TOOLS=ON -DPB_BUILD_PHASE0_GATE=ON -DPB_BUILD_PRESENTATION_GATE=ON
@@ -155,16 +170,18 @@ ASan 沿用现有 fuzz 图的 `/Zi /fsanitize=address` 和 runtime-copy；新库
 和新测试均插桩。与固定 Wirehair 图保持一致，MSVC STL container annotations 关闭，
 地址插桩仍开启。MSVC ASan 不等于 UBSan、TSan 或 coverage-guided libFuzzer。
 性能/时序观察只引用没有 ASan 和没有测试 readback 的 Release 运行。
-WARP 只通过未安装的 test seam 显式选择，快照以 `softwareRasterizer=true` 标记；
-WARP 的 descriptor/字节正确性通过不能冒充硬件认证。生产路径拒绝软件 adapter，不做隐式降级。
+WARP 只通过测试 seam 显式选择；窗口 seam 的快照以 `softwareRasterizer=true` 标记，
+G13 offscreen seam 复用生产 shader/point sampler 但只创建 WARP device、render-target texture
+和 staging readback，不创建 HWND。WARP 的 descriptor/字节正确性通过不能冒充硬件或实屏
+认证。生产路径拒绝软件 adapter，不做隐式降级。
 
 真实 Gate 串行并使用 `PixelBridgeDesktop` resource lock：
 
 | CTest | 内容 |
 | --- | --- |
-| `PBPresentationGate.gpu-warp` | 显式测试 WARP；8 个 native 创建阶段失败清理；两种 flip effect × latency 1/2；独立彩色棋盘格/padded row oracle、完整连续覆盖、resize 恢复、canonical BGRA；D3D debug layer |
+| `PBPresentationGate.gpu-warp` | 显式测试 WARP；8 个 native 创建阶段失败清理；两种 flip effect × latency 1/2；独立彩色棋盘格/padded row oracle、完整连续覆盖、aspect-fit resize/epoch 恢复、canonical BGRA；D3D debug layer |
 | `PBPresentationGate.gpu-hardware` | 相同字节 oracle、配置矩阵和 debug layer，真实硬件 adapter；没有 WARP fallback |
-| `PBPresentationGate.live` | 无 readback/debug instrumentation 的真实 Present；PMv2/descriptor/client 回读；minimize、非 canonical resize、真实跨屏过渡暂停及双向迁移 |
+| `PBPresentationGate.live` | 无 readback/debug instrumentation 的真实 Present；PMv2/descriptor/client 回读；minimize、aspect-fit resize、真实跨屏过渡暂停及双向迁移 |
 | `PBPresentationGate.mode-supervisor` | 保存全部活动输出；CDS_TEST；2560×1440@180 → 120 → 原模式；子进程 epoch/旧样本失效/重新暖机；正常、失败、崩溃、超时四条恢复路径 |
 | `PBPresentationGate.encoder` | apps 开启时验证 Encoder 有限提交、实际 Present、默认契约、Unicode 遥测路径、拒绝覆盖且已有日志不变；不比较两种 FPS 是否相等 |
 
@@ -188,6 +205,8 @@ Evidence 每次创建独立目录，位于 `build-presentation-*/tests/Presentat
 - 双输出真实迁移与 180/120Hz 模式 Gate 不代替真实 DPI 比例矩阵、不同 adapter 的实际迁移、
   HDR/VRR、显示方向变更、热拔插矩阵或设备 TDR 的实机认证。对应状态机分支有 fault/synthetic 测试，不能冒充这些实测。
 - 单监视器窗口契约并不证明无遮挡、无光标覆盖、无显示器缩放/色彩处理；最终接收端必须从实际捕获像素验收。
+- G13 只执行 headless/mock 与 WARP offscreen；真实 `DISPLAY2` resize、最小化、跨屏、DPI、
+  DWM/捕获闭环和用户可见交互均保留给 G20，不从本轮离屏结果推断。
 - 库内 wait/drain 可取消且有超时，但操作系统/显示驱动内部阻塞的创建、Present 或销毁调用
   无法由 C++ 超时强行抢占。实际 driver hang 的容错需要上层进程监督。
 - 模式恢复保证覆盖监督子进程的失败、崩溃和超时，不声称能在整机断电或监督进程本身被强杀后执行恢复代码。

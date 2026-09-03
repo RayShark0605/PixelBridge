@@ -73,6 +73,9 @@ inline constexpr std::uint32_t maximumControlRepetitions = 64;
 inline constexpr std::uint32_t maximumLogicalVisualFps = 240;
 inline constexpr std::uint32_t maximumRemoteVisualLogicalFps = 5;
 inline constexpr std::uint32_t maximumReplayCaptureFramesPerSecond = 60;
+inline constexpr std::string_view encoderWindowTooSmallStatus = "窗口过小，广播已暂停";
+inline constexpr std::string_view encoderBroadcastingStatus =
+    "Broadcasting continuously; receiver completion is visible only on Decoder";
 inline constexpr std::uint64_t timeUnitsPerSecond100ns = 10000000ULL;
 inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
 inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
@@ -379,6 +382,14 @@ void ComposeRemoteVisualFullscreenBgra(const std::span<const std::byte> source, 
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count();
     return elapsed < 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
+
+[[nodiscard]] std::uint64_t GetSteadyNanoseconds(
+    const std::chrono::steady_clock::time_point timestamp) noexcept
+{
+    const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        timestamp.time_since_epoch()).count();
+    return nanoseconds < 0 ? 0 : static_cast<std::uint64_t>(nanoseconds);
 }
 
 [[nodiscard]] std::uint64_t GetUnixTimeMilliseconds() noexcept
@@ -1535,14 +1546,18 @@ private:
 };
 
 [[nodiscard]] bool HasStablePresentationContract(const pbrenderd3d::DataWindowSnapshot& snapshot,
-    const std::uint32_t expectedWidth, const std::uint32_t expectedHeight) noexcept
+    const bool expectedResizableChrome) noexcept
 {
     return snapshot.state == pbrenderd3d::WindowState::Running && snapshot.candidateContractSatisfied &&
-        snapshot.contract.bufferWidth == expectedWidth && snapshot.contract.bufferHeight == expectedHeight &&
+        snapshot.contract.bufferWidth == snapshot.environment.clientWidth &&
+        snapshot.contract.bufferHeight == snapshot.environment.clientHeight &&
         snapshot.contract.bufferCount == 2 && snapshot.contract.maximumFrameLatency == 1 &&
         snapshot.contract.flipEffect == pbrenderd3d::FlipEffect::Discard && snapshot.contract.bgraUnorm &&
         snapshot.contract.noMsaa && snapshot.contract.alphaIgnored && snapshot.contract.scalingNone &&
         snapshot.contract.tearingDisabled && snapshot.contract.latencyWaitable && snapshot.contract.perMonitorV2 &&
+        snapshot.contract.resizableChrome == expectedResizableChrome && snapshot.contract.immutableCanonicalSource &&
+        snapshot.contract.pointSampled && snapshot.contract.centeredLetterbox &&
+        snapshot.contract.neutralMatteBelowMinimum && pbrenderd3d::CanPresentData(snapshot.viewport.disposition) &&
         !snapshot.softwareRasterizer;
 }
 
@@ -1561,6 +1576,19 @@ void ApplyEncoderPresentationSnapshot(const pbrenderd3d::DataWindowSnapshot& sou
     destination.activeFrame = source.activeFrame;
     destination.activeFrameSequence = source.activeFrameSequence;
     destination.candidateContractSatisfied = source.candidateContractSatisfied;
+    destination.dataWindowLeft = source.environment.clientOrigin.x;
+    destination.dataWindowTop = source.environment.clientOrigin.y;
+    destination.dataWindowWidth = source.environment.clientWidth;
+    destination.dataWindowHeight = source.environment.clientHeight;
+    if (source.viewport.disposition == pbrenderd3d::PresentationViewportDisposition::PausedBelowMinimumScale)
+    {
+        destination.statusMessage = encoderWindowTooSmallStatus;
+    }
+    else if (pbrenderd3d::CanPresentData(source.viewport.disposition) &&
+        destination.statusMessage == encoderWindowTooSmallStatus)
+    {
+        destination.statusMessage = encoderBroadcastingStatus;
+    }
 }
 
 class NativeCaptureSession
@@ -6331,6 +6359,7 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     }
     const std::uint64_t runGeneration = nextRunGeneration_++;
     stopRequested_ = false;
+    requestedLogicalVisualFps_.store(config.logicalVisualFps, std::memory_order_release);
     EncoderSnapshot initial;
     initial.state = EncoderState::Preparing;
     initial.runGeneration = runGeneration;
@@ -6395,6 +6424,43 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
         return RuntimeStatus::Failure("无法创建 Encoder worker thread");
     }
     return {};
+}
+
+RuntimeStatus EncoderRuntime::SetLogicalVisualFps(const std::uint32_t logicalVisualFps) noexcept
+{
+    try
+    {
+        if (logicalVisualFps < senderUnifiedMinimumLogicalFramesPerSecond ||
+            logicalVisualFps > senderUnifiedMaximumLogicalFramesPerSecond)
+        {
+            return RuntimeStatus::Failure("运行时 Logical Visual FPS 必须为 1..60");
+        }
+        const std::scoped_lock lock(lifecycleMutex_);
+        const EncoderSnapshot snapshot = snapshot_.Get();
+        if (!IsEncoderStateActive(snapshot.state) || !workerRunning_)
+        {
+            return RuntimeStatus::Failure("Encoder 未处于可调整 FPS 的活动 run");
+        }
+        if (snapshot.configuredLogicalVisualFps < senderUnifiedMinimumLogicalFramesPerSecond ||
+            snapshot.configuredLogicalVisualFps > senderUnifiedMaximumLogicalFramesPerSecond)
+        {
+            return RuntimeStatus::Failure("当前历史 presentation-driven 或高于 60 Hz 的 run 不支持运行时 FPS 调整");
+        }
+        if (IsRemoteVisualProfile(snapshot.visualProfile) && logicalVisualFps > maximumRemoteVisualLogicalFps)
+        {
+            return RuntimeStatus::Failure("历史 RemoteVisual Profile 的运行时 Logical Visual FPS 必须为 1..5");
+        }
+        requestedLogicalVisualFps_.store(logicalVisualFps, std::memory_order_release);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(std::string("无法请求运行时 FPS 调整：") + exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("无法请求运行时 FPS 调整");
+    }
 }
 
 void EncoderRuntime::RequestStop() noexcept
@@ -6633,19 +6699,70 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         bool broadcastStarted = false;
         auto nextStabilityCheck = workerStarted;
         auto nextMonitorSafetyCheck = workerStarted;
+        std::uint32_t appliedLogicalVisualFps = config.logicalVisualFps;
+        const bool useUnifiedLogicalClock = config.logicalVisualFps >= senderUnifiedMinimumLogicalFramesPerSecond &&
+            config.logicalVisualFps <= senderUnifiedMaximumLogicalFramesPerSecond;
+        SenderLogicalFrameClock logicalFrameClock;
+        if (useUnifiedLogicalClock)
+        {
+            appliedLogicalVisualFps = requestedLogicalVisualFps_.load(std::memory_order_acquire);
+            Require(appliedLogicalVisualFps >= senderUnifiedMinimumLogicalFramesPerSecond &&
+                appliedLogicalVisualFps <= senderUnifiedMaximumLogicalFramesPerSecond,
+                "runtime logical FPS request left the 1..60 product interval");
+            Require(static_cast<bool>(SenderLogicalFrameClock::Create(appliedLogicalVisualFps,
+                GetSteadyNanoseconds(workerStarted), logicalFrameClock)), "runtime logical frame clock creation failed");
+        }
         const auto logicalFrameInterval = config.logicalVisualFps == 0 ? std::chrono::steady_clock::duration::zero() :
             std::chrono::ceil<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / config.logicalVisualFps));
-        const std::optional<double> configuredLogicalDwellMilliseconds = config.logicalVisualFps == 0 ?
-            std::nullopt : std::optional<double>{1000.0 / config.logicalVisualFps};
+        std::optional<double> configuredLogicalDwellMilliseconds = appliedLogicalVisualFps == 0 ?
+            std::nullopt : std::optional<double>{1000.0 / appliedLogicalVisualFps};
         std::optional<std::chrono::steady_clock::time_point> firstLogicalFrameAt;
         std::optional<std::chrono::steady_clock::time_point> previousLogicalFrameAt;
         std::optional<double> minimumObservedLogicalDwellMilliseconds;
         std::uint64_t logicalDwellViolationCount = 0;
         auto nextLogicalFrameAt = workerStarted;
         std::optional<std::chrono::steady_clock::time_point> broadcastStartedAt;
+        const auto publishLogicalFps = [&](const std::uint32_t logicalVisualFps)
+        {
+            const auto perSecond = pbprotocol::CheckedMultiplyUint64(transportPayloadCeiling.Value(), logicalVisualFps);
+            RequireResult(perSecond, "runtime configured Transport payload ceiling overflow");
+            snapshot_.Update([&](EncoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration)
+                {
+                    value.configuredLogicalVisualFps = logicalVisualFps;
+                    value.configuredLogicalDwellMilliseconds = 1000.0 / logicalVisualFps;
+                    value.configuredTransportPayloadCeilingBytesPerSecond = perSecond.Value();
+                }
+            });
+        };
+        if (useUnifiedLogicalClock && appliedLogicalVisualFps != config.logicalVisualFps)
+        {
+            publishLogicalFps(appliedLogicalVisualFps);
+        }
         for (;;)
         {
             const auto now = std::chrono::steady_clock::now();
+            if (useUnifiedLogicalClock)
+            {
+                const std::uint32_t requestedLogicalVisualFps =
+                    requestedLogicalVisualFps_.load(std::memory_order_acquire);
+                const SenderLogicalFrameClockSnapshot beforeRequest = logicalFrameClock.GetSnapshot();
+                if (requestedLogicalVisualFps != beforeRequest.requestedLogicalFramesPerSecond)
+                {
+                    const SenderCarouselSchedulerStatus requestStatus = logicalFrameClock.RequestFramesPerSecond(
+                        requestedLogicalVisualFps, GetSteadyNanoseconds(now));
+                    Require(static_cast<bool>(requestStatus), std::string("runtime logical FPS request failed: ") +
+                        GetSenderCarouselSchedulerErrorName(requestStatus.code));
+                }
+                const SenderLogicalFrameClockSnapshot afterRequest = logicalFrameClock.GetSnapshot();
+                if (afterRequest.logicalFramesPerSecond != appliedLogicalVisualFps)
+                {
+                    appliedLogicalVisualFps = afterRequest.logicalFramesPerSecond;
+                    configuredLogicalDwellMilliseconds = 1000.0 / appliedLogicalVisualFps;
+                    publishLogicalFps(appliedLogicalVisualFps);
+                }
+            }
             resourceSampler.Sample(ElapsedMilliseconds(workerStarted));
             snapshot_.Update([&](EncoderSnapshot& value)
             {
@@ -6713,9 +6830,6 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     Require(static_cast<bool>(targetSafety),
                         std::string("remote-lf4 Data Window left its ExperimentMonitor: ") +
                         GetMonitorSafetyErrorName(targetSafety.code));
-                    Require(windowSnapshot.environment.clientWidth == phase1CanvasWidth &&
-                        windowSnapshot.environment.clientHeight == phase1CanvasHeight,
-                        "remote-lf4 Data Window client geometry changed");
                     snapshot_.Update([runGeneration](EncoderSnapshot& value)
                     {
                         if (value.runGeneration == runGeneration)
@@ -6729,7 +6843,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 nextMonitorSafetyCheck = now + std::chrono::seconds(1);
             }
             const bool presentationStable = HasStablePresentationContract(windowSnapshot,
-                presentationWidth, presentationHeight);
+                !config.singleMonitorFullscreen.has_value());
             if (!broadcastStarted && presentationStable)
             {
                 broadcastStarted = true;
@@ -6739,12 +6853,23 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     if (value.runGeneration == runGeneration && value.state == EncoderState::Preparing)
                     {
                         value.state = EncoderState::Broadcasting;
-                        value.statusMessage = "Broadcasting continuously; receiver completion is visible only on Decoder";
+                        value.statusMessage = encoderBroadcastingStatus;
                     }
                 });
             }
-            const bool canBuild = presentationStable && windowSnapshot.state == pbrenderd3d::WindowState::Running &&
-                !frameBuilt;
+            bool logicalFrameReady = !useUnifiedLogicalClock &&
+                (logicalFrameInterval == std::chrono::steady_clock::duration::zero() || now >= nextLogicalFrameAt);
+            bool canBuild = presentationStable && windowSnapshot.state == pbrenderd3d::WindowState::Running && !frameBuilt;
+            if (canBuild && useUnifiedLogicalClock)
+            {
+                SenderLogicalFrameTick logicalTick;
+                const SenderCarouselSchedulerStatus acquireStatus = logicalFrameClock.Acquire(
+                    GetSteadyNanoseconds(now), logicalTick);
+                Require(static_cast<bool>(acquireStatus), std::string("runtime logical clock acquire failed: ") +
+                    GetSenderCarouselSchedulerErrorName(acquireStatus.code));
+                logicalFrameReady = logicalTick.disposition == SenderLogicalFrameTickDisposition::Ready;
+                canBuild = logicalFrameReady;
+            }
             if (canBuild)
             {
                 Require(frameSequence != (std::numeric_limits<std::uint64_t>::max)(), "FrameSequence exhausted");
@@ -6759,7 +6884,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 }
                 frameBuilt = true;
             }
-            const bool logicalFrameReady = logicalFrameInterval == std::chrono::steady_clock::duration::zero() || now >= nextLogicalFrameAt;
+            if (useUnifiedLogicalClock && frameBuilt)
+            {
+                logicalFrameReady = true;
+            }
             if (presentationStable && windowSnapshot.state == pbrenderd3d::WindowState::Running && frameBuilt && logicalFrameReady &&
                 !windowSnapshot.pendingFrame && !stopRequested_)
             {
@@ -6771,10 +6899,11 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     windowSnapshot.timing.presentationEpoch});
                 if (submit)
                 {
+                    const auto logicalFrameCompletedAt = std::chrono::steady_clock::now();
                     if (previousLogicalFrameAt)
                     {
                         const double observedDwellMilliseconds =
-                            std::chrono::duration<double, std::milli>(now - *previousLogicalFrameAt).count();
+                            std::chrono::duration<double, std::milli>(logicalFrameCompletedAt - *previousLogicalFrameAt).count();
                         minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds ?
                             std::min(*minimumObservedLogicalDwellMilliseconds, observedDwellMilliseconds) : observedDwellMilliseconds;
                         if (configuredLogicalDwellMilliseconds && observedDwellMilliseconds < *configuredLogicalDwellMilliseconds)
@@ -6784,20 +6913,38 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     }
                     if (!firstLogicalFrameAt)
                     {
-                        firstLogicalFrameAt = now;
+                        firstLogicalFrameAt = logicalFrameCompletedAt;
                     }
-                    previousLogicalFrameAt = now;
+                    previousLogicalFrameAt = logicalFrameCompletedAt;
                     const auto nextGeneratedPayloadBytes = pbprotocol::CheckedAddUint64(generatedPayloadBytes,
                         builder.GetGeneratedPayloadBytesInFrame());
                     RequireResult(nextGeneratedPayloadBytes, "generated payload telemetry overflow");
                     generatedPayloadBytes = nextGeneratedPayloadBytes.Value();
                     const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
                     const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
+                    if (useUnifiedLogicalClock)
+                    {
+                        const SenderCarouselSchedulerStatus commitStatus = logicalFrameClock.Commit(
+                            GetSteadyNanoseconds(logicalFrameCompletedAt));
+                        Require(static_cast<bool>(commitStatus), std::string("runtime logical clock commit failed: ") +
+                            GetSenderCarouselSchedulerErrorName(commitStatus.code));
+                        const std::uint32_t committedLogicalVisualFps =
+                            logicalFrameClock.GetSnapshot().logicalFramesPerSecond;
+                        if (committedLogicalVisualFps != appliedLogicalVisualFps)
+                        {
+                            appliedLogicalVisualFps = committedLogicalVisualFps;
+                            configuredLogicalDwellMilliseconds = 1000.0 / appliedLogicalVisualFps;
+                            publishLogicalFps(appliedLogicalVisualFps);
+                        }
+                    }
                     builder.Advance();
                     frameSequence++;
                     generatedLogicalFrameCount++;
                     frameBuilt = false;
-                    nextLogicalFrameAt = now + logicalFrameInterval;
+                    if (!useUnifiedLogicalClock)
+                    {
+                        nextLogicalFrameAt = logicalFrameCompletedAt + logicalFrameInterval;
+                    }
                     const CarouselSnapshot carouselAfter = builder.GetCarouselSnapshot();
                     if (carouselAfter.cycleCount != previousCarouselPass ||
                         builder.GetCurrentSegmentOrdinal() != previousSegmentOrdinal)
@@ -6811,7 +6958,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     const std::uint64_t broadcastMilliseconds = ElapsedMilliseconds(*broadcastStartedAt);
                     const double elapsedSeconds = static_cast<double>(broadcastMilliseconds) / 1000.0;
                     const double logicalObservationSeconds = firstLogicalFrameAt ?
-                        std::chrono::duration<double>(now - *firstLogicalFrameAt).count() : 0;
+                        std::chrono::duration<double>(logicalFrameCompletedAt - *firstLogicalFrameAt).count() : 0;
                     snapshot_.Update([&](EncoderSnapshot& value)
                     {
                         if (value.runGeneration != runGeneration)
