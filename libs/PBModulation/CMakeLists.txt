@@ -37,6 +37,7 @@ target_sources(PBModulation
             include/pbmodulation/remote_visual.h
             include/pbmodulation/remote_visual_low_fps.h
             include/pbmodulation/unified_visual_profile.h
+            include/pbmodulation/unified_visual_mapping.h
             include/pbmodulation/visual_temporal.h)
 
 target_include_directories(PBModulation

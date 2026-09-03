@@ -204,6 +204,23 @@ struct ChromaSubsample420Transform
     bool operator==(const ChromaSubsample420Transform&) const = default;
 };
 
+struct NeutralChromaTransform
+{
+    bool operator==(const NeutralChromaTransform&) const = default;
+};
+
+inline constexpr std::uint8_t kMinimumQuantizationBitsPerChannel = 2;
+inline constexpr std::uint8_t kMaximumQuantizationBitsPerChannel = 8;
+
+struct ChannelQuantizationTransform
+{
+    // Uniform round-to-nearest quantization is applied independently to B/G/R.
+    // Alpha is preserved. Eight bits is the exact identity transform.
+    std::uint8_t bitsPerChannel = kMaximumQuantizationBitsPerChannel;
+
+    bool operator==(const ChannelQuantizationTransform&) const = default;
+};
+
 struct CropTransform
 {
     std::uint32_t x = 0;
@@ -236,7 +253,7 @@ struct ReferenceBlendTransform
 
 using ChannelTransform = std::variant<ResampleTransform, BlockReplacementTransform, Kernel3x3Transform,
     ColorTransferTransform, ChromaSubsample420Transform, CropTransform, SolidOverlayTransform,
-    ReferenceBlendTransform>;
+    ReferenceBlendTransform, NeutralChromaTransform, ChannelQuantizationTransform>;
 
 struct ChannelTransformPlan
 {

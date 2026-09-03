@@ -476,15 +476,17 @@ ctest --test-dir build-unified-release -C Release `
 
 **实现清单：**
 
-- [ ] 先封存 Train/Validation/Holdout manifest、样本摘要、transform 参数与 split 算法。
-- [ ] 复用历史 LF4/Shape 样本，补齐 neutral chroma、4:2:0 类损伤、0.75/0.85/1.0/1.5/2.0、fractional origin、letterbox、moderate blur/quantization。
-- [ ] 实现确定性候选枚举/搜索，排序键为 Base minimum margin → Fine → Chroma → lexicographic。
-- [ ] 在查看 Holdout 结果前冻结搜索程序版本、seed、评分规则和 Validation winner。
-- [ ] 仅对 winner 运行一次 Holdout；失败时报告阻塞，不基于品牌反复调参。
-- [ ] 生成独立可重建 Golden manifest，记录 mask/label/lane/interleave digest。
+- [x] 先封存 Train/Validation/Holdout manifest、样本摘要、transform 参数与 split 算法。
+- [x] 复用历史 LF4/Shape 样本，补齐 neutral chroma、4:2:0 类损伤、0.75/0.85/1.0/1.5/2.0、fractional origin、letterbox、moderate blur/quantization。
+- [x] 实现确定性候选枚举/搜索，排序键为 Base minimum margin → Fine → Chroma → lexicographic。
+- [x] 在查看 Holdout 结果前冻结搜索程序版本、seed、评分规则和 Validation winner。
+- [x] 仅对 winner 运行一次 Holdout；失败时报告阻塞，不基于品牌反复调参。
+- [x] 生成独立可重建 Golden manifest，记录 mask/label/lane/interleave digest。
 
 **最小验证：** 搜索工具 deterministic rerun 两次摘要相同；Validation 与一次 Holdout 报告；不跑产品 GUI/完整 CTest。
-**退出：** 独立重建得到相同 mapping；Holdout 无 false acceptance；所有选择理由可审计。
+**验证结果（2026-09-03）：** 先封存 60-sample provider-neutral manifest（Train/Validation/Holdout = 30/20/10，dataset BLAKE3 `a69fa7980680549ed951d3ddda7ab2e48a8da893a59180ccbb7bd83a2ac65ed3`），覆盖两组历史 LF4/Shape 来源、五档尺度及 neutral chroma、4:2:0、fractional origin、letterbox、blur/quantization。源锁 `c4eeebc4a655f2b93734ac0b5223176c2bfb77ae552e20390386c07d81a3bf55` 冻结后，两次全新目录各搜索 96 个 Validation candidates，5 个输出文件逐字节一致；胜者 Validation Base/Fine/Chroma Q12 margin product 为 `2869568/8829440/87957`，误接收 `0/0/0`，且两份 selection report 都记录 Holdout 未打开。随后仅对该 winner 执行一次 10-sample Holdout，Base/Fine/Chroma Q12 margin product 为 `1789216/7156864/71825`，误接收仍为 `0/0/0`。独立 Python 重建与 4/4 对抗测试通过；Release `PBRemoteVisualSimulatorTests` 8/8（346 assertions）和 `PBUnifiedVisualMappingTests` 3/3（40,678,473 assertions）通过，精确 CTest 正则 2/2 通过。未运行产品 GUI、完整 CTest、GPU、capture 或实屏 Gate。
+**退出：** 已满足。16 个 mask 均为平衡 4x4、无孤立同值像素、互补成对且 pairwise Hamming distance `>=8`；独立实现重建相同的 502,200-site frame-0 mapping digest `cd8444d1513640cb0b01d58dd5a8b984d54457d78ba49331c7def9f676cd1801`，C++ 穷举 16 phases 无碰撞且正反映射一致，单次 Holdout 无 false acceptance，候选枚举、Train-only labels、Validation 排序键、score 公式、source lock 与前十名理由均在报告中可审计。
+**产物：** 公共冻结合同位于 `libs/PBModulation/include/pbmodulation/unified_visual_mapping.h`；搜索器与 sealed fixture 位于 `tools/PBUnifiedMappingSearch/`；独立重建器位于 `tests/PBModulation/generate_unified_lc4_mapping_golden.py`；完整 selection/Holdout/digest inventory 位于 `tests/golden/unified-lc4/`。本地复核摘要为 `build-unified-release/g07-local-verification-evidence.json`，测试日志位于 `build-unified-release/tests/PBModulation/g07-unified-mapping-tests.txt`、`g07-independent-golden.txt`、`g07-independent-golden-unittest.txt` 与 `build-unified-release/tests/PBRemoteVisualSimulator/g07-channel-transform-tests.txt`。
 **提交建议：** `feat(modulation): freeze deterministic unified mapping`
 
 ## G08 — CPU encoder/oracle、逐 lane soft metric 与 freshness

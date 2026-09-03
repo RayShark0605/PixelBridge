@@ -1,4 +1,5 @@
 # Keep source and documentation reviewable across Windows and GitHub.
+.gitattributes text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
 *.json text eol=lf
@@ -6,6 +7,7 @@
 *.cpp text eol=lf
 *.h text eol=lf
 *.hlsl text eol=lf
+*.py text eol=lf
 CMakeLists.txt text eol=lf
 
 # These are protocol/corpus bytes, even when a tiny seed contains no NUL.
@@ -17,3 +19,4 @@ tests/golden/desktop-levels/manifest.txt text eol=lf
 tests/golden/remote-visual/lf4/*.bin binary
 tests/golden/remote-visual/lf4/*.blake3 text eol=lf
 tests/golden/remote-visual/lf4/manifest.json text eol=lf
+tests/golden/unified-lc4/*.blake3 text eol=lf

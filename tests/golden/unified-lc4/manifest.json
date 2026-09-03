@@ -1,0 +1,55 @@
+{
+  "chromaLabelDigest": "b3fe43fc78633a82ddd7dbf30b7423ac9f8139c7f3eb0bb86e46e412ba56a4d8",
+  "datasetManifestBlake3": "a69fa7980680549ed951d3ddda7ab2e48a8da893a59180ccbb7bd83a2ac65ed3",
+  "files": [
+    {
+      "blake3": "b3fe43fc78633a82ddd7dbf30b7423ac9f8139c7f3eb0bb86e46e412ba56a4d8",
+      "bytes": 28,
+      "file": "chroma-states.bin"
+    },
+    {
+      "blake3": "347125bf491b11d224014d79d80de25f62629858884459393b2ba4a1857b0616",
+      "bytes": 32,
+      "file": "codebook.bin"
+    },
+    {
+      "blake3": "91e2ccbf665533546b3d350005738c711052c9a8921e576c8d46b1de11a7720d",
+      "bytes": 62161,
+      "file": "dataset-manifest.json"
+    },
+    {
+      "blake3": "f234c43100640f591dedeced558d0c0d630a5532436fee2afb89d3c889342e5a",
+      "bytes": 2610,
+      "file": "holdout-report.json"
+    },
+    {
+      "blake3": "56ef611e10bd45797457af8fbf2f4482d31891ed204c2767870449dc6a8a1744",
+      "bytes": 128,
+      "file": "mapping-contract.bin"
+    },
+    {
+      "blake3": "ed35b32a062f74cffa770bf95d10262b60b6ebc39ada909cda1dfc0f5b4b07df",
+      "bytes": 65,
+      "file": "mapping-stream.blake3"
+    },
+    {
+      "blake3": "a1a4322be2efe031968d106ce94fed83cd36ffa875e866ecec730867c36a7995",
+      "bytes": 14953,
+      "file": "selection-report.json"
+    }
+  ],
+  "holdoutReportBlake3": "db2d7550aabf80848147e03baada966d2f16dfbf3d8437d558a90165bb5a998e",
+  "independentRebuild": "tests/PBModulation/generate_unified_lc4_mapping_golden.py --check",
+  "laneInterleaveDigest": "56ef611e10bd45797457af8fbf2f4482d31891ed204c2767870449dc6a8a1744",
+  "mappingStreamFormat": "BLAKE3(domain || repeated LE lane/carrier/plane/reserved/logical/tile records)",
+  "mappingStreamFrameSequenceZeroBlake3": "cd8444d1513640cb0b01d58dd5a8b984d54457d78ba49331c7def9f676cd1801",
+  "maskLabelDigest": "347125bf491b11d224014d79d80de25f62629858884459393b2ba4a1857b0616",
+  "profile": {
+    "layoutVersion": 8,
+    "name": "PB-Unified-LC4-V1",
+    "profileIdHex": "5042554e494c4331"
+  },
+  "schema": "PixelBridge.UnifiedLc4MappingGolden.1",
+  "selectionReportBlake3": "b047abaf309876b5fac3613d1ff3144d7927aeda72ad467795c05afff7706f93",
+  "status": "FrozenValidationWinnerPassedSingleHoldout"
+}

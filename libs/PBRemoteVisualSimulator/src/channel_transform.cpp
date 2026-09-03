@@ -696,6 +696,57 @@ void ApplyChroma420(BgraImage& image) noexcept
     }
 }
 
+void ApplyNeutralChroma(BgraImage& image) noexcept
+{
+    for (std::uint32_t y = 0; y < image.height; y++)
+    {
+        std::byte* row = image.pixels.data() + static_cast<std::size_t>(y) * image.rowPitch;
+        for (std::uint32_t x = 0; x < image.width; x++)
+        {
+            std::byte* pixel = row + static_cast<std::size_t>(x) * 4;
+            const int blue = std::to_integer<int>(pixel[0]);
+            const int green = std::to_integer<int>(pixel[1]);
+            const int red = std::to_integer<int>(pixel[2]);
+            const std::byte luma = static_cast<std::byte>(static_cast<unsigned char>(
+                (54 * red + 183 * green + 19 * blue + 128) / 256));
+            pixel[0] = luma;
+            pixel[1] = luma;
+            pixel[2] = luma;
+        }
+    }
+}
+
+[[nodiscard]] ChannelTransformErrorCode ValidateChannelQuantization(
+    const ChannelQuantizationTransform& transform) noexcept
+{
+    if (transform.bitsPerChannel < kMinimumQuantizationBitsPerChannel ||
+        transform.bitsPerChannel > kMaximumQuantizationBitsPerChannel)
+    {
+        return ChannelTransformErrorCode::InvalidParameter;
+    }
+    return ChannelTransformErrorCode::None;
+}
+
+void ApplyChannelQuantization(BgraImage& image, const ChannelQuantizationTransform& transform) noexcept
+{
+    const unsigned int maximumLevel = (1U << transform.bitsPerChannel) - 1U;
+    for (std::uint32_t y = 0; y < image.height; y++)
+    {
+        std::byte* row = image.pixels.data() + static_cast<std::size_t>(y) * image.rowPitch;
+        for (std::uint32_t x = 0; x < image.width; x++)
+        {
+            std::byte* pixel = row + static_cast<std::size_t>(x) * 4;
+            for (std::size_t channel = 0; channel < 3; channel++)
+            {
+                const unsigned int value = std::to_integer<unsigned int>(pixel[channel]);
+                const unsigned int level = (value * maximumLevel + 127U) / 255U;
+                const unsigned int quantized = (level * 255U + maximumLevel / 2U) / maximumLevel;
+                pixel[channel] = static_cast<std::byte>(static_cast<unsigned char>(quantized));
+            }
+        }
+    }
+}
+
 [[nodiscard]] ChannelTransformResult<BgraImage> ApplyCrop(const BgraImageView& source,
     const CropTransform& transform)
 {
@@ -844,6 +895,14 @@ void AppendBgra(std::string& output, const std::array<std::byte, 4>& bgra)
         {
             return "chroma-420";
         }
+        else if constexpr (std::is_same_v<TransformType, NeutralChromaTransform>)
+        {
+            return "neutral-chroma";
+        }
+        else if constexpr (std::is_same_v<TransformType, ChannelQuantizationTransform>)
+        {
+            return "channel-quantization";
+        }
         else if constexpr (std::is_same_v<TransformType, CropTransform>)
         {
             return "crop";
@@ -954,6 +1013,17 @@ void AppendTransformParameters(std::string& output, const ChannelTransform& tran
         {
             static_cast<void>(typedTransform);
             output.append("{\"matrix\":\"bt709-integer\",\"siting\":\"centered-2x2\"}");
+        }
+        else if constexpr (std::is_same_v<TransformType, NeutralChromaTransform>)
+        {
+            static_cast<void>(typedTransform);
+            output.append("{\"alpha\":\"preserved\",\"matrix\":\"bt709-integer\"}");
+        }
+        else if constexpr (std::is_same_v<TransformType, ChannelQuantizationTransform>)
+        {
+            output.append("{\"bitsPerChannel\":");
+            AppendUnsigned(output, typedTransform.bitsPerChannel);
+            output.append(",\"channels\":\"bgr\",\"method\":\"uniform-round-nearest\"}");
         }
         else if constexpr (std::is_same_v<TransformType, SolidOverlayTransform>)
         {
@@ -1274,6 +1344,41 @@ ChannelTransformResult<ChannelTransformExecution> ExecuteChannelTransformPlan(co
             if (currentReference)
             {
                 ApplyChroma420(*currentReference);
+            }
+        }
+        else if (std::holds_alternative<NeutralChromaTransform>(transform))
+        {
+            const auto pixelsResult = pbprotocol::CheckedMultiplyUint64(current.width, current.height);
+            const auto workResult = pixelsResult ? pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), 3) : pixelsResult;
+            if (!workResult || !TryAccumulateWork(workResult.Value(), currentReference.has_value(), totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            ApplyNeutralChroma(current);
+            if (currentReference)
+            {
+                ApplyNeutralChroma(*currentReference);
+            }
+        }
+        else if (const auto* quantization = std::get_if<ChannelQuantizationTransform>(&transform))
+        {
+            const ChannelTransformErrorCode validation = ValidateChannelQuantization(*quantization);
+            if (validation != ChannelTransformErrorCode::None)
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(validation, transformIndex);
+            }
+            const auto pixelsResult = pbprotocol::CheckedMultiplyUint64(current.width, current.height);
+            const auto workResult = pixelsResult ? pbprotocol::CheckedMultiplyUint64(pixelsResult.Value(), 3) : pixelsResult;
+            if (!workResult || !TryAccumulateWork(workResult.Value(), currentReference.has_value(), totalWorkUnits, policy))
+            {
+                return ChannelTransformResult<ChannelTransformExecution>::Failure(
+                    ChannelTransformErrorCode::WorkLimitExceeded, transformIndex);
+            }
+            ApplyChannelQuantization(current, *quantization);
+            if (currentReference)
+            {
+                ApplyChannelQuantization(*currentReference, *quantization);
             }
         }
         else if (const auto* crop = std::get_if<CropTransform>(&transform))
