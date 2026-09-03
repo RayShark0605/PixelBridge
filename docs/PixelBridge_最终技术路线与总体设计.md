@@ -4347,6 +4347,8 @@ resume.state.tmp
 
 所有 Segment 完成后，Decoder 按原始文件顺序**再次顺序扫描 `output.part`**，计算 FinalManifest 指定的 WholeFileDigest。只有 whole-file digest 成功后才执行同卷 atomic rename 并显示 `Verified Complete`。
 
+G03 当前实现采用带 generation/length/CRC 的 append journal、1 秒 accepted-block checkpoint、16 MiB/Segment-complete compact、completed Segment `.part` RawDigest 重验和 final reopen 复验；精确本地 schema、状态转换和故障分类见 [`DECODER_RESUMABLE_RECOVERY.md`](DECODER_RESUMABLE_RECOVERY.md)。rename 成功但 journal 未删的跨进程恢复仍由统一路线 G05 关闭。
+
 因此需要单独统计：
 
 ```text

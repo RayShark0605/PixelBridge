@@ -3,6 +3,7 @@
 #include "pbreceiver/receiver_result.h"
 
 #include "pbprotocol/control_plane_receiver.h"
+#include "pbprotocol/orphan_transport_block_cache.h"
 #include "pbprotocol/output_reservation.h"
 #include "pbprotocol/resume_state.h"
 
@@ -112,6 +113,9 @@ struct ReceiverDataAdmission
     // Non-wire admission telemetry. Unique is emitted only when the bounded
     // orphan cache or bound Outer decoder retained a new OuterBlockId.
     ReceiverOuterSymbolAdmission outerSymbolAdmission = ReceiverOuterSymbolAdmission::NotApplicable;
+    // Populated when a later bound-data observation drains pre-descriptor
+    // orphan blocks after decoder capacity becomes available.
+    std::vector<pbprotocol::OrphanTransportBlockEntry> replayedOrphanBlocks;
 };
 
 struct ReceiverControlAdmission
@@ -119,6 +123,11 @@ struct ReceiverControlAdmission
     pbprotocol::ControlRecordAdmission controlAdmission{};
     std::optional<pbprotocol::OutputReservationDecision>
         outputReservationDecision;
+    // Unique pre-descriptor blocks that this SegmentDescriptor actually
+    // replayed into a newly available bounded decoder. The application owns
+    // these copies so it can checkpoint the same accepted equations only
+    // after the descriptor has passed its resource and range validation.
+    std::vector<pbprotocol::OrphanTransportBlockEntry> replayedOrphanBlocks;
     std::optional<ReceiverCompletedSegment> completedSegment;
 };
 

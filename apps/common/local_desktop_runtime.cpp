@@ -3062,6 +3062,13 @@ private:
                 {
                     Require(*existing == parsed.Value(), "conflicting repeated SegmentDescriptor");
                 }
+                Require(!restoringResume_ || admission.replayedOrphanBlocks.empty(),
+                    "resume control replay unexpectedly drained live orphan blocks");
+                for (const pbprotocol::OrphanTransportBlockEntry& replayedBlock : admission.replayedOrphanBlocks)
+                {
+                    PersistAcceptedBlock(parsed.Value().segmentOrdinal, replayedBlock.outerBlockId,
+                        replayedBlock.declaredPayloadBytes, replayedBlock.paddedPayload);
+                }
             }
             else if (record->recordType == pbprotocol::ControlRecordType::FinalManifest)
             {
@@ -3100,6 +3107,21 @@ private:
             StoreCompleted(std::move(*admission.completedSegment), timestamp100ns);
         }
         TryPublish(timestamp100ns);
+    }
+
+    void PersistAcceptedBlock(const std::uint64_t segmentOrdinal, const std::uint32_t outerBlockId,
+        const std::uint16_t declaredPayloadBytes, const std::span<const std::byte> paddedPayload)
+    {
+        Require(resumeStore_ && session_ && segmentOrdinal < segments_.size() &&
+            segments_[static_cast<std::size_t>(segmentOrdinal)].has_value(),
+            "accepted Outer block cannot be persisted before its bounded SegmentDescriptor");
+        DecoderResumeAcceptedBlock cachedBlock;
+        cachedBlock.segmentOrdinal = segmentOrdinal;
+        cachedBlock.outerBlockId = outerBlockId;
+        cachedBlock.declaredPayloadBytes = declaredPayloadBytes;
+        cachedBlock.paddedPayload.assign(paddedPayload.begin(), paddedPayload.end());
+        const DecoderResumeStoreStatus resumeStatus = resumeStore_->RecordAcceptedBlock(cachedBlock);
+        Require(static_cast<bool>(resumeStatus), "accepted Outer block resume append failed: " + resumeStatus.message);
     }
 
     [[nodiscard]] ReceiverProcessResult ProcessTransport(
@@ -3171,6 +3193,12 @@ private:
             }
             const pbreceiver::ReceiverDataAdmission& acceptedAdmission = admission.Value();
             processing.carrierAccepted = true;
+            for (const pbprotocol::OrphanTransportBlockEntry& replayedBlock :
+                acceptedAdmission.replayedOrphanBlocks)
+            {
+                PersistAcceptedBlock(transport.header.segmentOrdinal, replayedBlock.outerBlockId,
+                    replayedBlock.declaredPayloadBytes, replayedBlock.paddedPayload);
+            }
             switch (acceptedAdmission.outerSymbolAdmission)
             {
             case pbreceiver::ReceiverOuterSymbolAdmission::Unique:
@@ -3178,17 +3206,14 @@ private:
                 processing.uniqueAdmission = true;
                 // Orphan Transport can be accepted into the Receiver's bounded
                 // pre-descriptor cache. It is intentionally not durable until
-                // a formal SessionDescriptor has bound the journal identity.
-                if (resumeStore_ && session_)
+                // its formal SegmentDescriptor has passed resource/range
+                // validation and bound the journal payload shape.
+                if (acceptedAdmission.replayedOrphanBlocks.empty() && resumeStore_ && session_ &&
+                    transport.header.segmentOrdinal < segments_.size() &&
+                    segments_[static_cast<std::size_t>(transport.header.segmentOrdinal)].has_value())
                 {
-                    DecoderResumeAcceptedBlock cachedBlock;
-                    cachedBlock.segmentOrdinal = transport.header.segmentOrdinal;
-                    cachedBlock.outerBlockId = transport.header.outerBlockId;
-                    cachedBlock.declaredPayloadBytes = transport.header.payloadBytes;
-                    cachedBlock.paddedPayload.assign(paddedPayload_.begin(), paddedPayload_.end());
-                    const DecoderResumeStoreStatus resumeStatus = resumeStore_->RecordAcceptedBlock(cachedBlock);
-                    Require(static_cast<bool>(resumeStatus),
-                        "accepted Outer block resume append failed: " + resumeStatus.message);
+                    PersistAcceptedBlock(transport.header.segmentOrdinal, transport.header.outerBlockId,
+                        transport.header.payloadBytes, paddedPayload_);
                 }
                 break;
             case pbreceiver::ReceiverOuterSymbolAdmission::IdenticalDuplicate:
@@ -3384,6 +3409,10 @@ private:
             !storedSegments_[static_cast<std::size_t>(descriptor.segmentOrdinal)] &&
             descriptor.rawSize == verifiedSegment.GetRawBytes().size() && encodedBytes == descriptor.encodedSize,
             "verified Segment does not match the bounded output reservation");
+        Require(static_cast<bool>(resumeStore_), "verified Segment has no active resume journal");
+        const DecoderResumeStoreStatus activeCheckpointStatus = resumeStore_->Checkpoint();
+        Require(static_cast<bool>(activeCheckpointStatus),
+            "completed Segment accepted-block checkpoint failed: " + activeCheckpointStatus.message);
         const auto writeStatus = storage_->WriteVerifiedSegment(descriptor.rawOffset, verifiedSegment.GetRawBytes());
         Require(static_cast<bool>(writeStatus), "PBStorage Segment write failed: " +
             DescribeStorageStatus(writeStatus));
@@ -3393,7 +3422,6 @@ private:
         const auto checkpointStatus = storage_->Checkpoint();
         Require(static_cast<bool>(checkpointStatus), "PBStorage checkpoint failed: " +
             DescribeStorageStatus(checkpointStatus));
-        Require(static_cast<bool>(resumeStore_), "verified Segment has no active resume journal");
         pbprotocol::ResumeCompletedSegmentRecord completedRecord;
         completedRecord.sessionId = session_->sessionId;
         completedRecord.segmentOrdinal = descriptor.segmentOrdinal;

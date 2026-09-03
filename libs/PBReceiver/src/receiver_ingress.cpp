@@ -733,7 +733,13 @@ DecodeBlock(
             outerAdmission});
 }
 
-[[nodiscard]] ReceiverResult<std::optional<ReceiverCompletedSegment>>
+struct OrphanReplayOutcome
+{
+    std::vector<pbprotocol::OrphanTransportBlockEntry> acceptedBlocks;
+    std::optional<ReceiverCompletedSegment> completedSegment;
+};
+
+[[nodiscard]] ReceiverResult<OrphanReplayOutcome>
 ProcessOrphanBlocks(
     detail::ReceiverIngressImplementation& implementation,
     const pbprotocol::BoundSegmentDescriptor& boundSegmentDescriptor)
@@ -744,8 +750,7 @@ ProcessOrphanBlocks(
             descriptor.sessionTag,
             descriptor.segmentOrdinal))
     {
-        return ReceiverResult<std::optional<ReceiverCompletedSegment>>::Success(
-            std::nullopt);
+        return ReceiverResult<OrphanReplayOutcome>::Success({});
     }
 
     const auto completedResult = implementation.controlReceiver.
@@ -754,7 +759,7 @@ ProcessOrphanBlocks(
             descriptor.segmentOrdinal);
     if (!completedResult)
     {
-        return FailureFrom<std::optional<ReceiverCompletedSegment>>(
+        return FailureFrom<OrphanReplayOutcome>(
             completedResult.Error());
     }
 
@@ -772,17 +777,15 @@ ProcessOrphanBlocks(
                 if (IsOuterFecDecoderQuotaError(*outerFecError))
                 {
                     pbprotocol::SaturatingIncrementUnsigned(implementation.deferredResourceBusyCount);
-                    return ReceiverResult<std::optional<ReceiverCompletedSegment>>::Success(std::nullopt);
+                    return ReceiverResult<OrphanReplayOutcome>::Success({});
                 }
-                return FailDecoderCreationForSession<
-                    std::optional<ReceiverCompletedSegment>>(
-                        implementation,
-                        descriptor.sessionTag,
-                        *outerFecError);
+                return FailDecoderCreationForSession<OrphanReplayOutcome>(
+                    implementation,
+                    descriptor.sessionTag,
+                    *outerFecError);
             }
-            return ReceiverResult<
-                std::optional<ReceiverCompletedSegment>>::Failure(
-                    activeDecoderResult.Error());
+            return ReceiverResult<OrphanReplayOutcome>::Failure(
+                activeDecoderResult.Error());
         }
     }
 
@@ -797,23 +800,24 @@ ProcessOrphanBlocks(
             pbprotocol::SaturatingIncrementUnsigned(
                 implementation.orphanConflictRejectionCount);
         }
-        return ReceiverResult<
-            std::optional<ReceiverCompletedSegment>>::Failure(
-                LatchTerminalSessionError(
-                    implementation,
-                    descriptor.sessionTag,
-                    ReceiverError{drainResult.Error()}));
+        return ReceiverResult<OrphanReplayOutcome>::Failure(
+            LatchTerminalSessionError(
+                implementation,
+                descriptor.sessionTag,
+                ReceiverError{drainResult.Error()}));
     }
 
     if (completedResult.Value())
     {
-        return ReceiverResult<std::optional<ReceiverCompletedSegment>>::Success(
-            std::nullopt);
+        return ReceiverResult<OrphanReplayOutcome>::Success({});
     }
 
-    for (const pbprotocol::OrphanTransportBlockEntry& entry :
-         drainResult.Value().entries)
+    pbprotocol::OrphanTransportBlockDrain drainedBlocks = std::move(drainResult).Value();
+    std::size_t acceptedBlockCount = 0;
+    OrphanReplayOutcome outcome;
+    for (std::size_t entryIndex = 0; entryIndex < drainedBlocks.entries.size(); entryIndex++)
     {
+        pbprotocol::OrphanTransportBlockEntry& entry = drainedBlocks.entries[entryIndex];
         const ReceivedTransportBlock transportBlock{
             descriptor.sessionTag,
             descriptor.segmentOrdinal,
@@ -826,20 +830,25 @@ ProcessOrphanBlocks(
             transportBlock);
         if (!admissionResult)
         {
-            return ReceiverResult<
-                std::optional<ReceiverCompletedSegment>>::Failure(
-                    admissionResult.Error());
+            return ReceiverResult<OrphanReplayOutcome>::Failure(admissionResult.Error());
+        }
+        if (admissionResult.Value().outerSymbolAdmission == ReceiverOuterSymbolAdmission::Unique)
+        {
+            if (acceptedBlockCount != entryIndex)
+            {
+                drainedBlocks.entries[acceptedBlockCount] = std::move(entry);
+            }
+            acceptedBlockCount++;
         }
         if (admissionResult.Value().completedSegment)
         {
-            return ReceiverResult<
-                std::optional<ReceiverCompletedSegment>>::Success(
-                    std::move(admissionResult.Value().completedSegment));
+            outcome.completedSegment = std::move(admissionResult.Value().completedSegment);
+            break;
         }
     }
-
-    return ReceiverResult<std::optional<ReceiverCompletedSegment>>::Success(
-        std::nullopt);
+    drainedBlocks.entries.resize(acceptedBlockCount);
+    outcome.acceptedBlocks = std::move(drainedBlocks.entries);
+    return ReceiverResult<OrphanReplayOutcome>::Success(std::move(outcome));
 }
 
 [[nodiscard]] ReceiverResult<pbprotocol::OutputReservationDecision>
@@ -930,8 +939,9 @@ HandleControlAdmission(
             return ReceiverResult<ReceiverControlAdmission>::Failure(
                 orphanResult.Error());
         }
-        receiverAdmission.completedSegment =
-            std::move(orphanResult).Value();
+        OrphanReplayOutcome orphanOutcome = std::move(orphanResult).Value();
+        receiverAdmission.replayedOrphanBlocks = std::move(orphanOutcome.acceptedBlocks);
+        receiverAdmission.completedSegment = std::move(orphanOutcome.completedSegment);
     }
     receiverAdmission.controlAdmission = std::move(controlAdmission);
     return ReceiverResult<ReceiverControlAdmission>::Success(
@@ -1334,13 +1344,15 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
             CountReturnedResourceFailure(*implementation_, result.Error());
             return result;
         }
-        if (orphanResult.Value())
+        OrphanReplayOutcome orphanOutcome = std::move(orphanResult).Value();
+        if (orphanOutcome.completedSegment)
         {
             return ReceiverResult<ReceiverDataAdmission>::Success(
                 ReceiverDataAdmission{
                     ReceiverDataDisposition::EncodedSegmentReady,
-                    std::move(orphanResult).Value(),
-                    outerAdmission});
+                    std::move(orphanOutcome.completedSegment),
+                    outerAdmission,
+                    std::move(orphanOutcome.acceptedBlocks)});
         }
         if (implementation_->orphanCache.HasCachedKey(
                 transportBlock.sessionTag,
@@ -1356,7 +1368,8 @@ ReceiverResult<ReceiverDataAdmission> ReceiverIngress::ReceiveDataBlock(
             ReceiverDataAdmission{
                 ReceiverDataDisposition::AcceptedNeedMore,
                 std::nullopt,
-                outerAdmission});
+                outerAdmission,
+                std::move(orphanOutcome.acceptedBlocks)});
     }
 
     auto result = ProcessBoundDataBlock(
