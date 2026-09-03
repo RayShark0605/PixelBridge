@@ -175,8 +175,8 @@ struct UnifiedVisualProfileManifest
 // The region table reuses only the historical 4x4 Shape geometry, not its
 // experimental masks, labels, lane mapping or interleave. The ten Data entries
 // and nine TimingFreshness entries exactly partition dataGridBounds. All canvas
-// pixels not listed here are reserved guard/matte space; G07 freezes their exact
-// signal values. Control has no separate pixel rectangle in layout 8: it is
+// pixels not listed here are reserved guard/matte space; the Unified raster
+// contract freezes their exact signal values. Control has no separate pixel rectangle in layout 8: it is
 // reserved in Base Luma codeword slot space by mixedSlots, so its capacity is
 // counted exactly once.
 inline constexpr UnifiedVisualProfileManifest kUnifiedVisualProfile{

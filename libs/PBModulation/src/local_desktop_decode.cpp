@@ -830,6 +830,17 @@ LocalDesktopObservation EvaluateGeometry(LumaReader& reader, const std::array<co
         return observation;
     }
     observation.erasure = CheckTiming(reader, policy, observation);
+    const bool unifiedLocalTimingFailure = binding == detail::LocalDesktopBinding::UnifiedVisual &&
+        (observation.erasure == Erasure::TimingMismatch || observation.erasure == Erasure::DoubleImage ||
+            observation.erasure == Erasure::ExcessResidual);
+    if (unifiedLocalTimingFailure)
+    {
+        // Unified timing patches protect only the data neighborhood assigned
+        // to that patch. The owning decoder re-evaluates all nine patches and
+        // zeros only those local metrics; the common scaffold must still fail
+        // closed for reader/work errors and every Bootstrap/locator conflict.
+        observation.erasure = Erasure::None;
+    }
     if (observation.erasure != Erasure::None)
     {
         return observation;
