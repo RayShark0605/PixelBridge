@@ -1410,6 +1410,11 @@ Descriptor 是 immutable binding：
 
 # 9. Session / File Manifest / Segment 协议
 
+Protocol 1.0 Descriptor Schema 1 的逐字段 offset、宽度、端序、长度、CRC、optional TLV、
+UTF-8 basename 与正式 Golden manifest 已冻结在
+[`PROTOCOL_1_DESCRIPTOR_SCHEMA.md`](PROTOCOL_1_DESCRIPTOR_SCHEMA.md)。本节保留总体语义；若旧的
+“建议”字段描述与正式字节表冲突，以正式字节表和统一实施路线为准。
+
 ## 9.1 SessionDescriptor
 
 单文件项目中建议至少：

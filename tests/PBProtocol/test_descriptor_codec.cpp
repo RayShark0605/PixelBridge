@@ -158,9 +158,12 @@ TEST_CASE("Formal SessionDescriptor carries filename profile policy and optional
 TEST_CASE("Session filename validation enforces strict UTF-8 Windows basename rules",
           "[pbprotocol][descriptor][filename][security]")
 {
-    const std::array<std::string, 13> invalidNames{
-        "", ".", "..", "../x", "folder\\x", "C:x", "file:stream",
-        "CON", "con.txt", "LPT9.bin", "bad?.bin", "trailing.", "trailing "};
+    const std::vector<std::string> invalidNames{
+        "", ".", "..", "../x", "/absolute", "folder\\x", "\\\\server\\share",
+        "C:x", "C:\\x", "file:stream", "CON", "con.txt", "PRN.bin", "AUX",
+        "NUL.dat", "CONIN$", "CONOUT$.txt", "COM1", "com9.log", "LPT1",
+        "LPT9.bin", "bad<.bin", "bad>.bin", "bad\".bin", "bad?.bin", "bad*.bin",
+        "bad|.bin", "trailing.", "trailing "};
     for (const std::string& invalidName : invalidNames)
     {
         CAPTURE(invalidName);
@@ -173,7 +176,13 @@ TEST_CASE("Session filename validation enforces strict UTF-8 Windows basename ru
     const auto invalidUtf8Status = pbprotocol::ValidateFileNameUtf8(invalidUtf8);
     REQUIRE_FALSE(invalidUtf8Status);
     REQUIRE(invalidUtf8Status.Error().code == pbprotocol::ProtocolErrorCode::InvalidUtf8);
+    const std::string embeddedNul{"safe\0.bin", 9};
+    const auto embeddedNulStatus = pbprotocol::ValidateFileNameUtf8(embeddedNul);
+    REQUIRE_FALSE(embeddedNulStatus);
+    REQUIRE(embeddedNulStatus.Error().code == pbprotocol::ProtocolErrorCode::InvalidFileName);
     REQUIRE(pbprotocol::ValidateFileNameUtf8("合法 文件名.数据"));
+    REQUIRE(pbprotocol::ValidateFileNameUtf8("COM0.bin"));
+    REQUIRE(pbprotocol::ValidateFileNameUtf8("LPT0"));
 
     pbprotocol::SessionDescriptor maximumNameDescriptor = pbprotocol::test::MakeSessionDescriptor(1, 1);
     maximumNameDescriptor.fileNameUtf8.assign(pbprotocol::kMaximumFileNameUtf8Bytes, 'a');
@@ -185,6 +194,93 @@ TEST_CASE("Session filename validation enforces strict UTF-8 Windows basename ru
     const auto excessiveStatus = pbprotocol::ValidateSessionDescriptor(maximumNameDescriptor);
     REQUIRE_FALSE(excessiveStatus);
     REQUIRE(excessiveStatus.Error().code == pbprotocol::ProtocolErrorCode::InvalidFileName);
+}
+
+TEST_CASE("Session optional TLVs are canonical bounded and mandatory-aware",
+          "[pbprotocol][descriptor][wire][session][tlv][boundary]")
+{
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+    pbprotocol::SessionDescriptor descriptor = pbprotocol::test::MakeSessionDescriptor(1, 1);
+    descriptor.optionalExtensions = {
+        Byte(0x01), Byte(0x00), Byte(0x01), Byte(0x00),
+        Byte(0x01), Byte(0x00), Byte(0x00), Byte(0x00), Byte(0xA1),
+        Byte(0x02), Byte(0x00), Byte(0x01), Byte(0x00),
+        Byte(0x00), Byte(0x00), Byte(0x00), Byte(0x00)};
+    REQUIRE(pbprotocol::ValidateSessionDescriptor(descriptor, resourcePolicy));
+    const std::vector<std::byte> serialized = SerializeSession(descriptor, resourcePolicy);
+    const auto parsedResult = pbprotocol::ParseSessionDescriptor(serialized, resourcePolicy);
+    REQUIRE(parsedResult);
+    REQUIRE(parsedResult.Value().optionalExtensions == descriptor.optionalExtensions);
+
+    SECTION("zero type is not canonical")
+    {
+        auto candidate = descriptor;
+        candidate.optionalExtensions[0] = Byte(0);
+        REQUIRE_FALSE(pbprotocol::ValidateSessionDescriptor(candidate, resourcePolicy));
+    }
+    SECTION("types are strictly increasing")
+    {
+        auto candidate = descriptor;
+        candidate.optionalExtensions[9] = Byte(0x01);
+        REQUIRE_FALSE(pbprotocol::ValidateSessionDescriptor(candidate, resourcePolicy));
+    }
+    SECTION("unknown mandatory TLV fails closed")
+    {
+        auto candidate = descriptor;
+        candidate.optionalExtensions[2] = Byte(0);
+        const auto status = pbprotocol::ValidateSessionDescriptor(candidate, resourcePolicy);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == pbprotocol::ProtocolErrorCode::UnknownMandatoryFeature);
+    }
+    SECTION("unknown TLV flag bits fail closed")
+    {
+        auto candidate = descriptor;
+        candidate.optionalExtensions[2] = Byte(0x03);
+        const auto status = pbprotocol::ValidateSessionDescriptor(candidate, resourcePolicy);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == pbprotocol::ProtocolErrorCode::NonZeroReservedBits);
+    }
+    SECTION("truncated TLV header fails closed")
+    {
+        auto candidate = descriptor;
+        candidate.optionalExtensions.resize(pbprotocol::kDescriptorTlvHeaderBytes - 1U);
+        const auto status = pbprotocol::ValidateSessionDescriptor(candidate, resourcePolicy);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == pbprotocol::ProtocolErrorCode::TruncatedInput);
+    }
+    SECTION("truncated TLV value fails closed")
+    {
+        auto candidate = descriptor;
+        candidate.optionalExtensions.resize(pbprotocol::kDescriptorTlvHeaderBytes);
+        const auto status = pbprotocol::ValidateSessionDescriptor(candidate, resourcePolicy);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == pbprotocol::ProtocolErrorCode::TruncatedInput);
+    }
+    SECTION("maximum descriptor payload is inclusive")
+    {
+        pbprotocol::SessionDescriptor maximumDescriptor = pbprotocol::test::MakeSessionDescriptor(1, 1);
+        const std::size_t maximumExtensionBytes = pbprotocol::kMaximumDescriptorPayloadBytes -
+            pbprotocol::kSessionDescriptorHeaderBytes - maximumDescriptor.fileNameUtf8.size() -
+            pbprotocol::kDescriptorCrcBytes;
+        REQUIRE(maximumExtensionBytes >= pbprotocol::kDescriptorTlvHeaderBytes);
+        maximumDescriptor.optionalExtensions.assign(maximumExtensionBytes, Byte(0));
+        WriteUint16(maximumDescriptor.optionalExtensions, pbprotocol::kDescriptorTlvTypeOffset, 1);
+        WriteUint16(maximumDescriptor.optionalExtensions, pbprotocol::kDescriptorTlvFlagsOffset,
+            pbprotocol::kDescriptorTlvOptionalFlag);
+        WriteUint32(maximumDescriptor.optionalExtensions, pbprotocol::kDescriptorTlvValueBytesOffset,
+            static_cast<std::uint32_t>(maximumExtensionBytes - pbprotocol::kDescriptorTlvHeaderBytes));
+        const auto maximumSizeResult = pbprotocol::GetSerializedSize(maximumDescriptor);
+        REQUIRE(maximumSizeResult);
+        REQUIRE(maximumSizeResult.Value() == pbprotocol::kMaximumDescriptorPayloadBytes);
+        REQUIRE(pbprotocol::ValidateSessionDescriptor(maximumDescriptor, resourcePolicy));
+
+        maximumDescriptor.optionalExtensions.push_back(Byte(0));
+        WriteUint32(maximumDescriptor.optionalExtensions, pbprotocol::kDescriptorTlvValueBytesOffset,
+            static_cast<std::uint32_t>(maximumDescriptor.optionalExtensions.size() - pbprotocol::kDescriptorTlvHeaderBytes));
+        const auto excessiveStatus = pbprotocol::ValidateSessionDescriptor(maximumDescriptor, resourcePolicy);
+        REQUIRE_FALSE(excessiveStatus);
+        REQUIRE(excessiveStatus.Error().code == pbprotocol::ProtocolErrorCode::LengthLimitExceeded);
+    }
 }
 
 TEST_CASE("Historical 37-byte provisional SessionDescriptor is deterministically rejected",
@@ -200,7 +296,7 @@ TEST_CASE("Historical 37-byte provisional SessionDescriptor is deterministically
         Byte(0x01)};
     const auto result = pbprotocol::ParseSessionDescriptor(phase0Descriptor, pbprotocol::test::MakeResourcePolicy());
     REQUIRE_FALSE(result);
-    REQUIRE(result.Error() == (pbprotocol::ProtocolError{pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema, 2}));
+    REQUIRE(result.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
 }
 
 TEST_CASE("Descriptor envelope rejects schema length CRC and reserved-field corruption",

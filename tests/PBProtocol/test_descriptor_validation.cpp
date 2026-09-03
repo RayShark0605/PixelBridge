@@ -61,6 +61,56 @@ TEST_CASE("SessionDescriptor enforces empty-file and resource semantics",
         pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
 }
 
+TEST_CASE("Formal SessionDescriptor covers canonical large-file arithmetic boundaries",
+          "[pbprotocol][descriptor][session][boundary][large-file]")
+{
+    constexpr std::uint64_t mebibyte = 1024ULL * 1024ULL;
+    constexpr std::uint64_t gibibyte = 1024ULL * mebibyte;
+    constexpr std::uint64_t segmentTargetBytes = 8ULL * mebibyte;
+    struct SessionBoundary
+    {
+        std::uint64_t originalFileSize;
+        std::uint64_t segmentCount;
+    };
+    constexpr std::array<SessionBoundary, 8> boundaries{{
+        {0, 0},
+        {1, 1},
+        {segmentTargetBytes - 1ULL, 1},
+        {segmentTargetBytes, 1},
+        {segmentTargetBytes + 1ULL, 2},
+        {20'000'000'000ULL, 2385},
+        {20ULL * gibibyte, 2560},
+        {500ULL * gibibyte, 64000}}};
+
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy =
+        pbprotocol::GetDefaultReceiverResourcePolicy();
+    REQUIRE(resourcePolicy.maxAcceptedFileBytes == 500ULL * gibibyte);
+    REQUIRE(resourcePolicy.maxSegmentCount >= 64000);
+    for (const SessionBoundary& boundary : boundaries)
+    {
+        CAPTURE(boundary.originalFileSize, boundary.segmentCount);
+        pbprotocol::SessionDescriptor descriptor = pbprotocol::test::MakeSessionDescriptor(
+            boundary.originalFileSize, boundary.segmentCount);
+        descriptor.sourceSegmentTargetBytes = static_cast<std::uint32_t>(segmentTargetBytes);
+        REQUIRE(pbprotocol::ValidateSessionDescriptor(descriptor, resourcePolicy));
+    }
+
+    pbprotocol::SessionDescriptor overFileLimit = pbprotocol::test::MakeSessionDescriptor(
+        500ULL * gibibyte + 1ULL, 64001);
+    const auto overFileStatus = pbprotocol::ValidateSessionDescriptor(overFileLimit, resourcePolicy);
+    REQUIRE_FALSE(overFileStatus);
+    REQUIRE(overFileStatus.Error().code == pbprotocol::ProtocolErrorCode::ResourceLimitExceeded);
+    REQUIRE(overFileStatus.Error().offset == pbprotocol::kFormalWireSessionDescriptorOriginalFileSizeOffset);
+
+    pbprotocol::SessionDescriptor zeroTarget = pbprotocol::test::MakeSessionDescriptor(1, 1);
+    zeroTarget.sourceSegmentTargetBytes = 0;
+    const auto zeroTargetStatus = pbprotocol::ValidateSessionDescriptor(zeroTarget, resourcePolicy);
+    REQUIRE_FALSE(zeroTargetStatus);
+    REQUIRE(zeroTargetStatus.Error().code == pbprotocol::ProtocolErrorCode::InvalidDescriptor);
+    REQUIRE(zeroTargetStatus.Error().offset ==
+        pbprotocol::kFormalWireSessionDescriptorSourceSegmentTargetBytesOffset);
+}
+
 TEST_CASE("Zero initialized ReceiverResourcePolicy fails closed",
           "[pbprotocol][descriptor][policy]")
 {
