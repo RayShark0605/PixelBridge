@@ -68,6 +68,7 @@ SPDX 2.3 SBOM 和 `THIRD_PARTY_NOTICES.txt` 覆盖 Qt 及 vcpkg status 中的全
 - relative path、case-insensitive duplicate、path escape 和 reparse-point 拒绝；
 - manifest 之外的目录文件或 ZIP entry 拒绝；
 - manifest、payload inventory、application、Qt、license、SBOM 和 seal 交叉验证；
+- Encoder/Decoder 提供只读 `--build-identity` JSON；creator 与 verifier 都从实际待发布/已发布 EXE 重新执行该入口，并要求 runtime `gitCommit` 精确等于 manifest `buildIdentity.headCommit`、application/version/protocol 与 `--version` 一致。仅仅重新计算外层 HEAD/source hash 不能掩盖未重新 configure/build 的陈旧二进制；
 - ZIP 每个 entry 都流式重算 SHA-256，不把解压内容无界读入内存；
 - 可选 `-ExpectedManifestSha256` 用于复制前后 exact identity 验证；
 - `-OutputPath` 为 create-only，使用 `.partial` 后原子发布。

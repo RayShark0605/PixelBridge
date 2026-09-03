@@ -52,6 +52,21 @@ function Require-Failure
     }
 }
 
+function Get-TextSha256
+{
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($Text)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try
+    {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally
+    {
+        $algorithm.Dispose()
+    }
+}
+
 $resolvedToolsRoot = [System.IO.Path]::GetFullPath($ToolsRoot)
 $resolvedWorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
 $resolvedBuildDirectory = [System.IO.Path]::GetFullPath($BuildDirectory)
@@ -172,6 +187,7 @@ try
     }
 
     $packageCreator = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualPortablePackage.ps1'
+    $packageVerifier = Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualPortablePackage.ps1'
     $packageOutputRoot = Join-Path $runRoot 'portable-package'
     [void](New-Item -ItemType Directory -Path $packageOutputRoot)
     $packageCreation = Invoke-Tool -Script $packageCreator -Arguments @(
@@ -248,6 +264,25 @@ try
     }
 
     $packageManifestPath = Join-Path ([string]$packageCreateResult.packageDirectory) 'package-manifest.json'
+    $originalPackageManifestText = [System.IO.File]::ReadAllText($packageManifestPath)
+    try
+    {
+        $runtimeIdentityTamper = $originalPackageManifestText | ConvertFrom-Json -AsHashtable -Depth 100
+        $runtimeIdentityTamper.buildIdentity.headCommit = 'f' * 40
+        $runtimeIdentityTamper.buildIdentityFingerprintSha256 = Get-TextSha256 -Text `
+            ($runtimeIdentityTamper.buildIdentity | ConvertTo-Json -Depth 16 -Compress)
+        [System.IO.File]::WriteAllText($packageManifestPath,
+            ($runtimeIdentityTamper | ConvertTo-Json -Depth 100), [System.Text.UTF8Encoding]::new($false))
+        $runtimeIdentityVerification = Invoke-Tool -Script $packageVerifier -Arguments @(
+            '-PackageDirectory', [string]$packageCreateResult.packageDirectory)
+        Require-Failure -Result $runtimeIdentityVerification -Name 'packaged application runtime-identity guard' `
+            -Pattern 'runtime build identity does not match package HEAD/protocol'
+    }
+    finally
+    {
+        [System.IO.File]::WriteAllText($packageManifestPath, $originalPackageManifestText,
+            [System.Text.UTF8Encoding]::new($false))
+    }
     $packageManifestHashBeforeOverlapProbe = (Get-FileHash -LiteralPath $packageManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $overlappingKitCreation = Invoke-Tool -Script $kitCreator -Arguments @(
         '-PackageDirectory', [string]$packageCreateResult.packageDirectory,

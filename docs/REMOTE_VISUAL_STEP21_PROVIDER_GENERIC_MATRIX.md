@@ -130,7 +130,7 @@ pwsh -NoProfile -File .\tools\PBRemoteVisualEvidence\Test-PBRemoteVisualStep21Co
   -ExpectedManifestSha256 $kit.manifestSha256
 ```
 
-生成器只有在以下条件全部满足后才发布目录、外层 ZIP 和外部 seal：Both-role package 的目录/seal/原始 ZIP 已由权威 package verifier 验证，package HEAD/tree/tested-source fingerprint 与当前 checkout 一致，source set 及其 1 MiB CSPRNG 文件已由权威 source verifier 验证，所有输出与输入目录分离，且展开目录和外层 ZIP 的每一个不可变文件都重新通过清单验证。文件数、单文件、总 payload、manifest、seal 和 ZIP 都有上限；额外文件、重复/不安全路径、reparse point、哈希漂移、archive tamper 和 launcher 语义漂移均 fail closed。只有 `Working/` 是明确可变区。
+生成器只有在以下条件全部满足后才发布目录、外层 ZIP 和外部 seal：Both-role package 的目录/seal/原始 ZIP 已由权威 package verifier 验证，package HEAD/tree/tested-source fingerprint 与当前 checkout 一致，source set 及其 1 MiB CSPRNG 文件已由权威 source verifier 验证，所有输出与输入目录分离，且展开目录和外层 ZIP 的每一个不可变文件都重新通过清单验证。package creator/verifier 还会从包内两个实际 EXE 执行只读 `--build-identity`，要求 runtime `gitCommit` 精确等于 package HEAD，并与 application/version/protocol identity 一致；因此 CMake configure 时固化的旧 commit 不能再伪装成 current-HEAD runtime。文件数、单文件、总 payload、manifest、seal 和 ZIP 都有上限；额外文件、重复/不安全路径、reparse point、哈希漂移、archive tamper 和 launcher 语义漂移均 fail closed。只有 `Working/` 是明确可变区。
 
 把 `$kit.archivePath` 复制到 Computer B 后只需解压一次。根目录内有：
 
