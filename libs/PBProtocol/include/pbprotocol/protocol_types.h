@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pbprotocol/product_visual_profile.h"
 #include "pbprotocol/protocol_version.h"
 
 #include <array>
@@ -91,8 +92,6 @@ enum class CompressionPolicy : std::uint8_t
     AutomaticZstandardLevel3RawFallback = 1
 };
 
-inline constexpr std::uint64_t kUnifiedVisualProfileId =
-    0x5042554E494C4331ULL;
 inline constexpr std::uint32_t kDefaultSourceSegmentTargetBytes =
     8U * 1024U * 1024U;
 

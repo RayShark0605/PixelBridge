@@ -68,6 +68,10 @@ target_compile_definitions(PBRemoteVisualTests PRIVATE
 PbInstrumentPresentationTest(PBRemoteVisualTests)
 set_tests_properties(PBRemoteVisualTests PROPERTIES LABELS "remote-visual;modulation;fec;golden" TIMEOUT 240)
 
+PbAddUnitTest(PBUnifiedVisualProfileTests test_unified_visual_profile.cpp)
+target_link_libraries(PBUnifiedVisualProfileTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
+set_tests_properties(PBUnifiedVisualProfileTests PROPERTIES LABELS "modulation;product-profile;unified" TIMEOUT 20)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

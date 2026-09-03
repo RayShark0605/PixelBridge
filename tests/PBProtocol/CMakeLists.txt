@@ -69,3 +69,12 @@ add_test(
 set_tests_properties(PBProtocolNoAllocationDigestProbe PROPERTIES
     LABELS "pbprotocol;blake3;allocation"
     TIMEOUT 10)
+
+PbAddUnitTest(PBProductVisualProfileTests
+    test_product_visual_profile.cpp)
+target_link_libraries(PBProductVisualProfileTests
+    PRIVATE
+        PB::PBProtocol)
+set_tests_properties(PBProductVisualProfileTests PROPERTIES
+    LABELS "pbprotocol;product-profile;unified"
+    TIMEOUT 10)
