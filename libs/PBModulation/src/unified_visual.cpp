@@ -24,6 +24,8 @@ struct UnifiedVisualCpuOracle::Implementation
     std::array<UnifiedAcceptedBlock, kUnifiedCodewordCount> accepted{};
     std::array<std::int16_t, kUnifiedVisualProfile.innerCodewordBits> slotMetrics{};
     std::array<std::byte, kUnifiedCodewordBytes> decodedCodeword{};
+    std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedCodewordCount> decodedInformation{};
+    std::array<bool, kUnifiedCodewordCount> decodedInformationValid{};
     pbinnerfec::QcLdpcDecoder decoder;
     std::uint32_t acceptedCount = 0;
     bool metricsValid = false;
@@ -617,14 +619,6 @@ void DecodeDataTiles(const LumaView& view, const std::uint64_t frameSequence,
     }
 }
 
-[[nodiscard]] std::uint32_t ReadLe32(const std::byte* bytes) noexcept
-{
-    return std::to_integer<std::uint32_t>(bytes[0]) |
-        (std::to_integer<std::uint32_t>(bytes[1]) << 8U) |
-        (std::to_integer<std::uint32_t>(bytes[2]) << 16U) |
-        (std::to_integer<std::uint32_t>(bytes[3]) << 24U);
-}
-
 [[nodiscard]] bool ControlTypeMatchesPriority(const pbprotocol::ControlRecordType type,
     const UnifiedControlPriority priority) noexcept
 {
@@ -633,6 +627,53 @@ void DecodeDataTiles(const LumaView& view, const std::uint64_t frameSequence,
         (priority == UnifiedControlPriority::FinalManifest && type == pbprotocol::ControlRecordType::FinalManifest) ||
         (priority == UnifiedControlPriority::CurrentSegmentDescriptor &&
             type == pbprotocol::ControlRecordType::SegmentDescriptor);
+}
+
+[[nodiscard]] bool IsControlInformationBlock(
+    const std::span<const std::byte> information) noexcept
+{
+    return information.size() >= pbprotocol::kControlRecordMagic.size() &&
+        std::equal(pbprotocol::kControlRecordMagic.begin(), pbprotocol::kControlRecordMagic.end(),
+            information.begin());
+}
+
+[[nodiscard]] UnifiedControlPriority GetControlPriorityFromInformation(
+    const std::span<const std::byte> information) noexcept
+{
+    constexpr std::size_t recordTypeOffset = 5;
+    if (information.size() <= recordTypeOffset)
+    {
+        return UnifiedControlPriority::SessionDescriptor;
+    }
+    const auto recordType = static_cast<pbprotocol::ControlRecordType>(
+        std::to_integer<std::uint8_t>(information[recordTypeOffset]));
+    if (recordType == pbprotocol::ControlRecordType::FinalManifest)
+    {
+        return UnifiedControlPriority::FinalManifest;
+    }
+    if (recordType == pbprotocol::ControlRecordType::SegmentDescriptor)
+    {
+        return UnifiedControlPriority::CurrentSegmentDescriptor;
+    }
+    return UnifiedControlPriority::SessionDescriptor;
+}
+
+[[nodiscard]] ModulationErrorCode MapProtocolPackingError(
+    const pbprotocol::ProtocolErrorCode code) noexcept
+{
+    if (code == pbprotocol::ProtocolErrorCode::CrcMismatch)
+    {
+        return ModulationErrorCode::CrcMismatch;
+    }
+    if (code == pbprotocol::ProtocolErrorCode::OutputBufferTooSmall)
+    {
+        return ModulationErrorCode::OutputBufferTooSmall;
+    }
+    if (code == pbprotocol::ProtocolErrorCode::InternalInvariantViolation)
+    {
+        return ModulationErrorCode::InternalInvariantViolation;
+    }
+    return ModulationErrorCode::InvalidInput;
 }
 
 void AcceptBlock(const std::uint32_t slot, const UnifiedSlotKind kind,
@@ -693,26 +734,21 @@ void EvaluateAcceptedInformation(const std::uint32_t slot, const UnifiedSlotAssi
         return;
     }
 
-    constexpr std::size_t controlRecordBytesOffset = pbprotocol::kControlRecordPrefixBytes - sizeof(std::uint32_t);
-    const std::uint32_t recordBytes = ReadLe32(information.data() + controlRecordBytesOffset);
-    if (recordBytes < pbprotocol::kMinimumControlRecordBytes || recordBytes > information.size())
+    const auto extracted = pbprotocol::ExtractControlRecordFromInfoBlock(information);
+    if (!extracted)
     {
-        slotObservation.rejection = UnifiedSlotRejection::InvalidInformation;
-        return;
-    }
-    const std::span<const std::byte> padding = information.subspan(recordBytes);
-    if (std::ranges::any_of(padding, [](const std::byte value) { return value != std::byte{0}; }))
-    {
-        slotObservation.rejection = UnifiedSlotRejection::NonCanonicalPadding;
+        slotObservation.rejection = extracted.Error().code == pbprotocol::ProtocolErrorCode::NonCanonicalPadding ?
+            UnifiedSlotRejection::NonCanonicalPadding :
+            extracted.Error().code == pbprotocol::ProtocolErrorCode::CrcMismatch ?
+                UnifiedSlotRejection::ControlCrcFailure : UnifiedSlotRejection::InvalidInformation;
         return;
     }
     slotObservation.paddingValid = true;
-    const std::span<const std::byte> record = information.first(recordBytes);
+    const std::span<const std::byte> record = extracted.Value();
     const auto parsed = pbprotocol::ParseControlRecord(record);
     if (!parsed)
     {
-        slotObservation.rejection = parsed.Error().code == pbprotocol::ProtocolErrorCode::CrcMismatch ?
-            UnifiedSlotRejection::ControlCrcFailure : UnifiedSlotRejection::InvalidInformation;
+        slotObservation.rejection = UnifiedSlotRejection::InvalidInformation;
         return;
     }
     slotObservation.crcValid = true;
@@ -778,6 +814,129 @@ std::uint8_t GetUnifiedPhasePilotLabel(const bool finePilot, const std::uint32_t
     const std::uint8_t base = static_cast<std::uint8_t>(((tileOrdinal / 2) + phase) & 7U);
     const std::uint8_t fine = static_cast<std::uint8_t>(((tileOrdinal + phase) & 1U) << 3U);
     return static_cast<std::uint8_t>(base | fine);
+}
+
+ModulationStatus PackUnifiedVisualFrame(
+    const UnifiedVisualFrameInput& input, const std::span<std::byte> outCodedFrame) noexcept
+{
+    if (input.bootstrapRecord.data() == nullptr || input.bootstrapRecord.size() != pbprotocol::kBootstrapRecordBytes ||
+        input.slots.data() == nullptr || input.slots.size() != kUnifiedCodewordCount ||
+        outCodedFrame.data() == nullptr)
+    {
+        return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
+    }
+    if (outCodedFrame.size() != kUnifiedCodedFrameBytes)
+    {
+        return ModulationStatus::Failure(outCodedFrame.size() < kUnifiedCodedFrameBytes ?
+            ModulationErrorCode::OutputBufferTooSmall : ModulationErrorCode::InvalidInput, 0);
+    }
+    const auto bootstrap = pbprotocol::ParseBootstrapRecord(input.bootstrapRecord);
+    if (!bootstrap)
+    {
+        return ModulationStatus::Failure(MapProtocolPackingError(bootstrap.Error().code), bootstrap.Error().offset);
+    }
+    if (bootstrap.Value().visualProfileId != kUnifiedVisualProfile.productProfile.visualProfileId ||
+        bootstrap.Value().visualLayoutVersion != kUnifiedVisualProfile.productProfile.visualLayoutVersion)
+    {
+        return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 8);
+    }
+
+    std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> assignments{};
+    for (std::size_t inputIndex = 0; inputIndex < input.slots.size(); inputIndex++)
+    {
+        assignments[inputIndex] = input.slots[inputIndex].assignment;
+    }
+    if (!ValidateUnifiedMixedSlotPlan(assignments))
+    {
+        return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
+    }
+
+    for (const UnifiedFrameSlotInput& slotInput : input.slots)
+    {
+        const UnifiedSlotAssignment& assignment = slotInput.assignment;
+        if (!slotInput.active)
+        {
+            if (assignment.kind != UnifiedSlotKind::Transport || !slotInput.block.empty())
+            {
+                return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, assignment.codewordSlot);
+            }
+            continue;
+        }
+        if (slotInput.block.data() == nullptr || slotInput.block.empty() ||
+            slotInput.block.size() > kUnifiedInformationBytes)
+        {
+            return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, assignment.codewordSlot);
+        }
+        if (assignment.kind == UnifiedSlotKind::Transport)
+        {
+            const auto transport = pbprotocol::ParseTransportBlock(slotInput.block);
+            if (!transport)
+            {
+                return ModulationStatus::Failure(
+                    MapProtocolPackingError(transport.Error().code), assignment.codewordSlot);
+            }
+            if (transport.Value().header.sessionTag != bootstrap.Value().sessionTag)
+            {
+                return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, assignment.codewordSlot);
+            }
+            continue;
+        }
+        const auto control = pbprotocol::ParseControlRecord(slotInput.block);
+        if (!control)
+        {
+            return ModulationStatus::Failure(MapProtocolPackingError(control.Error().code), assignment.codewordSlot);
+        }
+        if (!ControlTypeMatchesPriority(control.Value().recordType, assignment.controlPriority) ||
+            control.Value().sessionTag != bootstrap.Value().sessionTag)
+        {
+            return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, assignment.codewordSlot);
+        }
+    }
+
+    std::array<std::byte, kUnifiedCodedFrameBytes> codedFrame{};
+    std::array<std::byte, kUnifiedInformationBytes> information{};
+    for (const UnifiedFrameSlotInput& slotInput : input.slots)
+    {
+        const UnifiedSlotAssignment& assignment = slotInput.assignment;
+        if (!slotInput.active)
+        {
+            std::fill(information.begin(), information.end(), std::byte{0});
+        }
+        else
+        {
+            const pbprotocol::ProtocolStatus packingStatus = assignment.kind == UnifiedSlotKind::Control ?
+                pbprotocol::FrameControlRecordIntoInfoBlock(slotInput.block, information.size(), information) :
+                pbprotocol::FrameTransportBlockIntoInfoBlock(slotInput.block, information.size(), information);
+            if (!packingStatus)
+            {
+                return ModulationStatus::Failure(
+                    MapProtocolPackingError(packingStatus.Error().code), assignment.codewordSlot);
+            }
+        }
+        const std::span<std::byte> codeword = std::span(codedFrame).subspan(
+            static_cast<std::size_t>(assignment.codewordSlot) * kUnifiedCodewordBytes, kUnifiedCodewordBytes);
+        const pbinnerfec::InnerFecStatus fecStatus = pbinnerfec::EncodeQcLdpcCodeword(
+            pbinnerfec::kInnerFecProfileIdRobust, information, codeword);
+        if (!fecStatus)
+        {
+            return ModulationStatus::Failure(ModulationErrorCode::InternalInvariantViolation,
+                assignment.codewordSlot);
+        }
+    }
+    std::copy(codedFrame.begin(), codedFrame.end(), outCodedFrame.begin());
+    return ModulationStatus::Success();
+}
+
+ModulationStatus EncodeUnifiedVisualFrame(
+    const UnifiedVisualFrameInput& input, const std::span<std::byte> outBgra) noexcept
+{
+    std::array<std::byte, kUnifiedCodedFrameBytes> codedFrame{};
+    const ModulationStatus packingStatus = PackUnifiedVisualFrame(input, codedFrame);
+    if (!packingStatus)
+    {
+        return packingStatus;
+    }
+    return EncodeUnifiedVisualFrame(input.bootstrapRecord, codedFrame, outBgra);
 }
 
 ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> bootstrapRecord,
@@ -896,8 +1055,24 @@ ModulationResult<UnifiedVisualCpuOracle> UnifiedVisualCpuOracle::Create(const st
     }
 }
 
+UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeMixedFrame(const LumaView& view,
+    const UnifiedExpectedFrameIdentity& expectedIdentity,
+    const UnifiedVisualDecodePolicy& policy) noexcept
+{
+    return DecodeInternal(view, {}, true, expectedIdentity, policy);
+}
+
 UnifiedVisualObservation UnifiedVisualCpuOracle::Decode(const LumaView& view,
-    const std::span<const UnifiedSlotAssignment> slotPlan, const UnifiedExpectedFrameIdentity& expectedIdentity,
+    const std::span<const UnifiedSlotAssignment> slotPlan,
+    const UnifiedExpectedFrameIdentity& expectedIdentity,
+    const UnifiedVisualDecodePolicy& policy) noexcept
+{
+    return DecodeInternal(view, slotPlan, false, expectedIdentity, policy);
+}
+
+UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& view,
+    const std::span<const UnifiedSlotAssignment> slotPlan, const bool inferSlotKinds,
+    const UnifiedExpectedFrameIdentity& expectedIdentity,
     const UnifiedVisualDecodePolicy& policy) noexcept
 {
     UnifiedVisualObservation observation;
@@ -907,10 +1082,11 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::Decode(const LumaView& view,
     }
     Implementation& state = *implementation_;
     state.acceptedCount = 0;
+    state.decodedInformationValid.fill(false);
     state.metricsValid = false;
     InitializeMetrics(0, UnifiedErasureReason::CanvasClipped, state.metrics);
     state.metricsValid = true;
-    if (!ValidPolicy(policy) || !ValidateUnifiedMixedSlotPlan(slotPlan) ||
+    if (!ValidPolicy(policy) || (!inferSlotKinds && !ValidateUnifiedMixedSlotPlan(slotPlan)) ||
         ValidateLumaView(view) != LocalDesktopErasureReason::None || view.pixelFormat != LumaPixelFormat::Bgra8 ||
         view.width != kUnifiedVisualProfile.canvasWidth || view.height != kUnifiedVisualProfile.canvasHeight)
     {
@@ -918,13 +1094,20 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::Decode(const LumaView& view,
     }
     observation.inputValid = true;
     std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> assignmentsBySlot{};
-    for (const UnifiedSlotAssignment& assignment : slotPlan)
+    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
     {
-        assignmentsBySlot[assignment.codewordSlot] = assignment;
-        UnifiedSlotObservation& slotObservation = observation.slots[assignment.codewordSlot];
-        slotObservation.kind = assignment.kind;
-        const UnifiedLaneContract* const lane = FindUnifiedLaneForCodewordSlot(assignment.codewordSlot);
+        assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
+        UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        const UnifiedLaneContract* const lane = FindUnifiedLaneForCodewordSlot(slot);
         slotObservation.lane = lane == nullptr ? UnifiedLane::BaseLuma : lane->lane;
+    }
+    if (!inferSlotKinds)
+    {
+        for (const UnifiedSlotAssignment& assignment : slotPlan)
+        {
+            assignmentsBySlot[assignment.codewordSlot] = assignment;
+            observation.slots[assignment.codewordSlot].kind = assignment.kind;
+        }
     }
 
     const LocalDesktopBootstrapBinding binding{kUnifiedVisualProfile.productProfile.visualProfileId,
@@ -1040,9 +1223,45 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::Decode(const LumaView& view,
             slotObservation.iterationsUsed = decoded.Value().iterationsUsed;
         }
         slotObservation.fecValid = true;
+        std::copy_n(state.decodedCodeword.begin(), kUnifiedInformationBytes,
+            state.decodedInformation[slot].begin());
+        state.decodedInformationValid[slot] = true;
+    }
+
+    bool inferredPlanValid = true;
+    if (inferSlotKinds)
+    {
+        for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+        {
+            if (!state.decodedInformationValid[slot])
+            {
+                continue;
+            }
+            const std::span<const std::byte> information = state.decodedInformation[slot];
+            if (IsControlInformationBlock(information))
+            {
+                assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Control,
+                    GetControlPriorityFromInformation(information)};
+                observation.slots[slot].kind = UnifiedSlotKind::Control;
+            }
+        }
+        inferredPlanValid = ValidateUnifiedMixedSlotPlan(assignmentsBySlot);
+    }
+
+    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    {
+        if (!state.decodedInformationValid[slot])
+        {
+            continue;
+        }
+        UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        if (inferSlotKinds && !inferredPlanValid && assignmentsBySlot[slot].kind == UnifiedSlotKind::Control)
+        {
+            slotObservation.rejection = UnifiedSlotRejection::InvalidInformation;
+            continue;
+        }
         EvaluateAcceptedInformation(slot, assignmentsBySlot[slot], observation.bootstrapRecord.sessionTag,
-            std::span<const std::byte>(state.decodedCodeword).first(kUnifiedInformationBytes), slotObservation,
-            state.accepted, state.acceptedCount);
+            state.decodedInformation[slot], slotObservation, state.accepted, state.acceptedCount);
         if (slotObservation.accepted)
         {
             observation.acceptedBlocks++;

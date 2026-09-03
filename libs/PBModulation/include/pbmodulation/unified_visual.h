@@ -156,6 +156,43 @@ struct UnifiedVisualObservation
     }
 };
 
+// Each logical slot is explicitly typed before any protocol packing or Inner
+// FEC encoding occurs. block is one exact PB-Control-1 or Transport Block wire
+// object when active is true. Their existing canonical prefixes are mutually
+// exclusive, so DecodeMixedFrame recovers the type without a side channel and
+// without reducing the frozen 1314-byte Transport payload. Inactive slots are
+// permitted only for Transport and encode the deterministic all-zero
+// information word; this is the zero-byte Session filler and never represents
+// an accepted Data Block.
+struct UnifiedFrameSlotInput
+{
+    UnifiedSlotAssignment assignment;
+    bool active = false;
+    std::span<const std::byte> block;
+};
+
+// The spans borrow caller-owned storage for the duration of the call. Slot
+// entries may be in any order, but their assignment.codewordSlot values must
+// form the exact 0..30 set required by ValidateUnifiedMixedSlotPlan.
+struct UnifiedVisualFrameInput
+{
+    std::span<const std::byte> bootstrapRecord;
+    std::span<const UnifiedFrameSlotInput> slots;
+};
+
+// Validates Bootstrap/profile identity, every explicit slot type, canonical
+// protocol bytes and SessionTag binding before producing any output. Control
+// and Transport are zero-padded by their PBProtocol framing helpers and then
+// encoded with the frozen Robust QC-LDPC profile.
+[[nodiscard]] ModulationStatus PackUnifiedVisualFrame(
+    const UnifiedVisualFrameInput& input, std::span<std::byte> outCodedFrame) noexcept;
+
+// Convenience reference path used by the application scheduler and tests.
+// It packs all slots and renders the complete immutable canonical raster in
+// one call; scheduling state remains owned by the caller.
+[[nodiscard]] ModulationStatus EncodeUnifiedVisualFrame(
+    const UnifiedVisualFrameInput& input, std::span<std::byte> outBgra) noexcept;
+
 // Maps exactly 31 packed Robust codewords, in global slot order, into one
 // complete 1920x1080 BGRA8 canonical raster. The renderer redraws every pixel.
 // Slot scheduling and Control repetition policy are deliberately outside this
@@ -180,6 +217,15 @@ public:
 
     [[nodiscard]] static std::uint64_t RequiredBytes() noexcept;
     [[nodiscard]] static ModulationResult<UnifiedVisualCpuOracle> Create(std::uint64_t maximumBytes) noexcept;
+    // Product receive path. Slot kind is inferred after Inner FEC from the
+    // mutually exclusive canonical prefixes: PB-Control-1 starts with PBCR,
+    // while a Transport Block starts with BlockType 1. No sender-side plan or
+    // out-of-band scheduler state is required.
+    [[nodiscard]] UnifiedVisualObservation DecodeMixedFrame(const LumaView& view,
+        const UnifiedExpectedFrameIdentity& expectedIdentity = {},
+        const UnifiedVisualDecodePolicy& policy = {}) noexcept;
+    // Explicit-plan oracle retained for mapping/negative tests. Product
+    // application ingress should use DecodeMixedFrame.
     [[nodiscard]] UnifiedVisualObservation Decode(const LumaView& view,
         std::span<const UnifiedSlotAssignment> slotPlan, const UnifiedExpectedFrameIdentity& expectedIdentity = {},
         const UnifiedVisualDecodePolicy& policy = {}) noexcept;
@@ -187,6 +233,11 @@ public:
     [[nodiscard]] std::span<const UnifiedAcceptedBlock> GetAcceptedBlocks() const noexcept;
 
 private:
+    [[nodiscard]] UnifiedVisualObservation DecodeInternal(const LumaView& view,
+        std::span<const UnifiedSlotAssignment> slotPlan, bool inferSlotKinds,
+        const UnifiedExpectedFrameIdentity& expectedIdentity,
+        const UnifiedVisualDecodePolicy& policy) noexcept;
+
     struct Implementation;
     std::unique_ptr<Implementation> implementation_;
 };
