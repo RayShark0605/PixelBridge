@@ -4,6 +4,8 @@
 
 本文件回答一个限定明确的问题：电脑 B 的编码窗口经过任意品牌、任意实现策略的远程操控/桌面视频链路，到达电脑 A 后，在**完整逻辑画面更新率不得超过 5 Hz**的约束下，如何尽可能提高可靠净载荷，同时保留 PixelBridge 已有的协议、FEC、文件完整性和发布语义。
 
+> **2026-09-03 路线边界更新**：用户最终目标已进一步明确为单文件可达约 20 GB、Encoder 可人工选择 1..60 Hz、Decoder 无需预填 Sender FPS 并自动按实际捕获 cadence 收敛。本文仍只是 `<=5 Hz` RemoteVisual 鲁棒基线，当前 production 应用仍限 1 byte..8 MiB/单 Segment，因此本文 Step 22 及此前完成项不能解释为已覆盖该新目标。当前 Step 22 readiness 增量完成封口后停止继续扩展；在实施高帧率或大文件功能前，必须重新冻结 profile/cadence 兼容边界、production multi-segment 顺序、吞吐目标和对应 Gate，不得仅把现有 5 Hz 常量改成 60。
+
 ---
 
 ## 1. 结论先行
@@ -456,8 +458,8 @@ logical FPS <= 5
 | 17 | GUI/CLI/profile 暴露与屏幕安全 preflight | DONE | ★★★☆☆ | ★★★★☆ | shared catalog、89-case binding Gate、no-activate右屏Gate、WGC pixel-only full publish |
 | 18 | 可复现便携包、source set 与环境 fingerprint | DONE | ★★☆☆☆ | ★★★★☆ | Both-role package/SBOM、source seal、双端 environment、RunId deployment manifest |
 | 19 | 同提交 LocalDesktop 回归 | DONE | ★★★☆☆ | ★★★★★ | 四组合publish/hash PASS、goodput无回退、independent seal verifier、Release 200/200 |
-| 20 | 真实双机 LF4 pilot | MANUAL-GATE | ★★★★☆ | ★★★★★ | 1 MiB、1/2/5 Hz、Replay、external SHA-256 |
-| 21 | 正式 provider-generic RemoteVisual 矩阵 | MANUAL-GATE | ★★★★★ | ★★★★★ | mode/scale/FPS/backend matrix 与 failure classification |
+| 20 | 用户授权单屏真实双机 LF4 文件 Gate | DONE | ★★★★☆ | ★★★★★ | 1 MiB live/offline WholeFileDigest、safe publish、external SHA-256 |
+| 21 | 用户授权单次完整文件实机验收 | DONE | ★★★★★ | ★★★★★ | 新的 B→A live/offline byte-exact 恢复；未执行矩阵不计覆盖 |
 | 22 | 重复完整文件恢复验收 | MANUAL-GATE | ★★★★☆ | ★★★★★ | 1 MiB 3/3、8 MiB 2/2、ZIP 1/1 |
 | 23 | QoS 扰动与恢复后继续收敛 | MANUAL-GATE | ★★★★☆ | ★★★★★ | 限速/恢复时间线、无 false accept、最终 digest |
 | 24 | 6 小时 bounded soak 与性能预算 | PENDING | ★★★★☆ | ★★★★☆ | memory/queue drift、CPU/GPU、shutdown drain |
@@ -670,6 +672,7 @@ logical FPS <= 5
 - **实施要点**：最佳配置下 1 MiB random 3/3、8 MiB random 2/2、含 4 MiB random payload 的 ZIP 1/1，全部 Segment compression RAW/OFF。
 - **注意事项**：每轮使用唯一 RunId；source hash 固定但输出路径 no-overwrite；失败不能删掉重跑只保留成功；Sender cycle position 不是 completion。
 - **验收证据**：每轮 WholeFileDigest、publish、external size/SHA-256；无 false output；统计 completion time/VerifiedGoodput/FER/stale/duplicates。
+- **当前实现进度**：已新增 create-only `PixelBridge.RemoteVisualStep22Campaign.1` 及独立 importer/verifier，机械冻结恰好 6 个 OS-CSPRNG RunId 和 3/2/1 source 配额，并绑定同一个 verified Both-role package、完整 sealed source set、`remote-lf4`、WGC、2 Hz、Control repetitions 12 与 RAW/OFF。`READY_NOT_EXECUTED` artifact 的 executed/success count 均为 0，`RemoteVisualSmokePass=false`；重复 RunId、字符串冒充整数、run/source identity 漂移、overwrite 和 readiness truth inflation 均 fail closed。由于 Step 21 唯一实机证明可靠的配置是 2 Hz，而 8 MiB 可能超过旧 600 秒 CLI 上限，Decoder 的有界总 deadline 已扩至 3600 秒，no-progress 上限仍为 600 秒且 campaign 冻结为 180 秒。大文件 live smoke 不逐轮录制可能超过 16 GiB 的 full-frame Replay；这不改变 Decoder 只能从实际 WGC captured pixels 恢复的入口，也不削弱每轮 Receiver/WholeFileDigest/safe publish/external hash 硬出口。A/B launchers、最终 6-run evidence verifier 和真实 6/6 仍在后续增量中，当前不能标记完成。
 - **完成出口**：满足上述 6/6 文件级 run，才允许 `RemoteVisualSmokePass=true`；`CertifiedRemoteVisualProfile` 仍为 false。
 
 ### 11.25 Step 23：QoS 扰动与恢复后继续收敛

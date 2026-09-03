@@ -34,6 +34,9 @@
 namespace
 {
 
+constexpr std::uint32_t kMaximumReceiveTimeoutSeconds = 3600;
+constexpr std::uint32_t kMaximumNoProgressSeconds = 600;
+
 struct Options
 {
     std::wstring outputDirectory;
@@ -372,7 +375,7 @@ struct Options
         {
             const wchar_t* const value = nextArgument();
             if (value == nullptr || !ParseUnsigned(value, options.timeoutSeconds) ||
-                options.timeoutSeconds == 0 || options.timeoutSeconds > 600)
+                options.timeoutSeconds == 0 || options.timeoutSeconds > kMaximumReceiveTimeoutSeconds)
             {
                 return false;
             }
@@ -381,7 +384,7 @@ struct Options
         {
             const wchar_t* const value = nextArgument();
             if (value == nullptr || !ParseUnsigned(value, options.noProgressSeconds) ||
-                options.noProgressSeconds == 0 || options.noProgressSeconds > 600)
+                options.noProgressSeconds == 0 || options.noProgressSeconds > kMaximumNoProgressSeconds)
             {
                 return false;
             }
@@ -499,15 +502,15 @@ struct Options
 void Usage()
 {
     std::cerr << "usage: PixelBridgeDecoder --headless-receive --output-dir DIR --backend wgc|dxgi "
-                 "--profile direct|shape|remote|remote-lf4 --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..600 "
-                 "[--no-progress-seconds 1..timeout] "
+                 "--profile direct|shape|remote|remote-lf4 --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..3600 "
+                 "[--no-progress-seconds 1..min(timeout,600)] "
                  "[--protected-monitor DEVICE --experiment-monitor DEVICE] "
                  "[--replay-output NEW_PATH --replay-frames 1..2048 --replay-max-mib 16..16384 "
                  "[--replay-sample-fps 1..60] [--diagnostic-capture-only --replay-evidence-profile direct|shape|lf4]] "
                  "[--run-id 32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH]\n";
     std::cerr << "       PixelBridgeDecoder --headless-replay --replay-input PATH --output-dir DIR "
-                 "[--remote-provider NAME] [--remote-metadata PATH] [--profile direct|shape|remote|remote-lf4] [--timeout 1..600] "
-                 "[--no-progress-seconds 1..timeout] "
+                 "[--remote-provider NAME] [--remote-metadata PATH] [--profile direct|shape|remote|remote-lf4] [--timeout 1..3600] "
+                 "[--no-progress-seconds 1..min(timeout,600)] "
                  "[--replay-frames 1..2048 --replay-max-mib 16..16384] "
                  "[--run-id MATCHING_32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH]\n";
 }

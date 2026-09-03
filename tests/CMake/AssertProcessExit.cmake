@@ -25,3 +25,12 @@ if(NOT pbProcessResult STREQUAL "${PB_EXPECTED_EXIT}")
         "stdout: ${pbProcessStdout}\n"
         "stderr: ${pbProcessStderr}")
 endif()
+if(DEFINED PB_EXPECTED_OUTPUT_REGEX AND NOT PB_EXPECTED_OUTPUT_REGEX STREQUAL "")
+    string(CONCAT pbProcessOutput "${pbProcessStdout}" "${pbProcessStderr}")
+    if(NOT pbProcessOutput MATCHES "${PB_EXPECTED_OUTPUT_REGEX}")
+        message(FATAL_ERROR
+            "${PB_TEST_EXECUTABLE} output did not match ${PB_EXPECTED_OUTPUT_REGEX}\n"
+            "stdout: ${pbProcessStdout}\n"
+            "stderr: ${pbProcessStderr}")
+    endif()
+endif()

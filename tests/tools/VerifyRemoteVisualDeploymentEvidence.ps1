@@ -90,6 +90,9 @@ $scripts = @(
     'Test-PBRemoteVisualSourceSet.ps1',
     'New-PBRemoteVisualStep21ComputerBKit.ps1',
     'Test-PBRemoteVisualStep21ComputerBKit.ps1',
+    'PBRemoteVisualStep22Common.psm1',
+    'New-PBRemoteVisualStep22Campaign.ps1',
+    'Test-PBRemoteVisualStep22Campaign.ps1',
     'New-PBRemoteVisualRunPreset.ps1',
     'Get-PBRemoteVisualEnvironment.ps1',
     'New-PBRemoteVisualDeploymentManifest.ps1',
@@ -204,6 +207,120 @@ try
     {
         throw 'Portable-package creator did not return a valid Computer B kit input identity'
     }
+
+    $campaignCreator = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep22Campaign.ps1'
+    $campaignVerifier = Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualStep22Campaign.ps1'
+    $campaignPath = Join-Path $runRoot 'step22-campaign.json'
+    $packageManifestForCampaign = Get-Content -LiteralPath `
+        (Join-Path ([string]$packageCreateResult.packageDirectory) 'package-manifest.json') -Raw | ConvertFrom-Json
+    $campaignCommit = [string]$packageManifestForCampaign.buildIdentity.headCommit
+    $campaignCreation = Invoke-Tool -Script $campaignCreator -Arguments @(
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-ExpectedPackageManifestSha256', [string]$packageCreateResult.manifestSha256,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath,
+        '-ExpectedSourceManifestSha256', $manifestHash,
+        '-ExpectedGitCommit', $campaignCommit,
+        '-OutputPath', $campaignPath)
+    Require-Success -Result $campaignCreation -Name 'Step 22 create-only campaign creation'
+    $campaignCreationValue = $campaignCreation.output | ConvertFrom-Json
+    $campaign = Get-Content -LiteralPath $campaignPath -Raw | ConvertFrom-Json
+    if ($campaignCreationValue.status -cne 'READY_NOT_EXECUTED' -or $campaignCreationValue.runCount -ne 6 -or
+        $campaignCreationValue.remoteVisualSmokePass -or $campaignCreationValue.certifiedRemoteVisualProfile -or
+        $campaign.schema -cne 'PixelBridge.RemoteVisualStep22Campaign.1' -or
+        @($campaign.runs).Count -ne 6 -or @($campaign.runs.runId | Sort-Object -Unique).Count -ne 6 -or
+        @($campaign.runs | Where-Object { $_.sourceRelativePath -ceq 'random-1MiB.bin' }).Count -ne 3 -or
+        @($campaign.runs | Where-Object { $_.sourceRelativePath -ceq 'random-8MiB.bin' }).Count -ne 2 -or
+        @($campaign.runs | Where-Object { $_.sourceRelativePath -ceq 'random-payload-4MiB.zip' }).Count -ne 1)
+    {
+        throw 'Step 22 campaign creator inflated truth or produced an invalid 3/2/1 schedule'
+    }
+    $campaignHash = (Get-FileHash -LiteralPath $campaignPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $campaignVerificationPath = Join-Path $runRoot 'step22-campaign-verification.json'
+    $campaignVerification = Invoke-Tool -Script $campaignVerifier -Arguments @(
+        '-CampaignPath', $campaignPath,
+        '-ExpectedCampaignSha256', $campaignHash,
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath,
+        '-OutputPath', $campaignVerificationPath)
+    Require-Success -Result $campaignVerification -Name 'Step 22 campaign verification'
+    $campaignVerificationValue = $campaignVerification.output | ConvertFrom-Json
+    if (-not $campaignVerificationValue.verified -or $campaignVerificationValue.status -cne 'READY_NOT_EXECUTED' -or
+        $campaignVerificationValue.runCount -ne 6 -or $campaignVerificationValue.remoteVisualSmokePass -or
+        $campaignVerificationValue.certifiedRemoteVisualProfile)
+    {
+        throw 'Step 22 campaign verifier inflated readiness into execution, smoke, or certification'
+    }
+
+    $duplicateCampaign = Invoke-Tool -Script $campaignCreator -Arguments @(
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-ExpectedPackageManifestSha256', [string]$packageCreateResult.manifestSha256,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath,
+        '-ExpectedSourceManifestSha256', $manifestHash,
+        '-ExpectedGitCommit', $campaignCommit,
+        '-OutputPath', $campaignPath)
+    Require-Failure -Result $duplicateCampaign -Name 'Step 22 campaign create-only guard' `
+        -Pattern 'Create-only Step 22 campaign or partial already exists'
+    $duplicateCampaignVerification = Invoke-Tool -Script $campaignVerifier -Arguments @(
+        '-CampaignPath', $campaignPath,
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath,
+        '-OutputPath', $campaignVerificationPath)
+    Require-Failure -Result $duplicateCampaignVerification -Name 'Step 22 verification create-only guard' `
+        -Pattern 'Create-only JSON output or partial already exists'
+
+    $duplicateRunIdPath = Join-Path $runRoot 'step22-duplicate-run-id.json'
+    $duplicateRunId = Get-Content -LiteralPath $campaignPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $duplicateRunId.runs[1].runId = [string]$duplicateRunId.runs[0].runId
+    $duplicateRunId.runs[1].evidenceDirectoryName = [string]$duplicateRunId.runs[0].runId
+    [System.IO.File]::WriteAllText($duplicateRunIdPath, ($duplicateRunId | ConvertTo-Json -Depth 100),
+        [System.Text.UTF8Encoding]::new($false))
+    $duplicateRunIdVerification = Invoke-Tool -Script $campaignVerifier -Arguments @(
+        '-CampaignPath', $duplicateRunIdPath,
+        '-ExpectedCampaignSha256', (Get-FileHash -LiteralPath $duplicateRunIdPath -Algorithm SHA256).Hash.ToLowerInvariant(),
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath)
+    Require-Failure -Result $duplicateRunIdVerification -Name 'Step 22 duplicate RunId guard' `
+        -Pattern 'run IDs must be unique'
+
+    $stringIntegerPath = Join-Path $runRoot 'step22-string-integer.json'
+    $stringInteger = Get-Content -LiteralPath $campaignPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $stringInteger.policy.decoderTimeoutSeconds = '3600'
+    [System.IO.File]::WriteAllText($stringIntegerPath, ($stringInteger | ConvertTo-Json -Depth 100),
+        [System.Text.UTF8Encoding]::new($false))
+    $stringIntegerVerification = Invoke-Tool -Script $campaignVerifier -Arguments @(
+        '-CampaignPath', $stringIntegerPath,
+        '-ExpectedCampaignSha256', (Get-FileHash -LiteralPath $stringIntegerPath -Algorithm SHA256).Hash.ToLowerInvariant(),
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath)
+    Require-Failure -Result $stringIntegerVerification -Name 'Step 22 JSON numeric-type guard' `
+        -Pattern 'decoderTimeoutSeconds must be a non-negative UInt64 JSON integer'
+
+    $wrongRunSourcePath = Join-Path $runRoot 'step22-wrong-run-source.json'
+    $wrongRunSource = Get-Content -LiteralPath $campaignPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $wrongRunSource.runs[0].sourceSha256 = 'f' * 64
+    [System.IO.File]::WriteAllText($wrongRunSourcePath, ($wrongRunSource | ConvertTo-Json -Depth 100),
+        [System.Text.UTF8Encoding]::new($false))
+    $wrongRunSourceVerification = Invoke-Tool -Script $campaignVerifier -Arguments @(
+        '-CampaignPath', $wrongRunSourcePath,
+        '-ExpectedCampaignSha256', (Get-FileHash -LiteralPath $wrongRunSourcePath -Algorithm SHA256).Hash.ToLowerInvariant(),
+        '-PackageDirectory', [string]$packageCreateResult.packageDirectory,
+        '-PackageSealPath', [string]$packageCreateResult.sealPath,
+        '-SourceSetDirectory', $sourceSetDirectory,
+        '-SourceSetSealPath', $sourceSealPath)
+    Require-Failure -Result $wrongRunSourceVerification -Name 'Step 22 run/source identity guard' `
+        -Pattern 'run source identity differs from the sealed source set'
 
     $kitCreator = Join-Path $resolvedToolsRoot 'New-PBRemoteVisualStep21ComputerBKit.ps1'
     $kitVerifier = Join-Path $resolvedToolsRoot 'Test-PBRemoteVisualStep21ComputerBKit.ps1'
