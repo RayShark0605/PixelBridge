@@ -1,0 +1,86 @@
+{
+  "datasetManifestBlake3": "a69fa7980680549ed951d3ddda7ab2e48a8da893a59180ccbb7bd83a2ac65ed3",
+  "evaluation": {
+    "falseAccepted": {
+      "Base": 0,
+      "Chroma": 0,
+      "Fine": 0
+    },
+    "minimumCodewordQualityQ12": {
+      "Base": 3289,
+      "Chroma": 2873,
+      "Fine": 3289
+    },
+    "scores": {
+      "baseMinimumMarginQ12": 1789216,
+      "chromaMinimumMarginQ12": 71825,
+      "fineMinimumMarginQ12": 7156864
+    },
+    "signal": {
+      "chroma": {
+        "accepted": 72,
+        "erased": 0,
+        "evaluated": 72,
+        "expectedUnavailable": 8,
+        "falseAccepted": 0,
+        "minimumSignedMargin": 25
+      },
+      "luma": {
+        "acceptedByLabelBit": [
+          160,
+          160,
+          160,
+          160
+        ],
+        "baseMinimumSignedMargin": 544,
+        "erasedByLabelBit": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "falseAcceptedBase": 0,
+        "falseAcceptedByLabelBit": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "falseAcceptedFine": 0,
+        "fineMinimumSignedMargin": 2176,
+        "minimumSignedMarginByLabelBit": [
+          1344,
+          544,
+          544,
+          2176
+        ],
+        "observationsPerLabelBit": 160
+      }
+    }
+  },
+  "holdoutPolicy": {
+    "failureAction": "block-without-retuning",
+    "providerMetadataUsed": false,
+    "singleEvaluation": true,
+    "winnerOnly": true
+  },
+  "passCriteria": "all lane minimum margins positive and falseAccepted Base/Fine/Chroma all zero",
+  "programVersion": "PBUnifiedMappingSearch.1",
+  "sampleCount": 10,
+  "sampleDigests": [
+    "1d77520b80c6578cab1c7da2a6c36933d371678638f7b9125861b718f109aef7",
+    "c939ef5efb03d63b3e10033d3904f9be377a3a5ee74186bb4fba59b5d6a1de73",
+    "62214c83d8bebf3b89ff1684b00d899d120467377d7a6fb91b14e641e5d97f52",
+    "c5b123c24cafc6a7130b5a1691a68df27fb9fd26def44fb8d6144ffc6757af0a",
+    "cd758a89c1cd743c82cc33be1009500b143254d132274b06e65b42e582e1b2a4",
+    "cd8b8b35c5a71644ae856ded7e37e7977656c1d5fdc530e1c9cfa4b42a9c13cc",
+    "9a64627f7a5c314cb689d89b968ba304d2eb4819187fbff9a790b8aa431fb65e",
+    "a5328e753099a40613b31c1eef7c1c01ba42e48f2fe3053969fca278c5cb6d97",
+    "807b6072d7a7e46da6cd865f885d91a2b74ca1ef42fa6a932a1dee000ad59f36",
+    "631f6930362fc552b04e56beb4a915cc62c19af4dba754dc7e130d4f6f70a912"
+  ],
+  "schema": "PixelBridge.UnifiedLc4HoldoutReport.1",
+  "selectionReportBlake3": "b047abaf309876b5fac3613d1ff3144d7927aeda72ad467795c05afff7706f93",
+  "sourceLockBlake3": "c4eeebc4a655f2b93734ac0b5223176c2bfb77ae552e20390386c07d81a3bf55",
+  "status": "Passed"
+}

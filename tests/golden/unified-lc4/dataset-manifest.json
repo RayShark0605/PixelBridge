@@ -1,0 +1,2165 @@
+{
+  "historicalSources": [
+    {
+      "chromaStates": [
+        [
+          -24,
+          7,
+          -16,
+          0
+        ],
+        [
+          24,
+          2,
+          -16,
+          1
+        ],
+        [
+          24,
+          -7,
+          16,
+          3
+        ],
+        [
+          -24,
+          -2,
+          16,
+          2
+        ]
+      ],
+      "highLuma": 224,
+      "id": "historical-lf4",
+      "lowLuma": 32,
+      "maskBitOrder": "row-major-4x4-lsb-first",
+      "masksHexByHistoricalLabel": [
+        "3333",
+        "00ff",
+        "cc33",
+        "9999",
+        "f00f",
+        "6699",
+        "3cc3",
+        "9669",
+        "cccc",
+        "ff00",
+        "33cc",
+        "6666",
+        "0ff0",
+        "9966",
+        "c33c",
+        "6996"
+      ],
+      "origin": "pbmodulation::kRemoteVisualLowFpsSymbolMasks",
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad"
+    },
+    {
+      "chromaStates": [
+        [
+          -24,
+          7,
+          -16,
+          0
+        ],
+        [
+          24,
+          2,
+          -16,
+          1
+        ],
+        [
+          24,
+          -7,
+          16,
+          3
+        ],
+        [
+          -24,
+          -2,
+          16,
+          2
+        ]
+      ],
+      "highLuma": 176,
+      "id": "historical-shape-chroma",
+      "lowLuma": 80,
+      "maskBitOrder": "row-major-4x4-lsb-first",
+      "masksHexByHistoricalLabel": [
+        "00ff",
+        "ff00",
+        "3333",
+        "cccc",
+        "0ff0",
+        "f00f",
+        "6666",
+        "9999",
+        "7331",
+        "8cce",
+        "1337",
+        "ecc8",
+        "8c73",
+        "738c",
+        "13ec",
+        "ec13"
+      ],
+      "origin": "pbmodulation::kShapeChromaTemplates/kShapeChromaStates",
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e"
+    }
+  ],
+  "manifestBlake3": "a69fa7980680549ed951d3ddda7ab2e48a8da893a59180ccbb7bd83a2ac65ed3",
+  "profile": {
+    "dataTiles": 86688,
+    "layoutVersion": 8,
+    "name": "PB-Unified-LC4-V1",
+    "profileIdHex": "5042554e494c4331",
+    "tilePixels": 4
+  },
+  "requiredScales": [
+    {
+      "decimal": "0.75",
+      "denominator": 4,
+      "numerator": 3
+    },
+    {
+      "decimal": "0.85",
+      "denominator": 20,
+      "numerator": 17
+    },
+    {
+      "decimal": "1.00",
+      "denominator": 1,
+      "numerator": 1
+    },
+    {
+      "decimal": "1.50",
+      "denominator": 2,
+      "numerator": 3
+    },
+    {
+      "decimal": "2.00",
+      "denominator": 1,
+      "numerator": 2
+    }
+  ],
+  "sampleCounts": {
+    "Holdout": 10,
+    "Train": 30,
+    "Validation": 20
+  },
+  "samples": [
+    {
+      "sampleBlake3": "c9b14b4a92a5bc4f722b6e3860ebea240e9ab3b51f3a08f17e613ab8c62da5a8",
+      "sampleId": "historical-lf4-scale-1-1-blur-quant6",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "1d77520b80c6578cab1c7da2a6c36933d371678638f7b9125861b718f109aef7",
+      "sampleId": "historical-lf4-scale-1-1-chroma420-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "64183cdf4c3bf21c9a2fa78e2ceecf3680c000de2f1d9810fcdfde21152903f3",
+      "sampleId": "historical-lf4-scale-1-1-clean",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "dff026e88ce49cd93421bfb37c8acaf7b65948dde45ce025558aa6a4bc7706fb",
+      "sampleId": "historical-lf4-scale-1-1-fractional-a",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "15e988b6e6c860bfd0d2c480447209defd85d1572e2e53319fb726474fb7538a",
+      "sampleId": "historical-lf4-scale-1-1-fractional-b-letterbox",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "336f843610f817b952b666ca0ffe0d473a4a87f1586e6106fb8627ed782e2510",
+      "sampleId": "historical-lf4-scale-1-1-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "bcbd4f490f21e369d6c04ea4c3e613de98f6816414dac586fe65a7bf50e602de",
+      "sampleId": "historical-lf4-scale-17-20-blur-quant6",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "c939ef5efb03d63b3e10033d3904f9be377a3a5ee74186bb4fba59b5d6a1de73",
+      "sampleId": "historical-lf4-scale-17-20-chroma420-quant5",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "34c3276dbfcc9f490f9f769ee2a6edac35ea9050c4bb5ccc21e62e7ff157d3ca",
+      "sampleId": "historical-lf4-scale-17-20-clean",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "74984e6188a58085868b9e8582097e2057758e23feb7d83aa8a5362ecc988572",
+      "sampleId": "historical-lf4-scale-17-20-fractional-a",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "48f878dbf8002a37fc64863d81343bffabced3800427ef7a9b0ce615af019d88",
+      "sampleId": "historical-lf4-scale-17-20-fractional-b-letterbox",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "128efb0387914cf205098d75968d65b36b537a66e5cbdfd8f38301e71dd21eb3",
+      "sampleId": "historical-lf4-scale-17-20-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "510a638cb14138db00e2a20429eedb5ac1ba908e97a478034bc6f276585dc836",
+      "sampleId": "historical-lf4-scale-2-1-blur-quant6",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "6e0ceda0e5cf1cf7c1318eeb9c522b2b391807e0f87f3c496182cf112cdd3e11",
+      "sampleId": "historical-lf4-scale-2-1-chroma420-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "62214c83d8bebf3b89ff1684b00d899d120467377d7a6fb91b14e641e5d97f52",
+      "sampleId": "historical-lf4-scale-2-1-clean",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "e47c6751dd9e0ed6fe5c2380dd4801c5efdcbdf26dfc6bd11b3ed01fdf0045ed",
+      "sampleId": "historical-lf4-scale-2-1-fractional-a",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "2f79554e879e3bc63a1c94791ee346626088472e06a99e3456dd44eb6f0f700b",
+      "sampleId": "historical-lf4-scale-2-1-fractional-b-letterbox",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "b4fe96d4bd5160455865ee0794e10419467aacc9e8ff60ba52dffe19287048bf",
+      "sampleId": "historical-lf4-scale-2-1-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "67b932419cd236acba37e7638ac57d045a1e9822ad3b818e3c1cfc73ac4ab8fa",
+      "sampleId": "historical-lf4-scale-3-2-blur-quant6",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "0267018017280a6294ee5482fa702a958e8c1c4a5828d0393174790f89d68aab",
+      "sampleId": "historical-lf4-scale-3-2-chroma420-quant5",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "b7371f7d29e514cf38aed720530635417332514b4faf9bdb1cabd438842e2553",
+      "sampleId": "historical-lf4-scale-3-2-clean",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "c5b123c24cafc6a7130b5a1691a68df27fb9fd26def44fb8d6144ffc6757af0a",
+      "sampleId": "historical-lf4-scale-3-2-fractional-a",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "78d2633b8155adb9963201ed8e1d62345202f0e0b2f16182e373c0b5cd8f09f7",
+      "sampleId": "historical-lf4-scale-3-2-fractional-b-letterbox",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "0c65ba9d551ee8af231bb65529aaf5efa12b9dad6bfbd38f50cb13dc498e85de",
+      "sampleId": "historical-lf4-scale-3-2-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "cd758a89c1cd743c82cc33be1009500b143254d132274b06e65b42e582e1b2a4",
+      "sampleId": "historical-lf4-scale-3-4-blur-quant6",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "8db3e0fe329118a5d425e4eb30eb0812352d073eba873e6077bdf80e24769e9b",
+      "sampleId": "historical-lf4-scale-3-4-chroma420-quant5",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "15bfeabd86f8bbaca259417998ae162ae059f0b0eb53311c60cf0843a32f8f1b",
+      "sampleId": "historical-lf4-scale-3-4-clean",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "41d0a6dee219adce3ca38f6c73b62aa59ef3fa2a15246e28cd4af7b8f55a0e7f",
+      "sampleId": "historical-lf4-scale-3-4-fractional-a",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "cda51b7d8543a0508ea953414666fb607dc1e3335de071a529b343bd318a40de",
+      "sampleId": "historical-lf4-scale-3-4-fractional-b-letterbox",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "33da9e40be67f12a398df387cb2d18faec3b3e10cbe2f438817edd5388223374",
+      "sampleId": "historical-lf4-scale-3-4-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "a6e8947c391ccb817c6c4ec312de2a0dafdca2dd09b2a0520387912bf6fd14ad",
+      "sourceId": "historical-lf4",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "fb70f351b2554c16a1f7e1f9224f28fb887e7fb024fde8df1692bf076c60d5d1",
+      "sampleId": "historical-shape-chroma-scale-1-1-blur-quant6",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "cd8b8b35c5a71644ae856ded7e37e7977656c1d5fdc530e1c9cfa4b42a9c13cc",
+      "sampleId": "historical-shape-chroma-scale-1-1-chroma420-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "5e22c65252429c985c0bb76ba5be7e39b071fb3f696a57a2a9eae5811b1e80b6",
+      "sampleId": "historical-shape-chroma-scale-1-1-clean",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "37ec4b985bf73815700a73c0bea7b961ba5e244fc5aeb3a10d40da1c7dd8181b",
+      "sampleId": "historical-shape-chroma-scale-1-1-fractional-a",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "4719974a61cec5b03c6946aa7b9fc3c7a7a845055910abfc3e79f992ce31b404",
+      "sampleId": "historical-shape-chroma-scale-1-1-fractional-b-letterbox",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "e06fc2e373e64df192d53a99b15d24cc182ea8d436bd64da7d950ec82df94803",
+      "sampleId": "historical-shape-chroma-scale-1-1-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 1
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "a5d329430a5f7c9afcfdb3eb9eed63e8d5e66757bb5d193a8295e0f3be53c537",
+      "sampleId": "historical-shape-chroma-scale-17-20-blur-quant6",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "42bf564ede45da9bfcd132b46876be8c5594a7271055edb86f3c4105e209752e",
+      "sampleId": "historical-shape-chroma-scale-17-20-chroma420-quant5",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "9a64627f7a5c314cb689d89b968ba304d2eb4819187fbff9a790b8aa431fb65e",
+      "sampleId": "historical-shape-chroma-scale-17-20-clean",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "753fa9882cfe3c06f3d7d8bfc8bbd9c6a983f757920f55825c516ab7fd1d47d0",
+      "sampleId": "historical-shape-chroma-scale-17-20-fractional-a",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "fad2eafd077b426ef0e4a4689e506975a5d631bcc24a0b2210f1cbf70fa3727c",
+      "sampleId": "historical-shape-chroma-scale-17-20-fractional-b-letterbox",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "c16bedeafefdbe58e7d0c039dae4fb7af9b11a08393292aa9bd350474c64c8dc",
+      "sampleId": "historical-shape-chroma-scale-17-20-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 20,
+        "numerator": 17
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "a5328e753099a40613b31c1eef7c1c01ba42e48f2fe3053969fca278c5cb6d97",
+      "sampleId": "historical-shape-chroma-scale-2-1-blur-quant6",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "37c003456e39c88012540a443352eb3eeb1c75e8d3efc542f461d6ad01662b39",
+      "sampleId": "historical-shape-chroma-scale-2-1-chroma420-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "665971316de13b779213b68ca9bb9fe2fc318d078c3c39c71f793046a2a5eb0d",
+      "sampleId": "historical-shape-chroma-scale-2-1-clean",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "6103fcc6beb3660574ae3c9de92b19ed8ec4549eb012cf823664cbdfb6dddc98",
+      "sampleId": "historical-shape-chroma-scale-2-1-fractional-a",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "9c9889b54cd44fbb4c8ecae423adce85cb4d6c0cf3bd6b1f7ab3c01a92e6d3b7",
+      "sampleId": "historical-shape-chroma-scale-2-1-fractional-b-letterbox",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "0b89b17984601cac438519462ada485502ebe7915151c9ef7854c9dceb21f170",
+      "sampleId": "historical-shape-chroma-scale-2-1-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 1,
+        "numerator": 2
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "e4001e705ce47d5e6f3bdc3f8f3741b35c6ae48e2297d60198104b6c954e406f",
+      "sampleId": "historical-shape-chroma-scale-3-2-blur-quant6",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "a2c3363cef700ae010120aee284cf0c7ef8f887017141a832df21ccdf0a977a0",
+      "sampleId": "historical-shape-chroma-scale-3-2-chroma420-quant5",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "807b6072d7a7e46da6cd865f885d91a2b74ca1ef42fa6a932a1dee000ad59f36",
+      "sampleId": "historical-shape-chroma-scale-3-2-clean",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "9b334aa62cd2dcaf65009448fac5bf4a3318ad662d1bb449371908ccc005e3fa",
+      "sampleId": "historical-shape-chroma-scale-3-2-fractional-a",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "78593858548c57e70e5a1680be6ad6c7e4640978aeb2e47775c79ecc908cb9ec",
+      "sampleId": "historical-shape-chroma-scale-3-2-fractional-b-letterbox",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "cb8e3018427e74710c96294b4ac07d7efa17bda34898329ccc3c8c8275ca8416",
+      "sampleId": "historical-shape-chroma-scale-3-2-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 2,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "b36a0a02a9726adc2e7a2cc76ca63e75b596e14e7877c5763bc1821c4f83a102",
+      "sampleId": "historical-shape-chroma-scale-3-4-blur-quant6",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 3,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 6,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "065c773e1d2be862766061c0bbc87367cb582cacb51bce9c2c30cc5c98e11491",
+      "sampleId": "historical-shape-chroma-scale-3-4-chroma420-quant5",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 2,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": true,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          32,
+          64
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "ba80b4b38d97ac26a0f810b26cff250da3009a3e84c038ad88862524eb8da6df",
+      "sampleId": "historical-shape-chroma-scale-3-4-clean",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 0,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          0,
+          0
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "area"
+      }
+    },
+    {
+      "sampleBlake3": "6efb4de875acf3c52e8ed6726db5a5ea356f26cb10bce78500e862142bb40ab1",
+      "sampleId": "historical-shape-chroma-scale-3-4-fractional-a",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Train",
+      "splitRankWithinStratum": 1,
+      "transforms": {
+        "centeredLetterbox": false,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          64,
+          -96
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bilinear"
+      }
+    },
+    {
+      "sampleBlake3": "756a92ca48783f29a72ecd7e2f15c5bba61cecc545e89bc6acdb49c5ea7160f8",
+      "sampleId": "historical-shape-chroma-scale-3-4-fractional-b-letterbox",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Validation",
+      "splitRankWithinStratum": 4,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 0,
+        "neutralChroma": false,
+        "originQ8": [
+          -96,
+          32
+        ],
+        "quantizationBitsPerChannel": 8,
+        "resampleFilter": "bicubic-catmull-rom-q16"
+      }
+    },
+    {
+      "sampleBlake3": "631f6930362fc552b04e56beb4a915cc62c19af4dba754dc7e130d4f6f70a912",
+      "sampleId": "historical-shape-chroma-scale-3-4-neutral-chroma-blur-quant5",
+      "scale": {
+        "denominator": 4,
+        "numerator": 3
+      },
+      "sourceBlake3": "612f40e97f30537379a1ad8bd75b5edc306d95d0f59bf17222d109022fa0004e",
+      "sourceId": "historical-shape-chroma",
+      "spatialQualityModel": {
+        "minimumQualityQ12": 2560,
+        "periodTiles": [
+          17,
+          13
+        ],
+        "phaseSource": "sampleBlake3",
+        "schema": "PixelBridge.UnifiedLc4SpatialQualityQ12.1"
+      },
+      "split": "Holdout",
+      "splitRankWithinStratum": 5,
+      "transforms": {
+        "centeredLetterbox": true,
+        "chroma420": false,
+        "gaussianBlurPasses": 1,
+        "neutralChroma": true,
+        "originQ8": [
+          -64,
+          -32
+        ],
+        "quantizationBitsPerChannel": 5,
+        "resampleFilter": "bilinear"
+      }
+    }
+  ],
+  "schema": "PixelBridge.UnifiedLc4DatasetManifest.1",
+  "simulationModel": {
+    "arithmetic": "signed-int64/Q12/round-half-away-from-zero",
+    "chroma420": "centered 2x2 average of luma-relative B/R deltas",
+    "neutralChroma": "BT.709 integer luma (54R+183G+19B+128)/256",
+    "quantization": "uniform round-nearest B/G/R; alpha excluded",
+    "schema": "PixelBridge.UnifiedLc4TileChannelQ12.1"
+  },
+  "splitAlgorithm": {
+    "assignmentByRank": {
+      "Holdout": [
+        5
+      ],
+      "Train": [
+        0,
+        1,
+        2
+      ],
+      "Validation": [
+        3,
+        4
+      ]
+    },
+    "holdoutRule": "Descriptors are sealed here; outcomes are not evaluated during selection.",
+    "ordering": "BLAKE3(domain || seed || canonical sample descriptor), then sampleId",
+    "schema": "PixelBridge.UnifiedLc4StratifiedBlake3Split.1",
+    "seedHex": "7d21f1c9a0b45e33d6c803b27194fa80",
+    "strata": [
+      "sourceId",
+      "scale.numerator",
+      "scale.denominator"
+    ]
+  },
+  "status": "SealedBeforeSearch",
+  "version": 1
+}

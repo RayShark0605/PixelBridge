@@ -1,0 +1,679 @@
+{
+  "artifacts": {
+    "chroma-states.bin": {
+      "blake3": "b3fe43fc78633a82ddd7dbf30b7423ac9f8139c7f3eb0bb86e46e412ba56a4d8",
+      "bytes": 28,
+      "format": "4x(LE16-blue,LE16-green,LE16-red,u8-label)-by-label"
+    },
+    "codebook.bin": {
+      "blake3": "347125bf491b11d224014d79d80de25f62629858884459393b2ba4a1857b0616",
+      "bytes": 32,
+      "format": "16xLE16-by-label"
+    },
+    "mapping-contract.bin": {
+      "blake3": "56ef611e10bd45797457af8fbf2f4482d31891ed204c2767870449dc6a8a1744",
+      "bytes": 128,
+      "format": "PBULC4M1/LE/v1"
+    }
+  },
+  "datasetManifestBlake3": "a69fa7980680549ed951d3ddda7ab2e48a8da893a59180ccbb7bd83a2ac65ed3",
+  "programVersion": "PBUnifiedMappingSearch.1",
+  "runtime": {
+    "numpy": "1.26.4",
+    "python": "3.12.9"
+  },
+  "schema": "PixelBridge.UnifiedLc4SelectionReport.1",
+  "search": {
+    "allValidationScoresBlake3": "5737ca167a1181609f98c8da12649dc60bc7f19c0d1f266afc3cc13a1186f9a1",
+    "candidateEnumeration": "balanced 4x4 masks with no isolated equal-valued 4-neighbor cell, plus historical probes; every selectable codebook has pairwise Hamming distance at least 8",
+    "candidateMasks": 1916,
+    "codebookPairSets": 8,
+    "complementPairRepresentatives": 957,
+    "labelSearch": "Train-only exhaustive 8! complement-pair assignment; canonical orientation",
+    "labeledCodebooks": 8,
+    "mappingCandidates": 12,
+    "rankingOrder": [
+      "Base minimum margin descending",
+      "Fine minimum margin descending",
+      "Chroma minimum margin descending",
+      "lexicographic ascending"
+    ],
+    "scoreFormula": "minimum signed decision margin * minimum per-codeword spatial quality Q12; product retains Q12",
+    "searchEligibleMasks": 1914,
+    "seedHex": "51a7c4e29bd6038f1470ee39aa62d5c1",
+    "validationCandidates": 96
+  },
+  "sourceLock": {
+    "files": [
+      {
+        "blake3": "427a45498a1ba956a1f578bf953b48fb4be56360d1319f17618e1f2639f31d09",
+        "bytes": 9531,
+        "path": "tools/PBUnifiedMappingSearch/dataset_manifest.py"
+      },
+      {
+        "blake3": "6119c54e657c6649920f81dd32047fc16c00320756741a2f5ac0603925649c59",
+        "bytes": 48256,
+        "path": "tools/PBUnifiedMappingSearch/unified_mapping_search.py"
+      },
+      {
+        "blake3": "d6d6d8a02178963df0c033007000c266f7ba8fa39b74dd99687b4056610de43b",
+        "bytes": 9520,
+        "path": "libs/PBRemoteVisualSimulator/include/pbremotevisualsimulator/channel_transform.h"
+      },
+      {
+        "blake3": "8897bb7484ac7b389351bcac1fa5b68d49473bd451a34cb1f9e929a5a76602c8",
+        "bytes": 71202,
+        "path": "libs/PBRemoteVisualSimulator/src/channel_transform.cpp"
+      }
+    ],
+    "programVersion": "PBUnifiedMappingSearch.1",
+    "schema": "PixelBridge.UnifiedLc4SearchSourceLock.1",
+    "searchSeedHex": "51a7c4e29bd6038f1470ee39aa62d5c1",
+    "sourceLockBlake3": "c4eeebc4a655f2b93734ac0b5223176c2bfb77ae552e20390386c07d81a3bf55"
+  },
+  "splitDiscipline": {
+    "holdoutResultsOpened": false,
+    "holdoutSamplesEvaluated": 0,
+    "trainSamplesEvaluated": 30,
+    "validationSamplesEvaluated": 20
+  },
+  "status": "ValidationWinnerFrozenBeforeHoldout",
+  "topValidationCandidates": [
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 1,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 10,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 2,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 3,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 5,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 8,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 0,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3032,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87928,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 6,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3032,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87928,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 9,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3032,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87928,
+        "fineMinimumMarginQ12": 8829440
+      }
+    },
+    {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "mappingCandidateIndex": 4,
+      "masksHexByLabel": [
+        "07dc",
+        "08ef",
+        "1337",
+        "6666",
+        "34d3",
+        "3be0",
+        "62b9",
+        "718e",
+        "f823",
+        "f710",
+        "ecc8",
+        "9999",
+        "cb2c",
+        "c41f",
+        "9d46",
+        "8e71"
+      ],
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3448
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8826880
+      }
+    }
+  ],
+  "winner": {
+    "chromaStatesByLabel": [
+      [
+        -24,
+        7,
+        -16,
+        0
+      ],
+      [
+        24,
+        2,
+        -16,
+        1
+      ],
+      [
+        -24,
+        -2,
+        16,
+        2
+      ],
+      [
+        24,
+        -7,
+        16,
+        3
+      ]
+    ],
+    "mapping": {
+      "candidateIndex": 1,
+      "chromaTileOrder": {
+        "inverse": 14965,
+        "modulus": 86688,
+        "multiplier": 65533,
+        "offset": 51321,
+        "usedTiles": 81000
+      },
+      "lanes": [
+        {
+          "inverse": 200003,
+          "laneId": 0,
+          "logicalBits": 275400,
+          "multiplier": 194267,
+          "offset": 163611,
+          "phaseCount": 16,
+          "phaseStep": 230029,
+          "sequenceOffset": 3
+        },
+        {
+          "inverse": 30239,
+          "laneId": 1,
+          "logicalBits": 64800,
+          "multiplier": 34559,
+          "offset": 52798,
+          "phaseCount": 16,
+          "phaseStep": 26153,
+          "sequenceOffset": 14
+        },
+        {
+          "inverse": 148493,
+          "laneId": 2,
+          "logicalBits": 162000,
+          "multiplier": 152357,
+          "offset": 152539,
+          "phaseCount": 16,
+          "phaseStep": 50837,
+          "sequenceOffset": 15
+        }
+      ],
+      "lumaOwnership": {
+        "baseDedicatedBits": 260064,
+        "baseDedicatedPlanes": [
+          0,
+          1,
+          2
+        ],
+        "basePlane3Positions": [
+          0,
+          15336
+        ],
+        "finePlane3Positions": [
+          15336,
+          80136
+        ],
+        "reservedPlane3Positions": [
+          80136,
+          86688
+        ]
+      },
+      "phaseEvaluation": [
+        0,
+        7,
+        15
+      ],
+      "plane3TileOrder": {
+        "inverse": 15215,
+        "modulus": 86688,
+        "multiplier": 31439,
+        "offset": 76408
+      }
+    },
+    "mappingStreamFrameSequenceZeroBlake3": "cd8444d1513640cb0b01d58dd5a8b984d54457d78ba49331c7def9f676cd1801",
+    "masksHexByLabel": [
+      "07dc",
+      "08ef",
+      "1337",
+      "6666",
+      "34d3",
+      "3be0",
+      "62b9",
+      "718e",
+      "f823",
+      "f710",
+      "ecc8",
+      "9999",
+      "cb2c",
+      "c41f",
+      "9d46",
+      "8e71"
+    ],
+    "train": {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "minimumCodewordQualityQ12": {
+        "Base": 3286,
+        "Chroma": 2872,
+        "Fine": 3287
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 1787584,
+        "chromaMinimumMarginQ12": 71800,
+        "fineMinimumMarginQ12": 7888800
+      },
+      "signal": {
+        "chroma": {
+          "accepted": 200,
+          "erased": 0,
+          "evaluated": 200,
+          "expectedUnavailable": 40,
+          "falseAccepted": 0,
+          "minimumSignedMargin": 25
+        },
+        "luma": {
+          "acceptedByLabelBit": [
+            480,
+            480,
+            480,
+            480
+          ],
+          "baseMinimumSignedMargin": 544,
+          "erasedByLabelBit": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "falseAcceptedBase": 0,
+          "falseAcceptedByLabelBit": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "falseAcceptedFine": 0,
+          "fineMinimumSignedMargin": 2400,
+          "minimumSignedMarginByLabelBit": [
+            1344,
+            544,
+            544,
+            2400
+          ],
+          "observationsPerLabelBit": 480
+        }
+      }
+    },
+    "validation": {
+      "falseAccepted": {
+        "Base": 0,
+        "Chroma": 0,
+        "Fine": 0
+      },
+      "minimumCodewordQualityQ12": {
+        "Base": 3449,
+        "Chroma": 3033,
+        "Fine": 3449
+      },
+      "scores": {
+        "baseMinimumMarginQ12": 2869568,
+        "chromaMinimumMarginQ12": 87957,
+        "fineMinimumMarginQ12": 8829440
+      },
+      "signal": {
+        "chroma": {
+          "accepted": 128,
+          "erased": 0,
+          "evaluated": 128,
+          "expectedUnavailable": 32,
+          "falseAccepted": 0,
+          "minimumSignedMargin": 29
+        },
+        "luma": {
+          "acceptedByLabelBit": [
+            320,
+            320,
+            320,
+            320
+          ],
+          "baseMinimumSignedMargin": 832,
+          "erasedByLabelBit": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "falseAcceptedBase": 0,
+          "falseAcceptedByLabelBit": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "falseAcceptedFine": 0,
+          "fineMinimumSignedMargin": 2560,
+          "minimumSignedMarginByLabelBit": [
+            1600,
+            832,
+            832,
+            2560
+          ],
+          "observationsPerLabelBit": 320
+        }
+      }
+    }
+  }
+}

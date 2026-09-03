@@ -72,6 +72,12 @@ PbAddUnitTest(PBUnifiedVisualProfileTests test_unified_visual_profile.cpp)
 target_link_libraries(PBUnifiedVisualProfileTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
 set_tests_properties(PBUnifiedVisualProfileTests PROPERTIES LABELS "modulation;product-profile;unified" TIMEOUT 20)
 
+PbAddUnitTest(PBUnifiedVisualMappingTests test_unified_visual_mapping.cpp)
+target_link_libraries(PBUnifiedVisualMappingTests PRIVATE PB::PBModulation PB::PBProtocol)
+target_compile_definitions(PBUnifiedVisualMappingTests PRIVATE
+    PB_UNIFIED_LC4_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-lc4")
+set_tests_properties(PBUnifiedVisualMappingTests PROPERTIES LABELS "golden;mapping;modulation;unified" TIMEOUT 120)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

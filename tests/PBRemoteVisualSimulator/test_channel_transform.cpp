@@ -328,10 +328,12 @@ TEST_CASE("RemoteVisual fixed spatial color and temporal impairments share one d
 {
     const PaddedImage source = MakePatternImage(17, 13, 9, 0x123456789ABCDEF0ULL);
     const PaddedImage reference = MakePatternImage(17, 13, 11, 0x0FEDCBA987654321ULL);
-    const std::array<pbremotevisualsimulator::ChannelTransform, 6> transforms{
+    const std::array<pbremotevisualsimulator::ChannelTransform, 8> transforms{
         pbremotevisualsimulator::Kernel3x3Transform{pbremotevisualsimulator::FixedKernel3x3::GaussianBlur, 2},
         pbremotevisualsimulator::ColorTransferTransform{0.875, 12.5, 1.125},
         pbremotevisualsimulator::ChromaSubsample420Transform{},
+        pbremotevisualsimulator::NeutralChromaTransform{},
+        pbremotevisualsimulator::ChannelQuantizationTransform{5},
         pbremotevisualsimulator::SolidOverlayTransform{2, 3, 5, 4,
             {std::byte{12}, std::byte{34}, std::byte{56}, std::byte{255}}, 97},
         pbremotevisualsimulator::ReferenceBlendTransform{64},
@@ -357,8 +359,8 @@ TEST_CASE("RemoteVisual fixed spatial color and temporal impairments share one d
     {
         REQUIRE(first.records[index - 1].outputBlake3 == first.records[index].inputBlake3);
     }
-    for (const std::string kind : {"kernel-3x3", "color-transfer", "chroma-420", "solid-overlay",
-        "reference-blend", "crop"})
+    for (const std::string kind : {"kernel-3x3", "color-transfer", "chroma-420", "neutral-chroma",
+        "channel-quantization", "solid-overlay", "reference-blend", "crop"})
     {
         REQUIRE(first.canonicalManifestJson.find("\"kind\":\"" + kind + "\"") != std::string::npos);
     }
@@ -392,6 +394,48 @@ TEST_CASE("RemoteVisual impairment primitives preserve exact invariant cases",
         {3, chroma});
     REQUIRE(chromaResult);
     REQUIRE(chromaResult.Value().output.pixels == constant.pixels);
+
+    PaddedImage colored;
+    colored.width = 3;
+    colored.height = 1;
+    colored.rowPitch = 12;
+    colored.pixels = {std::byte{10}, std::byte{20}, std::byte{30}, std::byte{7},
+        std::byte{0}, std::byte{0}, std::byte{255}, std::byte{19},
+        std::byte{255}, std::byte{255}, std::byte{255}, std::byte{231}};
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> neutralChroma{
+        pbremotevisualsimulator::NeutralChromaTransform{}};
+    const auto neutralResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(colored.View(), std::nullopt,
+        {6, neutralChroma});
+    REQUIRE(neutralResult);
+    const std::vector<std::byte> expectedNeutral{std::byte{21}, std::byte{21}, std::byte{21}, std::byte{7},
+        std::byte{54}, std::byte{54}, std::byte{54}, std::byte{19},
+        std::byte{255}, std::byte{255}, std::byte{255}, std::byte{231}};
+    REQUIRE(neutralResult.Value().output.pixels == expectedNeutral);
+    REQUIRE(neutralResult.Value().canonicalManifestJson.find("\"kind\":\"neutral-chroma\"") != std::string::npos);
+    REQUIRE(neutralResult.Value().canonicalManifestJson.find(
+        "\"parameters\":{\"alpha\":\"preserved\",\"matrix\":\"bt709-integer\"}") != std::string::npos);
+
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> quantization{
+        pbremotevisualsimulator::ChannelQuantizationTransform{4}};
+    const auto quantizationResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(colored.View(), std::nullopt,
+        {7, quantization});
+    REQUIRE(quantizationResult);
+    const std::vector<std::byte> expectedQuantized{std::byte{17}, std::byte{17}, std::byte{34}, std::byte{7},
+        std::byte{0}, std::byte{0}, std::byte{255}, std::byte{19},
+        std::byte{255}, std::byte{255}, std::byte{255}, std::byte{231}};
+    REQUIRE(quantizationResult.Value().output.pixels == expectedQuantized);
+    REQUIRE(quantizationResult.Value().canonicalManifestJson.find("\"kind\":\"channel-quantization\"") !=
+        std::string::npos);
+    REQUIRE(quantizationResult.Value().canonicalManifestJson.find(
+        "\"parameters\":{\"bitsPerChannel\":4,\"channels\":\"bgr\",\"method\":\"uniform-round-nearest\"}") !=
+        std::string::npos);
+
+    const std::array<pbremotevisualsimulator::ChannelTransform, 1> identityQuantization{
+        pbremotevisualsimulator::ChannelQuantizationTransform{8}};
+    const auto identityQuantizationResult = pbremotevisualsimulator::ExecuteChannelTransformPlan(colored.View(),
+        std::nullopt, {8, identityQuantization});
+    REQUIRE(identityQuantizationResult);
+    REQUIRE(identityQuantizationResult.Value().output.pixels == colored.pixels);
 
     const PaddedImage pattern = MakePatternImage(9, 7, 0, 4);
     const std::array<pbremotevisualsimulator::ChannelTransform, 1> crop{
@@ -483,6 +527,12 @@ TEST_CASE("RemoteVisual channel transforms reject malformed geometry and resourc
         pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
     RequireTransformError(pbremotevisualsimulator::ColorTransferTransform{1, 0, 0.1},
         pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
+    RequireTransformError(pbremotevisualsimulator::ChannelQuantizationTransform{
+        pbremotevisualsimulator::kMinimumQuantizationBitsPerChannel - 1},
+        pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
+    RequireTransformError(pbremotevisualsimulator::ChannelQuantizationTransform{
+        pbremotevisualsimulator::kMaximumQuantizationBitsPerChannel + 1},
+        pbremotevisualsimulator::ChannelTransformErrorCode::InvalidParameter);
     RequireTransformError(pbremotevisualsimulator::ResampleTransform{8193, 1, 1, 1, 0, 0},
         pbremotevisualsimulator::ChannelTransformErrorCode::DimensionLimitExceeded);
     RequireTransformError(pbremotevisualsimulator::ResampleTransform{4096, 4096, 1, 1, 0, 0},
@@ -494,6 +544,11 @@ TEST_CASE("RemoteVisual channel transforms reject malformed geometry and resourc
     workPolicy.maximumWorkUnits = 1023;
     RequireTransformError(pbremotevisualsimulator::ResampleTransform{8, 8, 1, 1, 0, 0,
         pbremotevisualsimulator::ResampleFilter::Bicubic},
+        pbremotevisualsimulator::ChannelTransformErrorCode::WorkLimitExceeded, std::nullopt, workPolicy);
+    workPolicy.maximumWorkUnits = 191;
+    RequireTransformError(pbremotevisualsimulator::NeutralChromaTransform{},
+        pbremotevisualsimulator::ChannelTransformErrorCode::WorkLimitExceeded, std::nullopt, workPolicy);
+    RequireTransformError(pbremotevisualsimulator::ChannelQuantizationTransform{4},
         pbremotevisualsimulator::ChannelTransformErrorCode::WorkLimitExceeded, std::nullopt, workPolicy);
     pbremotevisualsimulator::ChannelTransformPolicy bytePolicy;
     bytePolicy.maximumResidentBytes = 511;
