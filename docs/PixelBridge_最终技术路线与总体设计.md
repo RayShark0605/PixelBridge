@@ -4408,6 +4408,8 @@ Encoder 进程重启后，如果不能恢复**完全相同**的 SessionDescripto
 
 zstd 的 compression level / worker 参数属于 Encoder tuning；Decoder 只依赖标准 zstd frame 与协议边界。不同 zstd 版本/worker 参数即使解压后得到相同 raw bytes，也可能产生不同 compressed bytes；同一 Session 不允许把这些不同 byte stream 混进同一个 Wirehair message。
 
+G02 当前实现采用完整重编码后校验 `EncodedDigest`、current/next encoded Segment 常驻缓冲和 4,096-ID durable lease；本地状态 schema、恢复身份与 crash-window 的机器可核对表见 [`ENCODER_STREAMING_CAROUSEL.md`](ENCODER_STREAMING_CAROUSEL.md)。该实现记录不改变本章 wire 语义。
+
 ---
 
 # 33. 输出路径与不可信文件名安全

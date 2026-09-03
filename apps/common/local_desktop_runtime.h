@@ -8,6 +8,7 @@
 #include "pbscreenregion/screen_region.h"
 
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -117,6 +118,51 @@ struct EncoderCarouselProbeSnapshot
     std::uint32_t codewords = 0;
 };
 
+inline constexpr std::uint32_t encoderProbeNoOuterBlockId = 0xFFFFFFFFU;
+
+struct EncoderStreamingSegmentProbeSnapshot
+{
+    std::uint64_t segmentOrdinal = 0;
+    std::uint64_t rawBytes = 0;
+    std::uint64_t encodedBytes = 0;
+    pbprotocol::CompressionCodec compressionCodec = pbprotocol::CompressionCodec::Raw;
+    pbprotocol::OuterFecMode outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
+    std::uint32_t systematicBlockCount = 0;
+    std::uint64_t repairEquationsPerRound = 0;
+    std::uint64_t paddingDuplicateSlotsPerRound = 0;
+    std::uint32_t firstRepairIdPass0 = encoderProbeNoOuterBlockId;
+    std::uint32_t firstRepairIdPass1 = encoderProbeNoOuterBlockId;
+    std::uint32_t persistedRepairLeaseEnd = 0;
+    std::uint32_t restartedRepairIdStart = 0;
+};
+
+struct EncoderStreamingCarouselProbeSnapshot
+{
+    std::uint64_t sourceBytes = 0;
+    std::uint64_t segmentCount = 0;
+    pbprotocol::SessionId sessionId{};
+    std::array<std::byte, pbprotocol::kDigestBytes> wholeFileDigest{};
+    std::uint64_t completedCarouselPasses = 0;
+    std::uint64_t scheduledFrames = 0;
+    std::uint64_t controlFrames = 0;
+    std::uint64_t dataFrames = 0;
+    std::uint64_t scheduledSystematicEquations = 0;
+    std::uint64_t scheduledRepairEquations = 0;
+    std::uint64_t paddingDuplicateSlots = 0;
+    std::uint64_t descriptorResidentEncodedBytes = 0;
+    std::uint32_t peakResidentEncodedSegmentCount = 0;
+    std::uint64_t peakResidentEncodedSegmentBytes = 0;
+    std::uint64_t initialFrameSequence = 0;
+    std::uint64_t lastUsedFrameSequence = 0;
+    std::uint64_t persistedFrameSequenceLeaseEnd = 0;
+    std::uint64_t restartedFrameSequenceStart = 0;
+    bool sourceWriteShareDenied = false;
+    bool sourceDeleteShareDenied = false;
+    bool restartWasResumed = false;
+    bool equationReproducible = false;
+    std::vector<EncoderStreamingSegmentProbeSnapshot> segments;
+};
+
 // Narrow test seam over the production SenderFrameBuilder. The external
 // completion marker is deliberately not passed into the builder: the probe
 // proves that sender carousel progression has no receiver-completion input.
@@ -129,6 +175,14 @@ public:
     [[nodiscard]] static RuntimeStatus ProbeRemoteVisualFullscreenComposition(std::span<const std::byte> source,
         std::uint32_t destinationWidth, std::uint32_t destinationHeight,
         std::vector<std::byte>& output) noexcept;
+    // Opens the real source handle and exercises production pre-scan,
+    // descriptor persistence, current/next encoded Segment buffering,
+    // Carousel scheduling, durable ID leases, and restart recreation without
+    // creating a DataWindow or performing any screen operation.
+    [[nodiscard]] static RuntimeStatus ProbeStreamingCarouselFile(const std::wstring& sourcePath,
+        const std::filesystem::path& sessionStateRoot, bool compressionEnabled, int compressionLevel,
+        std::uint32_t logicalVisualFps, std::uint32_t completedPasses,
+        EncoderStreamingCarouselProbeSnapshot& output) noexcept;
 };
 
 struct DecoderAdmissionProbeSnapshot

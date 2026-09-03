@@ -20,8 +20,8 @@ inline constexpr std::uint64_t encoderDurableIdLeaseSize = 4096;
 
 struct EncoderSourceIdentity
 {
-    std::uint32_t volumeSerialNumber = 0;
-    std::uint64_t fileId = 0;
+    std::uint64_t volumeSerialNumber = 0;
+    std::array<std::byte, 16> fileId{};
     std::uint64_t fileBytes = 0;
     std::uint64_t lastWriteTime = 0;
 

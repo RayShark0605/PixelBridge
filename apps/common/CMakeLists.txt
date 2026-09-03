@@ -13,6 +13,7 @@ target_sources(PBApplication
         monitor_catalog.cpp
         remote_visual_replay_recorder.cpp
         run_report.cpp
+        sender_carousel_scheduler.cpp
     PUBLIC
         application_model.h
         decoder_resume_store.h
@@ -21,7 +22,8 @@ target_sources(PBApplication
         local_desktop_runtime.h
         monitor_catalog.h
         remote_visual_replay_recorder.h
-        run_report.h)
+        run_report.h
+        sender_carousel_scheduler.h)
 
 target_include_directories(PBApplication PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(PBApplication

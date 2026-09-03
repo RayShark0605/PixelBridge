@@ -10,6 +10,7 @@ PbAddUnitTest(PBApplicationTests
     test_optional_diagnostic_fanout.cpp
     test_remote_visual_replay_recorder.cpp
     test_runtime_bindings.cpp
+    test_sender_streaming.cpp
     test_session_persistence.cpp
     test_run_report.cpp)
 target_link_libraries(PBApplicationTests PRIVATE PB::PBApplication PB::PBProtocol PB::PBCompression d3d11 dxgi)

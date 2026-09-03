@@ -78,8 +78,19 @@ TEST_CASE("Compression disabled binds byte-identical RAW without invoking a new 
     REQUIRE(result.Value().bytes == bytes);
 }
 
-TEST_CASE("Compression enabled uses existing zstd and RAW fallback binding", "[application][compression]")
+TEST_CASE("Compression enabled uses existing zstd and RAW fallback binding",
+    "[application][encoder][sender][compression]")
 {
+    pbcompression::CompressionSettings identitySettings;
+    identitySettings.compressionLevel = 3;
+    identitySettings.maxOutputBytes = 16ULL * 1024ULL * 1024ULL;
+    const std::string compressionIdentity = pbcompression::GetSegmentCompressionIdentity(true,
+        identitySettings);
+    REQUIRE(compressionIdentity.find("zstd-1.5.7;enabled=1;level=3") == 0);
+    REQUIRE(compressionIdentity.find(";content-size=1;checksum=1;workers=0") != std::string::npos);
+    identitySettings.compressionLevel = 4;
+    REQUIRE(pbcompression::GetSegmentCompressionIdentity(true, identitySettings) != compressionIdentity);
+
     const std::vector<std::byte> compressible(64U * 1024U, std::byte{0x41});
     auto compressed = pbapp::PrepareEncodedSegment(compressible, true, 3);
     REQUIRE(compressed);
@@ -300,7 +311,7 @@ TEST_CASE("remote-lf4 fullscreen composition centers an exact canvas inside non-
 }
 
 TEST_CASE("Production RemoteVisual sender builds LF4 four-codeword carousels past an external completion marker",
-    "[application][encoder][remote-visual][lf4][carousel]")
+    "[application][encoder][sender][remote-visual][lf4][carousel]")
 {
     const std::array<std::byte, 1> source{std::byte{0x5A}};
     pbapp::EncoderCarouselProbeSnapshot probe;

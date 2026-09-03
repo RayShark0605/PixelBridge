@@ -5,6 +5,7 @@
 #include "optional_diagnostic_fanout.h"
 #include "remote_visual_replay_recorder.h"
 #include "run_report.h"
+#include "sender_carousel_scheduler.h"
 
 #include "pbinnerfec/qc_ldpc_codec.h"
 #include "pbcore/build_info.h"
@@ -97,6 +98,17 @@ static_assert(pbdesktoplevels::kInfoBytes == informationBytes);
 static_assert(pbdesktoplevels::kCodewordBytes == codewordBytes);
 static_assert(pbmodulation::kRemoteVisualLowFpsDataBytes ==
     pbmodulation::kRemoteVisualLowFpsCodewords * codewordBytes);
+static_assert(senderCarouselMaximumLogicalFramesPerSecond == maximumLogicalVisualFps);
+static_assert(senderCarouselMaximumSystematicBlockCount == pbouterfec::kWirehairV2MaximumBlockCount);
+
+[[nodiscard]] pbcompression::CompressionSettings MakeEncoderCompressionSettings(
+    const int compressionLevel) noexcept
+{
+    pbcompression::CompressionSettings settings;
+    settings.compressionLevel = compressionLevel;
+    settings.maxOutputBytes = 16ULL * mebibyte;
+    return settings;
+}
 
 [[nodiscard]] bool IsReplayEvidenceVisualProfileId(const std::uint64_t visualProfileId) noexcept
 {
@@ -668,7 +680,8 @@ private:
 struct SourceFile
 {
     UniqueHandle handle;
-    BY_HANDLE_FILE_INFORMATION identity{};
+    BY_HANDLE_FILE_INFORMATION metadata{};
+    FILE_ID_INFO persistentIdentity{};
     std::wstring path;
     std::uint64_t fileBytes = 0;
 };
@@ -679,10 +692,14 @@ struct SourceFile
     source.handle.Reset(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
     Require(static_cast<bool>(source.handle), "无法以只读方式打开源文件，Win32=" + std::to_string(GetLastError()));
-    Require(GetFileInformationByHandle(source.handle.Get(), &source.identity) != FALSE,
-        "无法读取源文件身份，Win32=" + std::to_string(GetLastError()));
-    source.fileBytes = (static_cast<std::uint64_t>(source.identity.nFileSizeHigh) << 32U) |
-        source.identity.nFileSizeLow;
+    Require(GetFileType(source.handle.Get()) == FILE_TYPE_DISK, "源文件必须是支持稳定文件身份的磁盘文件");
+    Require(GetFileInformationByHandle(source.handle.Get(), &source.metadata) != FALSE,
+        "无法读取源文件元数据，Win32=" + std::to_string(GetLastError()));
+    Require(GetFileInformationByHandleEx(source.handle.Get(), FileIdInfo, &source.persistentIdentity,
+        sizeof(source.persistentIdentity)) != FALSE, "无法读取源文件 128-bit FILE_ID_INFO，Win32=" +
+        std::to_string(GetLastError()));
+    source.fileBytes = (static_cast<std::uint64_t>(source.metadata.nFileSizeHigh) << 32U) |
+        source.metadata.nFileSizeLow;
     const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
     Require(source.fileBytes <= policy.maxAcceptedFileBytes,
         "源文件超过当前 ReceiverResourcePolicy 的最大文件大小");
@@ -721,26 +738,34 @@ struct SourceFile
 [[nodiscard]] bool IsSourceStable(const SourceFile& source) noexcept
 {
     BY_HANDLE_FILE_INFORMATION current{};
-    if (GetFileInformationByHandle(source.handle.Get(), &current) == FALSE)
+    FILE_ID_INFO currentPersistentIdentity{};
+    if (GetFileInformationByHandle(source.handle.Get(), &current) == FALSE ||
+        GetFileInformationByHandleEx(source.handle.Get(), FileIdInfo, &currentPersistentIdentity,
+            sizeof(currentPersistentIdentity)) == FALSE)
     {
         return false;
     }
-    return current.dwVolumeSerialNumber == source.identity.dwVolumeSerialNumber &&
-        current.nFileIndexHigh == source.identity.nFileIndexHigh &&
-        current.nFileIndexLow == source.identity.nFileIndexLow &&
-        current.nFileSizeHigh == source.identity.nFileSizeHigh &&
-        current.nFileSizeLow == source.identity.nFileSizeLow &&
-        CompareFileTime(&current.ftLastWriteTime, &source.identity.ftLastWriteTime) == 0;
+    return currentPersistentIdentity.VolumeSerialNumber == source.persistentIdentity.VolumeSerialNumber &&
+        std::equal(std::begin(currentPersistentIdentity.FileId.Identifier),
+            std::end(currentPersistentIdentity.FileId.Identifier),
+            std::begin(source.persistentIdentity.FileId.Identifier)) &&
+        current.nFileSizeHigh == source.metadata.nFileSizeHigh &&
+        current.nFileSizeLow == source.metadata.nFileSizeLow &&
+        CompareFileTime(&current.ftLastWriteTime, &source.metadata.ftLastWriteTime) == 0;
 }
 
 [[nodiscard]] EncoderSourceIdentity GetEncoderSourceIdentity(const SourceFile& source) noexcept
 {
-    return {source.identity.dwVolumeSerialNumber,
-        static_cast<std::uint64_t>(source.identity.nFileIndexLow) |
-            (static_cast<std::uint64_t>(source.identity.nFileIndexHigh) << 32U),
-        source.fileBytes,
-        static_cast<std::uint64_t>(source.identity.ftLastWriteTime.dwLowDateTime) |
-            (static_cast<std::uint64_t>(source.identity.ftLastWriteTime.dwHighDateTime) << 32U)};
+    EncoderSourceIdentity identity;
+    identity.volumeSerialNumber = source.persistentIdentity.VolumeSerialNumber;
+    for (std::size_t index = 0; index < identity.fileId.size(); index++)
+    {
+        identity.fileId[index] = static_cast<std::byte>(source.persistentIdentity.FileId.Identifier[index]);
+    }
+    identity.fileBytes = source.fileBytes;
+    identity.lastWriteTime = static_cast<std::uint64_t>(source.metadata.ftLastWriteTime.dwLowDateTime) |
+        (static_cast<std::uint64_t>(source.metadata.ftLastWriteTime.dwHighDateTime) << 32U);
+    return identity;
 }
 
 struct ProfileBinding
@@ -1040,13 +1065,7 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     return std::move(encoded.bytes);
 }
 
-enum class FrameKind : std::uint8_t
-{
-    SessionControl,
-    ManifestControl,
-    SegmentControl,
-    Data
-};
+using FrameKind = SenderScheduledFrameKind;
 
 class SenderFrameBuilder
 {
@@ -1058,12 +1077,13 @@ public:
     SenderFrameBuilder(ProfileBinding profile, const TransferDescription& description,
         const std::uint32_t controlRepetitions, SegmentLoader segmentLoader = {},
         RepairIdStartProvider repairIdStartProvider = {}, RepairLeaseCallback repairLeaseCallback = {},
-        const std::uint64_t initialCarouselPass = 0, const std::uint64_t initialSegmentOrdinal = 0)
+        const std::uint64_t initialCarouselPass = 0, const std::uint64_t initialSegmentOrdinal = 0,
+        const std::uint32_t logicalVisualFps = 0)
         : profile_(profile), description_(description), data_(profile.dataBytes),
           pixels_(pbmodulation::kLocalDesktopFrameBgraBytes), segmentLoader_(std::move(segmentLoader)),
           repairIdStartProvider_(std::move(repairIdStartProvider)), repairLeaseCallback_(std::move(repairLeaseCallback)),
           nextRepairIds_(description.segments.size(), 0), currentSegmentOrdinal_(initialSegmentOrdinal),
-          carouselPass_(initialCarouselPass), controlRepetitions_(controlRepetitions)
+          carouselPass_(initialCarouselPass), controlRepetitions_(controlRepetitions), logicalVisualFps_(logicalVisualFps)
     {
         Require(profile_.codewords != 0 && controlRepetitions_ != 0,
             "Profile or Control repetition count is empty");
@@ -1072,13 +1092,22 @@ public:
         if (!description_.segments.empty())
         {
             currentEncodedBytes_ = LoadSegmentBytes(currentSegmentOrdinal_);
+            UpdateResidentSegmentHighWater();
             PreloadNextSegment();
         }
         InitializeCurrentSegment();
     }
 
-    [[nodiscard]] FrameKind GetCurrentKind() const noexcept
+    [[nodiscard]] FrameKind GetCurrentKind() const
     {
+        if (!description_.segments.empty())
+        {
+            SenderScheduledFrame frame;
+            const SenderCarouselSchedulerStatus status = roundScheduler_.GetCurrentFrame(frame);
+            Require(static_cast<bool>(status), std::string("Sender Carousel frame-kind query failed: ") +
+                GetSenderCarouselSchedulerErrorName(status.code));
+            return frame.kind;
+        }
         const std::uint32_t position = cyclePosition_;
         if (position < controlRepetitions_)
         {
@@ -1162,17 +1191,35 @@ public:
 
     void Advance()
     {
-        const bool completedDataRound = !description_.segments.empty() &&
-            cyclePosition_ + 1U == cycleFrameCount_;
-        if (completedDataRound && wirehair_)
+        if (!description_.segments.empty())
         {
-            const std::uint64_t repairIdsUsed = equationSlotsPerRound_ - blockCount_;
-            const auto nextRepairId = pbprotocol::CheckedAddUint64(nextRepairIds_[currentSegmentOrdinal_],
-                repairIdsUsed);
-            RequireResult(nextRepairId, "Wirehair repair ID high-water overflow");
-            Require(nextRepairId.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
-                "Wirehair repair ID space exhausted; start a new Session");
-            nextRepairIds_[currentSegmentOrdinal_] = static_cast<std::uint32_t>(nextRepairId.Value());
+            const SenderCarouselSchedulerStatus advanceStatus = roundScheduler_.Advance();
+            Require(static_cast<bool>(advanceStatus), std::string("Sender Carousel scheduler advance failed: ") +
+                GetSenderCarouselSchedulerErrorName(advanceStatus.code));
+            if (!roundScheduler_.IsComplete())
+            {
+                cyclePosition_ = static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
+                return;
+            }
+            if (wirehair_)
+            {
+                const std::uint64_t repairIdsUsed = roundScheduler_.GetSnapshot().repairEquationCount;
+                const auto nextRepairId = pbprotocol::CheckedAddUint64(nextRepairIds_[currentSegmentOrdinal_],
+                    repairIdsUsed);
+                RequireResult(nextRepairId, "Wirehair repair ID high-water overflow");
+                Require(nextRepairId.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                    "Wirehair repair ID space exhausted; start a new Session");
+                nextRepairIds_[currentSegmentOrdinal_] = static_cast<std::uint32_t>(nextRepairId.Value());
+            }
+            currentSegmentOrdinal_++;
+            if (currentSegmentOrdinal_ == description_.segments.size())
+            {
+                currentSegmentOrdinal_ = 0;
+                Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
+                carouselPass_++;
+            }
+            ActivateNextSegment();
+            return;
         }
         Require(cyclePosition_ < cycleFrameCount_, "Carousel position is outside its current cycle");
         cyclePosition_++;
@@ -1185,20 +1232,14 @@ public:
                 carouselPass_++;
                 return;
             }
-            currentSegmentOrdinal_++;
-            if (currentSegmentOrdinal_ == description_.segments.size())
-            {
-                currentSegmentOrdinal_ = 0;
-                Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
-                carouselPass_++;
-            }
-            ActivateNextSegment();
         }
     }
 
     [[nodiscard]] CarouselSnapshot GetCarouselSnapshot() const noexcept
     {
-        return {carouselPass_, cyclePosition_, cycleFrameCount_};
+        const std::uint32_t position = description_.segments.empty() ? cyclePosition_ :
+            static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
+        return {carouselPass_, position, cycleFrameCount_};
     }
     [[nodiscard]] const std::vector<std::byte>& GetBuiltPixels() const noexcept
     {
@@ -1219,6 +1260,39 @@ public:
     [[nodiscard]] std::uint64_t GetCurrentSegmentOrdinal() const noexcept
     {
         return currentSegmentOrdinal_;
+    }
+    [[nodiscard]] SenderCarouselRoundSnapshot GetCurrentRoundSnapshot() const noexcept
+    {
+        return roundScheduler_.GetSnapshot();
+    }
+    [[nodiscard]] SenderScheduledFrame GetCurrentScheduledFrame() const
+    {
+        SenderScheduledFrame frame;
+        const SenderCarouselSchedulerStatus status = roundScheduler_.GetCurrentFrame(frame);
+        Require(static_cast<bool>(status), std::string("Sender Carousel frame query failed: ") +
+            GetSenderCarouselSchedulerErrorName(status.code));
+        return frame;
+    }
+    [[nodiscard]] std::uint32_t GetOuterBlockIdForSlot(const std::uint32_t slot) const
+    {
+        return CalculateOuterBlockId(slot);
+    }
+    [[nodiscard]] std::uint32_t EncodeOuterPayloadForSlot(const std::uint32_t slot,
+        const std::span<std::byte> output)
+    {
+        const std::uint32_t blockId = CalculateOuterBlockId(slot);
+        const auto encoded = wirehair_ ? wirehair_->EncodeBlock(blockId, output) :
+            directRepeat_->EncodeBlock(blockId, output);
+        RequireResult(encoded, "Outer FEC headless block encoding failed");
+        return encoded.Value();
+    }
+    [[nodiscard]] std::uint32_t GetPeakResidentEncodedSegmentCount() const noexcept
+    {
+        return peakResidentEncodedSegmentCount_;
+    }
+    [[nodiscard]] std::uint64_t GetPeakResidentEncodedSegmentBytes() const noexcept
+    {
+        return peakResidentEncodedSegmentBytes_;
     }
 
 private:
@@ -1292,11 +1366,23 @@ private:
         nextEncodedSegmentOrdinal_.reset();
         if (description_.segments.size() <= 1)
         {
+            UpdateResidentSegmentHighWater();
             return;
         }
         const std::uint64_t nextOrdinal = (currentSegmentOrdinal_ + 1ULL) % description_.segments.size();
         nextEncodedBytes_ = LoadSegmentBytes(nextOrdinal);
         nextEncodedSegmentOrdinal_ = nextOrdinal;
+        UpdateResidentSegmentHighWater();
+    }
+
+    void UpdateResidentSegmentHighWater() noexcept
+    {
+        const std::uint32_t residentCount = static_cast<std::uint32_t>(!currentEncodedBytes_.empty()) +
+            static_cast<std::uint32_t>(!nextEncodedBytes_.empty());
+        const std::uint64_t residentBytes = static_cast<std::uint64_t>(currentEncodedBytes_.size()) +
+            static_cast<std::uint64_t>(nextEncodedBytes_.size());
+        peakResidentEncodedSegmentCount_ = (std::max)(peakResidentEncodedSegmentCount_, residentCount);
+        peakResidentEncodedSegmentBytes_ = (std::max)(peakResidentEncodedSegmentBytes_, residentBytes);
     }
 
     void ActivateNextSegment()
@@ -1318,7 +1404,6 @@ private:
         wirehair_.reset();
         directRepeat_.reset();
         blockCount_ = 0;
-        equationSlotsPerRound_ = 0;
         const std::uint32_t controlFrames = static_cast<std::uint32_t>(
             (description_.segments.empty() ? 2U : 3U) * controlRepetitions_);
         if (description_.segments.empty())
@@ -1341,25 +1426,6 @@ private:
             }
             Require(nextRepairIds_[currentSegmentOrdinal_] >= blockCount_,
                 "persisted Wirehair repair high-water precedes the systematic range");
-            const auto scaledRepairBlocks = pbprotocol::CheckedMultiplyUint64(blockCount_, 20);
-            RequireResult(scaledRepairBlocks, "Wirehair repair allowance overflow");
-            const std::uint64_t repairAllowance = (std::max)(16ULL,
-                (scaledRepairBlocks.Value() + 99ULL) / 100ULL);
-            const auto equationCount = pbprotocol::CheckedAddUint64(blockCount_, repairAllowance);
-            RequireResult(equationCount, "Wirehair carousel equation count overflow");
-            const auto roundedEquationCount = pbprotocol::CheckedAddUint64(equationCount.Value(),
-                profile_.codewords - 1U);
-            RequireResult(roundedEquationCount, "Wirehair carousel frame rounding overflow");
-            equationSlotsPerRound_ = roundedEquationCount.Value() / profile_.codewords * profile_.codewords;
-            const auto requiredRepairHighWater = pbprotocol::CheckedAddUint64(
-                nextRepairIds_[currentSegmentOrdinal_], equationSlotsPerRound_ - blockCount_);
-            RequireResult(requiredRepairHighWater, "Wirehair repair durable lease request overflow");
-            Require(requiredRepairHighWater.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
-                "Wirehair repair durable lease exceeds uint32");
-            if (repairLeaseCallback_)
-            {
-                repairLeaseCallback_(currentSegmentOrdinal_, requiredRepairHighWater.Value());
-            }
         }
         else
         {
@@ -1370,14 +1436,34 @@ private:
                 directRepeat_->GetBlockCount() <= (std::numeric_limits<std::uint32_t>::max)(),
                 "DirectRepeat block count is invalid");
             blockCount_ = static_cast<std::uint32_t>(directRepeat_->GetBlockCount());
-            const auto roundedEquationCount = pbprotocol::CheckedAddUint64(blockCount_, profile_.codewords - 1U);
-            RequireResult(roundedEquationCount, "DirectRepeat carousel frame rounding overflow");
-            equationSlotsPerRound_ = roundedEquationCount.Value() / profile_.codewords * profile_.codewords;
         }
-        const std::uint64_t dataFrameCount = equationSlotsPerRound_ / profile_.codewords;
-        Require(dataFrameCount <= (std::numeric_limits<std::uint32_t>::max)() - controlFrames,
+        SenderCarouselSchedulerConfig schedulerConfig;
+        schedulerConfig.systematicBlockCount = blockCount_;
+        schedulerConfig.dataSlotsPerFrame = profile_.codewords;
+        schedulerConfig.controlRepetitions = controlRepetitions_;
+        schedulerConfig.logicalFramesPerSecond = logicalVisualFps_;
+        schedulerConfig.wirehair = static_cast<bool>(wirehair_);
+        const SenderCarouselSchedulerStatus schedulerStatus = SenderCarouselScheduler::Create(
+            schedulerConfig, roundScheduler_);
+        Require(static_cast<bool>(schedulerStatus), std::string("Sender Carousel scheduler creation failed: ") +
+            GetSenderCarouselSchedulerErrorName(schedulerStatus.code));
+        const SenderCarouselRoundSnapshot round = roundScheduler_.GetSnapshot();
+        Require(round.totalFrameCount <= (std::numeric_limits<std::uint32_t>::max)(),
             "Carousel frame count exceeds the bounded UI model");
-        cycleFrameCount_ = controlFrames + static_cast<std::uint32_t>(dataFrameCount);
+        cycleFrameCount_ = static_cast<std::uint32_t>(round.totalFrameCount);
+        cyclePosition_ = 0;
+        if (wirehair_)
+        {
+            const auto requiredRepairHighWater = pbprotocol::CheckedAddUint64(
+                nextRepairIds_[currentSegmentOrdinal_], round.repairEquationCount);
+            RequireResult(requiredRepairHighWater, "Wirehair repair durable lease request overflow");
+            Require(requiredRepairHighWater.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Wirehair repair durable lease exceeds uint32");
+            if (repairLeaseCallback_)
+            {
+                repairLeaseCallback_(currentSegmentOrdinal_, requiredRepairHighWater.Value());
+            }
+        }
     }
 
     [[nodiscard]] std::uint32_t CalculateOuterBlockId(const std::uint32_t slot) const
@@ -1386,8 +1472,16 @@ private:
         {
             return 0;
         }
-        const std::uint64_t dataFrameIndex = cyclePosition_ - 3ULL * controlRepetitions_;
-        const std::uint64_t equationIndex = dataFrameIndex * profile_.codewords + slot;
+        Require(slot < profile_.codewords, "physical Data slot is out of bounds");
+        SenderScheduledFrame scheduledFrame;
+        const SenderCarouselSchedulerStatus frameStatus = roundScheduler_.GetCurrentFrame(scheduledFrame);
+        Require(static_cast<bool>(frameStatus) && scheduledFrame.kind == FrameKind::Data,
+            "Sender Carousel Data schedule is unavailable");
+        if (slot >= scheduledFrame.scheduledEquationCount)
+        {
+            return slot % blockCount_;
+        }
+        const std::uint64_t equationIndex = scheduledFrame.firstEquationIndex + slot;
         if (!wirehair_)
         {
             return static_cast<std::uint32_t>(equationIndex % blockCount_);
@@ -1424,11 +1518,14 @@ private:
     std::uint64_t currentSegmentOrdinal_ = 0;
     std::uint64_t carouselPass_ = 0;
     std::uint32_t blockCount_ = 0;
-    std::uint64_t equationSlotsPerRound_ = 0;
+    SenderCarouselScheduler roundScheduler_;
     std::uint32_t cycleFrameCount_ = 0;
     std::uint32_t cyclePosition_ = 0;
     std::uint64_t generatedPayloadBytesInFrame_ = 0;
+    std::uint32_t peakResidentEncodedSegmentCount_ = 0;
+    std::uint64_t peakResidentEncodedSegmentBytes_ = 0;
     const std::uint32_t controlRepetitions_;
+    const std::uint32_t logicalVisualFps_;
 };
 
 [[nodiscard]] bool HasStablePresentationContract(const pbrenderd3d::DataWindowSnapshot& snapshot,
@@ -3947,6 +4044,85 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
     });
 }
 
+struct DurableSenderPreparation
+{
+    TransferDescription description;
+    std::unique_ptr<EncoderSessionStore> sessionStore;
+    EncoderSourceIdentity sourceIdentity;
+    std::string buildIdentity;
+    std::string compressionIdentity;
+    std::string outerFecIdentity;
+    bool resumed = false;
+};
+
+[[nodiscard]] DurableSenderPreparation PrepareDurableSender(SourceFile& source,
+    const bool compressionEnabled, const int compressionLevel, const std::uint64_t visualProfileId,
+    const std::filesystem::path& configuredSessionRoot, const std::atomic<bool>& stopRequested)
+{
+    std::filesystem::path sessionStateRoot;
+    const EncoderSessionStoreStatus rootStatus = ResolveEncoderSessionRoot(configuredSessionRoot, sessionStateRoot);
+    Require(static_cast<bool>(rootStatus), "Encoder session root resolution failed: " + rootStatus.message);
+    const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
+    DurableSenderPreparation preparation;
+    preparation.buildIdentity = buildInfo.productName + "-" + buildInfo.version +
+        ";sender-streaming-carousel=1";
+    const pbcompression::CompressionSettings compressionSettings =
+        MakeEncoderCompressionSettings(compressionLevel);
+    preparation.compressionIdentity = pbcompression::GetSegmentCompressionIdentity(
+        compressionEnabled, compressionSettings);
+    preparation.outerFecIdentity = std::string(pbouterfec::kWirehairV2ImplementationIdentity) +
+        ";profile=" + std::to_string(pbouterfec::kWirehairV2CertifiedProfileId) +
+        ";outer-block=" + std::to_string(outerBlockBytes);
+    preparation.sourceIdentity = GetEncoderSourceIdentity(source);
+    bool foundPersistedSession = false;
+    const EncoderSessionStoreStatus findStatus = EncoderSessionStore::FindMatching(sessionStateRoot,
+        preparation.sourceIdentity, preparation.buildIdentity, preparation.compressionIdentity,
+        preparation.outerFecIdentity, preparation.sessionStore, foundPersistedSession);
+    Require(static_cast<bool>(findStatus), "Encoder persisted session load failed: " + findStatus.message);
+    pbprotocol::SessionId selectedSessionId{};
+    if (foundPersistedSession)
+    {
+        selectedSessionId = preparation.sessionStore->GetSessionId();
+    }
+    else
+    {
+        const auto generatedSessionId = pbprotocol::GenerateRandomSessionId();
+        RequireResult(generatedSessionId, "OS CSPRNG SessionId generation failed");
+        selectedSessionId = generatedSessionId.Value();
+    }
+    preparation.description = DescribeSource(source, compressionEnabled, compressionLevel,
+        visualProfileId, selectedSessionId, stopRequested);
+    std::vector<std::byte> descriptorBundle = BuildDescriptorBundle(preparation.description);
+    if (foundPersistedSession && !preparation.sessionStore->MatchesDescriptorBundle(descriptorBundle))
+    {
+        preparation.sessionStore.reset();
+        foundPersistedSession = false;
+        const auto replacementSessionId = pbprotocol::GenerateRandomSessionId();
+        RequireResult(replacementSessionId, "replacement OS CSPRNG SessionId generation failed");
+        SetTransferSessionId(preparation.description, replacementSessionId.Value());
+        descriptorBundle = BuildDescriptorBundle(preparation.description);
+    }
+    if (!foundPersistedSession)
+    {
+        EncoderSessionStoreCreateConfig stateConfig;
+        stateConfig.rootDirectory = sessionStateRoot;
+        stateConfig.sourceIdentity = preparation.sourceIdentity;
+        stateConfig.sourcePathUtf8 = Utf8FromWide(source.path);
+        stateConfig.buildIdentity = preparation.buildIdentity;
+        stateConfig.compressionIdentity = preparation.compressionIdentity;
+        stateConfig.outerFecIdentity = preparation.outerFecIdentity;
+        stateConfig.sessionId = preparation.description.session.sessionId;
+        stateConfig.segmentCount = preparation.description.session.segmentCount;
+        stateConfig.descriptorBundle = descriptorBundle;
+        const EncoderSessionStoreStatus createStatus = EncoderSessionStore::Create(stateConfig,
+            preparation.sessionStore);
+        Require(static_cast<bool>(createStatus), "Encoder persisted session creation failed: " +
+            createStatus.message);
+    }
+    preparation.resumed = foundPersistedSession;
+    return preparation;
+}
+
 } // namespace
 
 RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const std::span<const std::byte> rawBytes,
@@ -4068,6 +4244,292 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(c
     catch (...)
     {
         return RuntimeStatus::Failure("RemoteVisual fullscreen composition probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus EncoderRuntimeTestAccess::ProbeStreamingCarouselFile(const std::wstring& sourcePath,
+    const std::filesystem::path& sessionStateRoot, const bool compressionEnabled, const int compressionLevel,
+    const std::uint32_t logicalVisualFps, const std::uint32_t completedPasses,
+    EncoderStreamingCarouselProbeSnapshot& output) noexcept
+{
+    output = {};
+    const std::uint64_t minimumSourceBytes = 2ULL * pbprotocol::kDefaultSourceSegmentTargetBytes + 1ULL;
+    const std::uint64_t maximumSourceBytes = 5ULL * pbprotocol::kDefaultSourceSegmentTargetBytes;
+    if (sourcePath.empty() || sessionStateRoot.empty() || compressionLevel < 1 || compressionLevel > 22 ||
+        logicalVisualFps == 0 || logicalVisualFps > maximumLogicalVisualFps || completedPasses != 2)
+    {
+        return RuntimeStatus::Failure("Streaming Carousel probe input is outside its bounded contract");
+    }
+    try
+    {
+        EncoderStreamingCarouselProbeSnapshot result;
+        SourceFile source = ReadSourceFile(sourcePath);
+        Require(source.fileBytes >= minimumSourceBytes && source.fileBytes <= maximumSourceBytes,
+            "Streaming Carousel probe source must contain 3..5 bounded Segments");
+        const auto isDeniedByFrozenShare = [&sourcePath](const DWORD desiredAccess)
+        {
+            SetLastError(ERROR_SUCCESS);
+            const HANDLE candidate = CreateFileW(sourcePath.c_str(), desiredAccess,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL, nullptr);
+            const DWORD error = GetLastError();
+            if (candidate != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(candidate);
+                return false;
+            }
+            return error == ERROR_SHARING_VIOLATION;
+        };
+        result.sourceWriteShareDenied = isDeniedByFrozenShare(GENERIC_WRITE);
+        result.sourceDeleteShareDenied = isDeniedByFrozenShare(DELETE);
+        Require(result.sourceWriteShareDenied && result.sourceDeleteShareDenied,
+            "Source handle did not deny write/delete sharing during the Session");
+
+        const ProfileBinding profile = GetProfileBinding(VisualProfile::RemoteVisualLowFps);
+        std::atomic<bool> stopRequested = false;
+        DurableSenderPreparation preparation = PrepareDurableSender(source, compressionEnabled,
+            compressionLevel, profile.visualProfileId, sessionStateRoot, stopRequested);
+        Require(!preparation.resumed, "Streaming Carousel probe requires a clean session-state root");
+        TransferDescription& description = preparation.description;
+        std::unique_ptr<EncoderSessionStore>& sessionStore = preparation.sessionStore;
+        result.sourceBytes = source.fileBytes;
+        result.segmentCount = description.session.segmentCount;
+        result.sessionId = description.session.sessionId;
+        result.wholeFileDigest = description.manifest.wholeFileDigest.bytes;
+        Require(result.segmentCount == description.segments.size() && result.segmentCount >= 3 &&
+            result.segmentCount <= 5, "Streaming Carousel descriptor SegmentCount is outside the probe bound");
+        result.segments.resize(description.segments.size());
+        for (std::size_t index = 0; index < description.segments.size(); index++)
+        {
+            const TransferDescription::Segment& segment = description.segments[index];
+            EncoderStreamingSegmentProbeSnapshot& segmentResult = result.segments[index];
+            segmentResult.segmentOrdinal = segment.descriptor.segmentOrdinal;
+            segmentResult.rawBytes = segment.descriptor.rawSize;
+            segmentResult.encodedBytes = segment.descriptor.encodedSize;
+            segmentResult.compressionCodec = segment.descriptor.compressionCodec;
+            segmentResult.outerFecMode = segment.descriptor.outerFecMode;
+            result.descriptorResidentEncodedBytes += segment.inMemoryEncodedBytes.size();
+        }
+        Require(result.descriptorResidentEncodedBytes == 0,
+            "Production descriptor table retained encoded Segment bytes");
+
+        std::vector<std::vector<std::byte>> firstSystematicPayloads(description.segments.size());
+        std::vector<std::vector<std::byte>> firstRepairPayloads(description.segments.size());
+        std::vector<std::uint32_t> firstSystematicPayloadBytes(description.segments.size(), 0);
+        std::vector<std::uint32_t> firstRepairPayloadBytes(description.segments.size(), 0);
+        std::vector<bool> systematicCompared(description.segments.size(), false);
+        std::vector<bool> repairReproductionCandidate(description.segments.size(), false);
+        result.initialFrameSequence = sessionStore->GetFrameSequenceStart();
+        std::uint64_t frameSequence = result.initialFrameSequence;
+        {
+            SenderFrameBuilder builder(profile, description, 1,
+                [&source, &description, compressionEnabled, compressionLevel](const std::uint64_t segmentOrdinal)
+                {
+                    Require(segmentOrdinal < description.segments.size(), "headless Segment loader ordinal is invalid");
+                    return LoadEncodedSegment(source, description.segments[segmentOrdinal],
+                        compressionEnabled, compressionLevel);
+                },
+                [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint32_t systematicBlockCount)
+                {
+                    return sessionStore->GetRepairIdStart(segmentOrdinal, systematicBlockCount);
+                },
+                [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint64_t requiredExclusive)
+                {
+                    const EncoderSessionStoreStatus status = sessionStore->EnsureRepairIdLease(
+                        segmentOrdinal, requiredExclusive);
+                    Require(static_cast<bool>(status), "headless repair ID durable lease failed: " + status.message);
+                }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), logicalVisualFps);
+            const std::uint64_t initialCarouselPass = builder.GetCarouselSnapshot().cycleCount;
+            const auto targetPass = pbprotocol::CheckedAddUint64(initialCarouselPass, completedPasses);
+            RequireResult(targetPass, "headless Carousel target pass overflow");
+            while (builder.GetCarouselSnapshot().cycleCount < targetPass.Value())
+            {
+                const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                Require(segmentOrdinal < result.segments.size(), "headless Carousel Segment ordinal is invalid");
+                const std::size_t segmentIndex = static_cast<std::size_t>(segmentOrdinal);
+                const std::uint64_t relativePass = builder.GetCarouselSnapshot().cycleCount - initialCarouselPass;
+                const SenderCarouselRoundSnapshot round = builder.GetCurrentRoundSnapshot();
+                if (round.frameIndex == 0)
+                {
+                    EncoderStreamingSegmentProbeSnapshot& segmentResult = result.segments[segmentIndex];
+                    Require(segmentResult.systematicBlockCount == 0 ||
+                        segmentResult.systematicBlockCount == round.systematicEquationCount,
+                        "headless systematic equation count changed between passes");
+                    segmentResult.systematicBlockCount = static_cast<std::uint32_t>(round.systematicEquationCount);
+                    segmentResult.repairEquationsPerRound = round.repairEquationCount;
+                    segmentResult.paddingDuplicateSlotsPerRound = round.paddingDuplicateSlotCount;
+                    const auto systematicTotal = pbprotocol::CheckedAddUint64(
+                        result.scheduledSystematicEquations, round.systematicEquationCount);
+                    const auto repairTotal = pbprotocol::CheckedAddUint64(
+                        result.scheduledRepairEquations, round.repairEquationCount);
+                    const auto paddingTotal = pbprotocol::CheckedAddUint64(
+                        result.paddingDuplicateSlots, round.paddingDuplicateSlotCount);
+                    RequireResult(systematicTotal, "headless systematic equation telemetry overflow");
+                    RequireResult(repairTotal, "headless repair equation telemetry overflow");
+                    RequireResult(paddingTotal, "headless padding telemetry overflow");
+                    result.scheduledSystematicEquations = systematicTotal.Value();
+                    result.scheduledRepairEquations = repairTotal.Value();
+                    result.paddingDuplicateSlots = paddingTotal.Value();
+                }
+
+                Require(frameSequence != (std::numeric_limits<std::uint64_t>::max)(),
+                    "headless FrameSequence exhausted");
+                const EncoderSessionStoreStatus frameLeaseStatus = sessionStore->EnsureFrameSequenceLease(
+                    frameSequence + 1);
+                Require(static_cast<bool>(frameLeaseStatus), "headless FrameSequence durable lease failed: " +
+                    frameLeaseStatus.message);
+                const FrameKind kind = builder.GetCurrentKind();
+                if (kind == FrameKind::Data)
+                {
+                    result.dataFrames++;
+                    const SenderScheduledFrame frame = builder.GetCurrentScheduledFrame();
+                    Require(frame.scheduledEquationCount > 0 &&
+                        frame.scheduledEquationCount <= profile.codewords,
+                        "headless Data schedule has an invalid equation count");
+                    if (frame.firstEquationIndex == 0)
+                    {
+                        std::vector<std::byte> payload(outerBlockBytes);
+                        const std::uint32_t blockId = builder.GetOuterBlockIdForSlot(0);
+                        const std::uint32_t payloadBytes = builder.EncodeOuterPayloadForSlot(0, payload);
+                        Require(blockId == 0, "first systematic equation did not use OuterBlockId zero");
+                        payload.resize(payloadBytes);
+                        if (relativePass == 0)
+                        {
+                            firstSystematicPayloads[segmentIndex] = std::move(payload);
+                            firstSystematicPayloadBytes[segmentIndex] = payloadBytes;
+                        }
+                        else if (relativePass == 1)
+                        {
+                            Require(payloadBytes == firstSystematicPayloadBytes[segmentIndex] &&
+                                payload == firstSystematicPayloads[segmentIndex],
+                                "systematic equation bytes changed between Carousel passes");
+                            systematicCompared[segmentIndex] = true;
+                        }
+                    }
+                    const std::uint64_t systematicBlockCount = result.segments[segmentIndex].systematicBlockCount;
+                    const std::uint64_t frameEquationEnd = frame.firstEquationIndex + frame.scheduledEquationCount;
+                    if (result.segments[segmentIndex].outerFecMode == pbprotocol::OuterFecMode::WirehairV2 &&
+                        frame.firstEquationIndex <= systematicBlockCount && systematicBlockCount < frameEquationEnd)
+                    {
+                        const std::uint32_t slot = static_cast<std::uint32_t>(systematicBlockCount -
+                            frame.firstEquationIndex);
+                        std::vector<std::byte> payload(outerBlockBytes);
+                        const std::uint32_t blockId = builder.GetOuterBlockIdForSlot(slot);
+                        const std::uint32_t payloadBytes = builder.EncodeOuterPayloadForSlot(slot, payload);
+                        payload.resize(payloadBytes);
+                        EncoderStreamingSegmentProbeSnapshot& segmentResult = result.segments[segmentIndex];
+                        if (relativePass == 0)
+                        {
+                            segmentResult.firstRepairIdPass0 = blockId;
+                            firstRepairPayloads[segmentIndex] = std::move(payload);
+                            firstRepairPayloadBytes[segmentIndex] = payloadBytes;
+                            repairReproductionCandidate[segmentIndex] = true;
+                        }
+                        else if (relativePass == 1)
+                        {
+                            segmentResult.firstRepairIdPass1 = blockId;
+                            Require(blockId == static_cast<std::uint64_t>(segmentResult.firstRepairIdPass0) +
+                                segmentResult.repairEquationsPerRound,
+                                "second Carousel pass did not continue with fresh repair IDs");
+                        }
+                    }
+                }
+                else
+                {
+                    result.controlFrames++;
+                }
+                result.scheduledFrames++;
+                const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
+                builder.Advance();
+                frameSequence++;
+                const CarouselSnapshot after = builder.GetCarouselSnapshot();
+                if (after.cycleCount != previousCarouselPass ||
+                    builder.GetCurrentSegmentOrdinal() != previousSegmentOrdinal)
+                {
+                    const EncoderSessionStoreStatus positionStatus = sessionStore->UpdateCarouselPosition(
+                        after.cycleCount, builder.GetCurrentSegmentOrdinal());
+                    Require(static_cast<bool>(positionStatus), "headless Carousel checkpoint failed: " +
+                        positionStatus.message);
+                }
+            }
+            result.completedCarouselPasses = builder.GetCarouselSnapshot().cycleCount - initialCarouselPass;
+            result.peakResidentEncodedSegmentCount = builder.GetPeakResidentEncodedSegmentCount();
+            result.peakResidentEncodedSegmentBytes = builder.GetPeakResidentEncodedSegmentBytes();
+        }
+        Require(result.scheduledFrames != 0 && frameSequence > result.initialFrameSequence,
+            "headless Carousel produced no scheduled frames");
+        result.lastUsedFrameSequence = frameSequence - 1;
+        result.persistedFrameSequenceLeaseEnd = sessionStore->GetFrameSequenceLeaseEnd();
+        Require(result.persistedFrameSequenceLeaseEnd > result.lastUsedFrameSequence,
+            "FrameSequence lease endpoint was not persisted ahead of use");
+        Require(std::ranges::all_of(systematicCompared, [](const bool compared) { return compared; }),
+            "not every Segment reproduced its systematic equation on pass two");
+        Require(IsSourceStable(source), "source identity changed during the headless Carousel");
+        for (std::size_t index = 0; index < result.segments.size(); index++)
+        {
+            result.segments[index].persistedRepairLeaseEnd = sessionStore->GetRepairIdLeaseEnd(index);
+            Require(result.segments[index].outerFecMode != pbprotocol::OuterFecMode::WirehairV2 ||
+                (repairReproductionCandidate[index] &&
+                 result.segments[index].persistedRepairLeaseEnd >=
+                    static_cast<std::uint64_t>(result.segments[index].firstRepairIdPass1) +
+                        result.segments[index].repairEquationsPerRound),
+                "repair ID lease endpoint was not persisted ahead of all used repair IDs");
+        }
+
+        const pbprotocol::SessionId initialSessionId = result.sessionId;
+        const EncoderSourceIdentity initialSourceIdentity = preparation.sourceIdentity;
+        preparation.sessionStore.reset();
+        source.handle.Reset();
+        SourceFile restartSource = ReadSourceFile(sourcePath);
+        DurableSenderPreparation restartPreparation = PrepareDurableSender(restartSource, compressionEnabled,
+            compressionLevel, profile.visualProfileId, sessionStateRoot, stopRequested);
+        Require(restartPreparation.resumed && restartPreparation.description.session.sessionId == initialSessionId &&
+            restartPreparation.sourceIdentity == initialSourceIdentity,
+            "restart did not resume the exact source, descriptor, and Session identity");
+        result.restartWasResumed = restartPreparation.resumed;
+        result.restartedFrameSequenceStart = restartPreparation.sessionStore->GetFrameSequenceStart();
+        Require(result.restartedFrameSequenceStart == result.persistedFrameSequenceLeaseEnd &&
+            result.restartedFrameSequenceStart > result.lastUsedFrameSequence,
+            "restart did not skip the unused tail of the FrameSequence lease");
+        bool reproducedRepairEquation = false;
+        for (std::size_t index = 0; index < result.segments.size(); index++)
+        {
+            EncoderStreamingSegmentProbeSnapshot& segmentResult = result.segments[index];
+            segmentResult.restartedRepairIdStart = restartPreparation.sessionStore->GetRepairIdStart(
+                index, segmentResult.systematicBlockCount);
+            Require(segmentResult.restartedRepairIdStart == segmentResult.persistedRepairLeaseEnd,
+                "restart did not skip the unused tail of a repair ID lease");
+            if (!reproducedRepairEquation && segmentResult.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
+            {
+                const std::vector<std::byte> encodedBytes = LoadEncodedSegment(restartSource,
+                    restartPreparation.description.segments[index], compressionEnabled, compressionLevel);
+                auto encoderResult = pbouterfec::WirehairV2Encoder::Recreate(encodedBytes,
+                    restartPreparation.description.segments[index].descriptor);
+                RequireResult(encoderResult, "restart Wirehair equation recreation failed");
+                pbouterfec::WirehairV2Encoder encoder = std::move(encoderResult).Value();
+                std::vector<std::byte> payload(outerBlockBytes);
+                const auto encodedResult = encoder.EncodeBlock(segmentResult.firstRepairIdPass0, payload);
+                RequireResult(encodedResult, "restart Wirehair repair equation encoding failed");
+                payload.resize(encodedResult.Value());
+                Require(encodedResult.Value() == firstRepairPayloadBytes[index] &&
+                    payload == firstRepairPayloads[index],
+                    "restart did not reproduce the same Wirehair equation bytes");
+                reproducedRepairEquation = true;
+            }
+        }
+        Require(reproducedRepairEquation, "headless Carousel did not expose a Wirehair repair equation");
+        result.equationReproducible = true;
+        output = std::move(result);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Streaming Carousel probe failed with an unknown error");
     }
 }
 
@@ -4893,9 +5355,7 @@ pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSe
         encoded.bytes.assign(rawBytes.begin(), rawBytes.end());
         return pbcompression::CompressionResult<pbcompression::EncodedSegment>::Success(std::move(encoded));
     }
-    pbcompression::CompressionSettings settings;
-    settings.compressionLevel = compressionLevel;
-    settings.maxOutputBytes = 16ULL * mebibyte;
+    const pbcompression::CompressionSettings settings = MakeEncoderCompressionSettings(compressionLevel);
     return pbcompression::CompressSegment(rawBytes, settings);
 }
 
@@ -5104,59 +5564,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             return;
         }
         const ProfileBinding profile = GetProfileBinding(config.visualProfile);
-        std::filesystem::path sessionStateRoot;
-        const EncoderSessionStoreStatus rootStatus = ResolveEncoderSessionRoot(config.sessionStateRoot, sessionStateRoot);
-        Require(static_cast<bool>(rootStatus), "Encoder session root resolution failed: " + rootStatus.message);
-        const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
-        const std::string buildIdentity = buildInfo.productName + "-" + buildInfo.version;
-        const std::string compressionIdentity = pbcompression::GetZstandardBaselineIdentity();
-        const std::string outerFecIdentity = "wirehair-v2-profile-" +
-            std::to_string(pbouterfec::kWirehairV2CertifiedProfileId) + ";outer-block-" +
-            std::to_string(outerBlockBytes);
-        const EncoderSourceIdentity sourceIdentity = GetEncoderSourceIdentity(source);
-        std::unique_ptr<EncoderSessionStore> sessionStore;
-        bool foundPersistedSession = false;
-        const EncoderSessionStoreStatus findStatus = EncoderSessionStore::FindMatching(sessionStateRoot,
-            sourceIdentity, buildIdentity, compressionIdentity, outerFecIdentity, sessionStore, foundPersistedSession);
-        Require(static_cast<bool>(findStatus), "Encoder persisted session load failed: " + findStatus.message);
-        pbprotocol::SessionId selectedSessionId{};
-        if (foundPersistedSession)
-        {
-            selectedSessionId = sessionStore->GetSessionId();
-        }
-        else
-        {
-            const auto generatedSessionId = pbprotocol::GenerateRandomSessionId();
-            RequireResult(generatedSessionId, "OS CSPRNG SessionId generation failed");
-            selectedSessionId = generatedSessionId.Value();
-        }
-        TransferDescription description = DescribeSource(source, config.compressionEnabled,
-            config.compressionLevel, profile.visualProfileId, selectedSessionId, stopRequested_);
-        std::vector<std::byte> descriptorBundle = BuildDescriptorBundle(description);
-        if (foundPersistedSession && !sessionStore->MatchesDescriptorBundle(descriptorBundle))
-        {
-            sessionStore.reset();
-            foundPersistedSession = false;
-            const auto replacementSessionId = pbprotocol::GenerateRandomSessionId();
-            RequireResult(replacementSessionId, "replacement OS CSPRNG SessionId generation failed");
-            SetTransferSessionId(description, replacementSessionId.Value());
-            descriptorBundle = BuildDescriptorBundle(description);
-        }
-        if (!foundPersistedSession)
-        {
-            EncoderSessionStoreCreateConfig stateConfig;
-            stateConfig.rootDirectory = sessionStateRoot;
-            stateConfig.sourceIdentity = sourceIdentity;
-            stateConfig.sourcePathUtf8 = Utf8FromWide(source.path);
-            stateConfig.buildIdentity = buildIdentity;
-            stateConfig.compressionIdentity = compressionIdentity;
-            stateConfig.outerFecIdentity = outerFecIdentity;
-            stateConfig.sessionId = description.session.sessionId;
-            stateConfig.segmentCount = description.session.segmentCount;
-            stateConfig.descriptorBundle = descriptorBundle;
-            const EncoderSessionStoreStatus createStatus = EncoderSessionStore::Create(stateConfig, sessionStore);
-            Require(static_cast<bool>(createStatus), "Encoder persisted session creation failed: " + createStatus.message);
-        }
+        DurableSenderPreparation preparation = PrepareDurableSender(source, config.compressionEnabled,
+            config.compressionLevel, profile.visualProfileId, config.sessionStateRoot, stopRequested_);
+        TransferDescription description = std::move(preparation.description);
+        std::unique_ptr<EncoderSessionStore> sessionStore = std::move(preparation.sessionStore);
         if (stopRequested_)
         {
             snapshot_.Update([runGeneration](EncoderSnapshot& value)
@@ -5186,7 +5597,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 const EncoderSessionStoreStatus leaseStatus = sessionStore->EnsureRepairIdLease(
                     segmentOrdinal, requiredExclusive);
                 Require(static_cast<bool>(leaseStatus), "Encoder repair ID durable lease failed: " + leaseStatus.message);
-            }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal());
+            }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), config.logicalVisualFps);
         const std::string runId = config.runId.empty() ? GenerateRunId() : config.runId;
         const CarouselSnapshot initialCarousel = builder.GetCarouselSnapshot();
         const auto rawVisualBits = pbprotocol::CheckedMultiplyUint64(profile.dataBytes, 8);

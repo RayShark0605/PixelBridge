@@ -40,6 +40,12 @@ struct CompressionSettings
     std::uint64_t framingMarginBytes = 0;
 };
 
+// Durable sender identity for every local setting that can change the exact
+// encoded bytes or the RAW fallback decision. It is deliberately not a wire
+// version and must be compared before reusing a persisted Session.
+[[nodiscard]] std::string GetSegmentCompressionIdentity(
+    bool compressionEnabled, const CompressionSettings& settings);
+
 // 12.1 RAW fallback decision: compressed + margin (checked) >= raw means the
 // frame does not pay for its own framing, so the segment stays Raw.
 // Overflow is treated as Raw (fail closed).
