@@ -443,6 +443,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G06 — Unified Profile 常量与 lane 合同
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G04；G05 可并行但合并前必须均完成。
 **目的：** 建立唯一产品 Profile 的静态容量、slot/lane、pilot、geometry 和 erasure 公共合同，不立即写搜索算法或 shader。
 
@@ -468,6 +469,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G07 — 确定性 codebook/mapping 搜索与冻结
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G06。
 **目的：** 在固定数据集与不可窥视 Holdout 纪律下选择并冻结 16 个平衡 4x4 mask、labels、lane mapping、interleave seeds。
 
@@ -491,6 +493,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G08 — CPU encoder/oracle、逐 lane soft metric 与 freshness
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G07。
 **目的：** 先建立语义权威 CPU 路径，再允许 GPU 优化。
 
@@ -516,6 +519,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G09 — mixed Control/Transport 帧调度
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G08、G02。
 **目的：** 在同一逻辑帧分配 Base Luma control slots 和其余 Transport，消除 1 Hz 下整帧 Control 浪费。
 
@@ -540,6 +544,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G10 — provider-generic transform corpus 检查点
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G08、G09。
 **目的：** 在 GPU 前用 CPU oracle 关闭统一 Profile 的必须失真集合和 16 KiB Base Luma 可行性。
 
