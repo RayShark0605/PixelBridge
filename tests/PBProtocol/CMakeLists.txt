@@ -7,6 +7,7 @@ PbAddUnitTest(PBProtocolTests
     test_byte_io_uint8.cpp
     test_descriptor_binding.cpp
     test_descriptor_codec.cpp
+    test_descriptor_schema.cpp
     test_descriptor_validation.cpp
     test_feature_flags.cpp
     test_protocol_result.cpp
@@ -47,6 +48,14 @@ target_compile_definitions(PBProtocolTests
     PRIVATE
         "PB_BOOTSTRAP_CONTROL_CORPUS_DIRECTORY=\"${pbBootstrapControlCorpusDirectory}\"")
 unset(pbBootstrapControlCorpusDirectory)
+
+file(TO_CMAKE_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/formal_descriptor_golden_manifest.txt"
+    pbFormalDescriptorGoldenManifest)
+target_compile_definitions(PBProtocolTests
+    PRIVATE
+        "PB_FORMAL_DESCRIPTOR_GOLDEN_MANIFEST=\"${pbFormalDescriptorGoldenManifest}\"")
+unset(pbFormalDescriptorGoldenManifest)
 
 add_executable(PBProtocolNoAllocationDigestProbe
     no_allocation_digest_probe.cpp)

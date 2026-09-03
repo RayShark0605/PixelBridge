@@ -294,6 +294,7 @@ G00
 
 ## G01 — Protocol 1.0 Descriptor 收口
 
+**状态：** 已完成（2026-09-03）。
 **前置：** G00。
 **目的：** 将 `1445f9b` 的正式 descriptor 基础审查为可供后续产品使用的唯一 schema，并补齐规范/Golden 边界。
 
@@ -303,13 +304,13 @@ G00
 
 **实现清单：**
 
-- [ ] 把 Session/Segment/Manifest 每个字段的 offset、宽度、端序、长度和 CRC 覆盖范围写成机器可核对表。
-- [ ] 确认 `DescriptorTotalBytes` 与 Control payload 精确相等；禁止 trailing bytes 和部分解析成功。
-- [ ] 确认未知 mandatory feature/TLV 与 optional TLV 的分支和资源上限。
-- [ ] 确认 UTF-8 basename：无 NUL、路径/UNC/盘符/ADS、设备名、尾点/空格和非法字符。
-- [ ] 覆盖 0、1、8 MiB±1、20,000,000,000、20 GiB、500 GiB/64,000 Segment 的 checked arithmetic。
-- [ ] 冻结新正式 Golden；旧 provisional fixtures 只断言 `UnsupportedDescriptorSchema`。
-- [ ] 保持 PBProtocol 只验证 wire 结构和非零 profile；具体产品只允许 Unified 的规则留在 application admission。
+- [x] 把 Session/Segment/Manifest 每个字段的 offset、宽度、端序、长度和 CRC 覆盖范围写成机器可核对表。
+- [x] 确认 `DescriptorTotalBytes` 与 Control payload 精确相等；禁止 trailing bytes 和部分解析成功。
+- [x] 确认未知 mandatory feature/TLV 与 optional TLV 的分支和资源上限。
+- [x] 确认 UTF-8 basename：无 NUL、路径/UNC/盘符/ADS、设备名、尾点/空格和非法字符。
+- [x] 覆盖 0、1、8 MiB±1、20,000,000,000、20 GiB、500 GiB/64,000 Segment 的 checked arithmetic。
+- [x] 冻结新正式 Golden；旧 provisional fixtures 只断言 `UnsupportedDescriptorSchema`。
+- [x] 保持 PBProtocol 只验证 wire 结构和非零 profile；具体产品只允许 Unified 的规则留在 application admission。
 
 **最小验证：**
 
@@ -317,6 +318,8 @@ G00
 cmake --build build-unified-release --config Release --target PBProtocolTests -- /m
 ctest --test-dir build-unified-release -C Release -R '^PBProtocolTests$' --output-on-failure
 ```
+
+**验证结果（2026-09-03）：** `PBProtocolTests` Release 目标构建成功；上述 CTest 正则命中 1 个测试，1/1 通过，0 失败。
 
 **退出：** malformed/conflict/resource/Golden 全通过；协议表与 bytes 一致；旧 schema 确定拒绝。
 **产物：** 正式 descriptor 字节表、Golden manifest、测试结果。

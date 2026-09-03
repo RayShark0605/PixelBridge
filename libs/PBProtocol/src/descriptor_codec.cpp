@@ -20,16 +20,6 @@ namespace pbprotocol {
 
 namespace {
 
-constexpr std::size_t kDescriptorSchemaVersionOffset = 0;
-constexpr std::size_t kDescriptorHeaderBytesOffset = 2;
-constexpr std::size_t kDescriptorTotalBytesOffset = 4;
-constexpr std::uint16_t kSegmentDescriptorHeaderBytes = 128;
-constexpr std::uint16_t kFinalManifestHeaderBytes = 80;
-constexpr std::uint64_t kMandatorySessionFeatureMask = 0x00000000FFFFFFFFULL;
-constexpr std::uint16_t kDescriptorTlvOptionalFlag = 0x0001U;
-constexpr std::uint16_t kDescriptorTlvKnownFlags = kDescriptorTlvOptionalFlag;
-constexpr std::size_t kDescriptorTlvHeaderBytes = 8;
-
 constexpr std::size_t kSessionProtocolMajorOffset = kFormalWireSessionDescriptorProtocolMajorOffset;
 constexpr std::size_t kSessionProtocolMinorOffset = kFormalWireSessionDescriptorProtocolMinorOffset;
 constexpr std::size_t kSessionIdOffset = kFormalWireSessionDescriptorSessionIdOffset;
@@ -836,7 +826,7 @@ ProtocolStatus ValidateSessionDescriptor(
     {
         return ProtocolStatus::Failure(ProtocolErrorCode::InvalidEnumValue, kSessionCompressionPolicyOffset);
     }
-    if ((descriptor.featureFlags & kMandatorySessionFeatureMask) != 0)
+    if ((descriptor.featureFlags & kSessionMandatoryFeatureMask) != 0)
     {
         return ProtocolStatus::Failure(ProtocolErrorCode::UnknownMandatoryFeature, kSessionFeatureFlagsOffset);
     }
