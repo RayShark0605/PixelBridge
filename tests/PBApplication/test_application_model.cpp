@@ -91,6 +91,48 @@ TEST_CASE("Decoder stop and stale run transitions are idempotent and generation 
     REQUIRE(state.GetState() == pbapp::DecoderState::WaitingForBootstrap);
 }
 
+TEST_CASE("Decoder large output confirmation is explicit and stale callbacks cannot authorize allocation",
+    "[application][decoder-state][large-output][g05]")
+{
+    pbapp::DecoderStateMachine state;
+    REQUIRE(state.Start(41) == pbapp::TransitionResult::Applied);
+    REQUIRE(state.Advance(41, pbapp::DecoderState::AwaitingLargeOutputConfirmation) ==
+        pbapp::TransitionResult::Applied);
+    REQUIRE(pbapp::IsDecoderStateActive(pbapp::DecoderState::AwaitingLargeOutputConfirmation));
+    REQUIRE(state.Advance(41, pbapp::DecoderState::ReceivingControl) == pbapp::TransitionResult::Applied);
+
+    pbprotocol::SessionDescriptor session;
+    session.sessionId.bytes[0] = std::byte{0x41};
+    session.originalFileSize = 4097;
+    session.fileNameUtf8 = "large-output.bin";
+    const pbprotocol::SessionTag sessionTag{0x4100};
+    pbapp::LargeOutputConfirmationController confirmation;
+    REQUIRE(confirmation.BeginRun(41) == pbapp::TransitionResult::Applied);
+    REQUIRE(confirmation.Request(41, session, sessionTag) == pbapp::TransitionResult::Applied);
+    REQUIRE(confirmation.Request(41, session, sessionTag) == pbapp::TransitionResult::NoChange);
+    const pbapp::LargeOutputConfirmationSnapshot pending = confirmation.GetSnapshot();
+    REQUIRE(pending.state == pbapp::LargeOutputConfirmationState::AwaitingDecision);
+    REQUIRE(pending.requestId == 1);
+    REQUIRE(pending.originalFileBytes == session.originalFileSize);
+    REQUIRE(pending.fileNameUtf8 == session.fileNameUtf8);
+    REQUIRE(confirmation.Resolve(40, pending.requestId, true) == pbapp::TransitionResult::Stale);
+    REQUIRE(confirmation.Resolve(41, pending.requestId + 1, true) == pbapp::TransitionResult::Rejected);
+    REQUIRE(confirmation.Resolve(41, pending.requestId, true) == pbapp::TransitionResult::Applied);
+    REQUIRE(confirmation.Resolve(41, pending.requestId, true) == pbapp::TransitionResult::NoChange);
+    REQUIRE(confirmation.Resolve(41, pending.requestId, false) == pbapp::TransitionResult::Rejected);
+    REQUIRE(confirmation.GetSnapshot().state == pbapp::LargeOutputConfirmationState::Accepted);
+    REQUIRE(confirmation.BeginRun(41) == pbapp::TransitionResult::NoChange);
+    REQUIRE(confirmation.GetSnapshot().state == pbapp::LargeOutputConfirmationState::Accepted);
+
+    pbprotocol::SessionDescriptor conflicting = session;
+    conflicting.originalFileSize++;
+    REQUIRE(confirmation.Request(41, conflicting, sessionTag) == pbapp::TransitionResult::Rejected);
+    REQUIRE(confirmation.BeginRun(42) == pbapp::TransitionResult::Applied);
+    REQUIRE(confirmation.Resolve(41, pending.requestId, true) == pbapp::TransitionResult::Stale);
+    REQUIRE(confirmation.BeginRun(41) == pbapp::TransitionResult::Stale);
+    REQUIRE(confirmation.GetSnapshot().state == pbapp::LargeOutputConfirmationState::NotRequired);
+}
+
 TEST_CASE("Decoder progress is exactly verified raw bytes over descriptor size", "[application][progress]")
 {
     pbapp::DecoderProgressTracker progress;

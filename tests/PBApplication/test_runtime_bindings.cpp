@@ -787,3 +787,38 @@ TEST_CASE("Monitor identity detects topology DPI rotation refresh adapter and pr
     changed.adapterLuid.LowPart++;
     REQUIRE_FALSE(pbapp::SameMonitorIdentity(baseline, changed));
 }
+
+TEST_CASE("Application large output gate has no storage or Outer side effects before one decision",
+    "[application][storage][large-output][g05]")
+{
+    const std::vector<std::byte> bytes(4097, std::byte{0x5A});
+    bool accepted = false;
+    SECTION("accept creates bounded state only after confirmation")
+    {
+        accepted = true;
+    }
+    SECTION("reject remains an explainable side-effect-free terminal state")
+    {
+        accepted = false;
+    }
+    ScratchDirectory scratch(accepted ? L"large-output-accept" : L"large-output-reject");
+    pbapp::ApplicationLargeOutputConfirmationProbeSnapshot probe;
+    const pbapp::RuntimeStatus status = pbapp::ApplicationRuntimeTestAccess::ProbeLargeOutputConfirmation(
+        bytes, scratch.Path().wstring(), accepted, probe);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(probe.awaitingDecision.state == pbapp::DecoderState::AwaitingLargeOutputConfirmation);
+    REQUIRE(probe.awaitingDecision.largeOutputConfirmationState ==
+        pbapp::LargeOutputConfirmationState::AwaitingDecision);
+    REQUIRE(probe.awaitingDecision.largeOutputConfirmationRequestId != 0);
+    REQUIRE(probe.awaitingDecision.originalFileBytes == bytes.size());
+    REQUIRE(probe.transportSuppressedBeforeDecision);
+    REQUIRE(probe.orphanCachedBytesBeforeDecision == 0);
+    REQUIRE_FALSE(probe.partExistedBeforeDecision);
+    REQUIRE_FALSE(probe.resumeExistedBeforeDecision);
+    REQUIRE(probe.afterDecision.largeOutputConfirmationState == (accepted ?
+        pbapp::LargeOutputConfirmationState::Accepted : pbapp::LargeOutputConfirmationState::Rejected));
+    REQUIRE(probe.partExistsAfterDecision == accepted);
+    REQUIRE(probe.resumeExistsAfterDecision == accepted);
+    REQUIRE(probe.afterDecision.outputRequestedAllocationBytes == (accepted ? bytes.size() : 0));
+}

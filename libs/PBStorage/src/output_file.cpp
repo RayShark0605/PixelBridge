@@ -28,6 +28,20 @@ struct VerifiedRange
     std::uint64_t end = 0;
 };
 
+struct AllocationFacts
+{
+    std::uint64_t availableBytesBeforeReservation = 0;
+    std::uint64_t requestedAllocationBytes = 0;
+    std::uint64_t actualAllocationBytes = 0;
+    bool preallocationAttempted = false;
+    bool preallocationFullyAllocated = false;
+    bool fileSparse = false;
+    bool fileCompressed = false;
+    bool volumeSupportsSparseFiles = false;
+    bool volumeSupportsCompression = false;
+    bool volumeCompressed = false;
+};
+
 [[nodiscard]] StorageStatus LastError(const StorageStage stage) noexcept
 {
     const DWORD error = GetLastError();
@@ -116,6 +130,40 @@ struct VerifiedRange
     return StorageStatus::Success();
 }
 
+[[nodiscard]] StorageStatus WideFileNameToUtf8(const std::wstring_view fileName,
+    std::string& output) noexcept
+{
+    output.clear();
+    if (fileName.empty() || fileName.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)()))
+    {
+        return StorageStatus::Failure(StorageErrorCode::InvalidArgument, StorageStage::Configuration);
+    }
+    const int inputCharacters = static_cast<int>(fileName.size());
+    const int utf8Bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, fileName.data(), inputCharacters,
+        nullptr, 0, nullptr, nullptr);
+    if (utf8Bytes <= 0)
+    {
+        return LastError(StorageStage::Configuration);
+    }
+    try
+    {
+        output.resize(static_cast<std::size_t>(utf8Bytes));
+    }
+    catch (const std::bad_alloc&)
+    {
+        return StorageStatus::Failure(StorageErrorCode::OutOfMemory, StorageStage::Configuration);
+    }
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, fileName.data(), inputCharacters,
+        output.data(), utf8Bytes, nullptr, nullptr) != utf8Bytes)
+    {
+        output.clear();
+        return LastError(StorageStage::Configuration);
+    }
+    const pbprotocol::ProtocolStatus validationStatus = pbprotocol::ValidateFileNameUtf8(output);
+    return validationStatus ? StorageStatus::Success() :
+        StorageStatus::Failure(StorageErrorCode::InvalidArgument, StorageStage::Configuration);
+}
+
 [[nodiscard]] std::wstring MakeCollisionName(const std::wstring& originalName,
     const pbprotocol::SessionTag sessionTag)
 {
@@ -165,6 +213,51 @@ struct VerifiedRange
     catch (...)
     {
         return StorageStatus::Failure(StorageErrorCode::InvalidArgument, StorageStage::Directory);
+    }
+}
+
+[[nodiscard]] StorageStatus ResolveReservedFinalPath(const OutputFileConfig& config,
+    const std::filesystem::path& directory, const OutputFileReservation& reservation,
+    std::wstring& output) noexcept
+{
+    try
+    {
+        std::wstring reservedName;
+        StorageStatus status = Utf8FileNameToWide(reservation.finalFileNameUtf8, reservedName);
+        if (!status)
+        {
+            return status;
+        }
+        if (config.originalFileNameUtf8.empty())
+        {
+            if (reservedName != MakeDiagnosticFinalName(config.sessionTag))
+            {
+                return StorageStatus::Failure(StorageErrorCode::ResumeMismatch, StorageStage::Resume);
+            }
+        }
+        else
+        {
+            std::wstring originalName;
+            status = Utf8FileNameToWide(config.originalFileNameUtf8, originalName);
+            if (!status)
+            {
+                return status;
+            }
+            if (reservedName != originalName && reservedName != MakeCollisionName(originalName, config.sessionTag))
+            {
+                return StorageStatus::Failure(StorageErrorCode::ResumeMismatch, StorageStage::Resume);
+            }
+        }
+        output = (directory / reservedName).wstring();
+        return StorageStatus::Success();
+    }
+    catch (const std::bad_alloc&)
+    {
+        return StorageStatus::Failure(StorageErrorCode::OutOfMemory, StorageStage::Resume);
+    }
+    catch (...)
+    {
+        return StorageStatus::Failure(StorageErrorCode::InvalidArgument, StorageStage::Resume);
     }
 }
 
@@ -234,8 +327,52 @@ struct VerifiedRange
     return status;
 }
 
+[[nodiscard]] StorageStatus InspectAllocation(const HANDLE handle, const std::wstring& outputDirectory,
+    const std::uint64_t requestedBytes, const bool preallocationAttempted, AllocationFacts& output) noexcept
+{
+    ULARGE_INTEGER availableBytes{};
+    if (GetDiskFreeSpaceExW(outputDirectory.c_str(), &availableBytes, nullptr, nullptr) == FALSE)
+    {
+        return LastError(StorageStage::Preallocation);
+    }
+    output.availableBytesBeforeReservation = availableBytes.QuadPart;
+    output.requestedAllocationBytes = requestedBytes;
+    output.preallocationAttempted = preallocationAttempted;
+
+    std::array<wchar_t, MAX_PATH + 1> volumePath{};
+    if (GetVolumePathNameW(outputDirectory.c_str(), volumePath.data(), static_cast<DWORD>(volumePath.size())) == FALSE)
+    {
+        return LastError(StorageStage::Preallocation);
+    }
+    DWORD fileSystemFlags = 0;
+    if (GetVolumeInformationW(volumePath.data(), nullptr, 0, nullptr, nullptr, &fileSystemFlags, nullptr, 0) == FALSE)
+    {
+        return LastError(StorageStage::Preallocation);
+    }
+    output.volumeSupportsSparseFiles = (fileSystemFlags & FILE_SUPPORTS_SPARSE_FILES) != 0;
+    output.volumeSupportsCompression = (fileSystemFlags & FILE_FILE_COMPRESSION) != 0;
+    output.volumeCompressed = (fileSystemFlags & FILE_VOLUME_IS_COMPRESSED) != 0;
+
+    FILE_STANDARD_INFO standardInfo{};
+    if (GetFileInformationByHandleEx(handle, FileStandardInfo, &standardInfo, sizeof(standardInfo)) == FALSE ||
+        standardInfo.AllocationSize.QuadPart < 0)
+    {
+        return LastError(StorageStage::Preallocation);
+    }
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    if (GetFileInformationByHandle(handle, &fileInfo) == FALSE)
+    {
+        return LastError(StorageStage::Preallocation);
+    }
+    output.actualAllocationBytes = static_cast<std::uint64_t>(standardInfo.AllocationSize.QuadPart);
+    output.preallocationFullyAllocated = output.actualAllocationBytes >= requestedBytes;
+    output.fileSparse = (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_SPARSE_FILE) != 0;
+    output.fileCompressed = (fileInfo.dwFileAttributes & FILE_ATTRIBUTE_COMPRESSED) != 0;
+    return StorageStatus::Success();
+}
+
 [[nodiscard]] StorageStatus ReserveNewFile(const HANDLE handle,
-    const std::wstring& outputDirectory, const std::uint64_t fileBytes) noexcept
+    const std::wstring& outputDirectory, const std::uint64_t fileBytes, AllocationFacts& facts) noexcept
 {
     ULARGE_INTEGER availableBytes{};
     if (GetDiskFreeSpaceExW(outputDirectory.c_str(), &availableBytes, nullptr, nullptr) == FALSE)
@@ -260,7 +397,10 @@ struct VerifiedRange
     {
         return LastError(StorageStage::Preallocation);
     }
-    return StorageStatus::Success();
+    const std::uint64_t availableBytesBeforeReservation = availableBytes.QuadPart;
+    const StorageStatus status = InspectAllocation(handle, outputDirectory, fileBytes, true, facts);
+    facts.availableBytesBeforeReservation = availableBytesBeforeReservation;
+    return status;
 }
 
 } // namespace
@@ -274,9 +414,12 @@ struct OutputFile::Implementation
     std::uint64_t verifiedBytes = 0;
     std::vector<VerifiedRange> verifiedRanges;
     std::optional<VerifiedRange> pendingRange;
+    std::optional<pbprotocol::WholeFileDigest> publishedDigest;
+    AllocationFacts allocation;
     bool resumed = false;
     bool ownsPart = false;
     bool published = false;
+    bool recoveredPublished = false;
 };
 
 StorageStatus StorageStatus::Failure(const StorageErrorCode code, const StorageStage stage,
@@ -325,8 +468,52 @@ const char* GetStorageStageName(const StorageStage stage) noexcept
     return "Unknown";
 }
 
-StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config,
-    const bool allowResume, std::unique_ptr<OutputFile>& output) noexcept
+StorageStatus OutputFile::PlanReservation(const OutputFileConfig& config, OutputFileReservation& output) noexcept
+{
+    output = {};
+    if (config.outputDirectory.empty() || config.maximumFileBytes == 0 || config.fileBytes > config.maximumFileBytes ||
+        config.fileBytes > static_cast<std::uint64_t>((std::numeric_limits<LONGLONG>::max)()))
+    {
+        return StorageStatus::Failure(config.fileBytes > config.maximumFileBytes ? StorageErrorCode::ResourceLimit :
+            StorageErrorCode::InvalidArgument, StorageStage::Configuration);
+    }
+    DWORD directoryError = ERROR_SUCCESS;
+    if (!PathExists(config.outputDirectory, directoryError))
+    {
+        return StorageStatus::Failure(StorageErrorCode::InvalidDirectory, StorageStage::Directory,
+            static_cast<std::int32_t>(directoryError));
+    }
+    const DWORD attributes = GetFileAttributesW(config.outputDirectory.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+    {
+        return StorageStatus::Failure(StorageErrorCode::InvalidDirectory, StorageStage::Directory,
+            attributes == INVALID_FILE_ATTRIBUTES ? static_cast<std::int32_t>(GetLastError()) : ERROR_DIRECTORY);
+    }
+    try
+    {
+        const std::filesystem::path directory(config.outputDirectory);
+        std::wstring finalPath;
+        StorageStatus status = SelectFinalPath(config, directory, finalPath);
+        if (!status)
+        {
+            return status;
+        }
+        return WideFileNameToUtf8(std::filesystem::path(finalPath).filename().wstring(), output.finalFileNameUtf8);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return StorageStatus::Failure(StorageErrorCode::OutOfMemory, StorageStage::Reservation);
+    }
+    catch (...)
+    {
+        return StorageStatus::Failure(StorageErrorCode::InvalidArgument, StorageStage::Directory);
+    }
+}
+
+StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config, const bool allowResume,
+    const OutputFileReservation* const reservation,
+    const std::optional<pbprotocol::WholeFileDigest>& publishIntent,
+    std::unique_ptr<OutputFile>& output) noexcept
 {
     output.reset();
     if (config.outputDirectory.empty() || config.maximumFileBytes == 0 ||
@@ -353,7 +540,8 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config,
     {
         auto implementation = std::make_unique<OutputFile::Implementation>();
         const std::filesystem::path directory(config.outputDirectory);
-        StorageStatus status = SelectFinalPath(config, directory, implementation->finalPath);
+        StorageStatus status = reservation == nullptr ? SelectFinalPath(config, directory, implementation->finalPath) :
+            ResolveReservedFinalPath(config, directory, *reservation, implementation->finalPath);
         if (!status)
         {
             return status;
@@ -367,6 +555,57 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config,
         {
             return StorageStatus::Failure(StorageErrorCode::NativeFailure, StorageStage::Reservation,
                 static_cast<std::int32_t>(partError));
+        }
+        DWORD finalError = ERROR_SUCCESS;
+        const bool finalExists = PathExists(implementation->finalPath, finalError);
+        if (!finalExists && finalError != ERROR_FILE_NOT_FOUND && finalError != ERROR_PATH_NOT_FOUND)
+        {
+            return StorageStatus::Failure(StorageErrorCode::NativeFailure, StorageStage::Reservation,
+                static_cast<std::int32_t>(finalError));
+        }
+        if (partExists && finalExists)
+        {
+            return StorageStatus::Failure(StorageErrorCode::ResumeMismatch, StorageStage::Resume);
+        }
+        if (finalExists)
+        {
+            if (!publishIntent)
+            {
+                return StorageStatus::Failure(StorageErrorCode::TargetExists, StorageStage::Reservation,
+                    ERROR_FILE_EXISTS);
+            }
+            const HANDLE finalHandle = CreateFileW(implementation->finalPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+            if (finalHandle == INVALID_HANDLE_VALUE)
+            {
+                return LastError(StorageStage::Resume);
+            }
+            std::array<std::byte, pbprotocol::kDigestBytes> finalDigest{};
+            std::uint64_t finalBytes = 0;
+            status = HashFile(implementation->finalPath, finalDigest, finalBytes);
+            if (!status || finalBytes != config.fileBytes || finalDigest != publishIntent->bytes)
+            {
+                CloseHandle(finalHandle);
+                return status ? StorageStatus::Failure(StorageErrorCode::DigestMismatch, StorageStage::Resume) : status;
+            }
+            status = InspectAllocation(finalHandle, config.outputDirectory, config.fileBytes, false,
+                implementation->allocation);
+            const BOOL closed = CloseHandle(finalHandle);
+            if (!status || closed == FALSE)
+            {
+                return status ? LastError(StorageStage::Resume) : status;
+            }
+            implementation->verifiedBytes = config.fileBytes;
+            implementation->publishedDigest = *publishIntent;
+            implementation->resumed = true;
+            implementation->published = true;
+            implementation->recoveredPublished = true;
+            output = std::unique_ptr<OutputFile>(new OutputFile(std::move(implementation)));
+            return StorageStatus::Success();
+        }
+        if (publishIntent && !partExists)
+        {
+            return StorageStatus::Failure(StorageErrorCode::ResumeMismatch, StorageStage::Resume);
         }
         if (partExists && !allowResume)
         {
@@ -397,10 +636,19 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config,
                 implementation->handle = INVALID_HANDLE_VALUE;
                 return status ? StorageStatus::Failure(StorageErrorCode::ResumeMismatch, StorageStage::Resume) : status;
             }
+            status = InspectAllocation(implementation->handle, config.outputDirectory, config.fileBytes, false,
+                implementation->allocation);
+            if (!status)
+            {
+                CloseHandle(implementation->handle);
+                implementation->handle = INVALID_HANDLE_VALUE;
+                return status;
+            }
         }
         else
         {
-            status = ReserveNewFile(implementation->handle, config.outputDirectory, config.fileBytes);
+            status = ReserveNewFile(implementation->handle, config.outputDirectory, config.fileBytes,
+                implementation->allocation);
             if (!status)
             {
                 CloseHandle(implementation->handle);
@@ -427,13 +675,21 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config,
 StorageStatus OutputFile::Create(const OutputFileConfig& config,
     std::unique_ptr<OutputFile>& output) noexcept
 {
-    return CreateInternal(config, false, output);
+    return CreateInternal(config, false, nullptr, std::nullopt, output);
 }
 
 StorageStatus OutputFile::CreateOrResume(const OutputFileConfig& config,
     std::unique_ptr<OutputFile>& output) noexcept
 {
-    return CreateInternal(config, true, output);
+    return CreateInternal(config, true, nullptr, std::nullopt, output);
+}
+
+StorageStatus OutputFile::CreateOrResume(const OutputFileConfig& config,
+    const OutputFileReservation& reservation,
+    const std::optional<pbprotocol::WholeFileDigest>& publishIntent,
+    std::unique_ptr<OutputFile>& output) noexcept
+{
+    return CreateInternal(config, true, &reservation, publishIntent, output);
 }
 
 OutputFile::OutputFile(std::unique_ptr<Implementation> implementation) noexcept
@@ -688,9 +944,15 @@ StorageStatus OutputFile::Write(const std::uint64_t rawOffset,
 
 StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDigest) noexcept
 {
-    if (!implementation_ || implementation_->published)
+    if (!implementation_)
     {
         return StorageStatus::Failure(StorageErrorCode::AlreadyPublished, StorageStage::Publish);
+    }
+    if (implementation_->published)
+    {
+        return implementation_->publishedDigest && *implementation_->publishedDigest == expectedDigest ?
+            StorageStatus::Success() :
+            StorageStatus::Failure(StorageErrorCode::DigestMismatch, StorageStage::Publish);
     }
     if (implementation_->handle == INVALID_HANDLE_VALUE || implementation_->pendingRange.has_value() ||
         implementation_->verifiedBytes != implementation_->fileBytes)
@@ -744,6 +1006,7 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
         return verificationStatus;
     }
     implementation_->published = true;
+    implementation_->publishedDigest = expectedDigest;
     implementation_->ownsPart = false;
     return StorageStatus::Success();
 }
@@ -782,9 +1045,27 @@ OutputFileSnapshot OutputFile::GetSnapshot() const
     {
         return {};
     }
-    return {implementation_->finalPath, implementation_->partPath, implementation_->fileBytes,
-        implementation_->verifiedBytes, implementation_->verifiedBytes, implementation_->resumed,
-        implementation_->pendingRange.has_value(), implementation_->published};
+    OutputFileSnapshot snapshot;
+    snapshot.finalPath = implementation_->finalPath;
+    snapshot.partPath = implementation_->partPath;
+    snapshot.fileBytes = implementation_->fileBytes;
+    snapshot.writtenBytes = implementation_->verifiedBytes;
+    snapshot.verifiedBytes = implementation_->verifiedBytes;
+    snapshot.availableBytesBeforeReservation = implementation_->allocation.availableBytesBeforeReservation;
+    snapshot.requestedAllocationBytes = implementation_->allocation.requestedAllocationBytes;
+    snapshot.actualAllocationBytes = implementation_->allocation.actualAllocationBytes;
+    snapshot.resumed = implementation_->resumed;
+    snapshot.hasPendingWrite = implementation_->pendingRange.has_value();
+    snapshot.published = implementation_->published;
+    snapshot.recoveredPublished = implementation_->recoveredPublished;
+    snapshot.preallocationAttempted = implementation_->allocation.preallocationAttempted;
+    snapshot.preallocationFullyAllocated = implementation_->allocation.preallocationFullyAllocated;
+    snapshot.fileSparse = implementation_->allocation.fileSparse;
+    snapshot.fileCompressed = implementation_->allocation.fileCompressed;
+    snapshot.volumeSupportsSparseFiles = implementation_->allocation.volumeSupportsSparseFiles;
+    snapshot.volumeSupportsCompression = implementation_->allocation.volumeSupportsCompression;
+    snapshot.volumeCompressed = implementation_->allocation.volumeCompressed;
+    return snapshot;
 }
 
 } // namespace pbstorage

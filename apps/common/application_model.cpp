@@ -45,7 +45,8 @@ constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
 
 [[nodiscard]] bool IsDecoderActive(const DecoderState state) noexcept
 {
-    return state == DecoderState::WaitingForBootstrap || state == DecoderState::ReceivingControl ||
+    return state == DecoderState::WaitingForBootstrap || state == DecoderState::AwaitingLargeOutputConfirmation ||
+        state == DecoderState::ReceivingControl ||
         state == DecoderState::Receiving || state == DecoderState::Recovering || state == DecoderState::Verifying ||
         state == DecoderState::Publishing;
 }
@@ -56,6 +57,8 @@ constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
     switch (currentState)
     {
     case DecoderState::WaitingForBootstrap:
+        return nextState == DecoderState::AwaitingLargeOutputConfirmation || nextState == DecoderState::ReceivingControl;
+    case DecoderState::AwaitingLargeOutputConfirmation:
         return nextState == DecoderState::ReceivingControl;
     case DecoderState::ReceivingControl:
         return nextState == DecoderState::Receiving;
@@ -73,6 +76,81 @@ constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
 }
 
 } // namespace
+
+TransitionResult LargeOutputConfirmationController::BeginRun(const std::uint64_t runGeneration) noexcept
+{
+    if (runGeneration == 0)
+    {
+        return TransitionResult::Rejected;
+    }
+    const std::scoped_lock lock(mutex_);
+    if (snapshot_.runGeneration == runGeneration)
+    {
+        return TransitionResult::NoChange;
+    }
+    if (snapshot_.runGeneration != 0 && runGeneration < snapshot_.runGeneration)
+    {
+        return TransitionResult::Stale;
+    }
+    snapshot_ = {};
+    snapshot_.runGeneration = runGeneration;
+    return TransitionResult::Applied;
+}
+
+TransitionResult LargeOutputConfirmationController::Request(const std::uint64_t runGeneration,
+    const pbprotocol::SessionDescriptor& session, const pbprotocol::SessionTag sessionTag)
+{
+    const std::scoped_lock lock(mutex_);
+    if (runGeneration == 0 || snapshot_.runGeneration != runGeneration)
+    {
+        return TransitionResult::Stale;
+    }
+    if (snapshot_.requestId != 0)
+    {
+        const bool sameRequest = snapshot_.sessionId == session.sessionId && snapshot_.sessionTag == sessionTag &&
+            snapshot_.originalFileBytes == session.originalFileSize && snapshot_.fileNameUtf8 == session.fileNameUtf8;
+        return sameRequest ? TransitionResult::NoChange : TransitionResult::Rejected;
+    }
+    snapshot_.state = LargeOutputConfirmationState::AwaitingDecision;
+    snapshot_.requestId = 1;
+    snapshot_.sessionId = session.sessionId;
+    snapshot_.sessionTag = sessionTag;
+    snapshot_.originalFileBytes = session.originalFileSize;
+    snapshot_.fileNameUtf8 = session.fileNameUtf8;
+    return TransitionResult::Applied;
+}
+
+TransitionResult LargeOutputConfirmationController::Resolve(const std::uint64_t runGeneration,
+    const std::uint64_t requestId, const bool accepted) noexcept
+{
+    const std::scoped_lock lock(mutex_);
+    if (runGeneration == 0 || snapshot_.runGeneration != runGeneration)
+    {
+        return TransitionResult::Stale;
+    }
+    if (requestId == 0 || snapshot_.requestId != requestId)
+    {
+        return TransitionResult::Rejected;
+    }
+    const LargeOutputConfirmationState requestedState = accepted ?
+        LargeOutputConfirmationState::Accepted : LargeOutputConfirmationState::Rejected;
+    if (snapshot_.state == requestedState)
+    {
+        return TransitionResult::NoChange;
+    }
+    if (snapshot_.state != LargeOutputConfirmationState::AwaitingDecision)
+    {
+        return TransitionResult::Rejected;
+    }
+    snapshot_.state = requestedState;
+    return TransitionResult::Applied;
+}
+
+LargeOutputConfirmationSnapshot LargeOutputConfirmationController::GetSnapshot() const
+{
+    const std::scoped_lock lock(mutex_);
+    return snapshot_;
+}
 
 TransitionResult EncoderStateMachine::Start(const std::uint64_t runGeneration) noexcept
 {
@@ -608,6 +686,7 @@ const char* GetDecoderStateName(const DecoderState state) noexcept
     {
     case DecoderState::Idle: return "Idle";
     case DecoderState::WaitingForBootstrap: return "WaitingForBootstrap";
+    case DecoderState::AwaitingLargeOutputConfirmation: return "AwaitingLargeOutputConfirmation";
     case DecoderState::ReceivingControl: return "ReceivingControl";
     case DecoderState::Receiving: return "Receiving";
     case DecoderState::Recovering: return "Recovering";
@@ -625,6 +704,18 @@ const char* GetVisualProfileName(const VisualProfile profile) noexcept
 {
     const VisualProfileOption* const option = FindVisualProfileOption(profile);
     return option == nullptr ? "Unknown" : option->displayName.data();
+}
+
+const char* GetLargeOutputConfirmationStateName(const LargeOutputConfirmationState state) noexcept
+{
+    switch (state)
+    {
+    case LargeOutputConfirmationState::NotRequired: return "NotRequired";
+    case LargeOutputConfirmationState::AwaitingDecision: return "AwaitingDecision";
+    case LargeOutputConfirmationState::Accepted: return "Accepted";
+    case LargeOutputConfirmationState::Rejected: return "Rejected";
+    }
+    return "Unknown";
 }
 
 std::span<const VisualProfileOption> GetVisualProfileOptions() noexcept

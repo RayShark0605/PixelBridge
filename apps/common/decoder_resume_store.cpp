@@ -33,11 +33,14 @@ inline constexpr std::uint16_t segmentControlRecordType = 1;
 inline constexpr std::uint16_t manifestControlRecordType = 2;
 inline constexpr std::uint16_t acceptedBlockRecordType = 3;
 inline constexpr std::uint16_t completedSegmentRecordType = 4;
+inline constexpr std::uint16_t outputReservationRecordType = 5;
+inline constexpr std::uint16_t publishIntentRecordType = 6;
 
 [[nodiscard]] bool IsKnownRecordType(const std::uint16_t recordType) noexcept
 {
     return recordType == segmentControlRecordType || recordType == manifestControlRecordType ||
-        recordType == acceptedBlockRecordType || recordType == completedSegmentRecordType;
+        recordType == acceptedBlockRecordType || recordType == completedSegmentRecordType ||
+        recordType == outputReservationRecordType || recordType == publishIntentRecordType;
 }
 
 template <typename Integer>
@@ -76,7 +79,7 @@ template <typename Integer>
     if (tail.size() > 6)
     {
         const std::uint8_t typeLowByte = std::to_integer<std::uint8_t>(tail[6]);
-        if (typeLowByte < segmentControlRecordType || typeLowByte > completedSegmentRecordType ||
+        if (typeLowByte < segmentControlRecordType || typeLowByte > publishIntentRecordType ||
             (tail.size() > 7 && tail[7] != std::byte{0}))
         {
             return false;
@@ -446,6 +449,41 @@ template <typename Integer>
     return {};
 }
 
+[[nodiscard]] DecoderResumeStoreStatus ParseOutputReservationPayload(const std::span<const std::byte> payload,
+    std::string& output) noexcept
+{
+    if (payload.empty())
+    {
+        return DecoderResumeStoreStatus::Failure("resume output reservation filename is empty");
+    }
+    try
+    {
+        output.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+    }
+    catch (const std::bad_alloc&)
+    {
+        return DecoderResumeStoreStatus::Failure("resume output reservation filename allocation failed");
+    }
+    const pbprotocol::ProtocolStatus validationStatus = pbprotocol::ValidateFileNameUtf8(output);
+    if (!validationStatus)
+    {
+        output.clear();
+        return DecoderResumeStoreStatus::Failure("resume output reservation filename is invalid");
+    }
+    return {};
+}
+
+[[nodiscard]] DecoderResumeStoreStatus ParsePublishIntentPayload(const std::span<const std::byte> payload,
+    pbprotocol::WholeFileDigest& output) noexcept
+{
+    if (payload.size() != pbprotocol::kDigestBytes)
+    {
+        return DecoderResumeStoreStatus::Failure("resume publish intent digest size is invalid");
+    }
+    std::copy(payload.begin(), payload.end(), output.bytes.begin());
+    return {};
+}
+
 [[nodiscard]] bool IsCompletedOrdinal(const std::vector<pbprotocol::ResumeCompletedSegmentRecord>& completed,
     const std::uint64_t segmentOrdinal) noexcept
 {
@@ -519,6 +557,8 @@ struct DecoderResumeStore::Implementation
     std::vector<pbprotocol::ResumeCompletedSegmentRecord> completedSegments;
     std::vector<DecoderResumeAcceptedBlock> activeBlocks;
     std::vector<DecoderResumeAcceptedBlock> pendingBlocks;
+    std::optional<std::string> outputReservationFileNameUtf8;
+    std::optional<pbprotocol::WholeFileDigest> publishIntent;
     std::uint64_t generation = 0;
     std::uint64_t fileBytes = 0;
     bool resumed = false;
@@ -657,6 +697,11 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                 {
                     return DecoderResumeStoreStatus::Failure("resume journal internal record CRC is invalid");
                 }
+                if (implementation->publishIntent && type.Value() != publishIntentRecordType)
+                {
+                    return DecoderResumeStoreStatus::Failure(
+                        "resume journal mutates durable state after publish intent");
+                }
                 implementation->generation = generation.Value();
                 if (type.Value() == segmentControlRecordType)
                 {
@@ -766,6 +811,48 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                         return block.segmentOrdinal == completed.segmentOrdinal;
                     });
                 }
+                else if (type.Value() == outputReservationRecordType)
+                {
+                    std::string finalFileNameUtf8;
+                    status = ParseOutputReservationPayload(payload, finalFileNameUtf8);
+                    if (!status)
+                    {
+                        return status;
+                    }
+                    if (implementation->outputReservationFileNameUtf8 &&
+                        *implementation->outputReservationFileNameUtf8 != finalFileNameUtf8)
+                    {
+                        return DecoderResumeStoreStatus::Failure("resume output reservation conflict");
+                    }
+                    implementation->outputReservationFileNameUtf8 = std::move(finalFileNameUtf8);
+                }
+                else if (type.Value() == publishIntentRecordType)
+                {
+                    pbprotocol::WholeFileDigest publishIntent;
+                    status = ParsePublishIntentPayload(payload, publishIntent);
+                    if (!status || !implementation->outputReservationFileNameUtf8 ||
+                        implementation->manifestControl.empty() ||
+                        implementation->completedSegments.size() != implementation->session.segmentCount)
+                    {
+                        return status ? DecoderResumeStoreStatus::Failure(
+                            "resume publish intent lacks a complete durable output state") : status;
+                    }
+                    const auto manifestControl = pbprotocol::ParseControlRecord(implementation->manifestControl);
+                    const auto manifest = manifestControl ? pbprotocol::ParseFinalManifest(
+                        manifestControl.Value().payload, implementation->session, resourcePolicy) :
+                        pbprotocol::ProtocolResult<pbprotocol::FinalManifest>::Failure(
+                            pbprotocol::ProtocolErrorCode::InternalInvariantViolation, 0);
+                    if (!manifest || manifest.Value().wholeFileDigest != publishIntent)
+                    {
+                        return DecoderResumeStoreStatus::Failure(
+                            "resume publish intent digest conflicts with FinalManifest");
+                    }
+                    if (implementation->publishIntent && *implementation->publishIntent != publishIntent)
+                    {
+                        return DecoderResumeStoreStatus::Failure("resume publish intent conflict");
+                    }
+                    implementation->publishIntent = publishIntent;
+                }
                 if (CountActiveSegments(implementation->activeBlocks) > resourcePolicy.maxActiveOuterFecDecoders)
                 {
                     return DecoderResumeStoreStatus::Failure("resume journal exceeds the active Segment limit");
@@ -803,6 +890,8 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
         loaded.manifestControlRecord = store->implementation_->manifestControl;
         loaded.completedSegments = store->implementation_->completedSegments;
         loaded.activeBlocks = store->implementation_->activeBlocks;
+        loaded.outputReservationFileNameUtf8 = store->implementation_->outputReservationFileNameUtf8;
+        loaded.publishIntent = store->implementation_->publishIntent;
         loaded.resumed = store->implementation_->resumed;
         loaded.hadTruncatedTail = store->implementation_->hadTruncatedTail;
         loaded.generation = store->implementation_->generation;
@@ -904,6 +993,42 @@ DecoderResumeStoreStatus DecoderResumeStore::RecordManifestControl(
         }
     }
     return status;
+}
+
+DecoderResumeStoreStatus DecoderResumeStore::RecordOutputReservation(std::string finalFileNameUtf8) noexcept
+{
+    if (!implementation_ || implementation_->terminalFailure)
+    {
+        return DecoderResumeStoreStatus::Failure("resume store is unavailable");
+    }
+    const pbprotocol::ProtocolStatus validationStatus = pbprotocol::ValidateFileNameUtf8(finalFileNameUtf8);
+    if (!validationStatus)
+    {
+        return DecoderResumeStoreStatus::Failure("resume output reservation filename is invalid");
+    }
+    if (implementation_->outputReservationFileNameUtf8)
+    {
+        return *implementation_->outputReservationFileNameUtf8 == finalFileNameUtf8 ? DecoderResumeStoreStatus{} :
+            DecoderResumeStoreStatus::Failure("resume output reservation conflict");
+    }
+    const std::span<const char> characters(finalFileNameUtf8.data(), finalFileNameUtf8.size());
+    const DecoderResumeStoreStatus status = AppendRecord(outputReservationRecordType,
+        std::as_bytes(characters), true);
+    if (!status)
+    {
+        return status;
+    }
+    try
+    {
+        implementation_->outputReservationFileNameUtf8 = std::move(finalFileNameUtf8);
+    }
+    catch (const std::bad_alloc&)
+    {
+        implementation_->terminalFailure = true;
+        return DecoderResumeStoreStatus::Failure(
+            "resume output reservation memory update failed after durable append");
+    }
+    return {};
 }
 
 DecoderResumeStoreStatus DecoderResumeStore::RecordAcceptedBlock(const DecoderResumeAcceptedBlock& block) noexcept
@@ -1034,6 +1159,42 @@ DecoderResumeStoreStatus DecoderResumeStore::RecordCompletedSegment(
     return Compact();
 }
 
+DecoderResumeStoreStatus DecoderResumeStore::RecordPublishIntent(
+    const pbprotocol::WholeFileDigest& wholeFileDigest) noexcept
+{
+    if (!implementation_ || implementation_->terminalFailure ||
+        !implementation_->outputReservationFileNameUtf8 || implementation_->manifestControl.empty() ||
+        implementation_->completedSegments.size() != implementation_->session.segmentCount)
+    {
+        return DecoderResumeStoreStatus::Failure("resume publish intent requires a complete durable output state");
+    }
+    const auto manifestControl = pbprotocol::ParseControlRecord(implementation_->manifestControl);
+    const auto manifest = manifestControl ? pbprotocol::ParseFinalManifest(manifestControl.Value().payload,
+        implementation_->session, implementation_->policy) :
+        pbprotocol::ProtocolResult<pbprotocol::FinalManifest>::Failure(
+            pbprotocol::ProtocolErrorCode::InternalInvariantViolation, 0);
+    if (!manifest || manifest.Value().wholeFileDigest != wholeFileDigest)
+    {
+        return DecoderResumeStoreStatus::Failure("resume publish intent digest conflicts with FinalManifest");
+    }
+    if (implementation_->publishIntent)
+    {
+        return *implementation_->publishIntent == wholeFileDigest ? DecoderResumeStoreStatus{} :
+            DecoderResumeStoreStatus::Failure("resume publish intent conflict");
+    }
+    DecoderResumeStoreStatus status = Checkpoint();
+    if (!status)
+    {
+        return status;
+    }
+    status = AppendRecord(publishIntentRecordType, wholeFileDigest.bytes, true);
+    if (status)
+    {
+        implementation_->publishIntent = wholeFileDigest;
+    }
+    return status;
+}
+
 DecoderResumeStoreStatus DecoderResumeStore::RemoveAfterPublish() noexcept
 {
     if (!implementation_)
@@ -1130,6 +1291,16 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
         generation++;
         return {};
     };
+    if (implementation_->outputReservationFileNameUtf8)
+    {
+        const std::span<const char> characters(implementation_->outputReservationFileNameUtf8->data(),
+            implementation_->outputReservationFileNameUtf8->size());
+        status = AppendCompactRecord(outputReservationRecordType, std::as_bytes(characters));
+        if (!status)
+        {
+            return status;
+        }
+    }
     for (const std::vector<std::byte>& control : implementation_->segmentControls)
     {
         status = AppendCompactRecord(segmentControlRecordType, control);
@@ -1160,6 +1331,14 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
         std::vector<std::byte> payload;
         status = BuildAcceptedBlockPayload(block, payload);
         if (!status || !(status = AppendCompactRecord(acceptedBlockRecordType, payload)))
+        {
+            return status;
+        }
+    }
+    if (implementation_->publishIntent)
+    {
+        status = AppendCompactRecord(publishIntentRecordType, implementation_->publishIntent->bytes);
+        if (!status)
         {
             return status;
         }

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -78,6 +79,16 @@ struct OutputFileConfig
     std::string originalFileNameUtf8;
 };
 
+struct OutputFileReservation
+{
+    // UTF-8 basename selected before .part creation and persisted by the
+    // application resume journal. It is revalidated against the only legal
+    // primary/collision names on every reopen.
+    std::string finalFileNameUtf8;
+
+    bool operator==(const OutputFileReservation&) const = default;
+};
+
 struct OutputFileSnapshot
 {
     std::wstring finalPath;
@@ -85,9 +96,20 @@ struct OutputFileSnapshot
     std::uint64_t fileBytes = 0;
     std::uint64_t writtenBytes = 0;
     std::uint64_t verifiedBytes = 0;
+    std::uint64_t availableBytesBeforeReservation = 0;
+    std::uint64_t requestedAllocationBytes = 0;
+    std::uint64_t actualAllocationBytes = 0;
     bool resumed = false;
     bool hasPendingWrite = false;
     bool published = false;
+    bool recoveredPublished = false;
+    bool preallocationAttempted = false;
+    bool preallocationFullyAllocated = false;
+    bool fileSparse = false;
+    bool fileCompressed = false;
+    bool volumeSupportsSparseFiles = false;
+    bool volumeSupportsCompression = false;
+    bool volumeCompressed = false;
 };
 
 [[nodiscard]] const char* GetStorageErrorName(StorageErrorCode code) noexcept;
@@ -100,9 +122,15 @@ struct OutputFileSnapshot
 class OutputFile
 {
 public:
+    [[nodiscard]] static StorageStatus PlanReservation(const OutputFileConfig& config,
+        OutputFileReservation& output) noexcept;
     [[nodiscard]] static StorageStatus Create(const OutputFileConfig& config,
         std::unique_ptr<OutputFile>& output) noexcept;
     [[nodiscard]] static StorageStatus CreateOrResume(const OutputFileConfig& config,
+        std::unique_ptr<OutputFile>& output) noexcept;
+    [[nodiscard]] static StorageStatus CreateOrResume(const OutputFileConfig& config,
+        const OutputFileReservation& reservation,
+        const std::optional<pbprotocol::WholeFileDigest>& publishIntent,
         std::unique_ptr<OutputFile>& output) noexcept;
 
     ~OutputFile();
@@ -128,7 +156,9 @@ public:
 private:
     struct Implementation;
     [[nodiscard]] static StorageStatus CreateInternal(const OutputFileConfig& config,
-        bool allowResume, std::unique_ptr<OutputFile>& output) noexcept;
+        bool allowResume, const OutputFileReservation* reservation,
+        const std::optional<pbprotocol::WholeFileDigest>& publishIntent,
+        std::unique_ptr<OutputFile>& output) noexcept;
     explicit OutputFile(std::unique_ptr<Implementation> implementation) noexcept;
     std::unique_ptr<Implementation> implementation_;
 };
