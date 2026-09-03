@@ -1206,6 +1206,11 @@ std::uint64_t DecoderResumeStore::GetFileBytes() const noexcept
     return implementation_->fileBytes;
 }
 
+std::size_t DecoderResumeStore::GetActiveBlockCount() const noexcept
+{
+    return implementation_->activeBlocks.size();
+}
+
 std::size_t DecoderResumeStore::GetPendingBlockCount() const noexcept
 {
     return implementation_->pendingBlocks.size();

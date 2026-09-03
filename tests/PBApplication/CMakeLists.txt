@@ -22,6 +22,16 @@ PbInstrumentPresentationTest(PBApplicationTests)
 # bound prevents sanitizer overhead from terminating a still-progressing gate.
 set_tests_properties(PBApplicationTests PROPERTIES LABELS "application;controller;gui-model" TIMEOUT 600)
 
+add_executable(PBHeadlessMultiSegmentCheckpoint headless_multi_segment_checkpoint.cpp)
+target_link_libraries(PBHeadlessMultiSegmentCheckpoint PRIVATE PB::CompilerSettings PB::PBApplication
+    PB::PBProtocol bcrypt)
+target_compile_definitions(PBHeadlessMultiSegmentCheckpoint PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+    "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
+target_compile_features(PBHeadlessMultiSegmentCheckpoint PRIVATE cxx_std_20)
+add_test(NAME PBHeadlessMultiSegmentCheckpoint COMMAND PBHeadlessMultiSegmentCheckpoint)
+set_tests_properties(PBHeadlessMultiSegmentCheckpoint PROPERTIES LABELS "application;headless;checkpoint"
+    TIMEOUT 900)
+
 PbAddUnitTest(PBQSettingsTests test_qsettings_contract.cpp test_remote_visual_metadata_preset.cpp
     "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.cpp")
 target_link_libraries(PBQSettingsTests PRIVATE PB::PBApplication Qt${QT_VERSION_MAJOR}::Core)

@@ -1286,6 +1286,28 @@ public:
         RequireResult(encoded, "Outer FEC headless block encoding failed");
         return encoded.Value();
     }
+    [[nodiscard]] std::size_t BuildTransportBlockForSlot(const std::uint32_t slot,
+        const std::span<std::byte> output, std::uint32_t& payloadBytes)
+    {
+        const std::uint32_t blockId = CalculateOuterBlockId(slot);
+        std::fill(outerPayload_.begin(), outerPayload_.end(), std::byte{0});
+        const auto encoded = wirehair_ ? wirehair_->EncodeBlock(blockId, outerPayload_) :
+            directRepeat_->EncodeBlock(blockId, outerPayload_);
+        RequireResult(encoded, "Outer FEC block encoding failed");
+        Require(encoded.Value() > 0 && encoded.Value() <= outerPayload_.size() &&
+            encoded.Value() <= (std::numeric_limits<std::uint16_t>::max)(),
+            "Outer FEC produced an invalid payload length");
+        const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData,
+            pbprotocol::kTransportProtocolMinor, 0,
+            description_.segments[currentSegmentOrdinal_].descriptor.sessionTag,
+            currentSegmentOrdinal_, blockId, static_cast<std::uint16_t>(encoded.Value())};
+        const std::size_t serializedBytes = pbprotocol::GetTransportSerializedSize(header);
+        Require(serializedBytes <= output.size(), "Transport block exceeds its bounded output");
+        RequireResult(pbprotocol::SerializeTransportBlock(header, std::span(outerPayload_).first(encoded.Value()),
+            output.first(serializedBytes)), "Transport serialization failed");
+        payloadBytes = encoded.Value();
+        return serializedBytes;
+    }
     [[nodiscard]] std::uint32_t GetPeakResidentEncodedSegmentCount() const noexcept
     {
         return peakResidentEncodedSegmentCount_;
@@ -1313,30 +1335,14 @@ private:
         generatedPayloadBytesInFrame_ = 0;
         for (std::uint32_t slot = 0; slot < profile_.codewords; slot++)
         {
-            const std::uint32_t blockId = CalculateOuterBlockId(slot);
-            std::fill(outerPayload_.begin(), outerPayload_.end(), std::byte{0});
-            const auto encoded = wirehair_ ? wirehair_->EncodeBlock(blockId, outerPayload_) :
-                directRepeat_->EncodeBlock(blockId, outerPayload_);
-            RequireResult(encoded, "Outer FEC block encoding failed");
-            Require(encoded.Value() > 0 && encoded.Value() <= outerPayload_.size() &&
-                encoded.Value() <= (std::numeric_limits<std::uint16_t>::max)(),
-                "Outer FEC produced an invalid payload length");
-            const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData,
-                pbprotocol::kTransportProtocolMinor, 0,
-                description_.segments[currentSegmentOrdinal_].descriptor.sessionTag,
-                currentSegmentOrdinal_, blockId,
-                static_cast<std::uint16_t>(encoded.Value())};
-            const std::size_t serializedBytes = pbprotocol::GetTransportSerializedSize(header);
-            Require(serializedBytes <= transport_.size(), "Transport block exceeds the robust information block");
-            RequireResult(pbprotocol::SerializeTransportBlock(header,
-                std::span(outerPayload_).first(encoded.Value()), std::span(transport_).first(serializedBytes)),
-                "Transport serialization failed");
+            std::uint32_t payloadBytes = 0;
+            const std::size_t serializedBytes = BuildTransportBlockForSlot(slot, transport_, payloadBytes);
             RequireResult(pbprotocol::FrameTransportBlockIntoInfoBlock(std::span(transport_).first(serializedBytes),
                 information_.size(), information_), "Transport information framing failed");
             RequireResult(pbinnerfec::EncodeQcLdpcCodeword(pbinnerfec::kInnerFecProfileIdRobust, information_,
                 std::span(data_).subspan(static_cast<std::size_t>(slot) * codewordBytes, codewordBytes)),
                 "Robust QC-LDPC encoding failed");
-            generatedPayloadBytesInFrame_ += encoded.Value();
+            generatedPayloadBytesInFrame_ += payloadBytes;
         }
     }
 
@@ -1650,6 +1656,11 @@ struct ReceiverProcessResult
 {
     bool carrierAccepted = false;
     bool uniqueAdmission = false;
+    bool hasDataAdmission = false;
+    bool completedSegment = false;
+    pbreceiver::ReceiverDataDisposition dataDisposition = pbreceiver::ReceiverDataDisposition::AcceptedNeedMore;
+    pbreceiver::ReceiverOuterSymbolAdmission outerSymbolAdmission =
+        pbreceiver::ReceiverOuterSymbolAdmission::NotApplicable;
 };
 
 [[nodiscard]] pbrealcapturereplay::ReplayV2DemodResultKind ToReplayResultKind(
@@ -2476,6 +2487,7 @@ struct AuthoritativeCompletion
 {
     bool published = false;
     std::string outputPath;
+    std::wstring outputPathWide;
     std::string wholeFileDigestHex;
     std::uint64_t recoveryRuntimeMilliseconds = 0;
 };
@@ -2487,10 +2499,12 @@ public:
         const pbprotocol::ReceiverResourcePolicy& policy, SnapshotStore<DecoderSnapshot>& snapshot,
         AuthoritativeCompletion& completion, const std::uint64_t runGeneration,
         const std::chrono::steady_clock::time_point started, const VisualProfile visualProfile,
-        const bool deferCompletedState = false)
+        const bool deferCompletedState = false, const bool captureTelemetryAvailable = true,
+        const bool collectResourceHighWater = false)
         : receiver_(receiver), outputDirectory_(std::move(outputDirectory)), policy_(policy), snapshot_(snapshot),
           completion_(completion), runGeneration_(runGeneration), started_(started), visualProfile_(visualProfile),
-          deferCompletedState_(deferCompletedState)
+          deferCompletedState_(deferCompletedState), captureTelemetryAvailable_(captureTelemetryAvailable),
+          collectResourceHighWater_(collectResourceHighWater)
     {
     }
 
@@ -2640,6 +2654,63 @@ public:
         UpdateVisualSnapshot();
         UpdateTelemetrySnapshot();
         return {carrierAccepted, receiverAdmission};
+    }
+
+    [[nodiscard]] bool ProcessHeadlessControlRecord(const std::span<const std::byte> bytes,
+        const std::int64_t timestamp100ns)
+    {
+        const auto record = pbprotocol::ParseControlRecord(bytes);
+        RequireResult(record, "headless ControlRecord failed an independent parse");
+        return ProcessControlRecord(bytes, record.Value().sessionTag, timestamp100ns);
+    }
+
+    [[nodiscard]] ReceiverProcessResult ProcessHeadlessTransportBlock(const std::span<const std::byte> bytes,
+        const std::uint64_t captureObservation, const std::int64_t timestamp100ns)
+    {
+        pbdemodd3d11::CaptureDemodulatorResult result;
+        result.kind = pbdemodd3d11::CaptureDemodulatorResultKind::Transport;
+        result.metadata.captureObservation = captureObservation;
+        result.metadata.timestamp.monotonic100ns = timestamp100ns;
+        result.demodulation.metadata = result.metadata;
+        result.demodulation.acceptedTransportBlockCount = 1;
+        pbdesktoplevels::AcceptedTransportBlock& accepted = result.demodulation.acceptedTransportBlocks[0];
+        Require(bytes.size() >= pbprotocol::kTransportMinimumBlockBytes && bytes.size() <= accepted.bytes.size(),
+            "headless Transport block is outside the fixed accepted-block capacity");
+        accepted.byteCount = static_cast<std::uint32_t>(bytes.size());
+        std::copy(bytes.begin(), bytes.end(), accepted.bytes.begin());
+        result.admittedTransportBlockCount = 1;
+        result.admittedTransportBlockIndices[0] = 0;
+        return ProcessTransport(result, false);
+    }
+
+    [[nodiscard]] std::uint64_t GetPeakActiveOuterFecDecoderCount() const noexcept
+    {
+        return peakActiveOuterFecDecoderCount_;
+    }
+
+    [[nodiscard]] std::uint64_t GetPeakReservedOuterFecDecoderBytes() const noexcept
+    {
+        return peakReservedOuterFecDecoderBytes_;
+    }
+
+    [[nodiscard]] std::uint64_t GetPeakOrphanCachedBytes() const noexcept
+    {
+        return peakOrphanCachedBytes_;
+    }
+
+    [[nodiscard]] std::uint64_t GetPeakResumeActivePayloadBytes() const noexcept
+    {
+        return peakResumeActivePayloadBytes_;
+    }
+
+    [[nodiscard]] std::uint64_t GetPeakResumePendingPayloadBytes() const noexcept
+    {
+        return peakResumePendingPayloadBytes_;
+    }
+
+    [[nodiscard]] std::uint64_t GetPeakResumeResidentPayloadBytes() const noexcept
+    {
+        return peakResumeResidentPayloadBytes_;
     }
 
     void CaptureEpochReset(const std::uint64_t monotonicMilliseconds)
@@ -2917,6 +2988,7 @@ private:
             throw RuntimeFailure("ReceiverIngress rejected ControlRecord: " +
                 DescribeReceiverError(admission.Error()));
         }
+        UpdateReceiverResourceHighWater();
         HandleControlAdmission(admission.Value(), record, timestamp100ns, bytes);
         return true;
     }
@@ -2984,6 +3056,7 @@ private:
                     const DecoderResumeStoreStatus resumeStatus = DecoderResumeStore::Open(outputDirectory_,
                         record->sessionTag, rawControlRecord, policy_, resumeStore_, loadedResume);
                     Require(static_cast<bool>(resumeStatus), "Decoder resume journal open failed: " + resumeStatus.message);
+                    UpdateResumeResourceHighWater();
                     const auto storageSnapshot = storage_->GetSnapshot();
                     snapshot_.Update([this, &storageSnapshot, &loadedResume](DecoderSnapshot& value)
                     {
@@ -3122,6 +3195,7 @@ private:
         cachedBlock.paddedPayload.assign(paddedPayload.begin(), paddedPayload.end());
         const DecoderResumeStoreStatus resumeStatus = resumeStore_->RecordAcceptedBlock(cachedBlock);
         Require(static_cast<bool>(resumeStatus), "accepted Outer block resume append failed: " + resumeStatus.message);
+        UpdateResumeResourceHighWater();
     }
 
     [[nodiscard]] ReceiverProcessResult ProcessTransport(
@@ -3192,7 +3266,11 @@ private:
                     DescribeReceiverError(admission.Error()));
             }
             const pbreceiver::ReceiverDataAdmission& acceptedAdmission = admission.Value();
+            processing.hasDataAdmission = true;
+            processing.dataDisposition = acceptedAdmission.disposition;
+            processing.outerSymbolAdmission = acceptedAdmission.outerSymbolAdmission;
             processing.carrierAccepted = true;
+            UpdateReceiverResourceHighWater();
             for (const pbprotocol::OrphanTransportBlockEntry& replayedBlock :
                 acceptedAdmission.replayedOrphanBlocks)
             {
@@ -3237,6 +3315,7 @@ private:
             }
             if (admission.Value().completedSegment)
             {
+                processing.completedSegment = true;
                 StoreCompleted(std::move(*admission.Value().completedSegment),
                     result.metadata.timestamp.monotonic100ns);
             }
@@ -3284,6 +3363,38 @@ private:
         value.outerRecoveryReadyEvents = outerRecoveryReadyEvents_;
         value.outerResourceRejections = outerResourceRejections_;
         value.outerConflictRejections = outerConflictRejections_;
+    }
+
+    void UpdateReceiverResourceHighWater()
+    {
+        if (!collectResourceHighWater_)
+        {
+            return;
+        }
+        const pbreceiver::ReceiverResourceTelemetrySnapshot telemetry = receiver_.GetTelemetry();
+        peakActiveOuterFecDecoderCount_ = (std::max)(peakActiveOuterFecDecoderCount_,
+            telemetry.activeOuterFecDecoderCount);
+        peakReservedOuterFecDecoderBytes_ = (std::max)(peakReservedOuterFecDecoderBytes_,
+            telemetry.reservedOuterFecDecoderBytes);
+        peakOrphanCachedBytes_ = (std::max)(peakOrphanCachedBytes_,
+            static_cast<std::uint64_t>(telemetry.orphanCachedBytes));
+    }
+
+    void UpdateResumeResourceHighWater()
+    {
+        if (!collectResourceHighWater_ || !resumeStore_)
+        {
+            return;
+        }
+        const auto activeBytes = pbprotocol::CheckedMultiplyUint64(resumeStore_->GetActiveBlockCount(), outerBlockBytes);
+        const auto pendingBytes = pbprotocol::CheckedMultiplyUint64(resumeStore_->GetPendingBlockCount(), outerBlockBytes);
+        RequireResult(activeBytes, "active resume payload-byte accounting overflow");
+        RequireResult(pendingBytes, "pending resume payload-byte accounting overflow");
+        const auto residentBytes = pbprotocol::CheckedAddUint64(activeBytes.Value(), pendingBytes.Value());
+        RequireResult(residentBytes, "resident resume payload-byte accounting overflow");
+        peakResumeActivePayloadBytes_ = (std::max)(peakResumeActivePayloadBytes_, activeBytes.Value());
+        peakResumePendingPayloadBytes_ = (std::max)(peakResumePendingPayloadBytes_, pendingBytes.Value());
+        peakResumeResidentPayloadBytes_ = (std::max)(peakResumeResidentPayloadBytes_, residentBytes.Value());
     }
 
     void UpdateOuterAdmissionSnapshot()
@@ -3469,6 +3580,7 @@ private:
         });
         const auto storageSnapshot = storage_->GetSnapshot();
         std::string outputPath = Utf8FromWide(storageSnapshot.finalPath);
+        std::wstring outputPathWide = storageSnapshot.finalPath;
         std::string wholeFileDigestHex = DigestHex(manifest_->wholeFileDigest.bytes);
         const auto publishStatus = storage_->Publish(manifest_->wholeFileDigest);
         Require(static_cast<bool>(publishStatus), "WholeFileDigest/final publish failed: " +
@@ -3477,11 +3589,15 @@ private:
         const DecoderResumeStoreStatus resumeStatus = resumeStore_->RemoveAfterPublish();
         Require(static_cast<bool>(resumeStatus), "published file resume cleanup failed: " + resumeStatus.message);
         completion_.outputPath = std::move(outputPath);
+        completion_.outputPathWide = std::move(outputPathWide);
         completion_.wholeFileDigestHex = std::move(wholeFileDigestHex);
         completion_.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started_);
         completion_.published = true;
         published_ = true;
-        if (storedEncodedBytes_ != 0)
+        // CP-A can inject canonical Transport without fabricating a capture
+        // epoch. Digest, storage and publish gates above remain authoritative;
+        // only capture-time goodput telemetry is unavailable in that mode.
+        if (storedEncodedBytes_ != 0 && captureTelemetryAvailable_)
         {
             RequireTelemetry(telemetry_.RecordVerifiedEncodedBytes(storedEncodedBytes_, timestamp100ns),
                 "PBTelemetry RecordVerifiedEncodedBytes");
@@ -3661,6 +3777,8 @@ private:
     std::chrono::steady_clock::time_point started_;
     VisualProfile visualProfile_ = VisualProfile::DirectLevels2x2;
     bool deferCompletedState_ = false;
+    bool captureTelemetryAvailable_ = true;
+    bool collectResourceHighWater_ = false;
     std::unique_ptr<pbstorage::OutputFile> storage_;
     std::unique_ptr<DecoderResumeStore> resumeStore_;
     std::optional<pbprotocol::SessionDescriptor> session_;
@@ -3692,6 +3810,12 @@ private:
     std::uint64_t outerRecoveryReadyEvents_ = 0;
     std::uint64_t outerResourceRejections_ = 0;
     std::uint64_t outerConflictRejections_ = 0;
+    std::uint64_t peakActiveOuterFecDecoderCount_ = 0;
+    std::uint64_t peakReservedOuterFecDecoderBytes_ = 0;
+    std::uint64_t peakOrphanCachedBytes_ = 0;
+    std::uint64_t peakResumeActivePayloadBytes_ = 0;
+    std::uint64_t peakResumePendingPayloadBytes_ = 0;
+    std::uint64_t peakResumeResidentPayloadBytes_ = 0;
     std::chrono::steady_clock::time_point nextResumeCheckpoint_ =
         std::chrono::steady_clock::time_point::min();
     bool restoringResume_ = false;
@@ -4151,6 +4275,397 @@ struct DurableSenderPreparation
     return preparation;
 }
 
+void RunHeadlessMultiSegmentFileProbe(const std::wstring& sourcePath,
+    const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
+    const ApplicationHeadlessProbeOptions& options, ApplicationHeadlessProbeSnapshot& result)
+{
+    std::error_code directoryError;
+    Require(std::filesystem::is_directory(outputDirectory, directoryError) && !directoryError,
+        "headless application probe output directory is unavailable");
+    SourceFile source = ReadSourceFile(sourcePath);
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::RemoteVisualLowFps);
+    std::atomic<bool> stopRequested = false;
+    DurableSenderPreparation preparation = PrepareDurableSender(source, options.compressionEnabled,
+        options.compressionLevel, profile.visualProfileId, sessionStateRoot, stopRequested);
+    Require(!preparation.resumed, "headless application probe requires a clean sender state root");
+    TransferDescription& description = preparation.description;
+    std::unique_ptr<EncoderSessionStore>& sessionStore = preparation.sessionStore;
+    const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    Require(description.session.segmentCount == description.segments.size(),
+        "headless application descriptor count is inconsistent");
+    Require(!options.exerciseFourActiveBusy ||
+        description.segments.size() == policy.maxActiveOuterFecDecoders + 1,
+        "four-active busy probe requires exactly one more Segment than the decoder limit");
+    Require(options.exerciseFourActiveBusy ||
+        description.segments.size() <= policy.maxActiveOuterFecDecoders,
+        "headless probe with more than four Segments must explicitly exercise busy/retry");
+
+    result.sourceBytes = source.fileBytes;
+    result.segmentCount = description.session.segmentCount;
+    result.sessionId = description.session.sessionId;
+    result.wholeFileDigest = description.manifest.wholeFileDigest.bytes;
+    result.receiverActiveOuterFecDecoderLimit = policy.maxActiveOuterFecDecoders;
+    result.receiverTotalOuterFecDecoderByteLimit = policy.maxTotalOuterFecDecoderBytes;
+    result.receiverResumeByteLimit = policy.maxResumeBytes;
+    result.segments.resize(description.segments.size());
+    for (std::size_t index = 0; index < description.segments.size(); index++)
+    {
+        const TransferDescription::Segment& segment = description.segments[index];
+        Require(segment.inMemoryEncodedBytes.empty(),
+            "headless production descriptor retained encoded Segment bytes");
+        ApplicationHeadlessSegmentProbeSnapshot& segmentResult = result.segments[index];
+        segmentResult.segmentOrdinal = segment.descriptor.segmentOrdinal;
+        segmentResult.rawBytes = segment.descriptor.rawSize;
+        segmentResult.encodedBytes = segment.descriptor.encodedSize;
+        segmentResult.compressionCodec = segment.descriptor.compressionCodec;
+        segmentResult.outerFecMode = segment.descriptor.outerFecMode;
+    }
+
+    SenderFrameBuilder builder(profile, description, 1,
+        [&source, &description, &options](const std::uint64_t segmentOrdinal)
+        {
+            Require(segmentOrdinal < description.segments.size(),
+                "headless application Segment loader ordinal is invalid");
+            return LoadEncodedSegment(source, description.segments[static_cast<std::size_t>(segmentOrdinal)],
+                options.compressionEnabled, options.compressionLevel);
+        },
+        [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint32_t systematicBlockCount)
+        {
+            return sessionStore->GetRepairIdStart(segmentOrdinal, systematicBlockCount);
+        },
+        [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint64_t requiredExclusive)
+        {
+            const EncoderSessionStoreStatus status = sessionStore->EnsureRepairIdLease(
+                segmentOrdinal, requiredExclusive);
+            Require(static_cast<bool>(status), "headless application repair ID lease failed: " + status.message);
+        }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), 0);
+
+    auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, outerBlockBytes);
+    RequireResult(receiverResult, "headless application ReceiverIngress creation failed");
+    pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
+    constexpr std::uint64_t runGeneration = 1;
+    SnapshotStore<DecoderSnapshot> snapshot;
+    snapshot.Update([&](DecoderSnapshot& value)
+    {
+        value.state = DecoderState::WaitingForBootstrap;
+        value.runGeneration = runGeneration;
+        value.visualProfile = VisualProfile::RemoteVisualLowFps;
+        value.visualProfileId = profile.visualProfileId;
+        value.visualLayoutVersion = profile.layoutVersion;
+        value.codedDataBytesPerFrame = profile.dataBytes;
+        value.codewordsPerFrame = profile.codewords;
+    });
+    AuthoritativeCompletion completion;
+    const auto started = std::chrono::steady_clock::now();
+    ReceiverPipeline pipeline(receiver, outputDirectory, policy, snapshot, completion, runGeneration,
+        started, VisualProfile::RemoteVisualLowFps, false, false, true);
+    std::uint64_t captureObservation = 0;
+    std::int64_t timestamp100ns = 0;
+
+    const auto ProcessControl = [&](const std::span<const std::byte> bytes, const bool repeated)
+    {
+        timestamp100ns++;
+        Require(pipeline.ProcessHeadlessControlRecord(bytes, timestamp100ns),
+            "headless application ControlRecord was not admitted");
+        result.processedControlRecords++;
+        if (repeated)
+        {
+            result.repeatedControlRecords++;
+        }
+    };
+    const auto AdvanceBuilder = [&]()
+    {
+        const std::uint64_t previousPass = builder.GetCarouselSnapshot().cycleCount;
+        const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        builder.Advance();
+        const CarouselSnapshot after = builder.GetCarouselSnapshot();
+        if (after.cycleCount != previousPass || builder.GetCurrentSegmentOrdinal() != previousSegmentOrdinal)
+        {
+            const EncoderSessionStoreStatus status = sessionStore->UpdateCarouselPosition(
+                after.cycleCount, builder.GetCurrentSegmentOrdinal());
+            Require(static_cast<bool>(status), "headless application Carousel checkpoint failed: " + status.message);
+        }
+    };
+    const auto SetCurrentBlockCount = [&]()
+    {
+        const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        Require(segmentOrdinal < result.segments.size() && builder.GetBlockCount() != 0,
+            "headless application current Segment block count is invalid");
+        ApplicationHeadlessSegmentProbeSnapshot& segmentResult =
+            result.segments[static_cast<std::size_t>(segmentOrdinal)];
+        Require(segmentResult.systematicBlockCount == 0 ||
+            segmentResult.systematicBlockCount == builder.GetBlockCount(),
+            "headless application systematic block count changed between passes");
+        segmentResult.systematicBlockCount = builder.GetBlockCount();
+    };
+    const auto BuildTransport = [&](const std::uint32_t slot, std::uint32_t& blockId)
+    {
+        std::vector<std::byte> bytes(informationBytes);
+        std::uint32_t payloadBytes = 0;
+        blockId = builder.GetOuterBlockIdForSlot(slot);
+        const std::size_t serializedBytes = builder.BuildTransportBlockForSlot(slot, bytes, payloadBytes);
+        Require(payloadBytes > 0 && serializedBytes <= bytes.size(),
+            "headless application sender returned an invalid Transport size");
+        bytes.resize(serializedBytes);
+        return bytes;
+    };
+    const auto SubmitTransport = [&](const std::span<const std::byte> bytes)
+    {
+        captureObservation++;
+        timestamp100ns++;
+        ReceiverProcessResult processing = pipeline.ProcessHeadlessTransportBlock(
+            bytes, captureObservation, timestamp100ns);
+        Require(processing.hasDataAdmission,
+            "headless application Transport did not reach Receiver data admission");
+        return processing;
+    };
+    const auto RecordSubmitted = [&](const std::uint64_t segmentOrdinal, const std::uint32_t blockId,
+        const std::uint32_t systematicBlockCount)
+    {
+        Require(segmentOrdinal < result.segments.size() && systematicBlockCount != 0,
+            "headless submitted-block accounting is outside the Segment table");
+        ApplicationHeadlessSegmentProbeSnapshot& segmentResult =
+            result.segments[static_cast<std::size_t>(segmentOrdinal)];
+        if (blockId < systematicBlockCount)
+        {
+            segmentResult.submittedSystematicBlocks++;
+            result.submittedSystematicBlocks++;
+        }
+        else
+        {
+            segmentResult.submittedRepairBlocks++;
+            result.submittedRepairBlocks++;
+        }
+    };
+    const auto ProcessCurrentScheduledControl = [&]()
+    {
+        const FrameKind kind = builder.GetCurrentKind();
+        Require(kind != FrameKind::Data, "headless scheduled Control helper received Data");
+        const std::span<const std::byte> bytes = kind == FrameKind::SessionControl ?
+            std::span<const std::byte>(description.sessionControl) : kind == FrameKind::ManifestControl ?
+            std::span<const std::byte>(description.manifestControl) :
+            std::span<const std::byte>(description.segments[static_cast<std::size_t>(
+                builder.GetCurrentSegmentOrdinal())].control);
+        ProcessControl(bytes, true);
+    };
+
+    ProcessControl(description.sessionControl, false);
+    std::vector<bool> seedAttempted(description.segments.size(), false);
+    std::vector<bool> segmentFinished(description.segments.size(), false);
+    std::vector<std::byte> deferredTransport;
+    std::uint64_t deferredSegmentOrdinal = 0;
+    std::uint32_t deferredBlockId = 0;
+    std::uint32_t deferredSystematicBlockCount = 0;
+    if (!description.segments.empty())
+    {
+        const std::uint64_t firstPass = builder.GetCarouselSnapshot().cycleCount;
+        while (builder.GetCurrentKind() != FrameKind::Data)
+        {
+            Require(builder.GetCarouselSnapshot().cycleCount == firstPass &&
+                builder.GetCurrentSegmentOrdinal() == 0,
+                "headless application could not locate the first Segment data frame");
+            AdvanceBuilder();
+        }
+        SetCurrentBlockCount();
+        std::uint32_t blockId = 0;
+        const std::vector<std::byte> orphanTransport = BuildTransport(0, blockId);
+        const ReceiverProcessResult orphan = SubmitTransport(orphanTransport);
+        Require(orphan.dataDisposition == pbreceiver::ReceiverDataDisposition::CachedOrphan &&
+            orphan.outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::Unique,
+            "pre-descriptor Transport did not enter the bounded orphan cache");
+        RecordSubmitted(0, blockId, builder.GetBlockCount());
+        result.preDescriptorOrphanBlocks++;
+        seedAttempted[0] = true;
+    }
+    for (std::size_t reverseIndex = description.segments.size(); reverseIndex > 0; reverseIndex--)
+    {
+        ProcessControl(description.segments[reverseIndex - 1].control, false);
+        if (description.segments.size() > 1)
+        {
+            result.reversedSegmentDescriptors++;
+        }
+    }
+    if (!description.segments.empty())
+    {
+        ProcessControl(description.segments.front().control, true);
+        result.exactDuplicateSegmentDescriptors++;
+    }
+    ProcessControl(description.manifestControl, false);
+
+    if (!pipeline.IsCompleted())
+    {
+        const std::uint64_t seedingPass = builder.GetCarouselSnapshot().cycleCount;
+        while (builder.GetCarouselSnapshot().cycleCount == seedingPass)
+        {
+            if (builder.GetCurrentKind() == FrameKind::Data)
+            {
+                const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                const std::size_t segmentIndex = static_cast<std::size_t>(segmentOrdinal);
+                SetCurrentBlockCount();
+                if (!seedAttempted[segmentIndex])
+                {
+                    std::uint32_t blockId = 0;
+                    const std::vector<std::byte> transport = BuildTransport(0, blockId);
+                    const ReceiverProcessResult processing = SubmitTransport(transport);
+                    RecordSubmitted(segmentOrdinal, blockId, builder.GetBlockCount());
+                    seedAttempted[segmentIndex] = true;
+                    if (processing.dataDisposition == pbreceiver::ReceiverDataDisposition::DeferredResourceBusy)
+                    {
+                        Require(options.exerciseFourActiveBusy && deferredTransport.empty(),
+                            "unexpected or repeated headless active-decoder deferral");
+                        deferredTransport = transport;
+                        deferredSegmentOrdinal = segmentOrdinal;
+                        deferredBlockId = blockId;
+                        deferredSystematicBlockCount = builder.GetBlockCount();
+                    }
+                    else
+                    {
+                        Require(processing.carrierAccepted,
+                            "headless seeding Transport was not accepted by ReceiverIngress");
+                        segmentFinished[segmentIndex] = processing.completedSegment;
+                    }
+                }
+            }
+            else
+            {
+                ProcessCurrentScheduledControl();
+            }
+            AdvanceBuilder();
+        }
+    }
+
+    if (options.exerciseFourActiveBusy)
+    {
+        Require(!deferredTransport.empty() &&
+            pipeline.GetPeakActiveOuterFecDecoderCount() == policy.maxActiveOuterFecDecoders,
+            "headless probe did not reach four active decoders before deferring the fifth Segment");
+    }
+
+    const auto RetryDeferred = [&]()
+    {
+        if (deferredTransport.empty() ||
+            receiver.GetTelemetry().activeOuterFecDecoderCount >= policy.maxActiveOuterFecDecoders)
+        {
+            return;
+        }
+        const ReceiverProcessResult retry = SubmitTransport(deferredTransport);
+        Require(retry.dataDisposition != pbreceiver::ReceiverDataDisposition::DeferredResourceBusy &&
+            retry.carrierAccepted, "deferred headless Segment did not succeed after decoder capacity was released");
+        RecordSubmitted(deferredSegmentOrdinal, deferredBlockId, deferredSystematicBlockCount);
+        result.successfulBusyRetryCount++;
+        segmentFinished[static_cast<std::size_t>(deferredSegmentOrdinal)] = retry.completedSegment;
+        deferredTransport.clear();
+    };
+
+    const std::uint64_t firstRecoveryPass = builder.GetCarouselSnapshot().cycleCount;
+    const auto recoveryPassLimit = pbprotocol::CheckedAddUint64(firstRecoveryPass, 3);
+    RequireResult(recoveryPassLimit, "headless recovery pass limit overflow");
+    std::vector<bool> skippedSystematic(description.segments.size(), false);
+    while (!pipeline.IsCompleted() && builder.GetCarouselSnapshot().cycleCount < recoveryPassLimit.Value())
+    {
+        if (builder.GetCurrentKind() != FrameKind::Data)
+        {
+            ProcessCurrentScheduledControl();
+            AdvanceBuilder();
+            continue;
+        }
+        const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        const std::size_t segmentIndex = static_cast<std::size_t>(segmentOrdinal);
+        SetCurrentBlockCount();
+        const std::uint32_t systematicBlockCount = builder.GetBlockCount();
+        const SenderScheduledFrame scheduledFrame = builder.GetCurrentScheduledFrame();
+        for (std::uint32_t slot = 0; slot < scheduledFrame.scheduledEquationCount &&
+            !pipeline.IsCompleted() && !segmentFinished[segmentIndex]; slot++)
+        {
+            const std::uint32_t blockId = builder.GetOuterBlockIdForSlot(slot);
+            const bool shouldSkipSystematic =
+                result.segments[segmentIndex].outerFecMode == pbprotocol::OuterFecMode::WirehairV2 &&
+                builder.GetCarouselSnapshot().cycleCount == firstRecoveryPass && blockId == 1 &&
+                !skippedSystematic[segmentIndex];
+            if (shouldSkipSystematic)
+            {
+                skippedSystematic[segmentIndex] = true;
+                result.segments[segmentIndex].intentionallySkippedSystematicBlocks++;
+                result.intentionallySkippedSystematicBlocks++;
+                continue;
+            }
+            std::uint32_t builtBlockId = 0;
+            const std::vector<std::byte> transport = BuildTransport(slot, builtBlockId);
+            Require(builtBlockId == blockId, "headless sender block identity changed during serialization");
+            const ReceiverProcessResult processing = SubmitTransport(transport);
+            RecordSubmitted(segmentOrdinal, blockId, systematicBlockCount);
+            if (processing.dataDisposition == pbreceiver::ReceiverDataDisposition::DeferredResourceBusy)
+            {
+                Require(deferredTransport.empty(), "more than one headless Segment was deferred concurrently");
+                deferredTransport = transport;
+                deferredSegmentOrdinal = segmentOrdinal;
+                deferredBlockId = blockId;
+                deferredSystematicBlockCount = systematicBlockCount;
+            }
+            else
+            {
+                Require(processing.carrierAccepted,
+                    "headless recovery Transport was not accepted by ReceiverIngress");
+                segmentFinished[segmentIndex] = processing.completedSegment ||
+                    processing.dataDisposition == pbreceiver::ReceiverDataDisposition::AlreadyCompleted;
+            }
+            RetryDeferred();
+        }
+        AdvanceBuilder();
+    }
+    RetryDeferred();
+
+    Require(deferredTransport.empty(), "headless active-decoder deferral remained pending after Carousel retry");
+    Require(pipeline.IsCompleted() && completion.published,
+        "headless application pipeline did not reach authoritative publish");
+    result.decoder = snapshot.Get();
+    result.publishedPath = completion.outputPathWide;
+    result.authoritativePublish = result.decoder.state == DecoderState::Completed &&
+        result.decoder.wholeFileDigestVerified && result.decoder.finalPublishSucceeded &&
+        result.decoder.verifiedRawBytes == source.fileBytes;
+    Require(result.authoritativePublish && result.decoder.originalFileBytes == source.fileBytes,
+        "headless application final Decoder snapshot is not authoritative");
+    result.peakSenderResidentEncodedSegmentCount = builder.GetPeakResidentEncodedSegmentCount();
+    result.peakSenderResidentEncodedSegmentBytes = builder.GetPeakResidentEncodedSegmentBytes();
+    result.peakReceiverActiveOuterFecDecoderCount = pipeline.GetPeakActiveOuterFecDecoderCount();
+    result.peakReceiverReservedOuterFecDecoderBytes = pipeline.GetPeakReservedOuterFecDecoderBytes();
+    result.peakReceiverOrphanCachedBytes = pipeline.GetPeakOrphanCachedBytes();
+    result.peakReceiverResumeActivePayloadBytes = pipeline.GetPeakResumeActivePayloadBytes();
+    result.peakReceiverResumePendingPayloadBytes = pipeline.GetPeakResumePendingPayloadBytes();
+    result.peakReceiverResumeResidentPayloadBytes = pipeline.GetPeakResumeResidentPayloadBytes();
+    result.deferredResourceBusyCount = receiver.GetTelemetry().deferredResourceBusyCount;
+    result.sourceStable = IsSourceStable(source);
+    Require(result.sourceStable, "source identity changed during the headless application checkpoint");
+    Require(result.peakSenderResidentEncodedSegmentCount <= (std::min)(2ULL, result.segmentCount) &&
+        result.peakSenderResidentEncodedSegmentBytes <= 2ULL * pbprotocol::kDefaultSourceSegmentTargetBytes,
+        "headless sender exceeded its current/next Segment working-set budget");
+    Require(result.peakReceiverActiveOuterFecDecoderCount <= policy.maxActiveOuterFecDecoders &&
+        result.peakReceiverReservedOuterFecDecoderBytes <= policy.maxTotalOuterFecDecoderBytes,
+        "headless Receiver exceeded its active Outer FEC budget");
+    const auto maximumResumeResidentBytes = pbprotocol::CheckedMultiplyUint64(policy.maxResumeBytes, 2);
+    RequireResult(maximumResumeResidentBytes, "headless resume resident-byte limit overflow");
+    Require(result.peakReceiverResumeActivePayloadBytes <= policy.maxResumeBytes &&
+        result.peakReceiverResumePendingPayloadBytes <= policy.maxResumeBytes &&
+        result.peakReceiverResumeResidentPayloadBytes <= maximumResumeResidentBytes.Value(),
+        "headless Receiver resume equation copies exceeded their bounded working-set budget");
+    if (options.exerciseFourActiveBusy)
+    {
+        Require(result.deferredResourceBusyCount == 1 && result.successfulBusyRetryCount == 1,
+            "headless four-active busy/retry transition was not observed exactly once");
+    }
+    for (const ApplicationHeadlessSegmentProbeSnapshot& segment : result.segments)
+    {
+        if (segment.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
+        {
+            Require(segment.intentionallySkippedSystematicBlocks == 1 && segment.submittedRepairBlocks > 0,
+                "headless Wirehair Segment did not recover through the intentional repair path");
+        }
+    }
+    Require(!result.publishedPath.empty() && std::filesystem::is_regular_file(result.publishedPath) &&
+        std::filesystem::file_size(result.publishedPath) == source.fileBytes,
+        "headless authoritative output path is absent or has the wrong external length");
+}
+
 } // namespace
 
 RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const std::span<const std::byte> rawBytes,
@@ -4558,6 +5073,33 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeStreamingCarouselFile(const std::ws
     catch (...)
     {
         return RuntimeStatus::Failure("Streaming Carousel probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeHeadlessMultiSegmentFile(const std::wstring& sourcePath,
+    const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
+    const ApplicationHeadlessProbeOptions& options, ApplicationHeadlessProbeSnapshot& output) noexcept
+{
+    output = {};
+    if (sourcePath.empty() || sessionStateRoot.empty() || outputDirectory.empty() ||
+        options.compressionLevel < 1 || options.compressionLevel > 22)
+    {
+        return RuntimeStatus::Failure("Headless application probe input is outside its bounded contract");
+    }
+    try
+    {
+        ApplicationHeadlessProbeSnapshot result;
+        RunHeadlessMultiSegmentFileProbe(sourcePath, sessionStateRoot, outputDirectory, options, result);
+        output = std::move(result);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Headless application probe failed with an unknown error");
     }
 }
 
