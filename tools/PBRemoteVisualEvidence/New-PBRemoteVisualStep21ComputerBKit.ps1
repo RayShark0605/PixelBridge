@@ -575,14 +575,14 @@ if /i "%PB_PACKAGE_PREFLIGHT_ONLY%"=="2" (
     exit /b 0
 )
 echo PixelBridge RemoteVisual LF4 ExperimentMonitor demo
-echo This convenience launcher is NOT a formal Step 21 matrix cell.
-echo ExperimentMonitor: $ComputerBExperimentMonitorDeviceName
-echo ProtectedMonitor remains free of PixelBridge pixels: $ComputerBProtectedMonitorDeviceName
+echo This launcher is the user-authorized single-run Step 21 acceptance candidate.
+echo Fullscreen output selector: primary
+echo The current Windows primary monitor is selected at launch time.
 echo Source SHA-256: %ACTUAL_SHA256%
 echo Demo RunId: %RUN_ID%
 echo.
 echo Wait for Computer A Decoder WholeFileDigest and safe publish, then press Q or Enter.
-"%ENCODER%" --headless-broadcast --source "%SOURCE%" --profile remote-lf4 --channel remote --remote-provider UserProvidedVisualLink --compression off --single-monitor-fullscreen "$ComputerBExperimentMonitorDeviceName" --logical-fps $DemoLogicalFps --control-repetitions $DemoControlRepetitions --manual-stop --loop --run-id "%RUN_ID%" --journal "%RUN_DIR%\encoder-journal.ndjson" --report "%RUN_DIR%\encoder-report.json"
+"%ENCODER%" --headless-broadcast --source "%SOURCE%" --profile remote-lf4 --channel remote --remote-provider UserProvidedVisualLink --compression off --single-monitor-fullscreen primary --logical-fps $DemoLogicalFps --control-repetitions $DemoControlRepetitions --manual-stop --loop --run-id "%RUN_ID%" --journal "%RUN_DIR%\encoder-journal.ndjson" --report "%RUN_DIR%\encoder-report.json"
 set "ENCODER_EXIT=%ERRORLEVEL%"
 echo.
 if "%ENCODER_EXIT%"=="0" (
@@ -615,14 +615,14 @@ Ad-hoc recovery demonstration:
 - It uses the sealed 1 MiB test binary at:
   $sourceSetDirectoryName\random-1MiB.bin
 - Test binary SHA-256: $([string]$demoSource.sha256)
-- The selected ExperimentMonitor is covered by a fullscreen outer surface. The logical LF4 canvas remains centered and locator-derived geometry on Computer A is authoritative, so the captured/player/remote picture need not be 16:9 and need not use a pre-assumed scale.
+- The demo resolves Windows' unique primary monitor at launch time instead of assuming a DEVICE number. The fullscreen outer surface covers that monitor. The logical LF4 canvas remains centered and locator-derived geometry on Computer A is authoritative, so the captured/player/remote picture need not be 16:9 and need not use a pre-assumed scale.
 - It loops until Q or Enter. Stop only after Computer A reports Receiver completion, WholeFileDigest verification, safe publish, and an external byte-exact comparison.
 
 Formal Step 21 boundary:
-- The convenience demo BAT is not a formal matrix cell and cannot fill the RunLedger.
+- The convenience demo BAT is the current user-authorized single-run acceptance candidate; it does not claim cross-provider or cross-mode matrix coverage.
 - For each formal cell, Computer A must first create a fresh RunId, deployment/UI evidence and PilotPlan.3, then start the Decoder before invoking operator-tools\tools\PBRemoteVisualEvidence\Invoke-PBRemoteVisualPilotEncoder.ps1 on Computer B.
 - Do not transfer payload through clipboard, shared folders, sockets, temp files, or any route other than the displayed pixels during a formal run.
-- This kit is PREDEPLOYMENT_ONLY: zero matrix cells executed, no Step 21 acceptance, no Certified Profile.
+- This kit alone is PREDEPLOYMENT_ONLY: Step 21 is accepted only after Computer A completes production Receiver recovery, WholeFileDigest verification, safe publish, and an external byte-exact comparison. No Certified Profile is implied.
 
 Package HEAD: $ExpectedHeadCommit
 Package manifest SHA-256: $ExpectedPackageManifestSha256
@@ -676,6 +676,7 @@ Source manifest SHA-256: $ExpectedSourceManifestSha256
             demoProfile = 'remote-lf4'
             demoLogicalFps = $DemoLogicalFps
             demoControlRepetitions = $DemoControlRepetitions
+            demoMonitorSelector = 'primary'
             computerBProtectedMonitor = $ComputerBProtectedMonitorDeviceName
             computerBExperimentMonitor = $ComputerBExperimentMonitorDeviceName
         }

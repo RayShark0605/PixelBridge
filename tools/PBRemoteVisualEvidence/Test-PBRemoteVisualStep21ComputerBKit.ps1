@@ -438,7 +438,7 @@ if ([string]$manifest.operatorTools.root -cne 'operator-tools' -or $operatorTool
 
 Assert-ExactKeys -Dictionary $manifest.launchers -ExpectedKeys @('verify', 'captureMonitorCatalog',
     'experimentMonitorDemo', 'demoProfile', 'demoLogicalFps', 'demoControlRepetitions',
-    'computerBProtectedMonitor', 'computerBExperimentMonitor') -Name 'Computer B kit launchers'
+    'demoMonitorSelector', 'computerBProtectedMonitor', 'computerBExperimentMonitor') -Name 'Computer B kit launchers'
 $demoLogicalFps = Get-NonNegativeUInt64 -Value $manifest.launchers.demoLogicalFps -Name 'Computer B kit demo logical FPS'
 $demoControlRepetitions = Get-NonNegativeUInt64 -Value $manifest.launchers.demoControlRepetitions `
     -Name 'Computer B kit demo control repetitions'
@@ -449,6 +449,7 @@ if ([string]$manifest.launchers.verify -cne 'VERIFY-COMPUTER-B-KIT.bat' -or
     [string]$manifest.launchers.experimentMonitorDemo -cne 'Start-PBRemoteVisualExperimentMonitorDemo.bat' -or
     [string]$manifest.launchers.demoProfile -cne 'remote-lf4' -or $demoLogicalFps -lt 1 -or $demoLogicalFps -gt 5 -or
     $demoControlRepetitions -lt 1 -or $demoControlRepetitions -gt 64 -or
+    [string]$manifest.launchers.demoMonitorSelector -cne 'primary' -or
     $protectedMonitorDeviceName -cnotmatch '^\\\\\.\\DISPLAY[1-9][0-9]*$' -or
     $experimentMonitorDeviceName -cnotmatch '^\\\\\.\\DISPLAY[1-9][0-9]*$' -or
     $protectedMonitorDeviceName -ieq $experimentMonitorDeviceName)
@@ -486,8 +487,8 @@ Assert-ContainsExactlyOnce -Text $demoLauncherText `
 Assert-ContainsExactlyOnce -Text $demoLauncherText `
     -Expected 'for /f "skip=1 tokens=*" %%H in (''%CERTUTIL% -hashfile "%SOURCE%" SHA256'') do if not defined ACTUAL_SHA256 set "ACTUAL_SHA256=%%H"' `
     -Name 'Computer B kit demo launcher SHA-256 command'
-$expectedDemoCommand = '"%ENCODER%" --headless-broadcast --source "%SOURCE%" --profile remote-lf4 --channel remote --remote-provider UserProvidedVisualLink --compression off --single-monitor-fullscreen "' +
-    $experimentMonitorDeviceName + '" --logical-fps ' + $demoLogicalFps + ' --control-repetitions ' +
+$expectedDemoCommand = '"%ENCODER%" --headless-broadcast --source "%SOURCE%" --profile remote-lf4 --channel remote --remote-provider UserProvidedVisualLink --compression off --single-monitor-fullscreen primary --logical-fps ' +
+    $demoLogicalFps + ' --control-repetitions ' +
     $demoControlRepetitions + ' --manual-stop --loop --run-id "%RUN_ID%" --journal "%RUN_DIR%\encoder-journal.ndjson" --report "%RUN_DIR%\encoder-report.json"'
 Assert-ContainsExactlyOnce -Text $demoLauncherText -Expected $expectedDemoCommand -Name 'Computer B kit demo launcher command'
 if ($demoLauncherText.Contains('--protected-monitor', [StringComparison]::Ordinal) -or
