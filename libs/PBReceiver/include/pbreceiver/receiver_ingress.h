@@ -87,7 +87,11 @@ enum class ReceiverDataDisposition : std::uint8_t
     CachedOrphan,
     AcceptedNeedMore,
     AlreadyCompleted,
-    EncodedSegmentReady
+    EncodedSegmentReady,
+    // The descriptor is valid but all bounded decoder slots are occupied.
+    // The block was not admitted by a new decoder and may be retried by a
+    // later Carousel pass after another Segment is durably committed.
+    DeferredResourceBusy
 };
 
 enum class ReceiverOuterSymbolAdmission : std::uint8_t
@@ -96,7 +100,8 @@ enum class ReceiverOuterSymbolAdmission : std::uint8_t
     Unique,
     IdenticalDuplicate,
     RecoveryAlreadyReady,
-    AlreadyCompleted
+    AlreadyCompleted,
+    DeferredResourceBusy
 };
 
 struct ReceiverDataAdmission
@@ -131,6 +136,7 @@ struct ReceiverResourceTelemetrySnapshot
     std::size_t activeControlReassemblyCount = 0;
     std::size_t controlReassemblyBytesInUse = 0;
     std::uint64_t outerFecQuotaExceededCount = 0;
+    std::uint64_t deferredResourceBusyCount = 0;
     std::uint64_t orphanAdmittedBlockCount = 0;
     std::uint64_t orphanDroppedByQuotaCount = 0;
     std::uint64_t orphanResourceExhaustedCount = 0;

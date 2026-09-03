@@ -1237,17 +1237,24 @@ TEST_CASE("ReceiverIngress enforces one receiver-wide decoder quota without fall
             3);
     const auto quotaResult = receiver.ReceiveControlRecord(
         secondDescriptorRecord);
-    REQUIRE_FALSE(quotaResult);
-    RequireOuterFecError(
-        quotaResult.Error(),
-        pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
+    REQUIRE(quotaResult);
+    REQUIRE_FALSE(quotaResult.Value().completedSegment);
     pbreceiver::ReceiverResourceTelemetrySnapshot telemetry =
         receiver.GetTelemetry();
     REQUIRE(telemetry.activeOuterFecDecoderCount == 1);
     REQUIRE(telemetry.orphanCachedBlockCount == 1);
     REQUIRE(telemetry.orphanCachedBytes == outerBlockBytes);
     REQUIRE(telemetry.outerFecQuotaExceededCount == 1);
-    REQUIRE(telemetry.totalResourcePolicyRejectedCount == 1);
+    REQUIRE(telemetry.deferredResourceBusyCount == 1);
+    REQUIRE(telemetry.totalResourcePolicyRejectedCount == 0);
+
+    const auto deferredDataResult = receiver.ReceiveDataBlock(
+        MakeReceivedBlock(secondDescriptor.sessionTag, 1, secondBlocks[0]));
+    REQUIRE(deferredDataResult);
+    REQUIRE(deferredDataResult.Value().disposition ==
+        pbreceiver::ReceiverDataDisposition::DeferredResourceBusy);
+    REQUIRE(deferredDataResult.Value().outerSymbolAdmission ==
+        pbreceiver::ReceiverOuterSymbolAdmission::DeferredResourceBusy);
 
     auto firstReady = receiver.ReceiveDataBlock(
         MakeReceivedBlock(firstDescriptor.sessionTag, 0, firstBlocks[1]));
@@ -1255,9 +1262,10 @@ TEST_CASE("ReceiverIngress enforces one receiver-wide decoder quota without fall
     REQUIRE(firstReady.Value().completedSegment.has_value());
     REQUIRE(firstReady.Value().completedSegment->encodedBytes == firstMessage);
     const auto pendingQuotaResult = receiver.ReceiveControlRecord(secondDescriptorRecord);
-    REQUIRE_FALSE(pendingQuotaResult);
-    RequireOuterFecError(pendingQuotaResult.Error(), pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
-    REQUIRE(receiver.GetTelemetry().outerFecQuotaExceededCount == 2);
+    REQUIRE(pendingQuotaResult);
+    REQUIRE_FALSE(pendingQuotaResult.Value().completedSegment);
+    REQUIRE(receiver.GetTelemetry().outerFecQuotaExceededCount == 3);
+    REQUIRE(receiver.GetTelemetry().deferredResourceBusyCount == 3);
     REQUIRE(receiver.GetTelemetry().orphanCachedBlockCount == 1);
     auto firstVerified = receiver.VerifyRecoveredSegment(std::move(*firstReady.Value().completedSegment));
     REQUIRE(firstVerified);
@@ -1345,10 +1353,8 @@ TEST_CASE("ReceiverIngress detects a cached conflict before quota retry drain",
             sessionDescriptor,
             resourcePolicy,
             3));
-    REQUIRE_FALSE(quotaResult);
-    RequireOuterFecError(
-        quotaResult.Error(),
-        pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
+    REQUIRE(quotaResult);
+    REQUIRE_FALSE(quotaResult.Value().completedSegment);
 
     EncodedTransportBlock conflictingBlock = secondBlocks[0];
     conflictingBlock.paddedPayload[0] ^= std::byte{0x80};

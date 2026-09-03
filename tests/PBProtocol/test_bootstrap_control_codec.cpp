@@ -134,6 +134,15 @@ void RefreshControlCrc(const std::span<std::byte> bytes)
     StoreUint32(bytes, crcOffset, crc32c);
 }
 
+void RefreshDescriptorCrc(const std::span<std::byte> bytes)
+{
+    REQUIRE(bytes.size() >= pbprotocol::kDescriptorCrcBytes);
+    const std::size_t crcOffset = bytes.size() - pbprotocol::kDescriptorCrcBytes;
+    const std::uint32_t crc32c = pbprotocol::ComputeCrc32c(
+        std::span<const std::byte>(bytes).first(crcOffset));
+    StoreUint32(bytes, crcOffset, crc32c);
+}
+
 [[nodiscard]] std::vector<std::byte> WrapControlPayload(
     const pbprotocol::ControlRecordType recordType,
     const std::uint64_t controlSequence,
@@ -927,8 +936,13 @@ TEST_CASE("PB-Control-1 composes with every existing descriptor parser",
 
     SECTION("Envelope CRC does not make malformed payload acceptable")
     {
-        auto malformedPayload = kSessionDescriptorGolden;
-        malformedPayload[36] = Byte(0xFF);
+        std::array<std::byte, pbprotocol::kSessionDescriptorPayloadBytes> malformedPayload{};
+        REQUIRE(pbprotocol::SerializeSessionDescriptor(
+            sessionDescriptor,
+            resourcePolicy,
+            malformedPayload));
+        malformedPayload[pbprotocol::kFormalWireSessionDescriptorDigestAlgorithmOffset] = Byte(0xFF);
+        RefreshDescriptorCrc(malformedPayload);
         const std::vector<std::byte> envelope = WrapControlPayload(
             pbprotocol::ControlRecordType::SessionDescriptor,
             14,

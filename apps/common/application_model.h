@@ -16,8 +16,8 @@
 namespace pbapp
 {
 
-inline constexpr std::uint64_t maximumInstantFileBytes = 8ULL * 1024ULL * 1024ULL;
-inline constexpr std::uint64_t minimumInstantFileBytes = 1;
+inline constexpr std::uint64_t maximumInstantFileBytes = 500ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t minimumInstantFileBytes = 0;
 inline constexpr std::uint32_t phase1CanvasWidth = 1920;
 inline constexpr std::uint32_t phase1CanvasHeight = 1080;
 
@@ -113,7 +113,7 @@ struct RuntimeCapabilities
 {
     bool instantLocalDesktop = true;
     bool offlineMp4 = false;
-    bool multiSegment = false;
+    bool multiSegment = true;
     bool automaticCaptureFallback = false;
 };
 
@@ -187,6 +187,11 @@ struct EncoderSnapshot
     std::uint64_t segmentCount = 0;
     std::uint32_t currentOuterBlockId = 0;
     std::uint64_t frameSequence = 0;
+    bool resumedSession = false;
+    std::string sessionStateDirectory;
+    std::uint64_t sessionStateGeneration = 0;
+    std::uint64_t durableFrameSequenceLeaseEnd = 0;
+    std::uint32_t durableRepairIdLeaseEnd = 0;
     std::uint64_t presentationEpoch = 0;
     std::optional<double> presentedVisualFps;
     std::optional<double> presentCallFps;
@@ -292,6 +297,11 @@ struct DecoderSnapshot
     std::uint64_t sessionTag = 0;
     std::uint64_t segmentCount = 0;
     std::uint64_t currentSegmentOrdinal = 0;
+    bool resumeStateLoaded = false;
+    bool resumeStateTruncatedTail = false;
+    std::uint64_t resumeStateGeneration = 0;
+    std::uint64_t resumeStateBytes = 0;
+    std::string resumeStatePath;
     pbprotocol::CompressionCodec compressionCodec = pbprotocol::CompressionCodec::Raw;
     pbprotocol::OuterFecMode outerFecMode = pbprotocol::OuterFecMode::DirectRepeat;
     std::uint64_t captureEpoch = 0;

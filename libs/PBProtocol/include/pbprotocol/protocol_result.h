@@ -79,7 +79,14 @@ enum class ProtocolErrorCode : std::uint8_t
     // Outer recovery and byte verification may have succeeded while Segment
     // storage has not yet been explicitly committed. This receiver-local
     // diagnostic is never serialized into wire bytes. Keep append-only.
-    SegmentRecoveryIncomplete
+    SegmentRecoveryIncomplete,
+    // Formal Protocol 1.0 descriptors start with an explicit schema header.
+    // Historical Phase-0 descriptor payloads and unknown schema revisions are
+    // rejected with this code instead of being guessed from record length.
+    UnsupportedDescriptorSchema,
+    // A descriptor filename is valid UTF-8 but violates the Windows basename
+    // contract (path syntax, reserved device name, illegal character, etc.).
+    InvalidFileName
 };
 
 struct ProtocolError

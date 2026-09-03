@@ -3,41 +3,62 @@
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/byte_io.h"
 #include "pbprotocol/checked_integer.h"
+#include "pbprotocol/crc32c.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <limits>
+#include <new>
+#include <string>
+#include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace pbprotocol {
 
 namespace {
 
-constexpr std::size_t kSessionProtocolMajorOffset = 0;
-constexpr std::size_t kSessionProtocolMinorOffset = 2;
-constexpr std::size_t kSessionIdOffset = 4;
-constexpr std::size_t kSessionOriginalFileSizeOffset = 20;
-constexpr std::size_t kSessionSegmentCountOffset = 28;
-constexpr std::size_t kSessionDigestAlgorithmOffset = 36;
+constexpr std::size_t kDescriptorSchemaVersionOffset = 0;
+constexpr std::size_t kDescriptorHeaderBytesOffset = 2;
+constexpr std::size_t kDescriptorTotalBytesOffset = 4;
+constexpr std::uint16_t kSegmentDescriptorHeaderBytes = 128;
+constexpr std::uint16_t kFinalManifestHeaderBytes = 80;
+constexpr std::uint64_t kMandatorySessionFeatureMask = 0x00000000FFFFFFFFULL;
+constexpr std::uint16_t kDescriptorTlvOptionalFlag = 0x0001U;
+constexpr std::uint16_t kDescriptorTlvKnownFlags = kDescriptorTlvOptionalFlag;
+constexpr std::size_t kDescriptorTlvHeaderBytes = 8;
 
-constexpr std::size_t kSegmentSessionTagOffset = 0;
-constexpr std::size_t kSegmentOrdinalOffset = 8;
-constexpr std::size_t kSegmentRawOffsetOffset = 16;
-constexpr std::size_t kSegmentRawSizeOffset = 24;
-constexpr std::size_t kSegmentEncodedSizeOffset = 32;
-constexpr std::size_t kSegmentCompressionCodecOffset = 40;
-constexpr std::size_t kSegmentOuterFecModeOffset = 41;
-constexpr std::size_t kSegmentOuterBlockBytesOffset = 42;
-constexpr std::size_t kSegmentRawDigestOffset = 46;
-constexpr std::size_t kSegmentEncodedDigestOffset = 78;
-constexpr std::size_t kSegmentWirehairProfileOffset = 110;
-
-constexpr std::size_t kFinalSessionIdOffset = 0;
-constexpr std::size_t kFinalOriginalFileSizeOffset = 16;
-constexpr std::size_t kFinalSegmentCountOffset = 24;
-constexpr std::size_t kFinalWholeFileDigestOffset = 32;
-constexpr std::size_t kFinalDigestAlgorithmOffset = 64;
+constexpr std::size_t kSessionProtocolMajorOffset = kFormalWireSessionDescriptorProtocolMajorOffset;
+constexpr std::size_t kSessionProtocolMinorOffset = kFormalWireSessionDescriptorProtocolMinorOffset;
+constexpr std::size_t kSessionIdOffset = kFormalWireSessionDescriptorSessionIdOffset;
+constexpr std::size_t kSessionVisualProfileIdOffset = kFormalWireSessionDescriptorVisualProfileIdOffset;
+constexpr std::size_t kSessionOriginalFileSizeOffset = kFormalWireSessionDescriptorOriginalFileSizeOffset;
+constexpr std::size_t kSessionSourceSegmentTargetBytesOffset = kFormalWireSessionDescriptorSourceSegmentTargetBytesOffset;
+constexpr std::size_t kSessionSegmentCountOffset = kFormalWireSessionDescriptorSegmentCountOffset;
+constexpr std::size_t kSessionCompressionPolicyOffset = kFormalWireSessionDescriptorCompressionPolicyOffset;
+constexpr std::size_t kSessionDigestAlgorithmOffset = kFormalWireSessionDescriptorDigestAlgorithmOffset;
+constexpr std::size_t kSessionFeatureFlagsOffset = kFormalWireSessionDescriptorFeatureFlagsOffset;
+constexpr std::size_t kSessionFileNameUtf8BytesOffset = kFormalWireSessionDescriptorFileNameUtf8BytesOffset;
+constexpr std::size_t kSessionFileNameUtf8Offset = kFormalWireSessionDescriptorFileNameUtf8Offset;
+constexpr std::size_t kSegmentSessionTagOffset = kFormalWireSegmentDescriptorSessionTagOffset;
+constexpr std::size_t kSegmentOrdinalOffset = kFormalWireSegmentDescriptorOrdinalOffset;
+constexpr std::size_t kSegmentRawOffsetOffset = kFormalWireSegmentDescriptorRawOffsetOffset;
+constexpr std::size_t kSegmentRawSizeOffset = kFormalWireSegmentDescriptorRawSizeOffset;
+constexpr std::size_t kSegmentEncodedSizeOffset = kFormalWireSegmentDescriptorEncodedSizeOffset;
+constexpr std::size_t kSegmentCompressionCodecOffset = kFormalWireSegmentDescriptorCompressionCodecOffset;
+constexpr std::size_t kSegmentOuterFecModeOffset = kFormalWireSegmentDescriptorOuterFecModeOffset;
+constexpr std::size_t kSegmentOuterBlockBytesOffset = kFormalWireSegmentDescriptorOuterBlockBytesOffset;
+constexpr std::size_t kSegmentRawDigestOffset = kFormalWireSegmentDescriptorRawDigestOffset;
+constexpr std::size_t kSegmentEncodedDigestOffset = kFormalWireSegmentDescriptorEncodedDigestOffset;
+constexpr std::size_t kSegmentFlagsOffset = kFormalWireSegmentDescriptorFlagsOffset;
+constexpr std::size_t kSegmentWirehairProfileOffset = kFormalWireSegmentDescriptorWirehairProfileOffset;
+constexpr std::size_t kFinalSessionIdOffset = kFormalWireFinalManifestSessionIdOffset;
+constexpr std::size_t kFinalOriginalFileSizeOffset = kFormalWireFinalManifestOriginalFileSizeOffset;
+constexpr std::size_t kFinalSegmentCountOffset = kFormalWireFinalManifestSegmentCountOffset;
+constexpr std::size_t kFinalWholeFileDigestOffset = kFormalWireFinalManifestWholeFileDigestOffset;
+constexpr std::size_t kFinalDigestAlgorithmOffset = kFormalWireFinalManifestDigestAlgorithmOffset;
 
 constexpr std::array<std::byte, 4> kWirehairMagic{
     static_cast<std::byte>('W'),
@@ -198,42 +219,179 @@ template <typename ValueType>
     return ProtocolStatus::Failure(error.code, error.offset);
 }
 
-template <std::size_t OutputBytes, typename WriteFunction>
+[[nodiscard]] ProtocolStatus OffsetStatus(
+    const ProtocolError& error,
+    const std::size_t baseOffset) noexcept
+{
+    const auto offsetResult = CheckedAddSize(baseOffset, error.offset, baseOffset);
+    if (!offsetResult)
+    {
+        return ProtocolStatus::Failure(offsetResult.Error().code, offsetResult.Error().offset);
+    }
+    return ProtocolStatus::Failure(error.code, offsetResult.Value());
+}
+
+[[nodiscard]] ProtocolStatus ValidateOptionalExtensions(
+    const std::span<const std::byte> extensions,
+    const std::size_t baseOffset) noexcept
+{
+    ByteReader reader(extensions);
+    std::uint16_t previousType = 0;
+    bool hasPreviousType = false;
+    while (reader.Remaining() != 0)
+    {
+        const std::size_t extensionOffset = reader.Position();
+        if (reader.Remaining() < kDescriptorTlvHeaderBytes)
+        {
+            return ProtocolStatus::Failure(ProtocolErrorCode::TruncatedInput, baseOffset + extensionOffset);
+        }
+
+        const auto typeResult = reader.ReadUint16();
+        const auto flagsResult = reader.ReadUint16();
+        const auto lengthResult = reader.ReadUint32();
+        if (!typeResult || !flagsResult || !lengthResult)
+        {
+            const ProtocolError& error = !typeResult ? typeResult.Error() : (!flagsResult ? flagsResult.Error() : lengthResult.Error());
+            return OffsetStatus(error, baseOffset);
+        }
+        if (typeResult.Value() == 0 || (hasPreviousType && typeResult.Value() <= previousType))
+        {
+            return ProtocolStatus::Failure(ProtocolErrorCode::InvalidDescriptor, baseOffset + extensionOffset);
+        }
+        if ((flagsResult.Value() & ~kDescriptorTlvKnownFlags) != 0)
+        {
+            return ProtocolStatus::Failure(ProtocolErrorCode::NonZeroReservedBits, baseOffset + extensionOffset + 2);
+        }
+        if ((flagsResult.Value() & kDescriptorTlvOptionalFlag) == 0)
+        {
+            return ProtocolStatus::Failure(ProtocolErrorCode::UnknownMandatoryFeature, baseOffset + extensionOffset);
+        }
+        const auto valueResult = reader.ReadBytes(lengthResult.Value());
+        if (!valueResult)
+        {
+            return OffsetStatus(valueResult.Error(), baseOffset);
+        }
+        previousType = typeResult.Value();
+        hasPreviousType = true;
+    }
+    return ProtocolStatus::Success();
+}
+
+[[nodiscard]] ProtocolStatus ValidateDescriptorEnvelope(
+    const std::span<const std::byte> input,
+    const std::uint16_t expectedHeaderBytes,
+    const std::size_t minimumBytes,
+    const std::size_t maximumBytes) noexcept
+{
+    ByteReader reader(input);
+    const auto schemaResult = reader.ReadUint16();
+    if (!schemaResult)
+    {
+        return CopyStatusFailure(schemaResult.Error());
+    }
+    const auto headerBytesResult = reader.ReadUint16();
+    if (!headerBytesResult)
+    {
+        return CopyStatusFailure(headerBytesResult.Error());
+    }
+    const auto totalBytesResult = reader.ReadUint32();
+    if (!totalBytesResult)
+    {
+        return CopyStatusFailure(totalBytesResult.Error());
+    }
+    if (schemaResult.Value() != kDescriptorSchemaVersion)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::UnsupportedDescriptorSchema, kDescriptorSchemaVersionOffset);
+    }
+    if (headerBytesResult.Value() != expectedHeaderBytes)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::UnsupportedDescriptorSchema, kDescriptorHeaderBytesOffset);
+    }
+    if (input.size() < minimumBytes || input.size() > maximumBytes || totalBytesResult.Value() != input.size())
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidRecordSize, kDescriptorTotalBytesOffset);
+    }
+
+    const std::size_t crcOffset = input.size() - kDescriptorCrcBytes;
+    ByteReader crcReader(input.subspan(crcOffset));
+    const auto storedCrcResult = crcReader.ReadUint32();
+    if (!storedCrcResult)
+    {
+        return OffsetStatus(storedCrcResult.Error(), crcOffset);
+    }
+    if (storedCrcResult.Value() != ComputeCrc32c(input.first(crcOffset)))
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::CrcMismatch, crcOffset);
+    }
+    return ProtocolStatus::Success();
+}
+
+[[nodiscard]] ProtocolStatus WriteDescriptorPrefix(
+    ByteWriter& writer,
+    const std::uint16_t headerBytes,
+    const std::uint32_t totalBytes) noexcept
+{
+    ProtocolStatus status = writer.WriteUint16(kDescriptorSchemaVersion);
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteUint16(headerBytes);
+    if (!status)
+    {
+        return status;
+    }
+    return writer.WriteUint32(totalBytes);
+}
+
+template <typename WriteFunction>
 [[nodiscard]] ProtocolStatus SerializeAtomically(
+    const std::size_t expectedBytes,
     const std::span<std::byte> output,
     WriteFunction&& writeFunction) noexcept
 {
-    if (output.size() != OutputBytes)
+    if (expectedBytes > kMaximumDescriptorPayloadBytes || output.size() != expectedBytes)
     {
-        return ProtocolStatus::Failure(
-            ProtocolErrorCode::InvalidRecordSize,
-            0);
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidRecordSize, 0);
     }
 
-    std::array<std::byte, OutputBytes> scratch{};
-    ByteWriter writer(scratch);
+    std::array<std::byte, kMaximumDescriptorPayloadBytes> scratch{};
+    ByteWriter writer(std::span<std::byte>(scratch).first(expectedBytes));
     const ProtocolStatus writeStatus = writeFunction(writer);
     if (!writeStatus)
     {
         return writeStatus;
     }
-
-    if (writer.Position() != scratch.size())
+    if (writer.Position() != expectedBytes - kDescriptorCrcBytes)
     {
-        return ProtocolStatus::Failure(
-            ProtocolErrorCode::InternalDescriptorStateError,
-            writer.Position());
+        return ProtocolStatus::Failure(ProtocolErrorCode::InternalDescriptorStateError, writer.Position());
+    }
+    const std::uint32_t crc = ComputeCrc32c(std::span<const std::byte>(scratch).first(writer.Position()));
+    const ProtocolStatus crcStatus = writer.WriteUint32(crc);
+    if (!crcStatus)
+    {
+        return crcStatus;
+    }
+    if (writer.Position() != expectedBytes)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InternalDescriptorStateError, writer.Position());
     }
 
-    std::copy(scratch.begin(), scratch.end(), output.begin());
+    std::copy_n(scratch.begin(), expectedBytes, output.begin());
     return ProtocolStatus::Success();
 }
 
 [[nodiscard]] ProtocolStatus WriteSessionDescriptor(
     const SessionDescriptor& descriptor,
+    const std::uint32_t totalBytes,
     ByteWriter& writer) noexcept
 {
-    ProtocolStatus status = writer.WriteUint16(descriptor.protocolVersion.major);
+    ProtocolStatus status = WriteDescriptorPrefix(writer, static_cast<std::uint16_t>(kSessionDescriptorHeaderBytes), totalBytes);
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteUint16(descriptor.protocolVersion.major);
     if (!status)
     {
         return status;
@@ -248,7 +406,17 @@ template <std::size_t OutputBytes, typename WriteFunction>
     {
         return status;
     }
+    status = writer.WriteUint64(descriptor.sessionVisualProfileId);
+    if (!status)
+    {
+        return status;
+    }
     status = writer.WriteUint64(descriptor.originalFileSize);
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteUint32(descriptor.sourceSegmentTargetBytes);
     if (!status)
     {
         return status;
@@ -258,16 +426,51 @@ template <std::size_t OutputBytes, typename WriteFunction>
     {
         return status;
     }
-    return writer.WriteUint8(
-        static_cast<std::underlying_type_t<DigestAlgorithm>>(
-            descriptor.digestAlgorithm));
+    status = writer.WriteUint8(static_cast<std::underlying_type_t<CompressionPolicy>>(descriptor.compressionPolicy));
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteUint8(static_cast<std::underlying_type_t<DigestAlgorithm>>(descriptor.digestAlgorithm));
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteCanonicalZeroPadding(2);
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteUint64(descriptor.featureFlags);
+    if (!status)
+    {
+        return status;
+    }
+    const std::span<const std::byte> fileNameBytes(reinterpret_cast<const std::byte*>(descriptor.fileNameUtf8.data()), descriptor.fileNameUtf8.size());
+    status = writer.WriteUint16(static_cast<std::uint16_t>(fileNameBytes.size()));
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteBytes(fileNameBytes);
+    if (!status)
+    {
+        return status;
+    }
+    return writer.WriteBytes(descriptor.optionalExtensions);
 }
 
 [[nodiscard]] ProtocolStatus WriteSegmentDescriptor(
     const SegmentDescriptor& descriptor,
+    const std::uint32_t totalBytes,
     ByteWriter& writer) noexcept
 {
-    ProtocolStatus status = writer.WriteUint64(descriptor.sessionTag.value);
+    ProtocolStatus status = WriteDescriptorPrefix(writer, kSegmentDescriptorHeaderBytes, totalBytes);
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteUint64(descriptor.sessionTag.value);
     if (!status)
     {
         return status;
@@ -292,16 +495,17 @@ template <std::size_t OutputBytes, typename WriteFunction>
     {
         return status;
     }
-    status = writer.WriteUint8(
-        static_cast<std::underlying_type_t<CompressionCodec>>(
-            descriptor.compressionCodec));
+    status = writer.WriteUint8(static_cast<std::underlying_type_t<CompressionCodec>>(descriptor.compressionCodec));
     if (!status)
     {
         return status;
     }
-    status = writer.WriteUint8(
-        static_cast<std::underlying_type_t<OuterFecMode>>(
-            descriptor.outerFecMode));
+    status = writer.WriteUint8(static_cast<std::underlying_type_t<OuterFecMode>>(descriptor.outerFecMode));
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteCanonicalZeroPadding(2);
     if (!status)
     {
         return status;
@@ -321,19 +525,19 @@ template <std::size_t OutputBytes, typename WriteFunction>
     {
         return status;
     }
-
+    status = writer.WriteUint64(descriptor.flags);
+    if (!status)
+    {
+        return status;
+    }
     if (descriptor.outerFecMode == OuterFecMode::WirehairV2)
     {
         if (!descriptor.wirehairV2SerializedProfile.has_value())
         {
-            return ProtocolStatus::Failure(
-                ProtocolErrorCode::InternalDescriptorStateError,
-                kSegmentWirehairProfileOffset);
+            return ProtocolStatus::Failure(ProtocolErrorCode::InternalDescriptorStateError, kSegmentWirehairProfileOffset);
         }
-        return writer.WriteFixedBytes(
-            descriptor.wirehairV2SerializedProfile->bytes);
+        return writer.WriteFixedBytes(descriptor.wirehairV2SerializedProfile->bytes);
     }
-
     return ProtocolStatus::Success();
 }
 
@@ -341,7 +545,12 @@ template <std::size_t OutputBytes, typename WriteFunction>
     const FinalManifest& finalManifest,
     ByteWriter& writer) noexcept
 {
-    ProtocolStatus status = writer.WriteFixedBytes(finalManifest.sessionId.bytes);
+    ProtocolStatus status = WriteDescriptorPrefix(writer, kFinalManifestHeaderBytes, static_cast<std::uint32_t>(kFinalManifestPayloadBytes));
+    if (!status)
+    {
+        return status;
+    }
+    status = writer.WriteFixedBytes(finalManifest.sessionId.bytes);
     if (!status)
     {
         return status;
@@ -361,12 +570,97 @@ template <std::size_t OutputBytes, typename WriteFunction>
     {
         return status;
     }
-    return writer.WriteUint8(
-        static_cast<std::underlying_type_t<DigestAlgorithm>>(
-            finalManifest.digestAlgorithm));
+    status = writer.WriteUint8(static_cast<std::underlying_type_t<DigestAlgorithm>>(finalManifest.digestAlgorithm));
+    if (!status)
+    {
+        return status;
+    }
+    return writer.WriteCanonicalZeroPadding(7);
 }
 
 } // namespace
+
+ProtocolStatus ValidateFileNameUtf8(
+    const std::string_view fileNameUtf8,
+    const std::size_t fieldOffset) noexcept
+{
+    if (fileNameUtf8.empty() || fileNameUtf8.size() > kMaximumFileNameUtf8Bytes)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidFileName, fieldOffset);
+    }
+    const ProtocolStatus utf8Status = ValidateUtf8(fileNameUtf8, fieldOffset);
+    if (!utf8Status)
+    {
+        return utf8Status;
+    }
+    if (fileNameUtf8 == "." || fileNameUtf8 == ".." || fileNameUtf8.back() == '.' || fileNameUtf8.back() == ' ')
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidFileName, fieldOffset);
+    }
+
+    constexpr std::string_view invalidCharacters = "<>:\"/\\|?*";
+    for (std::size_t byteIndex = 0; byteIndex < fileNameUtf8.size(); byteIndex++)
+    {
+        const unsigned char byteValue = static_cast<unsigned char>(fileNameUtf8[byteIndex]);
+        if (byteValue < 0x20U || invalidCharacters.find(fileNameUtf8[byteIndex]) != std::string_view::npos)
+        {
+            return ProtocolStatus::Failure(ProtocolErrorCode::InvalidFileName, fieldOffset + byteIndex);
+        }
+    }
+
+    const std::size_t dotOffset = fileNameUtf8.find('.');
+    const std::string_view deviceStem = fileNameUtf8.substr(0, dotOffset);
+    const auto equalsAsciiIgnoreCase = [deviceStem](const std::string_view candidate) noexcept
+    {
+        if (deviceStem.size() != candidate.size())
+        {
+            return false;
+        }
+        for (std::size_t characterIndex = 0; characterIndex < deviceStem.size(); characterIndex++)
+        {
+            const unsigned char left = static_cast<unsigned char>(deviceStem[characterIndex]);
+            const unsigned char right = static_cast<unsigned char>(candidate[characterIndex]);
+            if (std::toupper(left) != std::toupper(right))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (equalsAsciiIgnoreCase("CON") || equalsAsciiIgnoreCase("PRN") || equalsAsciiIgnoreCase("AUX") ||
+        equalsAsciiIgnoreCase("NUL") || equalsAsciiIgnoreCase("CONIN$") || equalsAsciiIgnoreCase("CONOUT$"))
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidFileName, fieldOffset);
+    }
+    if (deviceStem.size() == 4)
+    {
+        const char digit = deviceStem[3];
+        const bool hasReservedDigit = digit >= '1' && digit <= '9';
+        const std::string_view prefix = deviceStem.substr(0, 3);
+        const auto prefixEquals = [prefix](const std::string_view candidate) noexcept
+        {
+            if (prefix.size() != candidate.size())
+            {
+                return false;
+            }
+            for (std::size_t characterIndex = 0; characterIndex < prefix.size(); characterIndex++)
+            {
+                const unsigned char left = static_cast<unsigned char>(prefix[characterIndex]);
+                const unsigned char right = static_cast<unsigned char>(candidate[characterIndex]);
+                if (std::toupper(left) != std::toupper(right))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (hasReservedDigit && (prefixEquals("COM") || prefixEquals("LPT")))
+        {
+            return ProtocolStatus::Failure(ProtocolErrorCode::InvalidFileName, fieldOffset);
+        }
+    }
+    return ProtocolStatus::Success();
+}
 
 ProtocolStatus ValidateReceiverResourcePolicy(
     const ReceiverResourcePolicy& resourcePolicy) noexcept
@@ -524,6 +818,44 @@ ProtocolStatus ValidateSessionDescriptor(
     if (!digestStatus)
     {
         return digestStatus;
+    }
+
+    // PBProtocol validates the self-describing wire shape. Product/profile
+    // availability belongs to the application binding so historical internal
+    // comparison profiles can still emit formal descriptors without teaching
+    // this Qt-free protocol layer about PBModulation constants.
+    if (descriptor.sessionVisualProfileId == 0)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidDescriptor, kSessionVisualProfileIdOffset);
+    }
+    if (descriptor.sourceSegmentTargetBytes == 0)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidDescriptor, kSessionSourceSegmentTargetBytesOffset);
+    }
+    if (descriptor.compressionPolicy != CompressionPolicy::AutomaticZstandardLevel3RawFallback)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::InvalidEnumValue, kSessionCompressionPolicyOffset);
+    }
+    if ((descriptor.featureFlags & kMandatorySessionFeatureMask) != 0)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::UnknownMandatoryFeature, kSessionFeatureFlagsOffset);
+    }
+    const ProtocolStatus fileNameStatus = ValidateFileNameUtf8(descriptor.fileNameUtf8, kSessionFileNameUtf8Offset);
+    if (!fileNameStatus)
+    {
+        return fileNameStatus;
+    }
+    const ProtocolStatus extensionStatus = ValidateOptionalExtensions(
+        descriptor.optionalExtensions,
+        kSessionFileNameUtf8Offset + descriptor.fileNameUtf8.size());
+    if (!extensionStatus)
+    {
+        return extensionStatus;
+    }
+    const auto serializedSizeResult = GetSerializedSize(descriptor);
+    if (!serializedSizeResult)
+    {
+        return CopyStatusFailure(serializedSizeResult.Error());
     }
 
     return ValidateSessionShape(
@@ -776,6 +1108,10 @@ namespace {
     {
         return outerFecStatus;
     }
+    if (descriptor.flags != 0)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::UnknownMandatoryFeature, kSegmentFlagsOffset);
+    }
 
     if (descriptor.outerFecMode == OuterFecMode::WirehairV2)
     {
@@ -947,50 +1283,55 @@ ProtocolStatus ValidateFinalManifest(
 }
 
 ProtocolResult<std::size_t> GetSerializedSize(
+    const SessionDescriptor& descriptor) noexcept
+{
+    if (descriptor.fileNameUtf8.size() > kMaximumFileNameUtf8Bytes)
+    {
+        return ProtocolResult<std::size_t>::Failure(ProtocolErrorCode::LengthLimitExceeded, kSessionFileNameUtf8BytesOffset);
+    }
+    const auto nameEndResult = CheckedAddSize(kSessionDescriptorHeaderBytes, descriptor.fileNameUtf8.size(), kSessionFileNameUtf8BytesOffset);
+    if (!nameEndResult)
+    {
+        return FailureFrom<std::size_t>(nameEndResult.Error());
+    }
+    const auto extensionEndResult = CheckedAddSize(nameEndResult.Value(), descriptor.optionalExtensions.size(), nameEndResult.Value());
+    if (!extensionEndResult)
+    {
+        return FailureFrom<std::size_t>(extensionEndResult.Error());
+    }
+    const auto totalBytesResult = CheckedAddSize(extensionEndResult.Value(), kDescriptorCrcBytes, extensionEndResult.Value());
+    if (!totalBytesResult)
+    {
+        return FailureFrom<std::size_t>(totalBytesResult.Error());
+    }
+    if (totalBytesResult.Value() > kMaximumDescriptorPayloadBytes)
+    {
+        return ProtocolResult<std::size_t>::Failure(ProtocolErrorCode::LengthLimitExceeded, extensionEndResult.Value());
+    }
+    return totalBytesResult;
+}
+
+ProtocolResult<std::size_t> GetSerializedSize(
     const SegmentDescriptor& descriptor) noexcept
 {
-    const ProtocolStatus modeStatus = ValidateOuterFecMode(
-        descriptor.outerFecMode,
-        kSegmentOuterFecModeOffset);
+    const ProtocolStatus modeStatus = ValidateOuterFecMode(descriptor.outerFecMode, kSegmentOuterFecModeOffset);
     if (!modeStatus)
     {
         return FailureFrom<std::size_t>(modeStatus.Error());
     }
-
     if (descriptor.outerFecMode == OuterFecMode::WirehairV2)
     {
         if (!descriptor.wirehairV2SerializedProfile.has_value())
         {
-            return ProtocolResult<std::size_t>::Failure(
-                ProtocolErrorCode::InvalidDescriptor,
-                kSegmentWirehairProfileOffset);
+            return ProtocolResult<std::size_t>::Failure(ProtocolErrorCode::InvalidDescriptor, kSegmentWirehairProfileOffset);
         }
-        const auto serializedSizeResult = CheckedAddSize(
-            kDirectRepeatSegmentDescriptorPayloadBytes,
-            kWirehairV2SerializedProfileBytes,
-            kSegmentWirehairProfileOffset);
-        if (!serializedSizeResult)
-        {
-            return FailureFrom<std::size_t>(serializedSizeResult.Error());
-        }
-        if (serializedSizeResult.Value() !=
-            kWirehairV2SegmentDescriptorPayloadBytes)
-        {
-            return ProtocolResult<std::size_t>::Failure(
-                ProtocolErrorCode::InternalDescriptorStateError,
-                kSegmentWirehairProfileOffset);
-        }
-        return serializedSizeResult;
+        return ProtocolResult<std::size_t>::Success(kWirehairV2SegmentDescriptorPayloadBytes);
     }
-
     if (descriptor.wirehairV2SerializedProfile.has_value())
     {
-        return ProtocolResult<std::size_t>::Failure(
-            ProtocolErrorCode::InvalidDescriptor,
-            kSegmentWirehairProfileOffset);
+        return ProtocolResult<std::size_t>::Failure(ProtocolErrorCode::InvalidDescriptor, kSegmentWirehairProfileOffset);
     }
-    return ProtocolResult<std::size_t>::Success(
-        kDirectRepeatSegmentDescriptorPayloadBytes);
+    return ProtocolResult<std::size_t>::Success(kDirectRepeatSegmentDescriptorPayloadBytes);
 }
 
 ProtocolStatus SerializeSessionDescriptor(
@@ -1002,13 +1343,16 @@ ProtocolStatus SerializeSessionDescriptor(
     {
         return validationStatus;
     }
-
-    return SerializeAtomically<kSessionDescriptorPayloadBytes>(
-        output,
-        [&descriptor](ByteWriter& writer) noexcept
-        {
-            return WriteSessionDescriptor(descriptor, writer);
-        });
+    const auto serializedSizeResult = GetSerializedSize(descriptor);
+    if (!serializedSizeResult)
+    {
+        return CopyStatusFailure(serializedSizeResult.Error());
+    }
+    const std::size_t serializedSize = serializedSizeResult.Value();
+    return SerializeAtomically(serializedSize, output, [&descriptor, serializedSize](ByteWriter& writer) noexcept
+    {
+        return WriteSessionDescriptor(descriptor, static_cast<std::uint32_t>(serializedSize), writer);
+    });
 }
 
 ProtocolStatus SerializeSessionDescriptor(
@@ -1016,14 +1360,11 @@ ProtocolStatus SerializeSessionDescriptor(
     const ReceiverResourcePolicy& resourcePolicy,
     const std::span<std::byte> output) noexcept
 {
-    const ProtocolStatus validationStatus = ValidateSessionDescriptor(
-        descriptor,
-        resourcePolicy);
+    const ProtocolStatus validationStatus = ValidateSessionDescriptor(descriptor, resourcePolicy);
     if (!validationStatus)
     {
         return validationStatus;
     }
-
     return SerializeSessionDescriptor(descriptor, output);
 }
 
@@ -1032,36 +1373,21 @@ ProtocolStatus SerializeSegmentDescriptor(
     const SessionDescriptor& sessionDescriptor,
     const std::span<std::byte> output) noexcept
 {
-    const ProtocolStatus validationStatus = ValidateSegmentDescriptor(
-        descriptor,
-        sessionDescriptor);
+    const ProtocolStatus validationStatus = ValidateSegmentDescriptor(descriptor, sessionDescriptor);
     if (!validationStatus)
     {
         return validationStatus;
     }
-
     const auto serializedSizeResult = GetSerializedSize(descriptor);
     if (!serializedSizeResult)
     {
         return CopyStatusFailure(serializedSizeResult.Error());
     }
-
-    if (serializedSizeResult.Value() == kWirehairV2SegmentDescriptorPayloadBytes)
+    const std::size_t serializedSize = serializedSizeResult.Value();
+    return SerializeAtomically(serializedSize, output, [&descriptor, serializedSize](ByteWriter& writer) noexcept
     {
-        return SerializeAtomically<kWirehairV2SegmentDescriptorPayloadBytes>(
-            output,
-            [&descriptor](ByteWriter& writer) noexcept
-            {
-                return WriteSegmentDescriptor(descriptor, writer);
-            });
-    }
-
-    return SerializeAtomically<kDirectRepeatSegmentDescriptorPayloadBytes>(
-        output,
-        [&descriptor](ByteWriter& writer) noexcept
-        {
-            return WriteSegmentDescriptor(descriptor, writer);
-        });
+        return WriteSegmentDescriptor(descriptor, static_cast<std::uint32_t>(serializedSize), writer);
+    });
 }
 
 ProtocolStatus SerializeSegmentDescriptor(
@@ -1070,15 +1396,11 @@ ProtocolStatus SerializeSegmentDescriptor(
     const ReceiverResourcePolicy& resourcePolicy,
     const std::span<std::byte> output) noexcept
 {
-    const ProtocolStatus validationStatus = ValidateSegmentDescriptor(
-        descriptor,
-        sessionDescriptor,
-        resourcePolicy);
+    const ProtocolStatus validationStatus = ValidateSegmentDescriptor(descriptor, sessionDescriptor, resourcePolicy);
     if (!validationStatus)
     {
         return validationStatus;
     }
-
     return SerializeSegmentDescriptor(descriptor, sessionDescriptor, output);
 }
 
@@ -1087,20 +1409,15 @@ ProtocolStatus SerializeFinalManifest(
     const SessionDescriptor& sessionDescriptor,
     const std::span<std::byte> output) noexcept
 {
-    const ProtocolStatus validationStatus = ValidateFinalManifest(
-        finalManifest,
-        sessionDescriptor);
+    const ProtocolStatus validationStatus = ValidateFinalManifest(finalManifest, sessionDescriptor);
     if (!validationStatus)
     {
         return validationStatus;
     }
-
-    return SerializeAtomically<kFinalManifestPayloadBytes>(
-        output,
-        [&finalManifest](ByteWriter& writer) noexcept
-        {
-            return WriteFinalManifest(finalManifest, writer);
-        });
+    return SerializeAtomically(kFinalManifestPayloadBytes, output, [&finalManifest](ByteWriter& writer) noexcept
+    {
+        return WriteFinalManifest(finalManifest, writer);
+    });
 }
 
 ProtocolStatus SerializeFinalManifest(
@@ -1109,15 +1426,11 @@ ProtocolStatus SerializeFinalManifest(
     const ReceiverResourcePolicy& resourcePolicy,
     const std::span<std::byte> output) noexcept
 {
-    const ProtocolStatus validationStatus = ValidateFinalManifest(
-        finalManifest,
-        sessionDescriptor,
-        resourcePolicy);
+    const ProtocolStatus validationStatus = ValidateFinalManifest(finalManifest, sessionDescriptor, resourcePolicy);
     if (!validationStatus)
     {
         return validationStatus;
     }
-
     return SerializeFinalManifest(finalManifest, sessionDescriptor, output);
 }
 
@@ -1125,58 +1438,91 @@ ProtocolResult<SessionDescriptor> ParseSessionDescriptor(
     const std::span<const std::byte> input,
     const ReceiverResourcePolicy& resourcePolicy) noexcept
 {
-    ByteReader reader(input);
+    const ProtocolStatus envelopeStatus = ValidateDescriptorEnvelope(
+        input,
+        static_cast<std::uint16_t>(kSessionDescriptorHeaderBytes),
+        kMinimumSessionDescriptorPayloadBytes,
+        kMaximumDescriptorPayloadBytes);
+    if (!envelopeStatus)
+    {
+        return FailureFrom<SessionDescriptor>(envelopeStatus.Error());
+    }
+
+    ByteReader reader(input.first(input.size() - kDescriptorCrcBytes));
+    const auto schemaResult = reader.ReadUint16();
+    const auto headerBytesResult = reader.ReadUint16();
+    const auto totalBytesResult = reader.ReadUint32();
     const auto majorResult = reader.ReadUint16();
-    if (!majorResult)
-    {
-        return FailureFrom<SessionDescriptor>(majorResult.Error());
-    }
     const auto minorResult = reader.ReadUint16();
-    if (!minorResult)
-    {
-        return FailureFrom<SessionDescriptor>(minorResult.Error());
-    }
     const auto sessionIdResult = reader.ReadFixedBytes<kSessionIdBytes>();
-    if (!sessionIdResult)
-    {
-        return FailureFrom<SessionDescriptor>(sessionIdResult.Error());
-    }
+    const auto visualProfileResult = reader.ReadUint64();
     const auto originalFileSizeResult = reader.ReadUint64();
-    if (!originalFileSizeResult)
-    {
-        return FailureFrom<SessionDescriptor>(originalFileSizeResult.Error());
-    }
+    const auto sourceSegmentTargetResult = reader.ReadUint32();
     const auto segmentCountResult = reader.ReadUint64();
-    if (!segmentCountResult)
-    {
-        return FailureFrom<SessionDescriptor>(segmentCountResult.Error());
-    }
+    const auto compressionPolicyResult = reader.ReadUint8();
     const auto digestAlgorithmResult = reader.ReadUint8();
-    if (!digestAlgorithmResult)
+    if (!schemaResult || !headerBytesResult || !totalBytesResult || !majorResult || !minorResult || !sessionIdResult ||
+        !visualProfileResult || !originalFileSizeResult || !sourceSegmentTargetResult || !segmentCountResult ||
+        !compressionPolicyResult || !digestAlgorithmResult)
     {
-        return FailureFrom<SessionDescriptor>(digestAlgorithmResult.Error());
+        return ProtocolResult<SessionDescriptor>::Failure(ProtocolErrorCode::InternalDescriptorStateError, reader.Position());
     }
-    const ProtocolStatus consumedStatus = reader.RequireFullyConsumed();
-    if (!consumedStatus)
+    const ProtocolStatus reservedStatus = reader.ReadReservedZeroBytes(2);
+    if (!reservedStatus)
     {
-        return FailureFrom<SessionDescriptor>(consumedStatus.Error());
+        return FailureFrom<SessionDescriptor>(reservedStatus.Error());
+    }
+    const auto featureFlagsResult = reader.ReadUint64();
+    const auto fileNameBytesResult = reader.ReadUint16();
+    if (!featureFlagsResult || !fileNameBytesResult)
+    {
+        const ProtocolError& error = !featureFlagsResult ? featureFlagsResult.Error() : fileNameBytesResult.Error();
+        return FailureFrom<SessionDescriptor>(error);
+    }
+    if (fileNameBytesResult.Value() > kMaximumFileNameUtf8Bytes)
+    {
+        return ProtocolResult<SessionDescriptor>::Failure(ProtocolErrorCode::LengthLimitExceeded, kSessionFileNameUtf8BytesOffset);
+    }
+    const auto fileNameResult = reader.ReadBytes(fileNameBytesResult.Value());
+    if (!fileNameResult)
+    {
+        return FailureFrom<SessionDescriptor>(fileNameResult.Error());
+    }
+    const auto extensionResult = reader.ReadBytes(reader.Remaining());
+    if (!extensionResult)
+    {
+        return FailureFrom<SessionDescriptor>(extensionResult.Error());
     }
 
-    const SessionDescriptor descriptor{
-        ProtocolVersion{majorResult.Value(), minorResult.Value()},
-        SessionId{sessionIdResult.Value()},
-        originalFileSizeResult.Value(),
-        segmentCountResult.Value(),
-        static_cast<DigestAlgorithm>(digestAlgorithmResult.Value())};
-    const ProtocolStatus validationStatus = ValidateSessionDescriptor(
-        descriptor,
-        resourcePolicy);
-    if (!validationStatus)
+    try
     {
-        return FailureFrom<SessionDescriptor>(validationStatus.Error());
+        const std::string fileName(
+            reinterpret_cast<const char*>(fileNameResult.Value().data()),
+            fileNameResult.Value().size());
+        const std::vector<std::byte> extensions(extensionResult.Value().begin(), extensionResult.Value().end());
+        const SessionDescriptor descriptor{
+            ProtocolVersion{majorResult.Value(), minorResult.Value()},
+            SessionId{sessionIdResult.Value()},
+            originalFileSizeResult.Value(),
+            segmentCountResult.Value(),
+            static_cast<DigestAlgorithm>(digestAlgorithmResult.Value()),
+            visualProfileResult.Value(),
+            sourceSegmentTargetResult.Value(),
+            static_cast<CompressionPolicy>(compressionPolicyResult.Value()),
+            featureFlagsResult.Value(),
+            fileName,
+            extensions};
+        const ProtocolStatus validationStatus = ValidateSessionDescriptor(descriptor, resourcePolicy);
+        if (!validationStatus)
+        {
+            return FailureFrom<SessionDescriptor>(validationStatus.Error());
+        }
+        return ProtocolResult<SessionDescriptor>::Success(descriptor);
     }
-
-    return ProtocolResult<SessionDescriptor>::Success(descriptor);
+    catch (const std::bad_alloc&)
+    {
+        return ProtocolResult<SessionDescriptor>::Failure(ProtocolErrorCode::ResourceExhausted, kSessionFileNameUtf8Offset);
+    }
 }
 
 ProtocolResult<SegmentDescriptor> ParseSegmentDescriptor(
@@ -1184,91 +1530,69 @@ ProtocolResult<SegmentDescriptor> ParseSegmentDescriptor(
     const SessionDescriptor& sessionDescriptor,
     const ReceiverResourcePolicy& resourcePolicy) noexcept
 {
-    ByteReader reader(input);
+    const ProtocolStatus envelopeStatus = ValidateDescriptorEnvelope(
+        input,
+        kSegmentDescriptorHeaderBytes,
+        kDirectRepeatSegmentDescriptorPayloadBytes,
+        kWirehairV2SegmentDescriptorPayloadBytes);
+    if (!envelopeStatus)
+    {
+        return FailureFrom<SegmentDescriptor>(envelopeStatus.Error());
+    }
+
+    ByteReader reader(input.first(input.size() - kDescriptorCrcBytes));
+    const auto schemaResult = reader.ReadUint16();
+    const auto headerBytesResult = reader.ReadUint16();
+    const auto totalBytesResult = reader.ReadUint32();
     const auto sessionTagResult = reader.ReadUint64();
-    if (!sessionTagResult)
-    {
-        return FailureFrom<SegmentDescriptor>(sessionTagResult.Error());
-    }
     const auto segmentOrdinalResult = reader.ReadUint64();
-    if (!segmentOrdinalResult)
-    {
-        return FailureFrom<SegmentDescriptor>(segmentOrdinalResult.Error());
-    }
     const auto rawOffsetResult = reader.ReadUint64();
-    if (!rawOffsetResult)
-    {
-        return FailureFrom<SegmentDescriptor>(rawOffsetResult.Error());
-    }
     const auto rawSizeResult = reader.ReadUint64();
-    if (!rawSizeResult)
-    {
-        return FailureFrom<SegmentDescriptor>(rawSizeResult.Error());
-    }
     const auto encodedSizeResult = reader.ReadUint64();
-    if (!encodedSizeResult)
-    {
-        return FailureFrom<SegmentDescriptor>(encodedSizeResult.Error());
-    }
     const auto compressionCodecResult = reader.ReadUint8();
-    if (!compressionCodecResult)
+    const auto outerFecModeResult = reader.ReadUint8();
+    if (!schemaResult || !headerBytesResult || !totalBytesResult || !sessionTagResult || !segmentOrdinalResult ||
+        !rawOffsetResult || !rawSizeResult || !encodedSizeResult || !compressionCodecResult || !outerFecModeResult)
     {
-        return FailureFrom<SegmentDescriptor>(compressionCodecResult.Error());
+        return ProtocolResult<SegmentDescriptor>::Failure(ProtocolErrorCode::InternalDescriptorStateError, reader.Position());
     }
-    const CompressionCodec compressionCodec =
-        static_cast<CompressionCodec>(compressionCodecResult.Value());
-    const ProtocolStatus compressionStatus = ValidateCompressionCodec(
-        compressionCodec,
-        kSegmentCompressionCodecOffset);
+    const ProtocolStatus reservedStatus = reader.ReadReservedZeroBytes(2);
+    if (!reservedStatus)
+    {
+        return FailureFrom<SegmentDescriptor>(reservedStatus.Error());
+    }
+    const auto outerBlockBytesResult = reader.ReadUint32();
+    const auto rawDigestResult = reader.ReadFixedBytes<kDigestBytes>();
+    const auto encodedDigestResult = reader.ReadFixedBytes<kDigestBytes>();
+    const auto flagsResult = reader.ReadUint64();
+    if (!outerBlockBytesResult || !rawDigestResult || !encodedDigestResult || !flagsResult)
+    {
+        return ProtocolResult<SegmentDescriptor>::Failure(ProtocolErrorCode::InternalDescriptorStateError, reader.Position());
+    }
+
+    const CompressionCodec compressionCodec = static_cast<CompressionCodec>(compressionCodecResult.Value());
+    const ProtocolStatus compressionStatus = ValidateCompressionCodec(compressionCodec, kSegmentCompressionCodecOffset);
     if (!compressionStatus)
     {
         return FailureFrom<SegmentDescriptor>(compressionStatus.Error());
     }
-
-    const auto outerFecModeResult = reader.ReadUint8();
-    if (!outerFecModeResult)
-    {
-        return FailureFrom<SegmentDescriptor>(outerFecModeResult.Error());
-    }
-    const OuterFecMode outerFecMode =
-        static_cast<OuterFecMode>(outerFecModeResult.Value());
-    const ProtocolStatus modeStatus = ValidateOuterFecMode(
-        outerFecMode,
-        kSegmentOuterFecModeOffset);
+    const OuterFecMode outerFecMode = static_cast<OuterFecMode>(outerFecModeResult.Value());
+    const ProtocolStatus modeStatus = ValidateOuterFecMode(outerFecMode, kSegmentOuterFecModeOffset);
     if (!modeStatus)
     {
         return FailureFrom<SegmentDescriptor>(modeStatus.Error());
     }
 
-    const auto outerBlockBytesResult = reader.ReadUint32();
-    if (!outerBlockBytesResult)
-    {
-        return FailureFrom<SegmentDescriptor>(outerBlockBytesResult.Error());
-    }
-    const auto rawDigestResult = reader.ReadFixedBytes<kDigestBytes>();
-    if (!rawDigestResult)
-    {
-        return FailureFrom<SegmentDescriptor>(rawDigestResult.Error());
-    }
-    const auto encodedDigestResult = reader.ReadFixedBytes<kDigestBytes>();
-    if (!encodedDigestResult)
-    {
-        return FailureFrom<SegmentDescriptor>(encodedDigestResult.Error());
-    }
-
     std::optional<WirehairV2SerializedProfile> wirehairProfile;
     if (outerFecMode == OuterFecMode::WirehairV2)
     {
-        const auto wirehairProfileResult =
-            reader.ReadFixedBytes<kWirehairV2SerializedProfileBytes>();
+        const auto wirehairProfileResult = reader.ReadFixedBytes<kWirehairV2SerializedProfileBytes>();
         if (!wirehairProfileResult)
         {
             return FailureFrom<SegmentDescriptor>(wirehairProfileResult.Error());
         }
-        wirehairProfile = WirehairV2SerializedProfile{
-            wirehairProfileResult.Value()};
+        wirehairProfile = WirehairV2SerializedProfile{wirehairProfileResult.Value()};
     }
-
     const ProtocolStatus consumedStatus = reader.RequireFullyConsumed();
     if (!consumedStatus)
     {
@@ -1286,16 +1610,18 @@ ProtocolResult<SegmentDescriptor> ParseSegmentDescriptor(
         outerBlockBytesResult.Value(),
         RawDigest{rawDigestResult.Value()},
         EncodedDigest{encodedDigestResult.Value()},
-        wirehairProfile};
-    const ProtocolStatus validationStatus = ValidateSegmentDescriptor(
-        descriptor,
-        sessionDescriptor,
-        resourcePolicy);
+        wirehairProfile,
+        flagsResult.Value()};
+    const auto expectedSizeResult = GetSerializedSize(descriptor);
+    if (!expectedSizeResult || expectedSizeResult.Value() != input.size())
+    {
+        return ProtocolResult<SegmentDescriptor>::Failure(ProtocolErrorCode::InvalidRecordSize, kDescriptorTotalBytesOffset);
+    }
+    const ProtocolStatus validationStatus = ValidateSegmentDescriptor(descriptor, sessionDescriptor, resourcePolicy);
     if (!validationStatus)
     {
         return FailureFrom<SegmentDescriptor>(validationStatus.Error());
     }
-
     return ProtocolResult<SegmentDescriptor>::Success(descriptor);
 }
 
@@ -1304,31 +1630,34 @@ ProtocolResult<FinalManifest> ParseFinalManifest(
     const SessionDescriptor& sessionDescriptor,
     const ReceiverResourcePolicy& resourcePolicy) noexcept
 {
-    ByteReader reader(input);
+    const ProtocolStatus envelopeStatus = ValidateDescriptorEnvelope(
+        input,
+        kFinalManifestHeaderBytes,
+        kFinalManifestPayloadBytes,
+        kFinalManifestPayloadBytes);
+    if (!envelopeStatus)
+    {
+        return FailureFrom<FinalManifest>(envelopeStatus.Error());
+    }
+
+    ByteReader reader(input.first(input.size() - kDescriptorCrcBytes));
+    const auto schemaResult = reader.ReadUint16();
+    const auto headerBytesResult = reader.ReadUint16();
+    const auto totalBytesResult = reader.ReadUint32();
     const auto sessionIdResult = reader.ReadFixedBytes<kSessionIdBytes>();
-    if (!sessionIdResult)
-    {
-        return FailureFrom<FinalManifest>(sessionIdResult.Error());
-    }
     const auto originalFileSizeResult = reader.ReadUint64();
-    if (!originalFileSizeResult)
-    {
-        return FailureFrom<FinalManifest>(originalFileSizeResult.Error());
-    }
     const auto segmentCountResult = reader.ReadUint64();
-    if (!segmentCountResult)
-    {
-        return FailureFrom<FinalManifest>(segmentCountResult.Error());
-    }
     const auto wholeFileDigestResult = reader.ReadFixedBytes<kDigestBytes>();
-    if (!wholeFileDigestResult)
-    {
-        return FailureFrom<FinalManifest>(wholeFileDigestResult.Error());
-    }
     const auto digestAlgorithmResult = reader.ReadUint8();
-    if (!digestAlgorithmResult)
+    if (!schemaResult || !headerBytesResult || !totalBytesResult || !sessionIdResult || !originalFileSizeResult ||
+        !segmentCountResult || !wholeFileDigestResult || !digestAlgorithmResult)
     {
-        return FailureFrom<FinalManifest>(digestAlgorithmResult.Error());
+        return ProtocolResult<FinalManifest>::Failure(ProtocolErrorCode::InternalDescriptorStateError, reader.Position());
+    }
+    const ProtocolStatus reservedStatus = reader.ReadReservedZeroBytes(7);
+    if (!reservedStatus)
+    {
+        return FailureFrom<FinalManifest>(reservedStatus.Error());
     }
     const ProtocolStatus consumedStatus = reader.RequireFullyConsumed();
     if (!consumedStatus)
@@ -1342,15 +1671,11 @@ ProtocolResult<FinalManifest> ParseFinalManifest(
         segmentCountResult.Value(),
         WholeFileDigest{wholeFileDigestResult.Value()},
         static_cast<DigestAlgorithm>(digestAlgorithmResult.Value())};
-    const ProtocolStatus validationStatus = ValidateFinalManifest(
-        finalManifest,
-        sessionDescriptor,
-        resourcePolicy);
+    const ProtocolStatus validationStatus = ValidateFinalManifest(finalManifest, sessionDescriptor, resourcePolicy);
     if (!validationStatus)
     {
         return FailureFrom<FinalManifest>(validationStatus.Error());
     }
-
     return ProtocolResult<FinalManifest>::Success(finalManifest);
 }
 

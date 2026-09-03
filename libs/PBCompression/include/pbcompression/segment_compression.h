@@ -7,9 +7,15 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace pbcompression {
+
+// Local persistence/build identity only. This string never enters a wire
+// descriptor; Encoder session resume rejects a changed zstd runtime baseline
+// before attempting to reproduce frozen encoded bytes.
+[[nodiscard]] std::string GetZstandardBaselineIdentity();
 
 // ZSTD_compressStream2 can make progress with a one-byte destination. Keeping
 // this minimum at one allows CompressSegment() to prove that a tiny zstd frame

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -41,6 +42,10 @@ struct EncoderConfig
     // least 200 ms stable dwell; it never changes the encoded bytes.
     std::uint32_t logicalVisualFps = 0;
     std::uint32_t controlRepetitions = 4;
+    // Empty selects %LOCALAPPDATA%\PixelBridge\EncoderSessions. Tests and
+    // headless automation may provide an isolated root without changing wire
+    // semantics.
+    std::filesystem::path sessionStateRoot;
 };
 
 struct DecoderConfig

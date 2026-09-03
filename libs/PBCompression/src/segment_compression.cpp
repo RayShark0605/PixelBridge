@@ -18,6 +18,12 @@
 #include <vector>
 
 namespace pbcompression {
+
+std::string GetZstandardBaselineIdentity()
+{
+    return std::string("zstd-") + ZSTD_versionString();
+}
+
 namespace {
 
 [[nodiscard]] bool FitsByteVector(const std::uint64_t byteCount) noexcept

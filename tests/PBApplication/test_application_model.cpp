@@ -428,13 +428,13 @@ TEST_CASE("Window close defers exactly one stop while active and accepts after t
     REQUIRE(pbapp::GetWindowCloseAction(false, true) == pbapp::WindowCloseAction::Accept);
 }
 
-TEST_CASE("Phase 1.5 capability model keeps future offline and automatic fallback unavailable",
+TEST_CASE("Application capability model exposes multi-Segment while keeping offline and automatic fallback unavailable",
     "[application][capabilities][offline]")
 {
     const pbapp::RuntimeCapabilities capabilities = pbapp::GetRuntimeCapabilities();
     REQUIRE(capabilities.instantLocalDesktop);
     REQUIRE_FALSE(capabilities.offlineMp4);
-    REQUIRE_FALSE(capabilities.multiSegment);
+    REQUIRE(capabilities.multiSegment);
     REQUIRE_FALSE(capabilities.automaticCaptureFallback);
 }
 

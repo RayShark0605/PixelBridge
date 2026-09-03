@@ -485,7 +485,7 @@ RemoteDuplicateRefinementSnapshot RemoteDuplicateRefinementGate::GetSnapshot() c
 bool DecoderProgressTracker::BindDescriptor(const std::uint64_t totalRawBytes,
     const std::uint64_t monotonicMilliseconds) noexcept
 {
-    if (totalRawBytes == 0 || snapshot_.descriptorKnown)
+    if (snapshot_.descriptorKnown)
     {
         return false;
     }
@@ -493,7 +493,7 @@ bool DecoderProgressTracker::BindDescriptor(const std::uint64_t totalRawBytes,
     snapshot_.descriptorKnown = true;
     snapshot_.totalRawBytes = totalRawBytes;
     snapshot_.remainingRawBytes = totalRawBytes;
-    snapshot_.progress = 0.0;
+    snapshot_.progress = totalRawBytes == 0 ? 1.0 : 0.0;
     startMilliseconds_ = monotonicMilliseconds;
     lastSampleMilliseconds_ = monotonicMilliseconds;
     lastPositiveSampleMilliseconds_ = monotonicMilliseconds;
@@ -526,7 +526,8 @@ bool DecoderProgressTracker::ObserveVerifiedRawBytes(const std::uint64_t verifie
     }
     snapshot_.verifiedRawBytes = verifiedRawBytes;
     snapshot_.remainingRawBytes = snapshot_.totalRawBytes - verifiedRawBytes;
-    snapshot_.progress = static_cast<double>(verifiedRawBytes) / static_cast<double>(snapshot_.totalRawBytes);
+    snapshot_.progress = snapshot_.totalRawBytes == 0 ? 1.0 :
+        static_cast<double>(verifiedRawBytes) / static_cast<double>(snapshot_.totalRawBytes);
     const std::uint64_t totalElapsedMilliseconds = monotonicMilliseconds - startMilliseconds_;
     snapshot_.averageBytesPerSecond = verifiedRawBytes == 0 || totalElapsedMilliseconds == 0 ? 0 :
         static_cast<double>(verifiedRawBytes) * 1000.0 / static_cast<double>(totalElapsedMilliseconds);
