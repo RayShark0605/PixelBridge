@@ -2,7 +2,7 @@
 
 ## 1. 当前状态与前置
 
-**2026-09-05：PARTIAL / 两次真实远程 smoke 均未发布；用户随后提供的 Encoder 报告已核实配置 15 Hz、实际平均约 15.0023 Hz。** 该报告不能与此前两次接收完整关联。用户已批准同一远程源文件的 5 Hz 定向对照；附加脚本及本机最小检查完成，尚待远程原文件检查和右屏就绪，未运行 5 Hz 接收。初始准备和未运行边界保留在下文，第 6 节记录两次 live 结果，第 7 节记录附加包。
+**2026-09-05：PARTIAL / 两次真实远程 smoke 均未发布；用户随后提供的 Encoder 报告已核实配置 15 Hz、实际平均约 15.0023 Hz。** 该报告不能与此前两次接收完整关联。用户原先批准同一远程源文件的 5 Hz 对照，但随后明确说明远程原安装目录及其中的 source 已删除；该受控同源条件不再可执行。现已改为全新、自包含的远程 Encoder 完整包，使用新的 1 MiB CSPRNG source 做 5 Hz 定向诊断，尚未运行广播或接收。初始准备和未运行边界保留在下文，第 6 节记录两次 live 结果，第 7 节记录已失去远程前置的附加包，第 8 节记录新完整包。
 
 - 前置 G20：`e94da7f1d68fd3b410c180ac71201716c11bb9d7`，在途背压修复与本地功能收口已提交。原证据见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 16 节。
 - G20 的 2.0x 是用户豁免、未验证；letterbox 的 15,420.2353 B/unique 不是性能通过。G21 的 16 KiB 硬门仍然有效。
@@ -186,9 +186,47 @@ SHA-256: da27c9dd9f13d9683d1719c7d1a5741ba97cfe9d9282fd3ecaeee2363cd8d61a
 
 ### 7.2 用户操作和接收安排
 
+以下安排在远程原目录和原 source 存在时才成立。用户随后明确报告两者均已删除，因此**不再执行本小节**，也不能从 SHA-256/BLAKE3 摘要恢复 CSPRNG 原文或伪造同源文件。改用第 8 节全新完整包。
+
 1. 在远程机保留原 `remote-encoder` 目录及 `runs`，把附加 ZIP 的五个文件复制到 `00_Check.bat` 同级，不覆盖原文件。
 2. 运行 `03_Check_SameSource_5Hz.bat`；通过后运行 `04_Start_SameSource_5Hz.bat`。若旧 Encoder 尚在运行，先在其控制台按 Enter/Q 正常停止。不要重新运行生成源文件的 `01` / `02`。
 3. 用户手动将完整画布和四个 finder 放在本机右屏可见范围，然后回复“5Hz 右屏已就绪”。本机届时重新进行只读 monitor preflight，以相同冻结 receiver、相同整块右屏 ROI、新建输出目录、180 秒接收 / 210 秒外层 watchdog 执行一次对照，不操作输入。
 4. 收到停止指令后正常停止远程 Encoder，只提供**本次新 run** 的两个 JSON；原 `.bin` 留在远程。比较时单列 source/Session/运行时段关联，不能用未关联的 15 Hz 老记录推导严格配对性能结论。
 
 单 owner、250 ms、质量/FEC/CRC/摘要/发布/重开门全部不变。此次仅判断降频能否改善可见模糊和接收行为；无论结果如何，都不把 5 Hz 诊断等同于默认 15 Hz、64 MiB、chroma/Base-only 或 16 KiB 性能门通过。G21 仍 PARTIAL，G22 未开始。
+
+## 8. 远程原目录删除后的全新 5 Hz 完整包
+
+用户明确说明远程原 `remote-encoder` 整个目录已删除，而不是只删除本机提供的附加 ZIP。因此第 7 节要求复用的 CSPRNG source 也已丢失；现有 sender 报告中的摘要只能验证将来找到的候选内容，不能反推出 1 MiB 随机原文。没有把其他文件命名成旧 source 或修改预期 hash 绕过检查。
+
+新增的全新安装包不依赖任何旧目录，解压到任意新目录后即可先做加载检查。它复用冻结 Encoder `e94da7f` 及原封不动的 42 个 `bin/` 文件，另含 `expected-build.json`、`PACKAGE_MANIFEST.json`、说明文件和三个 fresh-source 脚本：
+
+```text
+build-unified-release/g21-5hz-fresh-full-2/PixelBridge-G21-RemoteEncoder-e94da7f-Fresh5Hz-Full.zip
+bytes: 26714458
+SHA-256: 93123440c769031ecc1ebe73755d087a4a9c939ce1bb71ee51c82583d4982e2c
+ZIP entries: 48
+uncompressed bytes: 61461871
+```
+
+ZIP 根目录直接包含 `Fresh5Hz_00_Check.bat` 和 `Fresh5Hz_01_Start_1MiB.bat`，不会再要求把 add-on 合并到旧目录。启动脚本仅在确认没有运行中的 `PixelBridgeEncoder` 后新建 `runs/diagnostic-fresh-5hz-<RunId>`，用远程 OS CSPRNG 和有界 1 MiB buffer 生成全新的 1 MiB source，durable flush 后核对 regular-file/size；从 SHA-256 到 Encoder 退出持续持有拒绝写入和删除的只读租约。Encoder 参数固定为 Unified、`--logical-fps 5`、600 秒安全上限及手动停止。manifest 明确记录 `originalFixtureAvailable=false`、`strictSameSourceComparison=false`、`G21AcceptanceRun=false`，不将新 source 冒充旧 15 Hz 的逐字节控制变量。
+
+### 8.1 最小验证
+
+- Windows PowerShell 5.1 AST：零错误；静态核对只有一个 `--logical-fps 5` command 和一个 1 MiB CSPRNG buffer。
+- 在组装目录执行真实 `Fresh5Hz_00_Check.bat`：exit 0，加载的应用为 Encoder `e94da7f`；package 文件逐字节未变，未生成 `runs`、source 或画面。
+- ZIP CRC/entry/path/逐字节检查通过；解压到全新目录后再次从 batch 入口检查：exit 0，解压文件逐字节未变，未生成 `runs`、source 或广播。这是部署/加载证据，不是正常 sender、实屏或恢复成功。
+- 首次组装目录 `g21-5hz-fresh-full-1/` 没有 ZIP。其 batch 检查在刻意缩窄且漏掉 Windows PowerShell 的验证 `PATH` 下返回 9009；没有 source/run/广播。问题确认后，两个新 batch 改为 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` 绝对路径，并从全新 `full-2` 目录重做上述检查；原失败日志与 `FAILED_ASSEMBLY.json` 保留，不覆盖、不冒充首轮通过。
+- 原 Encoder ZIP/EXE、冻结 receiver 及 `PHASE1_GATE_REPORT.md` 的 SHA-256 均未变；未重新构建产品，未运行 full CTest、ASan、GPU/native 回归、64 MiB、20 GiB 或 G22。
+
+完整证据见 `build-unified-release/g21-5hz-fresh-full-2/handoff-audit.json`、`PACKAGE_MANIFEST.json`、两份 batch log 和 `syntax.log`。
+
+### 8.2 新操作顺序
+
+1. 用户把完整 ZIP 复制到远程机，完整解压到任意**新目录**；不能直接在 ZIP 预览中运行。
+2. 双击 `Fresh5Hz_00_Check.bat` 并提供完整输出。该步骤不创建 source/run 或画面。
+3. 检查通过后，按明确启动指令双击 `Fresh5Hz_01_Start_1MiB.bat`，再把完整画布和四个 finder 放到本机右屏，回复“5Hz 右屏已就绪”。
+4. 本机届时仍使用冻结 `83bffb3` receiver、新建输出目录、整块右屏 ROI、180 秒接收 / 210 秒 watchdog；不操作输入或左屏，不把 sender source/摘要传入 Decoder。
+5. 收到停止指令后正常停止远程 Encoder，只提供新 run 的 `source-manifest.json` 与 `encoder-report.json`，不提供 `.bin`。
+
+fresh-source 诊断可以观察 5 Hz 下的画面及接收行为，但失去严格 same-source 差分能力。它仍不能替代 G21 默认 15 Hz、64 MiB、Base-only/chroma、外部发布摘要或 16 KiB 硬门；G21 继续 PARTIAL，G22 未开始。
