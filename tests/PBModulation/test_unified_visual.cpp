@@ -416,6 +416,87 @@ TEST_CASE("Unified point-downscaled pixels retain mixed blocks using same-frame 
     }
 }
 
+TEST_CASE("Unified point edge quantization distinguishes complete canvas coverage from integer crops",
+    "[unified][g20][point-coverage]")
+{
+    const auto& fixture = GetFixture41();
+    const auto pixels = Render(fixture);
+    constexpr std::uint32_t width = 2160;
+    constexpr std::uint32_t height = 1215;
+    auto oracle = MakeOracle();
+    for (std::uint32_t tie = 0; tie < 4; tie++)
+    {
+        CAPTURE(tie);
+        const auto pointPixels = pbtest::UpscaleUnifiedPoint(pixels, (tie & 1) != 0, (tie & 2) != 0);
+        const LumaView view{pointPixels, width, height, static_cast<std::size_t>(width) * 4, LumaPixelFormat::Bgra8};
+        const auto clean = oracle.DecodeMixedFrame(view);
+        CAPTURE(clean.frameErasure, clean.bootstrap.geometry.originX, clean.bootstrap.geometry.originY);
+        REQUIRE(clean.IsFrameAvailable());
+        REQUIRE(clean.baseLuma.IsAvailable());
+        REQUIRE(clean.fineLuma.IsAvailable());
+        REQUIRE(clean.chroma.IsAvailable());
+        REQUIRE(clean.bootstrap.geometry.originX == 0);
+        REQUIRE(clean.bootstrap.geometry.originY == 0);
+        REQUIRE(clean.bootstrap.geometry.scaleX == 1.125);
+        REQUIRE(clean.bootstrap.geometry.scaleY == 1.125);
+        REQUIRE(clean.bootstrap.geometry.markerResidualPixels == 0.5);
+        REQUIRE(clean.acceptedBlocks == kUnifiedCodewordCount);
+        for (const auto& block : oracle.GetAcceptedBlocks())
+        {
+            REQUIRE(block.size == fixture.expected[block.codewordSlot].size());
+            REQUIRE(std::equal(fixture.expected[block.codewordSlot].begin(), fixture.expected[block.codewordSlot].end(), block.bytes.begin()));
+        }
+        for (std::uint32_t edge = 0; edge < 4; edge++)
+        {
+            CAPTURE(edge);
+            auto cropped = view;
+            const bool horizontal = edge < 2;
+            const std::size_t offset = edge == 0 ? 4 : (edge == 2 ? view.rowPitch : 0);
+            cropped.pixels = cropped.pixels.subspan(offset);
+            cropped.width -= horizontal ? 1U : 0U;
+            cropped.height -= horizontal ? 0U : 1U;
+            const auto rejected = oracle.DecodeMixedFrame(cropped);
+            REQUIRE_FALSE(rejected.IsFrameAvailable());
+            REQUIRE(rejected.frameErasure == UnifiedErasureReason::CanvasClipped);
+            REQUIRE(oracle.GetAcceptedBlocks().empty());
+        }
+        UnifiedVisualDecodePolicy strict;
+        strict.locator.maximumGeometryResidualPixels = 0.25;
+        const auto strictResult = oracle.DecodeMixedFrame(view, {}, strict);
+        REQUIRE_FALSE(strictResult.IsFrameAvailable());
+        REQUIRE(oracle.GetAcceptedBlocks().empty());
+    }
+    const auto pointPixels = pbtest::UpscaleUnifiedPoint(pixels, false, false);
+    for (const bool horizontal : {true, false})
+    {
+        CAPTURE(horizontal);
+        auto blurred = pointPixels;
+        // A symmetric three-tap blur preserves the apparent integer edge
+        // midpoint but destroys the adjacent-center point-quantization proof.
+        const std::size_t step = horizontal ? 4 : static_cast<std::size_t>(width) * 4;
+        for (std::uint32_t row = 1; row < height - 1; row++)
+        {
+            for (std::uint32_t column = 1; column < width - 1; column++)
+            {
+                const std::size_t offset = (static_cast<std::size_t>(row) * width + column) * 4;
+                for (std::size_t channel = 0; channel < 3; channel++)
+                {
+                    const unsigned sum = std::to_integer<unsigned>(pointPixels[offset + channel - step]) +
+                        2 * std::to_integer<unsigned>(pointPixels[offset + channel]) +
+                        std::to_integer<unsigned>(pointPixels[offset + channel + step]);
+                    blurred[offset + channel] = static_cast<std::byte>((sum + 2) / 4);
+                }
+            }
+        }
+        const auto rejected = oracle.DecodeMixedFrame({blurred, width, height, width * 4, LumaPixelFormat::Bgra8});
+        REQUIRE_FALSE(rejected.IsFrameAvailable());
+        REQUIRE(rejected.frameErasure == UnifiedErasureReason::CanvasClipped);
+        REQUIRE(oracle.GetAcceptedBlocks().empty());
+        REQUIRE(std::abs(rejected.bootstrap.geometry.originX - 0.5) < 1.0e-9);
+        REQUIRE(std::abs(rejected.bootstrap.geometry.originY - 0.5) < 1.0e-9);
+    }
+}
+
 TEST_CASE("Unified frame input packs explicit slot kinds into the frozen reference raster",
     "[unified][g09][frame-input][control][transport]")
 {

@@ -551,6 +551,97 @@ bool RefineGeometry(LumaReader& reader, const std::array<const Marker*, 4>& mark
     return true;
 }
 
+bool RefinePointCoverageAxis(LumaReader& reader, const std::array<const Marker*, 4>& markers,
+    const LocalDesktopGeometry& geometry, const bool horizontal, double& origin, double& maximumResidual) noexcept
+{
+    const double scale = horizontal ? geometry.scaleX : geometry.scaleY;
+    const double canvasPixels = horizontal ? kLocalDesktopCanvasWidth : kLocalDesktopCanvasHeight;
+    const double framePixels = horizontal ? reader.Width() : reader.Height();
+    const double extent = scale * canvasPixels;
+    if (origin >= 0 && origin + extent <= framePixels)
+    {
+        return true;
+    }
+    // Never shrink the fitted scale to fit a cropped ROI. Only the origin can
+    // be constrained by point-quantized edges, and only if the whole extent fits.
+    if (extent > framePixels)
+    {
+        return false;
+    }
+    constexpr std::array<double, 6> offsets{-28, -20, -12, 12, 20, 28};
+    std::array<double, 24> edgeOrigins{};
+    double minimumOrigin = 0;
+    double maximumOrigin = framePixels - extent;
+    for (std::size_t role = 0; role < markers.size(); role++)
+    {
+        const double centre = horizontal ? LogicalCentreX(role) : LogicalCentreY(role);
+        const double perpendicular = horizontal ? geometry.originY + geometry.scaleY * LogicalCentreY(role) :
+                                                  geometry.originX + geometry.scaleX * LogicalCentreX(role);
+        const double black = markers[role]->blackLevel;
+        const double white = markers[role]->whiteLevel;
+        const double midpoint = (black + white) * 0.5;
+        const double roundoff = (white - black) * LocatorLimits::scaleRoundoffTolerance;
+        for (std::size_t edge = 0; edge < offsets.size(); edge++)
+        {
+            const double logical = centre + offsets[edge];
+            const bool rising = edge % 2 != 0;
+            double crossing = 0;
+            if (!FindEdge(reader, horizontal, origin + scale * logical, perpendicular, midpoint, rising, crossing))
+            {
+                return false;
+            }
+            const double integerEdge = std::round(crossing);
+            if (std::abs(crossing - integerEdge) > LocatorLimits::scaleRoundoffTolerance)
+            {
+                return false;
+            }
+            double before = 0;
+            double after = 0;
+            const double beforeX = horizontal ? integerEdge - 1 : perpendicular - 0.5;
+            const double beforeY = horizontal ? perpendicular - 0.5 : integerEdge - 1;
+            const double afterX = horizontal ? integerEdge : perpendicular - 0.5;
+            const double afterY = horizontal ? perpendicular - 0.5 : integerEdge;
+            if (!reader.Contains(beforeX, beforeY) || !reader.Contains(afterX, afterY) ||
+                !reader.Sample(beforeX, beforeY, before) || !reader.Sample(afterX, afterY, after) ||
+                std::abs(before - (rising ? black : white)) > roundoff ||
+                std::abs(after - (rising ? white : black)) > roundoff)
+            {
+                return false;
+            }
+            // A sharp transition between adjacent pixel centers constrains the
+            // source edge to [E - 0.5, E + 0.5]; its midpoint is not an exact
+            // continuous edge measurement. Intersect all 24 edges and the ROI,
+            // not an enlarged crop tolerance. Blurred edges provide no such proof.
+            const double edgeOrigin = integerEdge - scale * logical;
+            edgeOrigins[role * offsets.size() + edge] = edgeOrigin;
+            minimumOrigin = std::max(minimumOrigin, edgeOrigin - 0.5);
+            maximumOrigin = std::min(maximumOrigin, edgeOrigin + 0.5);
+            if (minimumOrigin > maximumOrigin)
+            {
+                return false;
+            }
+        }
+    }
+    origin = std::clamp(origin, minimumOrigin, maximumOrigin);
+    for (const double edgeOrigin : edgeOrigins)
+    {
+        maximumResidual = std::max(maximumResidual, std::abs(edgeOrigin - origin));
+    }
+    return true;
+}
+
+void RefinePointCanvasCoverage(LumaReader& reader, const std::array<const Marker*, 4>& markers,
+    const LocalDesktopDecodePolicy& policy, LocalDesktopGeometry& geometry) noexcept
+{
+    auto candidate = geometry;
+    if (RefinePointCoverageAxis(reader, markers, geometry, true, candidate.originX, candidate.markerResidualPixels) &&
+        RefinePointCoverageAxis(reader, markers, geometry, false, candidate.originY, candidate.markerResidualPixels) &&
+        candidate.markerResidualPixels <= policy.maximumGeometryResidualPixels)
+    {
+        geometry = candidate;
+    }
+}
+
 struct CoreSample
 {
     static constexpr std::size_t count = 5;
@@ -794,6 +885,15 @@ LocalDesktopObservation EvaluateGeometry(LumaReader& reader, const std::array<co
     {
         observation.erasure = reader.Error() == Erasure::None ? Erasure::InvalidGeometry : reader.Error();
         return observation;
+    }
+    if (binding == detail::LocalDesktopBinding::UnifiedVisual)
+    {
+        RefinePointCanvasCoverage(reader, markers, policy, geometry);
+        if (reader.Error() != Erasure::None)
+        {
+            observation.erasure = reader.Error();
+            return observation;
+        }
     }
     observation.geometry = geometry;
     observation.erasure = Calibrate(reader, policy, observation);

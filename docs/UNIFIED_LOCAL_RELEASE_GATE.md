@@ -572,3 +572,73 @@ native 独立复验方式（**只有明确执行以下命令才会显示右屏�
 `frozen-worker-point-model/seal.json` 封存实际 native worker SHA-256 `39a8963a3cb9ec33ae187ede7156d4035494279a942e12d172119e8a81cc31bb` 及 DLL；`source/` 与 `source-seal.json` 保留其对应 dirty 源码和 base HEAD。native 之后的最终小修复仅把“样本可读但所选模型预测跨相邻 tile”的 CPU 零 metric 归类对齐 GPU 的 decision-margin erasure；最终三组定向单测覆盖，未重复已完成的 native 成功项，不能把两个 worker 字节身份混写。最终 mutable build worker 与源码另在最终审计封印。`point-final-checks.json`、`point-model-native-summary.json`、`remaining-native-summary.json` 和各 case 原始 reports 是精确命令/结果入口。
 
 **本节未执行：** 追加 full CTest、追加 ASan、完整 G12 多适配器矩阵、20 GiB/process-crash、Qt main EXE 的新 native UI 流程、2.0x native、G21 remote、G22 package。未修改或暂存 `docs/PHASE1_GATE_REPORT.md`，未修改 220 个既有 pins。**下一目标仍为 G20；G21/G22 未启动。**
+
+## 14. G20：point 半像素几何与完整画布覆盖（2026-09-04）
+
+**结论：1.125x 已修复并完成全新 native 文件闭环；G20 仍 OPEN。** 本节更新第 13 节的 1.125x 待决/失败状态，不覆盖原失败证据。用户明确同意修正几何估计与覆盖判定，区分 point 半像素量化和实际裁剪，保持整像素裁剪拒绝及质量、摘要、发布门；不是直接扩大 tolerance。实施基线 `690acf89dd6ec1e5f4929d40b94f64ef1eda2168`，G18/G19 仍为祖先，G19 报告及原 seals 已核对。本轮仅修改一个生产实现文件、三个定向测试文件和两份 G20 文档；不修改公共接口、wire、HLSL、资源上限或展示合同。
+
+### 根因与实现边界
+
+- 原真实 2160×1215 ROI 的 marker 边缘全都落在 point sampling 的半像素 tie 上。连续边缘最小二乘把像素跳变的中点当作精确边缘，得到 `origin=(0.5,0.5), scale=(1.125,1.125), markerResidual=0`，随后 `CanvasClipped`。新独立整数 9/8 point fixture 在未修复生产代码上复现同样结果（`point-coverage/red-test.log`，exit 42）；不是仅根据合成推测现场。
+- 在 `local_desktop_decode.cpp` 的 **Unified-only** locator refinement 中，保持已拟合 scale 不变。只有当前画布不完整包含于 ROI 时，才在受影响轴重新检查四个 marker 的 24 条已知边缘。边缘必须为整数像素边界，且相邻像素中心分别匹配该 marker 的黑/白端点；只允许原有 `1e-9` 数值 roundoff，不把灰化/模糊边缘当作 point 证据。
+- 对每条边缘，由固定 scale 和跳变位置 E 推得 origin 的闭区间 `[E - scale × logical - 0.5, E - scale × logical + 0.5]`，求 24 条边缘与完整画布可容纳范围 `[0, ROI - scale × canvas]` 的交集。交集为空、拟合画布比 ROI 大、任一边缘无可靠证据或 reader/work-budget 出错时不放行；不收缩 scale 来隐藏 crop。
+- 两轴候选原子应用，任一轴失败不能留下半份修正。调整后的实测 marker residual 重新计入原质量门，本次为 **0.5 px**，而不是继续报告 0。`ResolveUnifiedVisualSamplingGeometry` 的 **0.005 px** 边界检查完全未改；Bootstrap 双副本/FEC/CRC/identity、lane/pilot/freshness、WholeFileDigest、安全发布/final reopen 全部保留。没有增加载荷旁路或跨帧猜测。
+
+### 最小验证与结果
+
+证据根目录：`build-presentation-release/g20-native-1/point-coverage/`。先重新 configure 专用 presentation Release tree，再仅增量构建 `PBUnifiedVisualCpuTests`、`PBUnifiedNativeGate`、`PBUnifiedTransformCorpusTests`、`PBDemodD3D11Tests`，均 exit 0；没有运行新的整套 CTest。
+
+| 检查 | 结果 | 秒 |
+| --- | --- | ---: |
+| Unified CPU 受影响单元目标 | **12 cases / 1,023,233 assertions，exit 0** | 7.672 |
+| 新 Unified WARP coverage 单例 | **1 case / 580 assertions，exit 0** | 0.610 |
+| 原 18 场景 CPU transform corpus | **1 case / 9,042,053 assertions，report 与原 manifest 逐字节一致** | 4.094 |
+| 原真实 1.125x 截图离线重解 | **31/31 blocks；三 lane 可用、九 freshness current；scale 不变** | 非吞吐测量 |
+| 新 1.125x native 文件闭环 | **两个 child exit 0，全部最终发布门和外部 bytes/digests 一致** | 25.625 |
+
+新 CPU 单例覆盖四个横/纵 tie 组合、四边各裁 1 px 的 **16 个拒绝负例**、更严 `maximumGeometryResidualPixels=0.25` 的四个拒绝负例，以及横/纵对称 blur 的两个拒绝负例。blur 保留整数跳变中点但破坏锐利相邻中心证据，不能触发修正；纵轴拒绝同时验证横轴候选不会单独发布。原 1 px crop/冲突/后 FEC 验真用例仍在 CPU 目标中通过。
+
+WARP 覆盖四种 tie 的 31/31 accepted-byte truth，以及四边整数裁剪：Bootstrap 仍可解析，但 GPU submission 在 Binding 阶段以 `InvalidFrame / CanvasClipped` 拒绝，pending 不增加；raw pixel readback=0。新增测试首次运行因复用 upload helper 要求完整末行 pitch，而 cropped span 仅保留逻辑 footprint，未能进入 GPU 裁剪断言；改为测试侧逐行紧密拷贝，不修改 helper/生产边界。第二次是新断言把已存在的 `InvalidFrame` 写成 `InvalidBinding`，按生产的 code/stage/CanvasClipped 三项精确断言修正。两份开发失败日志原样保留，最终生产修复没有为它们改门槛。
+
+```powershell
+cmake -S . -B build-presentation-release
+cmake --build build-presentation-release --config Release --target PBUnifiedVisualCpuTests PBUnifiedNativeGate PBUnifiedTransformCorpusTests PBDemodD3D11Tests --parallel 4
+& .\build-presentation-release\tests\PBModulation\Release\PBUnifiedVisualCpuTests.exe
+& .\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe '[point-coverage]'
+& .\build-presentation-release\tests\PBModulation\Release\PBUnifiedTransformCorpusTests.exe
+```
+
+### 实际闭环与可复验工件
+
+`native-15-1125x-fixed/summary.json` 为独立新 Session / CSPRNG 262,144 B RAW 文件，默认生产 Encoder/Decoder runtime，没有启用 diagnostic demod wrapper。`DISPLAY2` 仍为 2560×1440，窗口 client 为 2160×1215，前后 monitor catalog 相同；只控制自有 no-activate HWND，未发送输入或更改显示设置。
+
+- WGC accepted geometry 25 次均为 `origin=(0,0), scale=(1.125,1.125), markerResidual=0.5`。
+- 配置 15 Hz，实际 sender **15.0319 Hz**；16 个 distinct received logical frames，observed unique **5.8443 Hz**，最终 **16,384 encoded B / unique frame**；不把 sender rate 当作 receiver rate。
+- 三 lane 的 FEC/CRC/identity failures 均 0；whole digest、rename、final reopen、published 全 true。外部 source/final **SHA-256 `57e6ad0c4e735a807afda5f1e7eeccc81576d98cd9353fa83cfc5c09c682564e`**，**BLAKE3 `8d98ea9c445d92b9f2793a69ce226fe8e9ef5856c001cf82882dea991ae7761b`**，逐字节相等。
+- `frozen-worker-point-coverage/` 另存实际运行 EXE、DLL、九份 source 快照及 `source.diff`；worker SHA-256 **`02296215659851b5a4a7fd9f901012aa59eda711f684fe9bc6cba4decac0f12a`**。嵌入基线 HEAD 为 `690acf8`，修复由 source seals 标识，不能冒充提交后重新构建的包。普通 Release 两应用仍是此前 `e0729b2` 的冻结产物，本轮未改写其身份。
+
+不打开屏幕的原 ROI 复验（report 路径必须不存在）：
+
+```powershell
+& .\build-presentation-release\g20-native-1\frozen-worker-point-coverage\PBUnifiedNativeGate.exe --inspect-roi `
+  build-presentation-release/g20-native-1/diagnose-1125-owned/actual-right-roi.bgra `
+  build-presentation-release/g20-native-1/point-coverage-replay-new.json 2160 1215
+```
+
+以下命令会显示一个自有右屏窗口，必须使用新的 run directory，脚本先重新枚举并验证屏幕：
+
+```powershell
+& <python> tests/PresentationGate/run_unified_native_gate.py `
+  --worker build-presentation-release/g20-native-1/frozen-worker-point-coverage/PBUnifiedNativeGate.exe `
+  --catalog-executable build-unified-release/apps/PixelBridgeDecoder/Release/PixelBridgeDecoder.exe `
+  --run-directory build-presentation-release/g20-native-1125-replay-new `
+  --case native-15-1125x
+```
+
+`validation-results.json` / `validation-results-2.json` 保留前两次开发运行，`validation-results-3.json` 为最终 WARP/corpus；`actual-1125-fixed.json` 是同一旧截图修复后结果。`final-audit.json` 核对源码/实际 worker seals、G19 报告、220 个 pins、保护文件、native 最终状态以及原 Golden report。
+
+### 尚未关闭的边界
+
+本轮只读解析旧 letterbox/pause 的 `.resume` journal，PBJH/PBJR CRC32C 全通过，分别只有 **31 / 97 个不同 AcceptedBlock**（`journal-passive-audit.json`），不足 256 KiB RAW / 1,314 B block 的 K=200；这是未完成状态的证据，**不是丢失原因已定位**。未改 journal、恢复状态、发送期限、接收期限或用更小 source 规避失败；两项完整文件门仍未通过，下一步应从实际 Bootstrap 拒绝、geometry、capture/queue 到最终入库定位缺口。
+
+**未执行：** 新 full CTest/ASan、重复已过的 native 1/15/60 Hz 与 0.75x、完整 GPU/硬件矩阵、20 GiB/crash harness、新 Qt main EXE native UI、2.0x、G21 remote、G22 package/提交后 binary 身份复验。2.0x 仍为其余 native 均通过之后的用户条件性豁免，未验证。`docs/PHASE1_GATE_REPORT.md` 未修改、未暂存。**下一目标仍为 G20 的 letterbox/pause 完整闭环，不进入 G21。**

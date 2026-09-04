@@ -3191,6 +3191,82 @@ TEST_CASE("Unified D3D11 point downscale selects same-frame models and rejects a
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
+TEST_CASE("Unified D3D11 accepts point-constrained coverage but rejects integer-cropped submissions",
+    "[demod][d3d11][unified][warp][g20][point-coverage]")
+{
+    auto environment = CreateWarpEnvironment();
+    const auto fixture = MakeUnifiedFixture(41);
+    pbdemodd3d11::DemodConfig config;
+    config.readbackSlotCount = 2;
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, demodulator));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x77}}, 1};
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
+    std::uint64_t observation = 1;
+    for (std::uint32_t tie = 0; tie < 4; tie++)
+    {
+        CAPTURE(tie);
+        const auto pixels = pbtest::UpscaleUnifiedPoint(fixture.pixels, (tie & 1) != 0, (tie & 2) != 0);
+        const pbmodulation::LumaView view{pixels, 2160, 1215, 2160 * 4, pbmodulation::LumaPixelFormat::Bgra8};
+        const auto bootstrap = pbmodulation::DecodeLocalDesktopBootstrap(view, binding);
+        REQUIRE(bootstrap.IsAccepted());
+        REQUIRE(bootstrap.geometry.originX == 0);
+        REQUIRE(bootstrap.geometry.originY == 0);
+        REQUIRE(bootstrap.geometry.scaleX == 1.125);
+        REQUIRE(bootstrap.geometry.scaleY == 1.125);
+        const auto texture = UploadBgraTexture(environment.device.Get(), pixels, view.width, view.height, view.rowPitch);
+        const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, observation++);
+        pbdemodd3d11::DemodSubmission submission;
+        REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, {}, submission));
+        const auto result = PollUntilReady(*demodulator, environment.context.Get(), submission);
+        REQUIRE(result.unifiedObservation.IsFrameAvailable());
+        REQUIRE(result.unifiedObservation.baseLuma.IsAvailable());
+        REQUIRE(result.unifiedObservation.fineLuma.IsAvailable());
+        REQUIRE(result.unifiedObservation.chroma.IsAvailable());
+        REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedCodewordCount);
+        for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
+        {
+            const auto& accepted = result.acceptedUnifiedBlocks[index];
+            REQUIRE(accepted.codewordSlot < fixture.blocks.size());
+            REQUIRE(accepted.size == fixture.blocks[accepted.codewordSlot].size());
+            REQUIRE(std::equal(fixture.blocks[accepted.codewordSlot].begin(), fixture.blocks[accepted.codewordSlot].end(), accepted.bytes.begin()));
+        }
+        if (tie == 0)
+        {
+            for (std::uint32_t edge = 0; edge < 4; edge++)
+            {
+                CAPTURE(edge);
+                auto cropped = view;
+                cropped.pixels = cropped.pixels.subspan(edge == 0 ? 4 : (edge == 2 ? view.rowPitch : 0));
+                cropped.width -= edge < 2 ? 1U : 0U;
+                cropped.height -= edge < 2 ? 0U : 1U;
+                const auto croppedBootstrap = pbmodulation::DecodeLocalDesktopBootstrap(cropped, binding);
+                REQUIRE(croppedBootstrap.IsAccepted());
+                const std::size_t croppedPitch = static_cast<std::size_t>(cropped.width) * 4;
+                std::vector<std::byte> croppedPixels(croppedPitch * cropped.height);
+                for (std::uint32_t row = 0; row < cropped.height; row++)
+                {
+                    std::copy_n(cropped.pixels.begin() + static_cast<std::size_t>(row) * cropped.rowPitch, croppedPitch,
+                        croppedPixels.begin() + static_cast<std::size_t>(row) * croppedPitch);
+                }
+                const auto croppedTexture = UploadBgraTexture(environment.device.Get(), croppedPixels, cropped.width, cropped.height, croppedPitch);
+                const auto croppedFrame = MakeFrame(croppedTexture.Get(), environment.adapterLuid, domain, observation++);
+                const auto rejected = demodulator->SubmitUnifiedVisual(croppedFrame, environment.context.Get(), croppedBootstrap, {}, submission);
+                REQUIRE(rejected.code == pbdemodd3d11::DemodError::InvalidFrame);
+                REQUIRE(rejected.stage == pbdemodd3d11::DemodStage::Binding);
+                REQUIRE(rejected.nativeError == static_cast<std::int32_t>(pbmodulation::UnifiedErasureReason::CanvasClipped));
+                REQUIRE(demodulator->GetSnapshot().pendingFrames == 0);
+            }
+        }
+    }
+    REQUIRE(demodulator->GetSnapshot().submittedFrames == 4);
+    REQUIRE(demodulator->GetSnapshot().completedFrames == 4);
+    REQUIRE(demodulator->GetSnapshot().rawPixelReadbackBytes == 0);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+}
+
 TEST_CASE("Unified layout-8 D3D11 demod preserves mixed blocks at bounded scale and fractional letterbox geometry",
     "[demod][d3d11][unified][warp][geometry][letterbox][scale]")
 {
