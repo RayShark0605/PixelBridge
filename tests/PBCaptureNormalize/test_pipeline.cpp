@@ -1164,6 +1164,7 @@ void ExerciseStagedGpuPipeline(const CaptureBackendKind kind, const bool request
                              144, 192, DXGI_MODE_ROTATION_ROTATE90};
     config.capture.queuedFrameLimit = 1;
     config.capture.roiTextureCount = 2;
+    config.capture.maximumInFlightFrames = 1;
     config.capture.gpuTimeoutMilliseconds = 5000;
     config.capture.maximumFrameAgeMilliseconds = 60000;
     config.capture.maximumCaptureBytes = 8 * 1024 * 1024;

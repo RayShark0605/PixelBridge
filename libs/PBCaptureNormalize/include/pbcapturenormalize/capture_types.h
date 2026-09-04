@@ -74,6 +74,10 @@ struct CaptureConfig
     // Optional hints, never requirements for capture correctness or measured FPS.
     bool requestBorderless = false;
     std::optional<std::int64_t> minUpdateInterval100ns;
+    // Zero uses every physical ROI slot; otherwise 1..roiTextureCount. Counts
+    // Copying and Consuming through all GPU continuations and CPU completion.
+    // Admission is before acquisition/copy; reservations still cover the full ring.
+    std::uint32_t maximumInFlightFrames = 0;
 };
 
 struct CaptureCapabilities

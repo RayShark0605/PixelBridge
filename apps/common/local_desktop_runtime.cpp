@@ -2300,19 +2300,28 @@ private:
         left.receiverStateAdvanced == right.receiverStateAdvanced;
 }
 
+[[nodiscard]] std::uint32_t GetCaptureDemodulatorSlotCount(const VisualProfile visualProfile, const bool offlineReplay) noexcept
+{
+    // A live Unified slot remains occupied through Bootstrap and CPU FEC on the
+    // same owner. Bound that non-replaceable backlog before copying another ROI;
+    // the inbox still selects the newest frame and admission still requires 250 ms.
+    return visualProfile == VisualProfile::UnifiedLc4 && !offlineReplay ? 2 : captureDemodulatorSlotCount;
+}
+
 [[nodiscard]] pbcapturenormalize::CaptureNormalizeConfig MakeCaptureConfig(const DecoderConfig& config)
 {
     pbcapturenormalize::CaptureNormalizeConfig captureConfig;
     captureConfig.capture.region = config.region;
     captureConfig.capture.initialCaptureEpoch = 1;
     captureConfig.capture.queuedFrameLimit = captureQueuedFrameLimit;
-    captureConfig.capture.roiTextureCount = captureDemodulatorSlotCount;
+    captureConfig.capture.roiTextureCount = GetCaptureDemodulatorSlotCount(config.visualProfile, false);
+    captureConfig.capture.maximumInFlightFrames = config.visualProfile == VisualProfile::UnifiedLc4 ? 1 : 0;
     captureConfig.capture.maximumCaptureBytes = config.visualProfile == VisualProfile::UnifiedLc4 ?
         maximumUnifiedCaptureResidentBytes : config.visualProfile == VisualProfile::RemoteVisualLowFps ?
         config.replayOutputPath.empty() ? maximumRemoteVisualLowFpsCaptureResidentBytes :
             maximumRemoteVisualLowFpsReplayCaptureResidentBytes : maximumCaptureResidentBytes;
-    // Auto must reserve DXGI's advertised worst-case source format too: four
-    // BGRA output slots plus four R16G16B16A16 scratch slots at the ROI bound.
+    // Keep the existing cap for DXGI's advertised worst-case source format too:
+    // BGRA output slots plus matching R16G16B16A16 scratch slots at the ROI bound.
     captureConfig.capture.maximumRoiBytes = config.visualProfile == VisualProfile::UnifiedLc4 ?
         384ULL * mebibyte : maximumRoiResidentBytes;
     captureConfig.capture.gpuTimeoutMilliseconds = 3000;
@@ -2328,7 +2337,7 @@ private:
 {
     pbdemodd3d11::CaptureDemodulatorConfig demodConfig;
     demodConfig.visualProfileId = profile.visualProfileId;
-    demodConfig.slotCount = captureDemodulatorSlotCount;
+    demodConfig.slotCount = GetCaptureDemodulatorSlotCount(config.visualProfile, offlineReplay);
     // A sealed Replay has no live capture backlog. Keep the same bounded
     // production decoder while allowing slow WARP/offline execution to finish
     // without misclassifying compute time as capture staleness.

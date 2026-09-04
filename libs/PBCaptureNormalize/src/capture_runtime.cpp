@@ -14,7 +14,8 @@ CaptureStatus ValidateCaptureConfig(const CaptureConfig& config, const CaptureBa
 {
     if (config.initialCaptureEpoch == 0 || config.initialCaptureEpoch == std::numeric_limits<std::uint64_t>::max() ||
         config.queuedFrameLimit == 0 || config.queuedFrameLimit > maximumQueuedFrames || config.roiTextureCount < 2 ||
-        config.roiTextureCount > maximumRoiTextures || config.maximumDeviceRecoveries > 8 || config.maximumFrameAgeMilliseconds > 60000 || config.gpuTimeoutMilliseconds == 0 ||
+        config.roiTextureCount > maximumRoiTextures || config.maximumInFlightFrames > config.roiTextureCount ||
+        config.maximumDeviceRecoveries > 8 || config.maximumFrameAgeMilliseconds > 60000 || config.gpuTimeoutMilliseconds == 0 ||
         config.gpuTimeoutMilliseconds > 60000 || config.maximumCaptureBytes == 0 || config.maximumRoiBytes == 0 ||
         config.maximumCaptureBytes == std::numeric_limits<std::uint64_t>::max() || config.maximumRoiBytes == std::numeric_limits<std::uint64_t>::max() ||
         (config.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM && config.pixelFormat != DXGI_FORMAT_R16G16B16A16_FLOAT && config.pixelFormat != DXGI_FORMAT_R10G10B10A2_UNORM) ||
@@ -358,8 +359,26 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
                                    [](const Slot& slot) { return slot.state == SlotState::Free; });
     }
 
+    [[nodiscard]] bool HasSubmissionCapacity() const noexcept
+    {
+        const std::uint32_t limit = config.maximumInFlightFrames == 0 ? config.roiTextureCount : config.maximumInFlightFrames;
+        std::uint32_t inFlightFrames = 0;
+        for (std::size_t index = 0; index < config.roiTextureCount; index++)
+        {
+            if (slots[index].state != SlotState::Free)
+            {
+                inFlightFrames++;
+            }
+        }
+        return inFlightFrames < limit;
+    }
+
     void SubmitNewest() noexcept
     {
+        if (!HasSubmissionCapacity())
+        {
+            return;
+        }
         for (std::size_t index = 0; index < config.roiTextureCount; index++)
         {
             auto& slot = slots[index];
@@ -650,8 +669,7 @@ struct CaptureRuntime::Implementation final : DeferredCleanup, std::enable_share
                 static_cast<void>(PollSlots(deliver));
             }
             input = inbox->GetSnapshot();
-            if (working.error && !input.stopRequested && !input.recreateRequested &&
-                std::ranges::any_of(slots.begin(), slots.begin() + config.roiTextureCount, [](const Slot& slot) { return slot.state == SlotState::Free; }))
+            if (working.error && !input.stopRequested && !input.recreateRequested && HasSubmissionCapacity())
             {
                 SetError(backend->Acquire());
                 input = inbox->GetSnapshot();

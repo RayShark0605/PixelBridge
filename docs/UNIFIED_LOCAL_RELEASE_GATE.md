@@ -724,3 +724,73 @@ cmake --build build-presentation-release --config Release --target PBUnifiedVisu
 **下一步决策：** 已确认最终年龄门拒绝，局部重复工作/统计锁优化不足以使原期限内闭环。当前 owner 仍串行执行 Bootstrap 与 CPU FEC，最新运行 pending high-water=4；需要进一步对在途帧限额、最新帧优先和背压做定向验证，不能未经决定就降低采样质量、改变 FEC 或扩大年龄门。涉及调度策略的后续实现先向用户确认范围；本节不预先选择新线程模型或降低资源/队列合同来写过关。
 
 **未执行：** 新 full CTest/ASan、原 CPU corpus/完整 GPU 多适配器矩阵、已通过的 1/15/60 Hz 与 0.75x/1.125x native 重跑、pause/resume 重跑、20 GiB/crash、Qt main EXE 新 native UI、2.0x、G21 remote、G22 package/提交后 binary 复验。既有 full Release **218/218 仅属于冻结 e0729b2**，不冒充当前差分整套回归。2.0x 仍为其他 native 全过之后的条件性用户豁免、未验证。**G20 未关闭，不进入 G21。**
+
+## 16. G20：在途背压修复与现有右屏验收收口（2026-09-05）
+
+**结论：原 letterbox 与 pause/resume 的最终文件失败均已关闭；G20 按修订后的本地功能退出标准收口。** 用户明确批准定向诊断并修复在途限额/背压，保持单 owner、250 ms 与现有质量、摘要、发布门，FEC 线程拆分另行确认。本轮没有拆分线程。基线为 `51f5d4d96c276c4de1604510731bc7596686d059`；已复核 G19 提交/报告、AGENTS、G20 条件、Git 状态。证据另存 create-only **`build-presentation-release/g20-native-1/backpressure-1/`**，不覆盖第 15 节或本轮中间失败。
+
+### 16.1 单变量诊断：物理两槽仍不足
+
+4 槽不只是 GPU 缓冲：每槽跨越 `Copying → Bootstrap → GPU continuation → CPU FEC → terminal completion`，全链仍占用同一 owner。先只把 Unified live 的 Capture/Demod 成对物理槽数从 4 改为合法最小值 2，保留 inbox=4、result queue=128、250 ms 和其余路径。新默认 `native-15-letterbox/` 仍未发布：pending high-water=2、Bootstrap 146 accepted/0 rejected、admissionDrops=142。
+
+随后只打开既有只读 wrapper 的 `letterbox-diagnostic/`：147 个正确解调结果、4,557 accepted blocks，140 个 effective age >250 ms，精确对应 admissionDrops=140；年龄最小/中位/最大 **129.3287 / 296.2422 / 359.7876 ms**。1,546 次快照累计 527 μs、单次最大 5 μs，说明第 15 节的统计锁长等待已经消除，但两份在途 CPU 工作仍使大多数结果过期。没有更改 source 大小、FPS、时限、几何或 FEC 来规避失败。
+
+### 16.2 逻辑在途与物理容量分离
+
+- 本轮唯一新增公共配置字段：`CaptureConfig.maximumInFlightFrames`，附加在结构末尾；`0` 表示使用全部物理 ROI 槽，显式值只允许 `1..roiTextureCount`。配置与 layout 两处在分配前拒绝越界，资源 reservation 仍按完整物理 ring/pool 计算，不能按逻辑限额打折。
+- Unified **live** 在应用生产工厂统一选择物理 Capture/Demod **2 槽**、逻辑在途 **1 帧**；不是 native harness 覆盖。legacy/non-Unified 的物理 4 槽/默认全槽行为不变，offline demod 仍为 4 槽及原循环索引。
+- owner 在 **Acquire 和 SubmitNewest 前**统计全部非 Free 槽。Copying、Consuming、continuation、取消退休均占额度；只在原 terminal completion 后释放，等待区继续原 `TakeNewest` 丢旧保新。
+- 不阻挡 WGC 全环 Poll、DXGI 前置 Copying/后置 Consuming Poll 或 Drain；不重排原完成顺序，不通过 consumer 返回 Busy 实现重试，不增加线程、动态队列或热路径分配。
+- inbox=4、result queue=128、live age=250 ms、GPU timeout、资源上限、quality/FEC/CRC/identity、whole digest、安全发布与 final reopen 均未改。wire、shader、持久格式及 220 个原 pins 不变。
+
+### 16.3 回归与默认生产链复验
+
+新 single-inflight fake 在未接入容量门的生产 owner 上先失败（exit 42，第二帧仍能进入 Copy）；原失败日志 `logical-limit-red-test.log` 保留。接入后只跑既有窄范围及新增边界：
+
+| 检查 | 最终结果 | 证据 |
+| --- | --- | --- |
+| Capture：默认两槽、显式单在途、最新帧、Stop 取消、预算/非法上限、原 WGC/DXGI 顺序 | 6 cases / 234 assertions | `logical-capture-tests.log` |
+| Application：实际工厂 Capture/Demod 配对、fallback/restart、最终发布、provider 独立性、250 ms 精确边界 | 4 cases / 250 assertions | `logical-application-tests.log` |
+| WARP staged continuation：WGC/DXGI、非法第二 continuation 安全退休，cap=1 | 2 cases / 739 assertions | `logical-pipeline-tests.log` |
+| Unified ROI 跨 Bootstrap/metric 与 epoch cancellation 邻接 | 1 case / 142 assertions | `logical-demod-tests.log` |
+| 专用 worker 无窗口 policy check | PASS | `logical-self-test.log` |
+
+合计 **13 cases / 1,365 assertions**，全部通过；configure 与受影响 target build exit 0。`logical-targeted-results.json` 保存完整命令、用时和实际测试 EXE hashes，最终 build 后再核对二进制相同。fake/WARP 的 60,000 ms 仅隔离生命周期，不是 live 时效证明；应用测试确定性验证 **250 ms 接受、250 ms +100 ns 拒绝**。没有新增“cap=1 持有 continuation 时 recreate”的专门运行；其 Drain 路径只作源审查，不冒充新增运行覆盖。
+
+以下两例都使用 **默认生产 factory**，非 diagnostic wrapper；保持 256 KiB CSPRNG/RAW、15 Hz、sender 25 s / receiver 22 s，并重新枚举 monitor identity。全部 child 已退出；自有 no-activate HWND/ROI 完全在 DISPLAY2，DISPLAY1 无交集，无输入注入/显示设置变更，catalog/source/worker 前后封印一致。
+
+| 本轮真实右屏用例 | letterbox | pause/resume |
+| --- | --- | --- |
+| 新证据目录 | `native-letterbox-single-flight/` | `native-pause-single-flight/` |
+| 实际 client | 2240×1120 | 1920×1080 → 1344×756 → 1920×1080 |
+| Decoder run elapsed | 5.170 s | 4.782 s（含暂停中的等待，不是恢复后的纯耗时） |
+| Capture / pending HWM | WGC，无 fallback / 1 | WGC，无 fallback / 1 |
+| 最终 admission drops | **0** | **0** |
+| accepted Transport / observed unique | 488 / 17 | 200 / 7 |
+| 实际 unique FPS | 6.8248 | 12.0001 |
+| FEC / CRC / identity failures | 三 lane 均 0 | 三 lane 均 0 |
+| whole digest / safe publish / final reopen / 外部字节比对 | 全部通过 | 全部通过 |
+| VerifiedEncodedBytesPerUniqueFrame | **15,420.2353 B** | **37,449.1429 B** |
+
+pause 仍为原来 **等待 `paused.json` 后启动 Decoder** 的用例，不改成预先绑定 Receiver；九个实际屏幕点均为 neutral matte，4.089 s 内 FrameSequence=49 且同 Session 不变，恢复后完成文件。暂停期间有 32 个 Bootstrap 拒绝，未隐藏或放宽；不能宣称“已绑定 Receiver 跨暂停”也被本例覆盖。letterbox 的 capture-age HWM=42.0558 ms 是进入 CPU 消费前的值，不是最终结果年龄分布；最终时效依据是原 admission 门及 drops=0。
+
+独立 SHA-256：letterbox **`6986612e5f46cec6963ac2af0140ded3abb957d71aa29b6f2c19f5e25c7e3b8d`**；pause **`7ea91e74b0c0f4a79ea1b58ca87c6b5c8d2af8c20ce6c15e0a68867c6ee04133`**。BLAKE3 分别为 `494f2b478f12c271c54cf4368be72ea53fa048142d89118c07aada0b75be550a`、`91cf316d9bd13246bc5c647aafd3e3ecd5fdcc939e81825c9dd81fdeb6a974b9`；源、发布文件、sender in-band 与 receiver digest 一致。
+
+**性能限制不豁免：** 本次 letterbox 的 15,420.2353 B/unique **低于 16 KiB**，也未达到 clean 32 KiB 工程目标。G20 的修订退出项为尺度/cadence/最终文件合同并记录实测指标，因此这里只关闭本地功能门；不把它写成 16 KiB 性能认证，不选择性排除帧或重算分母。G12 正式 Base-neutralized 候选证据维持原版本边界；G21 明列的 live `>=16 KiB` 硬门仍必须独立满足，当前结果绝不能替代 G21 通过。
+
+### 16.4 冻结与复现
+
+最终 worker：`backpressure-1/logical-worker/PBUnifiedNativeGate.exe`，SHA-256 **`b9e19b07a23eab663945314c2fb2d3bf5b0a406c45f2fd92d6fab6cfd2626f07`**；嵌入基线提交 `51f5d4d…`，另有 `seal.json`、`sources/` 与 `source.diff` 绑定本轮差分，不能冒充提交后重编译的发布包。物理两槽失败 worker `8a3e5649…` 与原始诊断均独立保留。重放使用新的不存在目录，不覆盖既有结果：
+
+```powershell
+<python> <repo>\tests\PresentationGate\run_unified_native_gate.py `
+  --worker <repo>\build-presentation-release\g20-native-1\backpressure-1\logical-worker\PBUnifiedNativeGate.exe `
+  --catalog-executable <repo>\build-unified-release\apps\PixelBridgeDecoder\Release\PixelBridgeDecoder.exe `
+  --run-directory <repo>\build-presentation-release\g20-letterbox-new `
+  --case native-15-letterbox
+# 原 pause 用例改为 --case native-pause-resume，并指定另一个全新 run-directory。
+```
+
+`final-audit.json` 复核 source/EXE、独立字节和双摘要、G19 报告、220 pins、保护文件及显式暂存范围。**未运行**新 full CTest/ASan、完整 CPU/GPU corpus/硬件矩阵、已通过 native 场景重跑、20 GiB/crash、Qt main EXE 新 native UI、提交后 package/binary 验证；完整 Release **218/218 仍只属于 e0729b2**，不得写作当前提交整套回归。`docs/PHASE1_GATE_REPORT.md` 未修改/未暂存。
+
+**收口：** 第 13–14 节已通过的 1/15/60 Hz 设定、1.0x/0.75x/1.125x 与本节 letterbox/pause 构成现有右屏功能验收记录；60 Hz 设定仍只证明实际约 44.90 Hz，而非持续 60 Hz。按用户既有决定，其他本地功能项通过后，**2.0x 实屏豁免生效，始终标为未验证**，不改变产品尺度合同。下一目标 **G21**，在本轮独立提交之后核对前置；远程机器分工/连接链路需用户提供，不自行连接或假设可用性，不执行 G22。

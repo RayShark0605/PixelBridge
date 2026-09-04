@@ -82,6 +82,47 @@ struct OrderingObservations
     std::atomic<std::size_t> thirdSlot{maximumRoiTextures};
 };
 
+class BackpressureBackend final : public capturetest::Backend
+{
+public:
+    explicit BackpressureBackend(std::shared_ptr<capturetest::Control> control)
+        : capturetest::Backend(control), control_(std::move(control))
+    {
+    }
+    CaptureStatus Copy(const FrameLease& frame, const std::size_t slot, bool& submitted) noexcept override
+    {
+        continuationStages_[slot] = 0;
+        return capturetest::Backend::Copy(frame, slot, submitted);
+    }
+    CaptureConsumerCompletion Complete(RawRoiConsumer&, const RawRoiFrameMetadata& metadata, const std::size_t slot, const bool cancelled) noexcept override
+    {
+        if (!cancelled && continuationStages_[slot] == 0)
+        {
+            continuationStages_[slot] = 1;
+            control_->Record("continuation", static_cast<std::int64_t>(metadata.arrivalOrdinal));
+            return {{}, true};
+        }
+        control_->Record(cancelled ? "terminal-cancel" : "terminal", static_cast<std::int64_t>(metadata.arrivalOrdinal));
+        return {};
+    }
+    CompletionResult Poll(const std::size_t slot) noexcept override
+    {
+        if (continuationStages_[slot] == 1)
+        {
+            if (!control_->copyComplete)
+            {
+                return {{}, false};
+            }
+            continuationStages_[slot] = 2;
+            return {{}, true};
+        }
+        return capturetest::Backend::Poll(slot);
+    }
+private:
+    const std::shared_ptr<capturetest::Control> control_;
+    std::array<std::uint8_t, maximumRoiTextures> continuationStages_{};
+};
+
 class AcquisitionPriorityBackend final : public capturetest::Backend
 {
 public:
@@ -516,6 +557,204 @@ TEST_CASE("Capture frame age rejects invalid timestamps without unsigned wraparo
     REQUIRE(ClassifyFrameAge(maximumLimit100ns, 0, maximumLimit) == CaptureFrameAgeResult{CaptureFrameAgeDisposition::Current, maximumLimit100ns});
     REQUIRE(ClassifyFrameAge(maximumLimit100ns + 1, 0, maximumLimit) == CaptureFrameAgeResult{CaptureFrameAgeDisposition::Expired, maximumLimit100ns + 1});
     REQUIRE(ClassifyFrameAge(maximumTimestamp, 0, 0) == CaptureFrameAgeResult{CaptureFrameAgeDisposition::Current, 0});
+}
+
+TEST_CASE("Two-slot capture backpressure retires held work before taking the newest queued frame", "[capture][runtime][backpressure]")
+{
+    const auto control = std::make_shared<capturetest::Control>();
+    control->consumeComplete = false;
+    const auto consumer = std::make_shared<SequenceConsumer>();
+    auto config = capturetest::MakeConfig();
+    config.roiTextureCount = 2;
+    config.queuedFrameLimit = 4;
+    // This is a marker/lifetime test, not a wall-clock performance assertion.
+    // The application admission test separately checks the exact 250 ms boundary.
+    config.maximumFrameAgeMilliseconds = 60000;
+    std::unique_ptr<CaptureRuntime> capture;
+    const ReleaseFakeGpuOnExit releaseOnExit{control};
+    REQUIRE(CaptureRuntime::Create(config, consumer, std::make_unique<capturetest::Backend>(control), capture));
+    std::array<std::int64_t, 7> timestamps{};
+    for (std::int64_t id = 1; id <= 7; id++)
+    {
+        auto frame = capturetest::MakeFrame(control, id);
+        REQUIRE(ReadNow100ns(frame.timestamp100ns));
+        timestamps[static_cast<std::size_t>(id - 1)] = frame.timestamp100ns;
+        control->inbox.load()->Push(std::move(frame));
+        if (id <= 2)
+        {
+            REQUIRE(capturetest::WaitFor([&] { return control->copies == id; }));
+        }
+    }
+    REQUIRE(capturetest::WaitFor([&] { return capture->GetSnapshot().queuedFrames == 4; }));
+    REQUIRE(control->copies == 2);
+    REQUIRE(capture->GetSnapshot().busyRoiTextures == 2);
+    REQUIRE(capture->GetSnapshot().liveFrameLeases == 6);
+    control->copyComplete = true;
+    REQUIRE(capturetest::WaitFor([&]
+    {
+        const auto snapshot = capture->GetSnapshot();
+        return control->consumes == 2 && snapshot.liveFrameLeases == 4;
+    }));
+    REQUIRE(control->copies == 2);
+    REQUIRE(capture->GetSnapshot().busyRoiTextures == 2);
+    REQUIRE(consumer->Ordinals() == std::vector<std::uint64_t>{1, 2});
+    control->consumeComplete = true;
+    REQUIRE(capturetest::WaitFor([&]
+    {
+        const auto snapshot = capture->GetSnapshot();
+        return snapshot.copiedFrames == 3 && snapshot.liveFrameLeases == 0 && snapshot.busyRoiTextures == 0;
+    }));
+    REQUIRE(capture->Stop());
+    const auto snapshot = capture->GetSnapshot();
+    REQUIRE(consumer->Ordinals() == std::vector<std::uint64_t>{1, 2, 7});
+    REQUIRE(snapshot.arrivedFrames == 7);
+    REQUIRE(snapshot.droppedFrames == 4);
+    REQUIRE(snapshot.queuedFrames == 0);
+    REQUIRE(snapshot.liveFrameLeases == 0);
+    REQUIRE(snapshot.busyRoiTextures == 0);
+    REQUIRE(snapshot.expiredFrames == 0);
+    REQUIRE(snapshot.shutdownComplete);
+    REQUIRE_FALSE(snapshot.deferredCleanup);
+    RequireOneClosePerFrame(control, 7);
+    const auto events = control->Events();
+    const auto newestCopy = capturetest::FindEvent(events, "copy", timestamps[6]);
+    REQUIRE(newestCopy < events.size());
+    for (std::size_t index = 0; index < 2; index++)
+    {
+        REQUIRE(capturetest::FindEvent(events, "consume-done", timestamps[index]) < newestCopy);
+        REQUIRE(capturetest::FindEvent(events, "copy-done", timestamps[index]) < capturetest::FindEvent(events, "close", index + 1));
+    }
+    const auto ownerThread = events[newestCopy].thread;
+    for (const auto& event : events)
+    {
+        if (event.operation == "copy" || event.operation == "copy-done" || event.operation == "consume-done")
+        {
+            REQUIRE(event.thread == ownerThread);
+        }
+    }
+}
+
+TEST_CASE("Capture in-flight limit is bounded by physical slots without discounting reservations", "[capture][runtime][backpressure]")
+{
+    for (const auto kind : {CaptureBackendKind::Wgc, CaptureBackendKind::Dxgi})
+    {
+        auto config = capturetest::MakeConfig();
+        config.roiTextureCount = 2;
+        CaptureEnvironment environment;
+        environment.region = config.region;
+        environment.contentSize = {100, 80};
+        environment.pixelFormat = config.pixelFormat;
+        environment.backendKind = kind;
+        CaptureLayout baseline;
+        REQUIRE(ValidateLayout(config, environment, baseline));
+        for (const std::uint32_t limit : {0u, 1u, 2u, 3u, (std::numeric_limits<std::uint32_t>::max)()})
+        {
+            CAPTURE(kind, limit);
+            config.maximumInFlightFrames = limit;
+            CaptureLayout layout;
+            REQUIRE(static_cast<bool>(ValidateCaptureConfig(config, kind)) == (limit <= 2));
+            REQUIRE(static_cast<bool>(ValidateLayout(config, environment, layout)) == (limit <= 2));
+            if (limit <= 2)
+            {
+                REQUIRE(layout.poolBufferCount == baseline.poolBufferCount);
+                REQUIRE(layout.totalBytes == baseline.totalBytes);
+            }
+        }
+    }
+}
+
+TEST_CASE("Single in-flight admission holds both copy and continuation before replacing backlog with newest", "[capture][runtime][backpressure]")
+{
+    bool cancel = false;
+    SECTION("terminal completion admits only the newest queued frame")
+    {
+    }
+    SECTION("stop cancels the held continuation and discards queued frames")
+    {
+        cancel = true;
+    }
+    const auto control = std::make_shared<capturetest::Control>();
+    control->consumeComplete = false;
+    const auto consumer = std::make_shared<SequenceConsumer>();
+    auto config = capturetest::MakeConfig();
+    config.roiTextureCount = 2;
+    config.maximumInFlightFrames = 1;
+    config.queuedFrameLimit = 4;
+    config.maximumFrameAgeMilliseconds = 60000;
+    std::unique_ptr<CaptureRuntime> capture;
+    const ReleaseFakeGpuOnExit releaseOnExit{control};
+    REQUIRE(CaptureRuntime::Create(config, consumer, std::make_unique<BackpressureBackend>(control), capture));
+    std::array<std::int64_t, 7> timestamps{};
+    for (std::int64_t id = 1; id <= 7; id++)
+    {
+        auto frame = capturetest::MakeFrame(control, id);
+        REQUIRE(ReadNow100ns(frame.timestamp100ns));
+        timestamps[static_cast<std::size_t>(id - 1)] = frame.timestamp100ns;
+        control->inbox.load()->Push(std::move(frame));
+        if (id == 1)
+        {
+            REQUIRE(capturetest::WaitFor([&] { return control->copies == 1; }));
+        }
+    }
+    REQUIRE(capturetest::WaitFor([&] { return capture->GetSnapshot().queuedFrames == 4; }));
+    REQUIRE(control->copies == 1);
+    REQUIRE(capture->GetSnapshot().busyRoiTextures == 1);
+    REQUIRE(capture->GetSnapshot().liveFrameLeases == 5);
+    control->copyComplete = true;
+    REQUIRE(capturetest::WaitFor([&]
+    {
+        return control->consumes == 1 && capture->GetSnapshot().liveFrameLeases == 4;
+    }));
+    // Reuse the fake copy barrier for the second GPU marker only after the
+    // source copy has retired, before releasing the first consumer marker.
+    control->copyComplete = false;
+    control->consumeComplete = true;
+    REQUIRE(capturetest::WaitFor([&] { return capture->GetSnapshot().consumerContinuationSubmissions == 1; }));
+    REQUIRE(control->copies == 1);
+    REQUIRE(capture->GetSnapshot().busyRoiTextures == 1);
+    REQUIRE(capture->GetSnapshot().liveFrameLeases == 4);
+    if (cancel)
+    {
+        capture->RequestStop();
+    }
+    control->copyComplete = true;
+    REQUIRE(capturetest::WaitFor([&]
+    {
+        const auto snapshot = capture->GetSnapshot();
+        return snapshot.busyRoiTextures == 0 && snapshot.liveFrameLeases == 0 &&
+            (cancel ? snapshot.shutdownComplete : snapshot.copiedFrames == 2);
+    }));
+    REQUIRE(capture->Stop());
+    const auto snapshot = capture->GetSnapshot();
+    REQUIRE(consumer->Ordinals() == (cancel ? std::vector<std::uint64_t>{1} : std::vector<std::uint64_t>{1, 7}));
+    REQUIRE(snapshot.arrivedFrames == 7);
+    REQUIRE(snapshot.droppedFrames == (cancel ? 6 : 5));
+    REQUIRE(snapshot.copiedFrames == (cancel ? 1 : 2));
+    REQUIRE(snapshot.consumerContinuationRejections == 0);
+    REQUIRE(snapshot.queuedFrames == 0);
+    REQUIRE(snapshot.busyRoiTextures == 0);
+    REQUIRE(snapshot.liveFrameLeases == 0);
+    REQUIRE(snapshot.shutdownComplete);
+    REQUIRE_FALSE(snapshot.deferredCleanup);
+    RequireOneClosePerFrame(control, 7);
+    const auto events = control->Events();
+    const auto firstCopy = capturetest::FindEvent(events, "copy", timestamps[0]);
+    REQUIRE(firstCopy < events.size());
+    const auto firstTerminal = capturetest::FindEvent(events, cancel ? "terminal-cancel" : "terminal", 1);
+    REQUIRE(firstTerminal < events.size());
+    if (!cancel)
+    {
+        REQUIRE(firstTerminal < capturetest::FindEvent(events, "copy", timestamps[6]));
+    }
+    const auto ownerThread = events[firstCopy].thread;
+    for (const auto& event : events)
+    {
+        if (event.operation == "copy" || event.operation == "copy-done" || event.operation == "continuation" ||
+            event.operation == "terminal" || event.operation == "terminal-cancel")
+        {
+            REQUIRE(event.thread == ownerThread);
+        }
+    }
 }
 
 TEST_CASE("Capture owner rejects an older completed slot after delivering a newer ordinal only in bounded mode")

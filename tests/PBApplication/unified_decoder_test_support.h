@@ -169,6 +169,7 @@ struct ReceiveState
     pbcapturenormalize::CaptureNormalizeSnapshot normalized;
     pbdemodd3d11::CaptureDemodulatorSnapshot demod;
     pbdemodd3d11::CaptureDemodulatorConfig requestedDemod;
+    pbcapturenormalize::CaptureNormalizeConfig requestedCapture;
     pbapp::CaptureBackend backend = pbapp::CaptureBackend::Wgc;
     std::uint32_t sessionStarts = 0;
     bool failWgc = false;
@@ -266,6 +267,7 @@ public:
     {
         const std::scoped_lock lock(state_->mutex);
         state_->sessionStarts++;
+        state_->requestedCapture = config;
         state_->backend = backend_;
         state_->capture = {};
         state_->normalized = {};

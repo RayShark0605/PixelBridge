@@ -24,7 +24,7 @@ CaptureStatus ValidateLayout(const CaptureConfig& config, const CaptureEnvironme
     const std::uint64_t outputPixelBytes = PixelBytes(config.pixelFormat);
     const std::uint64_t sourcePixelBytes = PixelBytes(environment.pixelFormat);
     if (config.queuedFrameLimit == 0 || config.queuedFrameLimit > maximumQueuedFrames || config.roiTextureCount < 2 ||
-        config.roiTextureCount > maximumRoiTextures ||
+        config.roiTextureCount > maximumRoiTextures || config.maximumInFlightFrames > config.roiTextureCount ||
         outputPixelBytes == 0 || sourcePixelBytes == 0 ||
         (environment.backendKind != CaptureBackendKind::Wgc && environment.backendKind != CaptureBackendKind::Dxgi))
     {

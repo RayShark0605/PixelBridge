@@ -42,6 +42,17 @@ bool CompletedOrFailed(const pbapp::DecoderRuntime& runtime)
     const auto state = runtime.GetSnapshot().state;
     return state == pbapp::DecoderState::Completed || state == pbapp::DecoderState::Failed;
 }
+
+void RequireLiveFlowControl(const ReceiveState& state)
+{
+    REQUIRE(state.requestedCapture.capture.roiTextureCount == 2);
+    REQUIRE(state.requestedCapture.capture.maximumInFlightFrames == 1);
+    REQUIRE(state.requestedDemod.slotCount == state.requestedCapture.capture.roiTextureCount);
+    REQUIRE(state.requestedCapture.capture.queuedFrameLimit == 4);
+    REQUIRE(state.requestedDemod.resultQueueCapacity == 128);
+    REQUIRE(state.requestedCapture.capture.maximumFrameAgeMilliseconds == 250);
+    REQUIRE(state.requestedDemod.maximumFrameAgeMilliseconds == 250);
+}
 } // namespace
 
 TEST_CASE("G16 Unified Decoder policy selects real automatic runtime and bounded physical ROI", "[application][g16][model]")
@@ -118,6 +129,7 @@ TEST_CASE("G16 actual mixed pixels reach Decoder runtime final publish and reope
     REQUIRE_FALSE(std::filesystem::exists(std::filesystem::path(std::u8string(snapshot.resumeStatePath.begin(), snapshot.resumeStatePath.end()))));
     REQUIRE(state->requestedDemod.visualProfileId == pbprotocol::kUnifiedVisualProfileId);
     REQUIRE(state->requestedDemod.maximumRoiWidth == 1920);
+    RequireLiveFlowControl(*state);
 }
 
 TEST_CASE("G16 pending output locks its Session and applies one explicit small-threshold decision", "[application][g16][confirmation]")
@@ -239,6 +251,7 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
         }));
         runtime.Stop();
         const auto stopped = runtime.GetSnapshot();
+        RequireLiveFlowControl(*state);
         REQUIRE(stopped.state == pbapp::DecoderState::Stopped);
         REQUIRE(stopped.sessionIdHex == sessionId);
         REQUIRE(stopped.verifiedRawBytes == before.verifiedRawBytes);
@@ -261,6 +274,7 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
     REQUIRE(resumed.GetSnapshot().sessionIdHex == sessionId);
     REQUIRE(resumed.GetSnapshot().resumeStateLoaded);
     REQUIRE(resumed.GetSnapshot().verifiedSegmentCount == 2);
+    RequireLiveFlowControl(*state);
 }
 
 TEST_CASE("G16 mixed handoff rejects malformed capacity slot identity and same-frame conflicts", "[application][g16][negative]")

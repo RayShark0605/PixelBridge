@@ -376,6 +376,7 @@ TEST_CASE("G14 stale invalidated and cross-source frames are rejected immediatel
     REQUIRE(controller.Start());
     const auto frame = Frame(*fixture.wgc);
     REQUIRE(controller.CanAdmit(frame, 10000000));
+    REQUIRE(controller.CanAdmit(frame, 12500000));
     REQUIRE_FALSE(controller.CanAdmit(frame, 12500001));
     auto timestampLie = frame;
     timestampLie.timestamp.monotonic100ns = 13000000;
