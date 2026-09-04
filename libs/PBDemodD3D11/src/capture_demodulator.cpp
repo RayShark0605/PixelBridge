@@ -356,6 +356,28 @@ struct CaptureDemodulator::Implementation
         bool temporalAttemptActive = false;
     };
 
+    class ScopedDemodulatorAccess
+    {
+    public:
+        explicit ScopedDemodulatorAccess(Implementation& state) : state_(state), lock_(state.demodulatorMutex)
+        {
+        }
+
+        ~ScopedDemodulatorAccess()
+        {
+            // Publish counters after every protected operation, including
+            // failed submission, retirement, replacement and shutdown. Readers
+            // must not wait behind the next GPU/FEC operation just for telemetry.
+            const auto demodSnapshot = state_.demodulator ? state_.demodulator->GetSnapshot() : DemodSnapshot{};
+            const std::lock_guard snapshotLock(state_.mutex);
+            state_.snapshot.demodulator = demodSnapshot;
+        }
+
+    private:
+        Implementation& state_;
+        const std::lock_guard<std::mutex> lock_;
+    };
+
     Implementation(const CaptureDemodulatorConfig& configured, const CaptureDemodulatorBudget& reserved,
         const pbmodulation::LocalDesktopBootstrapBinding expectedBinding, const std::int64_t frequency)
         : config(configured), binding(expectedBinding), qpcFrequency(frequency),
@@ -623,7 +645,7 @@ struct CaptureDemodulator::Implementation
         DemodStatus status;
         bool attempted = false;
         {
-            const std::lock_guard lock(demodulatorMutex);
+            const ScopedDemodulatorAccess access(*this);
             if (!active && demodulator && demodulator->GetSnapshot().pendingFrames == 0)
             {
                 status = demodulator->ShutdownAfterExternalCompletion();
@@ -846,7 +868,7 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     DemodStatus previousShutdown;
     bool previousDemodulator = false;
     {
-        const std::lock_guard lock(state.demodulatorMutex);
+        const Implementation::ScopedDemodulatorAccess access(state);
         if (state.demodulator)
         {
             previousShutdown = state.demodulator->ShutdownAfterExternalCompletion();
@@ -864,7 +886,7 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     // before allocating the replacement rather than transiently holding two
     // complete demodulators and two full-canvas staging rings.
     {
-        const std::lock_guard lock(state.demodulatorMutex);
+        const Implementation::ScopedDemodulatorAccess access(state);
         state.demodulator.reset();
     }
     state.bootstrapStaging = {};
@@ -918,7 +940,7 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     state.roiWidth = static_cast<std::uint32_t>(width);
     state.roiHeight = static_cast<std::uint32_t>(height);
     {
-        const std::lock_guard lock(state.demodulatorMutex);
+        const Implementation::ScopedDemodulatorAccess access(state);
         state.demodulator = std::move(demodulator);
     }
     state.domain = domain;
@@ -949,7 +971,7 @@ void CaptureDemodulator::DomainInvalidated(const ScreenCaptureDomain& domain) no
     DemodStatus demodStatus;
     bool invalidated = false;
     {
-        const std::lock_guard lock(state.demodulatorMutex);
+        const Implementation::ScopedDemodulatorAccess access(state);
         if (state.demodulator)
         {
             demodStatus = state.demodulator->InvalidateDomain(domain);
@@ -1024,7 +1046,7 @@ CaptureStatus CaptureDemodulator::Submit(const ScreenCaptureFrame& frame, ID3D11
     {
         DemodStatus status;
         {
-            const std::lock_guard lock(state.demodulatorMutex);
+            const Implementation::ScopedDemodulatorAccess access(state);
             status = state.demodulator ? state.demodulator->SubmitUnbound(
                 frame, context, state.config.visualProfileId, submission) :
                 DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Submission);
@@ -1091,7 +1113,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         {
             return DemodStatus{};
         }
-        const std::lock_guard lock(state.demodulatorMutex);
+        const Implementation::ScopedDemodulatorAccess access(state);
         return state.demodulator ? state.demodulator->RetireAfterExternalCompletion(pending.submission) :
             DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion);
     };
@@ -1353,7 +1375,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         DemodSubmission submission;
         DemodStatus submitStatus;
         {
-            const std::lock_guard lock(state.demodulatorMutex);
+            const Implementation::ScopedDemodulatorAccess access(state);
             submitStatus = state.demodulator ? (remoteVisualLowFps ?
                 state.demodulator->SubmitRemoteVisualLowFps(frame, context, pending.bootstrap.canonical44,
                     pending.bootstrap.geometry, state.config.remoteVisualLowFpsPolicy, submission) :
@@ -1391,7 +1413,7 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
     DemodFrameResult demodulation;
     DemodPollResult poll;
     {
-        const std::lock_guard lock(state.demodulatorMutex);
+        const Implementation::ScopedDemodulatorAccess access(state);
         poll = state.demodulator ? (stagedVisual ? state.demodulator->Poll(context, pending.submission, demodulation) :
             state.demodulator->PollUnbound(context, pending.submission, bootstrap.canonical44, demodulation)) :
             DemodPollResult{DemodStatus::Failure(DemodError::InvalidConfiguration, DemodStage::Completion), true};
@@ -1615,15 +1637,8 @@ bool CaptureDemodulator::TakeResult(CaptureDemodulatorResult& output) noexcept
 CaptureDemodulatorSnapshot CaptureDemodulator::GetSnapshot() const noexcept
 {
     auto& state = *implementation_;
-    DemodSnapshot demodulatorSnapshot;
-    {
-        const std::lock_guard lock(state.demodulatorMutex);
-        demodulatorSnapshot = state.demodulator ? state.demodulator->GetSnapshot() : DemodSnapshot{};
-    }
     const std::lock_guard lock(state.mutex);
-    auto result = state.snapshot;
-    result.demodulator = demodulatorSnapshot;
-    return result;
+    return state.snapshot;
 }
 
 } // namespace pbdemodd3d11

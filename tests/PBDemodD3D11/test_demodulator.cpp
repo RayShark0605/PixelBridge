@@ -1959,6 +1959,10 @@ TEST_CASE("Capture demodulator retains one Unified ROI across Bootstrap and metr
     domain.captureEpoch = 81;
     REQUIRE(consumer->DomainStarted(domain, MakeCaptureEnvironment(environment.adapterLuid),
         environment.device.Get()));
+    const auto startedSnapshot = consumer->GetSnapshot();
+    REQUIRE(startedSnapshot.demodulator.residentBytes > 0);
+    REQUIRE(startedSnapshot.demodulator.submittedFrames == 0);
+    REQUIRE_FALSE(startedSnapshot.demodulator.shutdown);
     const auto texture = UploadBgraTexture(environment.device.Get(), fixture.pixels,
         pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,
         static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4);
@@ -1978,6 +1982,8 @@ TEST_CASE("Capture demodulator retains one Unified ROI across Bootstrap and metr
     REQUIRE(snapshot.stagedGpuSubmissions == 1);
     REQUIRE(snapshot.stagedGpuCompletions == 0);
     REQUIRE(snapshot.demodulator.pendingFrames == 1);
+    REQUIRE(snapshot.demodulator.submittedFrames == 1);
+    REQUIRE(snapshot.demodulator.completedFrames == 0);
 
     WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
     const auto dataStage = consumer->CompleteStage(frame.metadata, texture.Get(), environment.context.Get(), false);
@@ -1999,6 +2005,9 @@ TEST_CASE("Capture demodulator retains one Unified ROI across Bootstrap and metr
     REQUIRE(snapshot.acceptedUnifiedBlocks == pbmodulation::kUnifiedCodewordCount);
     REQUIRE(snapshot.pendingFrames == 0);
     REQUIRE(snapshot.demodulator.rawPixelReadbackBytes == 0);
+    REQUIRE(snapshot.demodulator.pendingFrames == 0);
+    REQUIRE(snapshot.demodulator.completedFrames == 1);
+    REQUIRE(snapshot.demodulator.metricReadbackBytes > 0);
 
     frame.metadata.captureObservation = 2;
     frame.metadata.slotGeneration = 2;
@@ -2011,6 +2020,8 @@ TEST_CASE("Capture demodulator retains one Unified ROI across Bootstrap and metr
     REQUIRE(secondBootstrapStage.gpuWorkSubmitted);
     REQUIRE(consumer->GetSnapshot().demodulator.pendingFrames == 1);
     consumer->DomainInvalidated(domain);
+    REQUIRE(consumer->GetSnapshot().demodulator.pendingFrames == 1);
+    REQUIRE_FALSE(consumer->GetSnapshot().demodulator.shutdown);
     WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
     const auto cancelledStage = consumer->CompleteStage(frame.metadata, nullptr, nullptr, true);
     REQUIRE(cancelledStage.status);
@@ -2023,8 +2034,20 @@ TEST_CASE("Capture demodulator retains one Unified ROI across Bootstrap and metr
     REQUIRE(snapshot.pendingFrames == 0);
     REQUIRE(snapshot.staleResultDrops == 0);
     REQUIRE(snapshot.demodulator.pendingFrames == 0);
+    REQUIRE(snapshot.demodulator.cancelledFrames == 1);
     REQUIRE(snapshot.demodulator.shutdown);
     REQUIRE(snapshot.demodulator.rawPixelReadbackBytes == 0);
+
+    domain.captureEpoch++;
+    REQUIRE(consumer->DomainStarted(domain, MakeCaptureEnvironment(environment.adapterLuid), environment.device.Get()));
+    snapshot = consumer->GetSnapshot();
+    REQUIRE(snapshot.demodulator.submittedFrames == 0);
+    REQUIRE(snapshot.demodulator.completedFrames == 0);
+    REQUIRE(snapshot.demodulator.cancelledFrames == 0);
+    REQUIRE(snapshot.demodulator.residentBytes == startedSnapshot.demodulator.residentBytes);
+    REQUIRE_FALSE(snapshot.demodulator.shutdown);
+    consumer->DomainInvalidated(domain);
+    REQUIRE(consumer->GetSnapshot().demodulator.shutdown);
 }
 
 TEST_CASE("Capture demodulator bounds LF4 duplicate refinement and admits only newly recovered codeword slots",

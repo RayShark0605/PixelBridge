@@ -497,6 +497,87 @@ TEST_CASE("Unified point edge quantization distinguishes complete canvas coverag
     }
 }
 
+TEST_CASE("Unified prepared metrics preserve reference metadata and fail-closed reuse across phases",
+    "[unified][g20][prepared-metadata]")
+{
+    auto reference = MakeOracle();
+    auto preparedOracle = MakeOracle();
+    auto invalidReference = MakeOracle();
+    REQUIRE_FALSE(invalidReference.DecodeMixedFrame({}).inputValid);
+    const auto clearedMetrics = invalidReference.GetSoftMetrics();
+    std::vector<float> logicalMetrics(kUnifiedSoftMetricCount);
+    std::vector<std::uint8_t> samplingFailures(kUnifiedVisualProfile.dataTileCount, 0);
+    for (std::uint64_t phase = 0; phase < kUnifiedMappingPhaseCount; phase++)
+    {
+        CAPTURE(phase);
+        const auto fixture = BuildFixture(40 + phase);
+        const auto pixels = Render(fixture);
+        const auto decoded = reference.DecodeMixedFrame(View(pixels));
+        REQUIRE(decoded.acceptedBlocks == kUnifiedCodewordCount);
+        const auto referenceMetrics = reference.GetSoftMetrics();
+        for (std::size_t index = 0; index < logicalMetrics.size(); index++)
+        {
+            logicalMetrics[index] = referenceMetrics[index].value;
+        }
+        const UnifiedPreparedMetricFrame input{decoded.bootstrap, logicalMetrics, samplingFailures,
+            decoded.freshness, decoded.baseLuma, decoded.fineLuma, decoded.chroma};
+        const auto prepared = preparedOracle.DecodePreparedMixedFrame(input);
+        REQUIRE(prepared.IsFrameAvailable());
+        REQUIRE(prepared.acceptedBlocks == kUnifiedCodewordCount);
+        REQUIRE(std::ranges::equal(referenceMetrics, preparedOracle.GetSoftMetrics()));
+        for (const auto& block : preparedOracle.GetAcceptedBlocks())
+        {
+            REQUIRE(block.size == fixture.expected[block.codewordSlot].size());
+            REQUIRE(std::equal(fixture.expected[block.codewordSlot].begin(), fixture.expected[block.codewordSlot].end(), block.bytes.begin()));
+        }
+        const auto RequireCleared = [&](const UnifiedPreparedMetricFrame& invalid)
+        {
+            REQUIRE_FALSE(preparedOracle.DecodePreparedMixedFrame(invalid).inputValid);
+            REQUIRE(preparedOracle.GetAcceptedBlocks().empty());
+            REQUIRE(std::ranges::equal(clearedMetrics, preparedOracle.GetSoftMetrics()));
+        };
+        auto invalid = input;
+        invalid.logicalMetrics = invalid.logicalMetrics.first(logicalMetrics.size() - 1);
+        RequireCleared(invalid);
+        invalid = input;
+        invalid.bootstrap.erasure = LocalDesktopErasureReason::InvalidGeometry;
+        RequireCleared(invalid);
+        logicalMetrics[0] = std::numeric_limits<float>::quiet_NaN();
+        RequireCleared(input);
+        logicalMetrics[0] = referenceMetrics[0].value;
+        samplingFailures[0] = 2;
+        RequireCleared(input);
+        samplingFailures[0] = 0;
+
+        const UnifiedExpectedFrameIdentity wrongIdentity{true, pbprotocol::SessionTag{1}, false, 0};
+        const auto rejected = preparedOracle.DecodePreparedMixedFrame(input, wrongIdentity);
+        REQUIRE(rejected.inputValid);
+        REQUIRE(rejected.frameErasure == UnifiedErasureReason::IdentityConflict);
+        REQUIRE(preparedOracle.GetAcceptedBlocks().empty());
+        std::vector<UnifiedSoftMetric> expected(referenceMetrics.begin(), referenceMetrics.end());
+        for (auto& metric : expected)
+        {
+            metric.value = 0;
+            metric.erasureReason = UnifiedErasureReason::IdentityConflict;
+        }
+        REQUIRE(std::ranges::equal(expected, preparedOracle.GetSoftMetrics()));
+
+        auto stale = input;
+        stale.freshness[0] = {false, static_cast<std::uint16_t>(kLocalDesktopTimingBits), 1.0};
+        REQUIRE(preparedOracle.DecodePreparedMixedFrame(stale).IsFrameAvailable());
+        expected.assign(referenceMetrics.begin(), referenceMetrics.end());
+        for (auto& metric : expected)
+        {
+            if (metric.freshnessRegion == 0)
+            {
+                metric.value = 0;
+                metric.erasureReason = UnifiedErasureReason::LocalStaleRegion;
+            }
+        }
+        REQUIRE(std::ranges::equal(expected, preparedOracle.GetSoftMetrics()));
+    }
+}
+
 TEST_CASE("Unified frame input packs explicit slot kinds into the frozen reference raster",
     "[unified][g09][frame-input][control][transport]")
 {

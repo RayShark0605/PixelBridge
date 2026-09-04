@@ -1390,8 +1390,11 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
     state.acceptedCount = 0;
     state.decodedInformationValid.fill(false);
     state.metricsValid = false;
-    InitializeMetrics(0, UnifiedErasureReason::CanvasClipped, state.metrics);
-    state.metricsValid = true;
+    const auto ClearRejectedMetrics = [&]() noexcept
+    {
+        InitializeMetrics(0, UnifiedErasureReason::CanvasClipped, state.metrics);
+        state.metricsValid = true;
+    };
     const bool metricsValid = input.logicalMetrics.size() == kUnifiedSoftMetricCount &&
         std::ranges::all_of(input.logicalMetrics, [](const float value) { return std::isfinite(value); });
     const bool samplingValid = input.tileSamplingFailures.size() == kUnifiedVisualProfile.dataTileCount &&
@@ -1409,6 +1412,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
     if (!ValidateUnifiedVisualDecodePolicy(policy) || !input.bootstrap.IsAccepted() || !metricsValid ||
         !samplingValid || !lanesValid || !freshnessValid)
     {
+        ClearRejectedMetrics();
         return observation;
     }
     const auto parsedBootstrap = pbprotocol::ParseBootstrapRecord(input.bootstrap.canonical44);
@@ -1416,6 +1420,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
         parsedBootstrap.Value().visualProfileId != kUnifiedVisualProfile.productProfile.visualProfileId ||
         parsedBootstrap.Value().visualLayoutVersion != kUnifiedVisualProfile.productProfile.visualLayoutVersion)
     {
+        ClearRejectedMetrics();
         return observation;
     }
     observation.inputValid = true;
@@ -1426,6 +1431,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
     {
         observation.frameErasure = UnifiedErasureReason::IdentityConflict;
         InitializeMetrics(observation.bootstrapRecord.frameSequence, observation.frameErasure, state.metrics);
+        state.metricsValid = true;
         return observation;
     }
     observation.frameErasure = UnifiedErasureReason::None;
@@ -1433,41 +1439,51 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
     observation.baseLuma = input.baseLuma;
     observation.fineLuma = input.fineLuma;
     observation.chroma = input.chroma;
-    InitializeMetrics(observation.bootstrapRecord.frameSequence, UnifiedErasureReason::LocalSamplingFailure,
-        state.metrics);
-    for (std::size_t globalBit = 0; globalBit < state.metrics.size(); globalBit++)
+    // Populate complete same-frame metadata and values once. The previous
+    // sequence-zero initialization and second physical-site lookup duplicated
+    // full-frame work on the capture owner before its unchanged age gate.
+    // Every metric is replaced, including zero/erased values after a good frame.
+    for (const UnifiedLaneContract& laneContract : kUnifiedVisualProfile.lanes)
     {
-        UnifiedSoftMetric& metric = state.metrics[globalBit];
-        const UnifiedLaneCapacity capacity = GetUnifiedLaneCapacity(metric.lane);
-        const std::uint32_t logicalBit = static_cast<std::uint32_t>(globalBit -
-            static_cast<std::size_t>(capacity.firstCodewordSlot) * kUnifiedVisualProfile.innerCodewordBits);
-        const UnifiedPhysicalCarrierSite site = GetUnifiedPhysicalCarrierSite(
-            metric.lane, logicalBit, observation.bootstrapRecord.frameSequence);
-        const std::int16_t value = QuantizeMetric(input.logicalMetrics[globalBit]);
-        if (!site.valid || !LaneAvailable(metric.lane, observation.baseLuma, observation.fineLuma, observation.chroma))
+        const UnifiedLaneCapacity capacity = GetUnifiedLaneCapacity(laneContract.lane);
+        const bool laneAvailable = LaneAvailable(laneContract.lane, observation.baseLuma, observation.fineLuma, observation.chroma);
+        const UnifiedErasureReason laneReason = LaneReason(laneContract.lane, observation.baseLuma, observation.fineLuma, observation.chroma);
+        for (std::uint32_t logicalBit = 0; logicalBit < capacity.codedBits; logicalBit++)
         {
-            metric.erasureReason = site.valid ? LaneReason(
-                metric.lane, observation.baseLuma, observation.fineLuma, observation.chroma) :
-                UnifiedErasureReason::LocalSamplingFailure;
-        }
-        else if (!observation.freshness[metric.freshnessRegion].current)
-        {
-            metric.erasureReason = UnifiedErasureReason::LocalStaleRegion;
-        }
-        else if (input.tileSamplingFailures[site.tileOrdinal] != 0)
-        {
-            metric.erasureReason = UnifiedErasureReason::LocalSamplingFailure;
-        }
-        else if (std::abs(static_cast<std::int32_t>(value)) < policy.minimumDecisionMetric)
-        {
-            metric.erasureReason = UnifiedErasureReason::LocalLowDecisionMargin;
-        }
-        else
-        {
-            metric.value = value;
-            metric.erasureReason = UnifiedErasureReason::None;
+            const UnifiedPhysicalCarrierSite site = GetUnifiedPhysicalCarrierSite(laneContract.lane,
+                logicalBit, observation.bootstrapRecord.frameSequence);
+            const UnifiedDataTile tile = GetUnifiedDataTile(site.tileOrdinal);
+            const std::size_t globalBit = static_cast<std::size_t>(capacity.firstCodewordSlot) *
+                kUnifiedVisualProfile.innerCodewordBits + logicalBit;
+            UnifiedSoftMetric& metric = state.metrics[globalBit];
+            metric = UnifiedSoftMetric{0, laneContract.lane,
+                static_cast<std::uint8_t>(capacity.firstCodewordSlot + logicalBit / kUnifiedVisualProfile.innerCodewordBits),
+                tile.dataRegion, tile.freshnessRegion, UnifiedErasureReason::LocalSamplingFailure};
+            const std::int16_t value = QuantizeMetric(input.logicalMetrics[globalBit]);
+            if (!site.valid || !laneAvailable)
+            {
+                metric.erasureReason = site.valid ? laneReason : UnifiedErasureReason::LocalSamplingFailure;
+            }
+            else if (!observation.freshness[metric.freshnessRegion].current)
+            {
+                metric.erasureReason = UnifiedErasureReason::LocalStaleRegion;
+            }
+            else if (input.tileSamplingFailures[site.tileOrdinal] != 0)
+            {
+                metric.erasureReason = UnifiedErasureReason::LocalSamplingFailure;
+            }
+            else if (std::abs(static_cast<std::int32_t>(value)) < policy.minimumDecisionMetric)
+            {
+                metric.erasureReason = UnifiedErasureReason::LocalLowDecisionMargin;
+            }
+            else
+            {
+                metric.value = value;
+                metric.erasureReason = UnifiedErasureReason::None;
+            }
         }
     }
+    state.metricsValid = true;
     return FinalizeDecodedMetrics(std::move(observation), {}, true, policy);
 }
 

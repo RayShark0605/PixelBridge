@@ -642,3 +642,85 @@ cmake --build build-presentation-release --config Release --target PBUnifiedVisu
 本轮只读解析旧 letterbox/pause 的 `.resume` journal，PBJH/PBJR CRC32C 全通过，分别只有 **31 / 97 个不同 AcceptedBlock**（`journal-passive-audit.json`），不足 256 KiB RAW / 1,314 B block 的 K=200；这是未完成状态的证据，**不是丢失原因已定位**。未改 journal、恢复状态、发送期限、接收期限或用更小 source 规避失败；两项完整文件门仍未通过，下一步应从实际 Bootstrap 拒绝、geometry、capture/queue 到最终入库定位缺口。
 
 **未执行：** 新 full CTest/ASan、重复已过的 native 1/15/60 Hz 与 0.75x、完整 GPU/硬件矩阵、20 GiB/crash harness、新 Qt main EXE native UI、2.0x、G21 remote、G22 package/提交后 binary 身份复验。2.0x 仍为其余 native 均通过之后的用户条件性豁免，未验证。`docs/PHASE1_GATE_REPORT.md` 未修改、未暂存。**下一目标仍为 G20 的 letterbox/pause 完整闭环，不进入 G21。**
+
+## 15. G20：letterbox 结果过期定位与局部热路径修正（2026-09-04）
+
+**结论：确认结果在最终 250 ms admission 门过期；两个局部优化通过定向验证，但仍未完成 letterbox 文件门，G20 继续 OPEN。** 第 14 节的几何修复与 1.125x 完整闭环已提交为 `c31ea9255b1221be729b23605a24718b8111a53c`，本节以其为基线继续诊断剩余失败。重新核对 AGENTS、G20 前置/退出条件、Git 状态及 G19 提交/报告；不覆盖历史失败，不进入 G21/G22。
+
+所有新证据在 **`build-presentation-release/g20-native-1/flow-diagnostics/`**。仅对原 `2240×1120 / 15 Hz / 256 KiB CSPRNG RAW / sender 25 s / receiver 22 s` letterbox 用例进行有明确变化的定向运行。每次新 Session、新 source、新目录；不是同一 source 的重复吞吐基准。未更换宽高比、缩小文件、延长时限或修改生产 admission/解码策略。全部 child 已退出，monitor catalog 前后不变；仍仅自有 no-activate DISPLAY2 HWND，无输入注入或左屏操作。
+
+### 15.1 输入到最终拒绝分支的证据
+
+首次增加只读诊断的 `letterbox-diagnostic/`（worker `8136ac17…`）保持生产代码为基线：
+
+- `decoder/demod-final.json`：Bootstrap **140 accepted / 0 rejected**，120 次 GPU/后 FEC 完成，**3,720 accepted Unified blocks = 120×31**；demodRejected=0、postFecFailed=0。故不是“Bootstrap 无法定位”或“FEC/CRC 普遍失败”。
+- `decoder/demod-events.json`：119 个取出结果，全部是 31-block Unified frame；其中 **113 个实际 effective age >250 ms**，精确对应 `decoder/final.json` 的 **captureAdmissionDrops=113**。年龄最小/中位/最大为 **188.8542 / 345.4598 / 405.1697 ms**；最后只有 6 次 geometry admission，没有最终发布。
+- 时间使用生产 `ResolveEffectiveCaptureTime100ns`，同时保存 claimed/arrival/take QPC；不是用报告时间或 sender FPS 猜测年龄。`DecoderCaptureController::CanAdmit` 的年龄拒绝使这些有效解调结果在进入 ReceiverPipeline 前被丢弃。
+- Bootstrap CPU 均值/最大 **25.6201 / 39.2344 ms**；后 GPU/FEC CPU 均值/最大 **124.3440 / 151.4724 ms**。GPU 本身累计约 197.57 ms，不能把 CPU/FEC 与队列耗时算成 GPU kernel 耗时。`stagedGpuCompletions` 包含进入完成阶段后被年龄/取消拒绝的情况，不等于成功 Poll 数量。
+
+测试 worker 私有 `nativeGate` 扩展补出原 UnifiedRunReport 分支未导出的计数；生产 `run_report` schema 未改。显式 `--diagnostic-decoder` 才启用只读 wrapper：固定 **256 个 metadata/Bootstrap/时间事件**，结束时落盘，记录 overwritten 数；不复制 Transport payload，不改返回值/结果顺序。默认验收仍使用默认生产 demodulator factory。纯 headless policy 检查覆盖计数输出、命名 erasure histogram 和 earlier-arrival 年龄语义。
+
+### 15.2 prepared-metrics 的重复工作消除
+
+原 `DecodePreparedMixedFrame` 在正常路径先用 sequence 0 初始化全部 **502,200** 个 metric，再用当前 sequence 初始化一次，随后值处理又计算一遍 physical site。新实现只在非法输入/Bootstrap 拒绝时保留原 sequence-0 清零，在身份冲突时保留原当前序列清零；正常路径按 lane 一次填完**当前帧的完整 metadata、值和擦除原因**。无跨帧 metric/cache 复用，无新分配，所有条目均覆盖；量化、lane/freshness/tile/decision-margin 的拒绝优先级与最终 FEC/CRC/padding/identity 判定不变。
+
+新 `[prepared-metadata]` 测试在未优化生产代码上先通过 **1 case / 3,892 assertions**，再覆盖修复后的全部 **16 个 mapping phases**：每个 metric 的 value/lane/slot/dataRegion/freshnessRegion/erasure 与 CPU reference 完全一致，31 个 accepted blocks 对比独立 fixture bytes；成功帧后的截短输入、非法 Bootstrap、NaN、非法 tile 状态清零、错误 SessionTag 清零和局部 stale region 均 fail closed。
+
+同一份已保存实际 letterbox ROI 用新增离线 `--profile-roi` 各测一次，CPU-derived metrics 再经过正式 prepared 接口，**不是实际 GPU readback**：
+
+| 单次离线测量 | 修复前 | 仅 prepared 修复后 |
+| --- | ---: | ---: |
+| 等价 public mapping/region pass | 18.0151 ms | 18.0531 ms |
+| 正式 prepared decode | **111.8245 ms** | **87.9351 ms** |
+| FEC iterations / accepted-byte 比对 | 23 / 全匹配 | 23 / 全匹配 |
+
+`letterbox-prepared-profile-before.json` / `letterbox-prepared-profile-after.json` 保留结果。此收益不等于 live 闭环通过：`letterbox-fused/` 的默认 factory 复验仍失败，Bootstrap rejected=0、captureAdmissionDrops=136、6 次 geometry admission、3 unique、81 accepted Transport blocks，未发布。
+
+### 15.3 统计快照不再等待下一次 GPU/FEC 工作锁
+
+随后只增加对既有 `GetSnapshot()` 调用的计时，不改变调用顺序。在 `letterbox-snapshot-timing/` 中，935 次快照调用累计 **11.9876 s**，单次最大 **111.7545 ms**。130 个成功解调结果之前的快照调用中位耗时 **90.6071 ms**，有效年龄中位数 **314.6046 ms**；129 个结果超过 250 ms，最终 admissionDrops 同为 129。本次另有 97 个 `IncompleteMarkers` 观测，原始记录完整保留；不能因此改写此前零 Bootstrap 拒绝的证据，也不能把“年龄减去快照耗时”当作已经验证的因果反事实。
+
+源码确认 `CaptureDemodulator::GetSnapshot` 原来先持 `demodulatorMutex` 读取 nested snapshot，而同一把锁覆盖 `Poll` 的整个 CPU/FEC 路径。最小改为私有 RAII scope，在**原受保护操作结束时**把 nested counters 写入既有 `state.snapshot.demodulator`；读者仅持短时 capture snapshot mutex。原 demodulatorMutex、唯一 owner、unique ownership、四槽资源 reservation、GPU retirement/fence、操作顺序和 250 ms 时效门全部保留。没有 try-lock 后填假计数，没有新增 worker/线程或延长旧资源寿命。
+
+scope 覆盖创建/替换/reset、Submit、Poll、Invalidate、失败返回、外部 retirement 与 shutdown；原 snapshot 字段复用，内存预算和公共接口不变。新增断言逐阶段核对 pending/submitted/completed/readback/cancelled/shutdown，epoch replacement 后 nested counters 归零；既有并发 snapshot/domain replacement 与 LF4 cancellation/backlog 负例保持通过。
+
+**但 `letterbox-published-snapshot/` 的默认 factory 复验仍失败：** Bootstrap rejected=0、captureAdmissionDrops=144，仅 2 次 geometry admission（1 unique、1 duplicate），19 个 accepted Transport blocks，无 whole digest/publish/reopen 成功。该运行没有启用诊断 wrapper，不能给出“修复后快照调用为多少 ms”的现场计时结论；锁分离的代码/定向生命周期验证不能冒充整个超时故障已修复。
+
+### 15.4 最小验证、冻结身份与限制
+
+| 检查 | 结果 / 证据 |
+| --- | --- |
+| prepared baseline 新单例 | 1 case / 3,892 assertions，exit 0；`prepared-baseline-test.log` |
+| prepared 修复后 CPU 受影响目标 | **13 cases / 1,027,125 assertions，exit 0**；`fused-cpu-tests.log` |
+| compact handoff / point-downscale / point-coverage / fractional letterbox WARP | **4 cases / 2,042 assertions，exit 0**；`fused-warp-tests.log` |
+| snapshot/Unified stage/epoch/取消/backlog WARP | **4 cases / 44,930 assertions，exit 0**；`published-snapshot-tests.log` |
+| 最终 affected build | exit 0；`published-snapshot-build-fixed.log` |
+| 最终冻结 worker policy-only | PASS，无 HWND/capture/input；`final-policy-checks.log` |
+| 两次诊断与两次默认 letterbox | 全部未通过文件门；原 `summary.json` 和全部 reports 保留 |
+
+首次新测试使用了不存在的 mapping 常量名，改为既有 `kUnifiedMappingPhaseCount`；首次 snapshot scope build 被 C4458 成员遮蔽警告（作为错误）阻止，改为不遮蔽的局部名。两份失败 build 日志保留，未改编译告警或测试门。
+
+```powershell
+cmake --build build-presentation-release --config Release --target PBUnifiedVisualCpuTests PBDemodD3D11Tests PBUnifiedNativeGate --parallel 4
+& .\build-presentation-release\tests\PBModulation\Release\PBUnifiedVisualCpuTests.exe
+& .\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe 'Unified layout-8 D3D11 demod hands*,[point-downscale],[point-coverage],Unified layout-8 D3D11 demod preserves mixed blocks at bounded scale and fractional letterbox geometry'
+& .\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe 'Capture demodulator retains one Unified ROI*,Capture demodulator snapshots remain safe*,Capture demodulator cancels staged LF4 work*,Capture demodulator bounds result backlog*'
+```
+
+实际最终 worker/DLL/八份相关 source 封存于 `published-snapshot-worker/`，EXE SHA-256 **`0f766ab7a155aeb03c9618321f01fb37f7f65ff520a983786c7ff440cbb54344`**。嵌入基线为 `c31ea92`，未提交修复由 `seal.json` 的 source hashes 标识，不冒充提交后构建。前三个只读冻结 worker 及 seals 另存 `worker/`、`fused-worker/`、`snapshot-timing-worker/`。普通 Release 两应用仍为此前 `e0729b2` 产物，没有覆盖或重写其身份。
+
+以下是原失败用例的精确重放方式，**会显示右屏窗口**；只在后续获准的定向诊断中执行，run directory 必须不存在：
+
+```powershell
+& <python> tests/PresentationGate/run_unified_native_gate.py `
+  --worker build-presentation-release/g20-native-1/flow-diagnostics/published-snapshot-worker/PBUnifiedNativeGate.exe `
+  --catalog-executable build-unified-release/apps/PixelBridgeDecoder/Release/PixelBridgeDecoder.exe `
+  --run-directory build-presentation-release/g20-letterbox-replay-new `
+  --case native-15-letterbox
+```
+
+`final-audit.json` 汇总各候选来源、实际失败分支、测试、source/worker/protected seals 和未执行项；`source.diff` 保留本轮最终生产/测试差分。220 个原 pins、G19 报告和 `docs/PHASE1_GATE_REPORT.md` SHA-256 未变，后者未暂存。
+
+**下一步决策：** 已确认最终年龄门拒绝，局部重复工作/统计锁优化不足以使原期限内闭环。当前 owner 仍串行执行 Bootstrap 与 CPU FEC，最新运行 pending high-water=4；需要进一步对在途帧限额、最新帧优先和背压做定向验证，不能未经决定就降低采样质量、改变 FEC 或扩大年龄门。涉及调度策略的后续实现先向用户确认范围；本节不预先选择新线程模型或降低资源/队列合同来写过关。
+
+**未执行：** 新 full CTest/ASan、原 CPU corpus/完整 GPU 多适配器矩阵、已通过的 1/15/60 Hz 与 0.75x/1.125x native 重跑、pause/resume 重跑、20 GiB/crash、Qt main EXE 新 native UI、2.0x、G21 remote、G22 package/提交后 binary 复验。既有 full Release **218/218 仅属于冻结 e0729b2**，不冒充当前差分整套回归。2.0x 仍为其他 native 全过之后的条件性用户豁免、未验证。**G20 未关闭，不进入 G21。**

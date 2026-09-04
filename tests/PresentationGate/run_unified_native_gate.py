@@ -109,6 +109,8 @@ def main():
     parser.add_argument("--catalog-executable", type=Path, required=True)
     parser.add_argument("--run-directory", type=Path, required=True)
     parser.add_argument("--case", choices=CASES, required=True)
+    parser.add_argument("--diagnostic-decoder", action="store_true",
+                        help="Observe a failed case with bounded read-only demod diagnostics; not the default acceptance run")
     args = parser.parse_args()
     require(os.name == "nt", "native gate requires Windows")
     worker = args.worker.resolve(strict=True)
@@ -127,19 +129,20 @@ def main():
     output_directory.mkdir()
     encoder_command = [str(worker), "--encoder", str(source), str(root / "encoder"),
                        str(width), str(height), str(fps), str(seconds), "1" if pause else "0"]
-    decoder_command = [str(worker), "--decoder", str(output_directory), str(root / "decoder"),
+    decoder_command = [str(worker), "--diagnose-decoder" if args.diagnostic_decoder else "--decoder", str(output_directory), str(root / "decoder"),
                        str(width), str(height), str(seconds - 3)]
     provenance = {"case": args.case, "worker": str(worker), "workerDigests": seal,
                   "sourceDigests": source_hashes, "sourceGenerator": "Windows os.urandom CSPRNG",
                   "encoderCommand": encoder_command, "decoderCommand": decoder_command,
                   "decoderReceivesSourceOrOracle": False, "pixelPath": "Native D3D11 window -> desktop capture Auto -> production Unified Receiver",
                   "inputAutomation": False, "displaySettingChanges": False, "protectedMonitor": r"\\.\DISPLAY1",
-                  "experimentMonitor": r"\\.\DISPLAY2", "twoTimesScaleExecuted": False}
+                  "experimentMonitor": r"\\.\DISPLAY2", "twoTimesScaleExecuted": False,
+                  "diagnosticDecoder": args.diagnostic_decoder}
     save_new(root / "provenance.json", provenance)
     processes = []
     files = []
     started = time.monotonic()
-    outcome = {"case": args.case, "passed": False}
+    outcome = {"case": args.case, "passed": False, "diagnosticDecoder": args.diagnostic_decoder}
 
     def launch(role, command):
         stdout = (root / f"{role}.stdout.log").open("xb")

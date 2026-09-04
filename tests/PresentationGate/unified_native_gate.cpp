@@ -6,9 +6,11 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -18,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -101,6 +104,31 @@ std::string EncoderReport(const pbapp::RunReportContext& context, const pbapp::E
         ",\"pendingFrames\":" + std::to_string(snapshot.pendingFrames) + ",\"presentationEpoch\":" + std::to_string(snapshot.presentationEpoch) +
         ",\"candidateContractSatisfied\":" + (snapshot.candidateContractSatisfied ? "true" : "false") +
         ",\"rawSegmentCount\":" + std::to_string(snapshot.rawSegmentCount) + ",\"zstdSegmentCount\":" + std::to_string(snapshot.zstdSegmentCount) + "}}";
+    return json;
+}
+
+std::string DecoderReport(const pbapp::RunReportContext& context, const pbapp::DecoderSnapshot& snapshot)
+{
+    auto json = pbapp::BuildDecoderRunReportJson(context, snapshot);
+    json.pop_back();
+    json += ",\"nativeGate\":{\"steadyMilliseconds\":" + std::to_string(
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count()) +
+        ",\"captureAdmissionDrops\":" + std::to_string(snapshot.captureAdmissionDrops) +
+        ",\"captureArrived\":" + std::to_string(snapshot.captureArrivedFrames) +
+        ",\"captureCopied\":" + std::to_string(snapshot.captureCopiedFrames) +
+        ",\"captureDelivered\":" + std::to_string(snapshot.captureDeliveredFrames) +
+        ",\"captureDropped\":" + std::to_string(snapshot.captureDroppedFrames) +
+        ",\"captureExpired\":" + std::to_string(snapshot.captureExpiredFrames) +
+        ",\"captureAgeHighWater100ns\":" + std::to_string(snapshot.captureFrameAgeHighWater100ns) +
+        ",\"bootstrapAccepted\":" + std::to_string(snapshot.bootstrapAcceptedFrames) +
+        ",\"bootstrapRejected\":" + std::to_string(snapshot.bootstrapRejectedFrames) +
+        ",\"bootstrapCpuTotal100ns\":" + std::to_string(snapshot.bootstrapCpuTimeTotal100ns) +
+        ",\"postGpuFecCpuTotal100ns\":" + std::to_string(snapshot.postGpuFecCpuTimeTotal100ns) +
+        ",\"demodGpuTotal100ns\":" + std::to_string(snapshot.demodGpuTimeTotal100ns) +
+        ",\"demodPendingHighWater\":" + std::to_string(snapshot.demodPendingHighWater) +
+        ",\"resultQueueHighWater\":" + std::to_string(snapshot.resultQueueHighWater) +
+        ",\"staleResultDrops\":" + std::to_string(snapshot.staleResultDrops) +
+        ",\"acceptedTransportBlocks\":" + std::to_string(snapshot.acceptedTransportBlocks) + "}}";
     return json;
 }
 
@@ -347,6 +375,101 @@ void RunEncoder(const int count, wchar_t* arguments[])
     }
 }
 
+std::string DemodDiagnosticReport(const pbdemodd3d11::CaptureDemodulatorSnapshot& value)
+{
+    std::ostringstream report;
+    report << "{\"submitted\":" << value.submittedFrames << ",\"completed\":" << value.completedFrames
+        << ",\"expired\":" << value.expiredFrames << ",\"cancelled\":" << value.cancelledFrames
+        << ",\"captureErasures\":" << value.captureErasures << ",\"bootstrapAccepted\":" << value.bootstrapAcceptedFrames
+        << ",\"bootstrapRejected\":" << value.bootstrapRejectedFrames << ",\"bootstrapMaps\":" << value.bootstrapMapCalls
+        << ",\"bootstrapCpuTotal100ns\":" << value.bootstrapCpuTimeTotal100ns
+        << ",\"bootstrapCpuHighWater100ns\":" << value.bootstrapCpuTimeHighWater100ns
+        << ",\"bootstrapCpuSamples\":" << value.bootstrapCpuTimingSamples
+        << ",\"postGpuFecCpuTotal100ns\":" << value.demodulationCpuTimeTotal100ns
+        << ",\"postGpuFecCpuHighWater100ns\":" << value.demodulationCpuTimeHighWater100ns
+        << ",\"postGpuFecCpuSamples\":" << value.demodulationCpuTimingSamples
+        << ",\"rejectedGeometry\":" << value.rejectedGeometryFrames
+        << ",\"stagedGpuSubmissions\":" << value.stagedGpuSubmissions << ",\"stagedGpuCompletions\":" << value.stagedGpuCompletions
+        << ",\"demodRejected\":" << value.demodulationRejectedFrames << ",\"postFecFailed\":" << value.postFecFailedFrames
+        << ",\"acceptedUnifiedBlocks\":" << value.acceptedUnifiedBlocks << ",\"resultQueueDrops\":" << value.resultQueueDrops
+        << ",\"staleResultDrops\":" << value.staleResultDrops << ",\"resultsTaken\":" << value.resultsTaken
+        << ",\"pending\":" << value.pendingFrames << ",\"pendingHighWater\":" << value.pendingHighWater
+        << ",\"queuedResults\":" << value.queuedResults << ",\"resultQueueHighWater\":" << value.resultQueueHighWater
+        << ",\"demodSubmitted\":" << value.demodulator.submittedFrames << ",\"demodCompleted\":" << value.demodulator.completedFrames
+        << ",\"demodPending\":" << value.demodulator.pendingFrames << ",\"bootstrapErasures\":{";
+    for (std::size_t index = 0; index < value.bootstrapErasures.size(); index++)
+    {
+        report << (index == 0 ? "" : ",") << '\"'
+            << pbmodulation::GetLocalDesktopErasureName(static_cast<pbmodulation::LocalDesktopErasureReason>(index))
+            << "\":" << value.bootstrapErasures[index];
+    }
+    report << "}}";
+    return report.str();
+}
+
+struct DiagnosticEvent
+{
+    std::int64_t takeQpc100ns = -1;
+    std::int64_t precedingSnapshotNanoseconds = 0;
+    pbcapturenormalize::ScreenCaptureFrameMetadata metadata;
+    pbdemodd3d11::CaptureDemodulatorResultKind kind = pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly;
+    pbmodulation::LocalDesktopObservation bootstrap;
+    std::array<unsigned int, 4> erasures{};
+    std::uint32_t acceptedBlocks = 0;
+    std::uint32_t controlBlocks = 0;
+};
+
+void WriteDiagnosticEvent(std::ostream& report, const DiagnosticEvent& event)
+{
+    const auto effectiveTime = pbcapturenormalize::ResolveEffectiveCaptureTime100ns(
+        event.metadata.timestamp.monotonic100ns, event.metadata.timestamp.arrivalQpc100ns);
+    report << "{\"takeQpc100ns\":" << event.takeQpc100ns
+        << ",\"precedingSnapshotNanoseconds\":" << event.precedingSnapshotNanoseconds
+        << ",\"claimed100ns\":" << event.metadata.timestamp.monotonic100ns
+        << ",\"arrival100ns\":" << event.metadata.timestamp.arrivalQpc100ns << ",\"effectiveAge100ns\":";
+    if (effectiveTime >= 0 && event.takeQpc100ns >= effectiveTime)
+    {
+        report << event.takeQpc100ns - effectiveTime;
+    }
+    else
+    {
+        report << "null";
+    }
+    report << ",\"captureEpoch\":" << event.metadata.domain.captureEpoch << ",\"captureObservation\":" << event.metadata.captureObservation
+        << ",\"kind\":" << static_cast<unsigned int>(event.kind)
+        << ",\"bootstrapErasure\":\"" << pbmodulation::GetLocalDesktopErasureName(event.bootstrap.erasure) << '\"'
+        << ",\"markerCandidates\":" << event.bootstrap.markerCandidates << ",\"geometryCandidates\":" << event.bootstrap.geometryCandidates
+        << ",\"workUnits\":" << event.bootstrap.workUnits << ",\"decodedFrameSequence\":";
+    // Even a rejected geometry may have a valid decoded copy. This is
+    // diagnostic identity only and is never returned as an admitted result.
+    const auto parsed = pbprotocol::ParseBootstrapRecord(event.bootstrap.copies[0].canonical44);
+    if (parsed)
+    {
+        report << parsed.Value().frameSequence;
+    }
+    else
+    {
+        report << "null";
+    }
+    report << ",\"geometry\":[";
+    const auto& geometry = event.bootstrap.geometry;
+    const std::array values{geometry.originX, geometry.originY, geometry.scaleX, geometry.scaleY, geometry.markerResidualPixels};
+    for (std::size_t index = 0; index < values.size(); index++)
+    {
+        report << (index == 0 ? "" : ",");
+        if (std::isfinite(values[index]))
+        {
+            report << values[index];
+        }
+        else
+        {
+            report << "null";
+        }
+    }
+    report << "],\"erasures\":[" << event.erasures[0] << ',' << event.erasures[1] << ',' << event.erasures[2] << ',' << event.erasures[3]
+        << "],\"acceptedBlocks\":" << event.acceptedBlocks << ",\"controlBlocks\":" << event.controlBlocks << '}';
+}
+
 // Read-only diagnostic adapter over the same native demodulator. Used only
 // after a failed Gate; successful acceptance runs use the default factory.
 class DiagnosticDemodulator final : public pbapp::DecoderDemodulator
@@ -355,20 +478,29 @@ public:
     DiagnosticDemodulator(std::shared_ptr<pbdemodd3d11::CaptureDemodulator> native, std::filesystem::path evidence) :
         native_(std::move(native)), evidence_(std::move(evidence))
     {
+        LARGE_INTEGER frequency{};
+        Require(QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0, "diagnostic QPC frequency unavailable");
+        qpcFrequency_ = frequency.QuadPart;
     }
     ~DiagnosticDemodulator() override
     {
         try
         {
-            const auto value = native_->GetSnapshot();
-            WriteNew(evidence_ / "demod-final.json", "{\"submitted\":" + std::to_string(value.submittedFrames) +
-                ",\"completed\":" + std::to_string(value.completedFrames) + ",\"expired\":" + std::to_string(value.expiredFrames) +
-                ",\"cancelled\":" + std::to_string(value.cancelledFrames) + ",\"bootstrapAccepted\":" + std::to_string(value.bootstrapAcceptedFrames) +
-                ",\"stagedGpuSubmissions\":" + std::to_string(value.stagedGpuSubmissions) +
-                ",\"stagedGpuCompletions\":" + std::to_string(value.stagedGpuCompletions) +
-                ",\"demodRejected\":" + std::to_string(value.demodulationRejectedFrames) +
-                ",\"postFecFailed\":" + std::to_string(value.postFecFailedFrames) +
-                ",\"acceptedUnifiedBlocks\":" + std::to_string(value.acceptedUnifiedBlocks) + "}");
+            WriteNew(evidence_ / "demod-final.json", DemodDiagnosticReport(native_->GetSnapshot()));
+            std::ostringstream report;
+            report.precision(17);
+            report << "{\"schema\":\"PBUnifiedNativeDiagnostic.2\",\"totalEvents\":" << totalEvents_
+                << ",\"overwrittenEvents\":" << totalEvents_ - storedEvents_
+                << ",\"snapshotCalls\":" << snapshotCalls_ << ",\"snapshotTotalNanoseconds\":" << snapshotTotalNanoseconds_
+                << ",\"snapshotHighWaterNanoseconds\":" << snapshotHighWaterNanoseconds_ << ",\"recentResults\":[";
+            const std::size_t firstIndex = (nextEvent_ + events_.size() - storedEvents_) % events_.size();
+            for (std::size_t index = 0; index < storedEvents_; index++)
+            {
+                report << (index == 0 ? "" : ",");
+                WriteDiagnosticEvent(report, events_[(firstIndex + index) % events_.size()]);
+            }
+            report << "]}";
+            WriteNew(evidence_ / "demod-events.json", report.str());
         }
         catch (...)
         {
@@ -382,6 +514,30 @@ public:
     bool TakeResult(pbdemodd3d11::CaptureDemodulatorResult& result) override
     {
         const bool available = native_->TakeResult(result);
+        if (available)
+        {
+            // Fixed in-memory ring; no per-result file writes or payload copies.
+            // Capture effective age before any formatting/snapshot mutex wait.
+            auto& event = events_[nextEvent_];
+            LARGE_INTEGER now{};
+            event.takeQpc100ns = -1;
+            if (QueryPerformanceCounter(&now))
+            {
+                static_cast<void>(pbcapturenormalize::ConvertQpcTo100ns(now.QuadPart, qpcFrequency_, event.takeQpc100ns));
+            }
+            event.metadata = result.metadata;
+            event.precedingSnapshotNanoseconds = precedingSnapshotNanoseconds_;
+            event.kind = result.kind;
+            event.bootstrap = result.bootstrap;
+            const auto& value = result.demodulation.unifiedObservation;
+            event.erasures = {static_cast<unsigned int>(value.frameErasure), static_cast<unsigned int>(value.baseLuma.erasureReason),
+                static_cast<unsigned int>(value.fineLuma.erasureReason), static_cast<unsigned int>(value.chroma.erasureReason)};
+            event.acceptedBlocks = result.demodulation.acceptedUnifiedBlockCount;
+            event.controlBlocks = value.acceptedControlRecords;
+            nextEvent_ = (nextEvent_ + 1) % events_.size();
+            storedEvents_ = std::min(storedEvents_ + 1, events_.size());
+            totalEvents_++;
+        }
         if (available && !resultRecorded_)
         {
             const auto& value = result.demodulation.unifiedObservation;
@@ -397,7 +553,12 @@ public:
     }
     pbdemodd3d11::CaptureDemodulatorSnapshot GetSnapshot() const override
     {
+        const auto started = Clock::now();
         const auto snapshot = native_->GetSnapshot();
+        precedingSnapshotNanoseconds_ = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count();
+        snapshotCalls_++;
+        snapshotTotalNanoseconds_ += static_cast<std::uint64_t>(precedingSnapshotNanoseconds_);
+        snapshotHighWaterNanoseconds_ = std::max(snapshotHighWaterNanoseconds_, precedingSnapshotNanoseconds_);
         if (!recorded_ && snapshot.lastDemodStatus.code != pbdemodd3d11::DemodError::None)
         {
             WriteNew(evidence_ / "first-demod-rejection.json", "{\"errorCode\":" + std::to_string(static_cast<unsigned int>(snapshot.lastDemodStatus.code)) +
@@ -414,9 +575,83 @@ private:
     const std::filesystem::path evidence_;
     mutable bool recorded_ = false;
     bool resultRecorded_ = false;
+    std::int64_t qpcFrequency_ = 0;
+    std::array<DiagnosticEvent, 256> events_{};
+    std::size_t nextEvent_ = 0;
+    std::size_t storedEvents_ = 0;
+    std::uint64_t totalEvents_ = 0;
+    mutable std::int64_t precedingSnapshotNanoseconds_ = 0;
+    mutable std::uint64_t snapshotCalls_ = 0;
+    mutable std::uint64_t snapshotTotalNanoseconds_ = 0;
+    mutable std::int64_t snapshotHighWaterNanoseconds_ = 0;
 };
 
-void InspectRoi(const int count, wchar_t* arguments[])
+std::string ProfilePreparedMetrics(const pbmodulation::UnifiedVisualCpuOracle& oracle,
+    const pbmodulation::UnifiedVisualObservation& observation)
+{
+    Require(observation.IsFrameAvailable() && observation.acceptedBlocks == pbmodulation::kUnifiedCodewordCount,
+        "prepared probe requires a fully decoded actual ROI");
+    const auto metrics = oracle.GetSoftMetrics();
+    std::vector<float> logicalMetrics;
+    logicalMetrics.reserve(metrics.size());
+    for (const auto& metric : metrics)
+    {
+        logicalMetrics.push_back(metric.value);
+    }
+    std::vector<pbmodulation::UnifiedSoftMetric> metadata(metrics.size());
+    const auto mappingStart = Clock::now();
+    // Probe the same public mapping/region work performed by InitializeMetrics;
+    // compare every output field so this is not a dead-code microbenchmark.
+    for (const auto& lane : pbmodulation::kUnifiedVisualProfile.lanes)
+    {
+        const auto capacity = pbmodulation::GetUnifiedLaneCapacity(lane.lane);
+        for (std::uint32_t logicalBit = 0; logicalBit < capacity.codedBits; logicalBit++)
+        {
+            const auto site = pbmodulation::GetUnifiedPhysicalCarrierSite(lane.lane, logicalBit, observation.bootstrapRecord.frameSequence);
+            const auto tile = pbmodulation::GetUnifiedDataTile(site.tileOrdinal);
+            const std::size_t globalBit = static_cast<std::size_t>(capacity.firstCodewordSlot) * pbmodulation::kUnifiedVisualProfile.innerCodewordBits + logicalBit;
+            metadata[globalBit] = {0, lane.lane,
+                static_cast<std::uint8_t>(capacity.firstCodewordSlot + logicalBit / pbmodulation::kUnifiedVisualProfile.innerCodewordBits),
+                tile.dataRegion, tile.freshnessRegion, pbmodulation::UnifiedErasureReason::None};
+        }
+    }
+    const auto mappingNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - mappingStart).count();
+    for (std::size_t index = 0; index < metadata.size(); index++)
+    {
+        Require(metadata[index].lane == metrics[index].lane && metadata[index].codewordSlot == metrics[index].codewordSlot &&
+            metadata[index].dataRegion == metrics[index].dataRegion && metadata[index].freshnessRegion == metrics[index].freshnessRegion,
+            "mapping probe metadata mismatch");
+    }
+    auto created = pbmodulation::UnifiedVisualCpuOracle::Create(pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
+    Require(static_cast<bool>(created), "prepared probe allocation failed");
+    auto preparedOracle = std::move(created).Value();
+    const std::vector<std::uint8_t> samplingFailures(pbmodulation::kUnifiedVisualProfile.dataTileCount, 0);
+    const pbmodulation::UnifiedPreparedMetricFrame input{observation.bootstrap, logicalMetrics, samplingFailures,
+        observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma};
+    const auto preparedStart = Clock::now();
+    const auto prepared = preparedOracle.DecodePreparedMixedFrame(input);
+    const auto preparedNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - preparedStart).count();
+    Require(prepared.acceptedBlocks == observation.acceptedBlocks, "prepared probe count mismatch");
+    const auto accepted = oracle.GetAcceptedBlocks();
+    const auto preparedAccepted = preparedOracle.GetAcceptedBlocks();
+    Require(preparedAccepted.size() == accepted.size(), "prepared probe output count mismatch");
+    for (std::size_t index = 0; index < accepted.size(); index++)
+    {
+        Require(preparedAccepted[index].codewordSlot == accepted[index].codewordSlot && preparedAccepted[index].size == accepted[index].size &&
+            std::equal(accepted[index].bytes.begin(), accepted[index].bytes.begin() + accepted[index].size, preparedAccepted[index].bytes.begin()),
+            "prepared probe accepted bytes mismatch");
+    }
+    std::uint64_t fecIterations = 0;
+    for (const auto& slot : prepared.slots)
+    {
+        fecIterations += slot.iterationsUsed;
+    }
+    return "{\"input\":\"CPU metrics from this actual ROI; not GPU readback\",\"mappingMetadataPassNanoseconds\":" +
+        std::to_string(mappingNanoseconds) + ",\"preparedDecodeNanoseconds\":" + std::to_string(preparedNanoseconds) +
+        ",\"fecIterations\":" + std::to_string(fecIterations) + ",\"acceptedBytesMatchCpu\":true}";
+}
+
+void InspectRoi(const int count, wchar_t* arguments[], const bool profilePrepared)
 {
     Require(count == 6, "inspect requires BGRA NEW_REPORT WIDTH HEIGHT");
     const auto width = ParseBounded(arguments[4], 1440, 2304);
@@ -449,7 +684,12 @@ void InspectRoi(const int count, wchar_t* arguments[])
         report << (index == 0 ? "" : ",") << "{\"current\":" << value.current << ",\"bitErrors\":" << value.bitErrors <<
             ",\"residual\":" << value.residual << '}';
     }
-    report << "]}";
+    report << ']';
+    if (profilePrepared)
+    {
+        report << ",\"preparedProbe\":" << ProfilePreparedMetrics(oracle, observation);
+    }
+    report << '}';
     WriteNew(arguments[3], report.str());
     std::cout << report.str() << '\n';
 }
@@ -492,7 +732,7 @@ void RunDecoder(const int count, wchar_t* arguments[], const bool diagnostic)
         {
             CheckTarget(safety, rectangle);
             const auto snapshot = runtime.GetSnapshot();
-            evidence.Sample(pbapp::BuildDecoderRunReportJson(context, snapshot));
+            evidence.Sample(DecoderReport(context, snapshot));
             if (snapshot.state == pbapp::DecoderState::Completed || snapshot.state == pbapp::DecoderState::Failed)
             {
                 break;
@@ -501,7 +741,7 @@ void RunDecoder(const int count, wchar_t* arguments[], const bool diagnostic)
         }
         runtime.Stop();
         const auto snapshot = runtime.GetSnapshot();
-        evidence.Record("final.json", pbapp::BuildDecoderRunReportJson(context, snapshot));
+        evidence.Record("final.json", DecoderReport(context, snapshot));
         Require(snapshot.state == pbapp::DecoderState::Completed && snapshot.wholeFileDigestCheck.value_or(false) &&
             snapshot.finalPublishSucceeded && snapshot.finalReopenVerified.value_or(false), "native receiver did not authoritatively publish");
         evidence.Record("gate.json", std::string("{\"passed\":true,\"sourcePathProvided\":false,\"diagnosticAdapter\":") + (diagnostic ? "true}" : "false}"));
@@ -509,13 +749,29 @@ void RunDecoder(const int count, wchar_t* arguments[], const bool diagnostic)
     catch (...)
     {
         runtime.Stop();
-        evidence.Record("failure-final.json", pbapp::BuildDecoderRunReportJson(context, runtime.GetSnapshot()));
+        evidence.Record("failure-final.json", DecoderReport(context, runtime.GetSnapshot()));
         throw;
     }
 }
 
 void RunPolicyChecks()
 {
+    pbapp::DecoderSnapshot decoder;
+    decoder.captureAdmissionDrops = 7;
+    decoder.captureExpiredFrames = 11;
+    const auto decoderReport = DecoderReport(ReportContext("PolicyFixture"), decoder);
+    Require(decoderReport.find("\"captureAdmissionDrops\":7") != std::string::npos &&
+        decoderReport.find("\"captureExpired\":11") != std::string::npos, "decoder diagnostic counters missing");
+    pbdemodd3d11::CaptureDemodulatorSnapshot demod;
+    demod.bootstrapErasures[static_cast<std::size_t>(pbmodulation::LocalDesktopErasureReason::InvalidGeometry)] = 3;
+    Require(DemodDiagnosticReport(demod).find("\"InvalidGeometry\":3") != std::string::npos, "diagnostic erasure histogram missing");
+    DiagnosticEvent event;
+    event.takeQpc100ns = 5000000;
+    event.metadata.timestamp.monotonic100ns = 3000000;
+    event.metadata.timestamp.arrivalQpc100ns = 2000000;
+    std::ostringstream eventReport;
+    WriteDiagnosticEvent(eventReport, event);
+    Require(eventReport.str().find("\"effectiveAge100ns\":3000000") != std::string::npos, "diagnostic age ignored earlier arrival");
     // G09 uses absolute tick deadlines, not legacy minimum time-between-submit
     // semantics. A slower frame followed by a faster one legitimately has a
     // shorter completed-submit interval. Preserve the raw legacy counter in
@@ -577,9 +833,9 @@ int wmain(const int count, wchar_t* arguments[])
         {
             RunDecoder(count, arguments, role == L"--diagnose-decoder");
         }
-        else if (role == L"--inspect-roi")
+        else if (role == L"--inspect-roi" || role == L"--profile-roi")
         {
-            InspectRoi(count, arguments);
+            InspectRoi(count, arguments, role == L"--profile-roi");
         }
         else
         {
