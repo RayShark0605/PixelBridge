@@ -26,7 +26,8 @@ enum class VisualProfile : std::uint8_t
     DirectLevels2x2,
     ShapeChroma,
     RemoteVisualResilient,
-    RemoteVisualLowFps
+    RemoteVisualLowFps,
+    UnifiedLc4
 };
 
 struct VisualProfileOption
@@ -207,6 +208,15 @@ struct EncoderSnapshot
     std::optional<std::uint64_t> runEndedUnixMilliseconds;
     std::string sourcePath;
     std::uint64_t sourceBytes = 0;
+    std::uint64_t preparedSourceBytes = 0;
+    std::uint64_t preparedSegmentCount = 0;
+    std::uint64_t preparationMilliseconds = 0;
+    std::optional<double> preparationBytesPerSecond;
+    bool preparationComplete = false;
+    bool sourceStabilityVerified = false;
+    std::uint64_t rawSegmentCount = 0;
+    std::uint64_t zstdSegmentCount = 0;
+    bool sessionDeleted = false;
     std::string sessionIdHex;
     std::uint64_t sessionTag = 0;
     std::string wholeFileDigestHex;

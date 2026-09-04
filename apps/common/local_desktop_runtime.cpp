@@ -16,6 +16,7 @@
 #include "pbmodulation/remote_visual.h"
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
+#include "pbmodulation/unified_visual.h"
 #include "pbouterfec/direct_repeat.h"
 #include "pbouterfec/wirehair_v2.h"
 #include "pbreceiver/receiver_ingress.h"
@@ -791,6 +792,12 @@ struct ProfileBinding
 
 [[nodiscard]] ProfileBinding GetProfileBinding(const VisualProfile profile)
 {
+    if (profile == VisualProfile::UnifiedLc4)
+    {
+        return {profile, pbprotocol::kUnifiedVisualProfileId, pbprotocol::kUnifiedVisualLayoutVersion,
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codedBytes),
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount)};
+    }
     if (profile == VisualProfile::ShapeChroma)
     {
         return {profile, pbmodulation::kShapeChromaProfileId, pbmodulation::kShapeChromaLayoutVersion,
@@ -806,6 +813,7 @@ struct ProfileBinding
         return {profile, pbmodulation::kRemoteVisualLowFpsProfileId, pbmodulation::kRemoteVisualLowFpsLayoutVersion,
             pbmodulation::kRemoteVisualLowFpsDataBytes, pbmodulation::kRemoteVisualLowFpsCodewords};
     }
+    Require(profile == VisualProfile::DirectLevels2x2, "Unknown application visual profile");
     const auto* const direct = pbmodulation::GetDesktopLevelsProfile(pbmodulation::kDesktopLevels2ProfileId);
     Require(direct != nullptr, "Direct-Level 2x2 profile is unavailable");
     return {profile, direct->visualProfileId, pbmodulation::kDesktopLevelsLayoutVersion,
@@ -1024,9 +1032,11 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     return description;
 }
 
+using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint64_t, bool)>;
+
 [[nodiscard]] TransferDescription DescribeSource(SourceFile& source, const bool compressionEnabled,
     const int compressionLevel, const std::uint64_t visualProfileId, const pbprotocol::SessionId& sessionId,
-    const std::atomic<bool>& stopRequested)
+    const std::atomic<bool>& stopRequested, const PreparationProgressCallback& progress = {})
 {
     const std::filesystem::path sourcePath(source.path);
     const std::string fileNameUtf8 = Utf8FromWide(sourcePath.filename().wstring());
@@ -1051,11 +1061,20 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
             segmentOrdinal, rawOffset, rawBytes, compressionEnabled, compressionLevel);
         std::vector<std::byte>().swap(segment.inMemoryEncodedBytes);
         description.segments.push_back(std::move(segment));
+        if (progress)
+        {
+            progress(rawOffset + rawSize, segmentOrdinal + 1, false);
+        }
     }
     Require(IsSourceStable(source), "源文件在完整预扫描期间发生变化");
     description.manifest = {description.session.sessionId, source.fileBytes, segmentCount,
         pbprotocol::WholeFileDigest{wholeFileHasher.Finalize()}, pbprotocol::DigestAlgorithm::Blake3_256};
     FinalizeTransferControls(description);
+    Require(!stopRequested, "Stopped during source preparation");
+    if (progress)
+    {
+        progress(source.fileBytes, segmentCount, true);
+    }
     return description;
 }
 
@@ -1112,6 +1131,10 @@ public:
 
     [[nodiscard]] FrameKind GetCurrentKind() const
     {
+        if (profile_.profile == VisualProfile::UnifiedLc4)
+        {
+            return FrameKind::Data;
+        }
         if (!description_.segments.empty())
         {
             SenderScheduledFrame frame;
@@ -1140,10 +1163,45 @@ public:
         return FrameKind::Data;
     }
 
-    [[nodiscard]] const std::vector<std::byte>& Build(const std::uint64_t frameSequence)
+    [[nodiscard]] const std::vector<std::byte>& Build(const std::uint64_t frameSequence,
+        const std::uint64_t logicalTickOrdinal = 0, const std::uint64_t nowNanoseconds = 0)
     {
         const FrameKind kind = GetCurrentKind();
         const auto bootstrap = MakeBootstrap(frameSequence);
+        if (profile_.profile == VisualProfile::UnifiedLc4)
+        {
+            Require(static_cast<bool>(unifiedScheduler_.PrepareFrameAt(logicalTickOrdinal, nowNanoseconds,
+                unifiedFrame_)), "Unified mixed-slot frame preparation failed");
+            std::array<pbmodulation::UnifiedFrameSlotInput, senderUnifiedCodewordSlotCount> slots{};
+            generatedPayloadBytesInFrame_ = 0;
+            for (std::size_t slotIndex = 0; slotIndex < slots.size(); slotIndex++)
+            {
+                const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slotIndex];
+                pbmodulation::UnifiedFrameSlotInput& slot = slots[slotIndex];
+                slot.assignment = scheduled.assignment;
+                if (scheduled.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                {
+                    slot.active = true;
+                    slot.block = scheduled.assignment.controlPriority == pbmodulation::UnifiedControlPriority::SessionDescriptor ?
+                        std::span<const std::byte>(description_.sessionControl) :
+                        scheduled.assignment.controlPriority == pbmodulation::UnifiedControlPriority::FinalManifest ?
+                        std::span<const std::byte>(description_.manifestControl) :
+                        std::span<const std::byte>(description_.segments.at(currentSegmentOrdinal_).control);
+                }
+                else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession)
+                {
+                    std::uint32_t payloadBytes = 0;
+                    const std::size_t serializedBytes = BuildTransportBlockForSlot(
+                        static_cast<std::uint32_t>(slotIndex), unifiedTransport_[slotIndex], payloadBytes);
+                    slot.active = true;
+                    slot.block = std::span(unifiedTransport_[slotIndex]).first(serializedBytes);
+                    generatedPayloadBytesInFrame_ += payloadBytes;
+                }
+            }
+            RequireResult(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, slots}, pixels_),
+                "Unified mixed-slot canonical raster generation failed");
+            return pixels_;
+        }
         if (kind != FrameKind::Data)
         {
             const std::vector<std::byte>& control = kind == FrameKind::SessionControl ?
@@ -1203,19 +1261,37 @@ public:
 
     void Advance()
     {
+        const bool unified = profile_.profile == VisualProfile::UnifiedLc4;
+        if (unified)
+        {
+            Require(static_cast<bool>(unifiedScheduler_.CommitPreparedFrame()), "Unified frame commit failed");
+            cyclePosition_ = static_cast<std::uint32_t>(unifiedScheduler_.GetSnapshot().committedFrameCount);
+            if (!unifiedScheduler_.IsComplete())
+            {
+                return;
+            }
+            if (description_.segments.empty())
+            {
+                Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
+                carouselPass_++;
+                InitializeCurrentSegment();
+                return;
+            }
+        }
         if (!description_.segments.empty())
         {
-            const SenderCarouselSchedulerStatus advanceStatus = roundScheduler_.Advance();
+            const SenderCarouselSchedulerStatus advanceStatus = unified ? SenderCarouselSchedulerStatus{} : roundScheduler_.Advance();
             Require(static_cast<bool>(advanceStatus), std::string("Sender Carousel scheduler advance failed: ") +
                 GetSenderCarouselSchedulerErrorName(advanceStatus.code));
-            if (!roundScheduler_.IsComplete())
+            if (!unified && !roundScheduler_.IsComplete())
             {
                 cyclePosition_ = static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
                 return;
             }
             if (wirehair_)
             {
-                const std::uint64_t repairIdsUsed = roundScheduler_.GetSnapshot().repairEquationCount;
+                const std::uint64_t repairIdsUsed = unified ? unifiedScheduler_.GetSnapshot().repairEquationCount :
+                    roundScheduler_.GetSnapshot().repairEquationCount;
                 const auto nextRepairId = pbprotocol::CheckedAddUint64(nextRepairIds_[currentSegmentOrdinal_],
                     repairIdsUsed);
                 RequireResult(nextRepairId, "Wirehair repair ID high-water overflow");
@@ -1249,7 +1325,7 @@ public:
 
     [[nodiscard]] CarouselSnapshot GetCarouselSnapshot() const noexcept
     {
-        const std::uint32_t position = description_.segments.empty() ? cyclePosition_ :
+        const std::uint32_t position = profile_.profile == VisualProfile::UnifiedLc4 || description_.segments.empty() ? cyclePosition_ :
             static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
         return {carouselPass_, position, cycleFrameCount_};
     }
@@ -1259,6 +1335,18 @@ public:
     }
     [[nodiscard]] std::uint32_t GetCurrentOuterBlockId() const
     {
+        if (profile_.profile == VisualProfile::UnifiedLc4)
+        {
+            for (const SenderUnifiedScheduledSlot& slot : unifiedFrame_.slots)
+            {
+                if (slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation ||
+                    slot.transportDisposition == SenderUnifiedTransportSlotDisposition::PaddingDuplicate)
+                {
+                    return CalculateOuterBlockId(slot.assignment.codewordSlot);
+                }
+            }
+            return 0;
+        }
         return GetCurrentKind() == FrameKind::Data ? CalculateOuterBlockId(0) : 0;
     }
     [[nodiscard]] std::uint32_t GetBlockCount() const noexcept
@@ -1427,6 +1515,10 @@ private:
         if (description_.segments.empty())
         {
             cycleFrameCount_ = controlFrames;
+            if (profile_.profile == VisualProfile::UnifiedLc4)
+            {
+                InitializeUnifiedScheduler();
+            }
             return;
         }
         const pbprotocol::SegmentDescriptor& descriptor =
@@ -1454,6 +1546,11 @@ private:
                 directRepeat_->GetBlockCount() <= (std::numeric_limits<std::uint32_t>::max)(),
                 "DirectRepeat block count is invalid");
             blockCount_ = static_cast<std::uint32_t>(directRepeat_->GetBlockCount());
+        }
+        if (profile_.profile == VisualProfile::UnifiedLc4)
+        {
+            InitializeUnifiedScheduler();
+            return;
         }
         SenderCarouselSchedulerConfig schedulerConfig;
         schedulerConfig.systematicBlockCount = blockCount_;
@@ -1484,6 +1581,26 @@ private:
         }
     }
 
+    void InitializeUnifiedScheduler()
+    {
+        Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
+            {blockCount_, controlRepetitions_, logicalVisualFps_, static_cast<bool>(wirehair_)}, unifiedScheduler_)),
+            "Unified Carousel scheduler creation failed");
+        unifiedFrame_ = {};
+        cyclePosition_ = 0;
+        // Wall-time Control insertion makes the exact final frame count
+        // unknowable in advance. Zero means unavailable, never an estimate.
+        cycleFrameCount_ = 0;
+        if (wirehair_ && repairLeaseCallback_)
+        {
+            const auto required = pbprotocol::CheckedAddUint64(nextRepairIds_[currentSegmentOrdinal_],
+                unifiedScheduler_.GetSnapshot().repairEquationCount);
+            RequireResult(required, "Unified repair lease overflow");
+            Require(required.Value() <= (std::numeric_limits<std::uint32_t>::max)(), "Unified repair ID space exhausted");
+            repairLeaseCallback_(currentSegmentOrdinal_, required.Value());
+        }
+    }
+
     [[nodiscard]] std::uint32_t CalculateOuterBlockId(const std::uint32_t slot) const
     {
         if (description_.segments.empty() || GetCurrentKind() != FrameKind::Data || blockCount_ == 0)
@@ -1491,6 +1608,14 @@ private:
             return 0;
         }
         Require(slot < profile_.codewords, "physical Data slot is out of bounds");
+        if (profile_.profile == VisualProfile::UnifiedLc4)
+        {
+            const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slot];
+            Require(scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation ||
+                scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::PaddingDuplicate,
+                "Control/inactive slot cannot allocate an OuterBlockId");
+            return MapEquationToOuterBlockId(scheduled.equationIndex);
+        }
         SenderScheduledFrame scheduledFrame;
         const SenderCarouselSchedulerStatus frameStatus = roundScheduler_.GetCurrentFrame(scheduledFrame);
         Require(static_cast<bool>(frameStatus) && scheduledFrame.kind == FrameKind::Data,
@@ -1500,6 +1625,11 @@ private:
             return slot % blockCount_;
         }
         const std::uint64_t equationIndex = scheduledFrame.firstEquationIndex + slot;
+        return MapEquationToOuterBlockId(equationIndex);
+    }
+
+    [[nodiscard]] std::uint32_t MapEquationToOuterBlockId(const std::uint64_t equationIndex) const
+    {
         if (!wirehair_)
         {
             return static_cast<std::uint32_t>(equationIndex % blockCount_);
@@ -1537,6 +1667,9 @@ private:
     std::uint64_t carouselPass_ = 0;
     std::uint32_t blockCount_ = 0;
     SenderCarouselScheduler roundScheduler_;
+    SenderUnifiedCarouselScheduler unifiedScheduler_;
+    SenderUnifiedScheduledFrame unifiedFrame_;
+    std::array<std::array<std::byte, informationBytes>, senderUnifiedCodewordSlotCount> unifiedTransport_{};
     std::uint32_t cycleFrameCount_ = 0;
     std::uint32_t cyclePosition_ = 0;
     std::uint64_t generatedPayloadBytesInFrame_ = 0;
@@ -4440,7 +4573,8 @@ struct DurableSenderPreparation
 
 [[nodiscard]] DurableSenderPreparation PrepareDurableSender(SourceFile& source,
     const bool compressionEnabled, const int compressionLevel, const std::uint64_t visualProfileId,
-    const std::filesystem::path& configuredSessionRoot, const std::atomic<bool>& stopRequested)
+    const std::filesystem::path& configuredSessionRoot, const std::atomic<bool>& stopRequested,
+    const PreparationProgressCallback& progress = {})
 {
     std::filesystem::path sessionStateRoot;
     const EncoderSessionStoreStatus rootStatus = ResolveEncoderSessionRoot(configuredSessionRoot, sessionStateRoot);
@@ -4474,7 +4608,7 @@ struct DurableSenderPreparation
         selectedSessionId = generatedSessionId.Value();
     }
     preparation.description = DescribeSource(source, compressionEnabled, compressionLevel,
-        visualProfileId, selectedSessionId, stopRequested);
+        visualProfileId, selectedSessionId, stopRequested, progress);
     std::vector<std::byte> descriptorBundle = BuildDescriptorBundle(preparation.description);
     if (foundPersistedSession && !preparation.sessionStore->MatchesDescriptorBundle(descriptorBundle))
     {
@@ -4487,6 +4621,7 @@ struct DurableSenderPreparation
     }
     if (!foundPersistedSession)
     {
+        Require(!stopRequested, "Stopped before durable Session creation");
         EncoderSessionStoreCreateConfig stateConfig;
         stateConfig.rootDirectory = sessionStateRoot;
         stateConfig.sourceIdentity = preparation.sourceIdentity;
@@ -5931,7 +6066,8 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("Compression level 必须位于当前支持范围 1..22");
     }
-    if (FindVisualProfileOption(config.visualProfile) == nullptr || !config.monitorClientOrigin)
+    if (FindVisualProfileOption(config.visualProfile) == nullptr ||
+        (config.visualProfile != VisualProfile::UnifiedLc4 && !config.monitorClientOrigin))
     {
         return RuntimeStatus::Failure("请选择当前真实存在的 Visual Profile 和目标 monitor");
     }
@@ -5939,6 +6075,12 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
         config.controlRepetitions > maximumControlRepetitions)
     {
         return RuntimeStatus::Failure("Logical Visual FPS 必须为 0 或 1..240，Control repetitions 必须为 1..64");
+    }
+    if (config.visualProfile == VisualProfile::UnifiedLc4 &&
+        (config.logicalVisualFps < 1 || config.logicalVisualFps > 60 || !config.compressionEnabled ||
+            config.compressionLevel != 3 || config.controlRepetitions != 4 || config.monitorSafety || config.singleMonitorFullscreen))
+    {
+        return RuntimeStatus::Failure("Unified 产品要求 1..60 Hz、自动 RAW/zstd(level 3)、Control repetitions=4，且不启用旧屏幕实验模式");
     }
     if (IsRemoteVisualProfile(config.visualProfile) &&
         (config.logicalVisualFps == 0 || config.logicalVisualFps > maximumRemoteVisualLogicalFps))
@@ -6281,6 +6423,63 @@ pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSe
     return pbcompression::CompressSegment(rawBytes, settings);
 }
 
+EncoderConfig MakeUnifiedEncoderConfig(std::wstring sourcePath, const std::uint32_t logicalVisualFps,
+    const std::optional<pbrenderd3d::PhysicalPoint> clientOrigin)
+{
+    EncoderConfig config;
+    config.sourcePath = std::move(sourcePath);
+    config.visualProfile = VisualProfile::UnifiedLc4;
+    config.compressionEnabled = true;
+    config.compressionLevel = 3;
+    config.controlRepetitions = 4;
+    config.logicalVisualFps = logicalVisualFps;
+    config.monitorClientOrigin = clientOrigin;
+    return config;
+}
+
+namespace
+{
+
+class NativeEncoderPresentation final : public EncoderPresentation
+{
+public:
+    explicit NativeEncoderPresentation(const pbrenderd3d::DataWindowConfig& config)
+    {
+        auto created = pbrenderd3d::DataWindow::Create(config);
+        Require(static_cast<bool>(created), "DataWindow creation failed: " + DescribePresentationStatus(created.Error()));
+        window_ = std::move(created).Value();
+    }
+    [[nodiscard]] pbrenderd3d::DataWindowSnapshot GetSnapshot() const override
+    {
+        return window_->GetSnapshot();
+    }
+    [[nodiscard]] pbrenderd3d::PresentationStatus SubmitFrame(const pbrenderd3d::CanonicalBgraFrameView& frame) override
+    {
+        return window_->SubmitFrame(frame);
+    }
+    void RequestStop() noexcept override
+    {
+        window_->RequestStop();
+    }
+    void Stop() noexcept override
+    {
+        window_->Stop();
+    }
+private:
+    std::unique_ptr<pbrenderd3d::DataWindow> window_;
+};
+
+} // namespace
+
+EncoderRuntime::EncoderRuntime(EncoderPresentationFactory presentationFactory) :
+    presentationFactory_(presentationFactory ? std::move(presentationFactory) :
+        EncoderPresentationFactory{[](const pbrenderd3d::DataWindowConfig& config)
+        {
+            return std::make_unique<NativeEncoderPresentation>(config);
+        }})
+{
+}
+
 EncoderRuntime::~EncoderRuntime()
 {
     Stop();
@@ -6325,8 +6524,8 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     initial.runStartedUnixMilliseconds = GetUnixTimeMilliseconds();
     initial.sourcePath = std::move(sourcePathUtf8);
     initial.visualProfile = config.visualProfile;
-    initial.dataWindowLeft = config.monitorClientOrigin->x;
-    initial.dataWindowTop = config.monitorClientOrigin->y;
+    initial.dataWindowLeft = config.monitorClientOrigin ? config.monitorClientOrigin->x : 0;
+    initial.dataWindowTop = config.monitorClientOrigin ? config.monitorClientOrigin->y : 0;
     initial.singleMonitorFullscreen = config.singleMonitorFullscreen.has_value();
     if (config.singleMonitorFullscreen)
     {
@@ -6464,6 +6663,54 @@ EncoderSnapshot EncoderRuntime::GetSnapshot() const
     return snapshot_.Get();
 }
 
+RuntimeStatus EncoderRuntime::EndAndDeleteSession(const std::uint64_t expectedRunGeneration) noexcept
+{
+    try
+    {
+        const std::scoped_lock lock(lifecycleMutex_);
+        const EncoderSnapshot current = snapshot_.Get();
+        if (current.runGeneration != expectedRunGeneration || expectedRunGeneration == 0 ||
+            IsEncoderStateActive(current.state) || current.sessionIdHex.empty() || current.sessionStateDirectory.empty())
+        {
+            return RuntimeStatus::Failure("请先停止当前广播；Session 已改变或尚未完成预扫描时不能删除");
+        }
+        if (worker_.joinable())
+        {
+            worker_.join();
+        }
+        if (current.sessionDeleted)
+        {
+            return {};
+        }
+        const std::filesystem::path sessionDirectory(std::u8string(
+            current.sessionStateDirectory.begin(), current.sessionStateDirectory.end()));
+        if (sessionDirectory.filename() != std::filesystem::path(current.sessionIdHex))
+        {
+            return RuntimeStatus::Failure("Session 目录与当前 SessionId 不一致");
+        }
+        const EncoderSessionStoreStatus deleted = EncoderSessionStore::EndAndDelete(
+            sessionDirectory.parent_path(), current.sessionIdHex);
+        if (!deleted)
+        {
+            return RuntimeStatus::Failure(deleted.message);
+        }
+        snapshot_.Update([](EncoderSnapshot& value)
+        {
+            value.sessionDeleted = true;
+            value.statusMessage = "会话已显式结束并删除；源文件未修改。再次开始将建立新 Session。";
+        });
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("无法结束并删除 Encoder Session");
+    }
+}
+
 void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration) noexcept
 {
     WorkerRunningGuard runningGuard(workerRunning_);
@@ -6524,10 +6771,42 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             return;
         }
         const ProfileBinding profile = GetProfileBinding(config.visualProfile);
+        const auto preparationStarted = std::chrono::steady_clock::now();
+        snapshot_.Update([&](EncoderSnapshot& value)
+        {
+            value.sourceBytes = source.fileBytes;
+            value.segmentCount = CalculateSegmentCount(source.fileBytes);
+            value.visualProfileId = profile.visualProfileId;
+            value.visualLayoutVersion = profile.layoutVersion;
+        });
         DurableSenderPreparation preparation = PrepareDurableSender(source, config.compressionEnabled,
-            config.compressionLevel, profile.visualProfileId, config.sessionStateRoot, stopRequested_);
+            config.compressionLevel, profile.visualProfileId, config.sessionStateRoot, stopRequested_,
+            [&](const std::uint64_t preparedBytes, const std::uint64_t preparedSegments, const bool complete)
+            {
+                const double elapsedSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - preparationStarted).count();
+                snapshot_.Update([&](EncoderSnapshot& value)
+                {
+                    value.preparedSourceBytes = preparedBytes;
+                    value.preparedSegmentCount = preparedSegments;
+                    value.preparationMilliseconds = ElapsedMilliseconds(preparationStarted);
+                    value.preparationBytesPerSecond = elapsedSeconds > 0 ?
+                        std::optional<double>{static_cast<double>(preparedBytes) / elapsedSeconds} : std::nullopt;
+                    value.preparationComplete = complete;
+                    value.sourceStabilityVerified = complete;
+                    value.statusMessage = complete ? "预扫描及源文件一致性校验通过，正在准备持久 Session" : "正在预扫描源文件，尚未打开编码窗口";
+                });
+            });
         TransferDescription description = std::move(preparation.description);
         std::unique_ptr<EncoderSessionStore> sessionStore = std::move(preparation.sessionStore);
+        snapshot_.Update([&](EncoderSnapshot& value)
+        {
+            value.sessionIdHex = SessionIdHex(description.session.sessionId);
+            value.sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId).value;
+            value.wholeFileDigestHex = DigestHex(description.manifest.wholeFileDigest.bytes);
+            value.resumedSession = sessionStore->WasResumed();
+            value.sessionStateDirectory = Utf8FromWide(sessionStore->GetSessionDirectory().wstring());
+            value.sessionStateGeneration = sessionStore->GetGeneration();
+        });
         if (stopRequested_)
         {
             snapshot_.Update([runGeneration](EncoderSnapshot& value)
@@ -6606,6 +6885,17 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.outerBlockCount = builder.GetBlockCount();
             value.cycleFrameCount = initialCarousel.cycleFrameCount;
             value.segmentCount = description.session.segmentCount;
+            for (const auto& segment : description.segments)
+            {
+                if (segment.descriptor.compressionCodec == pbprotocol::CompressionCodec::Zstandard)
+                {
+                    value.zstdSegmentCount++;
+                }
+                else
+                {
+                    value.rawSegmentCount++;
+                }
+            }
             value.statusMessage = "Creating the production D3D11 Data Window";
         });
         if (stopRequested_)
@@ -6642,14 +6932,11 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         windowConfig.width = presentationWidth;
         windowConfig.height = presentationHeight;
         windowConfig.clientOrigin = config.monitorClientOrigin;
-        windowConfig.repeatActiveFrame = config.visualProfile == VisualProfile::RemoteVisualLowFps;
+        windowConfig.repeatActiveFrame = config.visualProfile == VisualProfile::RemoteVisualLowFps ||
+            config.visualProfile == VisualProfile::UnifiedLc4;
         windowConfig.topmost = config.singleMonitorFullscreen.has_value();
-        auto created = pbrenderd3d::DataWindow::Create(windowConfig);
-        if (!created)
-        {
-            throw RuntimeFailure("DataWindow creation failed: " + DescribePresentationStatus(created.Error()));
-        }
-        std::unique_ptr<pbrenderd3d::DataWindow> window = std::move(created).Value();
+        std::unique_ptr<EncoderPresentation> window = presentationFactory_(windowConfig);
+        Require(window != nullptr, "Encoder presentation factory returned no window owner");
         std::uint64_t frameSequence = sessionStore->GetFrameSequenceStart();
         std::uint64_t generatedLogicalFrameCount = 0;
         std::uint64_t generatedPayloadBytes = 0;
@@ -6818,9 +7105,9 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             bool logicalFrameReady = !useUnifiedLogicalClock &&
                 (logicalFrameInterval == std::chrono::steady_clock::duration::zero() || now >= nextLogicalFrameAt);
             bool canBuild = presentationStable && windowSnapshot.state == pbrenderd3d::WindowState::Running && !frameBuilt;
+            SenderLogicalFrameTick logicalTick;
             if (canBuild && useUnifiedLogicalClock)
             {
-                SenderLogicalFrameTick logicalTick;
                 const SenderCarouselSchedulerStatus acquireStatus = logicalFrameClock.Acquire(
                     GetSteadyNanoseconds(now), logicalTick);
                 Require(static_cast<bool>(acquireStatus), std::string("runtime logical clock acquire failed: ") +
@@ -6834,7 +7121,13 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 const EncoderSessionStoreStatus frameLeaseStatus = sessionStore->EnsureFrameSequenceLease(frameSequence + 1);
                 Require(static_cast<bool>(frameLeaseStatus),
                     "Encoder FrameSequence durable lease failed: " + frameLeaseStatus.message);
-                static_cast<void>(builder.Build(frameSequence));
+                snapshot_.Update([&](EncoderSnapshot& value)
+                {
+                    value.sessionStateGeneration = sessionStore->GetGeneration();
+                    value.durableFrameSequenceLeaseEnd = sessionStore->GetFrameSequenceLeaseEnd();
+                    value.durableRepairIdLeaseEnd = sessionStore->GetRepairIdLeaseEnd(builder.GetCurrentSegmentOrdinal());
+                });
+                static_cast<void>(builder.Build(frameSequence, logicalTick.logicalTickOrdinal, GetSteadyNanoseconds(now)));
                 if (config.singleMonitorFullscreen)
                 {
                     ComposeRemoteVisualFullscreenBgra(builder.GetBuiltPixels(), presentationWidth,
@@ -7015,9 +7308,9 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 {
                     return;
                 }
-                value.state = EncoderState::Failed;
+                value.state = stopRequested_ && value.sessionIdHex.empty() ? EncoderState::Stopped : EncoderState::Failed;
                 value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
-                value.statusMessage = "Encoder failed";
+                value.statusMessage = value.state == EncoderState::Stopped ? "预扫描已停止，未建立新 Session 或编码窗口" : "Encoder failed";
                 value.errorDetail = exception.what();
                 value.sourceStable = sourceStable;
                 if (config.visualProfile == VisualProfile::RemoteVisualLowFps)
