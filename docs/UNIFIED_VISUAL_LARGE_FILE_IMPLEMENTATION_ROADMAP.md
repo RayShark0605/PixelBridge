@@ -838,6 +838,8 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G21 — 真实远程像素链
 
+**状态（2026-09-05）：** PARTIAL / 接收准备完成、真实远程恢复未开始。前置 G20 `e94da7f` 已提交；用户回报远程 Encoder 的 `00_Check.bat` 加载与提交身份检查通过，未生成 source 或广播。用户批准专用测试构建接收入口：`PBUnifiedRemoteGate` 复用完整生产 `DecoderRuntime`/Auto，无产品 CLI/Replay/monitor 接口变更，外层严格限定 DISPLAY2。最小 build/无捕获策略及参数负例/只读 monitor preflight 通过，未执行 full CTest 或实屏恢复；1 MiB、64 MiB、Base/chroma、外部摘要及 16 KiB 硬门仍待验收。操作顺序、冻结交付与证据边界见 [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md)。G22 未开始。
+
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。
 
