@@ -271,7 +271,9 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     {
         const uint2 tileOrigin = origin + uint2((tileOrdinal & 31) * 4, (tileOrdinal >> 5) * 4);
         const uint mask = SymbolMasks[GetPhaseLabel(pilot, tileOrdinal, phase)];
-        [unroll]
+        // Keep the bounded sampling loop compact: expanding ReadSample sixteen
+        // times makes shader initialization dominate the first-frame deadline.
+        [loop]
         for (uint chip = 0; chip < 16; chip++)
         {
             float3 sample = 0.0;

@@ -4591,11 +4591,12 @@ void ValidateReplayProductionCapture(const pbrealcapturereplay::ReplayV2Capture&
         raster.rowPitch, raster.pixelFormat, raster.pixels});
 }
 
-[[nodiscard]] pbdemodd3d11::CaptureDemodulatorResult RunReplayProductionDemod(
+void RunReplayProductionDemod(
     const std::shared_ptr<pbdemodd3d11::CaptureDemodulator>& demodulator,
     ID3D11Device* const device, ID3D11DeviceContext* const context,
     const pbcapturenormalize::ScreenCaptureFrameMetadata& metadata,
-    const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture)
+    const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture,
+    std::array<pbdemodd3d11::CaptureDemodulatorResult, 2>& results)
 {
     Require(demodulator != nullptr && device != nullptr && context != nullptr && texture != nullptr,
         "Offline Replay demod received an invalid production binding");
@@ -4629,13 +4630,11 @@ void ValidateReplayProductionCapture(const pbrealcapturereplay::ReplayV2Capture&
             DescribeCaptureStatus(completion.status));
         if (!completion.gpuWorkSubmitted)
         {
-            pbdemodd3d11::CaptureDemodulatorResult result;
-            Require(demodulator->TakeResult(result),
+            Require(demodulator->TakeResult(results[0]),
                 "Offline Replay production CaptureDemodulator emitted no result for a completed capture");
-            pbdemodd3d11::CaptureDemodulatorResult unexpectedResult;
-            Require(!demodulator->TakeResult(unexpectedResult),
+            Require(!demodulator->TakeResult(results[1]),
                 "Offline Replay production CaptureDemodulator emitted multiple results for one capture");
-            return result;
+            return;
         }
     }
 
@@ -4683,6 +4682,9 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
     std::optional<pbcapturenormalize::ScreenCaptureDomain> activeDomain;
     std::vector<pbrealcapturereplay::ReplayV2DemodObservationView> actualObservations;
     actualObservations.reserve(config.replayMaximumCaptureFrames);
+    // Shared demod results include all Unified slots even for legacy Replay.
+    // Keep both result checks off the nested GPU/LDPC stack, allocated once per run.
+    const auto demodResultsScratch = std::make_unique<std::array<pbdemodd3d11::CaptureDemodulatorResult, 2>>();
     std::uint64_t receiverCaptureEpoch = 0;
     std::uint64_t captureFrames = 0;
     std::uint64_t demodResults = 0;
@@ -4783,8 +4785,9 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
         metadata.timestamp.monotonic100ns = CurrentQpc100ns();
         metadata.timestamp.arrivalQpc100ns = metadata.timestamp.monotonic100ns;
         auto texture = CreateReplayTexture(replayDevice->device.Get(), record.capture.capturedRoi);
-        const pbdemodd3d11::CaptureDemodulatorResult result = RunReplayProductionDemod(demodulator,
-            replayDevice->device.Get(), replayDevice->context.Get(), metadata, texture);
+        RunReplayProductionDemod(demodulator, replayDevice->device.Get(), replayDevice->context.Get(),
+            metadata, texture, *demodResultsScratch);
+        const auto& result = (*demodResultsScratch)[0];
         const ReceiverProcessResult receiverResult = pipeline.Process(result);
         actualObservations.push_back(MakeReplayDemodObservation(result, profile.visualProfileId, receiverResult));
         demodResults++;
@@ -6238,6 +6241,7 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReplay(const std:
 
         std::uint64_t captureObservation = 0;
         std::uint64_t duplicateSuppressedResults = 0;
+        const auto demodResultsScratch = std::make_unique<std::array<pbdemodd3d11::CaptureDemodulatorResult, 2>>();
         const auto ProcessFrame = [&](const std::span<const std::byte> pixels)
         {
             captureObservation++;
@@ -6277,8 +6281,9 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReplay(const std:
             const pbrealcapturereplay::ReplayRasterView raster{phase1CanvasWidth, phase1CanvasHeight,
                 phase1CanvasWidth * 4, DXGI_FORMAT_B8G8R8A8_UNORM, pixels};
             const auto texture = CreateReplayTexture(replayDevice.device.Get(), raster);
-            const pbdemodd3d11::CaptureDemodulatorResult demodResult = RunReplayProductionDemod(demodulator,
-                replayDevice.device.Get(), replayDevice.context.Get(), metadata, texture);
+            RunReplayProductionDemod(demodulator, replayDevice.device.Get(), replayDevice.context.Get(),
+                metadata, texture, *demodResultsScratch);
+            const auto& demodResult = (*demodResultsScratch)[0];
             const ReceiverProcessResult processResult = pipeline.Process(demodResult);
             recorder->RecordDemodObservation(MakeReplayDemodObservation(
                 demodResult, profile.visualProfileId, processResult));
@@ -8069,8 +8074,9 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, outerBlockBytes);
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
-        ReceiverPipeline pipeline(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
+        const auto pipelineOwner = std::make_unique<ReceiverPipeline>(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
             started, config.visualProfile, replayReader != nullptr, true, false, &largeOutputConfirmation_);
+        auto& pipeline = *pipelineOwner;
 
         const pbdemodd3d11::CaptureDemodulatorConfig demodConfig = MakeCaptureDemodulatorConfig(
             config, profile, replayReader != nullptr);
@@ -8183,6 +8189,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         std::uint64_t receiverCaptureEpoch = 1;
         auto nextMonitorSafetyCheck = started;
         std::optional<std::chrono::steady_clock::time_point> replayTailDeadline;
+        // A stack local here reserves its large Unified result even in the
+        // early-return offline branch. One run-owned buffer also bounds live reuse.
+        const auto resultStorage = std::make_unique<pbdemodd3d11::CaptureDemodulatorResult>();
+        auto& result = *resultStorage;
         for (;;)
         {
             const auto now = std::chrono::steady_clock::now();
@@ -8244,7 +8254,6 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 pipeline.CaptureEpochReset(ElapsedMilliseconds(started));
             }
             std::uint32_t drained = 0;
-            pbdemodd3d11::CaptureDemodulatorResult result;
             while (!stopRequested_ && drained < pbdemodd3d11::maximumCaptureDemodResultQueue &&
                 demodulator->TakeResult(result))
             {

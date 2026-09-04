@@ -803,6 +803,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G20 — CP-C：最终 Release、ASan 与 DISPLAY2 native Gate
 
+**状态：** 进行中，不能关闭或进入 G21（2026-09-04）。前置 G19 `8c7cab5` 与 source/worker seals 已验证。首次全构建发现旧 Golden 测试的 `ProtocolResult<size_t>` 调用遗漏并最小修正；唯一完整 Release CTest 为 206/215，9 项失败。CDB 动态异常与编译 prologue 确认 offline Replay 大型按值结果/运行对象嵌套耗尽 1 MiB worker stack；两轮改为私有 run-owned 双缓冲、pipeline 和 live result 后，Release 五层固定栈预留由 1,330,904 降至 632,832 bytes，未调大 PE reserve。另以单变量实验定位 Unified phase shader 强制展开的编译开销，仅改固定 16 次循环为 `[loop]`；最终 Release 三个 Replay case 全过，原栈溢出 case 在 ASan 也以原 30 秒期限通过，但另两例 ASan 15 秒 deadline 仍失败。parser/resume/storage 定向 ASan 已通过；改变 shader 后的 Unified WARP/AMD/NVIDIA parity 和最终发布两例通过，错误接受/冲突输出为 0，指标仍满足原门槛。其他历史工具、capture/demod 回归尚未清零。当前右屏只有 2560×1440，无法完全容纳固定 1920×1080 raster 的 2.0x，已提问且未自行豁免/改变显示设置；所有 native Gate 尚未运行。详细台账及 source/executable seals 见 `UNIFIED_LOCAL_RELEASE_GATE.md`；不重复 full CTest，不修改历史 Golden bytes/pins。
 **前置：** G19，所有 Critical/High 已清零。
 **目的：** 只在此时执行一次完整本机构建/回归与真实右屏产品链。
 

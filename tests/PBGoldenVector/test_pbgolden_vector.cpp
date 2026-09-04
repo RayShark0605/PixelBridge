@@ -350,8 +350,9 @@ TEST_CASE("GoldenVector: descriptor payloads are Serialize/Parse "
         pbprotocol::GetDefaultReceiverResourcePolicy());
     REQUIRE(static_cast<bool>(session));
     // Serialize the parsed descriptor back and compare byte-for-byte.
-    std::vector<std::byte> serialized(pbprotocol::GetSerializedSize(
-        session.Value()));
+    const auto serializedSize = pbprotocol::GetSerializedSize(session.Value());
+    REQUIRE(static_cast<bool>(serializedSize));
+    std::vector<std::byte> serialized(serializedSize.Value());
     REQUIRE(static_cast<bool>(pbprotocol::SerializeSessionDescriptor(
         session.Value(), std::span<std::byte>(serialized))));
     REQUIRE(serialized == sessionPayload);
