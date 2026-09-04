@@ -103,6 +103,11 @@ struct OutputFileSnapshot
     bool hasPendingWrite = false;
     bool published = false;
     bool recoveredPublished = false;
+    // null = not observed in this object; false = attempted phase failed.
+    // Recovered publication observes the final digest, not the prior rename.
+    std::optional<bool> wholeFileDigestVerified;
+    std::optional<bool> finalRenameSucceeded;
+    std::optional<bool> finalReopenVerified;
     bool preallocationAttempted = false;
     bool preallocationFullyAllocated = false;
     bool fileSparse = false;

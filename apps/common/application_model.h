@@ -2,6 +2,7 @@
 
 #include "pbprotocol/protocol_types.h"
 #include "pbmodulation/visual_temporal.h"
+#include "pbtelemetry/unified_telemetry.h"
 
 #include <cstdint>
 #include <limits>
@@ -213,6 +214,10 @@ struct EncoderSnapshot
     std::uint64_t preparationMilliseconds = 0;
     std::optional<double> preparationBytesPerSecond;
     bool preparationComplete = false;
+    std::optional<std::uint64_t> resumeVerificationMilliseconds;
+    std::uint64_t submittedControlSlots = 0;
+    std::uint64_t submittedLogicalFrames = 0;
+    bool controlSlotCounterOverflow = false;
     bool sourceStabilityVerified = false;
     std::uint64_t rawSegmentCount = 0;
     std::uint64_t zstdSegmentCount = 0;
@@ -339,6 +344,13 @@ struct DecoderSnapshot
     bool descriptorKnown = false;
     std::string originalFileNameUtf8;
     std::uint64_t verifiedSegmentCount = 0;
+    std::optional<std::uint64_t> verifiedEncodedSegmentBytes;
+    std::optional<std::uint64_t> resumeVerificationMilliseconds;
+    std::optional<bool> resumeVerificationSucceeded;
+    std::optional<bool> wholeFileDigestCheck;
+    std::optional<bool> finalRenameSucceeded;
+    std::optional<bool> finalReopenVerified;
+    pbtelemetry::UnifiedTelemetrySnapshot unifiedTelemetry;
     std::string geometryStatus = "WaitingForBootstrap";
     std::uint64_t originalFileBytes = 0;
     LargeOutputConfirmationState largeOutputConfirmationState = LargeOutputConfirmationState::NotRequired;

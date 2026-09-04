@@ -1361,6 +1361,14 @@ public:
     {
         return generatedPayloadBytesInFrame_;
     }
+    [[nodiscard]] std::uint32_t GetControlSlotsInFrame() const noexcept
+    {
+        return profile_.profile == VisualProfile::UnifiedLc4 ? static_cast<std::uint32_t>(std::ranges::count_if(
+            unifiedFrame_.slots, [](const SenderUnifiedScheduledSlot& slot)
+            {
+                return slot.assignment.kind == pbmodulation::UnifiedSlotKind::Control;
+            })) : 0;
+    }
     [[nodiscard]] std::uint64_t GetCurrentSegmentOrdinal() const noexcept
     {
         return currentSegmentOrdinal_;
@@ -2692,6 +2700,10 @@ public:
             bootstrap.sessionTag.value);
         if (identityDisposition == VisualIdentityDisposition::Invalid)
         {
+            if (visualProfile_ == VisualProfile::UnifiedLc4)
+            {
+                unifiedTelemetry_.InvalidateFrameCoverage();
+            }
             UpdateVisualSnapshot();
             UpdateTelemetrySnapshot();
             return {};
@@ -3088,9 +3100,22 @@ private:
                 }
             }
         });
-        if (identityDisposition == VisualIdentityDisposition::Reordered ||
-            result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly)
+        if (identityDisposition == VisualIdentityDisposition::Reordered)
         {
+            unifiedTelemetry_.InvalidateFrameCoverage();
+            return {};
+        }
+        if (result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly)
+        {
+            if (session_ || pendingSession_)
+            {
+                const auto status = unifiedTelemetry_.BindSession(bootstrap.sessionTag.value);
+                if (!status || !unifiedTelemetry_.RecordUnavailableFrame(bootstrap,
+                    result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns))
+                {
+                    unifiedTelemetry_.InvalidateFrameCoverage();
+                }
+            }
             return {};
         }
         Require(result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame &&
@@ -3104,12 +3129,24 @@ private:
             "Unified same-frame demodulation identity mismatch");
         Require(demodulation.acceptedUnifiedBlockCount <= demodulation.acceptedUnifiedBlocks.size(),
             "Unified accepted-block count exceeds the fixed slot capacity");
+        const bool telemetrySessionKnown = session_.has_value() || pendingSession_.has_value();
+        if (telemetrySessionKnown)
+        {
+            RecordUnifiedObservation(result);
+        }
         if (!demodulation.unifiedObservation.IsFrameAvailable())
         {
             Require(demodulation.acceptedUnifiedBlockCount == 0, "erased Unified frame emitted accepted bytes");
             return {};
         }
-        if (!unifiedFrameIdentity_ || identityDisposition == VisualIdentityDisposition::Unique)
+        // Bootstrap-only/erased observations can advance the cadence tracker
+        // before the first usable result. Promote only a newer retained-frame
+        // identity; an ordinary same-frame duplicate must keep conflict state.
+        const bool firstAvailableNewerFrame = unifiedFrameIdentity_ &&
+            identityDisposition == VisualIdentityDisposition::Duplicate &&
+            unifiedFrameIdentity_->sessionTag == bootstrap.sessionTag &&
+            bootstrap.frameSequence > unifiedFrameIdentity_->frameSequence;
+        if (!unifiedFrameIdentity_ || identityDisposition == VisualIdentityDisposition::Unique || firstAvailableNewerFrame)
         {
             unifiedFrameIdentity_ = bootstrap;
             unifiedFrameBlocks_ = {};
@@ -3183,6 +3220,10 @@ private:
         // even if a backend returned the compact accepted array in another order.
         for (std::uint32_t pass = 0; pass < 3; pass++)
         {
+            if (pass == 1 && !telemetrySessionKnown && (session_ || pendingSession_))
+            {
+                RecordUnifiedObservation(result);
+            }
             for (std::uint32_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
             {
                 if (!unifiedFrameBlocks_[slot] || unifiedFrameAdmitted_[slot] || published_)
@@ -3226,6 +3267,18 @@ private:
                 result.metadata.timestamp.monotonic100ns, bootstrap.sessionTag.value));
         }
         return processing;
+    }
+
+    void RecordUnifiedObservation(const pbdemodd3d11::CaptureDemodulatorResult& result)
+    {
+        const auto status = unifiedTelemetry_.BindSession(result.demodulation.unifiedObservation.bootstrapRecord.sessionTag.value);
+        if (!status || !unifiedTelemetry_.Record(result.demodulation.unifiedObservation,
+            result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns))
+        {
+            unifiedTelemetry_.InvalidateFrameCoverage();
+        }
+        // Evidence health can withdraw a metric; it must not change admission.
+        UpdateTelemetrySnapshot();
     }
 
     static void RequireTelemetry(const pbtelemetry::TelemetryStatus status, const char* const operation)
@@ -3406,6 +3459,9 @@ private:
         output.outputVolumeSupportsCompression = storage.volumeSupportsCompression;
         output.outputVolumeCompressed = storage.volumeCompressed;
         output.outputRecoveredAfterPublish = storage.recoveredPublished;
+        output.wholeFileDigestCheck = storage.wholeFileDigestVerified;
+        output.finalRenameSucceeded = storage.finalRenameSucceeded;
+        output.finalReopenVerified = storage.finalReopenVerified;
     }
 
     void CompleteRecoveredPublish(const DecoderResumeLoadedState& loadedResume,
@@ -3453,6 +3509,7 @@ private:
             value.outputPath = completion_.outputPath;
             value.resumeStateLoaded = true;
             value.outputRecoveredAfterPublish = true;
+            value.verifiedEncodedSegmentBytes.reset();
             value.recoveryRuntimeMilliseconds = completion_.recoveryRuntimeMilliseconds;
             ApplyOutputAllocationSnapshot(storageSnapshot, value);
             value.statusMessage = deferCompletedState_ ?
@@ -3469,6 +3526,7 @@ private:
         const std::int64_t timestamp100ns, const LargeOutputConfirmationState confirmationState)
     {
         Require(!session_ && !storage_ && !resumeStore_, "Session output state was initialized more than once");
+        const auto verificationStarted = std::chrono::steady_clock::now();
         session_ = session;
         Require(progress_.BindDescriptor(session_->originalFileSize, ElapsedMilliseconds(started_)),
             "Decoder progress descriptor binding failed");
@@ -3517,6 +3575,7 @@ private:
             value.descriptorKnown = true;
             value.originalFileBytes = session_->originalFileSize;
             value.originalFileNameUtf8 = session_->fileNameUtf8;
+            value.verifiedEncodedSegmentBytes = 0;
             value.remainingRawBytes = session_->originalFileSize;
             value.recoveryProgress = session_->originalFileSize == 0 ? 1.0 : 0.0;
             value.sessionIdHex = SessionIdHex(session_->sessionId);
@@ -3536,13 +3595,33 @@ private:
                 "Session Descriptor accepted; verifying resumable state" :
                 "Session Descriptor accepted; receiving Control";
         });
-        if (storageSnapshot.recoveredPublished)
+        if (storageSnapshot.recoveredPublished || loadedResume.resumed)
         {
-            CompleteRecoveredPublish(loadedResume, storageSnapshot);
-        }
-        else if (loadedResume.resumed)
-        {
-            RestoreResumeState(loadedResume, timestamp100ns);
+            try
+            {
+                if (storageSnapshot.recoveredPublished)
+                {
+                    CompleteRecoveredPublish(loadedResume, storageSnapshot);
+                }
+                else
+                {
+                    RestoreResumeState(loadedResume, timestamp100ns);
+                }
+            }
+            catch (...)
+            {
+                snapshot_.Update([&](DecoderSnapshot& value)
+                {
+                    value.resumeVerificationMilliseconds = ElapsedMilliseconds(verificationStarted);
+                    value.resumeVerificationSucceeded = false;
+                });
+                throw;
+            }
+            snapshot_.Update([&](DecoderSnapshot& value)
+            {
+                value.resumeVerificationMilliseconds = ElapsedMilliseconds(verificationStarted);
+                value.resumeVerificationSucceeded = true;
+            });
         }
     }
 
@@ -4117,6 +4196,11 @@ private:
         const DecoderResumeStoreStatus intentStatus = resumeStore_->RecordPublishIntent(manifest_->wholeFileDigest);
         Require(static_cast<bool>(intentStatus), "durable publish intent failed: " + intentStatus.message);
         const auto publishStatus = storage_->Publish(manifest_->wholeFileDigest);
+        const auto publishSnapshot = storage_->GetSnapshot();
+        snapshot_.Update([&](DecoderSnapshot& value)
+        {
+            ApplyOutputAllocationSnapshot(publishSnapshot, value);
+        });
         Require(static_cast<bool>(publishStatus), "WholeFileDigest/final publish failed: " +
             DescribeStorageStatus(publishStatus));
         completion_.outputPath = std::move(outputPath);
@@ -4168,6 +4252,7 @@ private:
             value.originalFileBytes = progress.totalRawBytes;
             value.verifiedRawBytes = progress.verifiedRawBytes;
             value.verifiedSegmentCount = completedSegmentCount_;
+            value.verifiedEncodedSegmentBytes = storedEncodedBytes_;
             value.remainingRawBytes = progress.remainingRawBytes;
             value.recoveryProgress = progress.progress;
             value.instantVerifiedRawGoodputBytesPerSecond = progress.instantBytesPerSecond;
@@ -4188,7 +4273,8 @@ private:
             {
                 return;
             }
-            value.uniqueVisualFps = visual.framesPerSecond;
+            value.uniqueVisualFps = visualProfile_ == VisualProfile::UnifiedLc4 ?
+                unifiedTelemetry_.GetSnapshot().uniqueVisualFps : visual.framesPerSecond;
             value.admittedFrameSequenceFps = visual.framesPerSecond;
             value.duplicateFrameSequences = visual.duplicateFrames;
             value.reorderedFrameSequences = visual.reorderedFrames;
@@ -4299,6 +4385,7 @@ private:
             value.remoteFreshnessErasedDataMetricRate = telemetry.remoteFreshnessErasedDataMetricRate;
             value.verifiedEncodedBytes = telemetry.verifiedEncodedBytes;
             value.verifiedEncodedGoodputBitsPerSecond = telemetry.verifiedEncodedGoodputBitsPerSecond;
+            value.unifiedTelemetry = unifiedTelemetry_.GetSnapshot();
         });
     }
 
@@ -4330,6 +4417,7 @@ private:
     ChannelStallTracker channelStalls_;
     RemoteDuplicateRefinementGate remoteRefinement_;
     pbtelemetry::TelemetryAccumulator telemetry_;
+    pbtelemetry::UnifiedTelemetryAccumulator unifiedTelemetry_;
     std::uint64_t storedEncodedBytes_ = 0;
     std::uint64_t totalVerifiedRawBytes_ = 0;
     std::uint64_t completedSegmentCount_ = 0;
@@ -7049,6 +7137,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId).value;
             value.wholeFileDigestHex = DigestHex(description.manifest.wholeFileDigest.bytes);
             value.resumedSession = sessionStore->WasResumed();
+            if (value.resumedSession)
+            {
+                value.resumeVerificationMilliseconds = ElapsedMilliseconds(preparationStarted);
+            }
             value.sessionStateDirectory = Utf8FromWide(sessionStore->GetSessionDirectory().wstring());
             value.sessionStateGeneration = sessionStore->GetGeneration();
         });
@@ -7417,6 +7509,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     RequireResult(nextGeneratedPayloadBytes, "generated payload telemetry overflow");
                     generatedPayloadBytes = nextGeneratedPayloadBytes.Value();
                     const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                    const std::uint32_t submittedControlSlots = builder.GetControlSlotsInFrame();
                     const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
                     if (useUnifiedLogicalClock)
                     {
@@ -7462,6 +7555,17 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                             return;
                         }
                         value.broadcastRuntimeMilliseconds = broadcastMilliseconds;
+                        if (profile.profile == VisualProfile::UnifiedLc4)
+                        {
+                            const auto controlSlots = pbprotocol::CheckedAddUint64(value.submittedControlSlots, submittedControlSlots);
+                            const auto logicalFrames = pbprotocol::CheckedAddUint64(value.submittedLogicalFrames, 1);
+                            value.controlSlotCounterOverflow |= !controlSlots || !logicalFrames;
+                            if (controlSlots && logicalFrames)
+                            {
+                                value.submittedControlSlots = controlSlots.Value();
+                                value.submittedLogicalFrames = logicalFrames.Value();
+                            }
+                        }
                         value.cycleCount = carouselAfter.cycleCount;
                         value.cyclePosition = carouselAfter.cyclePosition;
                         value.cycleFrameCount = carouselAfter.cycleFrameCount;

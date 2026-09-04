@@ -1538,6 +1538,18 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     const UnifiedVisualDecodePolicy& policy) noexcept
 {
     Implementation& state = *implementation_;
+    for (const UnifiedSoftMetric& metric : state.metrics)
+    {
+        const std::size_t laneIndex = metric.lane == UnifiedLane::BaseLuma ? 0 : metric.lane == UnifiedLane::FineLuma ? 1 : 2;
+        auto& summary = observation.laneMetrics[laneIndex];
+        const auto magnitude = static_cast<std::uint32_t>(std::abs(static_cast<std::int32_t>(metric.value)));
+        summary.minimumAbsoluteMetric = summary.samples == 0 ? magnitude : std::min(summary.minimumAbsoluteMetric, magnitude);
+        summary.available = true;
+        summary.samples++;
+        summary.zeroMetrics += static_cast<std::uint32_t>(magnitude == 0);
+        summary.erasedMetrics += static_cast<std::uint32_t>(metric.erasureReason != UnifiedErasureReason::None);
+        summary.absoluteMetricSum += magnitude;
+    }
     state.acceptedCount = 0;
     state.decodedInformationValid.fill(false);
     std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> assignmentsBySlot{};

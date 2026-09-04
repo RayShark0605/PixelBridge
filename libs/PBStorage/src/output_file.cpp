@@ -420,6 +420,9 @@ struct OutputFile::Implementation
     bool ownsPart = false;
     bool published = false;
     bool recoveredPublished = false;
+    std::optional<bool> wholeFileDigestVerified;
+    std::optional<bool> finalRenameSucceeded;
+    std::optional<bool> finalReopenVerified;
 };
 
 StorageStatus StorageStatus::Failure(const StorageErrorCode code, const StorageStage stage,
@@ -600,6 +603,8 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config, const b
             implementation->resumed = true;
             implementation->published = true;
             implementation->recoveredPublished = true;
+            implementation->wholeFileDigestVerified = true;
+            implementation->finalReopenVerified = true;
             output = std::unique_ptr<OutputFile>(new OutputFile(std::move(implementation)));
             return StorageStatus::Success();
         }
@@ -972,6 +977,7 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
 
     std::array<std::byte, pbprotocol::kDigestBytes> partDigest{};
     std::uint64_t partBytes = 0;
+    implementation_->wholeFileDigestVerified = false;
     StorageStatus status = HashFile(implementation_->partPath, partDigest, partBytes);
     if (!status)
     {
@@ -981,6 +987,8 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
     {
         return StorageStatus::Failure(StorageErrorCode::DigestMismatch, StorageStage::Digest);
     }
+    implementation_->wholeFileDigestVerified = true;
+    implementation_->finalRenameSucceeded = false;
     status = RequireAbsent(implementation_->finalPath);
     if (!status)
     {
@@ -993,6 +1001,8 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
 
     std::array<std::byte, pbprotocol::kDigestBytes> finalDigest{};
     std::uint64_t finalBytes = 0;
+    implementation_->finalRenameSucceeded = true;
+    implementation_->finalReopenVerified = false;
     status = HashFile(implementation_->finalPath, finalDigest, finalBytes);
     if (!status || finalBytes != implementation_->fileBytes || finalDigest != expectedDigest.bytes)
     {
@@ -1005,6 +1015,7 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
         }
         return verificationStatus;
     }
+    implementation_->finalReopenVerified = true;
     implementation_->published = true;
     implementation_->publishedDigest = expectedDigest;
     implementation_->ownsPart = false;
@@ -1058,6 +1069,9 @@ OutputFileSnapshot OutputFile::GetSnapshot() const
     snapshot.hasPendingWrite = implementation_->pendingRange.has_value();
     snapshot.published = implementation_->published;
     snapshot.recoveredPublished = implementation_->recoveredPublished;
+    snapshot.wholeFileDigestVerified = implementation_->wholeFileDigestVerified;
+    snapshot.finalRenameSucceeded = implementation_->finalRenameSucceeded;
+    snapshot.finalReopenVerified = implementation_->finalReopenVerified;
     snapshot.preallocationAttempted = implementation_->allocation.preallocationAttempted;
     snapshot.preallocationFullyAllocated = implementation_->allocation.preallocationFullyAllocated;
     snapshot.fileSparse = implementation_->allocation.fileSparse;
