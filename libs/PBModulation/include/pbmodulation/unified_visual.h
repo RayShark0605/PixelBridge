@@ -134,6 +134,18 @@ struct UnifiedAcceptedBlock
     std::array<std::byte, kUnifiedInformationBytes> bytes{};
 };
 
+// Read-only statistics of the quantized, locally erased metrics actually sent
+// to the shared FEC gate. No sender truth or pre-erasure GPU values are inferred.
+struct UnifiedLaneMetricObservation
+{
+    bool available = false;
+    std::uint32_t samples = 0;
+    std::uint32_t zeroMetrics = 0;
+    std::uint32_t erasedMetrics = 0;
+    std::uint32_t minimumAbsoluteMetric = 0;
+    std::uint64_t absoluteMetricSum = 0;
+};
+
 struct UnifiedVisualObservation
 {
     bool inputValid = false;
@@ -145,6 +157,7 @@ struct UnifiedVisualObservation
     UnifiedChromaObservation chroma;
     std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount> freshness;
     std::array<UnifiedSlotObservation, kUnifiedCodewordCount> slots;
+    std::array<UnifiedLaneMetricObservation, 3> laneMetrics{};
     std::uint32_t acceptedBlocks = 0;
     std::uint32_t acceptedTransportBlocks = 0;
     std::uint32_t acceptedControlRecords = 0;

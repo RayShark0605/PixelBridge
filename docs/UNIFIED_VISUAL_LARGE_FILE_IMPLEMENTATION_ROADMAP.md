@@ -719,22 +719,27 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G17 — Telemetry、报告与状态真实性
 
+**状态：** 已完成（2026-09-04）。
 **前置：** G12、G15、G16。
 **目的：** 统一指标命名和证据来源，避免 Present/FPS/中间解码冒充最终 goodput。
 
 **主要范围：** PBTelemetry、run_report、GUI status adapters、report tests。
+**已确认的必要扩展（2026-09-04）：** 用户同意扩展既有 application model/runtime、Unified 解调观察值及 PBStorage 的只读观测接口，除下述随后明确批准的缓存修复外不改变解码决策，不改 shader、wire/FEC、发布顺序或持久化格式；Unified 报告采用 `PixelBridge.RunReport.3`，历史诊断 Profile 保持 `.2`，不批量迁移旧验收脚本；resumed run 缺少完整生命周期帧覆盖时，每帧性能为 `null` 并给出原因。指标 numerator/denominator/source、验证及修复记录见 `UNIFIED_TELEMETRY_REPORT.md`。
+**后续明确批准的最小修复：** 在同一 Session 内，较新帧先出现 Bootstrap-only/erased 观察后，首次可用数据允许建立对应单帧缓存；保留旧帧拒绝、同帧冲突、身份与边界检查，不改 wire/FEC/持久化/UI，其余接收决策不扩展。
 **实现清单：**
 
-- [ ] Base/Fine/Chroma metric/FEC/CRC/accepted/erased 计数。
-- [ ] control-slot 占用、Carousel pass/ordinal、repair lease。
-- [ ] preparation/resume verification 时间、verified segments/bytes。
-- [ ] `UniqueVisualFPS` 只来自观测到的唯一逻辑帧；重复 capture 不增加分母。
-- [ ] `VerifiedEncodedBytesPerUniqueFrame` 只有 whole digest + publish 成功才非空。
-- [ ] 最终 publish 状态、whole digest、final reopen 验证单独记录。
-- [ ] provider 字段只能进入 `NonDecodingOperatorMetadata`，并以测试证明不影响 decode 参数。
+- [x] Base/Fine/Chroma metric/FEC/CRC/accepted/erased 计数。
+- [x] control-slot 占用、Carousel pass/ordinal、repair lease。
+- [x] preparation/resume verification 时间、verified segments/bytes。
+- [x] `UniqueVisualFPS` 只来自观测到的唯一逻辑帧；重复 capture 不增加分母。
+- [x] `VerifiedEncodedBytesPerUniqueFrame` 只有 whole digest + publish 成功才非空。
+- [x] 最终 publish 状态、whole digest、final reopen 验证单独记录。
+- [x] provider 字段只能进入 `NonDecodingOperatorMetadata`，并以测试证明不影响 decode 参数。
 
 **最小验证：** PBTelemetry + application report tests；固定 JSON Golden 只在 schema 有意变更时更新。
-**退出：** 指标有明确 numerator/denominator/source；失败和 unavailable 不被填 0 或估算值。
+**验证结果（2026-09-04）：** 已核对 G12 `3044f23`、G15 `c5dc9da`、G16 `c7331e1` 为基线祖先或基线自身，对应既有证据通过。Release 定向构建 `PBTelemetryTests`、`PBApplicationTests`、`PixelBridgeEncoder`、`PixelBridgeDecoder` 成功。PBTelemetry 12 cases / 4,381 assertions，application report 11 / 478，受影响的 G16 model/negative 窄组 2 / 55 均通过；最后测试局部 `const` 修正仅重建并复核缓存身份 case，1 / 29 通过。报告组实际执行同 run fallback/Bootstrap-only 发布和 Stop/resume 两分支，包含 0-byte、20,000-byte RAW/Wirehair、8 MiB+1-byte 双 Segment，从真实 Encoder raster 经 CPU oracle 到 Receiver/Storage 的 bytes、BLAKE3、发布和 final reopen；provider/mode/version 改变后实际 demodulator、locator/metric/FEC 参数及输出相同。PBStorage 负例区分 digest 拒绝、目标冲突、成功发布及 rename 后恢复；metric 统计畸形只撤回性能，不改变 payload admission。缓存修复保留旧帧拒绝、同帧有效字节冲突及 Outer identity 冲突；新增 observation 大小下最大 ROI 的 demod reservation 为 216,641,048 bytes，低于 256 MiB cap。初始错误的 0-byte Control 数量预期、测试 SECTION 提前返回和 collector Stop 后仍报告 pending 的 fixture 问题已修正，未弱化 deadline 或断言。
+**退出：** 已满足。指标有明确 numerator/denominator/source；未测、失败、resumed 缺失历史帧覆盖与计数不完整不伪装成 0 或估算性能。唯一帧统计使用固定 4,096 项历史，epoch 切换不重复计数；每帧指标额外要求 final reopen。除明确批准的单帧缓存推进外无接收决策改变，无 wire/Profile/FEC/持久化/旧 Golden 变更。未运行 full CTest、GUI smoke、真实 ROI/capture、GPU parity 重跑、native/双屏/远控 Gate、故障注入、大文件或提交后安装包/嵌入身份验证；本结论不构成实屏与性能认证。按用户要求，本次在 G17 独立提交后结束，不继续 G18。
+**产物：** `libs/PBTelemetry` 新增 Unified accumulator/schema；PBModulation 与 PBStorage 增加只读观察字段；application model/runtime/report 接线，测试位于 `tests/PBTelemetry/test_unified_telemetry.cpp`、`tests/PBApplication/test_unified_run_report.cpp`。详细合同与修复前后证据见 `docs/UNIFIED_TELEMETRY_REPORT.md`。本地最终日志为 `build-unified-release/g17-build-final-complete.txt`、`g17-build-final-review.txt`、`tests/PBTelemetry/g17-telemetry-reviewed.txt`、`tests/PBApplication/g17-report-complete.txt`、`g17-cache-compatibility.txt`、`g17-cache-final-review.txt`；JSON 包括 `g17-encoder.json`、`g17-unified-published.json`、`g17-provider-variant.json`、`g17-fallback-published.json`、`g17-resumed-published.json`。
 **提交建议：** `feat(telemetry): report unified lane and publish truth`
 
 ## G18 — 256 MiB 与进程级故障注入

@@ -79,7 +79,7 @@ public:
         snapshot.candidateContractSatisfied = true;
         snapshot.viewport.disposition = pbrenderd3d::PresentationViewportDisposition::Active;
         snapshot.timing.presentationEpoch = 1;
-        snapshot.pendingFrame = frames_->frames.size() >= frames_->limit;
+        snapshot.pendingFrame = !frames_->stopped && frames_->frames.size() >= frames_->limit;
         return snapshot;
     }
     pbrenderd3d::PresentationStatus SubmitFrame(const pbrenderd3d::CanonicalBgraFrameView& frame) override
@@ -103,7 +103,8 @@ private:
 };
 
 inline std::vector<pbdemodd3d11::CaptureDemodulatorResult> MakeFrames(const std::filesystem::path& root,
-    const std::span<const std::byte> sourceBytes, const std::uint32_t frameCount = 1)
+    const std::span<const std::byte> sourceBytes, const std::uint32_t frameCount = 1,
+    pbapp::EncoderSnapshot* const encoderSnapshot = nullptr)
 {
     Check(frameCount > 0 && frameCount <= 8, "fixture frame budget is outside 1..8");
     std::filesystem::create_directories(root);
@@ -129,6 +130,11 @@ inline std::vector<pbdemodd3d11::CaptureDemodulatorResult> MakeFrames(const std:
         return pixels->frames.size() == frameCount || encoder.GetSnapshot().state == pbapp::EncoderState::Failed;
     });
     encoder.Stop();
+    Check(encoder.GetSnapshot().state == pbapp::EncoderState::Stopped, encoder.GetSnapshot().errorDetail.c_str());
+    if (encoderSnapshot != nullptr)
+    {
+        *encoderSnapshot = encoder.GetSnapshot();
+    }
     Check(ready && pixels->frames.size() == frameCount, encoder.GetSnapshot().errorDetail.c_str());
     auto oracleResult = pbmodulation::UnifiedVisualCpuOracle::Create(pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
     Check(static_cast<bool>(oracleResult), "cannot create CPU pixel oracle");

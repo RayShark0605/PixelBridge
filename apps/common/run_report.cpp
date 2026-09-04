@@ -184,9 +184,10 @@ void WriteRemoteMetadata(std::ostream& stream, const RemoteRunMetadata& metadata
     stream << '}';
 }
 
-void WriteContext(std::ostream& stream, const RunReportContext& context)
+void WriteContext(std::ostream& stream, const RunReportContext& context, const bool unified = false)
 {
-    stream << "\"schema\":\"PixelBridge.RunReport.2\",\"applicationName\":";
+    stream << (unified ? "\"schema\":\"PixelBridge.RunReport.3\",\"applicationName\":" :
+        "\"schema\":\"PixelBridge.RunReport.2\",\"applicationName\":");
     WriteEscaped(stream, context.applicationName);
     stream << ",\"applicationVersion\":";
     WriteEscaped(stream, context.applicationVersion);
@@ -194,6 +195,161 @@ void WriteContext(std::ostream& stream, const RunReportContext& context)
     WriteEscaped(stream, context.gitCommit);
     stream << ",\"exportedAtUtc\":";
     WriteEscaped(stream, context.exportedAtUtc);
+}
+
+void WriteUnifiedIdentity(std::ostream& stream, const std::string& runId, const std::string& sessionId,
+    const std::uint64_t sessionTag, const std::uint64_t started, const std::optional<std::uint64_t>& ended)
+{
+    stream << ",\"profile\":\"PB-Unified-LC4-V1\",\"visualProfileId\":" << pbprotocol::kUnifiedVisualProfileId
+        << ",\"visualLayoutVersion\":8,\"runId\":";
+    WriteEscaped(stream, runId);
+    stream << ",\"sessionId\":";
+    WriteEscaped(stream, sessionId);
+    stream << ",\"sessionTag\":" << sessionTag << ",\"runStartedUnixMilliseconds\":" << started
+        << ",\"runEndedUnixMilliseconds\":";
+    WriteOptionalNumber(stream, ended);
+}
+
+void WriteUnifiedTail(std::ostream& stream, const RemoteRunMetadata& metadata,
+    const std::string& status, const std::string& error)
+{
+    stream << ",\"NonDecodingOperatorMetadata\":";
+    WriteRemoteMetadata(stream, metadata);
+    stream << ",\"statusMessage\":";
+    WriteEscaped(stream, status);
+    stream << ",\"errorDetail\":";
+    WriteEscaped(stream, error);
+    stream << '}';
+}
+
+std::string BuildUnifiedEncoderReport(const RunReportContext& context, const EncoderSnapshot& snapshot)
+{
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::boolalpha << std::setprecision(17) << '{';
+    WriteContext(stream, context, true);
+    stream << ",\"role\":\"Encoder\",\"state\":";
+    WriteEscaped(stream, GetEncoderStateName(snapshot.state));
+    WriteUnifiedIdentity(stream, snapshot.runId, snapshot.sessionIdHex, snapshot.sessionTag,
+        snapshot.runStartedUnixMilliseconds, snapshot.runEndedUnixMilliseconds);
+    stream << ",\"fileBytes\":" << snapshot.sourceBytes << ",\"preparation\":{\"complete\":" << snapshot.preparationComplete
+        << ",\"verifiedSourceBytes\":" << snapshot.preparedSourceBytes << ",\"verifiedSegments\":" << snapshot.preparedSegmentCount
+        << ",\"elapsedMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.preparationComplete || snapshot.preparedSourceBytes != 0 ?
+        std::optional<std::uint64_t>(snapshot.preparationMilliseconds) : std::nullopt);
+    stream << ",\"bytesPerSecond\":";
+    WriteOptionalNumber(stream, snapshot.preparationBytesPerSecond);
+    stream << ",\"sourceStabilityVerified\":" << snapshot.sourceStabilityVerified << ",\"resumed\":" << snapshot.resumedSession
+        << ",\"resumeVerificationMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.resumeVerificationMilliseconds);
+    stream << ",\"resumeTimingBasis\":\"source prescan and persisted descriptor validation within preparation\"}"
+        << ",\"scheduler\":{\"carouselPass\":" << snapshot.cycleCount << ",\"segmentOrdinal\":" << snapshot.currentSegmentOrdinal
+        << ",\"segmentCount\":" << snapshot.segmentCount << ",\"stateGeneration\":" << snapshot.sessionStateGeneration
+        << ",\"frameSequenceLeaseEnd\":";
+    WriteOptionalNumber(stream, snapshot.durableFrameSequenceLeaseEnd != 0 ?
+        std::optional<std::uint64_t>(snapshot.durableFrameSequenceLeaseEnd) : std::nullopt);
+    stream << ",\"repairIdLeaseEnd\":";
+    WriteOptionalNumber(stream, snapshot.durableRepairIdLeaseEnd != 0 ?
+        std::optional<std::uint64_t>(snapshot.durableRepairIdLeaseEnd) : std::nullopt);
+    stream << ",\"submittedLogicalFrames\":" << snapshot.submittedLogicalFrames
+        << ",\"controlSlotCounterOverflow\":" << snapshot.controlSlotCounterOverflow << ",\"submittedControlSlots\":";
+    WriteOptionalNumber(stream, !snapshot.controlSlotCounterOverflow && snapshot.submittedLogicalFrames != 0 ?
+        std::optional<std::uint64_t>(snapshot.submittedControlSlots) : std::nullopt);
+    stream << ",\"controlSlotOccupancy\":";
+    WriteOptionalNumber(stream, !snapshot.controlSlotCounterOverflow && snapshot.submittedLogicalFrames != 0 ?
+        std::optional<double>(static_cast<double>(snapshot.submittedControlSlots) /
+            (static_cast<double>(snapshot.submittedLogicalFrames) * pbmodulation::kUnifiedCodewordCount)) : std::nullopt);
+    stream << ",\"occupancyBasis\":\"Control slots in successfully submitted complete logical rasters / (31 * submittedLogicalFrames); repeated Presents excluded\"}"
+        << ",\"configuredLogicalFps\":" << snapshot.configuredLogicalVisualFps << ",\"observedSubmittedLogicalFps\":";
+    WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);
+    stream << ",\"sourceWholeFileDigest\":";
+    WriteEscaped(stream, snapshot.wholeFileDigestHex);
+    stream << ",\"receiverProgress\":null,\"receiverEta\":null,\"verifiedGoodput\":null";
+    WriteUnifiedTail(stream, snapshot.remoteMetadata, snapshot.statusMessage, snapshot.errorDetail);
+    return stream.str();
+}
+
+std::string BuildUnifiedDecoderReport(const RunReportContext& context, const DecoderSnapshot& snapshot)
+{
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::boolalpha << std::setprecision(17) << '{';
+    WriteContext(stream, context, true);
+    stream << ",\"role\":\"Decoder\",\"state\":";
+    WriteEscaped(stream, GetDecoderStateName(snapshot.state));
+    WriteUnifiedIdentity(stream, snapshot.runId, snapshot.sessionIdHex, snapshot.sessionTag,
+        snapshot.runStartedUnixMilliseconds, snapshot.runEndedUnixMilliseconds);
+    stream << ",\"originalFileName\":";
+    WriteEscaped(stream, snapshot.originalFileNameUtf8);
+    stream << ",\"fileBytes\":";
+    WriteOptionalNumber(stream, snapshot.descriptorKnown ? std::optional<std::uint64_t>(snapshot.originalFileBytes) : std::nullopt);
+    stream << ",\"capture\":{\"requestedBackend\":\"Auto\",\"actualBackend\":";
+    if (snapshot.actualBackend)
+    {
+        WriteEscaped(stream, GetCaptureBackendName(*snapshot.actualBackend));
+    }
+    else
+    {
+        stream << "null";
+    }
+    stream << ",\"reason\":";
+    WriteEscaped(stream, snapshot.backendReason);
+    stream << ",\"fallbackReason\":";
+    WriteEscaped(stream, snapshot.captureFallbackReason);
+    stream << ",\"fallbackUnixMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.captureFallbackUnixMilliseconds);
+    stream << ",\"epoch\":" << snapshot.captureEpoch << ",\"geometryStatus\":";
+    WriteEscaped(stream, snapshot.geometryStatus);
+    stream << ",\"observedGeometry\":";
+    WriteObservedLocatorGeometry(stream, snapshot.observedLocatorGeometry);
+    stream << "},\"recovery\":{\"verifiedSegments\":" << snapshot.verifiedSegmentCount
+        << ",\"verifiedRawBytes\":" << snapshot.verifiedRawBytes << ",\"verifiedEncodedSegmentBytes\":";
+    WriteOptionalNumber(stream, snapshot.verifiedEncodedSegmentBytes);
+    stream << ",\"progress\":";
+    WriteOptionalNumber(stream, snapshot.recoveryProgress);
+    stream << ",\"resumeLoaded\":" << snapshot.resumeStateLoaded << ",\"resumeGeneration\":" << snapshot.resumeStateGeneration
+        << ",\"resumeVerificationMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.resumeVerificationMilliseconds);
+    stream << ",\"resumeVerificationSucceeded\":";
+    WriteOptionalNumber(stream, snapshot.resumeVerificationSucceeded);
+    stream << ",\"resumeTimingBasis\":\"journal/storage open plus existing completed-Segment and pending-payload verification\""
+        << ",\"largeOutputConfirmation\":";
+    WriteEscaped(stream, GetLargeOutputConfirmationStateName(snapshot.largeOutputConfirmationState));
+    stream << ",\"currentVerifiedRawGoodputBytesPerSecond\":";
+    WriteOptionalNumber(stream, IsDecoderStateActive(snapshot.state) && snapshot.verifiedRawBytes != 0 ?
+        std::optional<double>(snapshot.smoothedVerifiedRawGoodputBytesPerSecond) : std::nullopt);
+    stream << ",\"goodputBasis\":\"current-run verified raw-byte progress, including resumed disk revalidation; not whole-file channel performance\",\"etaMilliseconds\":";
+    WriteOptionalNumber(stream, IsDecoderStateActive(snapshot.state) ? snapshot.etaMilliseconds : std::nullopt);
+    stream << "},\"publish\":{\"wholeDigestVerified\":";
+    WriteOptionalNumber(stream, snapshot.wholeFileDigestCheck);
+    stream << ",\"renameSucceeded\":";
+    WriteOptionalNumber(stream, snapshot.finalRenameSucceeded);
+    stream << ",\"finalReopenVerified\":";
+    WriteOptionalNumber(stream, snapshot.finalReopenVerified);
+    stream << ",\"published\":" << snapshot.finalPublishSucceeded << ",\"recoveredAfterRename\":" << snapshot.outputRecoveredAfterPublish
+        << ",\"wholeFileDigest\":";
+    WriteEscaped(stream, snapshot.wholeFileDigestHex);
+    stream << ",\"finalPath\":";
+    WriteEscaped(stream, snapshot.outputPath);
+    stream << "},\"unifiedTelemetry\":";
+    pbtelemetry::WriteUnifiedTelemetryJson(stream, snapshot.unifiedTelemetry);
+    const bool resumed = snapshot.resumeStateLoaded || snapshot.outputRecoveredAfterPublish;
+    const auto metric = !snapshot.verifiedEncodedSegmentBytes && snapshot.finalPublishSucceeded && !resumed ?
+        pbtelemetry::PublishedFrameMetric{std::nullopt, "EncodedByteCoverageUnavailable"} :
+        pbtelemetry::EvaluatePublishedFrameMetric(snapshot.unifiedTelemetry,
+        snapshot.verifiedEncodedSegmentBytes.value_or(0), snapshot.wholeFileDigestCheck.value_or(false),
+        snapshot.finalPublishSucceeded, snapshot.finalReopenVerified.value_or(false),
+        resumed);
+    stream << ",\"verifiedEncodedBytesPerUniqueFrame\":";
+    WriteOptionalNumber(stream, metric.bytesPerUniqueFrame);
+    stream << ",\"publishedFrameMetric\":{\"numeratorEncodedBytes\":";
+    WriteOptionalNumber(stream, snapshot.verifiedEncodedSegmentBytes);
+    stream << ",\"denominatorObservedUniqueFrames\":" << snapshot.unifiedTelemetry.uniqueFrames << ",\"unavailableReason\":";
+    WriteEscaped(stream, metric.unavailableReason);
+    stream << ",\"gate\":\"WholeFileDigest+safe publish+final reopen+complete current-run frame coverage\"}"
+        << ",\"preFecBerEstimate\":null,\"preFecBerUnavailableReason\":\"No independent sender truth\"";
+    WriteUnifiedTail(stream, snapshot.remoteMetadata, snapshot.statusMessage, snapshot.errorDetail);
+    return stream.str();
 }
 
 } // namespace
@@ -210,6 +366,10 @@ std::string BuildRemoteVisualRunMetadataJson(const RemoteRunMetadata& metadata)
 std::string BuildEncoderRunReportJson(const RunReportContext& context,
     const EncoderSnapshot& snapshot)
 {
+    if (snapshot.visualProfile == VisualProfile::UnifiedLc4)
+    {
+        return BuildUnifiedEncoderReport(context, snapshot);
+    }
     std::ostringstream stream;
     stream.imbue(std::locale::classic());
     stream << std::boolalpha << std::setprecision(17) << '{';
@@ -331,6 +491,10 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
 std::string BuildDecoderRunReportJson(const RunReportContext& context,
     const DecoderSnapshot& snapshot)
 {
+    if (snapshot.visualProfile == VisualProfile::UnifiedLc4)
+    {
+        return BuildUnifiedDecoderReport(context, snapshot);
+    }
     std::ostringstream stream;
     stream.imbue(std::locale::classic());
     stream << std::boolalpha << std::setprecision(17) << '{';

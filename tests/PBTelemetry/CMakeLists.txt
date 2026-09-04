@@ -1,4 +1,4 @@
-PbAddUnitTest(PBTelemetryTests test_telemetry.cpp)
+PbAddUnitTest(PBTelemetryTests test_telemetry.cpp test_unified_telemetry.cpp)
 target_link_libraries(PBTelemetryTests PRIVATE PB::PBTelemetry PB::PBPresentTiming PB::PBProtocol)
 target_compile_definitions(PBTelemetryTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 PbInstrumentPresentationTest(PBTelemetryTests)

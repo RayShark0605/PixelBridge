@@ -16,6 +16,8 @@ PbAddUnitTest(PBApplicationTests
     test_sender_streaming.cpp
     test_session_persistence.cpp
     test_run_report.cpp)
+target_sources(PBApplicationTests PRIVATE test_unified_run_report.cpp)
+target_link_libraries(PBApplicationTests PRIVATE Qt${QT_VERSION_MAJOR}::Core)
 target_link_libraries(PBApplicationTests PRIVATE PB::PBApplication PB::PBProtocol PB::PBCompression d3d11 dxgi)
 target_compile_definitions(PBApplicationTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
     "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
@@ -52,6 +54,8 @@ if(pbQSettingsQmake)
     get_filename_component(pbQSettingsQtBin "${pbQSettingsQmake}" DIRECTORY)
     find_program(pbQSettingsWindeployqt NAMES windeployqt HINTS "${pbQSettingsQtBin}" NO_DEFAULT_PATH)
     if(pbQSettingsWindeployqt)
+        add_custom_command(TARGET PBApplicationTests POST_BUILD COMMAND "${pbQSettingsWindeployqt}"
+            --no-translations "$<TARGET_FILE:PBApplicationTests>" VERBATIM)
         add_custom_command(TARGET PBQSettingsTests POST_BUILD COMMAND "${pbQSettingsWindeployqt}"
             --no-translations "$<TARGET_FILE:PBQSettingsTests>" VERBATIM)
     endif()
