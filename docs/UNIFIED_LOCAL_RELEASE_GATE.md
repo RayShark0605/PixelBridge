@@ -1,6 +1,6 @@
 # G20：本地 Release Gate 进度与回归修复
 
-> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 经用户明确批准，在冻结提交 `e0729b2` 上追加的一次完整 Release CTest 已 **218/218 通过**，旧 206/215 失败记录保留，见第 12 节。此前 Replay、Golden/ProtocolDump、Capture、shader 编译开销、application 和 sampler 修复已纳入本次整套验证。CTest 层无失败/跳过，但 application 内一个依赖外部封存 Replay 的 case 因未设置数据根目录而跳过，不能声称全部内部 case 都执行。右屏 2.0x 条件仍待用户决定，native Gate 均未运行；完整回归通过不等于最终实屏产品认证。
+> **状态：G20 native 验收进行中。** 2026-09-04 经用户明确批准，在冻结提交 `e0729b2` 上追加的一次完整 Release CTest 已 **218/218 通过**，旧 206/215 失败记录保留，见第 12 节。此前 Replay、Golden/ProtocolDump、Capture、shader 编译开销、application 和 sampler 修复已纳入本次整套验证。CTest 层无失败/跳过，但 application 内一个依赖外部封存 Replay 的 case 因未设置数据根目录而跳过，不能声称全部内部 case 都执行。用户现已明确决定：先验收现有右屏 2560×1440 的可执行项目，全部通过后不验证 2.0x、关闭 G20 并进入 G21；2.0x 只能记录为用户豁免且未验证，不能标为通过。下文第 1–13 节保留各阶段当时的状态，不用新决定改写历史。
 
 ## 1. 前置与本轮边界
 
@@ -475,3 +475,100 @@ shader bytecode contract 为 **1 case / 61 assertions，10.400 秒**。两个实
 本轮提交只更新两份 G20 文档；运行时代码保持冻结。提交后应用身份检查若执行，单独归档，不重复完整 CTest，也不把新文档提交冒充上述测试的源码身份。`docs/PHASE1_GATE_REPORT.md` 始终未修改、未暂存。
 
 **当前 G20：** 完整 Release CTest 与 offscreen GUI smoke 已取得本次整套通过证据；此前定向 ASan 的范围和阶段结果见第 4/9/10 节，本轮没有追加 ASan。20 GiB/process-crash harness、真实 native、remote 和安装包验收未执行。右屏仍需满足 2.0x 的 3840×2160 完整包含条件，目前已确认的 2560×1440 配置不足；仍等待用户决定，未改显示模式或用离屏代替该要求。下一目标是 **G20 native 验收安排**，不能关闭 G20 或进入 G21。
+
+
+## 13. 现有右屏 native 验收、0.75x 修复与剩余阻塞（2026-09-04）
+
+### 用户决定、前置与范围
+
+- 用户明确要求先验收现有右屏 **2560×1440** 能完成的项目，其余项通过后不再验证 2.0x。2.0x 始终标为“用户条件性豁免 / 未验证”，不是通过；本节发现的其他失败不在豁免范围内。
+- 用户允许接收端采样/phase 修复，随后明确“**不用考虑兼容性**”。本次没有保留旧错误解码行为的要求，但不改 `PB-Unified-LC4-V1` wire/Golden、point-sampled 展示合同、0.75x 下限、质量阈值或最终发布安全门。
+- 起点 `bd58d5e99c4c81e21a4556a01ee9ea4c9159fabb`。重新读取 AGENTS、G20/G21、Git status；G19 `8c7cab5` 为 ancestor，12 个 G19 source seals（按该提交 LF/CRLF 规范化复核）、worker/report seals 以及 220 个 pins 均通过。前置审计：`build-presentation-release/g20-native-1/prerequisite-audit.json`。
+- 本节 **不重复完整 CTest**。第 12 节的 218/218 仅对应冻结 `e0729b2`，不冒充后续采样修复代码的 full-suite 结果；正常 Release 两应用仍是该冻结版本。本轮增量构建并运行的是专用 worker 和受影响单元目标。
+- 本地证据根：`<repo>\build-presentation-release\g20-native-1`，以下目录均相对此根。
+
+### 专用 Gate 与真实边界
+
+新增 `tests/PresentationGate/unified_native_gate.cpp`、`run_unified_native_gate.py`，仅在既有 `PB_BUILD_PRESENTATION_GATE=ON` 的独立 build tree 编译 `PBUnifiedNativeGate`，**不注册自动实屏 CTest**。配置时关掉该树原有 `PB_BUILD_PHASE0_GATE`，不运行旧 PresentationGate 的显示模式/输入操作模式。
+
+worker 两个独立进程调用默认生产 `EncoderRuntime`、`DecoderRuntime`。Decoder 只获得 output dir 与真实 ROI；不接收 source path、hash、Session oracle、编码数据或临时文件 payload。数据路径为 native D3D11 窗口→真实桌面 WGC（Auto，无 fallback）→GPU→Receiver/storage。supervisor 仅在最终发布后作独立 SHA-256/BLAKE3 和逐字节校验。这里验证的是生产 runtime，不是两个 Qt main EXE 的 native GUI 操作；后者只有此前明确记录的 offscreen smoke。
+
+每次运行前后重新枚举 monitor，worker 每 200 ms 重验 topology、ROI 和自有 HWND。当前实测 DISPLAY1 `[0,0,2560,1440)`，DISPLAY2 `[2560,0,5120,1440)`，两者 96 DPI / 180 Hz，adapter LUID `(0,94961)`；这些是本次观测，不是未来运行可硬编码的假定。仅创建/缩放自己进程的 `WS_EX_NOACTIVATE` HWND，展示前检查含 window chrome 的完整矩形，始终 `SWP_NOACTIVATE`，不操纵外部窗口、鼠标/键盘或显示设置。所有 Gate 的前后 catalog 一致；成功 sender 正常退出并释放窗口。诊断截图仅 BitBlt 自有右屏 client，原始 BGRA 不传入 live Decoder。
+
+### 已运行 native 结果（每项独立新 Session / 新输出目录）
+
+| Case / client | 配置 Hz | 实际 sender Hz | observed unique Hz | 最终发布 | Encoded B / unique frame |
+| --- | ---: | ---: | ---: | --- | ---: |
+| `native-15-1x` / 1920×1080 | 15 | 15.0449 | 1.2766 | 262,144 B，SHA/BLAKE3/bytes 一致 | 26,214.4 |
+| `native-1-1x` / 1920×1080 | 1 | 1.0053 | 0.4989 | 同上 | 37,449.1429 |
+| `native-60-1x` / 1920×1080 | 60 | **44.8953** | 2.4546 | 同上；不代表实测持续 60 Hz | 26,214.4 |
+| `native-15-075x` / 1440×810，修复前 | 15 | 约 15.008 | 未绑定 Session | 22 秒 receiver 期限内未发布 | 不可用 |
+| `native-15-075x-fixed` / 1440×810，修复后 | 15 | 15.0046 | 0.6241 | 262,144 B，全部发布门和外部比较通过 | **32,768** |
+| `native-15-1125x` / 2160×1215 | 15 | 有发送 | 未绑定 Session | 未发布；见几何诊断 | 不可用 |
+| `native-15-letterbox` / 2240×1120 | 15 | 有发送 | 0.2862（仅 2 unique） | 本次期限内未发布 | 不可用 |
+| `native-pause-resume` / 1920×1080→1344×756→1920×1080 | 15 | 成功暂停及恢复 | 1.3249（8 unique） | 本次期限内未发布 | 不可用 |
+
+前三项使用当时冻结 sender/receiver，后四项中的 fixed/letterbox/pause 使用 `frozen-worker-point-model/PBUnifiedNativeGate.exe`。第一次 15 Hz 运行的原 `summary.json` 因 supervisor 错把历史 minimum-submit-dwell 计数当成 G09 合同而标 false；**原失败文件未覆盖、未重跑实屏掩盖它**。G09 源码/测试证明使用绝对逻辑 tick deadlines，慢帧之后的快帧允许短于名义间隔。新增 clock 纯单测，按 `elapsed × fps`、最多 1 pending、单调 FrameSequence 对同一份日志重审，`corrected-contract-audit.json` 为通过（25,199 ms / 378 帧 / 上界 380）；原 legacy counter=191 保留，不作为 Unified 通过条件。first worker hash 保留在 provenance，原 EXE 未在重编译前另存，不能声称已封存该 binary。1 Hz/60 Hz 的实际 worker/DLL 另存 `frozen-worker-v2/`。
+
+### 0.75x：原因、最小修复与对抗检查
+
+1. 修复前 WGC 能接受 Bootstrap（原 gate 120 次），但无法绑定 Session。`diagnose-075-gpu-final/first-result.json` 直接观测 Unified frame：Base erasure=5、Fine=6、Chroma=0、10 accepted blocks；`demod-final.json` 为 134 completed、134 postFecFailed、1,340 accepted Unified blocks、demodRejected=0。这是 Base/Fine phase 拒绝，不是 GPU device/timeout/calibration API 错误；Control 位于 Base，故不能靠 Chroma 进入最终业务状态。
+2. `diagnose-075/actual-right-roi.bgra`：真实右屏 1440×810、sequence=4，SHA-256 `ebd30a1beb3e9e5cdac1af636167750bb98df153390dc62f24c8254e779570f7`。四级 calibration 精确 32/80/176/224，九个 freshness 全 current；独立 phase 运算得到正确 phase 的归一化残差 **0.1875 > 0.125**。真实每 tile 行/列保留 `[0,1,3]`；简单数学 point 构造取 `[0,2,3]`。原 mandatory 0.75x corpus 是 Area transform，不能替代实际 point 展示。
+3. “只丢弃不可观测 chip”的初始原型只通过构造样本，原截图仍失败，**已撤换该原型**；失败/通过输出和原型备份均保留。最终方案是对当前 captured sample 预测其实际来源的 canonical chip。原 integrated-sample reference 能通过时仍使用 reference；否则最多四种独立横/纵 point tie 模型，由本帧 Base/Fine phase pilot 各自选择。所有竞争 phase 都在相同候选集合中比较，残差阈值不变；数据 tile 只使用该 lane 当前帧选定的模型，不根据载荷、provider 或 GPU 品牌猜测。
+4. CPU / HLSL 同步；私有 `PhaseOutput.w` 携带 0..4 model，readback 验证整数范围。仍为 16 个 float4 phase entries，不增加 raw ROI readback，不改变 slot/ring/public API。无法预测的相邻 tile 不填造 bits，以零 metric 擦除，Chroma 保持独立。
+5. 新独立整数 fixture 覆盖四个取样组合，clean 为 31/31 且逐字节 truth 相等；将 Base pilot 换成上一 sequence 后，Base 拒绝、Control=0，Fine/Chroma 仍可用。CPU 与 WARP 均通过。原真实截图以默认 CPU oracle 重解得到 **31/31**、三 lane 无 erasure（`cpu-oracle-point-model.json`）。这只是单帧诊断，不单独构成文件恢复证据。
+6. 在全新 `native-15-075x-fixed/` 实屏会话，Encoder/Decoder exit 0，8 unique frames 后独立 whole-file 校验/安全发布/final reopen 通过，三个 lane FEC/CRC/identity failures 均为 0。最终 SHA-256 `bb713c1b00f71780bf2d358591d3db11dc33ff3621f4a4c213d8b2e18a59cc6a`，BLAKE3 `3c66a8482ac78083b99745e48b289b9f98ba4da26bf5f1e3577978704cc4d961`。不把 configured 15 Hz 或 encoder rate 当作 receiver unique FPS。
+
+shader 扩展首次触发 MSVC 单字符串字面量长度限制 `C2026`，未降低 shader 功能或运行期再编译。构建期将 Unified HLSL 分成最多 8 KiB 的相邻 raw literals，保留原首行换行和精确内容；最终 shader bytecode contract 61 assertions 通过。旧生成结果未用失败编译覆盖。
+
+### 剩余失败：不得越级或忽略
+
+- **1.125x（已定位到几何边界）**：`diagnose-1125-owned/actual-right-roi.bgra` SHA-256 `bde186b8f7ea0dc5b5d0bcf549212f0762073d5eae55b9446dc5d171d2a80938`。独立默认 CPU 解得 Bootstrap `None` erasure / sequence=4，scale=(1.125,1.125)、origin=(0.5,0.5)、markerResidual=0；但完整画布 far edge=(2160.5,1215.5)，被当前 0.005 px refinement 边界检查明确判 `CanvasClipped`。该 half-pixel 量化与 0.75x 的 phase 故障不是同一分支。**尚未修改几何/裁剪判定**；区分 point raster 的亚像素量化不确定性与真实 crop 会影响接收覆盖合同，需要明确该边界后再实现，不能直接增大 tolerance 让测试通过。
+- **letterbox（未定位最终未发布原因）**：本次 live 仅 2 个 unique frames，接收结果三 lane FEC/CRC failures=0，但未最终发布，不能写通过。独立 `diagnose-letterbox-owned/` 实际截图默认 CPU 可接受 31/31，origin 约 (124.3841,0.05729)、scale 约 (1.03710,1.03693)；这反驳“必然同于 1.125x 整帧裁剪”的猜测，不代替最终文件闭环。没有为它更换易过的宽高比或盲目拉长 deadline。
+- **pause/resume（发送端通过，文件门失败）**：稳定暂停 4.096 秒期间 FrameSequence=50、source texture replacements=49、submitted counter 和 Session 不变；九个真实右屏 GDI matte samples 为 128，声明仅为九点检查。恢复到 1920×1080 后同 Session 的 FrameSequence=290、presentation epoch=5；但 Decoder 仅取得 8 个 unique、三个 lane FEC/CRC failures=0，期限内没有 whole-file publish。不得用 sender 恢复成功当成完整产品链成功；后续仍须从已捕获帧→descriptor/ingress→最终 storage 状态定位。
+- 诊断截图 helper 第一次按 PID 选 HWND 时因同进程多个窗口而 fail closed，立即仅终止自有子进程；没有捕获左屏。改为 PID + `PixelBridge Data Window` 精确选择后保存到新 `*-owned` 目录。原失败目录不覆盖。单帧 capture replay helper 保留在本地 `capture_owned_roi.py`；它不进入产品或正式 payload 路径。
+
+### 定向测试、命令与冻结证据
+
+最终只运行受影响目标；所有 child 用 `CREATE_NO_WINDOW`、有界 timeout、分离 stdout/stderr，未跑全量回归或新增显示模式 Gate。
+
+```powershell
+cmake --build build-presentation-release --config Release --target PBUnifiedVisualCpuTests PBDemodD3D11Tests PBUnifiedNativeGate --parallel 6
+& .\build-presentation-release\tests\PBModulation\Release\PBUnifiedVisualCpuTests.exe
+& .\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe "Unified layout-8 D3D11 demod hands*,Unified layout-8 D3D11 demod preserves*,[point-downscale]"
+& .\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodShaderBytecodeTests.exe
+& .\build-presentation-release\tests\PresentationGate\Release\PBUnifiedNativeGate.exe --self-test
+```
+
+| 最小检查 | 结果 | 秒 |
+| --- | --- | ---: |
+| 最终 affected build | exit 0 | 26.375 |
+| Unified CPU 单元目标 | **11 cases / 1,022,877 assertions，exit 0** | 5.407 |
+| Unified WARP 新 point + 邻接 compact/geometry | **3 cases / 1,454 assertions，exit 0** | 1.750 |
+| shader bytecode contract | **1 case / 61 assertions，exit 0** | 11.812 |
+| native worker headless policy | PASS；无 HWND/capture/input | 0.047 |
+| 原 18 场景 CPU Golden corpus（此前同轮，仅执行一次） | **1 case / 9,042,053 assertions；report 逐字节一致** | 4.172 |
+
+新 CPU point 首次修复验证为 1 case / 605 assertions / 1.000 秒；新 WARP 为 1 case / 790 assertions / 0.812 秒。最终邻接计数包含异步轮询，不要求与前次相同。过程中旧 observable-chip 原型、build C2026、helper 编码/窗口选择错误和三项 native 文件失败均保留，不用最终绿色日志覆盖。
+
+native 独立复验方式（**只有明确执行以下命令才会显示右屏窗口**；每次必须新 run directory）：
+
+```powershell
+& <python> tests/PresentationGate/run_unified_native_gate.py `
+  --worker build-presentation-release/g20-native-1/frozen-worker-point-model/PBUnifiedNativeGate.exe `
+  --catalog-executable build-unified-release/apps/PixelBridgeDecoder/Release/PixelBridgeDecoder.exe `
+  --run-directory build-presentation-release/g20-native-replay-new `
+  --case native-15-075x
+```
+
+不打开屏幕的原截图复验：
+
+```powershell
+& .\build-presentation-release\g20-native-1\frozen-worker-point-model\PBUnifiedNativeGate.exe --inspect-roi `
+  build-presentation-release/g20-native-1/diagnose-075/actual-right-roi.bgra `
+  build-presentation-release/g20-native-1/cpu-inspect-new.json 1440 810
+```
+
+`frozen-worker-point-model/seal.json` 封存实际 native worker SHA-256 `39a8963a3cb9ec33ae187ede7156d4035494279a942e12d172119e8a81cc31bb` 及 DLL；`source/` 与 `source-seal.json` 保留其对应 dirty 源码和 base HEAD。native 之后的最终小修复仅把“样本可读但所选模型预测跨相邻 tile”的 CPU 零 metric 归类对齐 GPU 的 decision-margin erasure；最终三组定向单测覆盖，未重复已完成的 native 成功项，不能把两个 worker 字节身份混写。最终 mutable build worker 与源码另在最终审计封印。`point-final-checks.json`、`point-model-native-summary.json`、`remaining-native-summary.json` 和各 case 原始 reports 是精确命令/结果入口。
+
+**本节未执行：** 追加 full CTest、追加 ASan、完整 G12 多适配器矩阵、20 GiB/process-crash、Qt main EXE 的新 native UI 流程、2.0x native、G21 remote、G22 package。未修改或暂存 `docs/PHASE1_GATE_REPORT.md`，未修改 220 个既有 pins。**下一目标仍为 G20；G21/G22 未启动。**

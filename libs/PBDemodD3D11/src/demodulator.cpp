@@ -662,7 +662,8 @@ DemodStatus ApplyUnifiedPhaseObservations(
         for (std::size_t phase = 0; phase < 8; phase++)
         {
             const auto& entry = phases[phasePilot * 8 + phase];
-            entriesValid = entriesValid && entry[0] >= 0 && entry[1] == 512.0f && entry[2] == 1.0f;
+            entriesValid = entriesValid && entry[0] >= 0 && entry[1] == 512.0f && entry[2] == 1.0f &&
+                entry[3] >= 0 && entry[3] <= 4 && std::floor(entry[3]) == entry[3];
             if (phase != expectedPhase)
             {
                 nearestOther = std::min(nearestOther, static_cast<double>(entry[0]));
@@ -1621,7 +1622,7 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
         context->CSSetShader(state.evaluateUnifiedPhase.Get(), nullptr, 0);
         context->Dispatch(1, 1, 1);
         ID3D11UnorderedAccessView* dataOutputs[]{nullptr, slot.metricsUav.Get(),
-            slot.unifiedTileSamplingFailuresUav.Get(), nullptr, nullptr};
+            slot.unifiedTileSamplingFailuresUav.Get(), nullptr, slot.unifiedPhaseUav.Get()};
         context->CSSetUnorderedAccessViews(0, 5, dataOutputs, nullptr);
         context->CSSetShader(state.demodUnified.Get(), nullptr, 0);
         context->Dispatch((binding.tileCount + 63) / 64, 1, 1);

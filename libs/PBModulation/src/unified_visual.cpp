@@ -266,6 +266,39 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     return 0.0722 * sample.blue + 0.7152 * sample.green + 0.2126 * sample.red;
 }
 
+// Model zero retains the integrated-sample reference path. Point downsampling
+// instead compares the captured sample with the canonical chip that produced
+// it. Four bounded models cover independent axis tie directions, selected only
+// by this frame's phase pilot; neither adapter nor provider identity is input.
+[[nodiscard]] std::uint32_t ProjectLumaChip(const LocalDesktopGeometry& geometry,
+    const std::uint32_t tileX, const std::uint32_t tileY, const std::uint32_t chip,
+    const std::uint32_t model) noexcept
+{
+    if (model == 0)
+    {
+        return chip;
+    }
+    const auto ProjectAxis = [](const double origin, const double scale, const double logical,
+        const bool upperTie) noexcept
+    {
+        if (scale >= 1)
+        {
+            return logical;
+        }
+        const double pixel = std::floor(origin + scale * (logical + 0.5));
+        const double source = (pixel + 0.5 - origin) / scale;
+        // Bound uncertainty to the floating-point point-sampler tie, not a
+        // tunable geometry search or a relaxation of the phase residual gate.
+        constexpr double tieTolerance = 1.0 / 4096;
+        return upperTie ? std::floor(source + tieTolerance) : std::ceil(source - tieTolerance) - 1;
+    };
+    const double column = ProjectAxis(geometry.originX, geometry.scaleX, tileX + (chip & 3), ((model - 1) & 1) != 0) - tileX;
+    const double row = ProjectAxis(geometry.originY, geometry.scaleY, tileY + (chip >> 2), ((model - 1) & 2) != 0) - tileY;
+    // Neighbouring tiles contain independent symbols: never invent their bits.
+    return column >= 0 && column < 4 && row >= 0 && row < 4 ?
+        static_cast<std::uint32_t>(row) * 4 + static_cast<std::uint32_t>(column) : 16;
+}
+
 [[nodiscard]] std::array<double, 2> Opponent(const Sample& sample) noexcept
 {
     const double luma = Luma(sample);
@@ -493,41 +526,32 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     return calibration;
 }
 
-[[nodiscard]] bool CheckPhasePilot(const LumaView& view, const LocalDesktopGeometry& geometry,
+[[nodiscard]] bool MeasurePhasePilot(const LumaView& view, const LocalDesktopGeometry& geometry,
     const UnifiedPixelRegion& region, const bool finePilot, const std::uint64_t frameSequence,
-    const UnifiedCalibration& calibration, const UnifiedVisualDecodePolicy& policy) noexcept
+    const UnifiedCalibration& calibration, const std::uint32_t model, std::array<double, 8>& phaseDistances) noexcept
 {
     const std::uint32_t tilesPerRow = region.width / kUnifiedVisualProfile.tileWidth;
     const std::uint32_t tileRows = region.height / kUnifiedVisualProfile.tileHeight;
     const double low = calibration.lumaLevels[1];
     const double high = calibration.lumaLevels[2];
-    const double gap = high - low;
-    if (!(gap > 0))
-    {
-        return false;
-    }
-    std::array<double, 8> phaseDistances{};
-    std::uint64_t tiles = 0;
     for (std::uint32_t tileRow = 0; tileRow < tileRows; tileRow++)
     {
         for (std::uint32_t tileColumn = 0; tileColumn < tilesPerRow; tileColumn++)
         {
             const std::uint32_t tileOrdinal = tileRow * tilesPerRow + tileColumn;
+            const std::uint32_t tileX = region.x + tileColumn * 4;
+            const std::uint32_t tileY = region.y + tileRow * 4;
             std::array<double, 16> samples{};
-            for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
+            std::array<std::uint32_t, 16> projected{};
+            for (std::uint32_t chip = 0; chip < 16; chip++)
             {
-                for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
+                Sample sample;
+                projected[chip] = ProjectLumaChip(geometry, tileX, tileY, chip, model);
+                if (projected[chip] >= 16 || !ReadSample(view, geometry, tileX + (chip & 3), tileY + (chip >> 2), sample))
                 {
-                    const std::uint32_t chip = row * kUnifiedVisualProfile.tileWidth + column;
-                    Sample sample;
-                    if (!ReadSample(view, geometry,
-                        region.x + tileColumn * kUnifiedVisualProfile.tileWidth + column,
-                        region.y + tileRow * kUnifiedVisualProfile.tileHeight + row, sample))
-                    {
-                        return false;
-                    }
-                    samples[chip] = Luma(sample);
+                    return false;
                 }
+                samples[chip] = Luma(sample);
             }
             std::array<double, 16> distances{};
             for (std::size_t label = 0; label < distances.size(); label++)
@@ -535,7 +559,7 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
                 const std::uint16_t mask = kUnifiedSymbolMasksByLabel[label];
                 for (std::size_t chip = 0; chip < samples.size(); chip++)
                 {
-                    const double expected = ((mask >> chip) & 1U) != 0 ? high : low;
+                    const double expected = ((mask >> projected[chip]) & 1U) != 0 ? high : low;
                     const double difference = samples[chip] - expected;
                     distances[label] += difference * difference;
                 }
@@ -543,35 +567,66 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
             const std::uint64_t phaseBase = frameSequence - frameSequence % phaseDistances.size();
             for (std::size_t phase = 0; phase < phaseDistances.size(); phase++)
             {
-                const std::uint8_t label = GetUnifiedPhasePilotLabel(
-                    finePilot, tileOrdinal, phaseBase + phase);
+                const std::uint8_t label = GetUnifiedPhasePilotLabel(finePilot, tileOrdinal, phaseBase + phase);
                 phaseDistances[phase] += distances[label];
             }
-            tiles++;
         }
     }
-    if (tiles == 0)
+    return tilesPerRow != 0 && tileRows != 0;
+}
+
+[[nodiscard]] bool CheckPhasePilot(const LumaView& view, const LocalDesktopGeometry& geometry,
+    const UnifiedPixelRegion& region, const bool finePilot, const std::uint64_t frameSequence,
+    const UnifiedCalibration& calibration, const UnifiedVisualDecodePolicy& policy, std::uint32_t& selectedModel) noexcept
+{
+    selectedModel = 0;
+    const double gap = calibration.lumaLevels[2] - calibration.lumaLevels[1];
+    std::array<double, 8> phaseDistances{};
+    if (!(gap > 0) || !MeasurePhasePilot(view, geometry, region, finePilot, frameSequence, calibration, 0, phaseDistances))
     {
         return false;
     }
-    const std::size_t expectedPhase = static_cast<std::size_t>(frameSequence % phaseDistances.size());
-    double nearestOther = std::numeric_limits<double>::infinity();
-    for (std::size_t phase = 0; phase < phaseDistances.size(); phase++)
+    const std::size_t expectedPhase = static_cast<std::size_t>(frameSequence % 8);
+    const auto Accepted = [&]() noexcept
     {
-        if (phase != expectedPhase)
+        double nearestOther = std::numeric_limits<double>::infinity();
+        for (std::size_t phase = 0; phase < phaseDistances.size(); phase++)
         {
-            nearestOther = std::min(nearestOther, phaseDistances[phase]);
+            if (phase != expectedPhase)
+            {
+                nearestOther = std::min(nearestOther, phaseDistances[phase]);
+            }
+        }
+        const double expectedDistance = phaseDistances[expectedPhase];
+        const double residual = expectedDistance / (static_cast<double>(region.width) * region.height * gap * gap);
+        return expectedDistance < nearestOther && residual <= policy.maximumPhasePilotResidual;
+    };
+    if (Accepted())
+    {
+        return true;
+    }
+    if (geometry.scaleX < 1 || geometry.scaleY < 1)
+    {
+        for (std::uint32_t model = 1; model <= 4; model++)
+        {
+            std::array<double, 8> candidate{};
+            if (!MeasurePhasePilot(view, geometry, region, finePilot, frameSequence, calibration, model, candidate))
+            {
+                continue;
+            }
+            if (candidate[expectedPhase] < phaseDistances[expectedPhase])
+            {
+                selectedModel = model;
+            }
+            for (std::size_t phase = 0; phase < phaseDistances.size(); phase++)
+            {
+                phaseDistances[phase] = std::min(phaseDistances[phase], candidate[phase]);
+            }
         }
     }
-    const double expectedDistance = phaseDistances[expectedPhase];
-    // The nearest alternative is the phase-identity gate. Residual quality is
-    // normalized independently as mean squared error over the measured luma
-    // gap, so the same threshold remains meaningful when downsampling changes
-    // how many chip edges are blended without granting a wrong phase a pass.
-    const double squaredGap = gap * gap;
-    const double normalizedResidual = expectedDistance /
-        (static_cast<double>(tiles) * 16 * squaredGap);
-    return expectedDistance < nearestOther && normalizedResidual <= policy.maximumPhasePilotResidual;
+    // Compare against every competing phase under every supported model. A
+    // wrong phase must not pass merely because its own model was optimized.
+    return Accepted();
 }
 
 void EvaluateFreshness(const LumaView& view, const LocalDesktopGeometry& geometry,
@@ -738,7 +793,8 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
     const std::uint64_t frameSequence, const UnifiedCalibration& calibration, const UnifiedVisualDecodePolicy& policy,
     const std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount>& freshness,
     const UnifiedBaseLumaObservation& base, const UnifiedFineLumaObservation& fine,
-    const UnifiedChromaObservation& chroma, const std::span<UnifiedSoftMetric> metrics) noexcept
+    const UnifiedChromaObservation& chroma, const std::array<std::uint32_t, 2>& lumaModels,
+    const std::span<UnifiedSoftMetric> metrics) noexcept
 {
     const double low = calibration.lumaLevels[1];
     const double high = calibration.lumaLevels[2];
@@ -764,25 +820,49 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             }
         }
 
-        std::array<double, 16> lumaDistances{};
-        for (std::size_t label = 0; label < lumaDistances.size(); label++)
+        std::array<std::array<double, 16>, 2> lumaDistances{};
+        std::array<bool, 2> modelValid{true, true};
+        for (std::size_t lane = 0; lane < lumaModels.size(); lane++)
         {
-            const std::uint16_t mask = kUnifiedSymbolMasksByLabel[label];
-            for (std::size_t chip = 0; chip < samples.size(); chip++)
+            if (lane == 1 && lumaModels[0] == lumaModels[1])
             {
-                const double expected = ((mask >> chip) & 1U) != 0 ? high : low;
-                const double difference = Luma(samples[chip]) - expected;
-                lumaDistances[label] += difference * difference;
+                lumaDistances[1] = lumaDistances[0];
+                modelValid[1] = modelValid[0];
+                continue;
+            }
+            std::array<std::uint32_t, 16> projected{};
+            for (std::uint32_t chip = 0; chip < 16; chip++)
+            {
+                projected[chip] = ProjectLumaChip(geometry, tile.bounds.x, tile.bounds.y, chip, lumaModels[lane]);
+                modelValid[lane] = modelValid[lane] && projected[chip] < 16;
+            }
+            if (!modelValid[lane])
+            {
+                // The sample is in bounds, but this model cannot predict its
+                // neighbour. Zero distances erase the lane by decision margin,
+                // matching compact GPU metric admission without harming Chroma.
+                continue;
+            }
+            for (std::size_t label = 0; label < 16; label++)
+            {
+                const std::uint16_t mask = kUnifiedSymbolMasksByLabel[label];
+                for (std::size_t chip = 0; chip < samples.size(); chip++)
+                {
+                    const double expected = ((mask >> projected[chip]) & 1U) != 0 ? high : low;
+                    const double difference = Luma(samples[chip]) - expected;
+                    lumaDistances[lane][label] += difference * difference;
+                }
             }
         }
         for (std::uint8_t bitPlane = 0; bitPlane < 4; bitPlane++)
         {
+            const std::size_t lane = bitPlane < 3 ? 0 : 1;
             double zeroDistance = std::numeric_limits<double>::infinity();
             double oneDistance = std::numeric_limits<double>::infinity();
-            for (std::size_t label = 0; label < lumaDistances.size(); label++)
+            for (std::size_t label = 0; label < 16; label++)
             {
                 double& destination = ((label >> bitPlane) & 1U) != 0 ? oneDistance : zeroDistance;
-                destination = std::min(destination, lumaDistances[label]);
+                destination = std::min(destination, lumaDistances[lane][label]);
             }
             const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * lumaScale);
             const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
@@ -1507,6 +1587,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     {
         observation.chroma = {UnifiedErasureScope::Lane, UnifiedErasureReason::ChromaPilotFailure};
     }
+    std::array<std::uint32_t, 2> lumaModels{};
     bool finePilot = false;
     for (const UnifiedRegionContract& contract : kUnifiedVisualProfile.regions)
     {
@@ -1516,7 +1597,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
             continue;
         }
         const bool phaseValid = calibration.lumaValid && CheckPhasePilot(view, samplingGeometry,
-            contract.bounds, finePilot, observation.bootstrapRecord.frameSequence, calibration, policy);
+            contract.bounds, finePilot, observation.bootstrapRecord.frameSequence, calibration, policy, lumaModels[finePilot ? 1 : 0]);
         if (!phaseValid && finePilot)
         {
             observation.fineLuma = {UnifiedErasureScope::Lane, UnifiedErasureReason::FineLumaPilotFailure};
@@ -1528,7 +1609,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
         finePilot = true;
     }
     DecodeDataTiles(view, samplingGeometry, observation.bootstrapRecord.frameSequence, calibration, policy,
-        observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, state.metrics);
+        observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, lumaModels, state.metrics);
 
     return FinalizeDecodedMetrics(std::move(observation), slotPlan, inferSlotKinds, policy);
 }

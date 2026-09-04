@@ -112,6 +112,27 @@ bool ReadSample(float logicalX, float logicalY, out float3 blueGreenRed)
     return true;
 }
 
+uint ProjectLumaChip(uint2 tileOrigin, uint chip, uint model)
+{
+    if (model == 0)
+    {
+        return chip;
+    }
+    const float2 logical = (float2)(tileOrigin + uint2(chip & 3, chip >> 2));
+    const float2 origin = float2(OriginX, OriginY);
+    const float2 scale = float2(ScaleX, ScaleY);
+    const float2 pixel = floor(origin + scale * (logical + 0.5));
+    const float2 source = (pixel + 0.5 - origin) / scale;
+    // Same bounded point-sampler tie models as the CPU reference. Phase pilots
+    // select the model; no provider, adapter or expected payload is consulted.
+    const float tieTolerance = 1.0 / 4096.0;
+    const float2 lower = ceil(source - tieTolerance) - 1.0;
+    const float2 upper = floor(source + tieTolerance);
+    const float column = (ScaleX >= 1.0 ? logical.x : (((model - 1) & 1) != 0 ? upper.x : lower.x)) - (float)tileOrigin.x;
+    const float row = (ScaleY >= 1.0 ? logical.y : (((model - 1) & 2) != 0 ? upper.y : lower.y)) - (float)tileOrigin.y;
+    return column >= 0.0 && column < 4.0 && row >= 0.0 && row < 4.0 ? (uint)row * 4 + (uint)column : 16;
+}
+
 float GetLumaCentroid(uint label)
 {
     float result = 0.0;
@@ -252,14 +273,14 @@ uint GetPhaseLabel(uint pilot, uint tileOrdinal, uint phase)
     return (((tileOrdinal >> 1) + phase) & 7) | (((tileOrdinal + phase) & 1) << 3);
 }
 
+groupshared float CanonicalPhaseDistances[16];
+
 [numthreads(16, 1, 1)]
 void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     const uint entry = dispatchThreadId.x;
-    if (entry >= 16)
-    {
-        return;
-    }
+    // Exactly one sixteen-thread group is dispatched; every thread reaches
+    // the barrier before a lane chooses its same-frame sampling model.
     const uint pilot = entry >> 3;
     const uint phase = entry & 7;
     const uint2 origin = PhaseOrigins[pilot];
@@ -284,7 +305,55 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             distance += difference * difference;
         }
     }
-    PhaseOutput[entry] = float4(distance, 512.0, valid ? 1.0 : 0.0, 0.0);
+    CanonicalPhaseDistances[entry] = distance;
+    GroupMemoryBarrierWithGroupSync();
+    const uint expectedPhase = InterleavePhase & 7;
+    const float expectedDistance = CanonicalPhaseDistances[pilot * 8 + expectedPhase];
+    float nearestOther = 3.402823466e+38;
+    [unroll]
+    for (uint otherPhase = 0; otherPhase < 8; otherPhase++)
+    {
+        if (otherPhase != expectedPhase)
+        {
+            nearestOther = min(nearestOther, CanonicalPhaseDistances[pilot * 8 + otherPhase]);
+        }
+    }
+    const float gap = high - low;
+    const bool canonicalAccepted = valid && gap > 0.0 && expectedDistance < nearestOther &&
+        expectedDistance / (8192.0 * gap * gap) <= MinimumSymbolRms;
+    uint selectedModel = 0;
+    if (!canonicalAccepted && (ScaleX < 1.0 || ScaleY < 1.0))
+    {
+        [loop]
+        for (uint model = 1; model <= 4; model++)
+        {
+            float candidateDistance = 0.0;
+            bool candidateValid = true;
+            for (uint tileOrdinal = 0; tileOrdinal < 512; tileOrdinal++)
+            {
+                const uint2 tileOrigin = origin + uint2((tileOrdinal & 31) * 4, (tileOrdinal >> 5) * 4);
+                const uint mask = SymbolMasks[GetPhaseLabel(pilot, tileOrdinal, phase)];
+                [loop]
+                for (uint chip = 0; chip < 16; chip++)
+                {
+                    float3 sample = 0.0;
+                    const uint projected = ProjectLumaChip(tileOrigin, chip, model);
+                    candidateValid = projected < 16 && candidateValid;
+                    candidateValid = ReadSample((float)(tileOrigin.x + (chip & 3)),
+                        (float)(tileOrigin.y + (chip >> 2)), sample) && candidateValid;
+                    const float expected = ((mask >> min(projected, 15)) & 1) != 0 ? high : low;
+                    const float difference = Luma(sample) - expected;
+                    candidateDistance += difference * difference;
+                }
+            }
+            if (candidateValid && candidateDistance < distance)
+            {
+                distance = candidateDistance;
+                selectedModel = model;
+            }
+        }
+    }
+    PhaseOutput[entry] = float4(distance, 512.0, valid ? 1.0 : 0.0, (float)selectedModel);
 }
 
 [numthreads(64, 1, 1)]
@@ -314,20 +383,45 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float low = GetLumaCentroid(1);
     const float high = GetLumaCentroid(2);
     const float lumaGap = high - low;
-    float lumaDistances[16];
+    const uint baseModel = (uint)PhaseOutput[InterleavePhase & 7].w;
+    const uint fineModel = (uint)PhaseOutput[8 + (InterleavePhase & 7)].w;
+    uint baseChips[16];
+    uint fineChips[16];
+    bool baseValid = true;
+    bool fineValid = true;
+    [unroll]
+    for (uint sourceChip = 0; sourceChip < 16; sourceChip++)
+    {
+        baseChips[sourceChip] = ProjectLumaChip(uint2(binding.OriginX, binding.OriginY), sourceChip, baseModel);
+        fineChips[sourceChip] = baseModel == fineModel ? baseChips[sourceChip] :
+            ProjectLumaChip(uint2(binding.OriginX, binding.OriginY), sourceChip, fineModel);
+        baseValid = baseValid && baseChips[sourceChip] < 16;
+        fineValid = fineValid && fineChips[sourceChip] < 16;
+    }
+    float baseDistances[16];
+    float fineDistances[16];
     [unroll]
     for (uint label = 0; label < 16; label++)
     {
-        float distance = 0.0;
+        float baseDistance = 0.0;
+        float fineDistance = 0.0;
         const uint mask = SymbolMasks[label];
         [unroll]
         for (uint chipIndex = 0; chipIndex < 16; chipIndex++)
         {
-            const float expected = ((mask >> chipIndex) & 1) != 0 ? high : low;
-            const float difference = Luma(samples[chipIndex]) - expected;
-            distance += difference * difference;
+            const float value = Luma(samples[chipIndex]);
+            const float baseExpected = ((mask >> min(baseChips[chipIndex], 15)) & 1) != 0 ? high : low;
+            const float baseDifference = value - baseExpected;
+            baseDistance += baseDifference * baseDifference;
+            if (baseModel != fineModel)
+            {
+                const float fineExpected = ((mask >> min(fineChips[chipIndex], 15)) & 1) != 0 ? high : low;
+                const float fineDifference = value - fineExpected;
+                fineDistance += fineDifference * fineDifference;
+            }
         }
-        lumaDistances[label] = distance;
+        baseDistances[label] = baseValid ? baseDistance : 0.0;
+        fineDistances[label] = fineValid ? (baseModel == fineModel ? baseDistance : fineDistance) : 0.0;
     }
     const uint lumaBits[4] = {binding.LumaBit0, binding.LumaBit1, binding.LumaBit2, binding.LumaBit3};
     [unroll]
@@ -340,11 +434,11 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         {
             if (((labelIndex >> bitPlane) & 1) != 0)
             {
-                oneDistance = min(oneDistance, lumaDistances[labelIndex]);
+                oneDistance = min(oneDistance, bitPlane < 3 ? baseDistances[labelIndex] : fineDistances[labelIndex]);
             }
             else
             {
-                zeroDistance = min(zeroDistance, lumaDistances[labelIndex]);
+                zeroDistance = min(zeroDistance, bitPlane < 3 ? baseDistances[labelIndex] : fineDistances[labelIndex]);
             }
         }
         if (lumaBits[bitPlane] < UnifiedMetricCount)

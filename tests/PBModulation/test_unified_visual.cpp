@@ -1,3 +1,4 @@
+#include "unified_point_downscale_fixture.h"
 #include "pbmodulation/unified_visual.h"
 
 #include "pbinnerfec/qc_ldpc_codec.h"
@@ -373,6 +374,46 @@ TEST_CASE("Unified CPU oracle recovers every clean mixed Control and Transport s
             metric.codewordSlot < kUnifiedCodewordCount && metric.dataRegion < kUnifiedDataRegionCount &&
             metric.freshnessRegion < kUnifiedFreshnessRegionCount;
     }));
+}
+
+TEST_CASE("Unified point-downscaled pixels retain mixed blocks using same-frame point sampling models", "[unified][g20][point-downscale]")
+{
+    const auto& fixture = GetFixture41();
+    const auto pixels = Render(fixture);
+    constexpr std::uint32_t width = 1440;
+    constexpr std::uint32_t height = 810;
+    for (std::uint32_t tie = 0; tie < 4; tie++)
+    {
+        CAPTURE(tie);
+        const auto Downscale = [tie](const std::vector<std::byte>& source)
+        {
+            return pbtest::DownscaleUnifiedPoint(source, (tie & 1) != 0, (tie & 2) != 0);
+        };
+        auto pointPixels = Downscale(pixels);
+        auto oracle = MakeOracle();
+        const LumaView view{pointPixels, width, height, static_cast<std::size_t>(width) * 4, LumaPixelFormat::Bgra8};
+        const auto clean = oracle.DecodeMixedFrame(view);
+        REQUIRE(clean.IsFrameAvailable());
+        REQUIRE(clean.baseLuma.IsAvailable());
+        REQUIRE(clean.fineLuma.IsAvailable());
+        REQUIRE(clean.acceptedBlocks == kUnifiedCodewordCount);
+        for (const auto& block : oracle.GetAcceptedBlocks())
+        {
+            REQUIRE(block.size == fixture.expected[block.codewordSlot].size());
+            REQUIRE(std::equal(fixture.expected[block.codewordSlot].begin(), fixture.expected[block.codewordSlot].end(), block.bytes.begin()));
+        }
+        const auto wrongPhase = Downscale(Render(GetFixture40()));
+        for (std::uint32_t row = 12; row < 60; row++)
+        {
+            const std::size_t offset = (static_cast<std::size_t>(row) * width + 672) * 4;
+            std::copy_n(wrongPhase.begin() + offset, 96 * 4, pointPixels.begin() + offset);
+        }
+        const auto rejected = oracle.DecodeMixedFrame(view);
+        REQUIRE(rejected.IsFrameAvailable());
+        REQUIRE(rejected.baseLuma.erasureReason == UnifiedErasureReason::BaseLumaPilotFailure);
+        REQUIRE(rejected.acceptedControlRecords == 0);
+        REQUIRE(rejected.chroma.IsAvailable());
+    }
 }
 
 TEST_CASE("Unified frame input packs explicit slot kinds into the frozen reference raster",

@@ -803,13 +803,14 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G20 — CP-C：最终 Release、ASan 与 DISPLAY2 native Gate
 
-**状态：** 进行中，不能关闭或进入 G21（2026-09-04）。前置 G19 `8c7cab5` 与 source/worker seals 已验证。首次完整 Release CTest 的 206/215、9 项失败原始证据保留；后续修复均已提交。用户明确批准后，在冻结 `e0729b2` 上追加的一次完整 Release CTest **218/218 通过，exit 0，217.27 秒**，没有把多次局部结果拼写成 full CTest 全绿。新增三项来自既有 shader bytecode 和两个 ProtocolDump context 注册，原 215 项全部保留；application 内一个外部封存 Replay case 因未提供数据根目录而跳过，边界单列。追加整套预算已执行，不自动重复。最新被动枚举的右屏仍为 2560×1440，无法完全容纳固定 1920×1080 raster 的 2.0x，已提问且未自行豁免/改变显示设置，所有 native Gate 尚未运行。详细台账和 source/executable seals 见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 3–12 节；下一步为 G20 native 验收安排，不修改历史 Golden bytes/pins。
+**状态：** 进行中（2026-09-04）。前置 G19 `8c7cab5` 与 source/worker seals 已验证。首次完整 Release CTest 的 206/215、9 项失败原始证据保留；后续修复均已提交。用户明确批准后，在冻结 `e0729b2` 上追加的一次完整 Release CTest **218/218 通过，exit 0，217.27 秒**，没有把多次局部结果拼写成 full CTest 全绿。新增三项来自既有 shader bytecode 和两个 ProtocolDump context 注册，原 215 项全部保留；application 内一个外部封存 Replay case 因未提供数据根目录而跳过，边界单列。追加整套预算已执行，不自动重复。用户现已明确批准先验收现有右屏 2560×1440 可完成项目，其他 native 条件全部通过后豁免 2.0x 实屏、关闭 G20 并进入 G21；不改变显示设置，不把豁免写成通过。详细历史台账和 source/executable seals 见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 3–12 节；本轮已追加专用 native Gate，并在用户允许接收端修复及不考虑旧兼容性后修复 point-downscale 采样；不修改 wire、当前 point 展示合同、阈值或历史 Golden bytes/pins。
 **前置：** G19，所有 Critical/High 已清零。
 **后续工具闭环（2026-09-04）：** 在 `e5f7d9d` 后仅修复 G20 已发现的 Golden / ProtocolDump 合同迁移：四个历史 payload generator 私有 LE 重算恢复原 bytes/pins，正式 parser 继续拒绝旧 schema；Dump 改为正式 offset/CRC 边界，CLI 接受合法变长 Session context。原五个失败项及五个 CLI 检查定向 10/10 通过；正式 corpus/manifest/round-trip 8 cases / 300 assertions 通过；220 个原 Golden/corpus/manifest/registry 文件 SHA-256 未变，未重跑 full CTest、ASan、GPU/GUI/native 或大文件 harness。详见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 7 节；其他回归和实屏条件未关闭，不能进入 G21。
 **Capture / 启动开销后续闭环（2026-09-04）：** 在 `00045ed` 后，以相同失败 WGC SECTION 的快照及 CDB debug error `CLEARUNORDEREDACCESSVIEWFLOAT_INVALIDFORMAT` 确认 G11 structured calibration UAV 的 Float clear 非法，最小改为按位 Uint 零清；Capture 4 cases / 2,705 assertions 通过，60 秒期限不变。legacy GPU parity 只排除已有独立注册的 Unified corpus，1 case / 46,731 assertions、73.203 秒通过，WARP + 4 个 hardware adapter 的 accepted set 一致、false accepted 为 0。随后测得每次 12 个 shader 纯编译约 8.062 秒，经用户明确批准后改为私有构建期预编译和嵌入 bytecode；HLSL/flags/public headers 不变，12 个 CSO byte-identical。默认 demod 22 cases / 663,674 assertions、8.110 秒全过；Release/ASan 三个 Replay 各 3/3 通过（1.031 / 1.875 秒），原两个 ASan 15 秒 deadline 已关闭。增量不重复编译、隔离错误 HLSL 使构建失败且保留旧输出均已验证；详见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 8–9 节。未重复 full CTest、原已通过矩阵、GUI/native/remote 或 20 GiB；另两项 application 断言与右屏 2.0x 决策仍未关闭，下一目标仍 G20。
 **Application 断言后续闭环（2026-09-04）：** 在 `1b7a35e` 后确认 Replay 预检误把 128 MiB cap 当成实际 reservation，改为与 recorder 创建共用 checked 计算，限额/queue/public API 不变；Direct/WGC、Shape/WGC/DXGI、低预算拒绝和无文件副作用通过。LF4 probe 的早发布后迟到 refinement 被生产正确忽略，修复 probe 计数并明确检查迟到输入不改变 Completed/digest/publish/计数，保留真正的 Wirehair refinement 正例；新增 two-block DirectRepeat 边界。Release 四个相关 case 先通过，最终 LF4 单例 119 assertions / 0.860 秒通过；同五个定向 ASan case 共 219 assertions / 4.234 秒通过。中间失败保留，详见台账第 10 节。本轮未重跑 full CTest、完整 ASan、GPU/GUI/native/remote 或 20 GiB；G20 仍未关闭，不能进入 G21。
 **Sampler 状态后续闭环（2026-09-04）：** 在 `86b6f5c` 后，离屏固定图像/几何/策略仅改变 caller sampler Filter：CPU 和 LINEAR 均接受 4 个正确 Transport block，POINT 导致 Poll `CalibrationFailure`。把已有自有 LINEAR 绑定移到 calibration dispatch 前，参数/末尾解绑/HLSL/bytecode/public headers 均不变。临时 Poll INFO 引入的测试栈溢出经 CDB/obj 差分定位并撤销该诊断，原断言与 1 MiB stack reserve 保留。最终新增单例及原 geometry/compact 两例 **3 cases / 330 assertions、0.968 秒**通过；两种 caller Filter 的 accepted truth 均匹配 CPU、false accepted 0。完整失败/通过证据见台账第 11 节与 `build-unified-release/g20-sampler/`。未重复 full CTest、ASan、等价 GPU 矩阵、GUI/native/remote 或 20 GiB；下一步先等待追加完整回归预算及右屏 2.0x 条件明确，不能越级。
 **批准后的整套 Release 复验（2026-09-04）：** 用户允许在当前冻结代码上追加一次完整 CTest；`e0729b292b9dddec49346df73ce72437dd6ac468` 上 configure/build 成功，无筛选/重复参数的完整 **218/218 CTest** 通过，原九个失败项全部通过，两应用 offscreen GUI smoke 通过。测试前后源码/EXE、220 个 pins 和保护文件 seals 一致；原 full CTest 失败日志不覆盖，新结果与 G12 报告另存 `build-unified-release/g20-release-final-1/`。`PBApplicationTests` 内部为 103 passed / 1 skipped、77,241 assertions passed，skip 为未设置 `PB_REMOTE_VISUAL_REAL_REPLAY_ROOT` 的既有封存数据 case，未用其他测试冒充覆盖。七个实屏 Gate 开关均 OFF；未追加 ASan、20 GiB、native、remote 或包验收。仅追加两份文档记录，详见台账第 12 节；G20 剩余真实右屏尺度/cadence 验收，继续等待 2.0x 条件决定。
+**现有右屏验收与 point-downscale 修复（2026-09-04）：** `DISPLAY2=2560×1440` 的 1/15/60 Hz 设定、1.0x 均完成真实 WGC→Receiver→whole digest/publish/reopen 与外部逐字节比对；60 Hz 设定实际 sender 约 44.90 Hz，不能写成持续 60 Hz。0.75x 首次失败经真实 ROI 与只读 GPU 观测确认：point sampler 保留的 3×3 芯片被错误按原 4×4 canonical mask 打分，Base/Fine phase residual 为 0.1875，超过未修改的 0.125 门槛。新增仅由当前帧 phase pilots 决定的四种有界轴向 point 模型，CPU/GPU 同步；原截图从 10/31 提升为 31/31，四种独立取样夹具和错误 phase 负例通过，原 18 场景 Golden report 逐字节一致。全新 256 KiB RAW 的 0.75x native 复验通过，外部 SHA-256/BLAKE3/bytes 一致，三个 lane 的 FEC/CRC/identity failures 为 0，最终 32,768 B/unique frame。最终定向 CPU 11 cases / 1,022,877 assertions、WARP 邻接 3 cases / 1,454 assertions、bytecode 1 case / 61 assertions 通过；未重复 full CTest。**G20 仍未关闭：** 1.125x 的真实像素 Bootstrap 可解，但拟合 origin=(0.5,0.5) 触发严格 CanvasClipped；未擅自扩大边界容差。letterbox 与 pause/resume 的本次完整文件门均超时未发布，不能用单帧成功或 sender pause 成功替代；其原因继续待查。暂停自身的 1344×756 neutral matte、4.096 秒身份/texture 不推进和同 Session 恢复已取得证据。详见台账第 13 节；2.0x 为条件性用户豁免、未验证，不能据此越过当前其他失败进入 G21。
 **目的：** 只在此时执行一次完整本机构建/回归与真实右屏产品链。
 
 **执行顺序：**
@@ -818,7 +819,7 @@ ctest --test-dir build-unified-release -C Release `
 2. 一次完整 CTest；
 3. parser/resume/storage 定向 ASan；
 4. Qt GUI smoke；
-5. 真实 native：1 Hz、15 Hz、60 Hz、0.75x、fractional scale、arbitrary aspect letterbox、2.0x、小于 0.75x 暂停与恢复；
+5. 真实 native：1 Hz、15 Hz、60 Hz、0.75x、fractional scale、arbitrary aspect letterbox、小于 0.75x 暂停与恢复；原 2.0x 实屏项按用户 2026-09-04 明确决定，在其余项通过后豁免，状态始终为未验证；
 6. 记录实际逻辑 FPS、observed unique rate、lane erasure、digest/publish。
 
 **屏幕硬约束：**
@@ -828,7 +829,7 @@ ctest --test-dir build-unified-release -C Release `
 - 不发送鼠标键盘输入；ROI 选择等需要输入的步骤由用户手动完成。
 - Gate 前重新枚举 monitor identity/physical rect；不能按历史坐标猜测。
 
-**退出：** 两个 Qt EXE 可运行；full CTest 通过；定向 ASan 通过；右屏所有尺度/cadence 合同成立；未执行项精确列出。
+**退出（2026-09-04 用户修订）：** 两个 Qt EXE 可运行；full CTest 通过；定向 ASan 通过；现有右屏可容纳的上述尺度/cadence 合同成立；2.0x 实屏明确标为用户豁免且未验证，其他未执行项精确列出。该决定不修改产品 0.75x..2.0x 合同、不免除其他失败，也不自动豁免 G21。
 **提交建议：** `test(product): close local unified release gate`
 
 ## G21 — 真实远程像素链

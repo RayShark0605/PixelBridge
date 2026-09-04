@@ -1,3 +1,4 @@
+#include "../PBModulation/unified_point_downscale_fixture.h"
 #include "pbdemodd3d11/demodulator.h"
 #include "pbdemodd3d11/capture_demodulator.h"
 
@@ -3129,6 +3130,64 @@ TEST_CASE("Unified layout-8 D3D11 demod hands compact same-frame metrics to the 
     REQUIRE(snapshot.pendingFrames == 0);
     REQUIRE(snapshot.metricReadbackBytes == result.metricReadbackBytes);
     REQUIRE(snapshot.rawPixelReadbackBytes == 0);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+}
+
+TEST_CASE("Unified D3D11 point downscale selects same-frame models and rejects a wrong phase",
+    "[demod][d3d11][unified][warp][g20][point-downscale]")
+{
+    auto environment = CreateWarpEnvironment();
+    const auto fixture = MakeUnifiedFixture(41);
+    const auto previous = MakeUnifiedFixture(40);
+    pbdemodd3d11::DemodConfig config;
+    config.readbackSlotCount = 2;
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, demodulator));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x76}}, 1};
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
+        pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
+    std::uint64_t observation = 1;
+    const auto Verify = [&](const std::vector<std::byte>& pixels, const bool wrongPhase)
+    {
+        const pbmodulation::LumaView view{pixels, 1440, 810, 1440 * 4, pbmodulation::LumaPixelFormat::Bgra8};
+        const auto bootstrap = pbmodulation::DecodeLocalDesktopBootstrap(view, binding);
+        REQUIRE(bootstrap.IsAccepted());
+        const auto texture = UploadBgraTexture(environment.device.Get(), pixels, 1440, 810, 1440 * 4);
+        const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, observation++);
+        pbdemodd3d11::DemodSubmission submission;
+        REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, {}, submission));
+        const auto result = PollUntilReady(*demodulator, environment.context.Get(), submission);
+        REQUIRE(result.unifiedObservation.IsFrameAvailable());
+        REQUIRE(result.unifiedObservation.baseLuma.erasureReason == (wrongPhase ?
+            pbmodulation::UnifiedErasureReason::BaseLumaPilotFailure : pbmodulation::UnifiedErasureReason::None));
+        REQUIRE(result.unifiedObservation.fineLuma.IsAvailable());
+        REQUIRE(result.unifiedObservation.chroma.IsAvailable());
+        REQUIRE(result.acceptedUnifiedBlockCount == (wrongPhase ? 14U : 31U));
+        REQUIRE(result.unifiedObservation.acceptedControlRecords == (wrongPhase ? 0U : 1U));
+        for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
+        {
+            const auto& accepted = result.acceptedUnifiedBlocks[index];
+            REQUIRE(accepted.codewordSlot < fixture.blocks.size());
+            REQUIRE(accepted.size == fixture.blocks[accepted.codewordSlot].size());
+            REQUIRE(std::equal(fixture.blocks[accepted.codewordSlot].begin(),
+                fixture.blocks[accepted.codewordSlot].end(), accepted.bytes.begin()));
+        }
+    };
+    for (std::uint32_t tie = 0; tie < 4; tie++)
+    {
+        CAPTURE(tie);
+        auto pixels = pbtest::DownscaleUnifiedPoint(fixture.pixels, (tie & 1) != 0, (tie & 2) != 0);
+        Verify(pixels, false);
+        const auto wrongPhase = pbtest::DownscaleUnifiedPoint(previous.pixels, (tie & 1) != 0, (tie & 2) != 0);
+        for (std::uint32_t row = 12; row < 60; row++)
+        {
+            const std::size_t offset = (static_cast<std::size_t>(row) * 1440 + 672) * 4;
+            std::copy_n(wrongPhase.begin() + offset, 96 * 4, pixels.begin() + offset);
+        }
+        Verify(pixels, true);
+    }
+    REQUIRE(demodulator->GetSnapshot().rawPixelReadbackBytes == 0);
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 

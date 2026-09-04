@@ -3,7 +3,7 @@
 namespace pbdemodd3d11::detail
 {
 
-inline constexpr char kUnifiedVisualComputeShader[] = R"PBHLSL(
-@PB_UNIFIED_VISUAL_D3D11_HLSL@)PBHLSL";
+inline constexpr char kUnifiedVisualComputeShader[] =
+@PB_UNIFIED_VISUAL_D3D11_LITERALS@;
 
 } // namespace pbdemodd3d11::detail

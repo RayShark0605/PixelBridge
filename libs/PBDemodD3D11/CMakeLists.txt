@@ -10,9 +10,23 @@ configure_file(src/remote_visual_low_fps_shader_source.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/generated/remote_visual_low_fps_shader_source.h" @ONLY)
 unset(PB_REMOTE_VISUAL_LOW_FPS_D3D11_HLSL)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/unified_visual_compute.hlsl" PB_UNIFIED_VISUAL_D3D11_HLSL)
+# MSVC limits one string literal to 16 KiB. Adjacent bounded raw literals keep
+# the compiler input byte-identical without imposing that limit on the shader.
+set(PB_UNIFIED_VISUAL_D3D11_LITERALS "R\"PBHLSL(\n)PBHLSL\"\n")
+string(LENGTH "${PB_UNIFIED_VISUAL_D3D11_HLSL}" pbUnifiedSourceLength)
+set(pbUnifiedSourceOffset 0)
+while(pbUnifiedSourceOffset LESS pbUnifiedSourceLength)
+    string(SUBSTRING "${PB_UNIFIED_VISUAL_D3D11_HLSL}" ${pbUnifiedSourceOffset} 8192 pbUnifiedSourceChunk)
+    string(APPEND PB_UNIFIED_VISUAL_D3D11_LITERALS "R\"PBHLSL(${pbUnifiedSourceChunk})PBHLSL\"\n")
+    math(EXPR pbUnifiedSourceOffset "${pbUnifiedSourceOffset} + 8192")
+endwhile()
 configure_file(src/unified_visual_shader_source.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/generated/unified_visual_shader_source.h" @ONLY)
 unset(PB_UNIFIED_VISUAL_D3D11_HLSL)
+unset(PB_UNIFIED_VISUAL_D3D11_LITERALS)
+unset(pbUnifiedSourceLength)
+unset(pbUnifiedSourceOffset)
+unset(pbUnifiedSourceChunk)
 
 # This is a private build dependency, not an installed tool or runtime fallback.
 add_executable(PBDemodShaderCompiler EXCLUDE_FROM_ALL src/compile_shaders.cpp)

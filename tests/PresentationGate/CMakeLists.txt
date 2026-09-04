@@ -35,3 +35,17 @@ endif()
 set_property(GLOBAL APPEND PROPERTY PB_UNIT_TEST_TARGETS PBPresentationGate)
 unset(pbPresentationEvidence)
 unset(pbPresentationMode)
+
+# Explicit opt-in only. Never register the Unified real-screen matrix in CTest:
+# its supervisor requires a fresh DISPLAY1/DISPLAY2 safety audit for each run.
+add_executable(PBUnifiedNativeGate unified_native_gate.cpp
+    "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
+target_link_libraries(PBUnifiedNativeGate PRIVATE PB::CompilerSettings PB::PBApplication user32 gdi32)
+execute_process(COMMAND git rev-parse --verify HEAD WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    OUTPUT_VARIABLE pbUnifiedNativeCommit OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+target_compile_definitions(PBUnifiedNativeGate PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+    "PB_GIT_COMMIT=\"${pbUnifiedNativeCommit}\"")
+if(MSVC)
+    target_compile_options(PBUnifiedNativeGate PRIVATE /external:anglebrackets /external:W0)
+endif()
+unset(pbUnifiedNativeCommit)
