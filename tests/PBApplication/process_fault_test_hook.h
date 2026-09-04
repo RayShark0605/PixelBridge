@@ -84,6 +84,29 @@ inline void ObserveRestore(const std::size_t completedSegments, const std::size_
         (truncatedTail ? "true" : "false") + "}\n");
 }
 
+// First retry event per child only; CREATE_NEW never overwrites it. Observe
+// after the retry loop so file I/O and Restart Manager cannot cause recovery.
+inline void ObserveAtomicReplaceRetry(const std::filesystem::path& targetPath, const DWORD firstError,
+    const DWORD finalError, const std::uint32_t attempts, const std::uint64_t elapsedMilliseconds) noexcept
+{
+    try
+    {
+        const std::string target = targetPath.filename().string();
+        if (target != "runtime.state" && target != "descriptors.bin")
+        {
+            return;
+        }
+        WriteEvidence(L"atomic-replace-first-retry.json", "{\"targetFile\":\"" + target +
+            "\",\"firstError\":" + std::to_string(firstError) + ",\"finalError\":" + std::to_string(finalError) +
+            ",\"attempts\":" + std::to_string(attempts) + ",\"elapsedMilliseconds\":" +
+            std::to_string(elapsedMilliseconds) + "}\n");
+    }
+    catch (...)
+    {
+        // Missing metadata cannot change persistence success or failure.
+    }
+}
+
 inline void ObserveAtomicReplaceFailure(const std::filesystem::path& targetPath,
     const std::filesystem::path& temporaryPath, const DWORD originalError) noexcept
 {

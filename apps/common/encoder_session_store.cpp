@@ -1,4 +1,5 @@
 #include "encoder_session_store.h"
+#include "encoder_atomic_replace_retry.h"
 
 #ifdef PB_PROCESS_FAULT_TESTS
 #include "process_fault_test_hook.h"
@@ -370,14 +371,28 @@ struct ParsedRuntimeState
         DeleteFileW(temporaryPath.c_str());
         return EncoderSessionStoreStatus::Failure(NativeFailure("session state close", error));
     }
-    if (MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
+    // An ordinary target reader can transiently deny replacement even when it
+    // shares DELETE. Keep the same flushed candidate and durable transaction;
+    // no target deletion, copy fallback, reserialization or lease use on failure.
+    const auto replacement = detail::RetryEncoderStateReplace([&]() noexcept
     {
-        const DWORD error = GetLastError();
+        return MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
+            ERROR_SUCCESS : GetLastError();
+    }, []() noexcept { return GetTickCount64(); }, [](const DWORD milliseconds) noexcept { Sleep(milliseconds); });
 #ifdef PB_PROCESS_FAULT_TESTS
-        test::ObserveAtomicReplaceFailure(path, temporaryPath, error);
+    if (replacement.firstError != ERROR_SUCCESS)
+    {
+        test::ObserveAtomicReplaceRetry(path, replacement.firstError, replacement.error,
+            replacement.attempts, replacement.elapsedMilliseconds);
+    }
+#endif
+    if (replacement.error != ERROR_SUCCESS)
+    {
+#ifdef PB_PROCESS_FAULT_TESTS
+        test::ObserveAtomicReplaceFailure(path, temporaryPath, replacement.error);
 #endif
         DeleteFileW(temporaryPath.c_str());
-        return EncoderSessionStoreStatus::Failure(NativeFailure("session state atomic replace", error));
+        return EncoderSessionStoreStatus::Failure(NativeFailure("session state atomic replace", replacement.error));
     }
     return {};
 }

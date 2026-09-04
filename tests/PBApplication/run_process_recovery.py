@@ -33,7 +33,8 @@ MINIMUM_COMPLETED = dict(zip(POINTS, (0, 0, 2, 2, 2, 3, 32, 32, 32)))
 NEGATIVE_CASES = ("torn-final-tail", "internal-crc", "forged-length", "over-active-quota", "changed-source")
 SOURCE_FILES = (
     "apps/common/local_desktop_runtime.cpp", "apps/common/decoder_resume_store.cpp",
-    "apps/common/encoder_session_store.cpp", "libs/PBStorage/src/output_file.cpp",
+    "apps/common/encoder_session_store.cpp", "apps/common/encoder_atomic_replace_retry.h",
+    "libs/PBStorage/src/output_file.cpp",
     "tests/PBApplication/CMakeLists.txt", "tests/PBApplication/process_fault_test_hook.h",
     "tests/PBApplication/process_recovery_test_access.h", "tests/PBApplication/process_recovery_runtime.inc",
     "tests/PBApplication/process_recovery_worker.cpp", "tests/PBApplication/run_process_recovery.py",
@@ -172,20 +173,11 @@ def read_frames(evidence: Path) -> list[dict]:
 
 def verify_ids(before: Path, after: Path, point: str) -> dict:
     after_initial = read_json(after / "initial.json")
-    if point == "encoder-prescan":
-        require(not (before / "initial.json").exists() and not after_initial["resumed"],
-                "Incomplete prescan was incorrectly adopted as a durable Session")
-        return {"prescanHadNoDurableSession": True}
-    before_initial = read_json(before / "initial.json")
-    require(before_initial["sessionId"] == after_initial["sessionId"] and after_initial["resumed"], "Restart changed a valid Session")
     before_frames, after_frames = read_frames(before), read_frames(after)
-    require(before_frames, "Missing pre-termination frame/lease ledger")
     before_sequences = {frame["sequence"] for frame in before_frames}
     after_sequences = {frame["sequence"] for frame in after_frames}
     require(len(before_sequences) == len(before_frames) and len(after_sequences) == len(after_frames), "FrameSequence repeated inside a run")
     require(not before_sequences & after_sequences, "FrameSequence was reused after process death")
-    maximum_lease = max(frame["frameLeaseEnd"] for frame in before_frames)
-    require(after_initial["frameStart"] >= maximum_lease, "Restart did not skip the durable FrameSequence lease")
     before_repairs, after_repairs = set(), set()
     for frames, repair_ids in ((before_frames, before_repairs), (after_frames, after_repairs)):
         for frame in frames:
@@ -195,6 +187,17 @@ def verify_ids(before: Path, after: Path, point: str) -> dict:
                 require(key not in repair_ids and block_id < frame["repairLeaseEnd"], "Repair ID repeated or escaped its durable lease")
                 repair_ids.add(key)
     require(not before_repairs & after_repairs, "Repair ID reused after process death")
+    if point == "encoder-prescan":
+        require(not (before / "initial.json").exists() and not after_initial["resumed"] and
+                not before_frames and after_frames,
+                "Incomplete prescan was incorrectly adopted or its restarted identity ledger is missing")
+        return {"prescanHadNoDurableSession": True, "afterFrames": len(after_frames),
+                "afterRepairIds": len(after_repairs), "frameIdentityOverlap": 0, "repairIdentityOverlap": 0}
+    before_initial = read_json(before / "initial.json")
+    require(before_initial["sessionId"] == after_initial["sessionId"] and after_initial["resumed"], "Restart changed a valid Session")
+    require(before_frames, "Missing pre-termination frame/lease ledger")
+    maximum_lease = max(frame["frameLeaseEnd"] for frame in before_frames)
+    require(after_initial["frameStart"] >= maximum_lease, "Restart did not skip the durable FrameSequence lease")
     for frame in before_frames:
         require(after_initial["repairStarts"][frame["ordinal"]] >= frame["repairLeaseEnd"], "Restart did not skip a durable repair lease")
     return {"sameSession": True, "frameIdentityOverlap": 0, "repairIdentityOverlap": 0,

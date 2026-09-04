@@ -1,4 +1,5 @@
 #include "decoder_resume_store.h"
+#include "encoder_atomic_replace_retry.h"
 #include "encoder_session_store.h"
 
 #include "pbreceiver/receiver_ingress.h"
@@ -21,6 +22,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -100,6 +102,50 @@ private:
     input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     REQUIRE(input.good());
     return bytes;
+}
+
+class ScopedStateReader final
+{
+public:
+    ScopedStateReader(const std::filesystem::path& path, const DWORD shareMode)
+        : handle_(CreateFileW(path.c_str(), GENERIC_READ, shareMode, nullptr, OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT, nullptr))
+    {
+        REQUIRE(handle_ != INVALID_HANDLE_VALUE);
+    }
+    ~ScopedStateReader()
+    {
+        static_cast<void>(Close());
+    }
+    ScopedStateReader(const ScopedStateReader&) = delete;
+    ScopedStateReader& operator=(const ScopedStateReader&) = delete;
+    [[nodiscard]] bool Close() noexcept
+    {
+        if (handle_ == INVALID_HANDLE_VALUE)
+        {
+            return true;
+        }
+        const HANDLE handle = handle_;
+        handle_ = INVALID_HANDLE_VALUE;
+        return CloseHandle(handle) != FALSE;
+    }
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
+
+[[nodiscard]] pbapp::EncoderSessionStoreCreateConfig MakeReplaceTestConfig(const std::filesystem::path& root)
+{
+    pbapp::EncoderSessionStoreCreateConfig config;
+    config.rootDirectory = root;
+    config.sourceIdentity = MakeSourceIdentity(91, 31, 32, 17);
+    config.sourcePathUtf8 = "NON_TRANSFER_STATE_REPLACEMENT_TEST";
+    config.buildIdentity = "G18 state-store test";
+    config.compressionIdentity = "test-only";
+    config.outerFecIdentity = "test-only";
+    config.sessionId = MakeSessionId(0x80);
+    config.segmentCount = 2;
+    config.descriptorBundle = MakeBytes(32);
+    return config;
 }
 
 [[nodiscard]] std::vector<std::byte> WrapControl(const pbprotocol::ControlRecordType recordType,
@@ -338,6 +384,221 @@ TEST_CASE("Encoder session store leases IDs durably and resumes only exact sourc
         config.buildIdentity, config.compressionIdentity, config.outerFecIdentity, store, found));
     REQUIRE_FALSE(found);
     REQUIRE_FALSE(store);
+}
+
+TEST_CASE("Encoder atomic replacement retry policy is bounded and preserves the decisive error",
+    "[application][encoder][durable-lease][atomic-replace][g18]")
+{
+    std::vector<DWORD> errors{ERROR_SUCCESS};
+    std::uint64_t now = 0;
+    DWORD waitStep = 25;
+    std::uint64_t operationTime = 0;
+    std::uint32_t expectedAttempts = 1;
+    std::uint32_t expectedWaits = 0;
+    SECTION("normal replacement performs no wait")
+    {
+    }
+    SECTION("only access denied and sharing violation can recover")
+    {
+        errors = {ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_SUCCESS};
+        expectedAttempts = 3;
+        expectedWaits = 2;
+    }
+    SECTION("a nonretryable initial failure stops immediately")
+    {
+        errors = {ERROR_DISK_FULL};
+    }
+    SECTION("a nonretryable later failure preserves the last error")
+    {
+        errors = {ERROR_ACCESS_DENIED, ERROR_PATH_NOT_FOUND};
+        expectedAttempts = 2;
+        expectedWaits = 1;
+    }
+    SECTION("persistent access denial exhausts the time budget")
+    {
+        errors = {ERROR_ACCESS_DENIED};
+        expectedAttempts = 10;
+        expectedWaits = 10;
+    }
+    SECTION("a stalled clock still exhausts the attempt budget")
+    {
+        errors = {ERROR_SHARING_VIOLATION};
+        waitStep = 0;
+        expectedAttempts = 11;
+        expectedWaits = 10;
+    }
+    SECTION("scheduler oversleep cannot start a late retry")
+    {
+        errors = {ERROR_ACCESS_DENIED};
+        waitStep = 500;
+        expectedWaits = 1;
+    }
+    SECTION("time spent in the system call counts against retries")
+    {
+        errors = {ERROR_ACCESS_DENIED};
+        operationTime = 300;
+    }
+    std::size_t calls = 0;
+    std::uint32_t waits = 0;
+    std::uint64_t requestedWaitMilliseconds = 0;
+    const auto result = pbapp::detail::RetryEncoderStateReplace([&]() noexcept
+    {
+        now += operationTime;
+        const DWORD error = errors[(std::min)(calls, errors.size() - 1)];
+        calls++;
+        return error;
+    }, [&]() noexcept { return now; }, [&](const DWORD milliseconds) noexcept
+    {
+        waits++;
+        requestedWaitMilliseconds += milliseconds;
+        now += waitStep;
+    });
+    REQUIRE(result.attempts == expectedAttempts);
+    REQUIRE(calls == expectedAttempts);
+    REQUIRE(waits == expectedWaits);
+    REQUIRE(result.firstError == errors.front());
+    REQUIRE(result.error == errors.back());
+    REQUIRE(result.elapsedMilliseconds == now);
+    REQUIRE(requestedWaitMilliseconds <= pbapp::detail::encoderReplaceBudgetMilliseconds);
+}
+
+TEST_CASE("Encoder retries the same flushed temporary file after a controlled native rename denial",
+    "[application][encoder][durable-lease][atomic-replace][g18]")
+{
+    ScratchDirectory scratch(L"encoder-replace-native");
+    const auto config = MakeReplaceTestConfig(scratch.GetPath());
+    std::unique_ptr<pbapp::EncoderSessionStore> store;
+    REQUIRE(pbapp::EncoderSessionStore::Create(config, store));
+    const auto target = store->GetSessionDirectory() / L"runtime.state";
+    const auto temporary = store->GetSessionDirectory() / L"runtime.state.tmp";
+    const auto oldBytes = ReadAllBytes(target);
+    const auto newBytes = MakeBytes(47);
+    const HANDLE temporaryFile = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    REQUIRE(temporaryFile != INVALID_HANDLE_VALUE);
+    DWORD writtenBytes = 0;
+    const bool written = WriteFile(temporaryFile, newBytes.data(), static_cast<DWORD>(newBytes.size()), &writtenBytes, nullptr) != FALSE;
+    const bool flushed = FlushFileBuffers(temporaryFile) != FALSE;
+    const bool closed = CloseHandle(temporaryFile) != FALSE;
+    REQUIRE(written);
+    REQUIRE(writtenBytes == newBytes.size());
+    REQUIRE(flushed);
+    REQUIRE(closed);
+    ScopedStateReader reader(target, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    DWORD firstNativeError = ERROR_SUCCESS;
+    std::uint32_t attempts = 0;
+    std::uint64_t now = 0;
+    bool released = false;
+    const auto result = pbapp::detail::RetryEncoderStateReplace([&]() noexcept
+    {
+        const DWORD error = MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
+            ERROR_SUCCESS : GetLastError();
+        if (attempts == 0)
+        {
+            firstNativeError = error;
+        }
+        attempts++;
+        return error;
+    }, [&]() noexcept { return now; }, [&](const DWORD milliseconds) noexcept
+    {
+        released = reader.Close();
+        now += milliseconds;
+    });
+    REQUIRE(firstNativeError == ERROR_ACCESS_DENIED);
+    REQUIRE(released);
+    REQUIRE(result.error == ERROR_SUCCESS);
+    REQUIRE(result.attempts == 2);
+    REQUIRE(ReadAllBytes(target) == newBytes);
+    REQUIRE_FALSE(std::filesystem::exists(temporary));
+    REQUIRE(oldBytes != newBytes);
+}
+
+TEST_CASE("Encoder state persistence survives a short target reader without spending a second generation",
+    "[application][encoder][durable-lease][atomic-replace][transient-reader][g18]")
+{
+    ScratchDirectory scratch(L"encoder-replace-transient");
+    const auto config = MakeReplaceTestConfig(scratch.GetPath());
+    std::unique_ptr<pbapp::EncoderSessionStore> store;
+    REQUIRE(pbapp::EncoderSessionStore::Create(config, store));
+    REQUIRE(store->EnsureRepairIdLease(1, 8192));
+    const auto target = store->GetSessionDirectory() / L"runtime.state";
+    const auto generation = store->GetGeneration();
+    ScopedStateReader reader(target, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    bool released = false;
+    std::jthread releaser([&]() noexcept
+    {
+        Sleep(50);
+        released = reader.Close();
+    });
+    const auto status = store->UpdateCarouselPosition(3, 1);
+    releaser.join();
+    REQUIRE(released);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(store->GetGeneration() == generation + 1);
+    REQUIRE(store->GetRepairIdLeaseEnd(1) == 8192);
+    REQUIRE_FALSE(std::filesystem::exists(target.wstring() + L".tmp"));
+    store.reset();
+    bool found = false;
+    REQUIRE(pbapp::EncoderSessionStore::FindMatching(config.rootDirectory, config.sourceIdentity,
+        config.buildIdentity, config.compressionIdentity, config.outerFecIdentity, store, found));
+    REQUIRE(found);
+    REQUIRE(store->GetGeneration() == generation + 1);
+    REQUIRE(store->GetCarouselPass() == 3);
+    REQUIRE(store->GetSegmentOrdinal() == 1);
+    REQUIRE(store->GetRepairIdStart(1, 32) == 8192);
+}
+
+TEST_CASE("Encoder persistent replacement denial rolls back memory and retains exact durable leases",
+    "[application][encoder][durable-lease][atomic-replace][g18]")
+{
+    ScratchDirectory scratch(L"encoder-replace-permanent");
+    const auto config = MakeReplaceTestConfig(scratch.GetPath());
+    std::unique_ptr<pbapp::EncoderSessionStore> store;
+    REQUIRE(pbapp::EncoderSessionStore::Create(config, store));
+    REQUIRE(store->EnsureFrameSequenceLease(4096));
+    REQUIRE(store->EnsureRepairIdLease(1, 8192));
+    const auto generation = store->GetGeneration();
+    const auto target = store->GetSessionDirectory() / L"runtime.state";
+    const auto oldBytes = ReadAllBytes(target);
+    ScopedStateReader reader(target, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    pbapp::EncoderSessionStoreStatus status;
+    const auto started = GetTickCount64();
+    SECTION("frame lease")
+    {
+        status = store->EnsureFrameSequenceLease(8192);
+    }
+    SECTION("repair lease")
+    {
+        status = store->EnsureRepairIdLease(1, 12288);
+    }
+    SECTION("position after already committed repair lease")
+    {
+        status = store->UpdateCarouselPosition(3, 1);
+    }
+    const auto elapsed = GetTickCount64() - started;
+    REQUIRE(reader.Close());
+    INFO(status.message);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.message.find("session state atomic replace failed; win32=5") != std::string::npos);
+    REQUIRE(elapsed < 3000);
+    REQUIRE(store->GetGeneration() == generation);
+    REQUIRE(store->GetFrameSequenceLeaseEnd() == 4096);
+    REQUIRE(store->GetRepairIdLeaseEnd(1) == 8192);
+    REQUIRE(store->GetCarouselPass() == 0);
+    REQUIRE(store->GetSegmentOrdinal() == 0);
+    REQUIRE(ReadAllBytes(target) == oldBytes);
+    REQUIRE_FALSE(std::filesystem::exists(target.wstring() + L".tmp"));
+    store.reset();
+    bool found = false;
+    REQUIRE(pbapp::EncoderSessionStore::FindMatching(config.rootDirectory, config.sourceIdentity,
+        config.buildIdentity, config.compressionIdentity, config.outerFecIdentity, store, found));
+    REQUIRE(found);
+    REQUIRE(store->GetGeneration() == generation);
+    REQUIRE(store->GetFrameSequenceStart() == 4096);
+    REQUIRE(store->GetRepairIdStart(1, 32) == 8192);
+    REQUIRE(store->GetCarouselPass() == 0);
+    REQUIRE(store->GetSegmentOrdinal() == 0);
 }
 
 TEST_CASE("Decoder resume journal repairs only a torn tail and compacts completed Segment state",

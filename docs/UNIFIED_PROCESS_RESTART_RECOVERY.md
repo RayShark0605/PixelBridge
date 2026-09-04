@@ -1,7 +1,7 @@
 # G18：256 MiB 真实进程终止与恢复
 
-> 状态：实现与定向证据已整理，但 **G18 未通过最终验收，不得进入 G19**（2026-09-04）。
-> 基线为 `805dd2a5a8b8f937f56287e4e030ff6f50860074`（G17）。实现与失败证据已提交为 `8965f3d`，定向诊断记录为 `33f6bfa`。用户追加要求多次复测：三次 encoder-prescan 均通过，但随后 lease-persisted 再现同一 Win32 5，累计四次自然失败；不能按“复测均未发生”的条件忽略。未实施生产修复。定向诊断见第 8 节，最新复测见第 9 节。
+> 状态：**G18 已通过批准的无像素 headless 最终验收**（2026-09-04），当前结论见第 10 节。同一修复候选在干净状态下通过九个进程终止点和五项负例；仅提交 G18，不在本轮实现 G19。
+> G17 基线为 `805dd2a5a8b8f937f56287e4e030ff6f50860074`。历史实现/失败证据为 `8965f3d`，诊断为 `33f6bfa`，追加复测为 `1d49de2`。第 7–9 节按时间保留四次自然失败及当时未修复/阻塞的结论，不作为当前状态；受控原子替换拒绝的红灯→最小有界重试→绿灯见第 10 节。自然故障的具体占用者仍未知，不将本轮通过解释为所有环境下永不再发生 Win32 5。
 > 本目标的无像素 headless 验收与仅测试构建启用的最小插桩已由用户明确批准。
 
 ## 1. 范围与证据边界
@@ -317,3 +317,90 @@ foreach ($attempt in 1..3) {
 汇总明确 `naturalFailureReproduced=true`、`allRechecksPassed=false`、`ignoreFailureConditionMetForWholeRecheck=false`、`g18ExitCriteriaMet=false`、`productionFixApplied=false`。本轮结论是**故障仍会发生，但不是每次发生；具体根因仍未知**，不是从这四次不同注入点的样本估计发生概率。
 
 没有继续试到通过，没有实现重试/延时/API 替换，没有启动 Procmon/ETW，也没有运行 ASan、full CTest、GPU/GUI/native/remote、20 GiB 或发布包验证。本轮源码提交仅更新 G18 文档与状态，`docs/PHASE1_GATE_REPORT.md` 未改动、未暂存。下一目标仍是 G18 的自然拒绝来源诊断与最小修复决策，G19 未开始。
+
+## 10. 有界原子替换修复与最终候选（2026-09-04）
+
+用户随后明确要求继续定位、排查并修复。以下是新一轮证据，第 7–9 节的失败和历史结论保持原样，不把旧的 exit 1 改写成通过，也不再以管理员采集为唯一前提。
+
+### 10.1 确认的缺陷与最小修复
+
+确定的应用缺陷是：`AtomicWriteFile` 对可短暂恢复的原子替换拒绝只尝试一次，导致整个 Carousel 退出。原自然失败的具体占用进程/过滤驱动仍未知；不将其归因给安全软件。原 target-reader 小探针证明本机 Windows 的目标读句柄即使允许 `FILE_SHARE_DELETE`，仍能令旧的 `MoveFileExW` replacement 返回 error 5。新增生产 state-store 测试把该句柄限制为约 50 ms：**接入修复前仍失败，错误与自然故障相同**。
+
+修复只改变 `apps/common/encoder_session_store.cpp` 中 rename 的错误处理，内部策略在 `encoder_atomic_replace_retry.h`：
+
+- 仍为原 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`；只对 `ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION` 重试。
+- **最多 11 次调用、250 ms 重试调度预算、每次最多等待 25 ms**；同时检查尝试数和单调时钟，时钟停滞也不能无限循环，超时唤醒后不再开始新的调用。
+- 250 ms 是重试调度预算，不是 Windows 系统调用或线程调度的硬实时完成保证。正常一次成功没有额外文件 I/O 或 sleep。
+- 重用同一个已 write/flush/close 的临时文件，不重新序列化、不增加 generation、不重新分配 lease；不删除旧 target，不采用 copy、in-place write 或其他 API fallback。
+- 每次失败立即保存 `GetLastError`；非指定错误立即停止，持续拒绝返回最后错误，沿用原临时文件清理以及 generation/frame lease/repair lease/Carousel 位置回滚。
+- 成功返回之前不能消费新租约；已成功保存的下一段 repair lease 不因随后的位置保存失败而回退。公共接口、PBED/PBER v2、本地状态目录、wire/Profile/FEC/Golden 均不改变。
+
+仅专用测试克隆库增加 `atomic-replace-first-retry.json`：每个子进程 create-only 保存首个重试事务的文件名、首次/最终错误、尝试数和耗时。**观察在重试循环结束之后才发生**，不以 Restart Manager 或额外观察 I/O 促成恢复；普通产品没有该观察器。它不是全程重试次数统计，后续同名事件不能覆盖首条。
+
+### 10.2 定向回归及验收器修补
+
+ASan 使用原独立 build tree，仅重建并执行受影响的 Encoder durable-lease selector，没有再次运行未改动的 Decoder/Storage/Protocol/Receiver 组：
+
+```powershell
+cmake --build build-unified-asan --config RelWithDebInfo --target PBApplicationTests --parallel 6
+$env:ASAN_OPTIONS = 'halt_on_error=1'
+.\build-unified-asan\tests\PBApplication\RelWithDebInfo\PBApplicationTests.exe `
+  '[application][encoder][durable-lease]' --rng-seed 18092026 --durations yes
+```
+
+- 修复前红灯：`g18-retry-red.txt` / `.exitcode`，只运行 `[application][encoder][transient-reader]`，1 case、7 assertions，其中 `REQUIRE(status)` 以 `win32=5` 失败，exit 42。不是 sanitizer 错误，不被隐藏。
+- 修复后绿灯：`g18-retry-green.txt` / `.exitcode`，**5 cases / 248 assertions，exit 0**。覆盖正常无等待、5→32→成功、立即/中途非重试错误、时间预算、停滞时钟、超时唤醒、系统调用耗时预算。
+- 真实文件系统受控用例：首个 rename 确实返回 error 5，释放目标 reader 后第 2 次替换成功；同一 flushed 临时文件发布为预期字节。
+- 真实生产 store 的约 50 ms reader 释放后成功，generation 仅增加 1，重开位置/repair start 正确；持续 reader 下分别测试 frame lease、repair lease、Carousel position，均有界失败、旧 runtime 字节不变、内存回滚、临时文件清理且重开跳过旧 durable lease。
+- 构建日志为 `build-unified-asan/g18-retry-{red,green}-build.txt`；`windeployqt` 的既有 `VCINSTALLDIR is not set` 警告仍单独记录，不冒充 ASan 错误或隐藏它。
+
+验收器的 `encoder-prescan` 分支原来提前返回，只确认没有旧 Session，漏检重启后的 run 内 ID 唯一性/租约边界。现在先执行共同身份台账校验，再处理“无旧 durable Session”；同时拒绝该分支缺失重启台账。`g18-retry-verifier-checks/report.json` 的纯元数据检查接受 1 个正确例，并拒绝重复帧、重复 repair、帧越界、repair 越界、缺失台账 5 个负例，不启动传输进程。预留而未交付的尾部 repair ID 仍算已消耗，不要求预留计数等于实际交付计数。
+
+### 10.3 同一候选的九点与五项负例
+
+Release 只构建 `PBProcessRecoveryWorker` 与受修复影响的 `PixelBridgeEncoder`，不启动产品 GUI。候选复制到 create-only 的 `build-unified-release/g18-retry-candidate/`，与原失败 worker 快照分开：
+
+- worker SHA-256：`b14356c7f00ec4f2c5d09d922581ad1f66a0a8dc1dcd46712ef49156bae0d857`；
+- worker 嵌入 `baseGitCommit=1d49de2ac73772113ac4471409bcc6c931bad26d`，表示修复前父提交；具体修复源码由 campaign `provenance.json` 的逐文件 SHA-256 封印，不将该 worker 称为提交后 HEAD 构建；
+- 继续使用第 7.1 节固定 CSPRNG source；各点独立干净目录、串行、无 debugger、无人工 reader 注入，不复用原失败状态。
+
+```powershell
+cmake -S . -B build-unified-release -DPB_BUILD_PROCESS_RECOVERY_HARNESS=ON
+cmake --build build-unified-release --config Release --target PBProcessRecoveryWorker PixelBridgeEncoder --parallel 6
+& <python> tests\PBApplication\run_process_recovery.py `
+  --worker build-unified-release\g18-retry-candidate\PBProcessRecoveryWorker.exe `
+  --run-directory build-unified-release\g18-retry-final-matrix `
+  --fixture-manifest build-unified-release\g18-first-flow\fixture-manifest.json --negative-checks
+```
+
+以上是本轮实际命令；重放必须更换为不存在的 run directory。最终 **exit 0，九点与五项负例全部通过**，不是从旧候选拼接结果，也没有失败后重跑到通过。
+
+| 终止点 | 重启前 durable completed | 重启到发布 / 秒 | 重启 combined peak / MiB |
+| --- | ---: | ---: | ---: |
+| encoder-prescan | 0 | 54.922 | 84.96 |
+| lease-persisted | 0 | 59.937 | 84.42 |
+| encoder-mid-segment | 2 | 55.937 | 85.09 |
+| decoder-active | 2 | 51.859 | 84.56 |
+| part-flushed | 2 | 46.140 | 84.46 |
+| completed-record | 3 | 51.141 | 98.51 |
+| whole-digest | 32 | 0.875 | 49.65 |
+| before-rename | 32 | 0.766 | 49.65 |
+| after-rename | 32 | 0.625 | 42.63 |
+
+各终止子进程均有匹配的 PID/exit 218/durable marker，重启 PID 不同且 exit 0；保留 durable completed、重放 active cache，FrameSequence/repair 身份台账无复用且受 durable lease 约束。每个输出均为 268,435,456 bytes、32 段完成、final reopen 成功，外部 SHA-256/BLAKE3 与第 7.1 节源完全一致。
+
+五项负例：明确 torn final tail 修复后发布且 digest 正确；内部 CRC、伪长度拒绝；第 5 active cache 在 `.part` 预分配前拒绝；保持 identity/长度/mtime 的源内容变化拒绝旧 Session。source 原件前后哈希不变，没有错误发布。
+
+本矩阵终止/重启进程的最大观测峰值 **98.51 MiB**；source-change 中独立 sender-only 峰值 **49.68 MiB**。combined 仍只作为 receiver 保守上界，不代表独立 Decoder EXE 实测，headless 耗时也不代表视觉吞吐。
+
+### 10.4 证据归档、剩余限制与退出
+
+- `build-unified-release/g18-retry-final-matrix/report.json`：完整九点/五负例、PID、内存、耗时、final reopen、外部 digest 和逐文件 provenance。
+- 同目录 `fix-summary.json`：额外只读复核已结束进程、全部九份最终输出、源/worker/源码封印及历史失败 runtime 未改动；`g18-retry-collect.py` 为本地汇总入口。
+- `build-unified-release/g18-retry-final-matrix.txt` / `.exitcode`：监督进程完整日志与 exit 0。每个 case 的 `verified.json` 仍独立保存。
+- 本轮矩阵**没有记录到** `atomic-replace-first-retry.json` 或末次失败观察；不声称自然失败在该矩阵中“先发生、后被重试救回”。修复机制的直接证据来自第 10.2 节可控 reader 的原实现失败、相同生产 store 修复后成功及真实 rename 首次失败/第二次成功。
+- 原自然拒绝的占用者/过滤层仍未知。长期占用、永久权限拒绝或其他不可恢复 I/O 仍会有界失败；不能保证所有环境下消灭 error 5，也没有修改权限、关闭其他程序或规避安全软件。
+- 第 9 节失败的原 `runtime.state` SHA-256 仍为 `a47893392ad6b3fad7cd36ac5a09a08bbbed03324767216941db7bde9b4609e0`，没有推进其状态。`docs/PHASE1_GATE_REPORT.md` SHA-256 仍为 `076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`，未修改、未暂存。
+- 本轮未运行 full CTest、GPU/GUI/native/remote、20 GiB、断电测试或提交后安装包/嵌入身份复验；未操作任一屏幕或鼠标键盘。
+
+**G18 退出条件已满足：** 同一候选九点从干净状态真实终止并恢复；失败负例无错误发布；受影响 Encoder 定向 ASan 通过；报告给出可重放命令、峰值内存和恢复时间。公共接口/格式/视觉链不变，已修复可复现的短暂拒绝即导致整个会话失败的问题；未观察到的自然故障归因不伪装为已证实。下一目标为 **G19：20 GiB+ headless 大文件能力**，本轮没有开始。

@@ -744,10 +744,10 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G18 — 256 MiB 与进程级故障注入
 
-**状态：** 实现与定向证据已整理，但未通过最终验收（2026-09-04），不得进入 G19。实现/失败证据已提交 `8965f3d`，定向诊断记录为 `33f6bfa`。用户追加要求多次复测、若均未复现则忽略：三次 encoder-prescan 均通过，但随后 lease-persisted 在恢复 20.406 秒、12 个 durable Segment 后再次出现相同 `win32=5`，累计四次自然失败，条件性忽略不适用。已定位 repair lease 保存成功、随后 Carousel position 原子替换失败；受控目标读取句柄也能产生该错误，但自然故障的拒绝来源仍未确认，未擅自修复。
-**前置：** G17。
+**状态：** 已通过批准的无像素 headless 最终验收（2026-09-04）。本轮修复 Encoder 状态原子替换对短暂拒绝只尝试一次的问题，同一最终候选在干净状态下通过九个终止点与五项负例；不使用旧候选局部成功拼接验收。详细证据见 `UNIFIED_PROCESS_RESTART_RECOVERY.md` 第 10 节。
+**前置：** G17，提交 `805dd2a` 为当前祖先，telemetry/report/cache 定向通过日志已核对，未重跑 G17。
 **目的：** 用真实 256 MiB CSPRNG/RAW 文件关闭双端恢复 crash windows，是第一次集中可靠性检查。
-**已确认的证据边界（2026-09-04）：** 用户明确同意无像素 headless 闭环与仅专用测试构建启用的最小终止插桩。复用真实 Unified 调度、正式 Control/Transport、Outer FEC、Receiver、journal 和 PBStorage；不把结果声明为视觉链认证。修改限于专用 harness、测试 CMake、既有 application runtime/journal 与 PBStorage 的测试条件编译观察点和本目标文档；普通产品 target 不启用插桩，不改变生产公共接口、wire、FEC 或持久化格式。证据与重放入口见 `UNIFIED_PROCESS_RESTART_RECOVERY.md`。
+**已确认的证据边界（2026-09-04）：** 用户明确同意无像素 headless 闭环、仅专用测试构建启用的最小终止插桩，并追加批准诊断与修复 Encoder `runtime.state` 替换失败。复用真实 Unified 调度、正式 Control/Transport、Outer FEC、Receiver、journal 和 PBStorage；不把结果声明为视觉链认证。修复限于既有 Encoder state-store 的内部有界 rename 重试、其私有策略头、定向测试/专用 harness 和本目标文档；普通产品 target 不启用插桩，不改变生产公共接口、wire、FEC 或持久化格式。
 
 **注入点：**
 
@@ -762,21 +762,21 @@ ctest --test-dir build-unified-release -C Release `
 
 **验证：**
 
-- [x] 每个点使用真实进程终止与重启，不仅是函数异常模拟；九点均有历史成功证据，不代表同一最终候选整组通过。
+- [x] 同一最终候选的每个点使用真实进程终止与重启，不仅是函数异常模拟。
 - [x] 已 durable completed Segment 不丢；未 flush 尾部允许 Carousel 重收。
-- [x] FrameSequence/repair ID 不复用。
+- [x] FrameSequence/repair ID 不复用；预扫描恢复后的 run 内唯一性/lease 校验不再被提前返回略过。
 - [x] source 变化拒绝旧 Session，包括保持 identity/长度/mtime 的内容变化。
 - [x] torn final tail 可忽略；内部 CRC、伪长度、超额 active cache 拒绝。
 - [x] 成功输出外部长度、SHA-256、BLAKE3 与源一致；I/O 拒绝路径未错误发布。
-- [x] working set 已记录：sender-only 峰值 50.23 MiB；combined sender+receiver 最大观测峰值 99.11 MiB，仅为 receiver 保守上界，不冒充独立 Decoder EXE 测量。
-- [ ] 最终候选从干净基线关闭全部退出条件；不能用局部历史成功覆盖重复 I/O 失败。
+- [x] working set 已记录：sender-only 峰值 49.68 MiB；combined sender+receiver 最大观测峰值 98.51 MiB，仅为 receiver 保守上界，不冒充独立 Decoder EXE 测量。
+- [x] 最终候选从干净基线关闭全部退出条件；九点/五负例一次通过，历史失败记录未改写。
 
 **测试预算：** 只运行故障注入 harness 和受影响 parser/resume/storage 的定向 ASan；不跑 full CTest、GPU/GUI/native。
-**退出：** 所有注入点从干净基线可复现；失败路径无错误发布；报告包含峰值内存与恢复时间。
-**当前证据：** 真实 268,435,456-byte CSPRNG、32 个 RAW Segment；九个历史点重启到发布 0.703–54.859 秒，另有 27 段 I/O 失败状态的 8.125 秒恢复。五个负例通过。定向 ASan 基线 Protocol 22/2,261、Receiver 13/243、Storage 9/132、Application 6/348；实现后仅重建并重跑受影响 Storage 9/132、Application 6/348，均通过。最终预扫描候选在第 29 个 durable Segment 后仍因原子替换 error 5 失败，原来的 27/28 段同类失败日志均保留。观察器未能确定原因，不改生产重试/持久化语义。详细分阶段结果、失败复现命令、binary hashes 和未执行门禁见 `UNIFIED_PROCESS_RESTART_RECOVERY.md`；本地汇总 `build-unified-release/g18-incomplete-checkpoint.json` 明确退出条件未满足。
-**扩围诊断证据：** 两次 CDB 诊断闭环成功但未复现自然故障，时序可能被扰动；已有输出外部长度/SHA-256/BLAKE3 一致。链接原 state-store 的小探针证明允许 `FILE_SHARE_DELETE` 的目标读句柄也可使 rename 返回 error 5，而事后 DELETE-access 仍为 0；不得用该 probe 排除瞬时占用。无占用的 128 组双写在带/不带 debugger 下均成功。`build-unified-release/g18-atomic-diagnosis/diagnosis.json` 区分受控机制与未确认自然根因，生产代码未改。下一步需用户配合仅夹具路径的有界管理员文件 I/O 跟踪，不继续盲跑 campaign；详细命令、原始日志局限与证据边界见恢复报告第 8 节。
-**追加复测证据：** 与原失败同一 worker（SHA-256 `3d7d269fe726281422c7cc2d6d7e7a9265d619e7b7241f11cfb2314940639682`）及相同源码，独立干净目录、串行、无 debugger。三次 encoder-prescan 重启到发布 55.079 / 57.859 / 59.531 秒，32 段与 final reopen、外部长度/SHA-256/BLAKE3 均通过。随后的 lease-persisted 恢复 PID 42612 exit 1；有效 runtime generation 28 / ordinal 11，下一段 repair lease 已落盘，没有错误发布。首个失败后停止，余下 7 个终止点和 5 项负例未开始；未重跑 ASan/full CTest/实屏。新汇总 `build-unified-release/g18-user-recheck-20260904/recheck-summary.json` 与冻结的 Encoder/journal 元数据保留此次自然复现，不覆盖历史记录；详情见恢复报告第 9 节。
-**提交建议：** `test(resume): prove process restart recovery at 256 mib`
+**退出：** 已满足。所有注入点从干净基线可复现；失败路径无错误发布；报告包含峰值内存与恢复时间。
+**修复与关键证据：** 受控目标 reader 只占用约 50 ms，旧生产 state-store 定向测试仍以 `win32=5` 失败（exit 42）；新增同一临时文件的 rename-only 重试后通过。仅 error 5/32 可重试，最多 11 次、250 ms 调度预算、每次最多等待 25 ms；无删除旧 target、复制覆盖、重新序列化或提前使用新租约。持续拒绝仍返回最后错误并保持旧 runtime 字节、回滚内存 lease/position。受影响 Encoder 定向 ASan **5 cases / 248 assertions** 通过；未再次运行未改动的 Decoder/Storage/Protocol/Receiver 组。
+**最终矩阵：** worker SHA-256 `b14356c7f00ec4f2c5d09d922581ad1f66a0a8dc1dcd46712ef49156bae0d857`，父提交身份 `1d49de2`，改动源码逐文件封印；同一真实 268,435,456-byte CSPRNG source、32 个 RAW Segment。九点重启到发布 0.625–59.937 秒，每份输出 final reopen 与外部 SHA-256/BLAKE3 一致；五负例通过。完整 `build-unified-release/g18-retry-final-matrix/report.json`、`fix-summary.json`、各 case `verified.json` 与独立 ASan 日志保留。
+**历史与剩余限制：** 四次自然失败及无修复时的三次通过/一次失败仍见恢复报告第 7–9 节（`8965f3d`、`33f6bfa`、`1d49de2`）。本轮矩阵未记录到自然替换拒绝，机制修复由受控红灯→绿灯直接证明，不声称自然故障在矩阵中被重试救回。具体占用者/过滤层仍未知，永久拒绝仍安全失败，不能保证所有环境永不出现 Win32 5。未执行 full CTest、GPU/GUI/native/remote、20 GiB、断电或提交后安装包身份复验；`docs/PHASE1_GATE_REPORT.md` 未修改、未暂存。本轮止于 G18，推荐下一目标 G19。
+**提交建议：** `fix(resume): retry transient encoder state replacement`
 
 ## G19 — 20 GiB+ headless 大文件能力
 
