@@ -85,7 +85,8 @@ def create_fixture(root: Path) -> dict:
 
 
 def run_worker(worker: Path, source: Path, case: Path, label: str, point: str = "", mode: str = "combined",
-               expected_exit: int = 0) -> tuple[Path, float]:
+               expected_exit: int = 0, timeout_seconds: int = 600) -> tuple[Path, float]:
+    require(0 < timeout_seconds <= 1800, "Recovery child timeout is outside its bounded contract")
     evidence = case / label
     evidence.mkdir()
     for name in ("sender", "output"):
@@ -99,12 +100,12 @@ def run_worker(worker: Path, source: Path, case: Path, label: str, point: str = 
         process = subprocess.Popen(command, stdout=stdout, stderr=stderr, env=environment,
                                    creationflags=subprocess.CREATE_NO_WINDOW)
         try:
-            exit_code = process.wait(timeout=600)
+            exit_code = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             # Only this supervisor's still-live, explicitly owned child is killed.
             process.kill()
             process.wait()
-            raise RuntimeError(f"G18 worker exceeded 600 s: {case.name}/{label}")
+            raise RuntimeError(f"Recovery worker exceeded {timeout_seconds} s: {case.name}/{label}")
     elapsed = time.monotonic() - started
     write_json(evidence / "process.json", {"command": command, "pid": process.pid, "exitCode": exit_code,
                                          "elapsedSeconds": elapsed, "selectedCrashPoint": point})

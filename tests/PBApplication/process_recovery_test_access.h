@@ -9,7 +9,8 @@ enum class ProcessRecoveryMode
 {
     Combined,
     SenderOnly,
-    QuotaSeed
+    QuotaSeed,
+    LargeFile
 };
 
 // Linked only from the opt-in, instrumented clone of PBApplication. The

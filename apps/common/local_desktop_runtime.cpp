@@ -1048,6 +1048,9 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
     const int compressionLevel, const std::uint64_t visualProfileId, const pbprotocol::SessionId& sessionId,
     const std::atomic<bool>& stopRequested, const PreparationProgressCallback& progress = {})
 {
+#ifdef PB_PROCESS_FAULT_TESTS
+    const auto processTestPrescanStarted = std::chrono::steady_clock::now();
+#endif
     const std::filesystem::path sourcePath(source.path);
     const std::string fileNameUtf8 = Utf8FromWide(sourcePath.filename().wstring());
     const std::uint64_t segmentCount = CalculateSegmentCount(source.fileBytes);
@@ -1091,6 +1094,9 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
     {
         progress(source.fileBytes, segmentCount, true);
     }
+#ifdef PB_PROCESS_FAULT_TESTS
+    test::GetProcessRecoveryObservations().prescanMilliseconds = ElapsedMilliseconds(processTestPrescanStarted);
+#endif
     return description;
 }
 

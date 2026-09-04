@@ -66,7 +66,7 @@ unset(pbQSettingsWindeployqt)
 
 # Explicit test-only clones: neither the ordinary PBApplication/PBStorage nor
 # either product EXE receives a crash hook or the private recovery entry point.
-option(PB_BUILD_PROCESS_RECOVERY_HARNESS "Build the opt-in G18 process recovery worker" OFF)
+option(PB_BUILD_PROCESS_RECOVERY_HARNESS "Build the opt-in G18/G19 process recovery worker" OFF)
 if(PB_BUILD_PROCESS_RECOVERY_HARNESS)
     function(PbCloneProcessRecoveryLibrary targetName originalTarget)
         get_target_property(sourceDirectory ${originalTarget} SOURCE_DIR)

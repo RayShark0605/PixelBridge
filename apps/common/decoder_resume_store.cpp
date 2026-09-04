@@ -630,6 +630,9 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                 return status;
             }
             implementation->fileBytes = header.size();
+#ifdef PB_PROCESS_FAULT_TESTS
+            test::ObserveJournalFileBytes(implementation->fileBytes);
+#endif
         }
         else
         {
@@ -864,6 +867,9 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                 position += totalBytes.Value();
             }
             implementation->fileBytes = position;
+#ifdef PB_PROCESS_FAULT_TESTS
+            test::ObserveJournalFileBytes(implementation->fileBytes);
+#endif
         }
 
         implementation->file = CreateFileW(implementation->path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
@@ -1258,6 +1264,9 @@ DecoderResumeStoreStatus DecoderResumeStore::AppendRecord(const std::uint16_t re
     }
     implementation_->generation++;
     implementation_->fileBytes = newFileBytes.Value();
+#ifdef PB_PROCESS_FAULT_TESTS
+    test::ObserveJournalFileBytes(implementation_->fileBytes);
+#endif
     return {};
 }
 
@@ -1377,6 +1386,9 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
     }
     implementation_->generation = generation;
     implementation_->fileBytes = document.size();
+#ifdef PB_PROCESS_FAULT_TESTS
+    test::ObserveJournalFileBytes(implementation_->fileBytes);
+#endif
     return {};
 }
 

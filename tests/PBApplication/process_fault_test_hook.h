@@ -23,6 +23,29 @@ namespace pbapp::test
 
 inline constexpr unsigned long processCrashExitCode = 218;
 
+struct ProcessRecoveryObservations
+{
+    std::uint64_t prescanMilliseconds = 0;
+    std::uint64_t peakJournalFileBytes = 0;
+};
+
+// The headless worker owns sender, receiver and journal on one thread. These
+// bounded counters exist only in the opt-in clone, never in product binaries.
+[[nodiscard]] inline ProcessRecoveryObservations& GetProcessRecoveryObservations() noexcept
+{
+    static thread_local ProcessRecoveryObservations observations;
+    return observations;
+}
+
+inline void ObserveJournalFileBytes(const std::uint64_t bytes) noexcept
+{
+    auto& peak = GetProcessRecoveryObservations().peakJournalFileBytes;
+    if (bytes > peak)
+    {
+        peak = bytes;
+    }
+}
+
 [[nodiscard]] inline std::wstring ReadEnvironment(const wchar_t* const name)
 {
     std::array<wchar_t, 4096> buffer{};

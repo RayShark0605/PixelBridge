@@ -780,7 +780,8 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G19 — 20 GiB+ headless 大文件能力
 
-**前置：** G18。
+**状态：** 已通过最终验收（2026-09-04），详细合同与证据见 `UNIFIED_LARGE_FILE_CAPABILITY.md`。
+**前置：** G18，提交 `2c1d74d` 及九点/五负例、定向 ASan、源码封印已核对，未重跑 G18。
 **目的：** 用真实触达每个 Segment 的稀疏结构化文件证明 64-bit offset、预扫描、随机写、resume 与 publish。
 
 **fixture 合同：**
@@ -793,7 +794,11 @@ ctest --test-dir build-unified-release -C Release `
 
 **执行：** 完整 headless payload simulation，可跳过真实视觉耗时；至少一次中断恢复；记录预扫描速度、SegmentCount、max ordinal/offset、working set、journal 峰值、whole digest 和外部哈希。
 **测试预算：** 只运行专用 20 GiB harness；不同时运行 full CTest、ASan 或实屏。
-**退出：** 所有 Segment 实际触达；最终发布 byte-exact；内存仍为双 Segment/4 active；500 GiB 只做 checked-arithmetic/serialization，不实际分配。
+**退出：** 已满足。所有 Segment 实际触达；最终发布 byte-exact；内存仍为双 Segment/4 active；500 GiB 只做 checked-arithmetic/serialization，不实际分配。
+**实现范围：** 复用既有 opt-in process worker，新增私有 `large-file` 模式和 create-only Python supervisor；生产源只增加测试条件编译的 prescan/journal 计数，不改变公共接口、策略、wire/FEC 或持久化格式。通过原大文件确认控制器接受明确的 harness 请求，不调高免提示阈值。原 G18 默认模式/600 秒预算不放宽，G19 每个 child 单独有界为 1,800 秒。
+**关键证据：** 真实 **20 GiB + 64 KiB（21,474,902,016 bytes）**，2,561 个 Segment；每段 seed 数据和 ordinal/offset 标记，全文件实际经过原压缩/FEC/Receiver/写入/恢复/发布。ordinal 1,024 完成后 PID 61688 exit 218，1,025 个 durable completed；PID 31088 恢复同 Session，保留 completed，FrameSequence/repair 不复用，242.047 秒权威发布。最大 ordinal 2,560 / raw offset 21,474,836,480；源/输出/按规则重生成的期望值全字节比较与外部 SHA-256/BLAKE3 一致。combined peak **57.99 MiB**，Sender 2 encoded Segment / 131,787 bytes，Receiver 实际 active peak 1（cap 4），journal 逻辑高水位 **935,526 bytes**。两次预扫描 26.216 / 25.561 秒，按逻辑源字节为 781.205 / 801.223 MiB/s，不冒充视觉吞吐。500 GiB/64,000 Segment 的 Session/末段/Manifest 往返及越界/溢出拒绝通过，没有分配对应 payload。
+**夹具故障与归档：** 首轮在 source allocation 检查中停止，worker 未启动。受控 32 MiB 对照定位 Python truncate 扩展与写入在 flush/close 后实分配整个文件，生成器改用 Windows SetEOF，未放宽检查或改生产存储。第二轮 source 实际 allocation 480.0625 MiB，完整终止/恢复一次通过；原失败保留。最终 `build-unified-release/g19-final-2/report.json`、`audit-summary.json`、manifest/进程日志/冻结元数据与 source/worker hashes 均保留；worker SHA-256 `853908b8154a44ee34492dea76c6401f77f52324b9c6143a2448337ac286a669`，父提交身份 `2c1d74d`，不冒充提交后 HEAD 构建。
+**未执行：** full CTest、ASan、GPU/GUI/native/remote、断电、包/提交后身份复验；非 20 GiB CSPRNG/RAW 吞吐或独立 Decoder EXE 内存认证。`docs/PHASE1_GATE_REPORT.md` 未改动/未暂存；本轮未进入 G20。
 **提交建议：** `test(application): prove twenty gibibyte headless capability`
 
 ## G20 — CP-C：最终 Release、ASan 与 DISPLAY2 native Gate
