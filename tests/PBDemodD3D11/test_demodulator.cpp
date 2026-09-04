@@ -1435,6 +1435,76 @@ TEST_CASE("RemoteVisual LF4 D3D11 demod produces compact metrics and the same ac
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
+TEST_CASE("RemoteVisual LF4 calibration does not inherit caller sampler state",
+    "[demod][d3d11][warp][remote-visual][low-fps][sampler-state]")
+{
+    const auto record = MakeRecord(pbmodulation::kRemoteVisualLowFpsProfileId,
+        pbmodulation::kRemoteVisualLowFpsLayoutVersion, 211, 0xC47A29E105D86B3FULL);
+    std::vector<std::byte> logicalData(pbmodulation::kRemoteVisualLowFpsDataBytes);
+    REQUIRE(pbdesktoplevels::GenerateDiagnosticData(record, logicalData));
+    std::vector<std::byte> raster(pbmodulation::kLocalDesktopFrameBgraBytes);
+    REQUIRE(pbmodulation::EncodeRemoteVisualLowFpsFrame(record, logicalData, raster));
+    const auto original = localdesktoptest::GrayFromGolden(raster);
+    auto translated = localdesktoptest::Resample(original, 1.0, 1.0, 11.25, 13.5, localdesktoptest::FixtureFilter::Area);
+    // Alternating black-pilot rows expose POINT versus LINEAR sampling without
+    // changing the record, data, or policy. At this half-pixel vertical offset,
+    // LINEAR sees an unclipped endpoint near 32; POINT sees clipped zero rows.
+    for (const auto& region : pbmodulation::kRemoteVisualLadders)
+    {
+        for (std::uint32_t row = 2; row < 62; row++)
+        {
+            for (std::uint32_t column = 2; column < 30; column++)
+            {
+                translated.Write(region.x + 11 + column, region.y + 13 + row, row % 2 == 0 ? 0 : 64);
+            }
+        }
+    }
+    const auto fixture = localdesktoptest::ConvertFormat(translated, pbmodulation::LumaPixelFormat::Bgra8);
+    const auto oracle = RunRemoteVisualLowFpsOracle(fixture.View());
+    REQUIRE(oracle.acceptedTransportBlocks.size() == pbmodulation::kRemoteVisualLowFpsCodewords);
+
+    auto environment = CreateWarpEnvironment();
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), {}, demodulator));
+    pbcapturenormalize::ScreenCaptureDomain domain;
+    domain.sourceId[0] = std::byte{0x58};
+    domain.captureEpoch = 13;
+    std::uint64_t observation = 0;
+    for (const auto filter : {D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_FILTER_MIN_MAG_MIP_POINT})
+    {
+        INFO("Caller sampler filter=" << static_cast<unsigned>(filter));
+        D3D11_SAMPLER_DESC description{};
+        description.Filter = filter;
+        description.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        description.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        description.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        description.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        description.MaxLOD = D3D11_FLOAT32_MAX;
+        ComPtr<ID3D11SamplerState> sampler;
+        REQUIRE(SUCCEEDED(environment.device->CreateSamplerState(&description, &sampler)));
+        ID3D11SamplerState* samplers[]{sampler.Get()};
+        environment.context->CSSetSamplers(0, 1, samplers);
+        ComPtr<ID3D11SamplerState> boundSampler;
+        environment.context->CSGetSamplers(0, 1, &boundSampler);
+        REQUIRE(boundSampler.Get() == sampler.Get());
+
+        observation++;
+        const auto gpu = RunRemoteVisualLowFpsGpu(environment, *demodulator, fixture, record, oracle.geometry, {}, domain, observation);
+        RequireSameRemoteVisualLowFpsTruth(oracle, gpu);
+        std::cout << "LF4 caller sampler filter=" << static_cast<unsigned>(filter) <<
+            " accepted=" << gpu.acceptedTransportBlockCount << " falseAccepted=" << gpu.evaluation.falseAcceptedCodewords << '\n';
+        boundSampler.Reset();
+        environment.context->CSGetSamplers(0, 1, &boundSampler);
+        REQUIRE(boundSampler.Get() == nullptr);
+    }
+    const auto snapshot = demodulator->GetSnapshot();
+    REQUIRE(snapshot.submittedFrames == 2);
+    REQUIRE(snapshot.completedFrames == 2);
+    REQUIRE(snapshot.pendingFrames == 0);
+    REQUIRE(snapshot.rawPixelReadbackBytes == 0);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+}
+
 TEST_CASE("RemoteVisual LF4 D3D11 continuous geometry survives independent scale and blur fixtures",
     "[demod][d3d11][warp][remote-visual][low-fps][geometry][blur]")
 {

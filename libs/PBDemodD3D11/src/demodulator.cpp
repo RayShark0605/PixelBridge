@@ -1555,6 +1555,9 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
         const UINT clearValues[4]{};
         context->ClearUnorderedAccessViewUint(slot.metricsUav.Get(), clearValues);
         context->ClearUnorderedAccessViewUint(slot.remoteVisualLowFpsFreshnessSummaryUav.Get(), clearValues);
+        // Calibration uses SampleLevel too; do not inherit a caller's s0 state.
+        ID3D11SamplerState* samplers[]{state.remoteVisualLowFpsSampler.Get()};
+        context->CSSetSamplers(0, 1, samplers);
     }
     else if (unifiedVisual)
     {
@@ -1596,8 +1599,6 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
     context->CSSetShaderResources(0, 6, demodInputs);
     if (remoteVisualLowFps)
     {
-        ID3D11SamplerState* samplers[]{state.remoteVisualLowFpsSampler.Get()};
-        context->CSSetSamplers(0, 1, samplers);
         ID3D11UnorderedAccessView* freshnessOutputs[]{nullptr, nullptr, slot.remoteVisualLowFpsFreshnessSummaryUav.Get()};
         context->CSSetUnorderedAccessViews(0, 3, freshnessOutputs, nullptr);
         context->CSSetShader(state.demodRemoteVisualLowFpsFreshness.Get(), nullptr, 0);
