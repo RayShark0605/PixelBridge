@@ -35,6 +35,12 @@
 #include "pbtelemetry/telemetry.h"
 #include "pbcapturenormalize/diagnostic_readback.h"
 
+#ifdef PB_PROCESS_FAULT_TESTS
+#include "process_fault_test_hook.h"
+#include "process_recovery_test_access.h"
+#include <fstream>
+#endif
+
 #include <Windows.h>
 #include <d3d11_4.h>
 #include <dxgi1_2.h>
@@ -1065,6 +1071,12 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
             segmentOrdinal, rawOffset, rawBytes, compressionEnabled, compressionLevel);
         std::vector<std::byte>().swap(segment.inMemoryEncodedBytes);
         description.segments.push_back(std::move(segment));
+#ifdef PB_PROCESS_FAULT_TESTS
+        if (segmentOrdinal == 1)
+        {
+            test::CrashAt(L"encoder-prescan", rawOffset + rawSize);
+        }
+#endif
         if (progress)
         {
             progress(rawOffset + rawSize, segmentOrdinal + 1, false);
@@ -1424,6 +1436,16 @@ public:
     {
         return peakResidentEncodedSegmentCount_;
     }
+#ifdef PB_PROCESS_FAULT_TESTS
+    [[nodiscard]] const SenderUnifiedScheduledFrame& PrepareHeadlessFrame(const std::uint64_t tick)
+    {
+        Require(profile_.profile == VisualProfile::UnifiedLc4 && tick < 1000000,
+            "G18 headless tick or profile is outside the test contract");
+        Require(static_cast<bool>(unifiedScheduler_.PrepareFrameAt(tick, tick * 1000000000ULL / 15ULL,
+            unifiedFrame_)), "G18 Unified frame preparation failed");
+        return unifiedFrame_;
+    }
+#endif
     [[nodiscard]] std::uint64_t GetPeakResidentEncodedSegmentBytes() const noexcept
     {
         return peakResidentEncodedSegmentBytes_;
@@ -4021,6 +4043,10 @@ private:
     void RestoreResumeState(const DecoderResumeLoadedState& loadedResume, const std::int64_t timestamp100ns)
     {
         Require(resumeStore_ && storage_ && session_, "resume restoration started before Session/storage binding");
+#ifdef PB_PROCESS_FAULT_TESTS
+        test::ObserveRestore(loadedResume.completedSegments.size(), loadedResume.activeBlocks.size(),
+            loadedResume.hadTruncatedTail);
+#endif
         restoringResume_ = true;
         try
         {
@@ -4143,6 +4169,12 @@ private:
         const auto checkpointStatus = storage_->Checkpoint();
         Require(static_cast<bool>(checkpointStatus), "PBStorage checkpoint failed: " +
             DescribeStorageStatus(checkpointStatus));
+#ifdef PB_PROCESS_FAULT_TESTS
+        if (descriptor.segmentOrdinal == 2)
+        {
+            test::CrashAt(L"part-flushed", descriptor.segmentOrdinal);
+        }
+#endif
         pbprotocol::ResumeCompletedSegmentRecord completedRecord;
         completedRecord.sessionId = session_->sessionId;
         completedRecord.segmentOrdinal = descriptor.segmentOrdinal;
@@ -5312,6 +5344,10 @@ void RunHeadlessMultiSegmentFileProbe(const std::wstring& sourcePath,
 }
 
 } // namespace
+
+#ifdef PB_PROCESS_FAULT_TESTS
+#include "process_recovery_runtime.inc"
+#endif
 
 RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const std::span<const std::byte> rawBytes,
     const std::uint32_t controlRepetitions, const std::uint32_t completedCyclesBeforeMarker,

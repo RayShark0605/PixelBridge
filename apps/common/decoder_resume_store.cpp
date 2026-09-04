@@ -6,6 +6,10 @@
 #include "pbprotocol/crc32c.h"
 #include "pbprotocol/descriptor_codec.h"
 
+#ifdef PB_PROCESS_FAULT_TESTS
+#include "process_fault_test_hook.h"
+#endif
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -1143,6 +1147,12 @@ DecoderResumeStoreStatus DecoderResumeStore::RecordCompletedSegment(
     {
         return status;
     }
+#ifdef PB_PROCESS_FAULT_TESTS
+    if (completedRecord.segmentOrdinal == 2)
+    {
+        test::CrashAt(L"completed-record", completedRecord.segmentOrdinal);
+    }
+#endif
     try
     {
         implementation_->completedSegments.push_back(completedRecord);

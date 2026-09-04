@@ -1,5 +1,9 @@
 #include "encoder_session_store.h"
 
+#ifdef PB_PROCESS_FAULT_TESTS
+#include "process_fault_test_hook.h"
+#endif
+
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/byte_io.h"
 #include "pbprotocol/checked_integer.h"
@@ -369,6 +373,9 @@ struct ParsedRuntimeState
     if (MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
     {
         const DWORD error = GetLastError();
+#ifdef PB_PROCESS_FAULT_TESTS
+        test::ObserveAtomicReplaceFailure(path, temporaryPath, error);
+#endif
         DeleteFileW(temporaryPath.c_str());
         return EncoderSessionStoreStatus::Failure(NativeFailure("session state atomic replace", error));
     }

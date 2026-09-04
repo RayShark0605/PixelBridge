@@ -4,6 +4,10 @@
 #include "pbprotocol/checked_integer.h"
 #include "pbprotocol/descriptor_codec.h"
 
+#ifdef PB_PROCESS_FAULT_TESTS
+#include "process_fault_test_hook.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -305,6 +309,9 @@ struct AllocationFacts
         CloseHandle(handle);
         return StorageStatus::Failure(StorageErrorCode::OutOfMemory, StorageStage::Digest);
     }
+#ifdef PB_PROCESS_FAULT_TESTS
+    std::uint64_t observedDigestBytes = 0;
+#endif
     for (;;)
     {
         DWORD readBytes = 0;
@@ -319,6 +326,13 @@ struct AllocationFacts
             break;
         }
         hasher.Update(std::span(buffer).first(readBytes));
+#ifdef PB_PROCESS_FAULT_TESTS
+        observedDigestBytes += readBytes;
+        if (observedDigestBytes == 8ULL * 1024ULL * 1024ULL && std::wstring_view(path).ends_with(L".part"))
+        {
+            pbapp::test::CrashAt(L"whole-digest", observedDigestBytes);
+        }
+#endif
     }
     if (CloseHandle(handle) == FALSE && status)
     {
@@ -994,10 +1008,16 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
     {
         return status;
     }
+#ifdef PB_PROCESS_FAULT_TESTS
+    pbapp::test::CrashAt(L"before-rename", implementation_->fileBytes);
+#endif
     if (MoveFileExW(implementation_->partPath.c_str(), implementation_->finalPath.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
     {
         return LastError(StorageStage::Publish);
     }
+#ifdef PB_PROCESS_FAULT_TESTS
+    pbapp::test::CrashAt(L"after-rename", implementation_->fileBytes);
+#endif
 
     std::array<std::byte, pbprotocol::kDigestBytes> finalDigest{};
     std::uint64_t finalBytes = 0;
