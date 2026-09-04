@@ -32,10 +32,20 @@ if(WIN32)
         if(pbEncoderWindeployqt)
             add_custom_command(TARGET PixelBridgeEncoder POST_BUILD COMMAND "${pbEncoderWindeployqt}"
                 --no-translations --no-opengl-sw "$<TARGET_FILE:PixelBridgeEncoder>" VERBATIM)
+            # Offscreen is selected dynamically by --gui-smoke and is not
+            # discovered by windeployqt's ordinary imports. Deploy exactly
+            # this additional platform for non-interactive controller tests.
+            get_filename_component(pbEncoderQtDirectory "${pbEncoderQtBin}" DIRECTORY)
+            add_custom_command(TARGET PixelBridgeEncoder POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:PixelBridgeEncoder>/platforms"
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${pbEncoderQtDirectory}/plugins/platforms/qoffscreen$<$<CONFIG:Debug>:d>.dll"
+                    "$<TARGET_FILE_DIR:PixelBridgeEncoder>/platforms/" VERBATIM)
         endif()
     endif()
     unset(pbEncoderGitCommit)
     unset(pbEncoderQtQmake)
     unset(pbEncoderQtBin)
+    unset(pbEncoderQtDirectory)
     unset(pbEncoderWindeployqt)
 endif()

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -80,6 +81,28 @@ struct DecoderConfig
     // LF4 the primary GPU demodulator remains unsampled.
     std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
 };
+
+// One product policy, shared by Qt and CLI. Historical explicit diagnostic
+// configurations retain their old defaults and do not silently select Unified.
+[[nodiscard]] EncoderConfig MakeUnifiedEncoderConfig(std::wstring sourcePath,
+    std::uint32_t logicalVisualFps = 15,
+    std::optional<pbrenderd3d::PhysicalPoint> clientOrigin = {});
+
+// Injectable presentation boundary for controller tests. Production always
+// uses the DataWindow adapter; no product configuration can select a mock.
+class EncoderPresentation
+{
+public:
+    virtual ~EncoderPresentation() = default;
+    [[nodiscard]] virtual pbrenderd3d::DataWindowSnapshot GetSnapshot() const = 0;
+    [[nodiscard]] virtual pbrenderd3d::PresentationStatus SubmitFrame(
+        const pbrenderd3d::CanonicalBgraFrameView& frame) = 0;
+    virtual void RequestStop() noexcept = 0;
+    virtual void Stop() noexcept = 0;
+};
+
+using EncoderPresentationFactory = std::function<std::unique_ptr<EncoderPresentation>(
+    const pbrenderd3d::DataWindowConfig&)>;
 
 struct RuntimeStatus
 {
@@ -314,13 +337,16 @@ public:
 class EncoderRuntime
 {
 public:
-    EncoderRuntime() = default;
+    explicit EncoderRuntime(EncoderPresentationFactory presentationFactory = {});
     ~EncoderRuntime();
     EncoderRuntime(const EncoderRuntime&) = delete;
     EncoderRuntime& operator=(const EncoderRuntime&) = delete;
 
     [[nodiscard]] RuntimeStatus Start(const EncoderConfig& config);
     [[nodiscard]] RuntimeStatus SetLogicalVisualFps(std::uint32_t logicalVisualFps) noexcept;
+    // Only a stopped run can be ended. The expected generation prevents a
+    // delayed UI confirmation from deleting a newer Session.
+    [[nodiscard]] RuntimeStatus EndAndDeleteSession(std::uint64_t expectedRunGeneration) noexcept;
     void RequestStop() noexcept;
     void Stop() noexcept;
     [[nodiscard]] EncoderSnapshot GetSnapshot() const;
@@ -334,6 +360,7 @@ private:
     std::atomic<bool> workerRunning_ = false;
     std::atomic<std::uint32_t> requestedLogicalVisualFps_ = 0;
     std::uint64_t nextRunGeneration_ = 1;
+    EncoderPresentationFactory presentationFactory_;
 };
 
 class DecoderRuntime

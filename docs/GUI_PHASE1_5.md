@@ -1,5 +1,7 @@
 # PixelBridge Windows GUI — Phase 1.5
 
+> **2026-09-04 G15 更新：** Encoder 产品 GUI/默认 CLI 已改为 Unified、1..60 Hz（默认 15）、自动 RAW/zstd 与简化广播工作流，普通 Stop 保留 Session，显式确认后才删除。下文旧 Encoder 选项表仅为历史记录，不再描述当前产品界面；真实绑定与非显示证据见 [Unified Encoder 工作流](UNIFIED_ENCODER_WORKFLOW.md)。Decoder GUI 收敛仍是 G16，最终实屏认证尚未完成。
+
 ## 1. 交付边界
 
 `PixelBridgeEncoder.exe` 与 `PixelBridgeDecoder.exe` 无参数启动 Qt Widgets GUI。两者是薄

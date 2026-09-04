@@ -1,7 +1,7 @@
 # Encoder 流式预扫描、Carousel 与持久状态
 
-> 状态：G02 流式状态与 G09 Unified mixed-slot 调度均已实现并通过无屏幕定向验证（2026-09-03）
-> 性质：Encoder 本地实现/持久状态及 Unified scheduler/reference-raster 规范；不是实屏、吞吐或产品运行时接线证据
+> 状态：G02/G09 合同已接入 G15 Unified Encoder 产品 runtime，并通过定向非显示验证（2026-09-04）
+> 性质：Encoder 本地实现/持久状态及 Unified scheduler 规范；G15 产品接线与安全删除见 [Unified Encoder 工作流](UNIFIED_ENCODER_WORKFLOW.md)，不是实屏或吞吐认证。
 > 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`、`libs/PBModulation/src/unified_visual.cpp`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`
 
 ## 1. 已关闭的发送端合同
@@ -26,7 +26,7 @@ DirectRepeat 仍由 `ChooseOuterFecMode` 决定。它只调度固定 `[0,K)`，�
 5. `SenderLogicalFrameClock` 只接受 1..60 Hz。一次 `Acquire(now)` 最多返回已经到期的最新 tick，并显式计数中间错过的 ticks；旧 tick 直接丢弃，不进入 catch-up queue。Scheduler 自身仅持有一个 prepared frame 和固定 31-slot 数组。
 6. 零字节 Session 的剩余 Transport slots 使用显式 inactive disposition，并编码为确定性全零 information word。它们不能形成有效 Transport Block；Session/Manifest 仍走既有 `ControlPlaneReceiver`，未扩大 control record、reassembly 或其他 receiver resource policy。
 
-G09 只关闭 scheduler、protocol packing 与 CPU reference-raster 合同；把该路径接入产品 Encoder/Decoder 生命周期、GUI 和真实显示/capture 仍由后续路线图目标完成。
+G09 关闭 scheduler、protocol packing 与 CPU reference-raster 合同；G15 已把它接入 Encoder 生命周期/GUI/默认 CLI。生产路径使用 `PrepareFrameAt(logicalTick, monotonicNanoseconds)`：长 round 的 Control cadence 按 burst 起点约 10 秒调度，不因动态 FPS/丢弃 tick 改变。slot plan 在 pending retry 时保持冻结，只有完整 raster 成功 Submit 后才 commit。历史 tick API 保留用于原 fixture，不能在同一 round 混用两种时间基准。Decoder 产品自动接线和实屏/capture 仍由后续目标完成。
 
 ## 2. 恢复身份
 

@@ -31,6 +31,143 @@ inline constexpr std::uint64_t maximumDescriptorFileBytes = 32ULL * 1024ULL * 10
 inline constexpr std::uint64_t maximumRuntimeFileBytes = 2ULL * 1024ULL * 1024ULL;
 inline constexpr std::size_t maximumIdentityStringBytes = 4096;
 
+class StateHandle final
+{
+public:
+    explicit StateHandle(const HANDLE handle) noexcept : handle_(handle)
+    {
+    }
+    ~StateHandle()
+    {
+        if (handle_ != INVALID_HANDLE_VALUE)
+        {
+            if (deleteOnClose_)
+            {
+                FILE_DISPOSITION_INFO disposition{TRUE};
+                SetFileInformationByHandle(handle_, FileDispositionInfo, &disposition, sizeof(disposition));
+            }
+            CloseHandle(handle_);
+        }
+    }
+    StateHandle(const StateHandle&) = delete;
+    StateHandle& operator=(const StateHandle&) = delete;
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return handle_ != INVALID_HANDLE_VALUE;
+    }
+    void Adopt(const HANDLE handle) noexcept
+    {
+        handle_ = handle;
+    }
+    void DeleteOnClose() noexcept
+    {
+        deleteOnClose_ = true;
+    }
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+    bool deleteOnClose_ = false;
+};
+
+[[nodiscard]] std::unique_ptr<StateHandle> LockStateFile(const std::filesystem::path& path)
+{
+    auto lock = std::make_unique<StateHandle>(INVALID_HANDLE_VALUE);
+    const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
+        0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    lock->Adopt(handle);
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!lock->IsValid() || !GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0)
+    {
+        return nullptr;
+    }
+    lock->DeleteOnClose();
+    return lock;
+}
+
+// Keep every existing directory component pinned against rename/deletion,
+// including the ancestors of the configured root. Never follow a junction.
+[[nodiscard]] bool PinDirectories(const std::filesystem::path& directory,
+    std::vector<std::unique_ptr<StateHandle>>& pins)
+{
+    const std::filesystem::path absolute = std::filesystem::absolute(directory).lexically_normal();
+    if (absolute == absolute.root_path())
+    {
+        return false;
+    }
+    std::filesystem::path current = absolute.root_path();
+    for (const auto& component : absolute.relative_path())
+    {
+        current /= component;
+        auto pin = std::make_unique<StateHandle>(INVALID_HANDLE_VALUE);
+        const HANDLE handle = CreateFileW(current.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        pin->Adopt(handle);
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        if (!pin->IsValid() || !GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+            (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            return false;
+        }
+        pins.push_back(std::move(pin));
+    }
+    return true;
+}
+
+[[nodiscard]] bool IsOrdinaryStateFile(const std::filesystem::path& path)
+{
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
+}
+
+class UnpublishedSessionDirectory final
+{
+public:
+    explicit UnpublishedSessionDirectory(const std::filesystem::path& path) noexcept : path_(path)
+    {
+    }
+    ~UnpublishedSessionDirectory()
+    {
+        if (published_)
+        {
+            return;
+        }
+        // Only four files created by this Create operation, never recursive
+        // removal and never a source path. Pins remain held during cleanup.
+        if (!pins_.empty())
+        {
+            try
+            {
+                for (const wchar_t* name : {L"descriptors.bin", L"runtime.state", L"descriptors.bin.tmp", L"runtime.state.tmp"})
+                {
+                    DeleteFileW((path_ / name).c_str());
+                }
+            }
+            catch (...)
+            {
+                // Keep an unindexed residue rather than terminate while
+                // unwinding an allocation failure or deleting unknown files.
+            }
+        }
+        pins_.clear();
+        RemoveDirectoryW(path_.c_str());
+    }
+    [[nodiscard]] bool Pin()
+    {
+        return PinDirectories(path_, pins_);
+    }
+    void Publish() noexcept
+    {
+        published_ = true;
+    }
+private:
+    const std::filesystem::path& path_;
+    std::vector<std::unique_ptr<StateHandle>> pins_;
+    bool published_ = false;
+};
+
 struct ParsedDescriptorState
 {
     EncoderSourceIdentity sourceIdentity;
@@ -187,8 +324,15 @@ struct ParsedRuntimeState
     const std::span<const std::byte> bytes) noexcept
 {
     const std::filesystem::path temporaryPath = path.wstring() + L".tmp";
-    const HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    const DWORD temporaryAttributes = GetFileAttributesW(temporaryPath.c_str());
+    if (temporaryAttributes != INVALID_FILE_ATTRIBUTES &&
+        ((temporaryAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+            !DeleteFileW(temporaryPath.c_str())))
+    {
+        return EncoderSessionStoreStatus::Failure("Encoder temporary state is unsafe or busy");
+    }
+    const HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (file == INVALID_HANDLE_VALUE)
     {
         return EncoderSessionStoreStatus::Failure(NativeFailure("session state temporary create", GetLastError()));
@@ -526,6 +670,7 @@ struct ParsedRuntimeState
 
 struct EncoderSessionStore::Implementation
 {
+    std::unique_ptr<StateHandle> ownerLock;
     std::filesystem::path rootDirectory;
     std::filesystem::path sessionDirectory;
     std::filesystem::path runtimePath;
@@ -591,6 +736,11 @@ EncoderSessionStoreStatus EncoderSessionStore::FindMatching(const std::filesyste
         {
             return {};
         }
+        const auto indexLock = LockStateFile(rootDirectory / L"SourceIndex" / L"index.lock");
+        if (!indexLock)
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder source index is busy");
+        }
         std::vector<std::byte> indexBytes;
         EncoderSessionStoreStatus status = ReadFileBounded(indexPath, 64, indexBytes);
         if (!status)
@@ -608,6 +758,28 @@ EncoderSessionStoreStatus EncoderSessionStore::FindMatching(const std::filesyste
             return EncoderSessionStoreStatus::Failure("Encoder source index SessionId is malformed");
         }
         const std::filesystem::path sessionDirectory = rootDirectory / std::filesystem::path(sessionText);
+        auto ownerLock = LockStateFile(sessionDirectory / L"owner.lock");
+        if (!ownerLock)
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder Session has another live owner");
+        }
+        if (std::filesystem::exists(sessionDirectory / L"ended.descriptors"))
+        {
+            std::vector<std::byte> endedBytes;
+            ParsedDescriptorState endedDescriptor;
+            status = ReadFileBounded(sessionDirectory / L"ended.descriptors", maximumDescriptorFileBytes, endedBytes);
+            if (status)
+            {
+                status = ParseDescriptorState(endedBytes, endedDescriptor);
+            }
+            if (!status || endedDescriptor.sessionId != indexedSessionId ||
+                endedDescriptor.sourceIdentity.volumeSerialNumber != sourceIdentity.volumeSerialNumber ||
+                endedDescriptor.sourceIdentity.fileId != sourceIdentity.fileId)
+            {
+                return EncoderSessionStoreStatus::Failure("Encoder end marker identity/checksum is invalid");
+            }
+            return {};
+        }
         std::vector<std::byte> descriptorBytes;
         status = ReadFileBounded(sessionDirectory / L"descriptors.bin", maximumDescriptorFileBytes, descriptorBytes);
         if (!status)
@@ -654,6 +826,7 @@ EncoderSessionStoreStatus EncoderSessionStore::FindMatching(const std::filesyste
             return EncoderSessionStoreStatus::Failure("Encoder runtime state conflicts with immutable descriptors");
         }
         auto implementation = std::make_unique<Implementation>();
+        implementation->ownerLock = std::move(ownerLock);
         implementation->rootDirectory = rootDirectory;
         implementation->sessionDirectory = sessionDirectory;
         implementation->runtimePath = sessionDirectory / L"runtime.state";
@@ -695,6 +868,22 @@ EncoderSessionStoreStatus EncoderSessionStore::Create(const EncoderSessionStoreC
         {
             return EncoderSessionStoreStatus::Failure("Encoder SourceIndex directory creation failed");
         }
+        std::vector<std::unique_ptr<StateHandle>> rootPins;
+        if (!PinDirectories(config.rootDirectory / L"SourceIndex", rootPins))
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder Session root is unsafe or a reparse point");
+        }
+        const auto indexLock = LockStateFile(config.rootDirectory / L"SourceIndex" / L"index.lock");
+        if (!indexLock)
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder source index is busy");
+        }
+        std::vector<std::byte> descriptorBytes;
+        EncoderSessionStoreStatus status = SerializeDescriptorState(config, descriptorBytes);
+        if (!status)
+        {
+            return status;
+        }
         const std::string sessionText = SessionIdHex(config.sessionId);
         const std::filesystem::path sessionDirectory = config.rootDirectory / std::filesystem::path(sessionText);
         if (std::filesystem::exists(sessionDirectory, directoryError) || directoryError)
@@ -706,11 +895,15 @@ EncoderSessionStoreStatus EncoderSessionStore::Create(const EncoderSessionStoreC
         {
             return EncoderSessionStoreStatus::Failure("Encoder session directory creation failed");
         }
-        std::vector<std::byte> descriptorBytes;
-        EncoderSessionStoreStatus status = SerializeDescriptorState(config, descriptorBytes);
-        if (!status)
+        UnpublishedSessionDirectory cleanup(sessionDirectory);
+        if (!cleanup.Pin())
         {
-            return status;
+            return EncoderSessionStoreStatus::Failure("Encoder new Session directory could not be pinned");
+        }
+        auto ownerLock = LockStateFile(sessionDirectory / L"owner.lock");
+        if (!ownerLock)
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder new Session ownership failed");
         }
         status = AtomicWriteFile(sessionDirectory / L"descriptors.bin", descriptorBytes);
         if (!status)
@@ -734,14 +927,8 @@ EncoderSessionStoreStatus EncoderSessionStore::Create(const EncoderSessionStoreC
         {
             return status;
         }
-        std::string indexText = sessionText + "\n";
-        status = AtomicWriteFile(config.rootDirectory / L"SourceIndex" /
-            (SourceIdentityKey(config.sourceIdentity) + L".txt"), std::as_bytes(std::span(indexText)));
-        if (!status)
-        {
-            return status;
-        }
         auto implementation = std::make_unique<Implementation>();
+        implementation->ownerLock = std::move(ownerLock);
         implementation->rootDirectory = config.rootDirectory;
         implementation->sessionDirectory = sessionDirectory;
         implementation->runtimePath = runtimePath;
@@ -754,7 +941,16 @@ EncoderSessionStoreStatus EncoderSessionStore::Create(const EncoderSessionStoreC
         implementation->descriptor.segmentCount = config.segmentCount;
         implementation->descriptor.descriptorBundle = config.descriptorBundle;
         implementation->runtime = std::move(runtime);
-        output = std::unique_ptr<EncoderSessionStore>(new EncoderSessionStore(std::move(implementation)));
+        auto candidate = std::unique_ptr<EncoderSessionStore>(new EncoderSessionStore(std::move(implementation)));
+        const std::string indexText = sessionText + "\n";
+        status = AtomicWriteFile(config.rootDirectory / L"SourceIndex" /
+            (SourceIdentityKey(config.sourceIdentity) + L".txt"), std::as_bytes(std::span(indexText)));
+        if (!status)
+        {
+            return status;
+        }
+        cleanup.Publish();
+        output = std::move(candidate);
         return {};
     }
     catch (const std::bad_alloc&)
@@ -768,6 +964,128 @@ EncoderSessionStoreStatus EncoderSessionStore::Create(const EncoderSessionStoreC
     catch (...)
     {
         return EncoderSessionStoreStatus::Failure("Encoder session creation failed");
+    }
+}
+
+EncoderSessionStoreStatus EncoderSessionStore::EndAndDelete(const std::filesystem::path& rootDirectory,
+    const std::string_view sessionIdHex) noexcept
+{
+    try
+    {
+        pbprotocol::SessionId requestedId;
+        if (rootDirectory.empty() || !ParseSessionIdHex(sessionIdHex, requestedId))
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder deletion requires an exact root and SessionId");
+        }
+        const std::filesystem::path root = std::filesystem::absolute(rootDirectory).lexically_normal();
+        const std::filesystem::path sessionDirectory = root / std::string(sessionIdHex);
+        std::vector<std::unique_ptr<StateHandle>> rootPins;
+        std::vector<std::unique_ptr<StateHandle>> sessionPins;
+        if (!PinDirectories(root / L"SourceIndex", rootPins))
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder deletion root is missing, unsafe or a reparse point");
+        }
+        const auto indexLock = LockStateFile(root / L"SourceIndex" / L"index.lock");
+        if (!indexLock)
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder source index is busy");
+        }
+        if (!std::filesystem::exists(sessionDirectory))
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder Session directory is missing");
+        }
+        if (!PinDirectories(sessionDirectory, sessionPins))
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder Session directory is unsafe or a reparse point");
+        }
+        auto ownerLock = LockStateFile(sessionDirectory / L"owner.lock");
+        if (!ownerLock)
+        {
+            return EncoderSessionStoreStatus::Failure("Stop the live Encoder Session owner before deleting it");
+        }
+        constexpr std::array<std::wstring_view, 7> allowedNames{
+            L"descriptors.bin", L"runtime.state", L"descriptors.bin.tmp", L"runtime.state.tmp",
+            L"ended.descriptors", L"ended.descriptors.tmp", L"owner.lock"};
+        for (const auto& entry : std::filesystem::directory_iterator(sessionDirectory))
+        {
+            const std::wstring name = entry.path().filename().wstring();
+            if (std::ranges::find(allowedNames, name) == allowedNames.end() || !IsOrdinaryStateFile(entry.path()))
+            {
+                return EncoderSessionStoreStatus::Failure("Encoder deletion refuses unexpected files or reparse points");
+            }
+        }
+        const std::filesystem::path marker = sessionDirectory / L"ended.descriptors";
+        const bool alreadyEnded = std::filesystem::exists(marker);
+        std::vector<std::byte> descriptorBytes;
+        EncoderSessionStoreStatus status = ReadFileBounded(alreadyEnded ? marker : sessionDirectory / L"descriptors.bin",
+            maximumDescriptorFileBytes, descriptorBytes);
+        ParsedDescriptorState descriptor;
+        if (status)
+        {
+            status = ParseDescriptorState(descriptorBytes, descriptor);
+        }
+        if (!status || descriptor.sessionId != requestedId)
+        {
+            return EncoderSessionStoreStatus::Failure("Encoder deletion descriptor identity/checksum is invalid");
+        }
+        const std::filesystem::path indexPath = root / L"SourceIndex" /
+            (SourceIdentityKey(descriptor.sourceIdentity) + L".txt");
+        bool removeIndex = false;
+        if (std::filesystem::exists(indexPath))
+        {
+            std::vector<std::byte> indexBytes;
+            status = IsOrdinaryStateFile(indexPath) ? ReadFileBounded(indexPath, 64, indexBytes) :
+                EncoderSessionStoreStatus::Failure("Unsafe source index");
+            pbprotocol::SessionId indexedId;
+            if (!status || indexBytes.size() != 33 || indexBytes.back() != std::byte{'\n'} ||
+                !ParseSessionIdHex(std::string_view(reinterpret_cast<const char*>(indexBytes.data()), 32), indexedId))
+            {
+                return EncoderSessionStoreStatus::Failure("Encoder deletion refuses a malformed source index");
+            }
+            removeIndex = indexedId == requestedId;
+        }
+        // An interruption after this durable marker cannot resume the ended
+        // Session. Keeping the validated descriptor in the marker makes a
+        // partial deletion retryable without inventing an index identity.
+        if (!alreadyEnded)
+        {
+            status = AtomicWriteFile(marker, descriptorBytes);
+            if (!status)
+            {
+                return status;
+            }
+        }
+        if (removeIndex && !DeleteFileW(indexPath.c_str()))
+        {
+            return EncoderSessionStoreStatus::Failure(NativeFailure("Encoder index deletion", GetLastError()));
+        }
+        for (const std::wstring_view name : {L"runtime.state", L"runtime.state.tmp", L"descriptors.bin",
+            L"descriptors.bin.tmp", L"ended.descriptors.tmp"})
+        {
+            if (!DeleteFileW((sessionDirectory / name).c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+            {
+                return EncoderSessionStoreStatus::Failure(NativeFailure("Encoder state deletion", GetLastError()));
+            }
+        }
+        if (!DeleteFileW(marker.c_str()))
+        {
+            return EncoderSessionStoreStatus::Failure(NativeFailure("Encoder end marker deletion", GetLastError()));
+        }
+        ownerLock.reset();
+        sessionPins.clear();
+        if (!RemoveDirectoryW(sessionDirectory.c_str()))
+        {
+            return EncoderSessionStoreStatus::Failure(NativeFailure("Encoder Session directory deletion", GetLastError()));
+        }
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return EncoderSessionStoreStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return EncoderSessionStoreStatus::Failure("Encoder explicit Session deletion failed");
     }
 }
 

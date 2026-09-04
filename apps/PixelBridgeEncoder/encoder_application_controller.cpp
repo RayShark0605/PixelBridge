@@ -12,7 +12,8 @@ namespace
 
 } // namespace
 
-EncoderApplicationController::EncoderApplicationController(QObject* parent) : QObject(parent)
+EncoderApplicationController::EncoderApplicationController(QObject* parent, pbapp::EncoderPresentationFactory presentationFactory) :
+    QObject(parent), runtime_(std::move(presentationFactory))
 {
     pollTimer_.setInterval(100);
     pollTimer_.setTimerType(Qt::CoarseTimer);
@@ -59,6 +60,13 @@ void EncoderApplicationController::RequestStop() noexcept
     }
 }
 
+QString EncoderApplicationController::EndAndDeleteSession(const std::uint64_t expectedRunGeneration)
+{
+    const pbapp::RuntimeStatus status = runtime_.EndAndDeleteSession(expectedRunGeneration);
+    PollSnapshot();
+    return status ? QString() : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
+}
+
 pbapp::EncoderSnapshot EncoderApplicationController::GetSnapshot() const
 {
     return runtime_.GetSnapshot();
@@ -73,6 +81,9 @@ void EncoderApplicationController::PollSnapshot()
 {
     const pbapp::EncoderSnapshot current = runtime_.GetSnapshot();
     const bool changed = current.runGeneration != lastSnapshot_.runGeneration || current.state != lastSnapshot_.state ||
+        current.preparedSourceBytes != lastSnapshot_.preparedSourceBytes ||
+        current.preparationComplete != lastSnapshot_.preparationComplete || current.sessionDeleted != lastSnapshot_.sessionDeleted ||
+        current.sessionStateGeneration != lastSnapshot_.sessionStateGeneration ||
         current.frameSequence != lastSnapshot_.frameSequence || current.presentationEpoch != lastSnapshot_.presentationEpoch ||
         current.configuredLogicalVisualFps != lastSnapshot_.configuredLogicalVisualFps ||
         current.statusMessage != lastSnapshot_.statusMessage || current.errorDetail != lastSnapshot_.errorDetail;

@@ -39,8 +39,9 @@ struct Options
     std::wstring reportPath;
     std::wstring journalPath;
     std::string runId;
-    pbapp::VisualProfile profile = pbapp::VisualProfile::DirectLevels2x2;
+    pbapp::VisualProfile profile = pbapp::VisualProfile::UnifiedLc4;
     bool compression = false;
+    bool compressionSpecified = false;
     int compressionLevel = 3;
     pbrenderd3d::PhysicalPoint origin{};
     std::uint32_t seconds = 30;
@@ -330,6 +331,7 @@ private:
         }
         else if (option == L"--compression")
         {
+            options.compressionSpecified = true;
             const wchar_t* const value = nextArgument();
             if (value == nullptr)
             {
@@ -423,9 +425,24 @@ private:
             return false;
         }
     }
-    if (options.sourcePath.empty() || options.hasOrigin == options.singleMonitorFullscreenSpecified)
+    if (options.sourcePath.empty() || (options.hasOrigin && options.singleMonitorFullscreenSpecified) ||
+        (options.profile != pbapp::VisualProfile::UnifiedLc4 && !options.hasOrigin && !options.singleMonitorFullscreenSpecified))
     {
         return false;
+    }
+    if (options.profile == pbapp::VisualProfile::UnifiedLc4)
+    {
+        if (!options.logicalVisualFpsSpecified)
+        {
+            options.logicalVisualFps = 15;
+        }
+        if (options.logicalVisualFps < 1 || options.logicalVisualFps > 60 ||
+            options.compressionLevel != 3 || options.controlRepetitions != 4 ||
+            (options.compressionSpecified && !options.compression))
+        {
+            return false;
+        }
+        options.compression = true;
     }
     if (pbapp::IsRemoteVisualProfile(options.profile))
     {
@@ -561,7 +578,10 @@ private:
 
 void Usage()
 {
-    std::cerr << "usage: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
+    std::cerr << "product: PixelBridgeEncoder --headless-broadcast --source PATH [--profile unified] "
+                 "[--logical-fps 1..60; default=15] [--origin X Y] [--seconds 1..600; default=30] "
+                 "[--report NEW_PATH]; automatic RAW/zstd level 3, Control repetitions=4\n"
+                 "historical diagnostics: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
                  "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on "
                  "(--origin X Y --seconds 1..600 | --single-monitor-fullscreen primary|DEVICE --manual-stop --loop) "
                  "[--logical-fps 0..240; remote=1..5] "
@@ -581,7 +601,8 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         Usage();
         return 2;
     }
-    pbapp::EncoderConfig config;
+    pbapp::EncoderConfig config = options.profile == pbapp::VisualProfile::UnifiedLc4 ?
+        pbapp::MakeUnifiedEncoderConfig(options.sourcePath, options.logicalVisualFps) : pbapp::EncoderConfig{};
     config.sourcePath = options.sourcePath;
     config.compressionEnabled = options.compression;
     config.compressionLevel = options.compressionLevel;

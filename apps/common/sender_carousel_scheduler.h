@@ -255,13 +255,21 @@ public:
         SenderUnifiedCarouselScheduler& output) noexcept;
     [[nodiscard]] SenderCarouselSchedulerStatus PrepareFrame(
         std::uint64_t logicalTickOrdinal, SenderUnifiedScheduledFrame& output) noexcept;
+    // Runtime cadence uses monotonic time, not the changing FPS or dropped
+    // tick ordinal. A pending frame freezes both its plan and timestamp.
+    // Do not mix tick-based and time-based calls on the same round.
+    [[nodiscard]] SenderCarouselSchedulerStatus PrepareFrameAt(std::uint64_t logicalTickOrdinal,
+        std::uint64_t nowNanoseconds, SenderUnifiedScheduledFrame& output) noexcept;
     [[nodiscard]] SenderCarouselSchedulerStatus CommitPreparedFrame() noexcept;
     [[nodiscard]] SenderUnifiedCarouselSnapshot GetSnapshot() const noexcept;
     [[nodiscard]] bool IsComplete() const noexcept;
 
 private:
     [[nodiscard]] SenderCarouselSchedulerStatus BuildFrame(
-        std::uint64_t logicalTickOrdinal, SenderUnifiedScheduledFrame& output) const noexcept;
+        std::uint64_t logicalTickOrdinal, std::uint64_t cadencePosition,
+        SenderUnifiedScheduledFrame& output) const noexcept;
+    [[nodiscard]] SenderCarouselSchedulerStatus PrepareFrameInternal(std::uint64_t logicalTickOrdinal,
+        std::uint64_t cadencePosition, bool monotonicCadence, SenderUnifiedScheduledFrame& output) noexcept;
 
     SenderUnifiedCarouselSchedulerConfig config_{};
     SenderUnifiedScheduledFrame preparedFrame_{};
@@ -277,9 +285,12 @@ private:
     std::uint64_t inactiveTransportSlotCount_ = 0;
     std::uint64_t totalControlItemsPerBurst_ = 0;
     std::uint64_t currentControlItemOffset_ = 0;
-    std::uint64_t currentControlBurstStartTick_ = 0;
-    std::uint64_t nextControlBurstTick_ = 0;
+    std::uint64_t currentControlBurstStartPosition_ = 0;
+    std::uint64_t nextControlBurstPosition_ = 0;
     std::uint64_t lastCommittedLogicalTickOrdinal_ = 0;
+    std::uint64_t preparedCadencePosition_ = 0;
+    std::uint64_t lastCommittedCadencePosition_ = 0;
+    bool monotonicCadence_ = false;
     bool inControlBurst_ = true;
     bool currentControlBurstCounted_ = false;
     bool initialControlBurstCompleted_ = false;

@@ -70,6 +70,11 @@ public:
         bool& found) noexcept;
     [[nodiscard]] static EncoderSessionStoreStatus Create(const EncoderSessionStoreCreateConfig& config,
         std::unique_ptr<EncoderSessionStore>& output) noexcept;
+    // Explicit stopped-session deletion, never called by ordinary Stop.
+    // Validates the exact SessionId, refuses live owners/reparse points or
+    // unexpected files, and removes only an index still pointing at this ID.
+    [[nodiscard]] static EncoderSessionStoreStatus EndAndDelete(
+        const std::filesystem::path& rootDirectory, std::string_view sessionIdHex) noexcept;
 
     EncoderSessionStore(const EncoderSessionStore&) = delete;
     EncoderSessionStore& operator=(const EncoderSessionStore&) = delete;

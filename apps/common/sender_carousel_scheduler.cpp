@@ -408,7 +408,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
 }
 
 SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
-    const std::uint64_t logicalTickOrdinal, SenderUnifiedScheduledFrame& output) const noexcept
+    const std::uint64_t logicalTickOrdinal, const std::uint64_t cadencePosition,
+    SenderUnifiedScheduledFrame& output) const noexcept
 {
     if (complete_)
     {
@@ -419,7 +420,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::LogicalTickRegression);
     }
 
-    const bool controlBurstActive = inControlBurst_ || logicalTickOrdinal >= nextControlBurstTick_;
+    const bool controlBurstActive = inControlBurst_ || cadencePosition >= nextControlBurstPosition_;
     const std::uint64_t controlItemOffset = inControlBurst_ ? currentControlItemOffset_ : 0;
     const std::uint64_t remainingControlItems = controlBurstActive ?
         totalControlItemsPerBurst_ - controlItemOffset : 0;
@@ -490,6 +491,24 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
 SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::PrepareFrame(
     const std::uint64_t logicalTickOrdinal, SenderUnifiedScheduledFrame& output) noexcept
 {
+    return PrepareFrameInternal(logicalTickOrdinal, logicalTickOrdinal, false, output);
+}
+
+SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::PrepareFrameAt(
+    const std::uint64_t logicalTickOrdinal, const std::uint64_t nowNanoseconds,
+    SenderUnifiedScheduledFrame& output) noexcept
+{
+    return PrepareFrameInternal(logicalTickOrdinal, nowNanoseconds, true, output);
+}
+
+SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::PrepareFrameInternal(
+    const std::uint64_t logicalTickOrdinal, const std::uint64_t cadencePosition,
+    const bool monotonicCadence, SenderUnifiedScheduledFrame& output) noexcept
+{
+    if ((framePrepared_ || hasCommittedLogicalTick_) && monotonicCadence_ != monotonicCadence)
+    {
+        return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
+    }
     if (framePrepared_)
     {
         if (logicalTickOrdinal != preparedFrame_.logicalTickOrdinal)
@@ -500,12 +519,18 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::PrepareFrame(
         return {};
     }
     SenderUnifiedScheduledFrame frame;
-    const SenderCarouselSchedulerStatus status = BuildFrame(logicalTickOrdinal, frame);
+    if (hasCommittedLogicalTick_ && cadencePosition < lastCommittedCadencePosition_)
+    {
+        return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::LogicalTickRegression);
+    }
+    const SenderCarouselSchedulerStatus status = BuildFrame(logicalTickOrdinal, cadencePosition, frame);
     if (!status)
     {
         return status;
     }
     preparedFrame_ = frame;
+    preparedCadencePosition_ = cadencePosition;
+    monotonicCadence_ = monotonicCadence;
     framePrepared_ = true;
     output = frame;
     return {};
@@ -522,8 +547,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
     bool currentControlBurstCounted = currentControlBurstCounted_;
     bool initialControlBurstCompleted = initialControlBurstCompleted_;
     std::uint64_t currentControlItemOffset = currentControlItemOffset_;
-    std::uint64_t currentControlBurstStartTick = currentControlBurstStartTick_;
-    std::uint64_t nextControlBurstTick = nextControlBurstTick_;
+    std::uint64_t currentControlBurstStartPosition = currentControlBurstStartPosition_;
+    std::uint64_t nextControlBurstPosition = nextControlBurstPosition_;
     std::uint64_t controlBurstCount = controlBurstCount_;
     if (preparedFrame_.controlSlotCount != 0)
     {
@@ -535,7 +560,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
         }
         if (!currentControlBurstCounted)
         {
-            currentControlBurstStartTick = preparedFrame_.logicalTickOrdinal;
+            currentControlBurstStartPosition = preparedCadencePosition_;
             if (!AssignChecked(pbprotocol::CheckedAddUint64(controlBurstCount, 1), controlBurstCount))
             {
                 return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
@@ -550,10 +575,11 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
         }
         if (currentControlItemOffset == totalControlItemsPerBurst_)
         {
-            const std::uint64_t cadenceTicks = static_cast<std::uint64_t>(config_.logicalFramesPerSecond) *
+            const std::uint64_t cadenceDistance = (monotonicCadence_ ? senderLogicalFrameNanosecondsPerSecond :
+                static_cast<std::uint64_t>(config_.logicalFramesPerSecond)) *
                 senderCarouselControlCadenceSeconds;
             if (!AssignChecked(pbprotocol::CheckedAddUint64(
-                currentControlBurstStartTick, cadenceTicks), nextControlBurstTick))
+                currentControlBurstStartPosition, cadenceDistance), nextControlBurstPosition))
             {
                 return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
             }
@@ -593,8 +619,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
     currentControlBurstCounted_ = currentControlBurstCounted;
     initialControlBurstCompleted_ = initialControlBurstCompleted;
     currentControlItemOffset_ = currentControlItemOffset;
-    currentControlBurstStartTick_ = currentControlBurstStartTick;
-    nextControlBurstTick_ = nextControlBurstTick;
+    currentControlBurstStartPosition_ = currentControlBurstStartPosition;
+    nextControlBurstPosition_ = nextControlBurstPosition;
     controlBurstCount_ = controlBurstCount;
     committedEquationCount_ = committedEquationCount;
     committedFrameCount_ = committedFrameCount;
@@ -604,6 +630,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
     paddingDuplicateSlotCount_ = paddingDuplicateSlotCount;
     inactiveTransportSlotCount_ = inactiveTransportSlotCount;
     lastCommittedLogicalTickOrdinal_ = preparedFrame_.logicalTickOrdinal;
+    lastCommittedCadencePosition_ = preparedCadencePosition_;
     hasCommittedLogicalTick_ = true;
     framePrepared_ = false;
     preparedFrame_ = {};

@@ -672,20 +672,23 @@ ctest --test-dir build-unified-release -C Release `
 **目的：** 最终基础界面只保留文件、FPS、开始/停止，所有选项绑定真实 runtime。
 
 **主要范围：** `apps/PixelBridgeEncoder`、application controller/model、GUI tests/docs。
+**本次确认的必要扩展（2026-09-04）：** 用户同意将 Unified 实际广播接线、动态 FPS/Control 调度衔接、显式结束/删除 Session API 纳入 G15；仅扩展既有 `apps/common/local_desktop_runtime.*`、`sender_carousel_scheduler.*`、`encoder_session_store.*` 及其无窗口定向验证，不改变 wire/Profile/Golden，不实现 G16。
 **非目标：** 不在 Qt 中实现协议/FEC/render；不显示 Decoder 进度。
 
 **实现清单：**
 
-- [ ] 基础页：源文件、1..60 Hz（默认 15）、开始/停止、准备进度、广播状态。
-- [ ] 状态区：文件大小、Segment 数、预扫描速度、Carousel pass/ordinal、实际逻辑 FPS、source stability。
-- [ ] 高级页只读显示 Unified Profile、Outer/Inner FEC、RAW/zstd 决策与 durable lease。
-- [ ] 删除/隐藏产品级 Profile、compression tuning、backend、monitor safety experiment choices。
-- [ ] 先预扫描后开窗口；失败不留下伪 Session/空窗口。
-- [ ] Encoder 文案始终为 Broadcast/广播，不显示“已发送完成”或对端 ETA。
-- [ ] “结束并删除会话”必须是显式动作；普通停止保留 Session。
+- [x] 基础页：源文件、1..60 Hz（默认 15）、开始/停止、准备进度、广播状态。
+- [x] 状态区：文件大小、Segment 数、预扫描速度、Carousel pass/ordinal、实际逻辑 FPS、source stability。
+- [x] 高级页只读显示 Unified Profile、Outer/Inner FEC、RAW/zstd 决策与 durable lease。
+- [x] 删除/隐藏产品级 Profile、compression tuning、backend、monitor safety experiment choices。
+- [x] 先预扫描后开窗口；失败不留下伪 Session/空窗口。
+- [x] Encoder 文案始终为 Broadcast/广播，不显示“已发送完成”或对端 ETA。
+- [x] “结束并删除会话”必须是显式动作；普通停止保留 Session。
 
 **最小验证：** build `PixelBridgeEncoder`、controller/model tests、`PixelBridgeEncoderGuiSmoke`；不显示真实 Data Window。
-**退出：** 基础流程不需理解协议；所有可点控件有真实绑定；CLI/GUI 使用同 controller/runtime。
+**验证结果（2026-09-04）：** 已核对 G05 `5d51d0e`、G09 `74c8550`、G13 `93029cc` 为 HEAD 祖先，对应日志存在且通过。Release 定向构建 `PixelBridgeEncoder`、`PBApplicationTests`、`PBUnifiedSenderSchedulerTests` 成功。`PBApplicationTests [application][g15] --rng-seed 15092026` 11/11（563 assertions）通过；受影响的既有 Encoder store 组 2/2（164 assertions），mixed scheduler/clock 5/5（332658 assertions）通过。G15 使用 0-byte、20,000-byte RAW/Wirehair 与 8 MiB+1-byte 的双 Segment 小 fixture，从真实发送 runtime 生成的 Unified raster 经 CPU oracle、Receiver、PBStorage 发布、重新打开后逐字节及 BLAKE3 验证；并证明 prescan-before-presentation、pending epoch retry 不换 raster/ID、FPS 下一完整帧生效、Control 时间基准不随 FPS 失真、源写锁、普通 Stop 保留、恢复 lease 跳号、删除后新 Session、过期确认/活跃 owner/未知文件/损坏索引与 marker 拒绝，以及 index publish 失败清理不覆盖旧状态。`PixelBridgeEncoderGuiSmoke` 1/1（最终复核 0.17 s）通过，使用 offscreen 和隔离 QSettings、真实控件/controller，覆盖默认配置、准备、FPS、停止保留、取消/确认删除。初始 lease 快照问题和 fixture 压缩预期已修正；首个 GUI smoke 的 15 s timeout 已定位为未部署 `qoffscreen.dll`，补齐部署与 QApplication 前检查后通过，未放宽超时。Qt 部署仍提示 `VCINSTALLDIR` 未设置，定向构建退出码为 0，不声明安装包验证通过。
+**退出：** 已满足。Encoder 基础区仅文件、1..60 Hz（默认 15）、开始/停止与本地准备/广播状态；高级区只读，显式删除在会话菜单且须确认。Qt/默认 CLI 均通过 `MakeUnifiedEncoderConfig` 进入同一 `EncoderRuntime`，调用既有 mixed-slot/FEC/raster/双 Segment/durable lease 路径，无旧 raster 冒充 Unified、无 Qt 协议实现、无 Decoder 进度。旧显式诊断入口保留，未向尚未迁移的 Decoder GUI 暴露新选项。普通停止/关闭不删除会话；安全删除经过 generation、owner、路径/文件和 index 身份核对。未运行全量 CTest、实屏/native/双屏 Gate、ROI/capture、GPU parity、远控 provider、20 GiB、进程故障注入、安装包复验或 G16；本结论仅为 G15 产品接线和最小非显示验证，不构成端到端实屏认证。
+**产物：** 接线/工作流/独占状态与删除 API 位于 `apps/PixelBridgeEncoder` 和 `apps/common`；定向测试为 `tests/PBApplication/test_unified_encoder_workflow.cpp`，详细合同、命令及初始失败修正见 `docs/UNIFIED_ENCODER_WORKFLOW.md`。最终审查后的构建日志 `build-unified-release/g15-build-reviewed.txt`（scheduler 构建见 `g15-build-final.txt`）；验证日志 `build-unified-release/tests/PBApplication/g15-workflow-reviewed.txt`、`g15-store-compatibility.txt`、`g15-scheduler-compatibility.txt` 和 `build-unified-release/g15-gui-smoke-reviewed.txt`。
 **提交建议：** `feat(gui): converge unified encoder workflow`
 
 ## G16 — Decoder Qt 产品收敛

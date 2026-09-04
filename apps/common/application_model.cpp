@@ -9,6 +9,11 @@ namespace pbapp
 namespace
 {
 
+constexpr VisualProfileOption unifiedProfileOption{
+    VisualProfile::UnifiedLc4, "unified", "PB-Unified-LC4-V1", false, 15, 4};
+
+// Historical diagnostic selectors remain unchanged until their respective
+// product GUI migrations. The Encoder product binds Unified explicitly.
 constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
     {VisualProfile::DirectLevels2x2, "direct", "Direct-Level 2x2 (Experimental)", false, 0, 4},
     {VisualProfile::ShapeChroma, "shape", "Shape+Chroma (Experimental)", false, 0, 4},
@@ -725,6 +730,10 @@ std::span<const VisualProfileOption> GetVisualProfileOptions() noexcept
 
 const VisualProfileOption* FindVisualProfileOption(const VisualProfile profile) noexcept
 {
+    if (profile == VisualProfile::UnifiedLc4)
+    {
+        return &unifiedProfileOption;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [profile](const VisualProfileOption& value) { return value.profile == profile; });
     return option == visualProfileOptions.end() ? nullptr : &*option;
@@ -732,6 +741,10 @@ const VisualProfileOption* FindVisualProfileOption(const VisualProfile profile) 
 
 std::optional<VisualProfile> ParseVisualProfileToken(const std::string_view token) noexcept
 {
+    if (token == unifiedProfileOption.cliToken)
+    {
+        return unifiedProfileOption.profile;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return value.cliToken == token; });
     return option == visualProfileOptions.end() ? std::nullopt : std::optional(option->profile);
@@ -739,6 +752,10 @@ std::optional<VisualProfile> ParseVisualProfileToken(const std::string_view toke
 
 std::optional<VisualProfile> ParseVisualProfileToken(const std::wstring_view token) noexcept
 {
+    if (EqualsAsciiToken(token, unifiedProfileOption.cliToken))
+    {
+        return unifiedProfileOption.profile;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return EqualsAsciiToken(token, value.cliToken); });
     return option == visualProfileOptions.end() ? std::nullopt : std::optional(option->profile);
