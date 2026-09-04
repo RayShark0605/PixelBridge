@@ -840,6 +840,12 @@ ctest --test-dir build-unified-release -C Release `
 
 **状态（2026-09-05）：** PARTIAL / 接收准备完成、真实远程恢复未开始。前置 G20 `e94da7f` 已提交；用户回报远程 Encoder 的 `00_Check.bat` 加载与提交身份检查通过，未生成 source 或广播。用户批准专用测试构建接收入口：`PBUnifiedRemoteGate` 复用完整生产 `DecoderRuntime`/Auto，无产品 CLI/Replay/monitor 接口变更，外层严格限定 DISPLAY2。最小 build/无捕获策略及参数负例/只读 monitor preflight 通过，未执行 full CTest 或实屏恢复；1 MiB、64 MiB、Base/chroma、外部摘要及 16 KiB 硬门仍待验收。操作顺序、冻结交付与证据边界见 [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md)。G22 未开始。
 
+**真实 smoke 后续（2026-09-05）：** 上段“未开始”仅为准备阶段状态。现以冻结 `83bffb3` worker 执行两次 180 秒真实 WGC 接收，均 exit 1、没有发布或生成输出文件，未强杀。首次 Bootstrap 0/3,369，右屏单帧位置图显示底部 finder 被任务栏裁挡；用户手动调整后第二次 Bootstrap 360/185，但最终 admissionDrops=359，尚未绑定 Session。累计后 GPU/FEC 时间按 accepted Bootstrap 粗算约 387.557 ms/帧，提示结果超龄风险，但缺少逐结果时间戳，不把全部拒绝归因为 age 的推断写成已证实根因。两个位置截图仅为右屏 GDI 布局证据，不是 same-capture WGC replay。用户要求固定约 15 Hz；交付脚本本来已传入 `--logical-fps 15`，正在等待同次远程 `encoder-report.json` 和 source manifest 核对实际 cadence，不擅自改阈值或降 FPS。原失败封存于 `build-unified-release/g21-remote-smoke-1/`、`g21-remote-smoke-2/`；完整边界见 `UNIFIED_REMOTE_GATE.md` 第 6 节。G21 继续 PARTIAL，64 MiB/Base-only/外部摘要/性能门及 G22 均未关闭。
+
+**发送帧率核对（2026-09-05）：** 用户随后把指定的两份 JSON 放到本机桌面；原样封存到 `build-unified-release/g21-sender-report-1/`。这两个报告 RunId/1 MiB/`e94da7f` 身份一致，配置 15 Hz、实际平均逻辑帧率 **15.002331 Hz**，提交 1,553 帧，报告跨度 103.633 秒，正常停止且无 error。不能把其当成此前各 180 秒接收的完整配对记录：Receiver 均未绑定 Session，缺少同次身份和时钟关联；也不能据平均帧率声称逐帧 dwell 固定。现不盲改已是 15 的参数，待用户决定是否用同一远程 source 做短 5 Hz 对照；未执行降频，该对照不能冒充 G21 的 15 Hz 通过。
+
+**5 Hz 同源对照准备（2026-09-05）：** 用户已批准同源降到 5 Hz。新增 `03_Check_SameSource_5Hz.bat` / `04_Start_SameSource_5Hz.bat` / `Start-G21SameSource5Hz.ps1` 附加包，固定校验报告对应的原 1 MiB source，再使用原 Encoder 传入 `--logical-fps 5`；不生成或回传源文件，不覆盖原 15 Hz 包/脚本/证据。PowerShell 5.1 AST 和五个定向 policy 检查已关闭；其中两项初次被本机继承的模块路径阻断，修正验证子进程环境后只复核这两项通过，原失败保留。正例仅是合成 fixture 的 `-CheckOnly` 加载，不是远程原文件或实屏成功。封存根 `build-unified-release/g21-5hz-handoff-1/`，ZIP SHA-256 `bc7672c3d99bde5e89f0cf431d11afe5da8c635becdd254886558ab304ff45b3`；详情和操作顺序见 `UNIFIED_REMOTE_GATE.md` 第 7 节。等待用户远程检查及“5Hz 右屏已就绪”后，用冻结 `83bffb3` receiver 执行同一 180 秒 / 210 秒 watchdog 诊断；单 owner、250 ms 和全部质量/摘要/发布门不变。未开始 5 Hz live，不将其替代默认 15 Hz 验收；未运行额外 full CTest、ASan、native 回归、64 MiB 或 G22。
+
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。
 
