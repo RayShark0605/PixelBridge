@@ -1,7 +1,7 @@
 # G18：256 MiB 真实进程终止与恢复
 
 > 状态：实现与定向证据已整理，但 **G18 未通过最终验收，不得进入 G19**（2026-09-04）。
-> 基线为 `805dd2a5a8b8f937f56287e4e030ff6f50860074`（G17）。最终候选复核再次出现 Encoder `runtime.state` 原子替换 `win32=5`；原因未确认，待用户同意扩大定向诊断范围。
+> 基线为 `805dd2a5a8b8f937f56287e4e030ff6f50860074`（G17）。实现与失败证据已提交为 `8965f3d`。用户已同意扩大原子替换失败的定向诊断范围；已定位失败调用，并复现受控占用机制，但历史自然失败的根因/占用者仍未确认，未实施生产修复。新增诊断见第 8 节。
 > 本目标的无像素 headless 验收与仅测试构建启用的最小插桩已由用户明确批准。
 
 ## 1. 范围与证据边界
@@ -159,7 +159,7 @@ $env:ASAN_OPTIONS = 'halt_on_error=1'
   --points encoder-prescan
 ```
 
-已经向用户询问是否允许扩展为原子替换失败的定向诊断，并在原因确认后再确定最小修复；答复前停止依赖该决策的实现、进一步故障 campaign 和 G19。
+此前已就扩大原子替换失败的定向诊断范围向用户提问并暂停。用户随后批准“先定向诊断，并在原因确认后再确定最小修复”；该范围审批已经解除，不代表根因已确认或自动批准重试/持久化语义变更。诊断结果见第 8 节，G19 仍未开始。
 
 ### 7.3 夹具修正与证据封印
 
@@ -172,3 +172,88 @@ $env:ASAN_OPTIONS = 'halt_on_error=1'
 - 生成的普通 `PBApplication` / `PBStorage` 项目中 `PB_PROCESS_FAULT_TESTS` 出现次数为 0，两个克隆库中非零；最终 worker 不依赖 Qt 或 D3D DLL。普通产品不会读取 G18 环境变量或主动终止。
 
 未执行 full CTest、GPU/GUI/native/remote、20 GiB、独立产品 EXE 实屏恢复、断电或 release package 验证。这里的 base Git commit 是提交前构建基线；不能冒充提交后重建的产品嵌入身份。当前独立提交用于保存 G18 的实现与未关闭证据，不构成验收完成。
+
+## 8. 原子替换失败的定向诊断（2026-09-04）
+
+### 8.1 前置、范围与已确认的失败位置
+
+重新读取 `AGENTS.md`、路线 G18/G19、设计中恢复/源不可变性约束，并检查 Git。G17 `805dd2a` 是当前诊断基线 `8965f3d` 的祖先；其 telemetry 12/4,381、report 11/478、cache 1/29 通过日志仍存在，没有重跑前置目标。进入本轮时仅有用户所有的 untracked `docs/PHASE1_GATE_REPORT.md`，本轮不读取其正文、不改写、不暂存。
+
+生产调用顺序与 headless harness 相同：
+
+```text
+SenderFrameBuilder::Advance
+  -> ActivateNextSegment / InitializeCurrentSegment / InitializeUnifiedScheduler
+  -> EnsureRepairIdLease(next segment) -> PersistRuntimeState -> AtomicWriteFile  [已成功]
+返回调用方
+  -> UpdateCarouselPosition(next segment) -> PersistRuntimeState -> AtomicWriteFile  [Win32 5]
+```
+
+- 对应 `tests/PBApplication/process_recovery_runtime.inc` 的 `builder.Advance()` 后位置保存，以及 `apps/common/local_desktop_runtime.cpp` 中正式 Encoder 的同名调用；两次保存之间均没有 FPS 等待。headless 整体更快不是该双写次序的唯一来源。
+- 两份尚未做后续恢复的 Encoder 状态重新验证了长度、PBER v2、CRC32C、SessionId：
+
+| 原失败 | durable generation | durable ordinal | 已保存的下一段 repair lease | frame lease end | runtime SHA-256 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| campaign-2 / lease-persisted | 61 | 27 | segment 28 = 8,192 | 12,288 | `a69952237ba55a072b70377f02e4bf6358b0fdd93709a84e641eb828192e6513` |
+| final-prescan / encoder-prescan | 61 | 28 | segment 29 = 8,192 | 8,192 | `6c759e6cfc43a68991cc0c41bcbffd7236629e3b6a152c14ea221a7b915b0a18` |
+
+因此失败不是本次下一段 repair lease 未落盘，而是随后 Carousel position 的替换。第一份 campaign-1 Encoder 状态早已被第 7.2 节额外恢复推进，不能把它当前的 generation 当成原故障快照，也不能把 Decoder journal 摘要冒充 Encoder 状态。
+
+三份失败的 `frames.jsonl` 分别与既有成功用例的前 6,696 / 6,944 / 7,192 行完全相同。这只是身份/lease 元数据前缀，不代表所有运行时输入或环境相同。campaign-1 与 first-flow 的 worker SHA-256 相同（`333f4e23b8099e761562ccc4f8c3d27adbacfdc8d959a27909995300dc52efb8`），且均早于 I/O 失败观察器；没有证据支持“观察器新增后才引入故障”或“固定 generation 必然失败”。
+
+源码与历史审计未发现该同步路径中持有 `runtime.state` 的自有读句柄或第二个 writer：startup 读取句柄已关闭，tmp 的 write/flush/close 均先于 rename，owner lock 是另一文件。原子替换与失败回滚源自 G01 `1445f9b`，整轮 repair lease 预留源自 G02 `766d210`；G15 `c5dc9da` 增加安全 tmp/owner 检查，G18 观察器只在失败后运行。这些是排查证据，不是对未捕获瞬态句柄/过滤器的排除证明。
+
+### 8.2 低干扰跟踪与小探针结果
+
+全部新增产物位于 ignored `build-unified-release/g18-atomic-diagnosis/`。CDB 只启动自己的 worker，使用 `CREATE_NO_WINDOW`、`-hd`、本地空符号路径及有界超时，不附加其他进程、不控制输入、不打开实屏。没有安装工具、修改 ACL/安全软件、增加重试或改动生产源码。
+
+先检查当前系统实际服务的 `ntdll`/`KernelBase` 指令，再设置原生返回/错误分支断点。当前 `KernelBase.dll` 为 `10.0.26100.9278`，SHA-256 `86d70eb7d0f1f997bd965616405f166afcb56c20ac468e297b8b60f51cbb0193`；这些偏移不是跨系统版本 ABI。小探针 runner 在指纹不符时拒绝运行。其 `NtSetInformationFile` 返回值在系统库保存后被错误分支读取，避免将 HeapFree 后的 EAX 或普通 API 合成错误误当成原生 rename 返回值。
+
+| 执行 | 结果 | 证据边界 |
+| --- | --- | --- |
+| `native-trace-1` | CDB 脚本语法错误，在 worker main 前退出 | MASM 的按位 `|` 被误写为 `||`；保留原日志，不计产品失败/运行通过 |
+| `native-trace-2`，syscall 返回处跟踪 | 102 次 rename 全成功；worker 96,312 ms | 明显扰动时序；不是问题消失证明 |
+| `native-trace-3`，仅系统库错误分支跟踪 | 无错误分支命中；worker 54,958 ms | 同一最终 worker 快照，未复现自然故障 |
+| `probe-baseline`，无占用，1 组双写 | 成功，generation 5，10 ms | 小范围对照 |
+| `probe-share-all`，持有目标读句柄，允许 read/write/delete sharing | 原生 `0xc0000022`，Win32 5；内存回滚和重新打开均正确 | **受控占用**，不是自然故障 |
+| `probe-no-delete`，仅取消上述 delete sharing | 同样原生 `0xc0000022`，Win32 5；内存回滚和重新打开均正确 | 单变量差分；事后 DELETE-access probe 变为 error 32 |
+| `probe-paired-burst`，无占用，错误分支跟踪 | 128 组双写全成功，generation 259，1,405 ms | 不是 FEC/256 MiB 闭环或验收 |
+| `probe-paired-no-debugger`，仅去掉 CDB | 128 组双写全成功，exit 0，generation 259，1,552 ms | 未证明必须有 debugger 才能通过 |
+
+两次成功的 256 MiB 诊断输出另做流式长度/SHA-256/BLAKE3 核对，与第 7.1 节源完全一致；见 `diagnostic-output-verification.json`。它们没有真实终止/重启，不替换九点验收记录，表中时长也不是吞吐认证。
+
+小探针源码 `probe-source/encoder_atomic_replace_probe.cpp` 与独立 `CMakeLists.txt` 只在该 ignored 诊断目录创建；链接已存在的 `PBG18Application.lib`、`PBProtocol.lib`，**没有复制或重写 AtomicWriteFile 实现**。MSVC `/W4 /WX` Release 构建成功；最多 128 组，32 项修复租约元数据，create-only 目录，无控制/传输/FEC 数据流。用于构建 state-store 的 descriptor bundle 明确是 non-transfer 夹具，不能作为正式描述符或大文件证据。probe binary SHA-256 为 `748eb9fe8d3d835b8b11a291cea92fa75d4de05edc36093c06c2603dead614f6`。
+
+受控 share-all 案例在**同一线程**记录：native rename status `0xc0000022`、错误映射输入 `0xc0000022`、已核对的 `MoveFileExW` 错误分支 EAX=5、应用 `UpdateCarouselPosition ... win32=5`。同时原观察器仍显示 target/tmp attributes 32、DELETE-access 0/0；区别是本次占用保持到观察结束，Restart Manager 能看到探针自身 PID 29452，历史自然故障观察时 PID 列表为空。因此 **DELETE-access 成功不能排除已有读取句柄，Restart Manager 的事后空列表也不能证明失败瞬间无占用**。该受控机制与 Windows 对替换已打开目标的限制一致；参见 [MS-FSA FileRenameInformation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/87f86c9b-6c2a-4803-84b7-131a74a434fa)。
+
+原日志中的 `!gle` 因缺少 `ntdll!_TEB` 类型给出不可用的零值；不能引用它来否认应用 error 5。有效证据是保存的真实 NTSTATUS、上述已反汇编核对的 EAX、应用保存的 GetLastError。`!handle` 没有返回源句柄对象名称，不能伪称取得了完整源路径；目标路径来自长度受限的 `UNICODE_STRING`，未读取已释放的 rename buffer。
+
+### 8.3 重放、封印与下一步
+
+以下为本机诊断重放入口，必须使用新的 case 名，不能在原失败状态上继续推进。probe 来源和其依赖 static-library/EXE/script/DLL hashes 见每个 `.trace-run.json`；这些本地产物未进入源码提交，也不是可移植工具发布。系统 DLL 或工作库发生变化后须先重新核对，不能盲用旧偏移/身份：
+
+```powershell
+$diagnosis = '<repo>\build-unified-release\g18-atomic-diagnosis'
+cmake -S "$diagnosis\probe-source" -B "$diagnosis\probe-build" -G 'Visual Studio 17 2022' -A x64
+cmake --build "$diagnosis\probe-build" --config Release --target PBEncoderAtomicReplaceProbe --parallel 2
+& <python> "$diagnosis\run_probe_trace.py" probe-new-share-all share-all 1
+& <python> "$diagnosis\run_probe_trace.py" probe-new-no-delete no-delete 1
+& <python> "$diagnosis\run_probe_trace.py" probe-new-paired-burst none 128
+& "$diagnosis\probe-build\Release\PBEncoderAtomicReplaceProbe.exe" none "$diagnosis\probe-new-no-debugger" 128
+```
+
+本轮两次有效完整 worker 诊断分别由 `run_native_trace.py native-trace-2 trace-ret-only-v2.cdb` 和 `run_native_trace.py native-trace-3 trace-errors-only.cdb` 执行。该旧 runner 没有 DLL 指纹前置断言，不应在不同系统上直接重用。`collect_diagnosis.py` 仅核对既有状态、元数据前缀和受控日志并封印 SHA-256；汇总 `diagnosis.json` 明确记录：
+
+```text
+naturalFailureRootCauseConfirmed = false
+productionFixApplied = false
+g18ExitCriteriaMet = false
+```
+
+**当前最值得验证的假设：** rename 目标在失败瞬间被短暂打开或仍有文件系统/过滤器引用。受控复现证明该机制可产生已有的 error/probe 特征，但尚未将它与三次历史自然失败连接；不能认定是安全软件、索引器、系统缺陷或自有句柄错误。另一尚未排除的类别是过滤器直接拒绝 rename，而非某个普通可枚举用户态句柄。
+
+**下一证明步骤，而非修复：** 在一次自然失败附近取得同一 `runtime.state`/`.tmp` 的 CreateFile、Cleanup/CloseFile、SetRenameInformationFile 时间线、share/access、PID 与调用栈。推荐用户配合一次最多 90 秒、仅该诊断夹具路径的管理员文件 I/O 跟踪；[Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) 支持文件操作明细、过滤和调用栈。不能只按 worker PID 过滤，否则会丢掉其他进程的占用事件；不能只保留 error，否则会丢掉成功的 open/close。启动/配置该权限更高的跟踪前须取得用户配合，不自动安装驱动、接受 EULA、提升权限或改变安全软件。
+
+当前会话不是管理员，`fltmc filters` 一次返回 access denied；PATH 未发现 Procmon 命令，这不代表整台机器未安装。未启动全局 ETW/Procmon，也未干扰左右屏幕或输入。普通权限下的双写探针已有带/不带 debugger 的有界对照，不继续无证据重复完整 campaign。等待捕获自然失败的必要证据后再确定最小修复；不采用未经归因的 sleep/retry、合并持久化事务或更换 rename API。
+
+本轮只构建并执行上述诊断探针、两次有效诊断闭环及一次 main 前脚本失败，复核既有输出/状态；没有重跑 ASan、full CTest、GPU/GUI/native Gate、remote、20 GiB 或发布包验证。生产代码、公共接口、wire/FEC、持久化格式和 fail-closed 行为保持 `8965f3d` 不变。下一目标仍是 **关闭 G18 的自然原子替换故障及最终候选验收**，不是 G19。
