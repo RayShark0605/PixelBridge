@@ -1,11 +1,13 @@
 #pragma once
 
 #include "application_model.h"
+#include "decoder_capture_controller.h"
 #include "monitor_catalog.h"
 
 #include "pbcompression/segment_compression.h"
 #include "pbrenderd3d/data_window.h"
 #include "pbscreenregion/screen_region.h"
+#include "pbdemodd3d11/capture_demodulator.h"
 
 #include <atomic>
 #include <array>
@@ -80,6 +82,30 @@ struct DecoderConfig
     // 1..60 applies an authoritative pre-readback time sampler. For production
     // LF4 the primary GPU demodulator remains unsampled.
     std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
+};
+
+[[nodiscard]] DecoderConfig MakeUnifiedDecoderConfig(std::wstring outputDirectory,
+    const pbscreenregion::ScreenCaptureRegion& region);
+
+// Same live receive loop in production and non-display tests. Only the OS/GPU
+// edge is replaceable; Receiver, confirmation, persistence and publish are not.
+class DecoderDemodulator
+{
+public:
+    virtual ~DecoderDemodulator() = default;
+    [[nodiscard]] virtual std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> GetConsumer() const = 0;
+    [[nodiscard]] virtual bool TakeResult(pbdemodd3d11::CaptureDemodulatorResult& result) = 0;
+    [[nodiscard]] virtual pbdemodd3d11::CaptureDemodulatorSnapshot GetSnapshot() const = 0;
+};
+
+struct DecoderRuntimeServices
+{
+    DecoderCaptureController::SessionFactory captureFactory = MakeNativeDecoderCaptureSession;
+    std::function<pbcapturenormalize::CaptureStatus(const pbdemodd3d11::CaptureDemodulatorConfig&,
+        std::shared_ptr<DecoderDemodulator>&)> demodulatorFactory;
+    // May only lower the normal confirmation threshold. Used by small-fixture
+    // tests; no Qt/CLI control can change this or bypass a required decision.
+    std::optional<std::uint64_t> outputConfirmationThresholdBytes;
 };
 
 // One product policy, shared by Qt and CLI. Historical explicit diagnostic
@@ -366,7 +392,7 @@ private:
 class DecoderRuntime
 {
 public:
-    DecoderRuntime() = default;
+    explicit DecoderRuntime(DecoderRuntimeServices services = {});
     ~DecoderRuntime();
     DecoderRuntime(const DecoderRuntime&) = delete;
     DecoderRuntime& operator=(const DecoderRuntime&) = delete;
@@ -387,6 +413,7 @@ private:
     std::atomic<bool> workerRunning_ = false;
     LargeOutputConfirmationController largeOutputConfirmation_;
     std::uint64_t nextRunGeneration_ = 1;
+    DecoderRuntimeServices services_;
 };
 
 } // namespace pbapp

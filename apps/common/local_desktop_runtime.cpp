@@ -84,6 +84,10 @@ inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
 inline constexpr std::uint32_t captureResultQueueCapacity = 128;
 inline constexpr std::uint64_t maximumDemodulatorResidentBytes = 128ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t maximumRemoteVisualLowFpsDemodulatorResidentBytes = 256ULL * 1024ULL * 1024ULL;
+// Four 3840x2160 staging slots plus the existing fixed metric/FEC workspace
+// and result queue are preflighted by CalculateCaptureDemodulatorBudget.
+inline constexpr std::uint64_t maximumUnifiedDemodulatorResidentBytes = 256ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t maximumUnifiedCaptureResidentBytes = 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t maximumReplayDemodulatorResidentBytes = 512ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t mebibyte = 1024ULL * 1024ULL;
 inline constexpr std::uint64_t maximumCaptureResidentBytes = 512ULL * mebibyte;
@@ -2267,10 +2271,14 @@ private:
     captureConfig.capture.initialCaptureEpoch = 1;
     captureConfig.capture.queuedFrameLimit = captureQueuedFrameLimit;
     captureConfig.capture.roiTextureCount = captureDemodulatorSlotCount;
-    captureConfig.capture.maximumCaptureBytes = config.visualProfile == VisualProfile::RemoteVisualLowFps ?
+    captureConfig.capture.maximumCaptureBytes = config.visualProfile == VisualProfile::UnifiedLc4 ?
+        maximumUnifiedCaptureResidentBytes : config.visualProfile == VisualProfile::RemoteVisualLowFps ?
         config.replayOutputPath.empty() ? maximumRemoteVisualLowFpsCaptureResidentBytes :
             maximumRemoteVisualLowFpsReplayCaptureResidentBytes : maximumCaptureResidentBytes;
-    captureConfig.capture.maximumRoiBytes = maximumRoiResidentBytes;
+    // Auto must reserve DXGI's advertised worst-case source format too: four
+    // BGRA output slots plus four R16G16B16A16 scratch slots at the ROI bound.
+    captureConfig.capture.maximumRoiBytes = config.visualProfile == VisualProfile::UnifiedLc4 ?
+        384ULL * mebibyte : maximumRoiResidentBytes;
     captureConfig.capture.gpuTimeoutMilliseconds = 3000;
     captureConfig.capture.maximumDeviceRecoveries = 1;
     captureConfig.capture.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -2290,7 +2298,11 @@ private:
     // without misclassifying compute time as capture staleness.
     demodConfig.maximumFrameAgeMilliseconds = offlineReplay ? 60000 : 250;
     demodConfig.resultQueueCapacity = captureResultQueueCapacity;
-    if (offlineReplay && config.visualProfile == VisualProfile::RemoteVisualLowFps)
+    if (config.visualProfile == VisualProfile::UnifiedLc4)
+    {
+        demodConfig.maximumResidentBytes = maximumUnifiedDemodulatorResidentBytes;
+    }
+    else if (offlineReplay && config.visualProfile == VisualProfile::RemoteVisualLowFps)
     {
         demodConfig.maximumResidentBytes = maximumReplayDemodulatorResidentBytes;
     }
@@ -2302,7 +2314,7 @@ private:
     {
         demodConfig.maximumResidentBytes = maximumDemodulatorResidentBytes;
     }
-    if (!offlineReplay && config.visualProfile == VisualProfile::RemoteVisualLowFps)
+    if (!offlineReplay && (config.visualProfile == VisualProfile::RemoteVisualLowFps || config.visualProfile == VisualProfile::UnifiedLc4))
     {
         demodConfig.maximumRoiWidth = static_cast<std::uint32_t>(
             static_cast<std::int64_t>(config.region.physicalRect.right) - config.region.physicalRect.left);
@@ -2646,7 +2658,10 @@ public:
             return {};
         }
         RecordCaptureTelemetry(result);
-        RecordRemoteMetricTelemetry(result);
+        if (visualProfile_ != VisualProfile::UnifiedLc4)
+        {
+            RecordRemoteMetricTelemetry(result);
+        }
         if (!result.bootstrap.IsAccepted())
         {
             UpdateTelemetrySnapshot();
@@ -2665,7 +2680,8 @@ public:
         const auto parsedBootstrap = pbprotocol::ParseBootstrapRecord(result.bootstrapRecord);
         RequireResult(parsedBootstrap, "CaptureDemodulator published an invalid Bootstrap");
         const pbprotocol::BootstrapRecord& bootstrap = parsedBootstrap.Value();
-        if (session_ && bootstrap.sessionTag != pbprotocol::DeriveSessionTag(session_->sessionId))
+        if ((session_ && bootstrap.sessionTag != pbprotocol::DeriveSessionTag(session_->sessionId)) ||
+            (pendingSession_ && bootstrap.sessionTag != pendingSessionTag_))
         {
             UpdateTelemetrySnapshot();
             return {};
@@ -2679,6 +2695,13 @@ public:
             UpdateVisualSnapshot();
             UpdateTelemetrySnapshot();
             return {};
+        }
+        if (visualProfile_ == VisualProfile::UnifiedLc4)
+        {
+            const ReceiverProcessResult processed = ProcessUnifiedFrame(result, bootstrap, identityDisposition);
+            UpdateVisualSnapshot();
+            UpdateTelemetrySnapshot();
+            return processed;
         }
         const bool lowFps = visualProfile_ == VisualProfile::RemoteVisualLowFps;
         if (lowFps)
@@ -2854,6 +2877,7 @@ public:
         outerResourceRejections_ = 0;
         outerConflictRejections_ = 0;
         remoteRefinement_.ResetEpoch();
+        unifiedFrameIdentity_.reset();
         channelStalls_.ResetDomain(monotonicMilliseconds, lastCaptureObservationsForStall_,
             visualRate_.GetSnapshot().uniqueFrames);
         snapshot_.Update([this](DecoderSnapshot& value)
@@ -2882,6 +2906,7 @@ public:
             value.telemetryBootstrapSuccesses = 0;
             value.bootstrapSuccessRate.reset();
             value.observedLocatorGeometry = {};
+            value.geometryStatus = "WaitingForBootstrap";
             value.evaluatedDataFrames = 0;
             value.evaluatedCodewords = 0;
             value.postFecFailedFrames = 0;
@@ -3043,6 +3068,166 @@ public:
     }
 
 private:
+    [[nodiscard]] ReceiverProcessResult ProcessUnifiedFrame(const pbdemodd3d11::CaptureDemodulatorResult& result,
+        const pbprotocol::BootstrapRecord& bootstrap, const VisualIdentityDisposition identityDisposition)
+    {
+        const auto& demodulation = result.demodulation;
+        Require(bootstrap.visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId &&
+            bootstrap.visualLayoutVersion == pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion,
+            "Unified receive result has a foreign Bootstrap profile");
+        snapshot_.Update([this, &result](DecoderSnapshot& value)
+        {
+            if (value.runGeneration == runGeneration_)
+            {
+                switch (result.geometryStatus)
+                {
+                case pbdemodd3d11::CaptureDemodulatorGeometryStatus::ExactCanvas: value.geometryStatus = "ExactCanvas"; break;
+                case pbdemodd3d11::CaptureDemodulatorGeometryStatus::Scaled: value.geometryStatus = "Scaled"; break;
+                case pbdemodd3d11::CaptureDemodulatorGeometryStatus::Letterboxed: value.geometryStatus = "Letterboxed"; break;
+                default: value.geometryStatus = "Rejected"; break;
+                }
+            }
+        });
+        if (identityDisposition == VisualIdentityDisposition::Reordered ||
+            result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly)
+        {
+            return {};
+        }
+        Require(result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame &&
+            demodulation.visualProfileId == bootstrap.visualProfileId &&
+            demodulation.metadata.domain == result.metadata.domain &&
+            demodulation.metadata.captureObservation == result.metadata.captureObservation &&
+            demodulation.metadata.sourceGeneration == result.metadata.sourceGeneration &&
+            demodulation.metadata.slotGeneration == result.metadata.slotGeneration &&
+            demodulation.metadata.slotIndex == result.metadata.slotIndex &&
+            demodulation.unifiedObservation.bootstrapRecord == bootstrap,
+            "Unified same-frame demodulation identity mismatch");
+        Require(demodulation.acceptedUnifiedBlockCount <= demodulation.acceptedUnifiedBlocks.size(),
+            "Unified accepted-block count exceeds the fixed slot capacity");
+        if (!demodulation.unifiedObservation.IsFrameAvailable())
+        {
+            Require(demodulation.acceptedUnifiedBlockCount == 0, "erased Unified frame emitted accepted bytes");
+            return {};
+        }
+        if (!unifiedFrameIdentity_ || identityDisposition == VisualIdentityDisposition::Unique)
+        {
+            unifiedFrameIdentity_ = bootstrap;
+            unifiedFrameBlocks_ = {};
+            unifiedFrameAdmitted_ = {};
+        }
+        if (unifiedFrameIdentity_->sessionTag != bootstrap.sessionTag ||
+            unifiedFrameIdentity_->frameSequence != bootstrap.frameSequence)
+        {
+            return {}; // An older duplicate does not displace the single retained frame.
+        }
+        Require(*unifiedFrameIdentity_ == bootstrap, "conflicting same-sequence Unified Bootstrap");
+        std::array<bool, pbmodulation::kUnifiedCodewordCount> seenSlots{};
+        std::uint32_t controlSlots = 0;
+        // Validate the whole compact handoff before any Receiver mutation. The
+        // cache holds only one frame, never pixels or an unbounded frame history.
+        for (std::uint32_t index = 0; index < demodulation.acceptedUnifiedBlockCount; index++)
+        {
+            const auto& block = demodulation.acceptedUnifiedBlocks[index];
+            Require(block.codewordSlot < seenSlots.size() && !seenSlots[block.codewordSlot] &&
+                block.size != 0 && block.size <= block.bytes.size(), "invalid or repeated Unified slot");
+            seenSlots[block.codewordSlot] = true;
+            const auto bytes = std::span(block.bytes).first(block.size);
+            if (block.kind == pbmodulation::UnifiedSlotKind::Control)
+            {
+                const auto& region = pbmodulation::kUnifiedVisualProfile.mixedSlots.controlRegion;
+                Require(block.codewordSlot >= region.firstCodewordSlot &&
+                    block.codewordSlot - region.firstCodewordSlot < region.codewordSlotCount,
+                    "Unified Control outside Base Luma control region");
+                const auto control = pbprotocol::ParseControlRecord(bytes);
+                RequireResult(control, "Unified Control independent parse failed");
+                Require(control.Value().sessionTag == bootstrap.sessionTag, "Unified Control identity mismatch");
+                if (control.Value().recordType == pbprotocol::ControlRecordType::SessionDescriptor)
+                {
+                    const auto session = pbprotocol::ParseSessionDescriptor(control.Value().payload, policy_);
+                    RequireResult(session, "Unified Session independent parse failed");
+                    Require(session.Value().sessionVisualProfileId == bootstrap.visualProfileId,
+                        "Unified Session descriptor profile mismatch");
+                }
+                controlSlots++;
+            }
+            else
+            {
+                Require(block.kind == pbmodulation::UnifiedSlotKind::Transport, "unknown Unified carrier kind");
+                const auto transport = pbprotocol::ParseTransportBlock(bytes);
+                RequireResult(transport, "Unified Transport independent parse failed");
+                Require(transport.Value().header.sessionTag == bootstrap.sessionTag, "Unified Transport identity mismatch");
+            }
+            auto& previous = unifiedFrameBlocks_[block.codewordSlot];
+            if (previous)
+            {
+                Require(previous->kind == block.kind && previous->size == block.size &&
+                    std::equal(bytes.begin(), bytes.end(), previous->bytes.begin()),
+                    "conflicting accepted bytes in the same Unified frame slot");
+            }
+            else
+            {
+                previous = block;
+            }
+        }
+        controlSlots = 0;
+        for (const auto& block : unifiedFrameBlocks_)
+        {
+            if (block && block->kind == pbmodulation::UnifiedSlotKind::Control)
+            {
+                controlSlots++;
+            }
+        }
+        Require(controlSlots <= pbmodulation::GetUnifiedMaximumControlSlots(), "Unified control-slot budget exceeded");
+        ReceiverProcessResult processing;
+        // A same-frame Session must bind before its other Control and Transport,
+        // even if a backend returned the compact accepted array in another order.
+        for (std::uint32_t pass = 0; pass < 3; pass++)
+        {
+            for (std::uint32_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
+            {
+                if (!unifiedFrameBlocks_[slot] || unifiedFrameAdmitted_[slot] || published_)
+                {
+                    continue;
+                }
+                const auto& block = *unifiedFrameBlocks_[slot];
+                const auto bytes = std::span(block.bytes).first(block.size);
+                if (block.kind == pbmodulation::UnifiedSlotKind::Control)
+                {
+                    const auto control = pbprotocol::ParseControlRecord(bytes);
+                    RequireResult(control, "cached Unified Control parse failed");
+                    const bool sessionControl = control.Value().recordType == pbprotocol::ControlRecordType::SessionDescriptor;
+                    if ((pass == 0 && sessionControl) || (pass == 1 && !sessionControl))
+                    {
+                        const bool accepted = ProcessControlRecord(bytes, bootstrap.sessionTag, result.metadata.timestamp.monotonic100ns);
+                        unifiedFrameAdmitted_[slot] = accepted;
+                        processing.carrierAccepted |= accepted;
+                    }
+                }
+                else if (pass == 2 && session_ && !pendingSession_)
+                {
+                    pbdemodd3d11::CaptureDemodulatorResult transport;
+                    transport.metadata = result.metadata;
+                    transport.demodulation.acceptedTransportBlockCount = 1;
+                    transport.demodulation.acceptedTransportBlocks[0].byteCount = block.size;
+                    std::copy(bytes.begin(), bytes.end(), transport.demodulation.acceptedTransportBlocks[0].bytes.begin());
+                    transport.admittedTransportBlockCount = 1;
+                    transport.admittedTransportBlockIndices[0] = 0;
+                    const ReceiverProcessResult admitted = ProcessTransport(transport, false);
+                    unifiedFrameAdmitted_[slot] = admitted.carrierAccepted;
+                    processing.carrierAccepted |= admitted.carrierAccepted;
+                    processing.uniqueAdmission |= admitted.uniqueAdmission;
+                    processing.completedSegment |= admitted.completedSegment;
+                }
+            }
+        }
+        if (processing.uniqueAdmission)
+        {
+            static_cast<void>(endToEndRate_.Observe(bootstrap.frameSequence, result.metadata.domain.captureEpoch,
+                result.metadata.timestamp.monotonic100ns, bootstrap.sessionTag.value));
+        }
+        return processing;
+    }
+
     static void RequireTelemetry(const pbtelemetry::TelemetryStatus status, const char* const operation)
     {
         if (!status)
@@ -3331,6 +3516,7 @@ private:
             value.state = DecoderState::ReceivingControl;
             value.descriptorKnown = true;
             value.originalFileBytes = session_->originalFileSize;
+            value.originalFileNameUtf8 = session_->fileNameUtf8;
             value.remainingRawBytes = session_->originalFileSize;
             value.recoveryProgress = session_->originalFileSize == 0 ? 1.0 : 0.0;
             value.sessionIdHex = SessionIdHex(session_->sessionId);
@@ -3419,6 +3605,7 @@ private:
                         value.state = DecoderState::AwaitingLargeOutputConfirmation;
                         value.descriptorKnown = true;
                         value.originalFileBytes = pendingSession_->originalFileSize;
+                        value.originalFileNameUtf8 = pendingSession_->fileNameUtf8;
                         value.remainingRawBytes = pendingSession_->originalFileSize;
                         value.recoveryProgress = pendingSession_->originalFileSize == 0 ? 1.0 : 0.0;
                         value.sessionIdHex = SessionIdHex(pendingSession_->sessionId);
@@ -3964,7 +4151,7 @@ private:
             value.recoveryRuntimeMilliseconds = completion_.recoveryRuntimeMilliseconds;
             value.statusMessage = deferCompletedState_ ?
                 "文件已发布；正在消费 Replay 尾部并验证完整证据" :
-                "文件接收完成：WholeFileDigest PASS 且 final publish 成功";
+                "文件接收完成：WholeFileDigest、安全发布与最终文件重新打开复验均通过";
         });
     }
 
@@ -3980,6 +4167,7 @@ private:
             value.descriptorKnown = progress.descriptorKnown;
             value.originalFileBytes = progress.totalRawBytes;
             value.verifiedRawBytes = progress.verifiedRawBytes;
+            value.verifiedSegmentCount = completedSegmentCount_;
             value.remainingRawBytes = progress.remainingRawBytes;
             value.recoveryProgress = progress.progress;
             value.instantVerifiedRawGoodputBytesPerSecond = progress.instantBytesPerSecond;
@@ -4145,6 +4333,9 @@ private:
     std::uint64_t storedEncodedBytes_ = 0;
     std::uint64_t totalVerifiedRawBytes_ = 0;
     std::uint64_t completedSegmentCount_ = 0;
+    std::optional<pbprotocol::BootstrapRecord> unifiedFrameIdentity_;
+    std::array<std::optional<pbmodulation::UnifiedAcceptedBlock>, pbmodulation::kUnifiedCodewordCount> unifiedFrameBlocks_;
+    std::array<bool, pbmodulation::kUnifiedCodewordCount> unifiedFrameAdmitted_{};
     std::uint64_t pendingDroppedFrames_ = 0;
     std::uint64_t lastCaptureDroppedFrames_ = 0;
     std::uint64_t lastResultQueueDrops_ = 0;
@@ -6218,6 +6409,12 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
     {
         return RuntimeStatus::Failure("输出目录路径无效");
     }
+    if (config.visualProfile == VisualProfile::UnifiedLc4 &&
+        (config.captureBackend != CaptureBackend::Auto || config.monitorSafety || config.diagnosticCaptureOnly ||
+         !config.replayInputPath.empty() || !config.replayOutputPath.empty() || config.replayEvidenceVisualProfileId))
+    {
+        return RuntimeStatus::Failure("Unified 产品固定 Auto capture，不启用旧 Profile/Replay/monitor 实验入口");
+    }
     const bool offlineReplay = !config.replayInputPath.empty();
     const bool sampledProductionReplay = !config.replayOutputPath.empty() &&
         config.remoteMetadata.channelType == ChannelType::RemoteVisual && !config.diagnosticCaptureOnly &&
@@ -6277,7 +6474,7 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
     if ((config.captureBackend != CaptureBackend::Auto && config.captureBackend != CaptureBackend::Wgc && config.captureBackend != CaptureBackend::Dxgi) ||
         (config.visualProfile != VisualProfile::DirectLevels2x2 && config.visualProfile != VisualProfile::ShapeChroma &&
          config.visualProfile != VisualProfile::RemoteVisualResilient &&
-         config.visualProfile != VisualProfile::RemoteVisualLowFps))
+         config.visualProfile != VisualProfile::RemoteVisualLowFps && config.visualProfile != VisualProfile::UnifiedLc4))
     {
         return RuntimeStatus::Failure("Capture backend 或 Visual Profile 不在当前 Runtime Option Inventory 中");
     }
@@ -6302,10 +6499,14 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
     const bool diagnosticCaptureOnlyAllowed = config.diagnosticCaptureOnly &&
         !config.replayOutputPath.empty() && config.remoteMetadata.channelType == ChannelType::RemoteVisual &&
         config.visualProfile == VisualProfile::RemoteVisualResilient;
-    if (!strictGeometry && !lowFpsGeometry && !diagnosticCaptureOnlyAllowed)
+    const bool unifiedGeometry = config.visualProfile == VisualProfile::UnifiedLc4 &&
+        width >= phase1CanvasWidth * 3 / 4 && width <= phase1CanvasWidth * 2 &&
+        height >= phase1CanvasHeight * 3 / 4 && height <= phase1CanvasHeight * 2;
+    if ((config.visualProfile == VisualProfile::UnifiedLc4 && !unifiedGeometry) ||
+        (!strictGeometry && !lowFpsGeometry && !unifiedGeometry && !diagnosticCaptureOnlyAllowed))
     {
         return RuntimeStatus::Failure(
-            "Geometry incompatible with selected profile; remote-lf4 requires a bounded 0.5x..2.0x physical ROI");
+            "Geometry incompatible: Unified ROI requires 1440..3840 x 810..2160 physical pixels; legacy LF4 requires 0.5x..2.0x");
     }
     if (config.diagnosticCaptureOnly && !diagnosticCaptureOnlyAllowed)
     {
@@ -6423,6 +6624,16 @@ pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSe
     return pbcompression::CompressSegment(rawBytes, settings);
 }
 
+DecoderConfig MakeUnifiedDecoderConfig(std::wstring outputDirectory, const pbscreenregion::ScreenCaptureRegion& region)
+{
+    DecoderConfig config;
+    config.outputDirectory = std::move(outputDirectory);
+    config.region = region;
+    config.captureBackend = CaptureBackend::Auto;
+    config.visualProfile = VisualProfile::UnifiedLc4;
+    return config;
+}
+
 EncoderConfig MakeUnifiedEncoderConfig(std::wstring sourcePath, const std::uint32_t logicalVisualFps,
     const std::optional<pbrenderd3d::PhysicalPoint> clientOrigin)
 {
@@ -6439,6 +6650,40 @@ EncoderConfig MakeUnifiedEncoderConfig(std::wstring sourcePath, const std::uint3
 
 namespace
 {
+
+class NativeDecoderDemodulator final : public DecoderDemodulator
+{
+public:
+    explicit NativeDecoderDemodulator(std::shared_ptr<pbdemodd3d11::CaptureDemodulator> demodulator) : demodulator_(std::move(demodulator))
+    {
+    }
+    std::shared_ptr<pbcapturenormalize::ScreenCaptureConsumer> GetConsumer() const override
+    {
+        return demodulator_;
+    }
+    bool TakeResult(pbdemodd3d11::CaptureDemodulatorResult& result) override
+    {
+        return demodulator_->TakeResult(result);
+    }
+    pbdemodd3d11::CaptureDemodulatorSnapshot GetSnapshot() const override
+    {
+        return demodulator_->GetSnapshot();
+    }
+private:
+    std::shared_ptr<pbdemodd3d11::CaptureDemodulator> demodulator_;
+};
+
+pbcapturenormalize::CaptureStatus MakeNativeDecoderDemodulator(const pbdemodd3d11::CaptureDemodulatorConfig& config,
+    std::shared_ptr<DecoderDemodulator>& output)
+{
+    std::shared_ptr<pbdemodd3d11::CaptureDemodulator> native;
+    const auto status = pbdemodd3d11::CaptureDemodulator::Create(config, native);
+    if (status)
+    {
+        output = std::make_shared<NativeDecoderDemodulator>(std::move(native));
+    }
+    return status;
+}
 
 class NativeEncoderPresentation final : public EncoderPresentation
 {
@@ -7350,6 +7595,14 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
     }
 }
 
+DecoderRuntime::DecoderRuntime(DecoderRuntimeServices services) : services_(std::move(services))
+{
+    if (!services_.demodulatorFactory)
+    {
+        services_.demodulatorFactory = MakeNativeDecoderDemodulator;
+    }
+}
+
 DecoderRuntime::~DecoderRuntime()
 {
     Stop();
@@ -7357,16 +7610,24 @@ DecoderRuntime::~DecoderRuntime()
 
 RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
 {
+    const auto defaultPolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    if (!services_.captureFactory || (services_.outputConfirmationThresholdBytes &&
+        *services_.outputConfirmationThresholdBytes > defaultPolicy.maxOutputPreallocationBytesWithoutPrompt))
+    {
+        return RuntimeStatus::Failure("Decoder services cannot disable capture ownership or raise the output confirmation threshold");
+    }
     const RuntimeStatus validation = ValidateDecoderConfig(config);
     if (!validation)
     {
         return validation;
     }
     std::unique_lock lock(lifecycleMutex_);
-    if (workerRunning_)
+    if (workerRunning_ && IsDecoderStateActive(snapshot_.Get().state))
     {
         return RuntimeStatus::Failure("Decoder 已处于接收/停止流程，拒绝重复 Start");
     }
+    // A terminal snapshot can precede the worker guard's final release. Join
+    // that tail before starting another run rather than reject a valid restart.
     if (worker_.joinable())
     {
         worker_.join();
@@ -7654,7 +7915,11 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 resourceSampler, stopRequested_);
             return;
         }
-        const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+        pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+        if (services_.outputConfirmationThresholdBytes)
+        {
+            policy.maxOutputPreallocationBytesWithoutPrompt = *services_.outputConfirmationThresholdBytes;
+        }
         auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, outerBlockBytes);
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
@@ -7663,17 +7928,19 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
 
         const pbdemodd3d11::CaptureDemodulatorConfig demodConfig = MakeCaptureDemodulatorConfig(
             config, profile, replayReader != nullptr);
-        std::shared_ptr<pbdemodd3d11::CaptureDemodulator> demodulator;
-        const auto demodStatus = pbdemodd3d11::CaptureDemodulator::Create(demodConfig, demodulator);
-        Require(static_cast<bool>(demodStatus), "CaptureDemodulator creation failed: " +
-            DescribeCaptureStatus(demodStatus));
-
         if (replayReader)
         {
-            RunOfflineReplayDataset(config, *replayReader, profile, pipeline, demodulator,
+            std::shared_ptr<pbdemodd3d11::CaptureDemodulator> offlineDemodulator;
+            const auto status = pbdemodd3d11::CaptureDemodulator::Create(demodConfig, offlineDemodulator);
+            Require(static_cast<bool>(status), "Replay CaptureDemodulator creation failed: " + DescribeCaptureStatus(status));
+            RunOfflineReplayDataset(config, *replayReader, profile, pipeline, offlineDemodulator,
                 snapshot_, runGeneration, started, resourceSampler, stopRequested_);
             return;
         }
+        std::shared_ptr<DecoderDemodulator> demodulator;
+        const auto demodStatus = services_.demodulatorFactory(demodConfig, demodulator);
+        Require(static_cast<bool>(demodStatus) && demodulator && demodulator->GetConsumer(),
+            "CaptureDemodulator creation failed: " + DescribeCaptureStatus(demodStatus));
 
         const auto captureConfig = MakeCaptureConfig(config);
         std::shared_ptr<RemoteVisualReplayRecorder> replayRecorder;
@@ -7737,26 +8004,27 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 if (!firstCaptureConsumer)
                 {
                     demodulator.reset();
-                    const auto status = pbdemodd3d11::CaptureDemodulator::Create(demodConfig, demodulator);
+                    const auto status = services_.demodulatorFactory(demodConfig, demodulator);
                     if (!status)
                     {
                         return status;
                     }
                 }
+                Require(demodulator && demodulator->GetConsumer(), "capture consumer factory returned no consumer");
                 firstCaptureConsumer = false;
                 if (replayReadback)
                 {
                     // DiagnosticCpuReadback supports drained DomainStarted on a
                     // new owner; CaptureDemodulator deliberately does not.
-                    replayFanout = std::make_shared<OptionalDiagnosticFanout>(demodulator, replayReadback);
+                    replayFanout = std::make_shared<OptionalDiagnosticFanout>(demodulator->GetConsumer(), replayReadback);
                     output = replayFanout;
                 }
                 else
                 {
-                    output = demodulator;
+                    output = demodulator->GetConsumer();
                 }
                 return pbcapturenormalize::CaptureStatus{};
-            });
+            }, services_.captureFactory);
         const auto captureStartStatus = capture.Start();
         snapshot_.Update([&](DecoderSnapshot& value)
         {

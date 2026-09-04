@@ -1,5 +1,7 @@
 # Decoder 可恢复乱序写入、确认门与 publish commit
 
+> **2026-09-04 G16 更新：** Unified 产品 GUI 与真实接收 runtime 已复用本文的确认、journal、Stop/resume 和安全发布合同；Qt 只转交 run/request 决策和显示权威状态。定向 offscreen/controller 验证与命令见 [Unified Decoder 工作流](UNIFIED_DECODER_WORKFLOW.md)。下述 G03/G05 的原始证据边界保留；不据 G16 非显示验证声称真实 capture、进程 crash 或 20 GiB 门禁通过。
+
 本文记录 G03 与 G05 的当前实现合同：正式 Descriptor 绑定后的 Outer block 持久化、乱序 Segment 写入、completed Segment 重启重验、大输出确认门，以及 WholeFileDigest 后可跨进程恢复的安全发布。权威代码入口是：
 
 - `apps/common/decoder_resume_store.h/.cpp`；

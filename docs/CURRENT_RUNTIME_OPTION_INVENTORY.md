@@ -1,5 +1,7 @@
 # PixelBridge Phase 1.5 Current Runtime Option Inventory
 
+> **2026-09-04 G16 更新：** Decoder 产品 GUI 已固定 Unified/Auto，移除 FPS/Profile/backend/Replay 实验控件，真实 mixed-result 接线复用既有 Receiver、确认门、journal 与 Storage。旧 Decoder CLI 默认及显式诊断入口没有在本次迁移。下文旧表不再描述当前产品 GUI；当前入口、边界和证据见 [Unified Decoder 工作流](UNIFIED_DECODER_WORKFLOW.md)。逐 lane telemetry/report 留待 G17，真实 selector/capture/实屏认证尚未运行。
+
 > **2026-09-04 G15 更新：** Encoder 产品 GUI/默认 CLI 已改为 Unified、1..60 Hz（默认 15）、自动 RAW/zstd 与简化广播工作流，普通 Stop 保留 Session，显式确认后才删除。下文旧 Encoder 选项表仅为历史记录，不再描述当前产品界面；真实绑定与非显示证据见 [Unified Encoder 工作流](UNIFIED_ENCODER_WORKFLOW.md)。Decoder GUI 收敛仍是 G16，最终实屏认证尚未完成。
 
 > **2026-09-03 状态说明：本文件现为过渡/历史实现清单。** 下面的表格主要记录统一产品路线冻结前、截至 `bb5f0b1` 附近可到达的 Phase 1.5 GUI/CLI 与 RemoteVisual 实验入口。提交 `1445f9b` 已加入 Protocol 1.0 Descriptor Schema 1、流式多 Segment sender、durable ID lease、random-access `.part` 和 decoder resume journal 基础，因此本文关于 provisional descriptor、单 Segment 和“无协议状态恢复”的部分不再描述最新核心能力；但产品 GUI 仍未完成统一 Profile、自动 backend、1..60 Hz 与简化页面收敛。

@@ -18,6 +18,10 @@ if(WIN32)
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
     target_link_libraries(PixelBridgeDecoder PRIVATE PB::PBScreenRegion PB::PBScreenCaptureWgc PB::PBScreenCaptureDxgi PB::PBModulation PB::PBDesktopLevelsReference PB::PBTelemetry
         PB::PBApplication Qt${QT_VERSION_MAJOR}::Widgets)
+    if(PB_BUILD_TESTS)
+        target_compile_definitions(PixelBridgeDecoder PRIVATE PB_ENABLE_UNIFIED_GUI_SMOKE=1)
+        target_include_directories(PixelBridgeDecoder PRIVATE "${PROJECT_SOURCE_DIR}/tests/PBApplication")
+    endif()
     execute_process(COMMAND git rev-parse --verify HEAD WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         OUTPUT_VARIABLE pbDecoderGitCommit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(NOT pbDecoderGitCommit)
@@ -35,10 +39,17 @@ if(WIN32)
         if(pbDecoderWindeployqt)
             add_custom_command(TARGET PixelBridgeDecoder POST_BUILD COMMAND "${pbDecoderWindeployqt}"
                 --no-translations --no-opengl-sw "$<TARGET_FILE:PixelBridgeDecoder>" VERBATIM)
+            get_filename_component(pbDecoderQtDirectory "${pbDecoderQtBin}" DIRECTORY)
+            add_custom_command(TARGET PixelBridgeDecoder POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:PixelBridgeDecoder>/platforms"
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${pbDecoderQtDirectory}/plugins/platforms/qoffscreen$<$<CONFIG:Debug>:d>.dll"
+                    "$<TARGET_FILE_DIR:PixelBridgeDecoder>/platforms/" VERBATIM)
         endif()
     endif()
     unset(pbDecoderGitCommit)
     unset(pbDecoderQtQmake)
     unset(pbDecoderQtBin)
+    unset(pbDecoderQtDirectory)
     unset(pbDecoderWindeployqt)
 endif()
