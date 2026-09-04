@@ -1,6 +1,6 @@
 # G20：本地 Release Gate 进度与回归修复
 
-> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 已完成一次完整 Release CTest；后续定向修复 Replay worker 栈溢出、五项 Golden/ProtocolDump 工具失败、Capture 非法 UAV clear、demod 重复启动编译及最后两项已知 application 断言。LF4 caller sampler 候选现已离屏复现并最小修复，见第 11 节。相关定向验证已有通过证据，但未重复完整 CTest；追加完整回归预算及右屏 2.0x 条件仍待用户决定。本文不把部分通过写成最终产品认证。
+> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 经用户明确批准，在冻结提交 `e0729b2` 上追加的一次完整 Release CTest 已 **218/218 通过**，旧 206/215 失败记录保留，见第 12 节。此前 Replay、Golden/ProtocolDump、Capture、shader 编译开销、application 和 sampler 修复已纳入本次整套验证。CTest 层无失败/跳过，但 application 内一个依赖外部封存 Replay 的 case 因未设置数据根目录而跳过，不能声称全部内部 case 都执行。右屏 2.0x 条件仍待用户决定，native Gate 均未运行；完整回归通过不等于最终实屏产品认证。
 
 ## 1. 前置与本轮边界
 
@@ -9,7 +9,7 @@
 - 本轮仅 G20 的构建、回归诊断、最小修复及证据文档；不改 wire、公共接口、Golden bytes/pins、默认资源策略、GUI 交互或屏幕设置。
 - 所有 displayful Gate cache 均 OFF。普通 Release 树关闭 G18/G19 私有终止构建，未运行 crash/20 GiB matrix；没有操作鼠标键盘或打开真实数据窗口/选区器。
 
-## 2. Release 构建与唯一完整 CTest
+## 2. 首次 Release 构建与完整 CTest（历史失败）
 
 ```powershell
 cmake -S . -B build-unified-release -DPB_BUILD_PROCESS_RECOVERY_HARNESS=OFF
@@ -20,7 +20,7 @@ ctest --test-dir build-unified-release -C Release --output-on-failure --parallel
 
 首次配置成功，构建在 `test_pbgolden_vector.cpp` 失败：旧测试将 `GetSerializedSize(SessionDescriptor)` 返回的 `ProtocolResult<size_t>` 直接传给 vector constructor。只改为先 REQUIRE 成功再 `.Value()`，保持原 Golden 字节比较断言；增量全构建成功。这只是解除编译阻塞，不代表旧 Golden 的 schema 适配已完成。
 
-完整 CTest 只运行 **一次**：215 项，206 passed、9 failed，exit 8，868.62 秒。没有重新启动整套测试；原始输出与 JUnit 保留。
+本节对应首次完整 CTest：215 项，206 passed、9 failed，exit 8，868.62 秒。当时没有重新启动整套测试；原始输出与 JUnit 保留。用户后来批准追加的一次整套运行单独记录于第 12 节，不覆盖本节历史结果。
 
 | 失败项 | 原始结果 | 当前处理 |
 | --- | --- | --- |
@@ -422,3 +422,56 @@ $cases = 'RemoteVisual LF4 calibration does not inherit caller sampler state,' +
 证据在 `build-unified-release/g20-sampler/`：`preflight.json`、`before.json`/原 calibration 红灯、`after.json`/诊断栈溢出、`cdb-stack.log`、`stack-before.dmp`、`stack-comparison.json`、最终 `without-poll-info.json`/stdout/stderr，以及各阶段 source/executable hashes 和 diff；不覆盖任一中间 `allPassed=false`。最终源码、Golden/保护文件和提交后的应用身份分别另存审查记录。
 
 本轮未运行完整 CTest、ASan、完整 WARP/硬件矩阵、Qt GUI smoke、20 GiB、native、remote 或安装包验收。开始时已向用户询问：是否在代码冻结后额外执行一次完整 Release CTest；未获答复前不自行追加。右屏 2.0x 的容量问题也仍待决定，未操作屏幕设置或用户输入。G20 仍为 **PARTIAL**，不能进入 G21；下一步先明确这两项验收条件，而不是继续扩展候选排查或重复已通过测试。
+
+## 12. 用户批准的冻结代码完整 Release CTest
+
+用户明确允许“在当前冻结代码上追加一次完整 Release CTest”。冻结提交为 **`e0729b292b9dddec49346df73ce72437dd6ac468`**；本次 configure/build/CTest 全程没有修改源码、测试、阈值、超时或注册条件。所有新证据写入 create-only 目录 `build-unified-release/g20-release-final-1/`；该追加预算已经执行一次，不代表以后可以自动重复完整套件。
+
+### 准备与执行范围
+
+- 复核 AGENTS/G20、Git 状态、G19 ancestor/report、上轮 source/executable seals，以及保护文档；未发现前置缺失。
+- 七个 `PB_BUILD_*GATE` 开关均为 OFF，process-recovery harness 和 fuzz/ASan 也为 OFF。`--gui-smoke` 在创建 QApplication 前明确要求 offscreen plugin，缺失时直接拒绝；没有真实 DataWindow、ROI selector、屏幕捕获或输入自动化。
+- 当前注册 **218** 项，原 **215** 项全部保留。新增的 3 项分别是已提交的 `PBDemodShaderBytecodeTests`、`PBProtocolDumpExit.VariableSessionContext`、`PBProtocolDumpExit.LegacySessionContext`。
+- 预检脚本最初只计入新增 shader case，按 216 项检查而中止；当时尚未启动 CTest。对照 `00045ed` 和 `tests/tools/CMakeLists.txt` 确认另外两个既有工具 case 后，修正的是本地清单审计预期，不是生产代码或测试注册。原预检失败记录另存，没有重跑 build 来掩盖差异。
+- 先备份会被测试重新生成的 G12 `.actual.jsonl` 和 CTest 临时日志；旧 full CTest 四份原始输出的 SHA-256 在新运行前后保持不变。
+
+```powershell
+cmake -S . -B build-unified-release
+cmake --build build-unified-release --config Release --parallel 6
+ctest --test-dir build-unified-release -C Release --output-on-failure --parallel 2 `
+  --output-junit g20-release-final-1/ctest-full.xml
+```
+
+实际由 Python supervisor 以绝对路径及 `CREATE_NO_WINDOW` 执行；无 `-R/-E`、`--rerun-failed` 或 `--repeat`。configure **exit 0 / 6.250 秒**，完整 Release build **exit 0 / 20.484 秒**。构建保留已有 windeployqt `VCINSTALLDIR is not set` 警告，没有编译错误；不以此声明安装包验收通过。
+
+### 整套结果与原九项红灯
+
+**218/218 CTest passed，0 failed、0 CTest skipped，exit 0；CTest real time 217.27 秒，外层 supervisor 217.344 秒。** 注册集合与 JUnit case 集合逐名相同，所有测试启动 EXE 的 seals、冻结源码及 220 个 Golden/corpus/manifest/registry pins 在运行前后均一致。
+
+| 原失败项 | 本次结果 | 秒 |
+| --- | --- | ---: |
+| PBApplicationTests | 通过；103 内部 cases passed、1 skipped，77,241 assertions passed，跳过原因见下文 | 17.039 |
+| PBCapturePipelineTests | 4 cases / 2,705 assertions 通过 | 1.743 |
+| PBDemodD3D11Tests | 23 cases / 663,818 assertions 通过，含两种 caller sampler 状态 | 8.719 |
+| PBRemoteVisualGpuParityTests | 通过 | 2.978 |
+| PBGoldenVectorTests | 14 cases / 57,902 assertions 通过 | 0.273 |
+| PBGoldenVectorCheck | 通过，未改历史 Golden bytes/pins | 0.262 |
+| PBGoldenVectorCheckTests | 7 cases / 120 assertions 通过 | 0.497 |
+| PBProtocolDumpTests | 8 cases / 2,380 assertions 通过 | 0.016 |
+| PBVectorGenIntegration | 通过 | 0.952 |
+
+shader bytecode contract 为 **1 case / 61 assertions，10.400 秒**。两个实际应用 offscreen GUI smoke 分别 **0.193 / 0.873 秒**通过。统一 GPU parity 在该整套运行内通过，当前生成报告核实 WARP/一个 AMD/一个 NVIDIA 各 18 场景，共 **54** 条，false accepted、truth mismatch、conflict output 均为 0；两个离屏发布 fixture 的 whole digest、safe publish、final reopen 和硬门槛均为真。没有把这些 GPU/离屏发布结果写成 DISPLAY2 实屏链或 G21 远程验收。
+
+**内部 skip 的精确边界：** `PBApplicationTests` 中 `Sealed real Direct Shape and LF4 receiver-only datasets preserve production failure classification` 因 **`PB_REMOTE_VISUAL_REAL_REPLAY_ROOT is not set`**，按既有测试逻辑跳过。没有新增 skip、删除断言或为全绿改测试。它不是本次已通过的 `PBRealCaptureReplayTests` 所覆盖的同一个 case，不能用后者替代；本次没有执行该外部封存数据集 case，也未临时设置路径追加重跑。因此结论是“完整注册的 CTest 套件通过”，不是“全部内部 case 无条件执行”。
+
+### 封存、提交边界与下一步
+
+- `preflight.json`：用户批准边界、冻结源码与旧 full-run/pins seals。
+- `plan.stdout.log`、`initial-plan-audit.json`、`plan-audit.json`：原 215 项保留、新增三项来源及清单审计。
+- `ctest-started.json`、`ctest-full.stdout.log`、`ctest-full.stderr.log`、`ctest-full.xml`、`ctest-summary.json`：唯一追加进程、完整命令/期限、原始输出和 218 项结果。
+- `test-executable-seals.json`、`full-result-audit.json`：测试 EXE、逐项结果、内部 skip、旧九项红灯现状及独立解析的新 G12 报告。
+- `prior-generated-artifacts/` 和 `completed-artifacts/`：旧/新 CTest 临时日志与 G12 固定文件名报告分开保存；另保留本次实际测试的两个 `e0729b2` 应用 EXE，避免后续文档提交的身份重构建覆盖唯一候选。
+
+本轮提交只更新两份 G20 文档；运行时代码保持冻结。提交后应用身份检查若执行，单独归档，不重复完整 CTest，也不把新文档提交冒充上述测试的源码身份。`docs/PHASE1_GATE_REPORT.md` 始终未修改、未暂存。
+
+**当前 G20：** 完整 Release CTest 与 offscreen GUI smoke 已取得本次整套通过证据；此前定向 ASan 的范围和阶段结果见第 4/9/10 节，本轮没有追加 ASan。20 GiB/process-crash harness、真实 native、remote 和安装包验收未执行。右屏仍需满足 2.0x 的 3840×2160 完整包含条件，目前已确认的 2560×1440 配置不足；仍等待用户决定，未改显示模式或用离屏代替该要求。下一目标是 **G20 native 验收安排**，不能关闭 G20 或进入 G21。
