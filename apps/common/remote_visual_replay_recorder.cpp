@@ -97,6 +97,60 @@ struct RemoteVisualReplayRecorder::Implementation
 namespace
 {
 
+struct RecorderBudget
+{
+    std::uint64_t frameBytes = 0;
+    std::uint32_t slotCount = 0;
+    std::uint64_t processingReservedBytes = 0;
+};
+
+pbcapturenormalize::CaptureStatus CalculateRecorderBudget(
+    const RemoteVisualReplayRecorderConfig& config, RecorderBudget& output) noexcept
+{
+    const auto bytesPerPixel = BytesPerPixel(config.pixelFormat);
+    if (config.roiWidth == 0 || config.roiHeight == 0 || !bytesPerPixel ||
+        config.roiWidth > config.limits.maximumDimension || config.roiHeight > config.limits.maximumDimension ||
+        config.queueCapacity == 0 || config.queueCapacity > 16)
+    {
+        return Failure(pbcapturenormalize::CaptureError::InvalidConfiguration, E_INVALIDARG,
+            pbcapturenormalize::CaptureStage::Configuration);
+    }
+    const auto rowBytes = pbprotocol::CheckedMultiplyUint64(config.roiWidth, *bytesPerPixel);
+    const auto frameBytes = rowBytes ? pbprotocol::CheckedMultiplyUint64(rowBytes.Value(), config.roiHeight) : rowBytes;
+    const auto slotCount = pbprotocol::CheckedAddUint64(config.queueCapacity, 1);
+    if (!rowBytes || !frameBytes || !slotCount || rowBytes.Value() > (std::numeric_limits<std::uint32_t>::max)())
+    {
+        return Failure(pbcapturenormalize::CaptureError::ResourceLimit, E_OUTOFMEMORY,
+            pbcapturenormalize::CaptureStage::Configuration);
+    }
+    const auto pixelReservation = pbprotocol::CheckedMultiplyUint64(frameBytes.Value(), slotCount.Value());
+    const auto slotMetadataBytes = pbprotocol::CheckedMultiplyUint64(slotCount.Value(), sizeof(RecorderSlot));
+    const auto queueBytes = pbprotocol::CheckedMultiplyUint64(config.queueCapacity, sizeof(std::uint32_t));
+    const auto observationBytes = pbprotocol::CheckedMultiplyUint64(config.limits.maximumCaptureFrames,
+        sizeof(pbrealcapturereplay::ReplayV2DemodObservationView));
+    if (!pixelReservation || !slotMetadataBytes || !queueBytes || !observationBytes ||
+        frameBytes.Value() > config.limits.maximumRasterBytesPerFrame ||
+        frameBytes.Value() > (std::numeric_limits<std::size_t>::max)() ||
+        pixelReservation.Value() > config.limits.maximumFileBytes)
+    {
+        return Failure(pbcapturenormalize::CaptureError::ResourceLimit, E_OUTOFMEMORY,
+            pbcapturenormalize::CaptureStage::Configuration);
+    }
+    auto totalReservation = pbprotocol::CheckedAddUint64(pixelReservation.Value(),
+        sizeof(RemoteVisualReplayRecorder::Implementation::State));
+    for (const auto bytes : {slotMetadataBytes.Value(), queueBytes.Value(), observationBytes.Value()})
+    {
+        totalReservation = totalReservation ? pbprotocol::CheckedAddUint64(totalReservation.Value(), bytes) : totalReservation;
+    }
+    if (!totalReservation)
+    {
+        return Failure(pbcapturenormalize::CaptureError::ResourceLimit, E_OUTOFMEMORY,
+            pbcapturenormalize::CaptureStage::Configuration);
+    }
+    output = {frameBytes.Value(), static_cast<std::uint32_t>(slotCount.Value()), totalReservation.Value()};
+    return {};
+}
+
 bool CaptureWasWritten(const RemoteVisualReplayRecorder::Implementation::State& state,
     const pbrealcapturereplay::ReplayV2DemodObservationView& observation) noexcept
 {
@@ -219,40 +273,32 @@ RemoteVisualReplayRecorder::~RemoteVisualReplayRecorder()
     static_cast<void>(Stop());
 }
 
+pbcapturenormalize::CaptureStatus CalculateRemoteVisualReplayRecorderReservation(
+    const RemoteVisualReplayRecorderConfig& config, std::uint64_t& processingReservedBytes) noexcept
+{
+    RecorderBudget budget;
+    const auto status = CalculateRecorderBudget(config, budget);
+    if (status)
+    {
+        processingReservedBytes = budget.processingReservedBytes;
+    }
+    return status;
+}
+
 pbcapturenormalize::CaptureStatus RemoteVisualReplayRecorder::Create(
     const RemoteVisualReplayRecorderConfig& config,
     std::shared_ptr<RemoteVisualReplayRecorder>& output) noexcept
 {
-    const auto bytesPerPixel = BytesPerPixel(config.pixelFormat);
-    if (config.outputPath.empty() || config.roiWidth == 0 || config.roiHeight == 0 || !bytesPerPixel ||
-        config.roiWidth > config.limits.maximumDimension || config.roiHeight > config.limits.maximumDimension ||
-        config.displayIdentityUtf8.empty() || config.dpiX == 0 || config.dpiY == 0 ||
-        config.queueCapacity == 0 || config.queueCapacity > 16)
+    if (config.outputPath.empty() || config.displayIdentityUtf8.empty() || config.dpiX == 0 || config.dpiY == 0)
     {
         return Failure(pbcapturenormalize::CaptureError::InvalidConfiguration, E_INVALIDARG,
             pbcapturenormalize::CaptureStage::Configuration);
     }
-    const auto rowBytes = pbprotocol::CheckedMultiplyUint64(config.roiWidth, *bytesPerPixel);
-    if (!rowBytes)
+    RecorderBudget budget;
+    const auto budgetStatus = CalculateRecorderBudget(config, budget);
+    if (!budgetStatus)
     {
-        return Failure(pbcapturenormalize::CaptureError::ResourceLimit, E_OUTOFMEMORY,
-            pbcapturenormalize::CaptureStage::Configuration);
-    }
-    const auto frameBytes = pbprotocol::CheckedMultiplyUint64(rowBytes.Value(), config.roiHeight);
-    const auto slotCount = pbprotocol::CheckedAddUint64(config.queueCapacity, 1);
-    if (!frameBytes || !slotCount)
-    {
-        return Failure(pbcapturenormalize::CaptureError::ResourceLimit, E_OUTOFMEMORY,
-            pbcapturenormalize::CaptureStage::Configuration);
-    }
-    const auto pixelReservation = pbprotocol::CheckedMultiplyUint64(frameBytes.Value(), slotCount.Value());
-    if (!pixelReservation ||
-        frameBytes.Value() > config.limits.maximumRasterBytesPerFrame ||
-        pixelReservation.Value() > config.limits.maximumFileBytes ||
-        rowBytes.Value() > (std::numeric_limits<std::uint32_t>::max)())
-    {
-        return Failure(pbcapturenormalize::CaptureError::ResourceLimit, E_OUTOFMEMORY,
-            pbcapturenormalize::CaptureStage::Configuration);
+        return budgetStatus;
     }
     try
     {
@@ -270,24 +316,14 @@ pbcapturenormalize::CaptureStatus RemoteVisualReplayRecorder::Create(
                 writerStatus.nativeError == 0 ? E_FAIL : static_cast<HRESULT>(writerStatus.nativeError),
                 pbcapturenormalize::CaptureStage::Configuration);
         }
-        state.captureSlots.resize(static_cast<std::size_t>(slotCount.Value()));
+        state.captureSlots.resize(budget.slotCount);
         for (auto& slot : state.captureSlots)
         {
-            slot.pixels.resize(static_cast<std::size_t>(frameBytes.Value()));
+            slot.pixels.resize(static_cast<std::size_t>(budget.frameBytes));
         }
         state.queue.resize(config.queueCapacity);
         state.demodObservations.reserve(config.limits.maximumCaptureFrames);
-        const std::uint64_t fixedReservation = sizeof(Implementation::State) +
-            state.captureSlots.size() * sizeof(RecorderSlot) + state.queue.size() * sizeof(std::uint32_t) +
-            static_cast<std::uint64_t>(config.limits.maximumCaptureFrames) *
-                sizeof(pbrealcapturereplay::ReplayV2DemodObservationView);
-        const auto totalReservation = pbprotocol::CheckedAddUint64(pixelReservation.Value(), fixedReservation);
-        if (!totalReservation)
-        {
-            return Failure(pbcapturenormalize::CaptureError::ResourceLimit, E_OUTOFMEMORY,
-                pbcapturenormalize::CaptureStage::Configuration);
-        }
-        state.processingReservedBytes = totalReservation.Value();
+        state.processingReservedBytes = budget.processingReservedBytes;
         implementation->worker = std::thread(RunWriter, implementation->state);
         output = std::shared_ptr<RemoteVisualReplayRecorder>(
             new RemoteVisualReplayRecorder(std::move(implementation)));

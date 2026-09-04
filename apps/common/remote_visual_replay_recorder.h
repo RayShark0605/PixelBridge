@@ -29,6 +29,11 @@ struct RemoteVisualReplayRecorderConfig
     std::uint32_t queueCapacity = 2;
 };
 
+// Application-private, allocation-free resource preflight. This checks the
+// buffer layout only; Create still validates metadata and creates the writer.
+[[nodiscard]] pbcapturenormalize::CaptureStatus CalculateRemoteVisualReplayRecorderReservation(
+    const RemoteVisualReplayRecorderConfig& config, std::uint64_t& processingReservedBytes) noexcept;
+
 struct RemoteVisualReplayRecorderSnapshot
 {
     bool enabled = false;

@@ -2382,6 +2382,21 @@ private:
     return readbackConfig;
 }
 
+[[nodiscard]] RemoteVisualReplayRecorderConfig MakeProductionReplayRecorderResourceConfig(const DecoderConfig& config)
+{
+    RemoteVisualReplayRecorderConfig recorderConfig;
+    recorderConfig.limits.maximumFileBytes = config.replayMaximumFileBytes;
+    recorderConfig.limits.maximumTotalRasterBytes = config.replayMaximumFileBytes;
+    recorderConfig.limits.maximumCaptureFrames = config.replayMaximumCaptureFrames;
+    recorderConfig.roiWidth = static_cast<std::uint32_t>(
+        static_cast<std::int64_t>(config.region.physicalRect.right) - config.region.physicalRect.left);
+    recorderConfig.roiHeight = static_cast<std::uint32_t>(
+        static_cast<std::int64_t>(config.region.physicalRect.bottom) - config.region.physicalRect.top);
+    recorderConfig.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    recorderConfig.queueCapacity = remoteVisualReplayRecorderQueueCapacity;
+    return recorderConfig;
+}
+
 [[nodiscard]] RuntimeStatus ValidateProductionReplayResourceContract(const DecoderConfig& config,
     const ProfileBinding& profile, const pbcapturenormalize::CaptureNormalizeConfig& captureConfig)
 {
@@ -2389,20 +2404,17 @@ private:
     {
         return {};
     }
-    const std::uint64_t roiWidth = static_cast<std::uint64_t>(
-        static_cast<std::int64_t>(config.region.physicalRect.right) - config.region.physicalRect.left);
-    const std::uint64_t roiHeight = static_cast<std::uint64_t>(
-        static_cast<std::int64_t>(config.region.physicalRect.bottom) - config.region.physicalRect.top);
-    const auto pixels = pbprotocol::CheckedMultiplyUint64(roiWidth, roiHeight);
-    const auto frameBytes = pixels ? pbprotocol::CheckedMultiplyUint64(pixels.Value(), 4) : pixels;
-    const auto recorderSlots = pbprotocol::CheckedAddUint64(remoteVisualReplayRecorderQueueCapacity, 1);
-    const auto recorderPixelReservation = frameBytes && recorderSlots ?
-        pbprotocol::CheckedMultiplyUint64(frameBytes.Value(), recorderSlots.Value()) : frameBytes;
-    if (!pixels || !frameBytes || !recorderSlots || !recorderPixelReservation ||
-        recorderPixelReservation.Value() > config.replayMaximumFileBytes)
+    std::uint64_t processingReservedBytes = 0;
+    const auto recorderStatus = CalculateRemoteVisualReplayRecorderReservation(
+        MakeProductionReplayRecorderResourceConfig(config), processingReservedBytes);
+    if (!recorderStatus)
     {
-        return RuntimeStatus::Failure(
-            "RemoteVisual production Replay 的 file budget 小于 bounded recorder slot reservation");
+        return RuntimeStatus::Failure("RemoteVisual production Replay recorder resource contract invalid: " +
+            DescribeCaptureStatus(recorderStatus));
+    }
+    if (processingReservedBytes > maximumProductionReplayProcessorResidentBytes)
+    {
+        return RuntimeStatus::Failure("RemoteVisual production Replay recorder exceeds bounded processor reservation");
     }
 
     pbdemodd3d11::CaptureDemodulatorBudget demodBudget;
@@ -2414,7 +2426,7 @@ private:
             DescribeCaptureStatus(demodStatus));
     }
     const auto readbackConfig = MakeProductionReplayReadbackConfig(config, captureConfig,
-        maximumProductionReplayProcessorResidentBytes);
+        processingReservedBytes);
     pbcapturenormalize::DiagnosticReadbackBudget readbackBudget;
     const auto readbackStatus = pbcapturenormalize::CalculateDiagnosticReadbackBudget(readbackConfig, readbackBudget);
     if (!readbackStatus)
@@ -6060,17 +6072,41 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReceiver(const st
                 result.admittedTransportBlockIndices[0] = 2;
                 result.admittedTransportBlockIndices[1] = 3;
                 Stamp(result);
-                static_cast<void>(pipeline.Process(result));
-                probe.processedResults++;
-                probe.duplicateRefinementResults++;
-                probe.rawAcceptedTransportBlocks += result.demodulation.acceptedTransportBlockCount;
-                probe.temporallyAdmittedTransportBlocks += result.admittedTransportBlockCount;
+                const bool completedBeforeRefinement = pipeline.IsCompleted();
+                const auto beforeRefinement = snapshot.Get();
+                const auto refinement = pipeline.Process(result);
+                if (completedBeforeRefinement)
+                {
+                    // A small Segment may publish from the first partial observation.
+                    // Deliberately inject late input, but never count it as processed/admitted.
+                    const auto afterRefinement = snapshot.Get();
+                    Require(!refinement.carrierAccepted && !refinement.hasDataAdmission && !refinement.uniqueAdmission &&
+                        afterRefinement.state == DecoderState::Completed && afterRefinement.wholeFileDigestVerified &&
+                        afterRefinement.finalPublishSucceeded && afterRefinement.outputPath == beforeRefinement.outputPath &&
+                        afterRefinement.verifiedRawBytes == beforeRefinement.verifiedRawBytes &&
+                        afterRefinement.acceptedTransportBlocks == beforeRefinement.acceptedTransportBlocks &&
+                        afterRefinement.outerUniqueSymbols == beforeRefinement.outerUniqueSymbols &&
+                        afterRefinement.duplicateFrameSequences == beforeRefinement.duplicateFrameSequences &&
+                        afterRefinement.observedLocatorGeometry.samples == beforeRefinement.observedLocatorGeometry.samples,
+                        "production LF4 Receiver probe late refinement changed authoritative completion");
+                }
+                else
+                {
+                    Require(refinement.carrierAccepted && refinement.uniqueAdmission,
+                        "production LF4 Receiver probe refinement was not admitted");
+                    probe.processedResults++;
+                    probe.duplicateRefinementResults++;
+                    probe.rawAcceptedTransportBlocks += result.demodulation.acceptedTransportBlockCount;
+                    probe.temporallyAdmittedTransportBlocks += result.admittedTransportBlockCount;
+                }
                 duplicateRefinementInjected = true;
             }
             else
             {
                 static_cast<void>(pipeline.Process(result));
                 probe.processedResults++;
+                probe.rawAcceptedTransportBlocks += result.demodulation.acceptedTransportBlockCount;
+                probe.temporallyAdmittedTransportBlocks += result.admittedTransportBlockCount;
             }
             if (!duplicateBurstInjected)
             {
@@ -6103,7 +6139,13 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReceiver(const st
         Require(probe.decoder.state == DecoderState::Completed && probe.decoder.wholeFileDigestVerified &&
             probe.decoder.finalPublishSucceeded && probe.decoder.verifiedRawBytes == rawBytes.size() &&
             probe.decoder.acceptedTransportBlocks == probe.temporallyAdmittedTransportBlocks,
-            "production LF4 Receiver probe final snapshot is not authoritative");
+            "production LF4 Receiver probe final snapshot is not authoritative: source=" + std::to_string(rawBytes.size()) +
+                " state=" + std::to_string(static_cast<unsigned>(probe.decoder.state)) +
+                " digest=" + std::to_string(probe.decoder.wholeFileDigestVerified) +
+                " published=" + std::to_string(probe.decoder.finalPublishSucceeded) +
+                " verified=" + std::to_string(probe.decoder.verifiedRawBytes) +
+                " accepted=" + std::to_string(probe.decoder.acceptedTransportBlocks) +
+                " expected=" + std::to_string(probe.temporallyAdmittedTransportBlocks));
         output = std::move(probe);
         return {};
     }
@@ -8100,10 +8142,6 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         std::shared_ptr<OptionalDiagnosticFanout> replayFanout;
         if (!config.replayOutputPath.empty())
         {
-            const std::uint32_t roiWidth = static_cast<std::uint32_t>(
-                static_cast<std::int64_t>(config.region.physicalRect.right) - config.region.physicalRect.left);
-            const std::uint32_t roiHeight = static_cast<std::uint32_t>(
-                static_cast<std::int64_t>(config.region.physicalRect.bottom) - config.region.physicalRect.top);
             const auto datasetId = pbprotocol::GenerateRandomSessionId();
             RequireResult(datasetId, "Replay dataset CSPRNG failed");
             pbrealcapturereplay::ReplayV2FileDescriptor replayDescriptor;
@@ -8115,30 +8153,26 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
             replayDescriptor.remoteMetadataJsonUtf8 = BuildRemoteVisualRunMetadataJson(config.remoteMetadata);
             Require(replayDescriptor.createdUtc100ns > 0, "Replay UTC timestamp acquisition failed");
 
-            RemoteVisualReplayRecorderConfig recorderConfig;
+            auto recorderConfig = MakeProductionReplayRecorderResourceConfig(config);
             recorderConfig.outputPath = config.replayOutputPath;
             recorderConfig.descriptor = std::move(replayDescriptor);
-            recorderConfig.limits.maximumFileBytes = config.replayMaximumFileBytes;
-            recorderConfig.limits.maximumTotalRasterBytes = config.replayMaximumFileBytes;
-            recorderConfig.limits.maximumCaptureFrames = config.replayMaximumCaptureFrames;
-            recorderConfig.roiWidth = roiWidth;
-            recorderConfig.roiHeight = roiHeight;
-            recorderConfig.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
             recorderConfig.displayIdentityUtf8 = !config.remoteMetadata.experimentMonitorIdentity.empty() ?
                 config.remoteMetadata.experimentMonitorIdentity : Utf8FromWide(config.monitorSafety->experimentMonitor.deviceName);
             recorderConfig.dpiX = config.region.dpiX;
             recorderConfig.dpiY = config.region.dpiY;
             recorderConfig.scaleX = config.remoteMetadata.estimatedScaleX.value_or(
-                static_cast<double>(roiWidth) / phase1CanvasWidth);
+                static_cast<double>(recorderConfig.roiWidth) / phase1CanvasWidth);
             recorderConfig.scaleY = config.remoteMetadata.estimatedScaleY.value_or(
-                static_cast<double>(roiHeight) / phase1CanvasHeight);
-            recorderConfig.queueCapacity = remoteVisualReplayRecorderQueueCapacity;
+                static_cast<double>(recorderConfig.roiHeight) / phase1CanvasHeight);
+            std::uint64_t processingReservedBytes = 0;
+            const auto reservationStatus = CalculateRemoteVisualReplayRecorderReservation(recorderConfig, processingReservedBytes);
+            Require(static_cast<bool>(reservationStatus) && processingReservedBytes <= maximumProductionReplayProcessorResidentBytes,
+                "Replay recorder preflight reservation invalid");
             const auto recorderStatus = RemoteVisualReplayRecorder::Create(recorderConfig, replayRecorder);
             Require(static_cast<bool>(recorderStatus), "Replay recorder creation failed: " +
                 DescribeCaptureStatus(recorderStatus));
-            Require(replayRecorder->ProcessingReservedBytes() <=
-                maximumProductionReplayProcessorResidentBytes,
-                "Replay recorder exceeded the preflighted bounded processing reservation");
+            Require(replayRecorder->ProcessingReservedBytes() == processingReservedBytes,
+                "Replay recorder disagreed with the preflighted bounded processing reservation");
 
             const pbcapturenormalize::DiagnosticReadbackConfig readbackConfig =
                 MakeProductionReplayReadbackConfig(config, captureConfig,

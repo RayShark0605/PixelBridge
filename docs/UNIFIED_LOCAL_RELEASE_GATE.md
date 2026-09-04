@@ -1,6 +1,6 @@
 # G20：本地 Release Gate 进度与回归修复
 
-> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 已完成一次完整 Release CTest；后续定向修复 Replay worker 栈溢出、五项 Golden/ProtocolDump 工具失败、Capture 非法 UAV clear 和 demod 重复启动编译。经用户同意改用构建期嵌入 bytecode 后，demod 22 cases 及原两个 ASan 15 秒 deadline 用例均通过。application 的另两项既有断言失败和实屏验收条件仍待处理。本文不把部分通过写成最终产品认证。
+> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 已完成一次完整 Release CTest；后续定向修复 Replay worker 栈溢出、五项 Golden/ProtocolDump 工具失败、Capture 非法 UAV clear、demod 重复启动编译及最后两项已知 application 断言。相关 Release/ASan 用例已取得通过证据，但未重复完整 CTest；实屏验收条件及尚未复现的 sampler 候选仍待处理。本文不把部分通过写成最终产品认证。
 
 ## 1. 前置与本轮边界
 
@@ -24,7 +24,7 @@ ctest --test-dir build-unified-release -C Release --output-on-failure --parallel
 
 | 失败项 | 原始结果 | 当前处理 |
 | --- | --- | --- |
-| PBApplicationTests | SIGSEGV / Stack overflow | 第 3 节 run-owned 缓冲修复；模块重跑暴露其他断言失败，随后只做受影响用例复验 |
+| PBApplicationTests | SIGSEGV / Stack overflow | 第 3/9 节关闭栈溢出与启动期限；第 10 节关闭另两项已知断言，新增预算/早完成回归；未重跑完整模块 |
 | PBCapturePipelineTests | 两个 LF4 case 的 60 秒 Await 失败 | 第 8 节以 D3D debug error 定因并修复非法 structured UAV clear；4 cases / 2,705 assertions 通过，原期限不变 |
 | PBDemodD3D11Tests | 180 秒外层 timeout | 第 9 节构建期预编译后 22 cases / 663,674 assertions 全过，8.110 秒；不增加时间上限 |
 | PBRemoteVisualGpuParityTests | 300 秒外层 timeout | 第 8 节只排除另有独立注册的 Unified G12；legacy 1 case / 46,731 assertions、73.203 秒通过 |
@@ -333,3 +333,45 @@ cmake --build build-unified-asan --config RelWithDebInfo --target PBApplicationT
 220 个原 Golden/corpus/manifest/registry 文件逐个 SHA-256 未变；保护文档仍为原 hash、untracked 且未暂存。没有重复 full CTest、已通过的 parser/resume/storage ASan、Qt GUI smoke、Unified 硬件矩阵、20 GiB、native/remote 或安装包复验。保留唯一 full CTest 的历史 **206/215** 和所有中间红灯，不将多次定向结果拼写成一次 full CTest 全绿。
 
 下一目标仍为 **继续 G20**：独立处理 LF4 Receiver probe final-snapshot 断言、legacy Direct/Shape Replay validation 拒绝；DISPLAY2 2.0x 的容量问题仍待用户决定，未改分辨率或使用左屏。只读审查还提出 LF4 校准前可能继承 caller sampler state 的候选问题，尚无定向复现，未在本次 clear/bytecode 修复中顺手修改，也不将其声称为已确认根因。不能进入 G21。
+
+## 10. Application 预算预检与发布后 probe 计数
+
+从 `1b7a35ebc36d0366a017c7fd5fd16fddf8c80d0a` 继续。重新读取 AGENTS/G20 边界，复验 G19 ancestor、原 report、12 个提交级 source seals、候选 worker 以及上一轮的提交和测试证据。上一轮为 progress，不是仅等待屏幕条件。只处理两项已知 application 失败，没有进入 G21。
+
+### 最小复现
+
+只增加原测试的 status INFO 和既有 probe 最终失败消息的数值上下文，不改生产行为。`PBApplicationTests` 定向两个原失败 case 再现：exit 42，0.328 秒；诊断 EXE SHA-256 为 `c05867faaf5ed26481d1494545cc5d6bbb13cce5df744315a4ee1ae799d71b3c`。
+
+1. Replay validation 的真实分支是 `leaves insufficient bounded native capture budget: ResourceLimit stage=1 native=0`，不是 G16 删除了旧入口。G16 工作流仍明确保留显式 CLI/Replay 诊断兼容。
+2. LF4 probe 的 1-byte 输入已经 `state=8 (Completed), digest=1, published=1, verified=1`，但 `accepted=2 expected=4`。G05 的 `published_` guard 正确忽略后续 refinement，旧 probe 却把这次调用继续计入 processed/admitted；不是最终文件校验失败。
+
+### 两个最小修复
+
+**预算预检：** 旧预检把 128 MiB processor cap 当作 reservation，而实际创建 readback 时传入 recorder 的具体预留。新增 application-private、无分配/无文件副作用的共用计算器，以 checked arithmetic 计算 `(queue + 1) × frame bytes`、slot/queue/state 元数据及预留 demod observations；Create 在分配和打开 writer 前使用同一计算。生产 preflight/runtime 共用几何与限额配置映射，保持原 128 MiB processor cap、capture/readback caps、queue size 和 file limits；运行时再次核对创建后的 reservation 与计算结果相等。没有通过调高上限使测试通过，没有把此 reservation 字段冒充整个进程的实测峰值。
+
+**probe：** 保留生产 `ReceiverPipeline::Process` 的发布后拒收、FEC/选模、whole digest 和发布逻辑。对故意注入的 late refinement，明确验证返回未准入，Completed/digest/publish、输出路径、verified bytes、accepted/unique/duplicate/geometry 计数不变；不再把该调用计为实际处理的 observation。发布前的 Wirehair refinement 必须真的 `carrierAccepted && uniqueAdmission`，仍验证 4 个 admitted blocks、最终 digest 和重新打开文件后的全字节比较。计数同时覆盖后续普通 Data observation，公开 snapshot/DecoderConfig/运行接口未变。
+
+测试保留原 1-byte DirectRepeat 和 4,096-byte Wirehair，另增加 2,048-byte/two-block DirectRepeat 的早完成边界。中间两份红灯保留：一份新断言误用了只由 headless 路径填充的 `hasDataAdmission`；另一份新增 fixture 错把默认策略的 2-block 输入标为 Wirehair。对照既有 `Process` 聚合返回值和 `ChooseOuterFecMode` 后修正测试侧预期，没有改变返回合同、选模策略、文件内容或错误处理来迁就断言。
+
+### 定向验证与预算
+
+```powershell
+cmake --build build-unified-release --config Release --target PBApplicationTests PixelBridgeEncoder PixelBridgeDecoder --parallel 6
+$probe = '[application][decoder][remote-visual][lf4][temporal][receiver][outer][publish]'
+$affected = '[application][validation][remote-visual][production-replay],' + $probe + ',[application][replay][remote-visual][bounded],[application][replay][remote-visual][validation],[application][replay][remote-visual][recorder-budget]'
+.\build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe $affected --reporter console --durations yes --rng-seed 20092026
+# 最后只改新增 fixture 的模式标签，因此 Release 只复测该一个 case：
+.\build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe $probe --reporter console --durations yes --rng-seed 20092026
+cmake --build build-unified-asan --config RelWithDebInfo --target PBApplicationTests --parallel 6
+.\build-unified-asan\tests\PBApplication\RelWithDebInfo\PBApplicationTests.exe $affected --reporter console --durations yes --rng-seed 20092026
+```
+
+- `--list-tests` 确认 affected selector 仅 5 个 case。所有运行由 create-only supervisor 以 `CREATE_NO_WINDOW` 启动，单次测试外层 60 秒，未变更任何产品/测试 deadline。
+- Release 的 Replay validation、recorder 原有 2 例和新增 calculator 例先通过；最后只重跑 LF4 probe：**1 case / 119 assertions，exit 0，0.860 秒**。这是分次定向收口，不是重新执行完整模块。
+- 最终 ASan：**5 cases / 219 assertions，exit 0，4.234 秒**，stderr 无 sanitizer 错误。覆盖 Direct/WGC、Shape/WGC/DXGI、低 file budget 拒绝、预检不落盘、计算值等于实际 recorder reservation、BGRA/float 字节宽度、observation 预留、精确预算/少 1 byte、零/越界尺寸、未知格式、queue 0/17、row-pitch/frame 乘法溢出、失败不修改输出，以及三个 LF4 fixture 的 digest/publish/重新读取全字节比较。
+- 最后 Release application tests EXE SHA-256 为 `40ab81c42d11a372a6aed932e433a5dcc92f891e13a98d3e33c6031e24eb39da`；ASan 为 `4190575bf5e46f0bece022059de26b616c9b422527c22df7b52709d6880efe92`。这是 `1b7a35e` 加本轮明确 diff 的测试构建，不冒充提交后的包认证。
+- 只构建受影响 application target 和两个应用，未重跑 GPU、Capture、shader compiler、Qt GUI smoke、完整 CTest、完整 ASan、20 GiB、native 或 remote。
+
+全部原始失败、selector、构建/测试日志和 hashes 位于 `build-unified-release/g20-application/`：`preflight.json`、`probe-before.json`、`verify-release.json`、`verify-release-final.json`、`verify-final.json`。中间 `allPassed=false` 不覆盖，成功另存。最终 diff/源码/二进制 seals 与 220 个 Golden/corpus/manifest/registry 的保护检查单独归档；`docs/PHASE1_GATE_REPORT.md` 始终未改动、未暂存。
+
+本轮关闭最后两项已知 application 断言，不等于新的 full CTest 全绿，也不是屏幕像素链验收。下一步仍为 **G20**：先定向判断 LF4 caller sampler state 候选是否确实可复现；DISPLAY2 2.0x 容纳问题继续等待用户决定，未豁免/改屏幕设置。最终完整回归证据如何在既定预算内收口也仍需明确，当前不关闭 G20。

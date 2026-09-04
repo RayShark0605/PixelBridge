@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -104,10 +105,14 @@ TEST_CASE("RemoteVisual replay recorder copies receiver ROI through a bounded no
 {
     TemporaryRecorderFiles temporary;
     const auto config = MakeConfig(temporary.Path());
+    std::uint64_t expectedReservation = 0;
+    REQUIRE(pbapp::CalculateRemoteVisualReplayRecorderReservation(config, expectedReservation));
+    REQUIRE_FALSE(std::filesystem::exists(temporary.Path()));
     std::shared_ptr<pbapp::RemoteVisualReplayRecorder> recorder;
     REQUIRE(pbapp::RemoteVisualReplayRecorder::Create(config, recorder));
     REQUIRE(recorder != nullptr);
     REQUIRE(recorder->ProcessingReservedBytes() >= 64);
+    REQUIRE(recorder->ProcessingReservedBytes() == expectedReservation);
 
     std::vector<std::byte> pixels(32);
     for (std::size_t index = 0; index < pixels.size(); index++)
@@ -173,6 +178,99 @@ TEST_CASE("RemoteVisual replay recorder rejects unbounded or malformed setup wit
     const auto status = pbapp::RemoteVisualReplayRecorder::Create(config, recorder);
     REQUIRE(status.code == pbcapturenormalize::CaptureError::InvalidConfiguration);
     REQUIRE(recorder == nullptr);
+    REQUIRE_FALSE(std::filesystem::exists(temporary.Path()));
+    auto partial = temporary.Path();
+    partial += L".partial";
+    REQUIRE_FALSE(std::filesystem::exists(partial));
+}
+
+TEST_CASE("RemoteVisual replay recorder preflight shares checked allocation accounting without file side effects",
+    "[application][replay][remote-visual][recorder-budget]")
+{
+    TemporaryRecorderFiles temporary;
+    const auto base = MakeConfig(temporary.Path());
+    std::uint64_t baseline = 0;
+    REQUIRE(pbapp::CalculateRemoteVisualReplayRecorderReservation(base, baseline));
+    REQUIRE(baseline > 64);
+    const auto CheckRejected = [&](const pbapp::RemoteVisualReplayRecorderConfig& config,
+        const pbcapturenormalize::CaptureError expectedError)
+    {
+        std::uint64_t unchanged = 91;
+        const auto status = pbapp::CalculateRemoteVisualReplayRecorderReservation(config, unchanged);
+        CHECK(status.code == expectedError);
+        CHECK(status.stage == pbcapturenormalize::CaptureStage::Configuration);
+        CHECK(unchanged == 91);
+    };
+    SECTION("Pixel and observation storage count actual configured bytes")
+    {
+        auto config = base;
+        config.roiWidth *= 2;
+        std::uint64_t reservation = 0;
+        REQUIRE(pbapp::CalculateRemoteVisualReplayRecorderReservation(config, reservation));
+        CHECK(reservation == baseline + 64);
+        config = base;
+        config.pixelFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        REQUIRE(pbapp::CalculateRemoteVisualReplayRecorderReservation(config, reservation));
+        CHECK(reservation == baseline + 64);
+        config = base;
+        config.limits.maximumCaptureFrames++;
+        REQUIRE(pbapp::CalculateRemoteVisualReplayRecorderReservation(config, reservation));
+        CHECK(reservation == baseline + sizeof(pbrealcapturereplay::ReplayV2DemodObservationView));
+        config = base;
+        config.roiWidth = 1920;
+        config.roiHeight = 1080;
+        config.queueCapacity = 2;
+        config.limits.maximumCaptureFrames = pbrealcapturereplay::kReplayV2DefaultMaximumCaptureFrames;
+        REQUIRE(pbapp::CalculateRemoteVisualReplayRecorderReservation(config, reservation));
+        CHECK(reservation > 1920ULL * 1080 * 4 * 3);
+        CHECK(reservation < 128ULL * 1024 * 1024);
+        INFO("1920x1080 recorder reservation=" << reservation);
+    }
+    SECTION("Exact raster and slot budgets pass but one byte less fails")
+    {
+        auto config = base;
+        config.limits.maximumFileBytes = 64;
+        config.limits.maximumRasterBytesPerFrame = 32;
+        config.limits.maximumDimension = 4;
+        std::uint64_t reservation = 0;
+        REQUIRE(pbapp::CalculateRemoteVisualReplayRecorderReservation(config, reservation));
+        CHECK(reservation == baseline);
+        config.limits.maximumFileBytes--;
+        CheckRejected(config, pbcapturenormalize::CaptureError::ResourceLimit);
+        config.limits.maximumFileBytes = 64;
+        config.limits.maximumRasterBytesPerFrame--;
+        CheckRejected(config, pbcapturenormalize::CaptureError::ResourceLimit);
+    }
+    SECTION("Malformed dimensions formats and queue capacities preserve output")
+    {
+        auto config = base;
+        config.roiWidth = 0;
+        CheckRejected(config, pbcapturenormalize::CaptureError::InvalidConfiguration);
+        config = base;
+        config.roiHeight = config.limits.maximumDimension + 1;
+        CheckRejected(config, pbcapturenormalize::CaptureError::InvalidConfiguration);
+        config = base;
+        config.pixelFormat = DXGI_FORMAT_UNKNOWN;
+        CheckRejected(config, pbcapturenormalize::CaptureError::InvalidConfiguration);
+        for (const std::uint32_t queueCapacity : {0U, 17U})
+        {
+            config = base;
+            config.queueCapacity = queueCapacity;
+            CheckRejected(config, pbcapturenormalize::CaptureError::InvalidConfiguration);
+        }
+    }
+    SECTION("Row pitch and frame multiplication overflow fail before allocation")
+    {
+        auto config = base;
+        config.limits.maximumDimension = (std::numeric_limits<std::uint32_t>::max)();
+        config.limits.maximumRasterBytesPerFrame = (std::numeric_limits<std::uint64_t>::max)();
+        config.limits.maximumFileBytes = (std::numeric_limits<std::uint64_t>::max)();
+        config.roiWidth = config.limits.maximumDimension;
+        CheckRejected(config, pbcapturenormalize::CaptureError::ResourceLimit);
+        config.roiHeight = config.limits.maximumDimension;
+        config.pixelFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        CheckRejected(config, pbcapturenormalize::CaptureError::ResourceLimit);
+    }
     REQUIRE_FALSE(std::filesystem::exists(temporary.Path()));
     auto partial = temporary.Path();
     partial += L".partial";

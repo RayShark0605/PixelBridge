@@ -355,7 +355,7 @@ TEST_CASE("Production LF4 Receiver admits bounded partial codewords and preserve
         return bytes;
     };
     const auto Run = [&](const std::span<const std::byte> source, const wchar_t* directoryName,
-        const pbprotocol::OuterFecMode expectedMode, const std::uint64_t expectedOuterUnique)
+        const pbprotocol::OuterFecMode expectedMode, const std::uint64_t expectedOuterUnique, const bool refinementAdmitted)
     {
         const auto directory = scratch.Path() / directoryName;
         REQUIRE(std::filesystem::create_directories(directory));
@@ -364,12 +364,13 @@ TEST_CASE("Production LF4 Receiver admits bounded partial codewords and preserve
             directory.wstring(), 32, probe);
         INFO(status.message);
         REQUIRE(status);
+        const std::uint64_t expectedAdmittedBlocks = refinementAdmitted ? 4 : 2;
         CHECK(probe.outerFecMode == expectedMode);
-        CHECK(probe.processedResults == 37);
+        CHECK(probe.processedResults == (refinementAdmitted ? 37 : 36));
         CHECK(probe.suppressedDuplicateResults == 32);
-        CHECK(probe.duplicateRefinementResults == 1);
-        CHECK(probe.rawAcceptedTransportBlocks == 6);
-        CHECK(probe.temporallyAdmittedTransportBlocks == 4);
+        CHECK(probe.duplicateRefinementResults == (refinementAdmitted ? 1 : 0));
+        CHECK(probe.rawAcceptedTransportBlocks == (refinementAdmitted ? 6 : 2));
+        CHECK(probe.temporallyAdmittedTransportBlocks == expectedAdmittedBlocks);
         CHECK(probe.decoder.state == pbapp::DecoderState::Completed);
         CHECK(probe.decoder.visualProfile == pbapp::VisualProfile::RemoteVisualLowFps);
         CHECK(probe.decoder.wholeFileDigestVerified);
@@ -377,11 +378,11 @@ TEST_CASE("Production LF4 Receiver admits bounded partial codewords and preserve
         CHECK(probe.decoder.originalFileBytes == source.size());
         CHECK(probe.decoder.verifiedRawBytes == source.size());
         CHECK(probe.decoder.remainingRawBytes == 0);
-        CHECK(probe.decoder.acceptedTransportBlocks == 4);
+        CHECK(probe.decoder.acceptedTransportBlocks == expectedAdmittedBlocks);
         CHECK(probe.decoder.outerUniqueSymbols == expectedOuterUnique);
         CHECK(probe.decoder.outerConflictRejections == 0);
         CHECK(probe.decoder.outerResourceRejections == 0);
-        CHECK(probe.decoder.duplicateFrameSequences == 33);
+        CHECK(probe.decoder.duplicateFrameSequences == (refinementAdmitted ? 33 : 32));
         CHECK(probe.decoder.endToEndUniqueFrameSequences == 1);
         CHECK(probe.decoder.evaluatedDataFrames == 1);
         CHECK(probe.decoder.postFecFailedFrames == 1);
@@ -403,13 +404,14 @@ TEST_CASE("Production LF4 Receiver admits bounded partial codewords and preserve
     };
 
     const std::array<std::byte, 1> directSource{std::byte{0x5A}};
-    Run(directSource, L"direct-repeat", pbprotocol::OuterFecMode::DirectRepeat, 1);
+    Run(directSource, L"direct-repeat", pbprotocol::OuterFecMode::DirectRepeat, 1, false);
     std::vector<std::byte> wirehairSource(4096);
     for (std::size_t index = 0; index < wirehairSource.size(); index++)
     {
         wirehairSource[index] = static_cast<std::byte>((index * 73 + index / 7 + 19) & 0xFF);
     }
-    Run(wirehairSource, L"wirehair", pbprotocol::OuterFecMode::WirehairV2, 4);
+    Run(wirehairSource, L"wirehair", pbprotocol::OuterFecMode::WirehairV2, 4, true);
+    Run(std::span(wirehairSource).first(2048), L"direct-repeat-two-blocks", pbprotocol::OuterFecMode::DirectRepeat, 2, false);
 
     pbapp::DecoderAdmissionProbeSnapshot unchanged;
     unchanged.processedResults = 91;
@@ -641,13 +643,21 @@ TEST_CASE("RemoteVisual production Replay fan-out supports Direct and Shape with
         MakeMonitor(2, L"\\\\.\\DISPLAY2", {2560, 0, 5120, 1440}, false)};
     config.replayOutputPath = (scratch.Path() / L"direct-production.pbrv2").wstring();
     config.replayMaximumCaptureFramesPerSecond = 10;
-    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    const auto directStatus = pbapp::ValidateDecoderConfig(config);
+    INFO(directStatus.message);
+    REQUIRE(directStatus);
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
+    config.replayMaximumFileBytes = 16ULL * 1024 * 1024;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
+    config.replayMaximumFileBytes = 2ULL * 1024 * 1024 * 1024;
 
     config.visualProfile = pbapp::VisualProfile::ShapeChroma;
     config.replayOutputPath = (scratch.Path() / L"shape-production.pbrv2").wstring();
     REQUIRE(pbapp::ValidateDecoderConfig(config));
     config.captureBackend = pbapp::CaptureBackend::Dxgi;
     REQUIRE(pbapp::ValidateDecoderConfig(config));
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
 
     config.diagnosticCaptureOnly = true;
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
