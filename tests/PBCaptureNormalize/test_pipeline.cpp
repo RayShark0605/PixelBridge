@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -855,12 +856,38 @@ void ExerciseLowFpsPipeline(const CaptureBackendKind kind)
     control->requestedFrames = 1;
     pbdemodd3d11::CaptureDemodulatorResult firstResult;
     bool firstResultReady = false;
-    REQUIRE(Await([&]
+    const bool firstFrameRetired = Await([&]
     {
         firstResultReady = firstResultReady || consumer->TakeResult(firstResult);
         const auto snapshot = capture->GetSnapshot();
         return firstResultReady && snapshot.busyRoiTextures == 0 && snapshot.liveFrameLeases == 0;
-    }, std::chrono::seconds(60)));
+    }, std::chrono::seconds(60));
+    if (!firstFrameRetired)
+    {
+        // Capture/control counters are observable without taking the demodulator
+        // lock. Flush them before a consumer snapshot that may wait for GPU/FEC.
+        const auto state = capture->GetSnapshot();
+        const auto normalized = capture->GetNormalizationSnapshot();
+        std::cerr << "[lf4-pipeline-wait] ready=" << firstResultReady << " state=" << static_cast<unsigned>(state.state)
+                  << " error=" << static_cast<unsigned>(state.error.code) << "/" << static_cast<unsigned>(state.error.stage) << "/" << state.error.nativeError
+                  << " arrived/copied/delivered=" << state.arrivedFrames << "/" << state.copiedFrames << "/" << state.deliveredFrames
+                  << " busy/live=" << state.busyRoiTextures << "/" << state.liveFrameLeases
+                  << " expired/stale/age100ns=" << state.expiredFrames << "/" << state.staleFrames << "/" << state.frameAgeHighWater100ns
+                  << " continuation=" << state.consumerContinuationSubmissions << "/" << state.consumerContinuationCompletions << "/" << state.consumerContinuationRejections
+                  << " normalize=" << normalized.acceptedFrames << "/" << normalized.erasedFrames << "/" << static_cast<unsigned>(normalized.lastErasure)
+                  << " leases/closes=" << control->madeLeases.load() << "/" << control->closes[1].load()
+                  << " copies/consumes/completions/polls=" << control->copies.load() << "/" << control->consumes.load() << "/" << control->completions.load() << "/" << control->polls.load()
+                  << " wrongOwner=" << control->wrongOwner.load() << std::endl;
+        const auto consumerState = consumer->GetSnapshot();
+        std::cerr << "[lf4-pipeline-consumer] error=" << static_cast<unsigned>(consumerState.error.code) << "/" << static_cast<unsigned>(consumerState.error.stage) << "/" << consumerState.error.nativeError
+                  << " submitted/completed/cancelled/expired=" << consumerState.submittedFrames << "/" << consumerState.completedFrames << "/" << consumerState.cancelledFrames << "/" << consumerState.expiredFrames
+                  << " pending/queued/taken/stale=" << consumerState.pendingFrames << "/" << consumerState.queuedResults << "/" << consumerState.resultsTaken << "/" << consumerState.staleResultDrops
+                  << " bootstrap/map/accepted/rejected=" << consumerState.bootstrapMapCalls << "/" << consumerState.bootstrapAcceptedFrames << "/" << consumerState.bootstrapRejectedFrames
+                  << " staged/submitted/completed=" << consumerState.stagedGpuSubmissions << "/" << consumerState.stagedGpuCompletions
+                  << " demod/submitted/completed/failed/pending=" << consumerState.demodulator.submittedFrames << "/" << consumerState.demodulator.completedFrames << "/" << consumerState.demodulator.failedFrames << "/" << consumerState.demodulator.pendingFrames
+                  << " cpu/bootstrap/demod/100ns=" << consumerState.bootstrapCpuTimeHighWater100ns << "/" << consumerState.demodulationCpuTimeHighWater100ns << std::endl;
+    }
+    REQUIRE(firstFrameRetired);
     RequireLowFpsPipelineResult(firstResult, record, expectedBlocks, kind, 1);
     const auto firstDomain = firstResult.metadata.domain;
     auto captureSnapshot = capture->GetSnapshot();

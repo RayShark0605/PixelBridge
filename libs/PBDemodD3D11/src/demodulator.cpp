@@ -1,8 +1,6 @@
 #include "pbdemodd3d11/demodulator.h"
 
-#include "demod_shader_source.h"
-#include "remote_visual_low_fps_shader_source.h"
-#include "unified_visual_shader_source.h"
+#include "demod_shader_bytecode.h"
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/remote_visual.h"
 #include "pbmodulation/remote_visual_low_fps.h"
@@ -12,7 +10,6 @@
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/checked_integer.h"
 
-#include <d3dcompiler.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
@@ -25,6 +22,7 @@
 #include <new>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <utility>
 
 namespace pbdemodd3d11
@@ -345,19 +343,10 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
     return {};
 }
 
-DemodStatus CompileShader(ID3D11Device* device, const char* source, const std::size_t sourceBytes,
-    const char* entryPoint, ComPtr<ID3D11ComputeShader>& output) noexcept
+DemodStatus CreateShader(ID3D11Device* device, const std::span<const unsigned char> bytecode,
+    ComPtr<ID3D11ComputeShader>& output) noexcept
 {
-    ComPtr<ID3DBlob> shader;
-    ComPtr<ID3DBlob> diagnostics;
-    const HRESULT compile = D3DCompile(source, sourceBytes,
-        "PB-Demod-D3D11", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, entryPoint, "cs_5_0",
-        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS, 0, &shader, &diagnostics);
-    if (FAILED(compile))
-    {
-        return DemodStatus::Failure(DemodError::ShaderCompileFailure, DemodStage::Shader, compile);
-    }
-    const HRESULT create = device->CreateComputeShader(shader->GetBufferPointer(), shader->GetBufferSize(), nullptr, &output);
+    const HRESULT create = device->CreateComputeShader(bytecode.data(), bytecode.size(), nullptr, &output);
     return FAILED(create) ? DemodStatus::Failure(DemodError::NativeFailure, DemodStage::Shader, create) : DemodStatus{};
 }
 
@@ -1210,39 +1199,17 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
         }
         struct ShaderRequest
         {
-            const char* source;
-            std::size_t sourceBytes;
-            const char* entryPoint;
+            std::span<const unsigned char> bytecode;
             ComPtr<ID3D11ComputeShader>* output;
         };
         const std::array<ShaderRequest, 12> shaders{{
-            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
-                "CalibrateChromaCS", std::addressof(state->calibrateChroma)},
-            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
-                "CalibrateLevelsCS", std::addressof(state->calibrateLevels)},
-            {detail::kRemoteVisualLowFpsComputeShader, sizeof(detail::kRemoteVisualLowFpsComputeShader) - 1,
-                "CalibrateRemoteVisualLowFpsCS", std::addressof(state->calibrateRemoteVisualLowFps)},
-            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
-                "DemodShapeChromaCS", std::addressof(state->demodShapeChroma)},
-            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
-                "DemodDesktopLevelsCS", std::addressof(state->demodDesktopLevels)},
-            {detail::kDemodComputeShader, sizeof(detail::kDemodComputeShader) - 1,
-                "DemodRemoteVisualCS", std::addressof(state->demodRemoteVisual)},
-            {detail::kRemoteVisualLowFpsComputeShader, sizeof(detail::kRemoteVisualLowFpsComputeShader) - 1,
-                "DemodRemoteVisualLowFpsFreshnessCS", std::addressof(state->demodRemoteVisualLowFpsFreshness)},
-            {detail::kRemoteVisualLowFpsComputeShader, sizeof(detail::kRemoteVisualLowFpsComputeShader) - 1,
-                "DemodRemoteVisualLowFpsCS", std::addressof(state->demodRemoteVisualLowFps)},
-            {detail::kUnifiedVisualComputeShader, sizeof(detail::kUnifiedVisualComputeShader) - 1,
-                "CalibrateUnifiedCS", std::addressof(state->calibrateUnified)},
-            {detail::kUnifiedVisualComputeShader, sizeof(detail::kUnifiedVisualComputeShader) - 1,
-                "EvaluateUnifiedFreshnessCS", std::addressof(state->evaluateUnifiedFreshness)},
-            {detail::kUnifiedVisualComputeShader, sizeof(detail::kUnifiedVisualComputeShader) - 1,
-                "EvaluateUnifiedPhaseCS", std::addressof(state->evaluateUnifiedPhase)},
-            {detail::kUnifiedVisualComputeShader, sizeof(detail::kUnifiedVisualComputeShader) - 1,
-                "DemodUnifiedCS", std::addressof(state->demodUnified)}}};
+#define PB_DEMOD_SHADER(source, entryPoint, member) {detail::member##Bytecode, std::addressof(state->member)},
+#include "demod_shader_entries.inc"
+#undef PB_DEMOD_SHADER
+        }};
         for (const auto& entry : shaders)
         {
-            status = CompileShader(device, entry.source, entry.sourceBytes, entry.entryPoint, *entry.output);
+            status = CreateShader(device, entry.bytecode, *entry.output);
             if (!status)
             {
                 return status;
@@ -1601,8 +1568,10 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
         context->ClearUnorderedAccessViewUint(slot.unifiedFreshnessUav.Get(), clearValues);
         context->ClearUnorderedAccessViewUint(slot.unifiedPhaseUav.Get(), clearValues);
     }
-    const float clearCalibration[4]{};
-    context->ClearUnorderedAccessViewFloat(slot.calibrationUav.Get(), clearCalibration);
+    // A structured UAV has DXGI_FORMAT_UNKNOWN, so the float clear is invalid.
+    // Bit-exact uint zero initializes every float component to positive zero.
+    const UINT clearCalibration[4]{};
+    context->ClearUnorderedAccessViewUint(slot.calibrationUav.Get(), clearCalibration);
     ID3D11Buffer* constantBuffers[]{slot.constants.Get()};
     context->CSSetConstantBuffers(0, 1, constantBuffers);
     ID3D11ShaderResourceView* calibrationInputs[]{inputSrv.Get(), nullptr, nullptr, nullptr, nullptr, nullptr};

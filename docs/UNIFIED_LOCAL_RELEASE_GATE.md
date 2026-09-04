@@ -1,6 +1,6 @@
 # G20：本地 Release Gate 进度与回归修复
 
-> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 已完成一次完整 Release CTest，修复离线 Replay 的 worker 栈溢出和独立的 shader 初始化开销；后续又关闭五项 Golden/ProtocolDump 工具失败。仍有 application/capture/demod 回归、两项 ASan deadline 失败和实屏验收条件待处理。本文不把部分通过写成最终产品认证。
+> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 已完成一次完整 Release CTest；后续定向修复 Replay worker 栈溢出、五项 Golden/ProtocolDump 工具失败、Capture 非法 UAV clear 和 demod 重复启动编译。经用户同意改用构建期嵌入 bytecode 后，demod 22 cases 及原两个 ASan 15 秒 deadline 用例均通过。application 的另两项既有断言失败和实屏验收条件仍待处理。本文不把部分通过写成最终产品认证。
 
 ## 1. 前置与本轮边界
 
@@ -25,9 +25,9 @@ ctest --test-dir build-unified-release -C Release --output-on-failure --parallel
 | 失败项 | 原始结果 | 当前处理 |
 | --- | --- | --- |
 | PBApplicationTests | SIGSEGV / Stack overflow | 第 3 节 run-owned 缓冲修复；模块重跑暴露其他断言失败，随后只做受影响用例复验 |
-| PBCapturePipelineTests | 两个 LF4 case 的 60 秒 Await 失败 | 未定因；不能仅凭组合条件推断是没结果还是 lease 未退休 |
-| PBDemodD3D11Tests | 180 秒外层 timeout | 待分阶段诊断，不增加时间上限 |
-| PBRemoteVisualGpuParityTests | 300 秒外层 timeout | 另发现旧 `[.gpu-parity]` 过滤命中 Unified G12 用例，重复运行已独立注册的 corpus；尚未修正 |
+| PBCapturePipelineTests | 两个 LF4 case 的 60 秒 Await 失败 | 第 8 节以 D3D debug error 定因并修复非法 structured UAV clear；4 cases / 2,705 assertions 通过，原期限不变 |
+| PBDemodD3D11Tests | 180 秒外层 timeout | 第 9 节构建期预编译后 22 cases / 663,674 assertions 全过，8.110 秒；不增加时间上限 |
+| PBRemoteVisualGpuParityTests | 300 秒外层 timeout | 第 8 节只排除另有独立注册的 Unified G12；legacy 1 case / 46,731 assertions、73.203 秒通过 |
 | PBGoldenVectorTests | 旧 descriptor/control/fragment 期望冲突 | 第 7 节分层修复后定向通过，14 cases / 57,902 assertions |
 | PBGoldenVectorCheck | 8 个旧 pin 与重算不符 | 第 7 节恢复历史重算后通过；没有修改文件或 pin |
 | PBGoldenVectorCheckTests | 同上 8 项导致 summary 失败 | 第 7 节定向通过，7 cases / 120 assertions |
@@ -240,3 +240,96 @@ ctest --test-dir build-unified-release -C Release `
 原 Golden、正式/历史 corpus、formal manifest 与 registry 共 **220 个受保护文件逐个 SHA-256 未变**。`docs/PHASE1_GATE_REPORT.md` 仍为原 SHA-256、untracked 且未暂存。唯一 full CTest 的 206/215 历史结果和各中间红灯不覆盖、不改写为全绿。
 
 本轮没有 full CTest、ASan、GPU、Qt GUI、native、远程、20 GiB 或提交后安装包复验。五项工具失败已定向关闭；application/capture/demod 其他失败、两个 ASan 15 秒 deadline 和 DISPLAY2 2.0x 条件仍待处理。下一目标仍为 **继续 G20**。
+
+## 8. Capture 首帧失败：非法 structured UAV clear（2026-09-04）
+
+本轮从 `00045ed0130bcb5fe4dfa917e5642a73e3d0bf36` 继续，仅处理 G20 剩余本地回归。重新读取 AGENTS、G20 前置/退出与 Git 状态，复验 G19 ancestor、原报告、12 个提交级 source seals 和候选 worker。上轮是已有独立修复提交及通过证据的 progress，不是因实屏条件停滞的空转；G21/G22 未开始。
+
+### 从综合 Await 失败到精确 D3D11 错误
+
+只给 `PBCapturePipelineTests` 既有 LF4 首帧 60 秒 Await 增加失败后快照，不改变谓词、期限、frame age、GPU timeout 或生产错误处理。capture/control 计数先输出并 flush，再读取可能等待 demodulator mutex 的 consumer 快照，避免在每次轮询内引入该锁。
+
+原 WGC 单 SECTION、原 seed `642631882` 再次失败：exit 42，67.422 秒。关键记录为：
+
+```text
+ready=0 state=Failed error=NativeFailure/Completion/0
+arrived/copied/delivered=1/1/1 busy/live=0/0 expired=0
+continuation=1/1/0 normalize=1/0/0 leases/closes=1/1
+consumer submitted/completed/cancelled/expired=1/0/1/0
+pending/queued/taken=0/0/0 bootstrap accepted=1 demod submitted=1
+```
+
+这排除了“没拿到源帧”“租约没退休”和“GPU 一直运行 60 秒”的解释：帧实际在错误后被安全取消，测试继续等一个不会入队的结果。随后用同一 EXE、相同 SECTION/seed，在 CDB 下仅捕获现有 debug output；没有设置断点、修改 GPU 行为或关闭检查。CDB/test 均 exit 42，74.453 秒，诊断日志明确给出：
+
+```text
+D3D11 ERROR #2097405: CLEARUNORDEREDACCESSVIEWFLOAT_INVALIDFORMAT
+```
+
+`D3dRoiRing::Mark → CheckDebug` 看到 ERROR 后返回 `NativeFailure/Completion/0`，随后 CaptureRuntime 走终端取消，和快照完全一致。该错误不是本轮新加的诊断导致；旧 EXE 的错误检查逻辑未变。两次均使用仅新增测试失败诊断、尚未修复生产代码的 EXE，SHA-256 为 `e178f152e5c0e80fbd4b80ca309c0fde279d38a8be6f76c975caf3fbbe279997`，不冒充首次 full CTest 的原二进制。
+
+### 最小生产修复与独立过滤修复
+
+G11 `1459c861` 在所有 Profile 共用的 calibration 路径增加了 `ClearUnorderedAccessViewFloat`，但该 UAV 是 36×float4、stride 16 的 structured buffer，格式为 `DXGI_FORMAT_UNKNOWN`。Float clear 只适用于 FLOAT/UNORM/SNORM，而 Uint clear 可以对 structured view 做无格式转换的按位写入。[Microsoft Float API](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-clearunorderedaccessviewfloat)、[Uint API](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-clearunorderedaccessviewuint)。
+
+生产只把该调用及零数组类型改为 `ClearUnorderedAccessViewUint` / `UINT{0}`，使所有 float component 得到正零。buffer/UAV/SRV、容量、budget、HLSL、校准参数、dispatch、query/fence、wire 和 CPU/FEC 均不变；不关闭 debug layer，不吞掉 ERROR，也不调整 timeout。独立只读审查确认该范围和 bit pattern。
+
+另将 `PBRemoteVisualGpuParityTests` selector 从 `[.gpu-parity]` 改为 `[.gpu-parity]~[unified]`。修复前后的 `--list-tests` 分别是 2 / 1 个 case，排除项正是已有独立注册的 Unified G12 corpus，不是删除测试或绕过失败。legacy 保留 300 秒预算，Unified 自己的 selector/预算不变。
+
+### 只修复 clear 后的定向结果
+
+- 受影响 `PBCapturePipelineTests`、`PBDemodD3D11Tests`、两个 Qt EXE build 成功，44.953 秒。
+- Capture 原有全部 **4 cases / 2,705 assertions 通过，exit 0，34.250 秒**。包括 WGC upright、DXGI rotated LF4 Transport、epoch recreate、crop/lease retirement 和 continuation 拒绝；WGC/DXGI 对应 case 分别 16.786 / 16.725 秒。生产 debug 检查仍启用，内部 60 秒不变。
+- 默认 demod 组仍在原 **180 秒**外层期限超时；只有 15 个 case 的完成时间行，不能据此声称 22 cases 全绿。这份红灯及 `verify-clear-fix-summary.json` 的 `allPassed=false` 原样保留。
+- 随后独立运行 legacy selector：**1 case / 46,731 assertions，exit 0，73.203 秒**。WARP + 4 个可用硬件 adapter（NVIDIA/AMD），10 个初始/重建 run、25 个 scenario 结果，CPU/GPU accepted set 全部一致；false accepted、failed/cancelled frames 均为 0，shutdown 全部完成。没有重跑独立的 G12 corpus。
+
+本阶段 Capture EXE SHA-256 为 `816f8f4941b3e9708347884cf660ed2d091d6b81edae49d1af610c2a6f34aa9e`，demod EXE 为 `04763eb14ddefee7026c75830d9bd1d65baf8ae4a63fb5250852b2dc781c04af`。全部命令、期限、CDB output、失败快照和结果保存在 `build-unified-release/g20-capture/`，包括 `capture-probe-summary.json`、`cdb-capture.log`、`verify-clear-fix-summary.json`、`verify-legacy-parity-summary.json` 和 `legacy-parity-analysis.json`。
+
+## 9. 经用户批准的构建期 shader bytecode（2026-09-04）
+
+### 测量、决策与不变项
+
+clear 修复后，每个新 demodulator 仍依次编译全部 12 个入口。独立、无 GPU 的 `D3DCompile` 测量得到合计 **8.062 秒**，开销分散在 LF4/Shape/Unified 多个入口，不再是第 6 节单个 phase 循环的异常展开。使用系统 `d3dcompiler_47.dll`、`cs_5_0`、原 flags `264192`，所有 HRESULT=0；此测量不包含 CreateComputeShader、CPU workspace 或 ASan 额外开销，不冒充 ASan 阶段级 trace。
+
+已向用户说明构建流程和编译错误时机将变化，并获得明确同意后才实施。此次 **三个 HLSL 的内容、原 source template、entry 顺序、source name、include handler、target、flags、GPU 调度、资源容量/预算、wire/FEC、public headers 和 timeout 均不变**。没有继续改循环、加入运行时缓存或按 Profile 延迟初始化。
+
+### 私有实现与错误边界
+
+- 新增 `PBDemodShaderCompiler` 私有 build target；不依赖 Qt、不随产品安装，且不受 `PB_BUILD_TOOLS` 开关控制，因为它是库的构建依赖。
+- 私有 `demod_shader_entries.inc` 统一维护 12 个 source/entry/runtime-member 对应关系；compiler、runtime 绑定和测试共用该表。
+- 继续用原始 `D3DCompile` 参数。全部入口编译成功后才写临时头文件并原子替换；失败返回非零并输出 entry/HRESULT/diagnostics，不以旧产物继续成功构建，不生成运行时 fallback。[Microsoft D3DCompile](https://learn.microsoft.com/en-us/windows/win32/api/d3dcompiler/nf-d3dcompiler-d3dcompile)。
+- CMake 通过私有 custom target 和显式依赖生成 `generated/$<CONFIG>/demod_shader_bytecode.h`，不同配置隔离 writer；source/catalog/compiler 变化触发重建。遵循 target 与 file-level dependency 规则。[CMake add_custom_command](https://cmake.org/cmake/help/latest/command/add_custom_command.html)。
+- `Demodulator::Create` 保留原 12 个 GPU shader 的创建顺序和原 NativeFailure/Shader 路径，但改为只调用 `CreateComputeShader`；从该库移除 d3dcompiler 链接依赖。公开 `ShaderCompileFailure` 枚举保留，避免 ABI/接口变更。其他库可能仍使用 D3DCompile，不声称整个应用已无编译器依赖。
+
+### 最小验证与结果
+
+```powershell
+cmake --build build-unified-release --config Release --target PBDemodShaderBytecodeTests PBDemodD3D11Tests PBCapturePipelineTests PBApplicationTests PixelBridgeEncoder PixelBridgeDecoder --parallel 6
+.\build-unified-release\tests\PBDemodD3D11\Release\PBDemodShaderBytecodeTests.exe --reporter console --durations yes --rng-seed 20092026
+.\build-unified-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe --reporter console --durations yes --rng-seed 20092026
+.\build-unified-release\tests\PBCaptureNormalize\Release\PBCapturePipelineTests.exe --reporter console --durations yes --rng-seed 20092026
+.\build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][replay][offline][d3d11]" --reporter console --durations yes --rng-seed 20092026
+cmake --build build-unified-asan --config RelWithDebInfo --target PBApplicationTests --parallel 6
+.\build-unified-asan\tests\PBApplication\RelWithDebInfo\PBApplicationTests.exe "[application][replay][offline][d3d11]" --reporter console --durations yes --rng-seed 20092026
+```
+
+实际通过 create-only Python supervisor 运行上述命令，子进程均 `CREATE_NO_WINDOW`，没有干扰屏幕或输入。Release build exit 0 / 44.437 秒，ASan build exit 0 / 28.844 秒；只有 windeployqt 既有 `VCINSTALLDIR is not set` 警告，没有 shader/C++ 编译错误。
+
+| 定向检查 | 结果 |
+| --- | --- |
+| 新增 bytecode compiler contract | 12 个入口逐字节比较，**1 case / 61 assertions，9.344 秒** |
+| PBDemodD3D11Tests 原默认组 | **22 cases / 663,674 assertions，8.110 秒**；原外层 180 秒不变 |
+| PBCapturePipelineTests | **4 cases / 2,705 assertions，1.703 秒**；内部 60 秒不变 |
+| Release 三个 offline D3D11 Replay | **3 cases / 21,554 assertions，1.031 秒**；内部 15/15/30 秒不变 |
+| ASan 同三个 Replay | **3 cases / 21,562 assertions，1.875 秒**；无 ASan error、skip 或栈溢出；原两项 deadline 红灯已定向关闭 |
+| 增量 build contract | 无输入变化时 custom command 不执行，generated header 的 SHA-256 和 mtime 均不变 |
+| 编译失败 contract | 仅在复制的隔离 fixture 插入 `#error G20_SHADER_FAILURE_SENTINEL`；真实 CMake dependency 自动 reconfigure，D3DCompile 报错、build exit 1，旧 header SHA-256 不变，未留下临时产物；这是预期负例，不是忽略编译失败 |
+
+12 个嵌入 bytecode 合计 **392,884 bytes**，也与第 8 节修复前保存的独立编译 CSO 全部 byte-identical。Release 与 ASan 生成的 header 相同，SHA-256 为 `bbf53e113b453ce43153c066986f0a1fe4f55c9369790e974cb84fc0fef1d470`。demodulator.obj 符号检查无 D3DCompile 引用；ASan 应用测试 PE 确认导入 `clang_rt.asan_dynamic-x86_64.dll`。以上耗时是本机这一轮定向结果，不是吞吐认证或跨机器性能保证。
+
+### 证据与剩余 G20
+
+`build-unified-release/g20-shader-bytecode/` 保留批准边界、构建日志、逐 bytecode seals、`verify-release.json`、`replay-asan.json`、`verify-build-contract.json`、各测试 stdout/stderr 和隔离失败 fixture。当前 demod/Release application/ASan application EXE SHA-256 分别为 `e3c080b8e454b49d51b6dde7bce794caa3f3fa6b40874cb05ff42af535ad75cd` / `8ad4c0d3c5204b7ed9050b61aa77c17631396a0f95af131a06e58fc4b65f95b0` / `5201bd5522b17016b3771c71731f071f1cec778b5817e2ab0eeac9281fe8a3a8`。测试源身份为 `00045ed` 加本轮明确 diff，不冒充提交后打包复验。
+
+220 个原 Golden/corpus/manifest/registry 文件逐个 SHA-256 未变；保护文档仍为原 hash、untracked 且未暂存。没有重复 full CTest、已通过的 parser/resume/storage ASan、Qt GUI smoke、Unified 硬件矩阵、20 GiB、native/remote 或安装包复验。保留唯一 full CTest 的历史 **206/215** 和所有中间红灯，不将多次定向结果拼写成一次 full CTest 全绿。
+
+下一目标仍为 **继续 G20**：独立处理 LF4 Receiver probe final-snapshot 断言、legacy Direct/Shape Replay validation 拒绝；DISPLAY2 2.0x 的容量问题仍待用户决定，未改分辨率或使用左屏。只读审查还提出 LF4 校准前可能继承 caller sampler state 的候选问题，尚无定向复现，未在本次 clear/bytecode 修复中顺手修改，也不将其声称为已确认根因。不能进入 G21。

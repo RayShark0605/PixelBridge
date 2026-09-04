@@ -1,0 +1,13 @@
+// Private catalog shared by the build compiler, runtime bindings and bytecode test.
+PB_DEMOD_SHADER(kDemodComputeShader, CalibrateChromaCS, calibrateChroma)
+PB_DEMOD_SHADER(kDemodComputeShader, CalibrateLevelsCS, calibrateLevels)
+PB_DEMOD_SHADER(kRemoteVisualLowFpsComputeShader, CalibrateRemoteVisualLowFpsCS, calibrateRemoteVisualLowFps)
+PB_DEMOD_SHADER(kDemodComputeShader, DemodShapeChromaCS, demodShapeChroma)
+PB_DEMOD_SHADER(kDemodComputeShader, DemodDesktopLevelsCS, demodDesktopLevels)
+PB_DEMOD_SHADER(kDemodComputeShader, DemodRemoteVisualCS, demodRemoteVisual)
+PB_DEMOD_SHADER(kRemoteVisualLowFpsComputeShader, DemodRemoteVisualLowFpsFreshnessCS, demodRemoteVisualLowFpsFreshness)
+PB_DEMOD_SHADER(kRemoteVisualLowFpsComputeShader, DemodRemoteVisualLowFpsCS, demodRemoteVisualLowFps)
+PB_DEMOD_SHADER(kUnifiedVisualComputeShader, CalibrateUnifiedCS, calibrateUnified)
+PB_DEMOD_SHADER(kUnifiedVisualComputeShader, EvaluateUnifiedFreshnessCS, evaluateUnifiedFreshness)
+PB_DEMOD_SHADER(kUnifiedVisualComputeShader, EvaluateUnifiedPhaseCS, evaluateUnifiedPhase)
+PB_DEMOD_SHADER(kUnifiedVisualComputeShader, DemodUnifiedCS, demodUnified)

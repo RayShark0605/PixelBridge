@@ -20,7 +20,9 @@ set_tests_properties(PBDemodD3D11Tests PROPERTIES
 unset(pbDemodD3D11TestTimeout)
 
 add_test(NAME PBRemoteVisualGpuParityTests
-    COMMAND PBDemodD3D11Tests "[.gpu-parity]" --reporter console --durations yes)
+    # Unified G12 has its own CTest below; keep the legacy 300-second budget
+    # for its original corpus rather than running the Unified corpus twice.
+    COMMAND PBDemodD3D11Tests "[.gpu-parity]~[unified]" --reporter console --durations yes)
 set_tests_properties(PBRemoteVisualGpuParityTests PROPERTIES
     LABELS "demod;d3d11;remote-visual;gpu-parity;hardware"
     RUN_SERIAL TRUE
@@ -39,3 +41,15 @@ set_tests_properties(PBUnifiedVisualGpuParityTests PROPERTIES
     LABELS "demod;d3d11;unified;gpu-parity;hardware;receiver;storage;performance"
     RUN_SERIAL TRUE
     TIMEOUT 1800)
+
+# Compiler equivalence is a separate build-contract check, not startup work in
+# the runtime tests. It uses no device and does not repeat GPU parity matrices.
+PbAddUnitTest(PBDemodShaderBytecodeTests test_shader_bytecode.cpp)
+add_dependencies(PBDemodShaderBytecodeTests PBDemodShaderBytecode)
+target_include_directories(PBDemodShaderBytecodeTests PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/PBDemodD3D11/src"
+    "${PROJECT_BINARY_DIR}/libs/PBDemodD3D11/generated"
+    "${PROJECT_BINARY_DIR}/libs/PBDemodD3D11/generated/$<CONFIG>")
+target_link_libraries(PBDemodShaderBytecodeTests PRIVATE d3dcompiler)
+target_compile_definitions(PBDemodShaderBytecodeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+set_tests_properties(PBDemodShaderBytecodeTests PROPERTIES LABELS "demod;shader-bytecode;build-contract" TIMEOUT 60)
