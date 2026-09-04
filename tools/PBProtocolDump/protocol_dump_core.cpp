@@ -365,47 +365,134 @@ void AddFragmentFields(DumpReport& report,
     }
 }
 
+// Descriptor rows follow the formal prefix, never a guessed Phase-0 size.
+// Clip the body at its declared CRC boundary so trailing bytes cannot appear
+// as a filename, TLV, or Wirehair profile. Truncated fields stay absent.
+std::span<const std::byte> AddDescriptorPrefix(DumpReport& report,
+    const std::span<const std::byte> input, const std::uint16_t expectedHeaderBytes)
+{
+    auto& fields = report.fields;
+    AddU16Field(fields, input, pbprotocol::kDescriptorSchemaVersionOffset, "DescriptorSchemaVersion");
+    AddU16Field(fields, input, pbprotocol::kDescriptorHeaderBytesOffset, "DescriptorHeaderBytes");
+    AddU32Field(fields, input, pbprotocol::kDescriptorTotalBytesOffset, "DescriptorTotalBytes");
+    if (input.size() < pbprotocol::kDescriptorSchemaPrefixBytes ||
+        ReadU16(input, pbprotocol::kDescriptorSchemaVersionOffset) != pbprotocol::kDescriptorSchemaVersion ||
+        ReadU16(input, pbprotocol::kDescriptorHeaderBytesOffset) != expectedHeaderBytes)
+    {
+        return {};
+    }
+    const std::size_t declaredBytes = ReadU32(input, pbprotocol::kDescriptorTotalBytesOffset);
+    if (declaredBytes < expectedHeaderBytes + pbprotocol::kDescriptorCrcBytes ||
+        declaredBytes > pbprotocol::kMaximumDescriptorPayloadBytes)
+    {
+        return {};
+    }
+    return input.first(std::min(input.size(), declaredBytes - pbprotocol::kDescriptorCrcBytes));
+}
+
+void AddDescriptorCrc(DumpReport& report, const std::span<const std::byte> input)
+{
+    const std::size_t declaredBytes = ReadU32(input, pbprotocol::kDescriptorTotalBytesOffset);
+    if (declaredBytes < pbprotocol::kDescriptorCrcBytes || declaredBytes > input.size())
+    {
+        return;
+    }
+    const std::size_t crcOffset = declaredBytes - pbprotocol::kDescriptorCrcBytes;
+    AddU32Field(report.fields, input, crcOffset, "DescriptorCrc32c");
+    AddCrcGate(report, input, "DescriptorCrc32c", crcOffset, 0, crcOffset);
+}
+
 void AddSessionDescriptorFields(DumpReport& report,
     const std::span<const std::byte> input)
 {
+    const auto body = AddDescriptorPrefix(report, input, pbprotocol::kSessionDescriptorHeaderBytes);
+    if (body.empty())
+    {
+        return;
+    }
     auto& fields = report.fields;
-    AddU16Field(fields, input, 0, "ProtocolMajor");
-    AddU16Field(fields, input, 2, "ProtocolMinor");
-    AddRawField(fields, input, 4, 16, "SessionId");
-    AddU64Field(fields, input, 20, "FileSize");
-    AddU64Field(fields, input, 28, "SegmentCount");
-    AddU8Field(fields, input, 36, "DigestAlgorithm");
+    AddU16Field(fields, body, pbprotocol::kFormalWireSessionDescriptorProtocolMajorOffset, "ProtocolMajor");
+    AddU16Field(fields, body, pbprotocol::kFormalWireSessionDescriptorProtocolMinorOffset, "ProtocolMinor");
+    AddRawField(fields, body, pbprotocol::kFormalWireSessionDescriptorSessionIdOffset,
+        pbprotocol::kFormalWireSessionDescriptorSessionIdBytes, "SessionId");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSessionDescriptorVisualProfileIdOffset, "SessionVisualProfileId");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSessionDescriptorOriginalFileSizeOffset, "FileSize");
+    AddU32Field(fields, body, pbprotocol::kFormalWireSessionDescriptorSourceSegmentTargetBytesOffset, "SourceSegmentTargetBytes");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSessionDescriptorSegmentCountOffset, "SegmentCount");
+    AddU8Field(fields, body, pbprotocol::kFormalWireSessionDescriptorCompressionPolicyOffset, "CompressionPolicy");
+    AddU8Field(fields, body, pbprotocol::kFormalWireSessionDescriptorDigestAlgorithmOffset, "DigestAlgorithm");
+    AddRawField(fields, body, pbprotocol::kFormalWireSessionDescriptorReservedOffset,
+        pbprotocol::kFormalWireSessionDescriptorReservedBytes, "Reserved");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSessionDescriptorFeatureFlagsOffset, "FeatureFlags");
+    AddU16Field(fields, body, pbprotocol::kFormalWireSessionDescriptorFileNameUtf8BytesOffset, "FileNameUtf8Bytes");
+    const std::size_t nameOffset = pbprotocol::kFormalWireSessionDescriptorFileNameUtf8Offset;
+    const bool completeRecord = ReadU32(input, pbprotocol::kDescriptorTotalBytesOffset) <= input.size();
+    if (completeRecord && body.size() >= nameOffset)
+    {
+        const std::size_t nameBytes = ReadU16(body, pbprotocol::kFormalWireSessionDescriptorFileNameUtf8BytesOffset);
+        if (nameBytes != 0 && nameBytes <= pbprotocol::kMaximumFileNameUtf8Bytes && nameBytes <= body.size() - nameOffset)
+        {
+            AddRawField(fields, body, nameOffset, nameBytes, "FileNameUtf8");
+            const std::size_t extensionsOffset = nameOffset + nameBytes;
+            if (extensionsOffset < body.size())
+            {
+                AddPayloadPreview(fields, body, extensionsOffset, body.size() - extensionsOffset, "OptionalExtensions");
+            }
+        }
+    }
+    AddDescriptorCrc(report, input);
 }
 
 void AddSegmentDescriptorFields(DumpReport& report,
     const std::span<const std::byte> input)
 {
-    auto& fields = report.fields;
-    AddU64Field(fields, input, 0, "SessionTag");
-    AddU64Field(fields, input, 8, "SegmentOrdinal");
-    AddU64Field(fields, input, 16, "RawOffset");
-    AddU64Field(fields, input, 24, "RawSize");
-    AddU64Field(fields, input, 32, "EncodedSize");
-    AddU8Field(fields, input, 40, "CompressionCodec");
-    AddU8Field(fields, input, 41, "OuterFecMode");
-    AddU32Field(fields, input, 42, "OuterBlockBytes");
-    AddDigestField(fields, input, 46, "RawDigest");
-    AddDigestField(fields, input, 78, "EncodedDigest");
-    if (input.size() >= 142)
+    const auto body = AddDescriptorPrefix(report, input, pbprotocol::kSegmentDescriptorHeaderBytes);
+    if (body.empty())
     {
-        AddDigestField(fields, input, 110, "WirehairProfile");
+        return;
     }
+    auto& fields = report.fields;
+    AddU64Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorSessionTagOffset, "SessionTag");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorOrdinalOffset, "SegmentOrdinal");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorRawOffsetOffset, "RawOffset");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorRawSizeOffset, "RawSize");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorEncodedSizeOffset, "EncodedSize");
+    AddU8Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorCompressionCodecOffset, "CompressionCodec");
+    AddU8Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorOuterFecModeOffset, "OuterFecMode");
+    AddRawField(fields, body, pbprotocol::kFormalWireSegmentDescriptorReservedOffset,
+        pbprotocol::kFormalWireSegmentDescriptorReservedBytes, "Reserved");
+    AddU32Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorOuterBlockBytesOffset, "OuterBlockBytes");
+    AddDigestField(fields, body, pbprotocol::kFormalWireSegmentDescriptorRawDigestOffset, "RawDigest");
+    AddDigestField(fields, body, pbprotocol::kFormalWireSegmentDescriptorEncodedDigestOffset, "EncodedDigest");
+    AddU64Field(fields, body, pbprotocol::kFormalWireSegmentDescriptorFlagsOffset, "Flags");
+    if (body.size() > pbprotocol::kFormalWireSegmentDescriptorOuterFecModeOffset &&
+        body[pbprotocol::kFormalWireSegmentDescriptorOuterFecModeOffset] ==
+            static_cast<std::byte>(pbprotocol::OuterFecMode::WirehairV2))
+    {
+        AddRawField(fields, body, pbprotocol::kFormalWireSegmentDescriptorWirehairProfileOffset,
+            pbprotocol::kFormalWireSegmentDescriptorWirehairProfileBytes, "WirehairProfile");
+    }
+    AddDescriptorCrc(report, input);
 }
 
 void AddFinalManifestFields(DumpReport& report,
     const std::span<const std::byte> input)
 {
+    const auto body = AddDescriptorPrefix(report, input, pbprotocol::kFinalManifestHeaderBytes);
+    if (body.empty())
+    {
+        return;
+    }
     auto& fields = report.fields;
-    AddRawField(fields, input, 0, 16, "SessionId");
-    AddU64Field(fields, input, 16, "FileSize");
-    AddU64Field(fields, input, 24, "SegmentCount");
-    AddDigestField(fields, input, 32, "WholeFileDigest");
-    AddU8Field(fields, input, 64, "DigestAlgorithm");
+    AddRawField(fields, body, pbprotocol::kFormalWireFinalManifestSessionIdOffset,
+        pbprotocol::kFormalWireFinalManifestSessionIdBytes, "SessionId");
+    AddU64Field(fields, body, pbprotocol::kFormalWireFinalManifestOriginalFileSizeOffset, "FileSize");
+    AddU64Field(fields, body, pbprotocol::kFormalWireFinalManifestSegmentCountOffset, "SegmentCount");
+    AddDigestField(fields, body, pbprotocol::kFormalWireFinalManifestWholeFileDigestOffset, "WholeFileDigest");
+    AddU8Field(fields, body, pbprotocol::kFormalWireFinalManifestDigestAlgorithmOffset, "DigestAlgorithm");
+    AddRawField(fields, body, pbprotocol::kFormalWireFinalManifestReservedOffset,
+        pbprotocol::kFormalWireFinalManifestReservedBytes, "Reserved");
+    AddDescriptorCrc(report, input);
 }
 
 void AddTransportFields(DumpReport& report,
@@ -523,7 +610,7 @@ void BuildFailureDiagnostic(DumpReport& report,
         report.hasDiagnostic = true;
         report.diagnosticSpace = "context";
         report.diagnosticOffset = 0;
-        report.diagnosticExpected = "37-byte-session-descriptor";
+        report.diagnosticExpected = "formal-schema-1-session-descriptor";
         report.diagnosticActual = contextWasProvided ? "invalid" : "missing";
         return;
     }
@@ -1024,6 +1111,16 @@ std::string ProtocolErrorCodeName(
         return "UnknownSegment";
     case pbprotocol::ProtocolErrorCode::OverlappingSpans:
         return "OverlappingSpans";
+    case pbprotocol::ProtocolErrorCode::ResumeRecordConflict:
+        return "ResumeRecordConflict";
+    case pbprotocol::ProtocolErrorCode::ResumeStateIoFailure:
+        return "ResumeStateIoFailure";
+    case pbprotocol::ProtocolErrorCode::SegmentRecoveryIncomplete:
+        return "SegmentRecoveryIncomplete";
+    case pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema:
+        return "UnsupportedDescriptorSchema";
+    case pbprotocol::ProtocolErrorCode::InvalidFileName:
+        return "InvalidFileName";
     }
     return "Unknown(" +
         std::to_string(static_cast<int>(

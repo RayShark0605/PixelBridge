@@ -1,6 +1,6 @@
 # G20：本地 Release Gate 进度与回归修复
 
-> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 已完成一次完整 Release CTest，定位离线 Replay 的 worker 栈溢出和独立的 shader 初始化超时，并进行最小修复；仍有历史工具适配、capture/demod 失败和实屏验收条件待处理。本文不把部分通过写成最终产品认证。
+> **状态：进行中，不能关闭 G20，也不能进入 G21。** 2026-09-04 已完成一次完整 Release CTest，修复离线 Replay 的 worker 栈溢出和独立的 shader 初始化开销；后续又关闭五项 Golden/ProtocolDump 工具失败。仍有 application/capture/demod 回归、两项 ASan deadline 失败和实屏验收条件待处理。本文不把部分通过写成最终产品认证。
 
 ## 1. 前置与本轮边界
 
@@ -28,11 +28,11 @@ ctest --test-dir build-unified-release -C Release --output-on-failure --parallel
 | PBCapturePipelineTests | 两个 LF4 case 的 60 秒 Await 失败 | 未定因；不能仅凭组合条件推断是没结果还是 lease 未退休 |
 | PBDemodD3D11Tests | 180 秒外层 timeout | 待分阶段诊断，不增加时间上限 |
 | PBRemoteVisualGpuParityTests | 300 秒外层 timeout | 另发现旧 `[.gpu-parity]` 过滤命中 Unified G12 用例，重复运行已独立注册的 corpus；尚未修正 |
-| PBGoldenVectorTests | 旧 descriptor/control/fragment 期望冲突 | 历史 fixture 重算器与正式 Schema 1 未分层，待修复 |
-| PBGoldenVectorCheck | 8 个旧 pin 与重算不符 | 文件与旧 pin 一致，重算却调用新正式 serializer；禁止重新 pin |
-| PBGoldenVectorCheckTests | 同上 8 项导致 summary 失败 | 与 Golden 根因同组 |
-| PBProtocolDumpTests | 字段偏移、错误名与旧变异位置不符 | 工具仍使用旧 descriptor offsets；待适配正式 schema |
-| PBVectorGenIntegration | Golden 重算与旧 pin 不符 | 与 Golden 根因同组 |
+| PBGoldenVectorTests | 旧 descriptor/control/fragment 期望冲突 | 第 7 节分层修复后定向通过，14 cases / 57,902 assertions |
+| PBGoldenVectorCheck | 8 个旧 pin 与重算不符 | 第 7 节恢复历史重算后通过；没有修改文件或 pin |
+| PBGoldenVectorCheckTests | 同上 8 项导致 summary 失败 | 第 7 节定向通过，7 cases / 120 assertions |
+| PBProtocolDumpTests | 字段偏移、错误名与旧变异位置不符 | 第 7 节正式 schema 适配后通过，8 cases / 2,380 assertions |
+| PBVectorGenIntegration | Golden 重算与旧 pin 不符 | 第 7 节定向通过，重新生成/重放/冲突拒绝均保留 |
 
 正式 `PBProtocolTests`、`PBUnifiedVisualGpuParityTests`（159.08 秒）、`PBUnifiedVisualHardwareSmokeTests`（25.17 秒）及两项 Qt offscreen GUI smoke 已通过；不能把这些局部成功扩大为 full CTest 或 native Gate 通过。GUI smoke 已包含在 full CTest，不再重复。
 
@@ -40,7 +40,7 @@ ctest --test-dir build-unified-release -C Release --output-on-failure --parallel
 
 `PROTOCOL_1_DESCRIPTOR_SCHEMA.md` 第 9 节规定旧 37/110/142/65-byte descriptor 是 Phase-0 历史 fixture，正式 parser 只承诺 `UnsupportedDescriptorSchema`。本次旧 67-byte Control 的重算结果变为 115 bytes，BLAKE3 恰好等于 G01 manifest 的正式 accepted ControlSessionDescriptor；这是工具混用了两代合同，不是修改旧文件的理由。
 
-下一步应保持旧 `.bin`/pin/函数签名不变，给历史重算器使用明确的 private legacy byte source；正式成功解析/往返继续由正式 corpus 证明。Dump 的字段表与测试变异位置需按正式 offset 更新，不允许启用猜测式旧布局兼容解析。
+第 7 节按此边界完成修复：保持旧 `.bin`/pin/函数签名不变，历史重算器使用明确的 private legacy byte source；正式成功解析/往返继续由正式 corpus 证明。Dump 的字段表与测试变异位置按正式 offset 更新，没有启用猜测式旧布局兼容解析。
 
 ## 3. 已定位的生产离线 Replay 栈溢出
 
@@ -180,4 +180,63 @@ native 1/15/60 Hz、0.75x/fractional/letterbox、2.0x、低于阈值暂停恢复
 
 `build-unified-asan/g20/` 保留 configure/build/imports、四组窄范围通过结果、第一轮 `replay-stack.txt` 的符号化 ASan stack-overflow、第二轮 `build-worker-owners.*` 和 shader 修改后的 `build-phase-loop.*`。
 
-**下一目标仍是继续 G20，不是 G21**：先完成剩余回归的窄定位/修复和定向复验，并等待实屏 2.0x 决策。禁止重复 full CTest、静默更改旧 Golden 或放宽门禁来关闭目标。当前 build 嵌入父提交 `8c7cab5`，不声称提交后包身份复验。
+**下一目标仍是继续 G20，不是 G21**：先完成剩余回归的窄定位/修复和定向复验，并等待实屏 2.0x 决策。禁止重复 full CTest、静默更改旧 Golden 或放宽门禁来关闭目标。本节首轮 build 嵌入当时的父提交 `8c7cab5`，不声称提交后包身份复验。
+
+## 7. 后续定向闭环：Golden / ProtocolDump（2026-09-04）
+
+### 前置与原因确认
+
+从栈/shader 修复提交 `e5f7d9d5e677cf25c514ff1f2d633e891401c592` 继续，重新检查 AGENTS、G20 前置/退出和 Git 状态。G19 仍为 ancestor，原 12 个 source seals 按 G19 提交内容复验，候选 worker 与报告 SHA-256 匹配。没有因后续 runtime 的合法修复而要求旧 G19 source seal 匹配当前 HEAD，也没有重跑大文件 harness。
+
+修复前现有 `PBProtocolDump.exe` 的实际行为确认两处独立问题：
+
+1. G01 的 85-byte 正式 Session 返回 `Success`，但仍把 offset 0/2 当 ProtocolMajor/Minor、offset 4 当 SessionId、offset 20 当 FileSize；例如打印 `FileSize=0f0e0d0c0b0a0908`，而真实文件大小是 offset 36 的 64。
+2. 将同一 Session 的 `payload.bin` 改为 `a.bin` 并同步 length/CRC，得到合法的 79-byte context；同一个正式 DirectRepeat Segment 在旧 CLI 下 exit 2，错误要求 context 必须恰好 85 bytes。该尺寸只是常用 fixture，不是 schema 的变长上限。
+
+原 EXE SHA-256 为 `26068530fca4f5208dbf7db08a4a756042d22ecf69d9275711f0b61821d15615`。旧 Golden 重算失败的原因仍是第 2 节已确认的新 serializer/旧 pin 混用，不是 fixture 损坏。
+
+### 最小修改
+
+- `PBGoldenVector` 仅给四个历史 payload generator 增加显式 LE byte source；原函数签名、37/110/142/65-byte 内容及全部 pin 保持不变，Control/Fragment envelope 继续复用原 serializer。生产 Descriptor codec 没有改动，也没有新增旧布局解析入口。
+- Golden 测试分开证明历史 bytes/精确拒绝与正式值的 serialize/parse round-trip。正式 accepted/rejected corpus 和 manifest 不变，不以删除失败断言或 re-pin 达到绿灯。
+- Dump 使用正式 schema offset 常量显示 prefix、fixed fields、filename/TLV、Wirehair profile、inner CRC。字段体限制在声明的 CRC 边界内；截断、非法 total 或尾随字节不会被当成 variable field/profile。失败仍来自权威 parser，不让观察到的 CRC 结果替代实际错误分支。
+- CLI 在 allocation 前使用 1,300-byte context 上限，74-byte 最小 envelope 下限后再交正式 parser；不再强制 85 bytes。补齐五个已存在的错误枚举名称，未改变 CLI 参数、exit 0/1/2 分类或公共函数签名。
+- 新增唯一 79-byte CLI fixture `tests/tools/fixtures/formal-session-short-name.bin`，由 G01 Session 仅修改 filename/两个 length/CRC 得到，SHA-256 `aa3cfd41fb5dbf91eabd21c8046316ae8151462e3cd00bd922bb5ca2d28931da`。它是工具回归输入，不是替换或重新 pin 正式 Golden。
+
+### 最小验证与结果
+
+```powershell
+cmake -S . -B build-unified-release -DPB_BUILD_PROCESS_RECOVERY_HARNESS=OFF
+cmake --build build-unified-release --config Release --target `
+  PBGoldenVectorTests PBGoldenVectorCheck PBGoldenVectorCheckTests PBVectorGen `
+  PBFrameInspector PBProtocolDumpTests PBProtocolDump PBProtocolTests --parallel 6
+ctest --test-dir build-unified-release -C Release `
+  -R '^(PBGoldenVectorTests|PBGoldenVectorCheck|PBGoldenVectorCheckTests|PBVectorGenIntegration|PBProtocolDumpTests|PBProtocolDumpExit\..*)$' `
+  --output-on-failure --parallel 1 --output-junit g20-tools/ctest-tools.xml
+& .\build-unified-release\tests\PBProtocol\Release\PBProtocolTests.exe `
+  '[pbprotocol][descriptor][corpus],[pbprotocol][descriptor][golden][manifest],[pbprotocol][descriptor][wire][formal][roundtrip]' `
+  --reporter console --durations yes --rng-seed 20092026
+```
+
+构建成功，无 compiler warning/error；样式整理后仅增量重建 `PBProtocolDumpTests`，成功。实际由 hidden child supervisor 执行，运行前只做 CTest `-N` 和 Catch2 `--list-tests`，确认恰好 10 项 / 8 cases。首个 supervisor 将 Catch2 的 `8 matching test cases` 错认成 `8 test cases`，在任何测试执行前停止；保留该 preflight 失败记录，核对输出后只恢复尚未运行的测试，没有重跑已通过组。
+
+| 检查 | 本轮结果 |
+| --- | --- |
+| 定向 CTest | **10/10 passed，exit 0，2.50 秒**；包含原五个失败项与五个 CLI 检查，不是 full CTest |
+| PBGoldenVectorTests | 14 cases / 57,902 assertions，全通过 |
+| PBGoldenVectorCheck | 25 个 file-backed + 5 个 frame pin，`total=30 failures=0` |
+| PBGoldenVectorCheckTests | 7 cases / 120 assertions，全通过，保留负样本归因 |
+| PBProtocolDumpTests | 8 cases / 2,380 assertions，全通过；覆盖正式 literal offsets、变长 name/TLV、所有 0..89 截断、CRC/total/name 错误、旧 schema 拒绝与 DirectRepeat 假尾部 |
+| CLI | 原有成功/解析失败/usage 分类通过；79-byte context exit 0 且 `context=checked`；37-byte legacy context exit 2 |
+| PBVectorGenIntegration | 相同输入重放 byte-identical，生成内容匹配原文件，冲突不覆盖；PBRW/PNG recovery 通过 |
+| 正式 Protocol contract | **8 cases / 300 assertions，exit 0**；包括正式 manifest pin、独立 accepted/overflow/legacy corpus、正式 round-trip |
+
+同输入再次运行两个修复前 CLI probe：正式 Session 现在准确输出 offset 36 的 `FileSize=0000000000000040` 与匹配的 inner CRC；79-byte context 由 exit 2 变为 exit 0 / `status=checked`。当前 Dump EXE SHA-256 为 `8451b577daf3b489eae11060785b20d031f70b7899abb41aa2389b63a75e4863`。
+
+### 证据保护与剩余边界
+
+`build-unified-release/g20-tools/` 保留 `preflight.json`、`dump-before.json` / `*-before.txt`、`build-tools-summary.json`、两次 selector 计划、`ctest-tools.xml` / `ctest-tools-last-test.log`、`formal-contract.stdout.log`、`verify-tools-resumed-summary.json`、`dump-after.json` / `*-after.txt` 与 `postflight.json`。后者固定 9 个代码/fixture source SHA-256、8 个 EXE SHA-256 和工作 diff；其 source base 是 `e5f7d9d` 加本轮修改，不冒充提交后的包身份认证。旧 generator integration scratch 在确认实际绝对路径位于本 build tree 后先备份到 `pre-tools-vector-gen-integration/`，再允许运行已有清理逻辑。
+
+原 Golden、正式/历史 corpus、formal manifest 与 registry 共 **220 个受保护文件逐个 SHA-256 未变**。`docs/PHASE1_GATE_REPORT.md` 仍为原 SHA-256、untracked 且未暂存。唯一 full CTest 的 206/215 历史结果和各中间红灯不覆盖、不改写为全绿。
+
+本轮没有 full CTest、ASan、GPU、Qt GUI、native、远程、20 GiB 或提交后安装包复验。五项工具失败已定向关闭；application/capture/demod 其他失败、两个 ASan 15 秒 deadline 和 DISPLAY2 2.0x 条件仍待处理。下一目标仍为 **继续 G20**。

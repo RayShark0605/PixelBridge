@@ -5,8 +5,8 @@
 // lockstep with the rest of the repository:
 //   * bootstrap / control / fragment bytes equal the inline golden arrays
 //     pinned by tests/PBModulation (themselves reused from PBProtocol);
-//   * descriptor payloads equal Serialize/Parse round-trips of the frozen
-//     descriptor values (tests/PBProtocol helpers);
+//   * Phase-0 descriptor bytes remain frozen and are rejected by formal
+//     admission; current descriptor values round-trip separately;
 //   * every LDPC profile independently starts at bit zero of the frozen
 //     SplitMix64(0xC0FFEE) stream (the PBInnerFec convention);
 //   * the interleave / raster / transport vectors are reproducible from
@@ -240,14 +240,15 @@ TEST_CASE("GoldenVector: the committed control-sessiondescriptor record",
     REQUIRE(stored == 0xA13883C8U);
     REQUIRE(static_cast<std::uint32_t>(
         pbprotocol::ComputeCrc32c(span.first(63))) == stored);
-    // The 37-byte payload is the frozen session descriptor (file size 117,
-    // segment count 1) and parses under the default local policy.
+    // The envelope is still valid; the historical payload must not acquire
+    // formal Schema 1 acceptance just because the serializers were upgraded.
     const auto session = pbprotocol::ParseSessionDescriptor(
         parsed.Value().payload,
         pbprotocol::GetDefaultReceiverResourcePolicy());
-    REQUIRE(static_cast<bool>(session));
-    REQUIRE(session.Value().originalFileSize == 117);
-    REQUIRE(session.Value().segmentCount == 1);
+    REQUIRE_FALSE(session);
+    REQUIRE(session.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+    REQUIRE(ReadU64Le(parsed.Value().payload, 20) == 117);
+    REQUIRE(ReadU64Le(parsed.Value().payload, 28) == 1);
 }
 
 TEST_CASE("GoldenVector: the legacy G1 control record is untouched",
@@ -275,9 +276,10 @@ TEST_CASE("GoldenVector: the legacy G1 control record is untouched",
     const auto session = pbprotocol::ParseSessionDescriptor(
         parsed.Value().payload,
         pbprotocol::GetDefaultReceiverResourcePolicy());
-    REQUIRE(static_cast<bool>(session));
-    REQUIRE(session.Value().originalFileSize == 117);
-    REQUIRE(session.Value().segmentCount == 1);
+    REQUIRE_FALSE(session);
+    REQUIRE(session.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+    REQUIRE(ReadU64Le(parsed.Value().payload, 20) == 117);
+    REQUIRE(ReadU64Le(parsed.Value().payload, 28) == 1);
     // The empty and maximum control records are self-consistent envelopes.
     const auto empty = GenerateControlEmpty();
     REQUIRE(empty.size() == 30);
@@ -340,15 +342,56 @@ TEST_CASE("GoldenVector: control fragments reassemble the legacy record",
     REQUIRE(GenerateControlFragment(0) == fragmentZeroFirst);
 }
 
-TEST_CASE("GoldenVector: descriptor payloads are Serialize/Parse "
-    "round-trips of the frozen values", "[goldenvector][descriptor]")
+TEST_CASE("GoldenVector: Phase-0 descriptor bytes do not gain formal Schema 1 acceptance",
+    "[goldenvector][descriptor][legacy]")
 {
     const auto sessionPayload = GenerateSessionDescriptorPayload();
     REQUIRE(sessionPayload.size() == 37);
-    const auto session = pbprotocol::ParseSessionDescriptor(
-        std::span<const std::byte>(sessionPayload),
-        pbprotocol::GetDefaultReceiverResourcePolicy());
+    REQUIRE(ReadU64Le(sessionPayload, 20) == 117);
+    REQUIRE(ReadU64Le(sessionPayload, 28) == 1);
+    const auto policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    const auto rejectedSession = pbprotocol::ParseSessionDescriptor(sessionPayload, policy);
+    REQUIRE_FALSE(rejectedSession);
+    REQUIRE(rejectedSession.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+
+    const auto sessionValue = pbprotocol::test::MakeSessionDescriptor(117, 1);
+    const auto directPayload = GenerateDirectRepeatSegmentPayload();
+    REQUIRE(directPayload.size() == 110);
+    REQUIRE(ReadU64Le(directPayload, 24) == 117);
+    REQUIRE(ReadU64Le(directPayload, 32) == 117);
+    const auto rejectedDirect = pbprotocol::ParseSegmentDescriptor(directPayload, sessionValue, policy);
+    REQUIRE_FALSE(rejectedDirect);
+    REQUIRE(rejectedDirect.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+
+    const auto wirehairSession = pbprotocol::test::MakeSessionDescriptor(200, 1);
+    const auto wirehairPayload = GenerateWirehairSegmentPayload();
+    REQUIRE(wirehairPayload.size() == 142);
+    REQUIRE(ReadU64Le(wirehairPayload, 24) == 200);
+    REQUIRE(ReadU64Le(wirehairPayload, 32) == 117);
+    const auto rejectedWirehair = pbprotocol::ParseSegmentDescriptor(wirehairPayload, wirehairSession, policy);
+    REQUIRE_FALSE(rejectedWirehair);
+    REQUIRE(rejectedWirehair.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+
+    const auto manifestPayload = GenerateFinalManifestPayload();
+    REQUIRE(manifestPayload.size() == 65);
+    REQUIRE(ReadU64Le(manifestPayload, 16) == 117);
+    REQUIRE(ReadU64Le(manifestPayload, 24) == 1);
+    const auto rejectedManifest = pbprotocol::ParseFinalManifest(manifestPayload, sessionValue, policy);
+    REQUIRE_FALSE(rejectedManifest);
+    REQUIRE(rejectedManifest.Error().code == pbprotocol::ProtocolErrorCode::UnsupportedDescriptorSchema);
+}
+
+TEST_CASE("GoldenVector: formal descriptor values round-trip independently of Phase-0 bytes",
+    "[goldenvector][descriptor][formal]")
+{
+    const auto expectedSession = pbprotocol::test::MakeSessionDescriptor(117, 1);
+    const auto sessionSize = pbprotocol::GetSerializedSize(expectedSession);
+    REQUIRE(sessionSize);
+    std::vector<std::byte> sessionPayload(sessionSize.Value());
+    REQUIRE(pbprotocol::SerializeSessionDescriptor(expectedSession, sessionPayload));
+    const auto session = pbprotocol::ParseSessionDescriptor(sessionPayload, pbprotocol::GetDefaultReceiverResourcePolicy());
     REQUIRE(static_cast<bool>(session));
+    REQUIRE(session.Value() == expectedSession);
     // Serialize the parsed descriptor back and compare byte-for-byte.
     const auto serializedSize = pbprotocol::GetSerializedSize(session.Value());
     REQUIRE(static_cast<bool>(serializedSize));
@@ -359,8 +402,6 @@ TEST_CASE("GoldenVector: descriptor payloads are Serialize/Parse "
 
     // DirectRepeat segment: ordinal 0, offset 0, raw/encoded size 117,
     // outerBlockBytes 16 and the existing 0x20..0x3f digests.
-    const auto directPayload = GenerateDirectRepeatSegmentPayload();
-    REQUIRE(directPayload.size() == 110);
     const pbprotocol::SessionDescriptor sessionValue = session.Value();
     const pbprotocol::SegmentDescriptor directSegment =
         pbprotocol::test::MakeDirectRepeatSegment(
@@ -370,17 +411,16 @@ TEST_CASE("GoldenVector: descriptor payloads are Serialize/Parse "
     REQUIRE(static_cast<bool>(pbprotocol::SerializeSegmentDescriptor(
         directSegment, sessionValue,
         std::span<std::byte>(directSerialized))));
-    REQUIRE(directSerialized == directPayload);
+    REQUIRE(directSerialized.size() == 132);
     const auto parsedDirect = pbprotocol::ParseSegmentDescriptor(
-        std::span<const std::byte>(directPayload), sessionValue,
+        std::span<const std::byte>(directSerialized), sessionValue,
         pbprotocol::GetDefaultReceiverResourcePolicy());
     REQUIRE(static_cast<bool>(parsedDirect));
+    REQUIRE(parsedDirect.Value() == directSegment);
 
     // WirehairV2 segment: ordinal 0, offset 0, raw size 200, encoded 117,
     // 16-byte blocks, digests 0x10/0x80, canonical 117x16 profile. Its
     // extent requires the independently frozen 200-byte Session context.
-    const auto wirehairPayload = GenerateWirehairSegmentPayload();
-    REQUIRE(wirehairPayload.size() == 142);
     const pbprotocol::SessionDescriptor wirehairSession =
         pbprotocol::test::MakeSessionDescriptor(200, 1);
     const pbprotocol::SegmentDescriptor wirehairSegment =
@@ -391,29 +431,29 @@ TEST_CASE("GoldenVector: descriptor payloads are Serialize/Parse "
     REQUIRE(static_cast<bool>(pbprotocol::SerializeSegmentDescriptor(
         wirehairSegment, wirehairSession,
         std::span<std::byte>(wirehairSerialized))));
-    REQUIRE(wirehairSerialized == wirehairPayload);
+    REQUIRE(wirehairSerialized.size() == 164);
     const auto parsedWirehair = pbprotocol::ParseSegmentDescriptor(
-        std::span<const std::byte>(wirehairPayload), wirehairSession,
+        std::span<const std::byte>(wirehairSerialized), wirehairSession,
         pbprotocol::GetDefaultReceiverResourcePolicy());
     REQUIRE(static_cast<bool>(parsedWirehair));
+    REQUIRE(parsedWirehair.Value() == wirehairSegment);
     REQUIRE(parsedWirehair.Value().wirehairV2SerializedProfile
             == wirehairSegment.wirehairV2SerializedProfile);
 
     // Final manifest: digest start 0xA0 (the helper builds exactly the
     // frozen 32-byte digest from that start byte).
-    const auto manifestPayload = GenerateFinalManifestPayload();
-    REQUIRE(manifestPayload.size() == 65);
     const pbprotocol::FinalManifest manifest =
         pbprotocol::test::MakeFinalManifest(sessionValue, 0xA0);
     std::vector<std::byte> manifestSerialized(
         pbprotocol::GetSerializedSize(manifest));
     REQUIRE(static_cast<bool>(pbprotocol::SerializeFinalManifest(
         manifest, sessionValue, std::span<std::byte>(manifestSerialized))));
-    REQUIRE(manifestSerialized == manifestPayload);
+    REQUIRE(manifestSerialized.size() == 84);
     const auto parsedManifest = pbprotocol::ParseFinalManifest(
-        std::span<const std::byte>(manifestPayload), sessionValue,
+        std::span<const std::byte>(manifestSerialized), sessionValue,
         pbprotocol::GetDefaultReceiverResourcePolicy());
     REQUIRE(static_cast<bool>(parsedManifest));
+    REQUIRE(parsedManifest.Value() == manifest);
 }
 
 TEST_CASE("GoldenVector: the canonical Wirehair descriptor equals the "

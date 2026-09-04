@@ -10,7 +10,7 @@
 //                              session-descriptor, segment-descriptor,
 //                              final-manifest, transport,
 //                              wirehair-descriptor, pbvm-manifest.
-//   --session-descriptor <f>   37-byte session-descriptor payload used as
+//   --session-descriptor <f>   Variable-length formal Schema 1 payload used as
 //                              the context for the control type-2/type-3
 //                              and standalone segment-descriptor /
 //                              final-manifest semantic cross-checks.
@@ -46,8 +46,6 @@ namespace {
 
 constexpr std::size_t kMaximumRecordBytes =
     pbprotocol::kTransportMaximumBlockBytes; // 65,571
-constexpr std::size_t kSessionDescriptorBytes =
-    pbprotocol::kSessionDescriptorPayloadBytes; // 37
 
 [[nodiscard]] bool IsValidTypeHint(const std::string& typeHint)
 {
@@ -73,7 +71,8 @@ constexpr std::size_t kSessionDescriptorBytes =
 }
 
 [[nodiscard]] bool ReadFileBytes(
-    const std::string& path, std::vector<std::byte>& outBytes)
+    const std::string& path, std::vector<std::byte>& outBytes,
+    const std::size_t maximumBytes = kMaximumRecordBytes)
 {
     std::ifstream stream(path, std::ios::binary);
     if (!stream)
@@ -86,7 +85,7 @@ constexpr std::size_t kSessionDescriptorBytes =
     {
         return false;
     }
-    if (static_cast<std::size_t>(size) > kMaximumRecordBytes)
+    if (static_cast<std::size_t>(size) > maximumBytes)
     {
         return false;
     }
@@ -166,11 +165,12 @@ int RunMain(const int argumentCount, char* arguments[])
     std::vector<std::byte> sessionBytes;
     if (!sessionDescriptorPath.empty())
     {
-        if (!ReadFileBytes(sessionDescriptorPath, sessionBytes) ||
-            sessionBytes.size() != kSessionDescriptorBytes)
+        if (!ReadFileBytes(sessionDescriptorPath, sessionBytes, pbprotocol::kMaximumDescriptorPayloadBytes) ||
+            sessionBytes.size() < pbprotocol::kMinimumSessionDescriptorPayloadBytes)
         {
-            std::cerr << "[error] session-descriptor file must hold exactly "
-                         << kSessionDescriptorBytes
+            std::cerr << "[error] session-descriptor file must hold between "
+                      << pbprotocol::kMinimumSessionDescriptorPayloadBytes << " and "
+                      << pbprotocol::kMaximumDescriptorPayloadBytes
                       << " bytes: " << sessionDescriptorPath << "\n";
             return 2;
         }

@@ -17,6 +17,7 @@ target_link_libraries(PBProtocolDumpTests
         PB::PBGoldenVector
         PB::PBModulation
         PB::PBProtocol)
+target_include_directories(PBProtocolDumpTests PRIVATE "${PROJECT_SOURCE_DIR}/tests/PBProtocol")
 
 PbAddUnitTest(PBFrameInspectorTests
     test_frame_inspector_core.cpp)
@@ -141,6 +142,32 @@ if(TARGET PBProtocolDump)
             -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
     set_tests_properties(PBProtocolDumpExit.UsageError PROPERTIES
         LABELS "tools;exit-codes"
+        TIMEOUT 30)
+
+    # Derived from G01 valid-session.bin: only filename payload.bin -> a.bin,
+    # name/total lengths and CRC change. The 79-byte context must not be
+    # rejected just because the common payload.bin fixture occupies 85 bytes.
+    add_test(
+        NAME PBProtocolDumpExit.VariableSessionContext
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBProtocolDump>
+            -DPB_EXPECTED_EXIT=0
+            "-DPB_TEST_ARGS_ENCODED=--type|segment-descriptor|--session-descriptor|${CMAKE_CURRENT_SOURCE_DIR}/fixtures/formal-session-short-name.bin|${PROJECT_SOURCE_DIR}/fuzz/corpus/descriptor-resource/valid-direct-segment.bin"
+            "-DPB_EXPECTED_OUTPUT_REGEX=[[]context[]] status=checked"
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBProtocolDumpExit.VariableSessionContext PROPERTIES
+        LABELS "tools;exit-codes;descriptor-schema"
+        TIMEOUT 30)
+
+    add_test(
+        NAME PBProtocolDumpExit.LegacySessionContext
+        COMMAND "${CMAKE_COMMAND}"
+            -DPB_TEST_EXECUTABLE=$<TARGET_FILE:PBProtocolDump>
+            -DPB_EXPECTED_EXIT=2
+            "-DPB_TEST_ARGS_ENCODED=--type|segment-descriptor|--session-descriptor|${PROJECT_SOURCE_DIR}/fuzz/corpus/descriptor-resource/legacy-phase0-session.bin|${PROJECT_SOURCE_DIR}/fuzz/corpus/descriptor-resource/valid-direct-segment.bin"
+            -P "${PROJECT_SOURCE_DIR}/tests/CMake/AssertProcessExit.cmake")
+    set_tests_properties(PBProtocolDumpExit.LegacySessionContext PROPERTIES
+        LABELS "tools;exit-codes;descriptor-schema"
         TIMEOUT 30)
 endif()
 

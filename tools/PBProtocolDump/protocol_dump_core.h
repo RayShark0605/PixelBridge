@@ -17,10 +17,11 @@
 //                       semantic cross-check (SessionTagMismatch and
 //                       manifest mismatches are failures)
 //   fragment            24..65,559-byte control fragment record
-//   session-descriptor  37-byte descriptor payload (no magic)
-//   segment-descriptor  110/142-byte descriptor payload (no magic;
+//   session-descriptor  74..1300-byte formal Schema 1 payload (no magic;
+//                       includes a bounded UTF-8 basename and optional TLVs)
+//   segment-descriptor  132/164-byte Schema 1 payload (no magic;
 //                       needs the session-descriptor context)
-//   final-manifest      65-byte manifest payload (no magic; needs the
+//   final-manifest      84-byte Schema 1 manifest payload (no magic; needs the
 //                       session-descriptor context)
 //   transport           36..65,571-byte Transport block (no magic;
 //                       header CRC + length self-consistency probe)
@@ -41,12 +42,12 @@
 //   empty span              -> semantic cross-check "skipped"; a type that
 //                              requires context remains unvalidated and the
 //                              CLI exits 1 with missing-context diagnostics
-//   37-byte valid descriptor -> context "checked"; a tag/manifest
+//   valid formal descriptor -> context "checked"; a tag/manifest
 //                              mismatch surfaces through the parse result
-//   37-byte invalid         -> context "invalid-session-descriptor" and
+//   invalid descriptor      -> context "invalid-session-descriptor" and
 //                              the semantic parse is skipped
 // The authoritative parse for context-dependent types uses
-// GetDefaultReceiverResourcePolicy() (the Phase-0 local receiver policy),
+// GetDefaultReceiverResourcePolicy() (the current local receiver policy),
 // so descriptors above that policy's resource limits report the policy
 // error code rather than being silently accepted.
 
@@ -136,7 +137,7 @@ struct DumpReport
     const std::uint64_t value, const std::size_t hexDigits);
 
 // Dumps one record. typeHint: "auto" or an explicit type name (an unknown
-// hint renders as unrecognized). sessionDescriptor: optional 37-byte
+// hint renders as unrecognized). sessionDescriptor: optional formal Schema 1
 // session descriptor payload used for the context-dependent semantic
 // cross-check (empty span == not provided).
 [[nodiscard]] DumpReport DumpRecord(

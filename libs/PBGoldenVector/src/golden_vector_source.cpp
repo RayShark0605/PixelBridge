@@ -195,17 +195,6 @@ void StoreUint64Le(
     return bytes;
 }
 
-[[nodiscard]] pbprotocol::SessionDescriptor MakeGoldenSessionDescriptor()
-    noexcept
-{
-    return pbprotocol::SessionDescriptor{
-        pbprotocol::GetProtocolVersion(),
-        MakeGoldenSessionId(),
-        117ULL,
-        1ULL,
-        pbprotocol::DigestAlgorithm::Blake3_256};
-}
-
 [[nodiscard]] std::array<std::byte, 32> MakeWirehairCanonicalProfile()
     noexcept
 {
@@ -228,6 +217,30 @@ void StoreUint64Le(
     StoreUint32Le(std::span<std::byte>(profile), 24, 16U);
     // seedAttempt = 0; bytes 29..31 reserved zero.
     return profile;
+}
+
+// Phase-0 fixtures are historical byte contracts, not formal Schema 1
+// descriptors. Reconstruct their frozen layout without calling the current
+// descriptor serializer or reading the files that this source must verify.
+[[nodiscard]] std::vector<std::byte> MakeLegacySegmentPayload(const bool wirehair)
+{
+    std::vector<std::byte> buffer(wirehair ? 142 : 110);
+    StoreUint64Le(buffer, 0, kGoldenSessionTag);
+    StoreUint64Le(buffer, 24, wirehair ? 200ULL : 117ULL);
+    StoreUint64Le(buffer, 32, 117ULL);
+    buffer[40] = Byte(wirehair ? 2 : 1); // Zstandard / RAW.
+    buffer[41] = Byte(wirehair ? 1 : 2); // Wirehair V2 / DirectRepeat.
+    StoreUint32Le(buffer, 42, 16U);
+    const auto rawDigest = MakeDigestBytes(wirehair ? 0x10 : 0x20);
+    const auto encodedDigest = MakeDigestBytes(wirehair ? 0x80 : 0x20);
+    std::copy(rawDigest.begin(), rawDigest.end(), buffer.begin() + 46);
+    std::copy(encodedDigest.begin(), encodedDigest.end(), buffer.begin() + 78);
+    if (wirehair)
+    {
+        const auto profile = MakeWirehairCanonicalProfile();
+        std::copy(profile.begin(), profile.end(), buffer.begin() + 110);
+    }
+    return buffer;
 }
 
 [[nodiscard]] pbprotocol::TransportBlockHeader MakeTransportHeader(
@@ -432,91 +445,37 @@ std::vector<std::byte> GenerateControlFragment(
 
 std::vector<std::byte> GenerateSessionDescriptorPayload()
 {
-    std::vector<std::byte> buffer(
-        pbprotocol::kSessionDescriptorPayloadBytes);
-    const auto status = pbprotocol::SerializeSessionDescriptor(
-        MakeGoldenSessionDescriptor(), std::span<std::byte>(buffer));
-    if (!status)
-    {
-        FailGeneration("SessionDescriptor serialization failed");
-    }
+    std::vector<std::byte> buffer(37);
+    StoreUint16Le(buffer, 0, 1U);
+    StoreUint16Le(buffer, 2, 0U);
+    const auto sessionId = MakeGoldenSessionId();
+    std::copy(sessionId.bytes.begin(), sessionId.bytes.end(), buffer.begin() + 4);
+    StoreUint64Le(buffer, 20, 117ULL);
+    StoreUint64Le(buffer, 28, 1ULL);
+    buffer[36] = Byte(1); // BLAKE3-256 in the historical layout.
     return buffer;
 }
 
 std::vector<std::byte> GenerateDirectRepeatSegmentPayload()
 {
-    const auto sessionDescriptor = MakeGoldenSessionDescriptor();
-    const pbprotocol::SegmentDescriptor segment{
-        pbprotocol::DeriveSessionTag(sessionDescriptor.sessionId),
-        0ULL,
-        0ULL,
-        117ULL,
-        117ULL,
-        pbprotocol::CompressionCodec::Raw,
-        pbprotocol::OuterFecMode::DirectRepeat,
-        16U,
-        pbprotocol::RawDigest{MakeDigestBytes(0x20)},
-        pbprotocol::EncodedDigest{MakeDigestBytes(0x20)},
-        std::nullopt};
-    std::vector<std::byte> buffer(
-        pbprotocol::kDirectRepeatSegmentDescriptorPayloadBytes);
-    const auto status = pbprotocol::SerializeSegmentDescriptor(
-        segment, sessionDescriptor, std::span<std::byte>(buffer));
-    if (!status)
-    {
-        FailGeneration("DirectRepeat SegmentDescriptor serialization failed");
-    }
-    return buffer;
+    return MakeLegacySegmentPayload(false);
 }
 
 std::vector<std::byte> GenerateWirehairSegmentPayload()
 {
-    // The frozen Wirehair Segment Golden was authored against a one-segment
-    // 200-byte Session; its SessionId remains the same as the other descriptor
-    // vectors, so the derived SessionTag is byte-identical.
-    auto sessionDescriptor = MakeGoldenSessionDescriptor();
-    sessionDescriptor.originalFileSize = 200ULL;
-    const pbprotocol::SegmentDescriptor segment{
-        pbprotocol::DeriveSessionTag(sessionDescriptor.sessionId),
-        0ULL,
-        0ULL,
-        200ULL,
-        117ULL,
-        pbprotocol::CompressionCodec::Zstandard,
-        pbprotocol::OuterFecMode::WirehairV2,
-        16U,
-        pbprotocol::RawDigest{MakeDigestBytes(0x10)},
-        pbprotocol::EncodedDigest{MakeDigestBytes(0x80)},
-        pbprotocol::WirehairV2SerializedProfile{
-            MakeWirehairCanonicalProfile()}};
-    std::vector<std::byte> buffer(
-        pbprotocol::kWirehairV2SegmentDescriptorPayloadBytes);
-    const auto status = pbprotocol::SerializeSegmentDescriptor(
-        segment, sessionDescriptor, std::span<std::byte>(buffer));
-    if (!status)
-    {
-        FailGeneration("Wirehair SegmentDescriptor serialization failed");
-    }
-    return buffer;
+    return MakeLegacySegmentPayload(true);
 }
 
 std::vector<std::byte> GenerateFinalManifestPayload()
 {
-    const auto sessionDescriptor = MakeGoldenSessionDescriptor();
-    const pbprotocol::FinalManifest manifest{
-        sessionDescriptor.sessionId,
-        117ULL,
-        1ULL,
-        pbprotocol::WholeFileDigest{MakeDigestBytes(0xA0)},
-        pbprotocol::DigestAlgorithm::Blake3_256};
-    std::vector<std::byte> buffer(
-        pbprotocol::kFinalManifestPayloadBytes);
-    const auto status = pbprotocol::SerializeFinalManifest(
-        manifest, sessionDescriptor, std::span<std::byte>(buffer));
-    if (!status)
-    {
-        FailGeneration("FinalManifest serialization failed");
-    }
+    std::vector<std::byte> buffer(65);
+    const auto sessionId = MakeGoldenSessionId();
+    std::copy(sessionId.bytes.begin(), sessionId.bytes.end(), buffer.begin());
+    StoreUint64Le(buffer, 16, 117ULL);
+    StoreUint64Le(buffer, 24, 1ULL);
+    const auto wholeFileDigest = MakeDigestBytes(0xA0);
+    std::copy(wholeFileDigest.begin(), wholeFileDigest.end(), buffer.begin() + 32);
+    buffer[64] = Byte(1);
     return buffer;
 }
 

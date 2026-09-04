@@ -99,7 +99,8 @@ inline constexpr std::size_t kG1TransportPayloadBytes =
 [[nodiscard]] std::vector<std::byte> GenerateBootstrapRecord();
 
 // 67-byte frozen PB-Control-1 SessionDescriptor record (golden type 1
-// record, 37-byte payload).
+// record, 37-byte Phase-0 payload). The envelope remains valid, but formal
+// descriptor admission rejects this historical payload.
 [[nodiscard]] std::vector<std::byte> GenerateControlSessionDescriptor();
 
 // 30-byte minimal PB-Control-1 record: type 1, zero sequence and tag,
@@ -115,8 +116,11 @@ inline constexpr std::size_t kG1TransportPayloadBytes =
 [[nodiscard]] std::vector<std::byte> GenerateControlFragment(
     const std::uint16_t fragmentIndex);
 
+// The four descriptor generators below reproduce only historical Phase-0
+// bytes. Formal Schema 1 rejects them with UnsupportedDescriptorSchema;
+// formal accepted Golden coverage lives in PBProtocol's G01 corpus/manifest.
 // 37-byte SessionDescriptor payload (file size 117, segment count 1),
-// byte-identical to the existing PBProtocol and PBModulation Golden arrays.
+// byte-identical to the historical PBProtocol and PBModulation Golden arrays.
 [[nodiscard]] std::vector<std::byte> GenerateSessionDescriptorPayload();
 
 // 110-byte DirectRepeat SegmentDescriptor payload (ordinal 0, offset 0,

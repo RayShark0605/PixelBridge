@@ -6,6 +6,21 @@
 
 ## 1. 成熟度与依赖边界
 
+### 正式 Schema 1 与历史 byte source 的分层（G20）
+
+`PROTOCOL_1_DESCRIPTOR_SCHEMA.md` 第 9 节已冻结两代合同的边界：本文的
+37/110/142/65-byte Descriptor 及其 67-byte Control 容器继续保留原文件、size 和
+BLAKE3 pin，不能重新解释为正式 Schema 1。`PBGoldenVector` 的四个历史 payload
+generator 使用私有、显式 little-endian 重算，不读取待校验的文件，也不调用正式
+Descriptor serializer；Control/Fragment 的既有 envelope serializer 仍照常使用。
+
+正式 parser 对这些历史 Descriptor 必须返回 `UnsupportedDescriptorSchema`；
+Control envelope 可解析不等于它的旧 Descriptor payload 获得正式 admission。
+当前正式 accepted bytes、精确重序列化与历史拒绝由
+`tests/PBProtocol/formal_descriptor_golden_manifest.txt` 及 G01 corpus 绑定。
+`PBProtocolDump` 按正式 prefix/offset/声明的 CRC 边界显示字段，支持变长 Session
+context，不提供基于旧长度的兼容猜测。以下 Phase-0 成熟度记录不替代 Unified 路线。
+
 - PB-Bootstrap-1、PB-Control-1、Control Fragment、既有 descriptor Golden 与
   Wirehair V2 canonical descriptor 延续仓库已有字节契约。
 - `TransportBlockHeader` 的 32-byte header、`36 + PayloadBytes` block layout 以及
@@ -24,9 +39,9 @@
 | 类别 | 文件/内存 pin | 权威校验与独立证据 |
 | --- | --- | --- |
 | Bootstrap | `bootstrap-record.bin`，44B | 既有 inline byte array、CRC-32C、authoritative parser、精确重序列化 |
-| Control | 67B SessionDescriptor、30B empty、65,536B maximum | 既有 inline array；67B CRC 固定 `0xA13883C8`；长度/CRC/语义边界 |
+| Control | 67B SessionDescriptor、30B empty、65,536B maximum | 既有 inline array；67B CRC 固定 `0xA13883C8`；envelope 长度/CRC 边界及旧 Descriptor payload 的正式拒绝 |
 | Fragment | 48/48/43B 三片 | 既有 arrays；CRC 固定 `0x9DCD5402 / 0xF3FF94D8 / 0x40106F66` |
-| Descriptor | 37B Session、110B DirectRepeat、142B Wirehair Segment、65B FinalManifest | 与 `test_descriptor_codec.cpp` 的独立精确数组双向一致；Session 使用 fileSize=117、segmentCount=1 |
+| Descriptor | 37B Session、110B DirectRepeat、142B Wirehair Segment、65B FinalManifest | 历史文件/size/BLAKE3 pin 与私有 LE 重算一致；正式 parser 拒绝；Session 使用 fileSize=117、segmentCount=1 |
 | Wirehair | 32B `WHV2` canonical descriptor | 独立手工 LE layout、profile/dimension validator；不序列化第三方 C++ 类型 |
 | Transport | 36B minimum、1,350B canonical、65,571B maximum | test-only 手工 LE builder、bitwise CRC-32C、独立 SplitMix64 与生产 serializer 逐字节比较；header CRC 仅覆盖 `[0,28)` |
 | LDPC | Robust/Balanced/Fast 各 2,025B | 三个 profile 各自从 `SplitMix64(0xC0FFEE)` bit 0 开始；既有独立 H·c=0/矩阵/pin 测试 |
