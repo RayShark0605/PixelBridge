@@ -1,7 +1,7 @@
 # G18：256 MiB 真实进程终止与恢复
 
 > 状态：实现与定向证据已整理，但 **G18 未通过最终验收，不得进入 G19**（2026-09-04）。
-> 基线为 `805dd2a5a8b8f937f56287e4e030ff6f50860074`（G17）。实现与失败证据已提交为 `8965f3d`。用户已同意扩大原子替换失败的定向诊断范围；已定位失败调用，并复现受控占用机制，但历史自然失败的根因/占用者仍未确认，未实施生产修复。新增诊断见第 8 节。
+> 基线为 `805dd2a5a8b8f937f56287e4e030ff6f50860074`（G17）。实现与失败证据已提交为 `8965f3d`，定向诊断记录为 `33f6bfa`。用户追加要求多次复测：三次 encoder-prescan 均通过，但随后 lease-persisted 再现同一 Win32 5，累计四次自然失败；不能按“复测均未发生”的条件忽略。未实施生产修复。定向诊断见第 8 节，最新复测见第 9 节。
 > 本目标的无像素 headless 验收与仅测试构建启用的最小插桩已由用户明确批准。
 
 ## 1. 范围与证据边界
@@ -257,3 +257,63 @@ g18ExitCriteriaMet = false
 当前会话不是管理员，`fltmc filters` 一次返回 access denied；PATH 未发现 Procmon 命令，这不代表整台机器未安装。未启动全局 ETW/Procmon，也未干扰左右屏幕或输入。普通权限下的双写探针已有带/不带 debugger 的有界对照，不继续无证据重复完整 campaign。等待捕获自然失败的必要证据后再确定最小修复；不采用未经归因的 sleep/retry、合并持久化事务或更换 rename API。
 
 本轮只构建并执行上述诊断探针、两次有效诊断闭环及一次 main 前脚本失败，复核既有输出/状态；没有重跑 ASan、full CTest、GPU/GUI/native Gate、remote、20 GiB 或发布包验证。生产代码、公共接口、wire/FEC、持久化格式和 fail-closed 行为保持 `8965f3d` 不变。下一目标仍是 **关闭 G18 的自然原子替换故障及最终候选验收**，不是 G19。
+
+## 9. 用户要求的追加复测：三次通过后再次自然失败（2026-09-04）
+
+用户明确要求再测几次，如果这几次均不再发生，则忽略该失败。本轮先执行三次独立的 `encoder-prescan` 终止/重启，再补齐 G18 既定的其他终止点。前三次成功后，后续第一项 `lease-persisted` 就再次发生相同错误；因此本轮并非全部未复现，不能把该自然失败改判为通过，也不应用条件性忽略。
+
+### 9.1 固定 producer 与结果
+
+- 已重新读取 AGENTS/G18 范围，核对 G17 祖先提交及 telemetry/report/cache 通过日志；不重跑 G17。
+- 四次均使用原最终失败快照 `g18-worker-final-snapshot/PBProcessRecoveryWorker.exe`，SHA-256 `3d7d269fe726281422c7cc2d6d7e7a9265d619e7b7241f11cfb2314940639682`。
+- `original-candidate-comparison.json` 重新核对了原失败 provenance 中十个源码/脚本文件的 SHA-256，均与当前文件一致；没有重建成另一 worker 后再声称复现或消失。
+- 同一 256 MiB CSPRNG fixture，每次独立 create-only 状态目录；串行、无 debugger、无人为文件占用、无额外 sleep/retry、不使用管理员采集。实际终止进程均有 exit 218 和匹配的 durable marker，随后创建新的恢复进程。
+
+以下路径均相对于 `build-unified-release/g18-user-recheck-20260904/`：
+
+| 路径 / 测试 | 重启 PID | 重启结果 | 重启到发布或失败 / 秒 | combined 峰值 / MiB |
+| --- | ---: | --- | ---: | ---: |
+| `attempt-1/r1-encoder-prescan` | 14240 | exit 0，32 段发布与 final reopen | 55.079 | 85.35 |
+| `attempt-2/r1-encoder-prescan` | 46124 | exit 0，32 段发布与 final reopen | 57.859 | 85.41 |
+| `attempt-3/r1-encoder-prescan` | 55092 | exit 0，32 段发布与 final reopen | 59.531 | 84.99 |
+| `final-other-points/r1-lease-persisted` | 42612 | **exit 1，atomic replace Win32 5** | 20.406 | 85.37（截至失败前的观测值） |
+
+前三次输出均为 268,435,456 bytes，外部 SHA-256/BLAKE3 与第 7.1 节源一致。预扫描终止时尚无 durable Session，重启未误采用未完成的预扫描；每次恢复后的 7,895 个 FrameSequence、39,595 个预留 repair ID 均独立检查唯一性及 lease 边界。这里 39,595 是交付前台账，实际交付 repair count 为 39,588：最后一帧预留 8 个、交付 1 个后整文件完成，余下 7 个没有交付，仍视为已消耗的身份，不能混用两个计数口径。
+
+### 9.2 本次失败现场
+
+```text
+G18 Carousel position persistence failed: session state atomic replace failed; win32=5
+```
+
+- 故障发生在真实 `lease-persisted` 终止后的恢复阶段，恢复进程 `selectedCrashPoint` 为空，不是计划中的 exit 218 注入。
+- Decoder journal 验证长度、framing 和 CRC 后，确认已 durable completed 的 ordinal 为 0..11，共 12 段；没有最终 `fixture.bin`、没有成功 `result.json`、没有整组 PASS 报告。`.part` / `.resume` 保留，未尝试额外恢复。
+- Encoder `runtime.state` 为有效 PBER v2、236 bytes、generation **28**、pass 0、ordinal **11**、frame lease end 8,192；下一段 ordinal 12 的 repair lease 8,192 已保存，ordinal 13..31 仍为 0。仍是 repair lease 成功后的位置保存失败。
+- runtime SHA-256：`a47893392ad6b3fad7cd36ac5a09a08bbbed03324767216941db7bde9b4609e0`。与先前约 47–51 秒、27–29 个 durable Segment 后的失败相比，这次在 20.406 秒、12 段、generation 28 就发生，不能再将问题限定于接近文件末尾或 generation 61。
+- 事后观察器仍是 `moveError=5`、target/tmp attributes 32、DELETE-access 0/0、Restart Manager 成功但 PID 列表为空；根因/瞬时占用者仍未确认，不能凭空归因给安全软件。
+- 失败前已经生成的部分身份台账通过检查：同一 Session，重启跳过 frame lease 4,096；重启前 1 帧、重启后 2,976 帧，FrameSequence 和 repair ID 没有交叉复用。这不是最终文件成功证据。
+
+原始状态保持不变，另外用 create-only 文件封印 `frozen-failure-metadata/encoder-runtime.state`、`decoder.resume` 和 journal 检查摘要，避免将来继续恢复后丢失原故障快照。旧的三次失败、三次新增成功和本次失败分别保留，不覆盖旧汇总。
+
+### 9.3 命令、核对与停止边界
+
+前三次使用现有 harness 默认单次运行，分别传入 `attempt-1`、`attempt-2`、`attempt-3`，没有修改仅允许 `--repeat 1/2` 的脚本：
+
+```powershell
+$root = '<repo>\build-unified-release\g18-user-recheck-20260904'
+foreach ($attempt in 1..3) {
+    & <python> tests\PBApplication\run_process_recovery.py `
+      --worker build-unified-release\g18-worker-final-snapshot\PBProcessRecoveryWorker.exe `
+      --run-directory "$root\attempt-$attempt" `
+      --fixture-manifest build-unified-release\g18-first-flow\fixture-manifest.json --points encoder-prescan
+    if ($LASTEXITCODE -ne 0) { break }
+}
+```
+
+随后实际执行的命令为 `--run-directory "$root\final-other-points" --points lease-persisted encoder-mid-segment decoder-active part-flushed completed-record whole-digest before-rename after-rename --negative-checks`，worker/fixture 与上面相同。**首项失败后立即退出，另外 7 个终止点及 5 项负例均未开始**。若再次复现，应新建目录并只指定 `--points lease-persisted`，而不是继续推进本次原始失败状态。
+
+`collect_recheck.py` 只复核已结束进程的日志、三份最终输出、身份台账和失败状态，并生成 `recheck-summary.json`。首次离线汇总错误地要求“预留 repair ID 数 = 实际交付数”，已依据先写整帧台账、最终帧内完成即停止的实际代码和 7 个未交付 ID 修正口径；原 collector 和断言记录另存，未修改生产代码、harness 或任何测试结果，也没有为此再跑 worker。
+
+汇总明确 `naturalFailureReproduced=true`、`allRechecksPassed=false`、`ignoreFailureConditionMetForWholeRecheck=false`、`g18ExitCriteriaMet=false`、`productionFixApplied=false`。本轮结论是**故障仍会发生，但不是每次发生；具体根因仍未知**，不是从这四次不同注入点的样本估计发生概率。
+
+没有继续试到通过，没有实现重试/延时/API 替换，没有启动 Procmon/ETW，也没有运行 ASan、full CTest、GPU/GUI/native/remote、20 GiB 或发布包验证。本轮源码提交仅更新 G18 文档与状态，`docs/PHASE1_GATE_REPORT.md` 未改动、未暂存。下一目标仍是 G18 的自然拒绝来源诊断与最小修复决策，G19 未开始。

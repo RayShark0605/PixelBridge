@@ -744,7 +744,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G18 — 256 MiB 与进程级故障注入
 
-**状态：** 实现与定向证据已整理，但未通过最终验收（2026-09-04），不得进入 G19。实现/失败证据已提交 `8965f3d`；用户已批准扩大定向诊断范围。已定位 Segment 切换时 repair lease 保存成功、随后 Carousel position 原子替换失败，并通过受控目标读取句柄复现 native `STATUS_ACCESS_DENIED` → `win32=5`。三次自然故障的瞬时占用者/拒绝来源仍未确认；不据受控复现擅自修复。
+**状态：** 实现与定向证据已整理，但未通过最终验收（2026-09-04），不得进入 G19。实现/失败证据已提交 `8965f3d`，定向诊断记录为 `33f6bfa`。用户追加要求多次复测、若均未复现则忽略：三次 encoder-prescan 均通过，但随后 lease-persisted 在恢复 20.406 秒、12 个 durable Segment 后再次出现相同 `win32=5`，累计四次自然失败，条件性忽略不适用。已定位 repair lease 保存成功、随后 Carousel position 原子替换失败；受控目标读取句柄也能产生该错误，但自然故障的拒绝来源仍未确认，未擅自修复。
 **前置：** G17。
 **目的：** 用真实 256 MiB CSPRNG/RAW 文件关闭双端恢复 crash windows，是第一次集中可靠性检查。
 **已确认的证据边界（2026-09-04）：** 用户明确同意无像素 headless 闭环与仅专用测试构建启用的最小终止插桩。复用真实 Unified 调度、正式 Control/Transport、Outer FEC、Receiver、journal 和 PBStorage；不把结果声明为视觉链认证。修改限于专用 harness、测试 CMake、既有 application runtime/journal 与 PBStorage 的测试条件编译观察点和本目标文档；普通产品 target 不启用插桩，不改变生产公共接口、wire、FEC 或持久化格式。证据与重放入口见 `UNIFIED_PROCESS_RESTART_RECOVERY.md`。
@@ -775,6 +775,7 @@ ctest --test-dir build-unified-release -C Release `
 **退出：** 所有注入点从干净基线可复现；失败路径无错误发布；报告包含峰值内存与恢复时间。
 **当前证据：** 真实 268,435,456-byte CSPRNG、32 个 RAW Segment；九个历史点重启到发布 0.703–54.859 秒，另有 27 段 I/O 失败状态的 8.125 秒恢复。五个负例通过。定向 ASan 基线 Protocol 22/2,261、Receiver 13/243、Storage 9/132、Application 6/348；实现后仅重建并重跑受影响 Storage 9/132、Application 6/348，均通过。最终预扫描候选在第 29 个 durable Segment 后仍因原子替换 error 5 失败，原来的 27/28 段同类失败日志均保留。观察器未能确定原因，不改生产重试/持久化语义。详细分阶段结果、失败复现命令、binary hashes 和未执行门禁见 `UNIFIED_PROCESS_RESTART_RECOVERY.md`；本地汇总 `build-unified-release/g18-incomplete-checkpoint.json` 明确退出条件未满足。
 **扩围诊断证据：** 两次 CDB 诊断闭环成功但未复现自然故障，时序可能被扰动；已有输出外部长度/SHA-256/BLAKE3 一致。链接原 state-store 的小探针证明允许 `FILE_SHARE_DELETE` 的目标读句柄也可使 rename 返回 error 5，而事后 DELETE-access 仍为 0；不得用该 probe 排除瞬时占用。无占用的 128 组双写在带/不带 debugger 下均成功。`build-unified-release/g18-atomic-diagnosis/diagnosis.json` 区分受控机制与未确认自然根因，生产代码未改。下一步需用户配合仅夹具路径的有界管理员文件 I/O 跟踪，不继续盲跑 campaign；详细命令、原始日志局限与证据边界见恢复报告第 8 节。
+**追加复测证据：** 与原失败同一 worker（SHA-256 `3d7d269fe726281422c7cc2d6d7e7a9265d619e7b7241f11cfb2314940639682`）及相同源码，独立干净目录、串行、无 debugger。三次 encoder-prescan 重启到发布 55.079 / 57.859 / 59.531 秒，32 段与 final reopen、外部长度/SHA-256/BLAKE3 均通过。随后的 lease-persisted 恢复 PID 42612 exit 1；有效 runtime generation 28 / ordinal 11，下一段 repair lease 已落盘，没有错误发布。首个失败后停止，余下 7 个终止点和 5 项负例未开始；未重跑 ASan/full CTest/实屏。新汇总 `build-unified-release/g18-user-recheck-20260904/recheck-summary.json` 与冻结的 Encoder/journal 元数据保留此次自然复现，不覆盖历史记录；详情见恢复报告第 9 节。
 **提交建议：** `test(resume): prove process restart recovery at 256 mib`
 
 ## G19 — 20 GiB+ headless 大文件能力
