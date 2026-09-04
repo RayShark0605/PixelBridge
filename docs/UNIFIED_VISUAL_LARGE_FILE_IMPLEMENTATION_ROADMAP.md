@@ -693,24 +693,28 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G16 — Decoder Qt 产品收敛
 
+**状态：** 已完成（2026-09-04）。
 **前置：** G05、G12、G14。
 **目的：** 最终基础界面只保留输出目录、ROI、开始/停止，并展示真实恢复状态。
 
 **主要范围：** `apps/PixelBridgeDecoder`、application controller/model、GUI tests/docs。
+**本次确认的必要扩展（2026-09-04）：** 用户同意接通真实 Unified 接收链路，而不只修改 Qt 页面；扩展既有 `apps/common/local_desktop_runtime.*` 的 mixed-result admission、产品配置与 OS/GPU 测试 seam，复用 G05 Receiver/确认/存储和 G11/G12/G14 解调/捕获策略及定向无显示验证，不改变 wire/Profile/FEC/Golden，不实现 G17。
 **非目标：** 不在 Qt 中解码或写文件；默认测试不启动 ROI selector。
 
 **实现清单：**
 
-- [ ] 基础页：输出目录、选择 ROI、开始/停止。
-- [ ] 点击“选择 ROI”才调用现有 PMv2 selector；物理坐标仅作为高级后备。
-- [ ] 删除 FPS、Profile、显式 backend 选择；显示实际 backend/fallback 原因但不可调。
-- [ ] 首个正式 Unified Session 锁定；显示文件名、大小、verified Segment/bytes、goodput、ETA、resume 状态、geometry。
-- [ ] `AwaitingLargeOutputConfirmation` 用一次明确对话框；拒绝不创建大文件。
-- [ ] Waiting/Stalled 不清空状态、不自动停止；Stop 只停止捕获并保留可恢复状态。
-- [ ] Completed 显示路径、长度、BLAKE3、打开目录，不弹另存为。
+- [x] 基础页：输出目录、选择 ROI、开始/停止。
+- [x] 点击“选择 ROI”才调用现有 PMv2 selector；物理坐标仅作为高级后备。
+- [x] 删除 FPS、Profile、显式 backend 选择；显示实际 backend/fallback 原因但不可调。
+- [x] 首个正式 Unified Session 锁定；显示文件名、大小、verified Segment/bytes、goodput、ETA、resume 状态、geometry。
+- [x] `AwaitingLargeOutputConfirmation` 用一次明确对话框；拒绝不创建大文件。
+- [x] Waiting/Stalled 不清空状态、不自动停止；Stop 只停止捕获并保留可恢复状态。
+- [x] Completed 显示路径、长度、BLAKE3、打开目录，不弹另存为。
 
 **最小验证：** build `PixelBridgeDecoder`、controller/model tests、`PixelBridgeDecoderGuiSmoke`；不启动真实 selector/capture。
-**退出：** GUI 所有状态来自 runtime；无假 Profile/backend/FPS 选项；恢复/完成路径可解释。
+**验证结果（2026-09-04）：** 已核对 G05 `5d51d0e`、G12 `3044f23`、G14 `38911d6` 为 HEAD 祖先，对应原日志存在且通过。Release 定向构建 `PixelBridgeDecoder`、`PBApplicationTests` 成功；`PBApplicationTests [application][g16] --rng-seed 16092026` 5 cases / 170 assertions、G05/decoder-state/G14 窄兼容组 17 / 296、offscreen `PixelBridgeDecoderGuiSmoke` 1/1（0.85 s）通过。0-byte、20,000-byte RAW/Wirehair、8 MiB+1-byte 双 Segment fixture 从真实 Encoder raster 经 CPU oracle 进入同一 Decoder runtime，验证最终 reopen/完整字节/BLAKE3、确认/拒绝、pending Session 锁定、乱序 compact array、同帧/Outer identity 冲突、Stop/resume，以及 WGC 初始化失败和首 Segment 验证后的 AccessLost→DXGI。GUI smoke 覆盖显式 ROI 动作、确认、停止、恢复、发布、打开目录动作与新目录拒绝，替换 OS/GPU/原生对话框边界，不启动真实 selector/capture。最大 ROI 准入曾因 DXGI 高位深 source scratch 超过旧 ROI 预算失败，已按精确 reservation 修正为 Unified 384 MiB ROI cap，demod 保持 256 MiB（实际预算 216,628,760 bytes），没有提高 smoke 超时或弱化协议断言。
+**退出：** 已满足。GUI 的真实状态来自同一个 runtime，产品显式固定 Unified/Auto，无假 Profile/backend/FPS 选项；mixed Control/Transport 在固定 31-slot 单帧缓存中校验并按 Session/其他 Control/Transport 顺序交给原 Receiver，不合成跨帧像素或旁路 payload。沿用 G05 的 run/request 确认身份，新 run 重新确认；确认前不创建恢复文件或 admission Outer payload。Waiting/Stalled 和 G14 backend 切换保留已验证 Segment，普通 Stop/关闭保留 journal。Completed 只在原 Storage 完成 WholeFileDigest、安全发布、最终 reopen 后显示路径/长度/BLAKE3，打开目录须显式操作。历史 Decoder CLI 默认不变；未改 wire/Profile/FEC、run_report/telemetry schema 或 G17。未执行全量 CTest、真实 ROI/capture、GPU parity 重跑、native/双屏/远控门禁、进程 crash、20 GiB、安装包或提交后嵌入身份复验，非显示证据不冒充实屏认证。
+**产物：** 产品 GUI/controller 位于 `apps/PixelBridgeDecoder`；接收接线、策略与服务 seam 位于 `apps/common/local_desktop_runtime.*`，三个必要状态字段位于 `application_model.h`；无显示 fixture 与验证位于 `tests/PBApplication/test_unified_decoder_workflow.cpp`、`unified_decoder_test_support.h`。详细合同、命令和初始失败修正见 `docs/UNIFIED_DECODER_WORKFLOW.md`。本地最终日志为 `build-unified-release/g16-build-final.txt`、`build-unified-release/tests/PBApplication/g16-workflow-final.txt`、`g16-controller-compatibility.txt` 和 `build-unified-release/g16-gui-smoke-final.txt`。
 **提交建议：** `feat(gui): converge automatic decoder workflow`
 
 ## G17 — Telemetry、报告与状态真实性

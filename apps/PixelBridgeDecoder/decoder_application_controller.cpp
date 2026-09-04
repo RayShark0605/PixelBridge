@@ -13,7 +13,8 @@ namespace
 
 } // namespace
 
-DecoderApplicationController::DecoderApplicationController(QObject* parent) : QObject(parent)
+DecoderApplicationController::DecoderApplicationController(QObject* parent, pbapp::DecoderRuntimeServices services) :
+    QObject(parent), runtime_(std::move(services))
 {
     pollTimer_.setInterval(100);
     pollTimer_.setTimerType(Qt::CoarseTimer);
@@ -46,6 +47,14 @@ void DecoderApplicationController::RequestStop() noexcept
     }
 }
 
+QString DecoderApplicationController::ResolveLargeOutputConfirmation(const std::uint64_t runGeneration,
+    const std::uint64_t requestId, const bool accepted)
+{
+    const pbapp::RuntimeStatus status = runtime_.ResolveLargeOutputConfirmation(runGeneration, requestId, accepted);
+    PollSnapshot();
+    return status ? QString() : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
+}
+
 pbapp::DecoderSnapshot DecoderApplicationController::GetSnapshot() const
 {
     return runtime_.GetSnapshot();
@@ -60,6 +69,10 @@ void DecoderApplicationController::PollSnapshot()
 {
     const pbapp::DecoderSnapshot current = runtime_.GetSnapshot();
     const bool changed = current.runGeneration != lastSnapshot_.runGeneration || current.state != lastSnapshot_.state ||
+        current.largeOutputConfirmationRequestId != lastSnapshot_.largeOutputConfirmationRequestId ||
+        current.largeOutputConfirmationState != lastSnapshot_.largeOutputConfirmationState ||
+        current.verifiedSegmentCount != lastSnapshot_.verifiedSegmentCount || current.resumeStateGeneration != lastSnapshot_.resumeStateGeneration ||
+        current.captureStallActive != lastSnapshot_.captureStallActive || current.visualStallActive != lastSnapshot_.visualStallActive ||
         current.captureDeliveredFrames != lastSnapshot_.captureDeliveredFrames ||
         current.actualBackend != lastSnapshot_.actualBackend || current.backendReason != lastSnapshot_.backendReason ||
         current.verifiedRawBytes != lastSnapshot_.verifiedRawBytes || current.captureEpoch != lastSnapshot_.captureEpoch ||

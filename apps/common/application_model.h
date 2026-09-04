@@ -337,6 +337,9 @@ struct DecoderSnapshot
     std::uint32_t codedDataBytesPerFrame = 0;
     std::uint32_t codewordsPerFrame = 0;
     bool descriptorKnown = false;
+    std::string originalFileNameUtf8;
+    std::uint64_t verifiedSegmentCount = 0;
+    std::string geometryStatus = "WaitingForBootstrap";
     std::uint64_t originalFileBytes = 0;
     LargeOutputConfirmationState largeOutputConfirmationState = LargeOutputConfirmationState::NotRequired;
     std::uint64_t largeOutputConfirmationRequestId = 0;
