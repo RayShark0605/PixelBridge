@@ -58,6 +58,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -830,6 +831,19 @@ struct ProfileBinding
         direct->dataBytes, direct->codewords};
 }
 
+[[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeReceiverResourcePolicyForVisualProfile(
+    const VisualProfile profile) noexcept
+{
+    pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    if (profile == VisualProfile::UnifiedLc4)
+    {
+        // The legacy policy remains four. Unified temporal striping requires
+        // the Decoder to retain its complete bounded eight-Segment window.
+        policy.maxActiveOuterFecDecoders = senderUnifiedActiveSegmentWindowSize;
+    }
+    return policy;
+}
+
 struct TransferDescription
 {
     pbprotocol::SessionDescriptor session;
@@ -1122,6 +1136,17 @@ using FrameKind = SenderScheduledFrameKind;
 
 class SenderFrameBuilder
 {
+    struct UnifiedSegmentState
+    {
+        std::uint64_t segmentOrdinal = 0;
+        std::vector<std::byte> encodedBytes;
+        std::unique_ptr<pbouterfec::WirehairV2Encoder> wirehair;
+        std::unique_ptr<pbouterfec::DirectRepeatEncoder> directRepeat;
+        std::uint32_t blockCount = 0;
+        SenderUnifiedCarouselScheduler scheduler;
+        bool repairIdsFinalized = false;
+    };
+
 public:
     using SegmentLoader = std::function<std::vector<std::byte>(std::uint64_t)>;
     using RepairIdStartProvider = std::function<std::uint32_t(std::uint64_t, std::uint32_t)>;
@@ -1142,13 +1167,21 @@ public:
             "Profile or Control repetition count is empty");
         Require(description_.segments.empty() ? currentSegmentOrdinal_ == 0 :
             currentSegmentOrdinal_ < description_.segments.size(), "initial Carousel Segment ordinal is out of bounds");
-        if (!description_.segments.empty())
+        if (profile_.profile == VisualProfile::UnifiedLc4 && !description_.segments.empty())
+        {
+            InitializeUnifiedSegmentWindow();
+        }
+        else if (!description_.segments.empty())
         {
             currentEncodedBytes_ = LoadSegmentBytes(currentSegmentOrdinal_);
             UpdateResidentSegmentHighWater();
             PreloadNextSegment();
+            InitializeCurrentSegment();
         }
-        InitializeCurrentSegment();
+        else
+        {
+            InitializeCurrentSegment();
+        }
     }
 
     [[nodiscard]] FrameKind GetCurrentKind() const
@@ -1192,7 +1225,8 @@ public:
         const auto bootstrap = MakeBootstrap(frameSequence);
         if (profile_.profile == VisualProfile::UnifiedLc4)
         {
-            Require(static_cast<bool>(unifiedScheduler_.PrepareFrameAt(logicalTickOrdinal, nowNanoseconds,
+            SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
+            Require(static_cast<bool>(unifiedScheduler.PrepareFrameAt(logicalTickOrdinal, nowNanoseconds,
                 unifiedFrame_)), "Unified mixed-slot frame preparation failed");
             std::array<pbmodulation::UnifiedFrameSlotInput, senderUnifiedCodewordSlotCount> slots{};
             generatedPayloadBytesInFrame_ = 0;
@@ -1283,37 +1317,52 @@ public:
 
     void Advance()
     {
-        const bool unified = profile_.profile == VisualProfile::UnifiedLc4;
-        if (unified)
+        if (profile_.profile == VisualProfile::UnifiedLc4)
         {
-            Require(static_cast<bool>(unifiedScheduler_.CommitPreparedFrame()), "Unified frame commit failed");
-            cyclePosition_ = static_cast<std::uint32_t>(unifiedScheduler_.GetSnapshot().committedFrameCount);
-            if (!unifiedScheduler_.IsComplete())
-            {
-                return;
-            }
+            SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
+            Require(static_cast<bool>(unifiedScheduler.CommitPreparedFrame()), "Unified frame commit failed");
             if (description_.segments.empty())
             {
+                Require(unifiedScheduler.GetSnapshot().committedFrameCount <=
+                    (std::numeric_limits<std::uint32_t>::max)(), "Unified zero-byte frame count exceeds telemetry bounds");
+                cyclePosition_ = static_cast<std::uint32_t>(unifiedScheduler.GetSnapshot().committedFrameCount);
+                if (!unifiedScheduler.IsComplete())
+                {
+                    return;
+                }
                 Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
                 carouselPass_++;
                 InitializeCurrentSegment();
                 return;
             }
+            Require(cyclePosition_ != (std::numeric_limits<std::uint32_t>::max)(),
+                "Unified Segment-window frame count exceeds telemetry bounds");
+            cyclePosition_++;
+            UnifiedSegmentState& currentState = GetCurrentUnifiedSegmentState();
+            if (unifiedScheduler.IsComplete())
+            {
+                FinalizeUnifiedSegmentRound(currentState);
+            }
+            if (SelectNextUnifiedSegment())
+            {
+                return;
+            }
+            AdvanceUnifiedSegmentWindow();
+            return;
         }
         if (!description_.segments.empty())
         {
-            const SenderCarouselSchedulerStatus advanceStatus = unified ? SenderCarouselSchedulerStatus{} : roundScheduler_.Advance();
+            const SenderCarouselSchedulerStatus advanceStatus = roundScheduler_.Advance();
             Require(static_cast<bool>(advanceStatus), std::string("Sender Carousel scheduler advance failed: ") +
                 GetSenderCarouselSchedulerErrorName(advanceStatus.code));
-            if (!unified && !roundScheduler_.IsComplete())
+            if (!roundScheduler_.IsComplete())
             {
                 cyclePosition_ = static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
                 return;
             }
             if (wirehair_)
             {
-                const std::uint64_t repairIdsUsed = unified ? unifiedScheduler_.GetSnapshot().repairEquationCount :
-                    roundScheduler_.GetSnapshot().repairEquationCount;
+                const std::uint64_t repairIdsUsed = roundScheduler_.GetSnapshot().repairEquationCount;
                 const auto nextRepairId = pbprotocol::CheckedAddUint64(nextRepairIds_[currentSegmentOrdinal_],
                     repairIdsUsed);
                 RequireResult(nextRepairId, "Wirehair repair ID high-water overflow");
@@ -1391,6 +1440,17 @@ public:
     {
         return currentSegmentOrdinal_;
     }
+    [[nodiscard]] std::uint64_t GetCheckpointSegmentOrdinal() const noexcept
+    {
+        return profile_.profile == VisualProfile::UnifiedLc4 && !description_.segments.empty() ?
+            unifiedWindowStartSegmentOrdinal_ : currentSegmentOrdinal_;
+    }
+    [[nodiscard]] std::uint32_t GetActiveSegmentWindowSize() const noexcept
+    {
+        return profile_.profile == VisualProfile::UnifiedLc4 ?
+            static_cast<std::uint32_t>(unifiedSegmentStates_.size()) :
+            static_cast<std::uint32_t>(!description_.segments.empty());
+    }
     [[nodiscard]] SenderCarouselRoundSnapshot GetCurrentRoundSnapshot() const noexcept
     {
         return roundScheduler_.GetSnapshot();
@@ -1411,8 +1471,11 @@ public:
         const std::span<std::byte> output)
     {
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
-        const auto encoded = wirehair_ ? wirehair_->EncodeBlock(blockId, output) :
-            directRepeat_->EncodeBlock(blockId, output);
+        const UnifiedSegmentState* const unifiedState = profile_.profile == VisualProfile::UnifiedLc4 &&
+            !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
+        const auto encoded = unifiedState ? (unifiedState->wirehair ?
+            unifiedState->wirehair->EncodeBlock(blockId, output) : unifiedState->directRepeat->EncodeBlock(blockId, output)) :
+            wirehair_ ? wirehair_->EncodeBlock(blockId, output) : directRepeat_->EncodeBlock(blockId, output);
         RequireResult(encoded, "Outer FEC headless block encoding failed");
         return encoded.Value();
     }
@@ -1421,8 +1484,12 @@ public:
     {
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
         std::fill(outerPayload_.begin(), outerPayload_.end(), std::byte{0});
-        const auto encoded = wirehair_ ? wirehair_->EncodeBlock(blockId, outerPayload_) :
-            directRepeat_->EncodeBlock(blockId, outerPayload_);
+        const UnifiedSegmentState* const unifiedState = profile_.profile == VisualProfile::UnifiedLc4 &&
+            !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
+        const auto encoded = unifiedState ? (unifiedState->wirehair ?
+            unifiedState->wirehair->EncodeBlock(blockId, outerPayload_) :
+            unifiedState->directRepeat->EncodeBlock(blockId, outerPayload_)) :
+            wirehair_ ? wirehair_->EncodeBlock(blockId, outerPayload_) : directRepeat_->EncodeBlock(blockId, outerPayload_);
         RequireResult(encoded, "Outer FEC block encoding failed");
         Require(encoded.Value() > 0 && encoded.Value() <= outerPayload_.size() &&
             encoded.Value() <= (std::numeric_limits<std::uint16_t>::max)(),
@@ -1442,16 +1509,14 @@ public:
     {
         return peakResidentEncodedSegmentCount_;
     }
-#ifdef PB_PROCESS_FAULT_TESTS
     [[nodiscard]] const SenderUnifiedScheduledFrame& PrepareHeadlessFrame(const std::uint64_t tick)
     {
         Require(profile_.profile == VisualProfile::UnifiedLc4 && tick < 1000000,
-            "G18 headless tick or profile is outside the test contract");
-        Require(static_cast<bool>(unifiedScheduler_.PrepareFrameAt(tick, tick * 1000000000ULL / 15ULL,
-            unifiedFrame_)), "G18 Unified frame preparation failed");
+            "Unified headless tick or profile is outside the test contract");
+        Require(static_cast<bool>(GetCurrentUnifiedScheduler().PrepareFrameAt(tick, tick * 1000000000ULL / 15ULL,
+            unifiedFrame_)), "Unified headless frame preparation failed");
         return unifiedFrame_;
     }
-#endif
     [[nodiscard]] std::uint64_t GetPeakResidentEncodedSegmentBytes() const noexcept
     {
         return peakResidentEncodedSegmentBytes_;
@@ -1523,12 +1588,169 @@ private:
 
     void UpdateResidentSegmentHighWater() noexcept
     {
-        const std::uint32_t residentCount = static_cast<std::uint32_t>(!currentEncodedBytes_.empty()) +
+        std::uint32_t residentCount = static_cast<std::uint32_t>(!currentEncodedBytes_.empty()) +
             static_cast<std::uint32_t>(!nextEncodedBytes_.empty());
-        const std::uint64_t residentBytes = static_cast<std::uint64_t>(currentEncodedBytes_.size()) +
+        std::uint64_t residentBytes = static_cast<std::uint64_t>(currentEncodedBytes_.size()) +
             static_cast<std::uint64_t>(nextEncodedBytes_.size());
+        if (profile_.profile == VisualProfile::UnifiedLc4)
+        {
+            residentCount = static_cast<std::uint32_t>(unifiedSegmentStates_.size());
+            residentBytes = 0;
+            for (const UnifiedSegmentState& state : unifiedSegmentStates_)
+            {
+                residentBytes = pbprotocol::SaturatingAddUnsigned(residentBytes,
+                    static_cast<std::uint64_t>(state.encodedBytes.size()));
+            }
+        }
         peakResidentEncodedSegmentCount_ = (std::max)(peakResidentEncodedSegmentCount_, residentCount);
         peakResidentEncodedSegmentBytes_ = (std::max)(peakResidentEncodedSegmentBytes_, residentBytes);
+    }
+
+    [[nodiscard]] UnifiedSegmentState& GetCurrentUnifiedSegmentState()
+    {
+        Require(!unifiedSegmentStates_.empty() && unifiedCurrentStateIndex_ < unifiedSegmentStates_.size(),
+            "Unified active Segment state is unavailable");
+        return unifiedSegmentStates_[unifiedCurrentStateIndex_];
+    }
+
+    [[nodiscard]] const UnifiedSegmentState& GetCurrentUnifiedSegmentState() const
+    {
+        Require(!unifiedSegmentStates_.empty() && unifiedCurrentStateIndex_ < unifiedSegmentStates_.size(),
+            "Unified active Segment state is unavailable");
+        return unifiedSegmentStates_[unifiedCurrentStateIndex_];
+    }
+
+    [[nodiscard]] SenderUnifiedCarouselScheduler& GetCurrentUnifiedScheduler()
+    {
+        return description_.segments.empty() ? unifiedScheduler_ : GetCurrentUnifiedSegmentState().scheduler;
+    }
+
+    [[nodiscard]] UnifiedSegmentState BuildUnifiedSegmentState(const std::uint64_t segmentOrdinal)
+    {
+        Require(segmentOrdinal < description_.segments.size(), "Unified Segment-window ordinal is out of bounds");
+        UnifiedSegmentState state;
+        state.segmentOrdinal = segmentOrdinal;
+        state.encodedBytes = LoadSegmentBytes(segmentOrdinal);
+        const pbprotocol::SegmentDescriptor& descriptor = description_.segments[segmentOrdinal].descriptor;
+        if (descriptor.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
+        {
+            auto encoder = pbouterfec::WirehairV2Encoder::Recreate(state.encodedBytes, descriptor);
+            RequireResult(encoder, "Unified Wirehair V2 sender recreation failed");
+            state.wirehair = std::make_unique<pbouterfec::WirehairV2Encoder>(std::move(encoder).Value());
+            state.blockCount = state.wirehair->GetBlockCount();
+            if (nextRepairIds_[segmentOrdinal] == 0)
+            {
+                nextRepairIds_[segmentOrdinal] = repairIdStartProvider_ ?
+                    repairIdStartProvider_(segmentOrdinal, state.blockCount) : state.blockCount;
+            }
+            Require(nextRepairIds_[segmentOrdinal] >= state.blockCount,
+                "persisted Unified Wirehair repair high-water precedes the systematic range");
+        }
+        else
+        {
+            auto encoder = pbouterfec::DirectRepeatEncoder::Recreate(state.encodedBytes, descriptor);
+            RequireResult(encoder, "Unified DirectRepeat sender recreation failed");
+            state.directRepeat = std::make_unique<pbouterfec::DirectRepeatEncoder>(std::move(encoder).Value());
+            Require(state.directRepeat->GetBlockCount() > 0 &&
+                state.directRepeat->GetBlockCount() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Unified DirectRepeat block count is invalid");
+            state.blockCount = static_cast<std::uint32_t>(state.directRepeat->GetBlockCount());
+        }
+        Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
+            {state.blockCount, controlRepetitions_, logicalVisualFps_, static_cast<bool>(state.wirehair), carouselPass_},
+            state.scheduler)), "Unified Segment-window scheduler creation failed");
+        if (state.wirehair && repairLeaseCallback_)
+        {
+            const auto required = pbprotocol::CheckedAddUint64(nextRepairIds_[segmentOrdinal],
+                state.scheduler.GetSnapshot().repairEquationCount);
+            RequireResult(required, "Unified Segment-window repair lease overflow");
+            Require(required.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Unified Segment-window repair ID space exhausted");
+            repairLeaseCallback_(segmentOrdinal, required.Value());
+        }
+        return state;
+    }
+
+    void SynchronizeCurrentUnifiedSegment()
+    {
+        const UnifiedSegmentState& state = GetCurrentUnifiedSegmentState();
+        currentSegmentOrdinal_ = state.segmentOrdinal;
+        blockCount_ = state.blockCount;
+        unifiedFrame_ = {};
+    }
+
+    void InitializeUnifiedSegmentWindow()
+    {
+        Require(profile_.profile == VisualProfile::UnifiedLc4 && !description_.segments.empty() &&
+            currentSegmentOrdinal_ < description_.segments.size(), "Unified Segment window cannot be initialized");
+        unifiedSegmentStates_.clear();
+        unifiedCurrentStateIndex_ = 0;
+        unifiedWindowStartSegmentOrdinal_ = currentSegmentOrdinal_;
+        const std::uint64_t remainingSegments = description_.segments.size() - currentSegmentOrdinal_;
+        const std::uint64_t activeSegments = (std::min)(remainingSegments,
+            static_cast<std::uint64_t>(senderUnifiedActiveSegmentWindowSize));
+        unifiedSegmentStates_.reserve(static_cast<std::size_t>(activeSegments));
+        for (std::uint64_t segmentOffset = 0; segmentOffset < activeSegments; segmentOffset++)
+        {
+            unifiedSegmentStates_.push_back(BuildUnifiedSegmentState(currentSegmentOrdinal_ + segmentOffset));
+        }
+        Require(!unifiedSegmentStates_.empty(), "Unified Segment window is empty");
+        cyclePosition_ = 0;
+        cycleFrameCount_ = 0;
+        SynchronizeCurrentUnifiedSegment();
+        UpdateResidentSegmentHighWater();
+    }
+
+    void FinalizeUnifiedSegmentRound(UnifiedSegmentState& state)
+    {
+        Require(state.scheduler.IsComplete() && !state.repairIdsFinalized,
+            "Unified Segment round finalization is inconsistent");
+        if (state.wirehair)
+        {
+            const auto nextRepairId = pbprotocol::CheckedAddUint64(nextRepairIds_[state.segmentOrdinal],
+                state.scheduler.GetSnapshot().repairEquationCount);
+            RequireResult(nextRepairId, "Unified Wirehair repair ID high-water overflow");
+            Require(nextRepairId.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Unified Wirehair repair ID space exhausted; start a new Session");
+            nextRepairIds_[state.segmentOrdinal] = static_cast<std::uint32_t>(nextRepairId.Value());
+        }
+        state.repairIdsFinalized = true;
+    }
+
+    [[nodiscard]] bool SelectNextUnifiedSegment()
+    {
+        for (std::size_t offset = 1; offset <= unifiedSegmentStates_.size(); offset++)
+        {
+            const std::size_t candidateIndex = (unifiedCurrentStateIndex_ + offset) % unifiedSegmentStates_.size();
+            if (!unifiedSegmentStates_[candidateIndex].scheduler.IsComplete())
+            {
+                unifiedCurrentStateIndex_ = candidateIndex;
+                SynchronizeCurrentUnifiedSegment();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void AdvanceUnifiedSegmentWindow()
+    {
+        Require(std::ranges::all_of(unifiedSegmentStates_, [](const UnifiedSegmentState& state)
+        {
+            return state.scheduler.IsComplete() && state.repairIdsFinalized;
+        }), "Unified Segment window advanced before every round completed");
+        const auto nextWindowStart = pbprotocol::CheckedAddUint64(unifiedWindowStartSegmentOrdinal_,
+            unifiedSegmentStates_.size());
+        RequireResult(nextWindowStart, "Unified Segment-window ordinal overflow");
+        Require(nextWindowStart.Value() <= description_.segments.size(),
+            "Unified Segment-window advance exceeded the descriptor table");
+        currentSegmentOrdinal_ = nextWindowStart.Value();
+        if (currentSegmentOrdinal_ == description_.segments.size())
+        {
+            currentSegmentOrdinal_ = 0;
+            Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
+            carouselPass_++;
+        }
+        InitializeUnifiedSegmentWindow();
     }
 
     void ActivateNextSegment()
@@ -1561,6 +1783,8 @@ private:
             }
             return;
         }
+        Require(profile_.profile != VisualProfile::UnifiedLc4,
+            "nonempty Unified Sessions must use the bounded Segment window");
         const pbprotocol::SegmentDescriptor& descriptor =
             description_.segments[currentSegmentOrdinal_].descriptor;
         if (descriptor.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
@@ -1586,11 +1810,6 @@ private:
                 directRepeat_->GetBlockCount() <= (std::numeric_limits<std::uint32_t>::max)(),
                 "DirectRepeat block count is invalid");
             blockCount_ = static_cast<std::uint32_t>(directRepeat_->GetBlockCount());
-        }
-        if (profile_.profile == VisualProfile::UnifiedLc4)
-        {
-            InitializeUnifiedScheduler();
-            return;
         }
         SenderCarouselSchedulerConfig schedulerConfig;
         schedulerConfig.systematicBlockCount = blockCount_;
@@ -1623,6 +1842,8 @@ private:
 
     void InitializeUnifiedScheduler()
     {
+        Require(description_.segments.empty() && blockCount_ == 0,
+            "the standalone Unified scheduler is only valid for zero-byte Sessions");
         Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
             {blockCount_, controlRepetitions_, logicalVisualFps_, static_cast<bool>(wirehair_), carouselPass_},
             unifiedScheduler_)),
@@ -1651,17 +1872,18 @@ private:
         Require(slot < profile_.codewords, "physical Data slot is out of bounds");
         if (profile_.profile == VisualProfile::UnifiedLc4)
         {
+            const UnifiedSegmentState& state = GetCurrentUnifiedSegmentState();
             const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slot];
             Require(scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation ||
                 scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::PaddingDuplicate,
                 "Control/inactive slot cannot allocate an OuterBlockId");
-            if (!wirehair_)
+            if (!state.wirehair)
             {
                 Require(!scheduled.repairEquation && scheduled.repairEquationOffset == 0,
                     "DirectRepeat slot was marked as a repair equation");
-                return static_cast<std::uint32_t>(scheduled.equationIndex % blockCount_);
+                return static_cast<std::uint32_t>(scheduled.equationIndex % state.blockCount);
             }
-            const SenderUnifiedCarouselSnapshot round = unifiedScheduler_.GetSnapshot();
+            const SenderUnifiedCarouselSnapshot round = state.scheduler.GetSnapshot();
             if (!scheduled.repairEquation)
             {
                 Require(scheduled.repairEquationOffset == 0 && scheduled.equationIndex < round.systematicEquationCount,
@@ -1673,7 +1895,7 @@ private:
                 scheduled.repairEquationOffset < round.repairEquationCount,
                 "Unified repair equation metadata is inconsistent");
             const auto repairId = pbprotocol::CheckedAddUint64(
-                nextRepairIds_[currentSegmentOrdinal_], scheduled.repairEquationOffset);
+                nextRepairIds_[state.segmentOrdinal], scheduled.repairEquationOffset);
             RequireResult(repairId, "Unified Wirehair repair ID overflow inside a visual frame");
             Require(repairId.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
                 "Unified Wirehair repair ID space exhausted inside a visual frame");
@@ -1727,6 +1949,9 @@ private:
     std::vector<std::byte> currentEncodedBytes_;
     std::vector<std::byte> nextEncodedBytes_;
     std::optional<std::uint64_t> nextEncodedSegmentOrdinal_;
+    std::vector<UnifiedSegmentState> unifiedSegmentStates_;
+    std::size_t unifiedCurrentStateIndex_ = 0;
+    std::uint64_t unifiedWindowStartSegmentOrdinal_ = 0;
     std::uint64_t currentSegmentOrdinal_ = 0;
     std::uint64_t carouselPass_ = 0;
     std::uint32_t blockCount_ = 0;
@@ -2721,6 +2946,14 @@ public:
           deferCompletedState_(deferCompletedState), captureTelemetryAvailable_(captureTelemetryAvailable),
           collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation)
     {
+        snapshot_.Update([this](DecoderSnapshot& value)
+        {
+            if (value.runGeneration == runGeneration_)
+            {
+                value.outerActiveDecoderLimit = policy_.maxActiveOuterFecDecoders;
+                value.outerTotalDecoderByteLimit = policy_.maxTotalOuterFecDecoderBytes;
+            }
+        });
     }
 
     ~ReceiverPipeline()
@@ -4061,6 +4294,18 @@ private:
             telemetry.reservedOuterFecDecoderBytes);
         peakOrphanCachedBytes_ = (std::max)(peakOrphanCachedBytes_,
             static_cast<std::uint64_t>(telemetry.orphanCachedBytes));
+        snapshot_.Update([this, &telemetry](DecoderSnapshot& value)
+        {
+            if (value.runGeneration == runGeneration_)
+            {
+                value.outerActiveDecoderCount = telemetry.activeOuterFecDecoderCount;
+                value.outerPeakActiveDecoderCount = peakActiveOuterFecDecoderCount_;
+                value.outerReservedDecoderBytes = telemetry.reservedOuterFecDecoderBytes;
+                value.outerPeakReservedDecoderBytes = peakReservedOuterFecDecoderBytes_;
+                value.outerDeferredResourceBusyCount = telemetry.deferredResourceBusyCount;
+                value.outerFecQuotaExceededCount = telemetry.outerFecQuotaExceededCount;
+            }
+        });
     }
 
     void UpdateResumeResourceHighWater()
@@ -5107,13 +5352,14 @@ void RunHeadlessMultiSegmentFileProbe(const std::wstring& sourcePath,
     const auto AdvanceBuilder = [&]()
     {
         const std::uint64_t previousPass = builder.GetCarouselSnapshot().cycleCount;
-        const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        const std::uint64_t previousCheckpointSegmentOrdinal = builder.GetCheckpointSegmentOrdinal();
         builder.Advance();
         const CarouselSnapshot after = builder.GetCarouselSnapshot();
-        if (after.cycleCount != previousPass || builder.GetCurrentSegmentOrdinal() != previousSegmentOrdinal)
+        if (after.cycleCount != previousPass ||
+            builder.GetCheckpointSegmentOrdinal() != previousCheckpointSegmentOrdinal)
         {
             const EncoderSessionStoreStatus status = sessionStore->UpdateCarouselPosition(
-                after.cycleCount, builder.GetCurrentSegmentOrdinal());
+                after.cycleCount, builder.GetCheckpointSegmentOrdinal());
             Require(static_cast<bool>(status), "headless application Carousel checkpoint failed: " + status.message);
         }
     };
@@ -5397,11 +5643,365 @@ void RunHeadlessMultiSegmentFileProbe(const std::wstring& sourcePath,
         "headless authoritative output path is absent or has the wrong external length");
 }
 
+struct UnifiedStripingFixture
+{
+    std::vector<std::byte> source;
+    TransferDescription description;
+};
+
+[[nodiscard]] UnifiedStripingFixture BuildUnifiedStripingFixture(const std::uint32_t segmentBytes)
+{
+    constexpr std::uint64_t segmentCount = senderUnifiedActiveSegmentWindowSize;
+    Require(segmentBytes >= 64U * 1024U && segmentBytes <= pbprotocol::kDefaultSourceSegmentTargetBytes,
+        "Unified temporal-striping fixture Segment size is outside its bounded contract");
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedLc4);
+    UnifiedStripingFixture fixture;
+    fixture.source.resize(static_cast<std::size_t>(segmentCount) * segmentBytes);
+    for (std::size_t index = 0; index < fixture.source.size(); index++)
+    {
+        fixture.source[index] = static_cast<std::byte>((index * 157U + index / segmentBytes * 29U + 11U) & 0xFFU);
+    }
+    pbprotocol::SessionId sessionId;
+    for (std::size_t index = 0; index < sessionId.bytes.size(); index++)
+    {
+        sessionId.bytes[index] = static_cast<std::byte>(0xA0U + index);
+    }
+    fixture.description.session = MakeSessionDescriptor(sessionId, fixture.source.size(), segmentCount, profile.visualProfileId,
+        "unified-temporal-striping.bin");
+    fixture.description.session.sourceSegmentTargetBytes = segmentBytes;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(sessionId);
+    for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < segmentCount; segmentOrdinal++)
+    {
+        const std::size_t rawOffset = static_cast<std::size_t>(segmentOrdinal) * segmentBytes;
+        fixture.description.segments.push_back(PrepareSegmentDescription(fixture.description.session, sessionTag,
+            segmentOrdinal, rawOffset, std::span(fixture.source).subspan(rawOffset, segmentBytes), false, 3));
+        Require(fixture.description.segments.back().descriptor.outerFecMode == pbprotocol::OuterFecMode::WirehairV2,
+            "Unified temporal-striping probe requires Wirehair segments");
+    }
+    fixture.description.manifest = {sessionId, fixture.source.size(), segmentCount,
+        pbprotocol::WholeFileDigest{pbprotocol::ComputeBlake3Digest(fixture.source)},
+        pbprotocol::DigestAlgorithm::Blake3_256};
+    FinalizeTransferControls(fixture.description);
+    return fixture;
+}
+
+void RunUnifiedTemporalStripingProbe(UnifiedTemporalStripingProbeSnapshot& result)
+{
+    constexpr std::uint64_t segmentCount = senderUnifiedActiveSegmentWindowSize;
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedLc4);
+    UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(64U * 1024U);
+    const TransferDescription& description = fixture.description;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
+
+    result = {};
+    result.blockCounts.resize(segmentCount);
+    result.passZeroScheduledEquationCounts.resize(segmentCount);
+    result.passZeroUniqueOuterBlockCounts.resize(segmentCount);
+    result.passZeroMaximumOuterBlockIds.resize(segmentCount);
+    result.passOneFirstRepairIds.resize(segmentCount, (std::numeric_limits<std::uint32_t>::max)());
+    result.repairIdLeaseEnds.resize(segmentCount);
+    std::vector<std::set<std::uint32_t>> passZeroOuterBlockIds(segmentCount);
+    SenderFrameBuilder builder(profile, description, 4, {},
+        [](const std::uint64_t, const std::uint32_t systematicBlockCount)
+        {
+            return systematicBlockCount;
+        },
+        [&result](const std::uint64_t segmentOrdinal, const std::uint64_t requiredExclusive)
+        {
+            Require(segmentOrdinal < result.repairIdLeaseEnds.size(),
+                "Unified temporal-striping repair lease ordinal is out of bounds");
+            result.repairIdLeaseEnds[static_cast<std::size_t>(segmentOrdinal)] = requiredExclusive;
+        }, 0, 0, 15);
+    result.configuredWindowSize = builder.GetActiveSegmentWindowSize();
+    result.legacyReceiverActiveDecoderLimit = pbprotocol::GetDefaultReceiverResourcePolicy().maxActiveOuterFecDecoders;
+    const pbprotocol::ReceiverResourcePolicy unifiedPolicy =
+        MakeReceiverResourcePolicyForVisualProfile(VisualProfile::UnifiedLc4);
+    result.unifiedReceiverActiveDecoderLimit = unifiedPolicy.maxActiveOuterFecDecoders;
+    auto receiverResult = pbreceiver::ReceiverIngress::Create(unifiedPolicy, outerBlockBytes);
+    RequireResult(receiverResult, "Unified temporal-striping ReceiverIngress creation failed");
+    pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
+    RequireResult(receiver.ReceiveControlRecord(description.sessionControl),
+        "Unified temporal-striping SessionDescriptor admission failed");
+    for (const TransferDescription::Segment& segment : description.segments)
+    {
+        RequireResult(receiver.ReceiveControlRecord(segment.control),
+            "Unified temporal-striping SegmentDescriptor admission failed");
+    }
+    RequireResult(receiver.ReceiveControlRecord(description.manifestControl),
+        "Unified temporal-striping FinalManifest admission failed");
+
+    std::uint64_t logicalTick = 0;
+    while (builder.GetCarouselSnapshot().cycleCount == 0)
+    {
+        Require(logicalTick < 1000, "Unified temporal-striping pass-zero frame bound exceeded");
+        const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        const std::size_t segmentIndex = static_cast<std::size_t>(segmentOrdinal);
+        result.blockCounts[segmentIndex] = builder.GetBlockCount();
+        if (result.initialSegmentOrdinals.size() < 16)
+        {
+            result.initialSegmentOrdinals.push_back(segmentOrdinal);
+            result.initialCheckpointSegmentOrdinals.push_back(builder.GetCheckpointSegmentOrdinal());
+        }
+        const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
+        result.passZeroScheduledEquationCounts[segmentIndex] += frame.scheduledEquationCount;
+        std::optional<std::uint32_t> firstOuterBlockId;
+        for (std::uint32_t slot = 0; slot < frame.slots.size(); slot++)
+        {
+            if (frame.slots[slot].transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+            {
+                continue;
+            }
+            const std::uint32_t outerBlockId = builder.GetOuterBlockIdForSlot(slot);
+            passZeroOuterBlockIds[segmentIndex].insert(outerBlockId);
+            result.passZeroMaximumOuterBlockIds[segmentIndex] =
+                (std::max)(result.passZeroMaximumOuterBlockIds[segmentIndex], outerBlockId);
+            if (!firstOuterBlockId)
+            {
+                firstOuterBlockId = outerBlockId;
+            }
+        }
+        if (logicalTick < segmentCount)
+        {
+            Require(firstOuterBlockId.has_value(), "Unified temporal-striping seed frame has no equation");
+            std::array<std::byte, outerBlockBytes> payload{};
+            const std::uint32_t declaredPayloadBytes = builder.EncodeOuterPayloadForSlot(
+                static_cast<std::uint32_t>(std::ranges::find_if(frame.slots, [](const SenderUnifiedScheduledSlot& slot)
+                {
+                    return slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation;
+                }) - frame.slots.begin()), payload);
+            Require(declaredPayloadBytes > 0 && declaredPayloadBytes <= (std::numeric_limits<std::uint16_t>::max)(),
+                "Unified temporal-striping seed payload size is invalid");
+            const pbreceiver::ReceivedTransportBlock transport{sessionTag, segmentOrdinal, *firstOuterBlockId,
+                static_cast<std::uint16_t>(declaredPayloadBytes), payload};
+            const auto admission = receiver.ReceiveDataBlock(transport, logicalTick);
+            RequireResult(admission, "Unified temporal-striping seed equation admission failed");
+            Require(admission.Value().outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::Unique &&
+                admission.Value().disposition == pbreceiver::ReceiverDataDisposition::AcceptedNeedMore,
+                "Unified temporal-striping seed equation did not retain an active decoder");
+        }
+        const std::uint64_t previousPass = builder.GetCarouselSnapshot().cycleCount;
+        const std::uint64_t previousCheckpointSegmentOrdinal = builder.GetCheckpointSegmentOrdinal();
+        builder.Advance();
+        if (builder.GetCarouselSnapshot().cycleCount != previousPass ||
+            builder.GetCheckpointSegmentOrdinal() != previousCheckpointSegmentOrdinal)
+        {
+            result.durablePositionUpdateCount++;
+        }
+        logicalTick++;
+    }
+    result.passZeroLogicalFrames = logicalTick;
+    for (std::size_t segmentIndex = 0; segmentIndex < passZeroOuterBlockIds.size(); segmentIndex++)
+    {
+        result.passZeroUniqueOuterBlockCounts[segmentIndex] = passZeroOuterBlockIds[segmentIndex].size();
+    }
+    const pbreceiver::ReceiverResourceTelemetrySnapshot receiverTelemetry = receiver.GetTelemetry();
+    result.receiverActiveDecoderCount = receiverTelemetry.activeOuterFecDecoderCount;
+    result.receiverDeferredResourceBusyCount = receiverTelemetry.deferredResourceBusyCount;
+    result.peakResidentEncodedSegmentCount = builder.GetPeakResidentEncodedSegmentCount();
+    result.peakResidentEncodedSegmentBytes = builder.GetPeakResidentEncodedSegmentBytes();
+
+    std::vector<bool> passOneObserved(segmentCount, false);
+    std::size_t observedPassOneSegments = 0;
+    while (observedPassOneSegments < segmentCount)
+    {
+        Require(logicalTick < result.passZeroLogicalFrames + segmentCount * 2,
+            "Unified temporal-striping pass-one observation bound exceeded");
+        const std::size_t segmentIndex = static_cast<std::size_t>(builder.GetCurrentSegmentOrdinal());
+        const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
+        const auto scheduled = std::ranges::find_if(frame.slots, [](const SenderUnifiedScheduledSlot& slot)
+        {
+            return slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation;
+        });
+        Require(scheduled != frame.slots.end(), "Unified temporal-striping pass-one frame has no repair equation");
+        if (!passOneObserved[segmentIndex])
+        {
+            const std::uint32_t slot = static_cast<std::uint32_t>(scheduled - frame.slots.begin());
+            result.passOneFirstRepairIds[segmentIndex] = builder.GetOuterBlockIdForSlot(slot);
+            passOneObserved[segmentIndex] = true;
+            observedPassOneSegments++;
+        }
+        builder.Advance();
+        logicalTick++;
+    }
+}
+
+void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot& result)
+{
+    constexpr std::uint64_t segmentCount = senderUnifiedActiveSegmentWindowSize;
+    constexpr std::uint64_t maximumSenderLogicalFrames = 27000;
+    constexpr std::uint64_t erasurePeriodFrames = 113;
+    constexpr std::uint64_t erasureBurstFrames = 4;
+    const auto MixLogicalTick = [](std::uint64_t value) noexcept
+    {
+        value += 0x9E3779B97F4A7C15ULL;
+        value = (value ^ (value >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        value = (value ^ (value >> 27U)) * 0x94D049BB133111EBULL;
+        return value ^ (value >> 31U);
+    };
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedLc4);
+    UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(pbprotocol::kDefaultSourceSegmentTargetBytes);
+    const std::vector<std::byte>& source = fixture.source;
+    const TransferDescription& description = fixture.description;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
+    const pbprotocol::ReceiverResourcePolicy unifiedPolicy =
+        MakeReceiverResourcePolicyForVisualProfile(VisualProfile::UnifiedLc4);
+    auto receiverResult = pbreceiver::ReceiverIngress::Create(unifiedPolicy, outerBlockBytes);
+    RequireResult(receiverResult, "Unified large-window ReceiverIngress creation failed");
+    pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
+    RequireResult(receiver.ReceiveControlRecord(description.sessionControl),
+        "Unified large-window SessionDescriptor admission failed");
+    for (const TransferDescription::Segment& segment : description.segments)
+    {
+        RequireResult(receiver.ReceiveControlRecord(segment.control),
+            "Unified large-window SegmentDescriptor admission failed");
+    }
+    RequireResult(receiver.ReceiveControlRecord(description.manifestControl),
+        "Unified large-window FinalManifest admission failed");
+
+    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, 15);
+    Require(builder.GetActiveSegmentWindowSize() == segmentCount,
+        "Unified large-window sender did not retain the complete active Segment window");
+    std::vector<bool> completedSegments(segmentCount, false);
+    result = {};
+    result.sourceBytes = source.size();
+    while (result.completedSegments < segmentCount)
+    {
+        Require(result.senderLogicalFrames < maximumSenderLogicalFrames,
+            "Unified large-window recovery exceeded the live sender's bounded logical-frame budget");
+        const std::uint64_t logicalTick = result.senderLogicalFrames;
+        const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        Require(segmentOrdinal < segmentCount, "Unified large-window sender Segment ordinal is out of bounds");
+        const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
+        const bool observedByReceiver = (MixLogicalTick(logicalTick) & 3ULL) == 0;
+        if (!observedByReceiver)
+        {
+            result.unobservedSenderLogicalFrames++;
+        }
+        else
+        {
+            result.uniqueLogicalFrames++;
+            const bool intentionallyErased = logicalTick % erasurePeriodFrames >=
+                erasurePeriodFrames - erasureBurstFrames;
+            if (intentionallyErased)
+            {
+                result.intentionallyErasedLogicalFrames++;
+            }
+            else if (!completedSegments[static_cast<std::size_t>(segmentOrdinal)])
+            {
+                for (std::uint32_t slot = 0; slot < frame.slots.size(); slot++)
+                {
+                    if (frame.slots[slot].transportDisposition !=
+                        SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+                    {
+                        continue;
+                    }
+                    std::array<std::byte, outerBlockBytes> payload{};
+                    const std::uint32_t outerBlockId = builder.GetOuterBlockIdForSlot(slot);
+                    const std::uint32_t declaredPayloadBytes = builder.EncodeOuterPayloadForSlot(slot, payload);
+                    Require(declaredPayloadBytes > 0 &&
+                        declaredPayloadBytes <= (std::numeric_limits<std::uint16_t>::max)(),
+                        "Unified large-window sender produced an invalid payload size");
+                    const pbreceiver::ReceivedTransportBlock transport{sessionTag, segmentOrdinal, outerBlockId,
+                        static_cast<std::uint16_t>(declaredPayloadBytes), payload};
+                    auto admission = receiver.ReceiveDataBlock(transport, logicalTick);
+                    RequireResult(admission, "Unified large-window transport admission failed");
+                    Require(admission.Value().disposition != pbreceiver::ReceiverDataDisposition::DeferredResourceBusy &&
+                        admission.Value().outerSymbolAdmission !=
+                            pbreceiver::ReceiverOuterSymbolAdmission::DeferredResourceBusy,
+                        "Unified large-window transport was deferred by Receiver resources");
+                    if (admission.Value().outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::Unique)
+                    {
+                        result.uniqueOuterSymbols++;
+                    }
+                    if (!admission.Value().completedSegment)
+                    {
+                        continue;
+                    }
+                    auto verified = receiver.VerifyRecoveredSegment(std::move(*admission.Value().completedSegment));
+                    RequireResult(verified, "Unified large-window recovered Segment digest verification failed");
+                    const pbprotocol::SegmentDescriptor& descriptor =
+                        verified.Value().GetBoundSegmentDescriptor().GetDescriptor();
+                    Require(descriptor.segmentOrdinal == segmentOrdinal && descriptor.rawSize ==
+                        pbprotocol::kDefaultSourceSegmentTargetBytes,
+                        "Unified large-window verified Segment binding is inconsistent");
+                    const std::span<const std::byte> expected = std::span(source).subspan(
+                        static_cast<std::size_t>(descriptor.rawOffset), static_cast<std::size_t>(descriptor.rawSize));
+                    Require(std::ranges::equal(verified.Value().GetRawBytes(), expected),
+                        "Unified large-window recovered Segment differs from the authoritative source bytes");
+                    completedSegments[static_cast<std::size_t>(segmentOrdinal)] = true;
+                    result.completedSegments++;
+                    break;
+                }
+            }
+        }
+        const pbreceiver::ReceiverResourceTelemetrySnapshot telemetry = receiver.GetTelemetry();
+        result.receiverPeakActiveDecoderCount = (std::max)(result.receiverPeakActiveDecoderCount,
+            telemetry.activeOuterFecDecoderCount);
+        result.receiverPeakReservedDecoderBytes = (std::max)(result.receiverPeakReservedDecoderBytes,
+            telemetry.reservedOuterFecDecoderBytes);
+        builder.Advance();
+        result.senderLogicalFrames++;
+    }
+    const pbreceiver::ReceiverResourceTelemetrySnapshot finalTelemetry = receiver.GetTelemetry();
+    result.receiverDeferredResourceBusyCount = finalTelemetry.deferredResourceBusyCount;
+    result.receiverOuterFecQuotaExceededCount = finalTelemetry.outerFecQuotaExceededCount;
+    result.completedCarouselPasses = builder.GetCarouselSnapshot().cycleCount;
+    Require(result.uniqueLogicalFrames != 0, "Unified large-window recovery observed no logical frames");
+    result.verifiedEncodedBytesPerUniqueFrame =
+        static_cast<double>(result.sourceBytes) / static_cast<double>(result.uniqueLogicalFrames);
+    result.everySegmentDigestVerified = std::ranges::all_of(completedSegments, [](const bool completed)
+    {
+        return completed;
+    });
+}
+
 } // namespace
 
 #ifdef PB_PROCESS_FAULT_TESTS
 #include "process_recovery_runtime.inc"
 #endif
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedTemporalStriping(
+    UnifiedTemporalStripingProbeSnapshot& output) noexcept
+{
+    output = {};
+    try
+    {
+        UnifiedTemporalStripingProbeSnapshot result;
+        RunUnifiedTemporalStripingProbe(result);
+        output = std::move(result);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified temporal-striping probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedLargeWindowRecovery(
+    UnifiedLargeWindowRecoveryProbeSnapshot& output) noexcept
+{
+    output = {};
+    try
+    {
+        UnifiedLargeWindowRecoveryProbeSnapshot result;
+        RunUnifiedLargeWindowRecoveryProbe(result);
+        output = result;
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified large-window recovery probe failed with an unknown error");
+    }
+}
 
 RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const std::span<const std::byte> rawBytes,
     const std::uint32_t controlRepetitions, const std::uint32_t completedCyclesBeforeMarker,
@@ -5717,16 +6317,16 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeStreamingCarouselFile(const std::ws
                     result.controlFrames++;
                 }
                 result.scheduledFrames++;
-                const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                const std::uint64_t previousCheckpointSegmentOrdinal = builder.GetCheckpointSegmentOrdinal();
                 const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
                 builder.Advance();
                 frameSequence++;
                 const CarouselSnapshot after = builder.GetCarouselSnapshot();
                 if (after.cycleCount != previousCarouselPass ||
-                    builder.GetCurrentSegmentOrdinal() != previousSegmentOrdinal)
+                    builder.GetCheckpointSegmentOrdinal() != previousCheckpointSegmentOrdinal)
                 {
                     const EncoderSessionStoreStatus positionStatus = sessionStore->UpdateCarouselPosition(
-                        after.cycleCount, builder.GetCurrentSegmentOrdinal());
+                        after.cycleCount, builder.GetCheckpointSegmentOrdinal());
                     Require(static_cast<bool>(positionStatus), "headless Carousel checkpoint failed: " +
                         positionStatus.message);
                 }
@@ -7631,7 +8231,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                         builder.GetGeneratedPayloadBytesInFrame());
                     RequireResult(nextGeneratedPayloadBytes, "generated payload telemetry overflow");
                     generatedPayloadBytes = nextGeneratedPayloadBytes.Value();
-                    const std::uint64_t previousSegmentOrdinal = builder.GetCurrentSegmentOrdinal();
+                    const std::uint64_t previousCheckpointSegmentOrdinal = builder.GetCheckpointSegmentOrdinal();
                     const std::uint32_t submittedControlSlots = builder.GetControlSlotsInFrame();
                     const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
                     if (useUnifiedLogicalClock)
@@ -7659,10 +8259,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     }
                     const CarouselSnapshot carouselAfter = builder.GetCarouselSnapshot();
                     if (carouselAfter.cycleCount != previousCarouselPass ||
-                        builder.GetCurrentSegmentOrdinal() != previousSegmentOrdinal)
+                        builder.GetCheckpointSegmentOrdinal() != previousCheckpointSegmentOrdinal)
                     {
                         const EncoderSessionStoreStatus positionStatus = sessionStore->UpdateCarouselPosition(
-                            carouselAfter.cycleCount, builder.GetCurrentSegmentOrdinal());
+                            carouselAfter.cycleCount, builder.GetCheckpointSegmentOrdinal());
                         Require(static_cast<bool>(positionStatus),
                             "Encoder Carousel position checkpoint failed: " + positionStatus.message);
                     }
@@ -8142,7 +8742,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 resourceSampler, stopRequested_);
             return;
         }
-        pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+        pbprotocol::ReceiverResourcePolicy policy = MakeReceiverResourcePolicyForVisualProfile(config.visualProfile);
         if (services_.outputConfirmationThresholdBytes)
         {
             policy.maxOutputPreallocationBytesWithoutPrompt = *services_.outputConfirmationThresholdBytes;
@@ -8151,7 +8751,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
         const auto pipelineOwner = std::make_unique<ReceiverPipeline>(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
-            started, config.visualProfile, replayReader != nullptr, true, false, &largeOutputConfirmation_);
+            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_);
         auto& pipeline = *pipelineOwner;
 
         const pbdemodd3d11::CaptureDemodulatorConfig demodConfig = MakeCaptureDemodulatorConfig(

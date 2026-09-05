@@ -653,7 +653,15 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"alreadyCompletedSymbols\":" << snapshot.outerAlreadyCompletedSymbols
            << ",\"recoveryReadyEvents\":" << snapshot.outerRecoveryReadyEvents
            << ",\"resourceRejections\":" << snapshot.outerResourceRejections
-           << ",\"conflictRejections\":" << snapshot.outerConflictRejections << '}'
+           << ",\"conflictRejections\":" << snapshot.outerConflictRejections
+           << ",\"deferredResourceBusyCount\":" << snapshot.outerDeferredResourceBusyCount
+           << ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount
+           << ",\"activeDecoderLimit\":" << snapshot.outerActiveDecoderLimit
+           << ",\"totalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit
+           << ",\"activeDecoderCount\":" << snapshot.outerActiveDecoderCount
+           << ",\"peakActiveDecoderCount\":" << snapshot.outerPeakActiveDecoderCount
+           << ",\"reservedDecoderBytes\":" << snapshot.outerReservedDecoderBytes
+           << ",\"peakReservedDecoderBytes\":" << snapshot.outerPeakReservedDecoderBytes << '}'
            << ",\"comparedCodedBits\":" << snapshot.comparedCodedBits
            << ",\"erroneousCodedBits\":" << snapshot.erroneousCodedBits
            << ",\"fecFailures\":" << snapshot.fecFailures

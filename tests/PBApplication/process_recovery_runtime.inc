@@ -334,13 +334,14 @@ int test::RunProcessRecoveryWorker(const std::filesystem::path& sourcePath,
                 frameCount++;
                 break;
             }
-            const std::uint64_t previousOrdinal = ordinal;
+            const std::uint64_t previousCheckpointSegmentOrdinal = builder.GetCheckpointSegmentOrdinal();
             const std::uint64_t previousPass = builder.GetCarouselSnapshot().cycleCount;
             builder.Advance();
-            if (builder.GetCurrentSegmentOrdinal() != previousOrdinal || builder.GetCarouselSnapshot().cycleCount != previousPass)
+            if (builder.GetCheckpointSegmentOrdinal() != previousCheckpointSegmentOrdinal ||
+                builder.GetCarouselSnapshot().cycleCount != previousPass)
             {
                 const auto status = sessionStore.UpdateCarouselPosition(builder.GetCarouselSnapshot().cycleCount,
-                    builder.GetCurrentSegmentOrdinal());
+                    builder.GetCheckpointSegmentOrdinal());
                 Require(static_cast<bool>(status), "G18 Carousel position persistence failed: " + status.message);
             }
             frameSequence = nextSequence.Value();

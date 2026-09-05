@@ -1,5 +1,7 @@
 #include "decoder_resume_store.h"
 
+#include "sender_carousel_scheduler.h"
+
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/byte_io.h"
 #include "pbprotocol/checked_integer.h"
@@ -499,7 +501,7 @@ template <typename Integer>
 
 [[nodiscard]] std::size_t CountActiveSegments(const std::vector<DecoderResumeAcceptedBlock>& blocks) noexcept
 {
-    std::array<std::uint64_t, 4> ordinals{};
+    std::array<std::uint64_t, senderUnifiedActiveSegmentWindowSize> ordinals{};
     std::size_t count = 0;
     for (const DecoderResumeAcceptedBlock& block : blocks)
     {
@@ -594,7 +596,8 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
     try
     {
         if (outputDirectory.empty() || sessionControlRecord.empty() || resourcePolicy.maxResumeBytes == 0 ||
-            resourcePolicy.maxActiveOuterFecDecoders == 0 || resourcePolicy.maxActiveOuterFecDecoders > 4)
+            resourcePolicy.maxActiveOuterFecDecoders == 0 ||
+            resourcePolicy.maxActiveOuterFecDecoders > senderUnifiedActiveSegmentWindowSize)
         {
             return DecoderResumeStoreStatus::Failure("resume store configuration is invalid");
         }

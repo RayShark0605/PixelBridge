@@ -18,6 +18,10 @@ inline constexpr std::uint32_t senderCarouselMaximumSystematicBlockCount = 64000
 inline constexpr std::uint32_t senderUnifiedMinimumLogicalFramesPerSecond = 1;
 inline constexpr std::uint32_t senderUnifiedMaximumLogicalFramesPerSecond = 60;
 inline constexpr std::uint32_t senderUnifiedMaximumControlRepetitions = 64;
+// The certified Unified sender stripes one logical frame at a time across this
+// bounded Segment window. The matching Decoder policy and resume cache must
+// cover the same count; this is scheduler tuning and does not alter wire data.
+inline constexpr std::uint32_t senderUnifiedActiveSegmentWindowSize = 8;
 inline constexpr std::uint64_t senderLogicalFrameNanosecondsPerSecond = 1000000000ULL;
 inline constexpr std::size_t senderUnifiedCodewordSlotCount =
     static_cast<std::size_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount);

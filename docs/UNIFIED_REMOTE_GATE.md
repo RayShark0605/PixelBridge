@@ -2,14 +2,14 @@
 
 ## 1. 当前状态与前置
 
-**2026-09-05：PARTIAL / 三次 LC4 真实远程 smoke 均未发布；SC6 V3 跨帧抗失真方案已完成离线闭环，尚待新的真实远程复验。** 前两次 15 Hz 与一次严格时段包含的 5 Hz 接收都没有绑定 Session。5 Hz 证明仅降频不能修复物理符号失真；用户随后提供真实失真截图、libcimbar 参考截图和 `D:\libcimbar` 源码，并明确允许修改视觉/协议合同且不要求兼容。当前唯一产品 Profile 已替换为 `PB-Unified-SC6-V3`/layout 10；区域局部映射、三 backend 跨帧 parity 和三次 1 MiB 时域失真完整发布均通过 16 KiB 硬门。这仍是 headless synthetic WARP，不是 live。初始准备及失败保留在第 2–8 节，第 9 节是首版 SC6 V2 历史，第 10 节记录当前 V3 诊断、实现与证据。
+**2026-09-05：PARTIAL / SC6 V3 的真实远程 1 MiB 已正确发布并越过 16 KiB 硬门；首轮 64 MiB live 在 5/8 Segment 后触发双方有界时限，未发布。** `ceeef61` 的 receiver-first 运行以 55 个唯一帧发布 1 MiB，得到 19,065.018 B/unique frame。随后 `f93fd25` 的 64 MiB 运行在 1,800 秒 sender / 2,100 秒 receiver 硬时限内只完成 40 MiB；冻结 resume journal 证明 0..4 已完成，5..7 各保留数千个唯一方程。源码与运行状态共同定位到发送端逐 Segment 长突发、接收端最多 4 个在途 Outer decoder 的组合失配。当前修正把 Unified 冻结为 8-Segment 逐帧交织窗口，并把匹配的接收/恢复资源上限扩为 8；确定性 64 MiB 稀疏抽帧闭环已通过，但同提交 live 64 MiB 尚未执行，所以不能关闭 G21。完整历史见第 6–13 节，当前诊断与修正见第 14–15 节。
 
 - 前置 G20：`e94da7f1d68fd3b410c180ac71201716c11bb9d7`，在途背压修复与本地功能收口已提交。原证据见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 16 节。
 - G20 的 2.0x 是用户豁免、未验证；letterbox 的 15,420.2353 B/unique 不是性能通过。G21 的 16 KiB 硬门仍然有效。
 - 用户确认两端由本项目提供：Encoder 由用户放到远程机、启动和摆放；Decoder 由本机控制，只捕获本机右屏。远程连接已经可用、具体类型未知。不自动连接远程、不操作用户输入。
 - 用户回报远程 `00_Check.bat`：`PASS: Encoder loads; commit e94da7f1d68fd3b410c180ac71201716c11bb9d7`，`Script exit: 0`；未生成 source、未启动窗口或广播。这是**用户回报的远程加载证据**，不是已观察到的像素链。
 - 用户随后明确同意：接收入口仅在专用测试构建启用，内部使用完整生产 `DecoderRuntime` 和 Auto 捕获；外层保护右屏，不扩展产品公共 CLI/Replay/monitor 配置。
-- G21 的新 SC6 真实 1 MiB、64 MiB、chroma/Base Luma、外部摘要与远程性能门均未关闭。旧 LC4 的 1 MiB 已有三次失败 live 记录，不能按离线修复通过收口。G22 未开始。
+- G21 的 SC6 真实 1 MiB、外部 SHA-256/BLAKE3、whole digest、安全发布和 16 KiB 性能门已有一次完整 PASS；真实 64 MiB、Base Luma 独立恢复及当前修正的同身份 live 仍未关闭。G22 未开始。
 
 ## 2. 已交付的远程 Encoder 不变
 
@@ -620,3 +620,114 @@ build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[appli
 `5cedd15` FullRepair 可以在真实失真链发布正确文件，也权威证明旧 Control 排列低于硬门；调度修正目前只有定向
 Release 证据，必须在提交后重建同身份 Encoder/Decoder 并再跑 1 MiB / 15 Hz live。通过后仍需 64 MiB RAW 与
 chroma/Base-only 证据。因此 **G21 继续 PARTIAL，G22 未开始**。
+
+## 14. Control 交织后的真实 1 MiB 硬门通过
+
+`ceeef61fb5fc32d834d919b35780b1c0e548f8ed` 的同身份 Encoder/Decoder 在 receiver-first 顺序下完成第四次
+SC6 V3 真实远程 1 MiB / 15 Hz 运行。Receiver 比 sender 早启动 68.901 秒；sender 实际提交速率为
+15.000604 Hz，Decoder 从 DISPLAY2 的 WGC 像素观察到 3.202689 unique Hz。最终结果如下：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Unique logical frames | 55 |
+| Verified encoded B/unique | 19,065.0182 |
+| 16 KiB hard gate | **PASS** |
+| Accepted Control / Transport | 24 / 799 |
+| Whole digest / rename / final reopen | true / true / true |
+| Base/Fine/Chroma FEC failures | 0 / 0 / 0 |
+| CRC / identity / Outer conflict | 0 / 0 / 0 |
+
+source 与 published 文件均为 1,048,576 bytes，外部 SHA-256 均为
+`dc51c3202eeabb93ed22f5408ff936dcb7eaf9e55073b3d08fdcafabb7b2898f`；sender/receiver/published BLAKE3 均为
+`c1266b3497c20f293d640de6c6f06947037cd0d7a8b2bd930afc8e51c6d851d8`。提交、Profile/layout、SessionId、
+SessionTag、source filename、大小及时段全部严格配对，source 未提供给 Decoder。证据封存于：
+
+```text
+build-unified-release/g21-sc6-v3-live-control-interleave-1/
+  smoke-1mib-15hz-7ddc54fb7897403b88320a6420358760/
+```
+
+`sender-evidence/pairing-audit.json` 结果为 `PASS`。这轮权威关闭了当前 SC6 V3 的 live 1 MiB、外部双摘要、
+正确发布及 16 KiB 硬门；它没有覆盖多 Segment 资源行为，也不替代 64 MiB 或 Base-only。
+
+## 15. 64 MiB 有界超时、ActiveSegmentWindow 根因与修正
+
+### 15.1 冻结 live 结果不是崩溃
+
+为避免先前 180 秒短门把大文件正常收敛误判为故障，`0ae506d` 只把 remote Encoder 的受约束 hard maximum
+扩为 1,800 秒，`f93fd25` 只把专用 Receiver Gate 的允许区间扩为 2,100 秒；没有改变视觉、FEC、质量、250 ms、
+摘要或发布门。`f93fd257b64ab7efe7687fce73c06d64f0380a51` 的同身份 64 MiB CSPRNG/RAW 运行随后得到：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Sender submitted logical frames | 27,001 @ 15.000156 Hz |
+| Receiver unique logical frames | 6,232 @ 3.587830 Hz |
+| Verified Segments / raw bytes | 5 / 8；41,943,040 B |
+| Sender / Receiver elapsed | 1,800.404 s / 2,100.471 s |
+| Watchdog 强杀 | false |
+| Whole digest / publish / final reopen | unavailable / false / unavailable |
+| Base/Fine/Chroma FEC failures | 0 / 0 / 1 |
+| CRC / identity / Outer conflict | 0 / 0 / 0 |
+
+Encoder 到配置硬时限后自动停止，因没有 receiver ACK 仍按 fail-closed 返回 1；Receiver 到自身硬时限后返回 1，
+没有发布错误文件，也没有删除可恢复状态。`.part` 精确预分配 67,108,864 bytes，`.resume` 为 20,236,376 bytes。
+`VerifiedEncodedBytesPerUniqueFrame` 正确保持 `null / NotPublished`，不能用 40 MiB 中间进度冒充 G21 性能。
+冻结证据位于：
+
+```text
+build-unified-release/g21-sc6-v3-live-long-deadline-1/
+  full-64mib-15hz-ba1f09ba84d047c88834cfda5e4bffa7/
+```
+
+### 15.2 决定性运行状态与根因
+
+对原 `.resume` 进行只读、逐 record CRC-32C 校验后确认：完成 ordinal 为 `0..4`；仍活动的 5/6/7 分别
+持有 5,491 / 5,533 / 3,745 个互不重复的 OuterBlockId。解析结果、原 journal/report 哈希和证据边界写入
+`scheduler-diagnosis.json`；没有重开或改写原 resume。这个状态排除了“最后三个 Segment 从未到达”，并表明它们
+已经接收大量有效方程但尚未达到恢复阈值。
+
+当时 sender 对每个 8 MiB Segment 连续发送一整个 round，再切到下一 Segment；而默认 Receiver 只允许 4 个活动
+Outer decoder。真实链只观察约 24% sender 帧，一个 Segment 在单轮结束前通常不能完成，于是最先看到的四个
+Segment 占满 decoder，第五个及以后只能在后续空位出现时重试。长突发还让同一时段失真集中损伤单个 Segment。
+这正是总体设计要求 `ActiveSegmentWindow` 逐帧 temporal striping、且 Receiver 资源必须覆盖 W 的未实现部分。
+
+### 15.3 最小产品修正
+
+- Unified sender 的 `ActiveSegmentWindowSize` 冻结为 8；每个逻辑帧只推进窗口内一个 Segment，顺序为
+  `0,1,...,7,0,1,...`。每个 Segment 保留独立 Wirehair/DirectRepeat encoder、scheduler 和 repair-ID high-water；
+  一个窗口全部完成 round 后才滑到下一窗口或推进 Carousel pass。
+- Unified Receiver 的 `maxActiveOuterFecDecoders` 同步从 4 提升到 8；旧视觉 Profile 的默认值仍为 4。
+  默认 1 GiB 总 decoder 预算不变，本次 8×8 MiB 实测保留 457,201,696 bytes，仍在原预算内。
+- 崩溃恢复只在 window/pass 边界持久化 Carousel 位置，避免每帧原子替换；每个 Segment 的 repair lease 仍在任何
+  可能展示前单独持久化，重启不会复用可能已经显示过的 repair ID。
+- Decoder resume journal 允许并保留 8 个活动 Segment；第 9 个仍 fail closed。超过产品支持的 policy 同样拒绝。
+- Decoder report/journal 新增 active limit/current/peak、reserved bytes current/peak、`DeferredResourceBusy` 与
+  Outer-FEC quota 的真实计数。专用 G21 Gate 对任一资源延期/配额事件保持 fail closed，避免再次只表现为超时。
+- Wire format、SC6 V3 identity/layout、15 Hz、Control 交织、FullRepair、Wirehair 参数、单 owner、250 ms、质量、
+  whole digest、安全发布和 final reopen 门均未改变；没有 provider-specific 分支或隐藏 IPC。
+
+### 15.4 稀疏抽帧 64 MiB 定向闭环
+
+新增隐藏的 no-raster G21 probe 复用产品 `SenderFrameBuilder`、真实 Wirehair V2 和 `ReceiverIngress`，构造 8×8 MiB
+确定性 RAW source。它让约 75% sender 帧完全不可观察（不进入 Decoder unique-frame 分母），并在可观察帧中继续
+注入 4-frame burst Data erasure（Bootstrap 仍计入分母），强制经历多个 fresh-repair pass。冻结结果为：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Sender / observed unique frames | 15,795 / 3,870 |
+| Unobserved / accepted-but-Data-erased | 11,925 / 118 |
+| Completed Carousel passes | 3 |
+| Unique Outer symbols | 51,081 |
+| Verified Segments / exact bytes | 8 / 67,108,864 |
+| Receiver active decoder peak | 8 |
+| Receiver reserved decoder peak | 457,201,696 B |
+| DeferredResourceBusy / quota exceeded | 0 / 0 |
+| Verified encoded B/observed unique frame | **17,340.7917** |
+
+所有 8 个 Segment 的 encoded/raw digest 和 source byte equality 均通过；15,795 sender frames 也低于现场 1,800 秒
+hard maximum 可提交的约 27,000 帧。其余最小 Release 验证为：8-Segment 调度 90 assertions、resume 81、Decoder
+report 112、单 Segment scheduler/raster 邻接 37/128，以及 `PBUnifiedRemoteGate --self-test`；全部通过。
+
+该 probe 没有编码/显示/捕获屏幕像素，所以只关闭调度、Outer FEC、资源和 digest 的确定性回归，不冒充 live。
+本轮没有运行 full CTest、ASan、GPU/corpus、实际屏幕或 G22。提交后必须重建同身份 Encoder/Decoder，再跑真实
+64 MiB；还需 Base Luma 独立恢复（或同一 actual capture 的 neutralized 派生）。因此 **G21 继续 PARTIAL，G22 未开始**。

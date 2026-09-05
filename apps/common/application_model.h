@@ -478,6 +478,14 @@ struct DecoderSnapshot
     std::uint64_t outerRecoveryReadyEvents = 0;
     std::uint64_t outerResourceRejections = 0;
     std::uint64_t outerConflictRejections = 0;
+    std::uint64_t outerDeferredResourceBusyCount = 0;
+    std::uint64_t outerFecQuotaExceededCount = 0;
+    std::uint64_t outerActiveDecoderLimit = 0;
+    std::uint64_t outerTotalDecoderByteLimit = 0;
+    std::uint64_t outerActiveDecoderCount = 0;
+    std::uint64_t outerPeakActiveDecoderCount = 0;
+    std::uint64_t outerReservedDecoderBytes = 0;
+    std::uint64_t outerPeakReservedDecoderBytes = 0;
     std::uint64_t captureStallCount = 0;
     std::uint64_t captureStallTotalMilliseconds = 0;
     std::uint64_t captureStallMaximumMilliseconds = 0;

@@ -1,6 +1,7 @@
 #include "decoder_resume_store.h"
 #include "encoder_atomic_replace_retry.h"
 #include "encoder_session_store.h"
+#include "sender_carousel_scheduler.h"
 
 #include "pbreceiver/receiver_ingress.h"
 #include "pbprotocol/blake3_digest.h"
@@ -778,6 +779,78 @@ TEST_CASE("Decoder resume journal rejects active cache state above the restart d
         sessionTag, fixture.sessionControl, restartPolicy, store, loaded);
     REQUIRE_FALSE(restartStatus);
     REQUIRE(restartStatus.message == "resume journal exceeds the active Segment limit");
+    REQUIRE_FALSE(store);
+}
+
+TEST_CASE("Unified resume journal retains an eight-Segment window and rejects a ninth active Segment",
+    "[application][g21][unified][decoder][resume][journal][quota]")
+{
+    ScratchDirectory scratch(L"decoder-resume-unified-eight-active");
+    ResumeFixture fixture;
+    constexpr std::size_t segmentCount = pbapp::senderUnifiedActiveSegmentWindowSize;
+    fixture.policy.maxActiveOuterFecDecoders = segmentCount;
+    fixture.session.originalFileSize = fixture.rawBytes.size() * (segmentCount + 1ULL);
+    fixture.session.segmentCount = segmentCount + 1ULL;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    const auto sessionSize = pbprotocol::GetSerializedSize(fixture.session);
+    REQUIRE(sessionSize);
+    std::vector<std::byte> sessionPayload(sessionSize.Value());
+    REQUIRE(pbprotocol::SerializeSessionDescriptor(fixture.session, fixture.policy, sessionPayload));
+    fixture.sessionControl = WrapControl(pbprotocol::ControlRecordType::SessionDescriptor, 1,
+        sessionTag, sessionPayload);
+
+    std::vector<std::vector<std::byte>> segmentControls(segmentCount + 1ULL);
+    for (std::size_t segmentIndex = 0; segmentIndex < segmentControls.size(); segmentIndex++)
+    {
+        pbprotocol::SegmentDescriptor descriptor = fixture.segment;
+        descriptor.segmentOrdinal = segmentIndex;
+        descriptor.rawOffset = segmentIndex * fixture.rawBytes.size();
+        const auto descriptorSize = pbprotocol::GetSerializedSize(descriptor);
+        REQUIRE(descriptorSize);
+        std::vector<std::byte> descriptorPayload(descriptorSize.Value());
+        REQUIRE(pbprotocol::SerializeSegmentDescriptor(descriptor, fixture.session,
+            fixture.policy, descriptorPayload));
+        segmentControls[segmentIndex] = WrapControl(pbprotocol::ControlRecordType::SegmentDescriptor,
+            3 + segmentIndex, sessionTag, descriptorPayload);
+    }
+
+    pbapp::DecoderResumeLoadedState loaded;
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl,
+        fixture.policy, store, loaded));
+    for (std::size_t segmentIndex = 0; segmentIndex < segmentControls.size(); segmentIndex++)
+    {
+        REQUIRE(store->RecordSegmentControl(segmentControls[segmentIndex]));
+        pbapp::DecoderResumeAcceptedBlock block;
+        block.segmentOrdinal = segmentIndex;
+        block.outerBlockId = 0;
+        block.declaredPayloadBytes = 16;
+        block.paddedPayload.assign(fixture.rawBytes.begin(), fixture.rawBytes.begin() + 16);
+        const pbapp::DecoderResumeStoreStatus status = store->RecordAcceptedBlock(block);
+        if (segmentIndex < segmentCount)
+        {
+            REQUIRE(status);
+        }
+        else
+        {
+            REQUIRE_FALSE(status);
+            REQUIRE(status.message == "resume active Segment limit exceeded");
+        }
+    }
+    REQUIRE(store->GetActiveBlockCount() == segmentCount);
+    REQUIRE(store->Checkpoint());
+    store.reset();
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl,
+        fixture.policy, store, loaded));
+    REQUIRE(loaded.activeBlocks.size() == segmentCount);
+    store.reset();
+
+    pbprotocol::ReceiverResourcePolicy unsupportedPolicy = fixture.policy;
+    unsupportedPolicy.maxActiveOuterFecDecoders = segmentCount + 1ULL;
+    const pbapp::DecoderResumeStoreStatus unsupportedStatus = pbapp::DecoderResumeStore::Open(
+        scratch.GetPath(), sessionTag, fixture.sessionControl, unsupportedPolicy, store, loaded);
+    REQUIRE_FALSE(unsupportedStatus);
+    REQUIRE(unsupportedStatus.message == "resume store configuration is invalid");
     REQUIRE_FALSE(store);
 }
 

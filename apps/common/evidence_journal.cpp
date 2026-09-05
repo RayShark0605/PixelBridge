@@ -386,6 +386,14 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"outerRecoveryReadyEvents\":" << snapshot.outerRecoveryReadyEvents <<
         ",\"outerResourceRejections\":" << snapshot.outerResourceRejections <<
         ",\"outerConflictRejections\":" << snapshot.outerConflictRejections <<
+        ",\"outerDeferredResourceBusyCount\":" << snapshot.outerDeferredResourceBusyCount <<
+        ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount <<
+        ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit <<
+        ",\"outerTotalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit <<
+        ",\"outerActiveDecoderCount\":" << snapshot.outerActiveDecoderCount <<
+        ",\"outerPeakActiveDecoderCount\":" << snapshot.outerPeakActiveDecoderCount <<
+        ",\"outerReservedDecoderBytes\":" << snapshot.outerReservedDecoderBytes <<
+        ",\"outerPeakReservedDecoderBytes\":" << snapshot.outerPeakReservedDecoderBytes <<
         ",\"remoteMetricFrames\":" << snapshot.remoteMetricFrames <<
         ",\"remoteMetricSamples\":" << snapshot.remoteMetricSamples <<
         ",\"remoteSymbolSamples\":" << snapshot.remoteSymbolSamples <<

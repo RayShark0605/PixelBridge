@@ -3,6 +3,7 @@
 #include "local_desktop_runtime.h"
 #include "pbprotocol/checked_integer.h"
 #include "run_report.h"
+#include "sender_carousel_scheduler.h"
 
 #include <Windows.h>
 
@@ -233,7 +234,17 @@ std::string DecoderReport(const pbapp::DecoderSnapshot& snapshot, const std::uin
         << ",\"demodGpuTotal100ns\":" << snapshot.demodGpuTimeTotal100ns
         << ",\"demodPendingHighWater\":" << snapshot.demodPendingHighWater
         << ",\"resultQueueHighWater\":" << snapshot.resultQueueHighWater << ",\"staleResultDrops\":" << snapshot.staleResultDrops
-        << ",\"acceptedTransportBlocks\":" << snapshot.acceptedTransportBlocks << ",\"outerConflictRejections\":" << snapshot.outerConflictRejections
+        << ",\"acceptedTransportBlocks\":" << snapshot.acceptedTransportBlocks
+        << ",\"outerResourceRejections\":" << snapshot.outerResourceRejections
+        << ",\"outerConflictRejections\":" << snapshot.outerConflictRejections
+        << ",\"outerDeferredResourceBusyCount\":" << snapshot.outerDeferredResourceBusyCount
+        << ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount
+        << ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit
+        << ",\"outerTotalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit
+        << ",\"outerActiveDecoderCount\":" << snapshot.outerActiveDecoderCount
+        << ",\"outerPeakActiveDecoderCount\":" << snapshot.outerPeakActiveDecoderCount
+        << ",\"outerReservedDecoderBytes\":" << snapshot.outerReservedDecoderBytes
+        << ",\"outerPeakReservedDecoderBytes\":" << snapshot.outerPeakReservedDecoderBytes
         << ",\"independentFalseAcceptedCodewordOracle\":null,\"oracleUnavailableReason\":\"No independent sender truth supplied to receiver\"}}";
     return stream.str();
 }
@@ -242,8 +253,9 @@ bool ReceiverChecksPassed(const pbapp::DecoderSnapshot& snapshot) noexcept
 {
     return snapshot.state == pbapp::DecoderState::Completed && snapshot.wholeFileDigestCheck.value_or(false) &&
         snapshot.finalPublishSucceeded && snapshot.finalReopenVerified.value_or(false) &&
-        !snapshot.resumeStateLoaded && !snapshot.outputRecoveredAfterPublish && snapshot.outerConflictRejections == 0 &&
-        snapshot.errorDetail.empty();
+        !snapshot.resumeStateLoaded && !snapshot.outputRecoveredAfterPublish && snapshot.outerResourceRejections == 0 &&
+        snapshot.outerConflictRejections == 0 && snapshot.outerDeferredResourceBusyCount == 0 &&
+        snapshot.outerFecQuotaExceededCount == 0 && snapshot.errorDetail.empty();
 }
 
 pbtelemetry::PublishedFrameMetric PublishedMetric(const pbapp::DecoderSnapshot& snapshot) noexcept
@@ -532,12 +544,30 @@ void RunPolicyChecks()
     snapshot.outerConflictRejections = 1;
     Require(!ReceiverChecksPassed(snapshot), "conflict accepted by remote gate");
     snapshot.outerConflictRejections = 0;
+    snapshot.outerResourceRejections = 1;
+    Require(!ReceiverChecksPassed(snapshot), "Outer FEC resource rejection accepted by remote gate");
+    snapshot.outerResourceRejections = 0;
+    snapshot.outerDeferredResourceBusyCount = 1;
+    Require(!ReceiverChecksPassed(snapshot), "deferred Outer FEC resource pressure accepted by remote gate");
+    snapshot.outerDeferredResourceBusyCount = 0;
+    snapshot.outerFecQuotaExceededCount = 1;
+    Require(!ReceiverChecksPassed(snapshot), "Outer FEC decoder quota event accepted by remote gate");
+    snapshot.outerFecQuotaExceededCount = 0;
     snapshot.errorDetail = "Post-publish cleanup warning";
     Require(!ReceiverChecksPassed(snapshot), "published file with cleanup warning accepted as a clean gate");
     snapshot.errorDetail.clear();
     snapshot.unifiedTelemetry.frameCoverageComplete = false;
     Require(!PublishedMetric(snapshot).bytesPerUniqueFrame, "incomplete frame coverage accepted");
-    Require(DecoderReport(snapshot, 7).find("\"safetyRevalidations\":7") != std::string::npos &&
+    snapshot.outerActiveDecoderLimit = pbapp::senderUnifiedActiveSegmentWindowSize;
+    snapshot.outerTotalDecoderByteLimit = 1073741824ULL;
+    snapshot.outerPeakActiveDecoderCount = pbapp::senderUnifiedActiveSegmentWindowSize;
+    const std::string decoderReport = DecoderReport(snapshot, 7);
+    Require(decoderReport.find("\"safetyRevalidations\":7") != std::string::npos &&
+        decoderReport.find("\"outerDeferredResourceBusyCount\":0") != std::string::npos &&
+        decoderReport.find("\"outerFecQuotaExceededCount\":0") != std::string::npos &&
+        decoderReport.find("\"outerActiveDecoderLimit\":8") != std::string::npos &&
+        decoderReport.find("\"outerTotalDecoderByteLimit\":1073741824") != std::string::npos &&
+        decoderReport.find("\"outerPeakActiveDecoderCount\":8") != std::string::npos &&
         GateReport(snapshot).find("\"G21Completed\":false") != std::string::npos, "report boundary mismatch");
     std::cout << "PASS: remote gate policy; no monitor enumeration, capture, windows, files or input\n";
 }

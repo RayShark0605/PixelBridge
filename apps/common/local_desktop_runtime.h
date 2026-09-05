@@ -311,6 +311,45 @@ struct ApplicationHeadlessProbeSnapshot
     std::vector<ApplicationHeadlessSegmentProbeSnapshot> segments;
 };
 
+struct UnifiedTemporalStripingProbeSnapshot
+{
+    std::uint32_t configuredWindowSize = 0;
+    std::uint64_t unifiedReceiverActiveDecoderLimit = 0;
+    std::uint64_t legacyReceiverActiveDecoderLimit = 0;
+    std::uint64_t receiverActiveDecoderCount = 0;
+    std::uint64_t receiverDeferredResourceBusyCount = 0;
+    std::uint64_t passZeroLogicalFrames = 0;
+    std::uint64_t durablePositionUpdateCount = 0;
+    std::uint32_t peakResidentEncodedSegmentCount = 0;
+    std::uint64_t peakResidentEncodedSegmentBytes = 0;
+    std::vector<std::uint64_t> initialSegmentOrdinals;
+    std::vector<std::uint64_t> initialCheckpointSegmentOrdinals;
+    std::vector<std::uint32_t> blockCounts;
+    std::vector<std::uint64_t> passZeroScheduledEquationCounts;
+    std::vector<std::uint64_t> passZeroUniqueOuterBlockCounts;
+    std::vector<std::uint32_t> passZeroMaximumOuterBlockIds;
+    std::vector<std::uint32_t> passOneFirstRepairIds;
+    std::vector<std::uint64_t> repairIdLeaseEnds;
+};
+
+struct UnifiedLargeWindowRecoveryProbeSnapshot
+{
+    std::uint64_t sourceBytes = 0;
+    std::uint64_t senderLogicalFrames = 0;
+    std::uint64_t uniqueLogicalFrames = 0;
+    std::uint64_t unobservedSenderLogicalFrames = 0;
+    std::uint64_t intentionallyErasedLogicalFrames = 0;
+    std::uint64_t completedCarouselPasses = 0;
+    std::uint64_t completedSegments = 0;
+    std::uint64_t uniqueOuterSymbols = 0;
+    std::uint64_t receiverPeakActiveDecoderCount = 0;
+    std::uint64_t receiverPeakReservedDecoderBytes = 0;
+    std::uint64_t receiverDeferredResourceBusyCount = 0;
+    std::uint64_t receiverOuterFecQuotaExceededCount = 0;
+    double verifiedEncodedBytesPerUniqueFrame = 0;
+    bool everySegmentDigestVerified = false;
+};
+
 struct ApplicationLargeOutputConfirmationProbeSnapshot
 {
     DecoderSnapshot awaitingDecision;
@@ -349,6 +388,10 @@ public:
 class ApplicationRuntimeTestAccess
 {
 public:
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedTemporalStriping(
+        UnifiedTemporalStripingProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedLargeWindowRecovery(
+        UnifiedLargeWindowRecoveryProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeHeadlessMultiSegmentFile(const std::wstring& sourcePath,
         const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
         const ApplicationHeadlessProbeOptions& options, ApplicationHeadlessProbeSnapshot& output) noexcept;

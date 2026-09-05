@@ -251,6 +251,73 @@ void VerifyPublishedPixels(const std::vector<PresentedFrame>& frames, const std:
 
 } // namespace
 
+TEST_CASE("Unified sender stripes eight active Segments while the matching receiver retains all eight",
+    "[application][g21][unified][striping][receiver-resource]")
+{
+    pbapp::UnifiedTemporalStripingProbeSnapshot probe;
+    const pbapp::RuntimeStatus status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedTemporalStriping(probe);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(probe.configuredWindowSize == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.unifiedReceiverActiveDecoderLimit == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.legacyReceiverActiveDecoderLimit == 4);
+    REQUIRE(probe.receiverActiveDecoderCount == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.receiverDeferredResourceBusyCount == 0);
+    REQUIRE(probe.initialSegmentOrdinals.size() == 2 * pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.initialCheckpointSegmentOrdinals.size() == probe.initialSegmentOrdinals.size());
+    for (std::size_t index = 0; index < probe.initialSegmentOrdinals.size(); index++)
+    {
+        CHECK(probe.initialSegmentOrdinals[index] == index % pbapp::senderUnifiedActiveSegmentWindowSize);
+        CHECK(probe.initialCheckpointSegmentOrdinals[index] == 0);
+    }
+    REQUIRE(probe.passZeroLogicalFrames > probe.initialSegmentOrdinals.size());
+    REQUIRE(probe.durablePositionUpdateCount == 1);
+    REQUIRE(probe.peakResidentEncodedSegmentCount == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.peakResidentEncodedSegmentBytes == 8ULL * 64ULL * 1024ULL);
+    REQUIRE(probe.blockCounts.size() == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.passZeroScheduledEquationCounts.size() == probe.blockCounts.size());
+    REQUIRE(probe.passZeroUniqueOuterBlockCounts.size() == probe.blockCounts.size());
+    REQUIRE(probe.passZeroMaximumOuterBlockIds.size() == probe.blockCounts.size());
+    REQUIRE(probe.passOneFirstRepairIds.size() == probe.blockCounts.size());
+    REQUIRE(probe.repairIdLeaseEnds.size() == probe.blockCounts.size());
+    for (std::size_t segmentIndex = 0; segmentIndex < probe.blockCounts.size(); segmentIndex++)
+    {
+        CHECK(probe.blockCounts[segmentIndex] > 2);
+        CHECK(probe.passZeroScheduledEquationCounts[segmentIndex] ==
+            probe.passZeroUniqueOuterBlockCounts[segmentIndex]);
+        CHECK(probe.passZeroMaximumOuterBlockIds[segmentIndex] + 1ULL ==
+            probe.passZeroScheduledEquationCounts[segmentIndex]);
+        CHECK(probe.passOneFirstRepairIds[segmentIndex] ==
+            probe.passZeroMaximumOuterBlockIds[segmentIndex] + 1ULL);
+        CHECK(probe.repairIdLeaseEnds[segmentIndex] ==
+            probe.passOneFirstRepairIds[segmentIndex] + probe.passZeroScheduledEquationCounts[segmentIndex]);
+    }
+}
+
+TEST_CASE("Unified eight-Segment window recovers 64 MiB through sparse observations and bounded burst erasures",
+    "[.g21-large-window][application][g21][unified][large-window][receiver]")
+{
+    pbapp::UnifiedLargeWindowRecoveryProbeSnapshot probe;
+    const pbapp::RuntimeStatus status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedLargeWindowRecovery(probe);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(probe.sourceBytes == 8ULL * pbprotocol::kDefaultSourceSegmentTargetBytes);
+    REQUIRE(probe.completedSegments == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.everySegmentDigestVerified);
+    REQUIRE(probe.senderLogicalFrames > probe.uniqueLogicalFrames);
+    REQUIRE(probe.senderLogicalFrames <= 27000);
+    REQUIRE(probe.uniqueLogicalFrames > 0);
+    REQUIRE(probe.unobservedSenderLogicalFrames > 0);
+    REQUIRE(probe.intentionallyErasedLogicalFrames > 0);
+    REQUIRE(probe.completedCarouselPasses > 0);
+    REQUIRE(probe.uniqueOuterSymbols > 0);
+    REQUIRE(probe.receiverPeakActiveDecoderCount == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.receiverPeakReservedDecoderBytes > 0);
+    REQUIRE(probe.receiverDeferredResourceBusyCount == 0);
+    REQUIRE(probe.receiverOuterFecQuotaExceededCount == 0);
+    REQUIRE(probe.verifiedEncodedBytesPerUniqueFrame >= 16.0 * 1024.0);
+}
+
 TEST_CASE("Unified Encoder product policy is shared and rejects legacy tuning", "[application][g15][model]")
 {
     Scratch scratch;

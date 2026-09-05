@@ -241,6 +241,14 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     snapshot.outerRecoveryReadyEvents = 1;
     snapshot.outerResourceRejections = 4;
     snapshot.outerConflictRejections = 5;
+    snapshot.outerDeferredResourceBusyCount = 6;
+    snapshot.outerFecQuotaExceededCount = 7;
+    snapshot.outerActiveDecoderLimit = 8;
+    snapshot.outerTotalDecoderByteLimit = 1073741824;
+    snapshot.outerActiveDecoderCount = 3;
+    snapshot.outerPeakActiveDecoderCount = 8;
+    snapshot.outerReservedDecoderBytes = 3000;
+    snapshot.outerPeakReservedDecoderBytes = 8000;
     snapshot.captureStallCount = 2;
     snapshot.captureStallTotalMilliseconds = 3000;
     snapshot.visualStallCount = 4;
@@ -282,7 +290,7 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     REQUIRE(json.find("\"erroneousCodedBits\":7") != std::string::npos);
     REQUIRE(json.find("\"falseAcceptedCodewords\":null") != std::string::npos);
     REQUIRE(json.find("\"falseAcceptedCodewordsUnavailableReason\":\"Production receive has no independent truth oracle\"") != std::string::npos);
-    REQUIRE(json.find("\"outerAdmission\":{\"uniqueSymbols\":99,\"identicalDuplicateSymbols\":7,\"recoveryAlreadyReadySymbols\":3,\"alreadyCompletedSymbols\":2,\"recoveryReadyEvents\":1,\"resourceRejections\":4,\"conflictRejections\":5}") != std::string::npos);
+    REQUIRE(json.find("\"outerAdmission\":{\"uniqueSymbols\":99,\"identicalDuplicateSymbols\":7,\"recoveryAlreadyReadySymbols\":3,\"alreadyCompletedSymbols\":2,\"recoveryReadyEvents\":1,\"resourceRejections\":4,\"conflictRejections\":5,\"deferredResourceBusyCount\":6,\"outerFecQuotaExceededCount\":7,\"activeDecoderLimit\":8,\"totalDecoderByteLimit\":1073741824,\"activeDecoderCount\":3,\"peakActiveDecoderCount\":8,\"reservedDecoderBytes\":3000,\"peakReservedDecoderBytes\":8000}") != std::string::npos);
     REQUIRE(json.find("\"remoteDuplicateRefinementAttempts\":8") != std::string::npos);
     REQUIRE(json.find("\"remoteDuplicateRefinementRecoveries\":1") != std::string::npos);
     REQUIRE(json.find("\"remoteMetricTelemetry\":{\"frames\":9,\"samples\":583200,\"zeroMagnitudeMetrics\":29160") != std::string::npos);
