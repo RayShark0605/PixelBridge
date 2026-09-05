@@ -223,7 +223,13 @@ TEST_CASE("G17 actual Unified pixels feed truthful final reports independently o
 TEST_CASE("G17 fallback duplicates and resumed completion retain honest frame coverage", "[application][report][g17]")
 {
     G17Scratch scratch;
-    const std::vector<std::byte> bytes(8ULL * 1024 * 1024 + 1, std::byte{0x31});
+    // Segment 0 completes from its first striped frame, while the raw Segment 1
+    // needs both of its initial-burst frames. This keeps the fallback boundary
+    // deterministic after the product window increased to eight Segments.
+    constexpr std::size_t secondSegmentBytes = 16ULL * 1024;
+    std::vector<std::byte> bytes(8ULL * 1024 * 1024 + secondSegmentBytes, std::byte{0x31});
+    const std::vector<std::byte> secondSegment = g16test::RawBytes(secondSegmentBytes);
+    std::copy(secondSegment.begin(), secondSegment.end(), bytes.end() - secondSegment.size());
     const auto frames = g16test::MakeFrames(scratch.Directory(L"tx"), bytes, 4);
     const auto config = pbapp::MakeUnifiedDecoderConfig(scratch.Directory(L"out").wstring(), g16test::Region());
     bool publishedInSameRun = false;
