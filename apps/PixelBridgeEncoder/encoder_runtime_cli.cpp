@@ -467,20 +467,26 @@ private:
         !options.experimentMonitorDeviceName.empty();
     const bool anyMonitorArgument = !options.protectedMonitorDeviceName.empty() ||
         !options.experimentMonitorDeviceName.empty() || options.singleMonitorFullscreenSpecified;
+    const bool unifiedSingleMonitorFullscreen = options.profile == pbapp::VisualProfile::UnifiedLc4 &&
+        options.singleMonitorFullscreenSpecified && !options.protectedMonitorSpecified &&
+        !options.experimentMonitorSpecified;
     if ((options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
          (dualMonitorSafety == options.singleMonitorFullscreenSpecified || !options.remoteChannel)) ||
-        (options.profile != pbapp::VisualProfile::RemoteVisualLowFps && anyMonitorArgument) ||
+        (options.profile != pbapp::VisualProfile::RemoteVisualLowFps && anyMonitorArgument &&
+         !unifiedSingleMonitorFullscreen) ||
         (options.singleMonitorFullscreenSpecified &&
          (options.protectedMonitorSpecified || options.experimentMonitorSpecified)))
     {
         return false;
     }
-    if (options.singleMonitorFullscreenSpecified &&
+    if (options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
+        options.singleMonitorFullscreenSpecified &&
         (!options.manualStop || !options.loopUntilManualStop || options.secondsSpecified))
     {
         return false;
     }
-    if (options.loopUntilManualStop && !options.singleMonitorFullscreenSpecified)
+    if (options.loopUntilManualStop &&
+        (!options.singleMonitorFullscreenSpecified || !options.manualStop))
     {
         return false;
     }
@@ -579,7 +585,9 @@ private:
 void Usage()
 {
     std::cerr << "product: PixelBridgeEncoder --headless-broadcast --source PATH [--profile unified] "
-                 "[--logical-fps 1..60; default=15] [--origin X Y] [--seconds 1..600; default=30] "
+                 "[--logical-fps 1..60; default=15] [--origin X Y | --single-monitor-fullscreen primary|DEVICE] "
+                 "[--channel local|remote] [--remote-provider NAME | --remote-metadata PATH] "
+                 "[--seconds 1..600; default=30] "
                  "[--report NEW_PATH]; automatic RAW/zstd level 3, Control repetitions=4\n"
                  "historical diagnostics: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
                  "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on "
@@ -653,82 +661,82 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
             return 2;
         }
     }
-    if (options.profile == pbapp::VisualProfile::RemoteVisualLowFps)
+    if (options.singleMonitorFullscreenSpecified &&
+        (options.profile == pbapp::VisualProfile::UnifiedLc4 ||
+         options.profile == pbapp::VisualProfile::RemoteVisualLowFps))
     {
-        if (options.singleMonitorFullscreenSpecified)
+        pbapp::MonitorInfo fullscreenMonitor;
+        std::string monitorError;
+        if (!ResolveFullscreenMonitor(options.singleMonitorFullscreenDeviceName,
+            fullscreenMonitor, monitorError))
         {
-            pbapp::MonitorInfo fullscreenMonitor;
-            std::string monitorError;
-            if (!ResolveFullscreenMonitor(options.singleMonitorFullscreenDeviceName,
-                fullscreenMonitor, monitorError))
-            {
-                std::cerr << monitorError << '\n';
-                return 2;
-            }
-            try
-            {
-                const std::string experimentIdentity = WideToUtf8(fullscreenMonitor.deviceName);
-                if (!config.remoteMetadata.protectedMonitorIdentity.empty() ||
-                    (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
-                     config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
-                {
-                    std::cerr << "single-monitor fullscreen identities conflict with metadata preset\n";
-                    return 2;
-                }
-                config.remoteMetadata.protectedMonitorIdentity.clear();
-                config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
-                config.remoteMetadata.computerBDisplayResolution =
-                    std::to_string(fullscreenMonitor.physicalRect.right - fullscreenMonitor.physicalRect.left) +
-                    "x" + std::to_string(fullscreenMonitor.physicalRect.bottom - fullscreenMonitor.physicalRect.top);
-                config.remoteMetadata.computerBRefreshRate = fullscreenMonitor.refreshRate;
-                config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{
-                    fullscreenMonitor.physicalRect.left, fullscreenMonitor.physicalRect.top};
-                config.singleMonitorFullscreen = std::move(fullscreenMonitor);
-            }
-            catch (const std::exception& exception)
-            {
-                std::cerr << "single-monitor fullscreen identity conversion failed: " << exception.what() << '\n';
-                return 2;
-            }
+            std::cerr << monitorError << '\n';
+            return 2;
         }
-        else
+        try
         {
-            pbapp::MonitorSafetySelection safetySelection;
-            const pbapp::MonitorSafetyStatus safety = pbapp::ResolveMonitorSafetySelection(
-                options.protectedMonitorDeviceName, options.experimentMonitorDeviceName, safetySelection);
-            if (!safety)
+            const std::string experimentIdentity = WideToUtf8(fullscreenMonitor.deviceName);
+            if (!config.remoteMetadata.protectedMonitorIdentity.empty() ||
+                (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
+                 config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
             {
-                std::cerr << "remote-lf4 monitor safety resolution failed: " <<
-                    pbapp::GetMonitorSafetyErrorName(safety.code) << '\n';
+                std::cerr << "single-monitor fullscreen identities conflict with metadata preset\n";
                 return 2;
             }
-            try
+            config.remoteMetadata.protectedMonitorIdentity.clear();
+            config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
+            config.remoteMetadata.computerBDisplayResolution =
+                std::to_string(fullscreenMonitor.physicalRect.right - fullscreenMonitor.physicalRect.left) +
+                "x" + std::to_string(fullscreenMonitor.physicalRect.bottom - fullscreenMonitor.physicalRect.top);
+            config.remoteMetadata.computerBRefreshRate = fullscreenMonitor.refreshRate;
+            config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{
+                fullscreenMonitor.physicalRect.left, fullscreenMonitor.physicalRect.top};
+            config.singleMonitorFullscreen = std::move(fullscreenMonitor);
+        }
+        catch (const std::exception& exception)
+        {
+            std::cerr << "single-monitor fullscreen identity conversion failed: " << exception.what() << '\n';
+            return 2;
+        }
+    }
+    if (options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
+        !options.singleMonitorFullscreenSpecified)
+    {
+        pbapp::MonitorSafetySelection safetySelection;
+        const pbapp::MonitorSafetyStatus safety = pbapp::ResolveMonitorSafetySelection(
+            options.protectedMonitorDeviceName, options.experimentMonitorDeviceName, safetySelection);
+        if (!safety)
+        {
+            std::cerr << "remote-lf4 monitor safety resolution failed: " <<
+                pbapp::GetMonitorSafetyErrorName(safety.code) << '\n';
+            return 2;
+        }
+        try
+        {
+            const std::string protectedIdentity = WideToUtf8(safetySelection.protectedMonitor.deviceName);
+            const std::string experimentIdentity = WideToUtf8(safetySelection.experimentMonitor.deviceName);
+            if ((!config.remoteMetadata.protectedMonitorIdentity.empty() &&
+                 config.remoteMetadata.protectedMonitorIdentity != protectedIdentity) ||
+                (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
+                 config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
             {
-                const std::string protectedIdentity = WideToUtf8(safetySelection.protectedMonitor.deviceName);
-                const std::string experimentIdentity = WideToUtf8(safetySelection.experimentMonitor.deviceName);
-                if ((!config.remoteMetadata.protectedMonitorIdentity.empty() &&
-                     config.remoteMetadata.protectedMonitorIdentity != protectedIdentity) ||
-                    (!config.remoteMetadata.experimentMonitorIdentity.empty() &&
-                     config.remoteMetadata.experimentMonitorIdentity != experimentIdentity))
-                {
-                    std::cerr << "remote-lf4 monitor identities conflict with metadata preset\n";
-                    return 2;
-                }
-                config.remoteMetadata.protectedMonitorIdentity = protectedIdentity;
-                config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
-                config.remoteMetadata.computerBDisplayResolution =
-                    std::to_string(safetySelection.experimentMonitor.physicalRect.right -
-                        safetySelection.experimentMonitor.physicalRect.left) + "x" +
-                    std::to_string(safetySelection.experimentMonitor.physicalRect.bottom -
-                        safetySelection.experimentMonitor.physicalRect.top);
-                config.remoteMetadata.computerBRefreshRate = safetySelection.experimentMonitor.refreshRate;
-                config.monitorSafety = std::move(safetySelection);
-            }
-            catch (const std::exception& exception)
-            {
-                std::cerr << "remote-lf4 monitor identity conversion failed: " << exception.what() << '\n';
+                std::cerr << "remote-lf4 monitor identities conflict with metadata preset\n";
                 return 2;
             }
+            config.remoteMetadata.protectedMonitorIdentity = protectedIdentity;
+            config.remoteMetadata.experimentMonitorIdentity = experimentIdentity;
+            config.remoteMetadata.computerBDisplayResolution =
+                std::to_string(safetySelection.experimentMonitor.physicalRect.right -
+                    safetySelection.experimentMonitor.physicalRect.left) + "x" +
+                std::to_string(safetySelection.experimentMonitor.physicalRect.bottom -
+                    safetySelection.experimentMonitor.physicalRect.top);
+            config.remoteMetadata.computerBRefreshRate = safetySelection.experimentMonitor.refreshRate;
+            config.monitorSafety = std::move(safetySelection);
+        }
+        catch (const std::exception& exception)
+        {
+            std::cerr << "remote-lf4 monitor identity conversion failed: " << exception.what() << '\n';
+            return 2;
         }
     }
     pbapp::EncoderRuntime runtime;

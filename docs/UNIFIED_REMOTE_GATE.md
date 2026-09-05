@@ -415,3 +415,56 @@ V3 已证明能在显式跨帧残留与原最强空间/色度链叠加时完整�
 5. 核对 250 ms admission、cold-start 丢帧后的收敛以及 `>=16 KiB/unique logical frame`。
 
 在用户明确恢复配合前不启动 capture、不显示窗口、不操作输入。上述 live 项缺一不可，故 **G21 仍为 PARTIAL，G22 未开始**。
+
+## 11. SC6 V3 远端包纯灰暂停与全屏呈现修正
+
+### 11.1 纯灰不是数据栅格
+
+用户报告 `PixelBridge-G21-RemoteEncoder-bba268e-SC6V3-Full.zip` 的
+`01_Start_Smoke_1MiB_15Hz.bat` 启动后画面为纯灰。对 ZIP、启动脚本和冻结二进制的只读核对确认：
+
+- ZIP SHA-256 仍为 `64cbbefa03d8d3f3b25d33c5a4904f28597fd9ed7eed98f0fa91d3abbce7b4fa`，脚本确实启动
+  `bba268e` 的 SC6 V3 Encoder，并非残缺包或错误 EXE；
+- 旧脚本没有传入 `--single-monitor-fullscreen`，因此创建的是带边框的可缩放窗口；
+- Data Window 的最低显示比例仍为 1.0。只要远控桌面、任务栏、窗口边框或 DPI 使实际 client area 的宽或高低于
+  `1920x1080`，`ResolvePresentationViewport` 就返回 `PausedBelowMinimumScale`；
+- 该状态有意不提交数据 raster，而由 `PresentNeutralMatte` 清成 RGB code value 128，窗口标题同时变为
+  `窗口过小，广播已暂停`。因此纯灰是 fail-closed 暂停面，不是 SC6 payload、shader 编译失败或全灰编码结果。
+
+冻结包内 `bba268e` 原 EXE 在不切换用户桌面的私有 Windows desktop 上用新的 1 MiB source 启动，正常生成并提交了
+一个真实 SC6 V3/layout 10 logical frame 后因不可见 desktop 被 DWM occlude；报告位于
+`build-unified-release/g21-gray-diagnosis-1/`。这排除了包内 raster 生成链损坏，但私有 desktop 结果不属于可见屏幕或
+live remote 证据。
+
+### 11.2 最小产品修正
+
+Unified 产品入口现在显式接受 `--single-monitor-fullscreen primary|DEVICE`。启动时把选定显示器的物理 RECT、
+`HMONITOR`、未旋转状态和 identity 原子写入配置；只接受能容纳 `1920x1080` 且不超过 `3840x2160` 的单块显示器。
+窗口改为精确覆盖该显示器的无边框 topmost popup；1920x1080 canonical SC6 raster 以 1:1 居中拷入同尺寸 framebuffer，
+余区才使用中性灰。因此任务栏或 non-client chrome 不再把数据 client area 压到 1.0 以下，也不会通过缩小、裁剪或插值
+来换取显示成功。
+
+启动前及运行期间仍复核同一 monitor identity、RECT 和拓扑；不支持的尺寸、旋转、identity 冲突或拓扑改变均直接失败，
+不会静默回到普通窗口。原 1.0 最低比例、SC6 V3 wire/layout、质量阈值、250 ms admission、FEC、摘要和安全发布门均未放宽。
+三个 G21 远端启动脚本统一声明 `RemoteVisual / UnknownRemoteLink` operator metadata，并使用 primary fullscreen；provider
+标签仍不进入解码或阈值分支。
+
+### 11.3 定向验证和边界
+
+只执行受影响最小验证：
+
+```powershell
+cmake --build build-unified-release --config Release --target PBApplicationTests PixelBridgeEncoder --parallel 4
+.\build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe '[single-monitor][fullscreen]' --rng-seed 21092026
+```
+
+结果为 3 cases / 35 assertions 全部通过，覆盖 Unified 正例，以及 dual authority、ProtectedMonitor、identity/origin、旋转、
+过小显示器和错误 profile 的拒绝；三个 PowerShell 5.1 AST 均为零错误，并分别只有一组 fullscreen/remote/provider 参数。
+工作树产品 EXE 随后在不可见私有 desktop 上以
+`Unified + RemoteVisual + UnknownRemoteLink + primary fullscreen + 15 Hz` 运行 2 秒，exit 0、stderr 为空；journal 记录
+`singleMonitorFullscreen=true` 和 4 次 topology revalidation，report 记录 `2560x1440` / `\\.\DISPLAY1`。证据位于
+`build-unified-release/g21-gray-diagnosis-3/`。该 probe 使用未重新配置的测试 build tree，嵌入旧 build identity，故只作为
+工作树启动路径证据；提交后的交付 EXE 必须重新配置、重建并单独核对其 identity。
+
+没有切换用户桌面、显示窗口、执行 capture 或操作鼠标键盘；没有运行 full CTest、ASan、native/remote live、64 MiB 或 G22。
+新包仍需真实远端显示和 Decoder 恢复验证；本节只关闭“旧包为什么纯灰”和产品全屏入口缺失，**G21 继续 PARTIAL，G22 未开始**。

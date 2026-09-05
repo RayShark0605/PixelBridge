@@ -861,6 +861,8 @@ freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap t
 
 隐藏 1 MiB OS-CSPRNG 全文件 Gate 进一步把 reference-blend 放进每一帧而不是只做单帧 corpus。三次独立 source/run 分别在 60 / 63 / 59 个唯一逻辑帧完成正式 Wirehair V2、ReceiverIngress、whole digest、安全发布、final reopen 与逐字节比对，得到 **17,476.267 / 16,644.063 / 17,772.475 B/unique logical frame**，均越过 16 KiB 硬门；false accepted/truth mismatch/conflict output 均为 0，32 KiB 工程目标仍未达到。证据封存于 `build-unified-release/g21-sc6-v3-temporal-distortion-1/`，authority 明确是 headless synthetic WARP，不是 live。真实远程 1 MiB/64 MiB、外部摘要和 Base-only 仍未执行，因此 **G21 继续 PARTIAL，G22 未开始**；详见 `UNIFIED_REMOTE_GATE.md` 第 10 节。
 
+**SC6 V3 旧包纯灰与全屏入口修正（2026-09-05）：** `bba268e` 完整包的 15 Hz 脚本仍创建 1920×1080 带边框窗口；远控/DPI/任务栏使 client area 任一轴低于 1.0 时，既有 fail-closed 合同会进入 `PausedBelowMinimumScale` 并呈现 code value 128 的中性灰，所以纯灰不是 payload。Unified CLI/运行时现支持受约束的 primary/DEVICE 单显示器无边框全屏：精确绑定未旋转的 1920×1080..3840×2160 物理 monitor，把 canonical 画布 1:1 居中到同尺寸 framebuffer，启动及运行期复核 identity/RECT；不放宽尺度、裁剪、质量、250 ms、FEC、摘要或发布门。Release 定向 3 cases / 35 assertions、三个 PowerShell 5.1 AST 及不可见私有 desktop 产品启动路径通过；私有 desktop 没有切换用户屏幕且不冒充 live。提交后仍须重新构建同身份完整包并做真实远端 1 MiB/64 MiB，故 **G21 继续 PARTIAL，G22 未开始**；详见 `UNIFIED_REMOTE_GATE.md` 第 11 节。
+
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。
 

@@ -68,13 +68,16 @@ try
     New-Item -ItemType Directory -Path $runRoot | Out-Null
     $reportPath = Join-Path $runRoot 'encoder-report.json'
     $journalPath = Join-Path $runRoot 'encoder-evidence.jsonl'
-    $command = @('--headless-broadcast', '--source', $source, '--profile', 'unified', '--logical-fps', '5', '--seconds', '600', '--manual-stop', '--run-id', $runId, '--report', $reportPath, '--journal', $journalPath)
+    $command = @('--headless-broadcast', '--source', $source, '--profile', 'unified', '--channel', 'remote', '--remote-provider', 'UnknownRemoteLink',
+        '--single-monitor-fullscreen', 'primary', '--logical-fps', '5', '--seconds', '600', '--manual-stop', '--run-id', $runId,
+        '--report', $reportPath, '--journal', $journalPath)
     $manifest = [ordered]@{
         schema = 'PixelBridge.G21.SameSourceDiagnostic.1'; stage = 'diagnostic-5hz'; runId = $runId
         originalRunId = $expectedSource.originalRunId; sourceName = $sourceName; bytes = $sourceItem.Length; sha256 = $sourceHash
         generator = 'Reuse existing remote source; no new payload generated; read lease held throughout run'
         sourceTransferredToDecoder = $false; configuredLogicalFps = 5; hardMaximumBroadcastSeconds = 600
         G21AcceptanceRun = $false; comparison = 'Cadence diagnostic only; does not satisfy the default 15 Hz G21 gate'
+        presentationMode = 'Primary monitor borderless fullscreen; exact 1920x1080 canvas centered at 1:1 in neutral matte'
         build = $identity; encoderSha256 = $actualHash; arguments = $command
     }
     WriteNewText (Join-Path $runRoot 'source-manifest.json') ($manifest | ConvertTo-Json -Depth 5)

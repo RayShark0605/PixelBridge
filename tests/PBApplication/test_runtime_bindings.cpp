@@ -310,6 +310,43 @@ TEST_CASE("remote-lf4 fullscreen composition centers an exact canvas inside non-
     REQUIRE(rejected == std::vector<std::byte>{std::byte{0xA5}});
 }
 
+TEST_CASE("Unified sender accepts only an exact bounded single-monitor fullscreen authority",
+    "[application][validation][unified][encoder][single-monitor][fullscreen][g21]")
+{
+    ScratchDirectory scratch(L"encoder-unified-single-monitor-fullscreen");
+    const auto source = scratch.Path() / L"source.bin";
+    std::ofstream(source, std::ios::binary).put('x');
+    pbapp::EncoderConfig config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 15,
+        pbrenderd3d::PhysicalPoint{0, 0});
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "UnknownRemoteLink";
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.singleMonitorFullscreen = MakeMonitor(1, L"\\\\.\\DISPLAY1", {0, 0, 2560, 1440}, true);
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+
+    config.monitorSafety = pbapp::MonitorSafetySelection{
+        MakeMonitor(2, L"\\\\.\\DISPLAY2", {-1920, 0, 0, 1080}, false), *config.singleMonitorFullscreen};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorSafety.reset();
+    config.remoteMetadata.protectedMonitorIdentity = R"(\\.\DISPLAY2)";
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.remoteMetadata.protectedMonitorIdentity.clear();
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY3)";
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{1, 0};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
+    config.singleMonitorFullscreen->rotation = DXGI_MODE_ROTATION_ROTATE90;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.singleMonitorFullscreen->rotation = DXGI_MODE_ROTATION_IDENTITY;
+    config.singleMonitorFullscreen->physicalRect = {0, 0, 1600, 900};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.singleMonitorFullscreen->physicalRect = {0, 0, 2560, 1440};
+    config.visualProfile = pbapp::VisualProfile::ShapeChroma;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
 TEST_CASE("Production RemoteVisual sender builds LF4 four-codeword carousels past an external completion marker",
     "[application][encoder][sender][remote-visual][lf4][carousel]")
 {

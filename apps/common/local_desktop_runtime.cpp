@@ -332,7 +332,7 @@ void RequireResult(const ResultType& result, const std::string& message)
     return true;
 }
 
-[[nodiscard]] bool IsSupportedRemoteVisualFullscreenMonitor(const MonitorInfo& monitor) noexcept
+[[nodiscard]] bool IsSupportedSenderFullscreenMonitor(const MonitorInfo& monitor) noexcept
 {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
@@ -6455,18 +6455,52 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     }
     if (config.visualProfile == VisualProfile::UnifiedLc4 &&
         (config.logicalVisualFps < 1 || config.logicalVisualFps > 60 || !config.compressionEnabled ||
-            config.compressionLevel != 3 || config.controlRepetitions != 4 || config.monitorSafety || config.singleMonitorFullscreen))
+            config.compressionLevel != 3 || config.controlRepetitions != 4 || config.monitorSafety))
     {
-        return RuntimeStatus::Failure("Unified 产品要求 1..60 Hz、自动 RAW/zstd(level 3)、Control repetitions=4，且不启用旧屏幕实验模式");
+        return RuntimeStatus::Failure("Unified 产品要求 1..60 Hz、自动 RAW/zstd(level 3)、Control repetitions=4，且不启用旧 dual-monitor 实验模式");
     }
     if (IsRemoteVisualProfile(config.visualProfile) &&
         (config.logicalVisualFps == 0 || config.logicalVisualFps > maximumRemoteVisualLogicalFps))
     {
         return RuntimeStatus::Failure("历史 RemoteVisual Profile 的 Logical Visual FPS 必须为 1..5；统一 Profile 将独立使用 1..60");
     }
-    if (config.visualProfile != VisualProfile::RemoteVisualLowFps && config.singleMonitorFullscreen)
+    if (config.visualProfile != VisualProfile::UnifiedLc4 &&
+        config.visualProfile != VisualProfile::RemoteVisualLowFps && config.singleMonitorFullscreen)
     {
-        return RuntimeStatus::Failure("single-monitor fullscreen 仅允许 remote-lf4 profile");
+        return RuntimeStatus::Failure("single-monitor fullscreen 仅允许 Unified 或 remote-lf4 profile");
+    }
+    if (config.singleMonitorFullscreen)
+    {
+        std::uint32_t targetWidth = phase1CanvasWidth;
+        std::uint32_t targetHeight = phase1CanvasHeight;
+        if (!config.monitorClientOrigin ||
+            !TryGetMonitorDimensions(*config.singleMonitorFullscreen, targetWidth, targetHeight))
+        {
+            return RuntimeStatus::Failure("single-monitor fullscreen 物理显示器尺寸或 origin 无效");
+        }
+        RECT target{};
+        const MonitorInfo& monitor = *config.singleMonitorFullscreen;
+        if (!TryMakePhysicalRect(*config.monitorClientOrigin, targetWidth, targetHeight, target) ||
+            !IsSupportedSenderFullscreenMonitor(monitor) || !EqualRect(&target, &monitor.physicalRect) ||
+            monitor.monitor == nullptr)
+        {
+            return RuntimeStatus::Failure(
+                "single-monitor fullscreen 必须精确覆盖一块可容纳 1920x1080 canvas、且不超过 3840x2160 的未旋转物理显示器");
+        }
+        try
+        {
+            const std::string experimentIdentity = Utf8FromWide(monitor.deviceName);
+            if (!config.remoteMetadata.protectedMonitorIdentity.empty() ||
+                config.remoteMetadata.experimentMonitorIdentity != experimentIdentity)
+            {
+                return RuntimeStatus::Failure(
+                    "single-monitor fullscreen metadata 必须不声明 ProtectedMonitor，并精确绑定目标显示器 identity");
+            }
+        }
+        catch (const std::exception&)
+        {
+            return RuntimeStatus::Failure("single-monitor fullscreen monitor identity 不是有效 UTF-16");
+        }
     }
     if (config.visualProfile == VisualProfile::RemoteVisualLowFps)
     {
@@ -6480,44 +6514,13 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
             return RuntimeStatus::Failure(
                 "remote-lf4 必须且只能选择 dual-monitor safety 或显式 single-monitor fullscreen authority");
         }
-        std::uint32_t targetWidth = phase1CanvasWidth;
-        std::uint32_t targetHeight = phase1CanvasHeight;
-        if (singleMonitorFullscreen &&
-            !TryGetMonitorDimensions(*config.singleMonitorFullscreen, targetWidth, targetHeight))
+        if (!singleMonitorFullscreen)
         {
-            return RuntimeStatus::Failure("single-monitor fullscreen 物理显示器尺寸无效");
-        }
-        RECT target{};
-        if (!TryMakePhysicalRect(*config.monitorClientOrigin, targetWidth, targetHeight, target))
-        {
-            return RuntimeStatus::Failure("remote-lf4 Data Window physical RECT 溢出或无效");
-        }
-        if (singleMonitorFullscreen)
-        {
-            const MonitorInfo& monitor = *config.singleMonitorFullscreen;
-            if (!IsSupportedRemoteVisualFullscreenMonitor(monitor) ||
-                !EqualRect(&target, &monitor.physicalRect) || monitor.monitor == nullptr)
+            RECT target{};
+            if (!TryMakePhysicalRect(*config.monitorClientOrigin, phase1CanvasWidth, phase1CanvasHeight, target))
             {
-                return RuntimeStatus::Failure(
-                    "single-monitor fullscreen 必须精确覆盖一块可容纳 1920x1080 LF4 canvas、且不超过 3840x2160 的未旋转物理显示器");
+                return RuntimeStatus::Failure("remote-lf4 Data Window physical RECT 溢出或无效");
             }
-            try
-            {
-                const std::string experimentIdentity = Utf8FromWide(monitor.deviceName);
-                if (!config.remoteMetadata.protectedMonitorIdentity.empty() ||
-                    config.remoteMetadata.experimentMonitorIdentity != experimentIdentity)
-                {
-                    return RuntimeStatus::Failure(
-                        "single-monitor fullscreen metadata 必须不声明 ProtectedMonitor，并精确绑定目标显示器 identity");
-                }
-            }
-            catch (const std::exception&)
-            {
-                return RuntimeStatus::Failure("single-monitor fullscreen monitor identity 不是有效 UTF-16");
-            }
-        }
-        else
-        {
             const MonitorInfo& experimentMonitor = config.monitorSafety->experimentMonitor;
             const MonitorSafetyStatus monitorSafety = ValidateMonitorSafetyTarget(*config.monitorSafety, target,
                 experimentMonitor.monitor);
@@ -7150,42 +7153,39 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
     {
         const auto workerStarted = std::chrono::steady_clock::now();
         ProcessResourceSampler resourceSampler;
-        if (config.visualProfile == VisualProfile::RemoteVisualLowFps)
+        if (config.singleMonitorFullscreen)
         {
-            Require(config.monitorSafety.has_value() != config.singleMonitorFullscreen.has_value(),
-                "remote-lf4 worker requires exactly one display authority");
-            if (config.singleMonitorFullscreen)
+            const MonitorSafetyStatus topology = RevalidateSingleMonitorFullscreen(
+                *config.singleMonitorFullscreen);
+            Require(static_cast<bool>(topology),
+                std::string("single-monitor fullscreen topology changed before startup: ") +
+                GetMonitorSafetyErrorName(topology.code));
+            snapshot_.Update([runGeneration](EncoderSnapshot& value)
             {
-                const MonitorSafetyStatus topology = RevalidateSingleMonitorFullscreen(
-                    *config.singleMonitorFullscreen);
-                Require(static_cast<bool>(topology),
-                    std::string("single-monitor fullscreen topology changed before startup: ") +
-                    GetMonitorSafetyErrorName(topology.code));
-                snapshot_.Update([runGeneration](EncoderSnapshot& value)
+                if (value.runGeneration == runGeneration)
                 {
-                    if (value.runGeneration == runGeneration)
-                    {
-                        value.monitorSafetyRevalidationCount++;
-                        value.monitorSafetyStatus = "NotApplicableSingleMonitorFullscreen";
-                    }
-                });
-            }
-            else
+                    value.monitorSafetyRevalidationCount++;
+                    value.monitorSafetyStatus = "NotApplicableSingleMonitorFullscreen";
+                }
+            });
+        }
+        else if (config.visualProfile == VisualProfile::RemoteVisualLowFps)
+        {
+            Require(config.monitorSafety.has_value(),
+                "remote-lf4 worker requires dual-monitor display authority");
+            const MonitorSafetyStatus monitorSafety = RevalidateMonitorSafetySelection(*config.monitorSafety);
+            Require(static_cast<bool>(monitorSafety),
+                std::string("display topology changed before remote-lf4 startup: ") +
+                GetMonitorSafetyErrorName(monitorSafety.code));
+            snapshot_.Update([runGeneration](EncoderSnapshot& value)
             {
-                const MonitorSafetyStatus monitorSafety = RevalidateMonitorSafetySelection(*config.monitorSafety);
-                Require(static_cast<bool>(monitorSafety),
-                    std::string("display topology changed before remote-lf4 startup: ") +
-                    GetMonitorSafetyErrorName(monitorSafety.code));
-                snapshot_.Update([runGeneration](EncoderSnapshot& value)
+                if (value.runGeneration == runGeneration)
                 {
-                    if (value.runGeneration == runGeneration)
-                    {
-                        value.monitorSafetyPreflightPassed = true;
-                        value.monitorSafetyRevalidationCount++;
-                        value.monitorSafetyStatus = "PASS";
-                    }
-                });
-            }
+                    value.monitorSafetyPreflightPassed = true;
+                    value.monitorSafetyRevalidationCount++;
+                    value.monitorSafetyStatus = "PASS";
+                }
+            });
         }
         SourceFile source = ReadSourceFile(config.sourcePath);
         if (stopRequested_)
@@ -7470,7 +7470,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 Require(sourceStable, "源文件在 Session 广播期间发生变化，Session 已中止");
                 nextStabilityCheck = now + std::chrono::seconds(1);
             }
-            if (config.visualProfile == VisualProfile::RemoteVisualLowFps && now >= nextMonitorSafetyCheck)
+            if ((config.singleMonitorFullscreen || config.visualProfile == VisualProfile::RemoteVisualLowFps) &&
+                now >= nextMonitorSafetyCheck)
             {
                 RECT actualTarget{};
                 Require(TryMakePhysicalRect(windowSnapshot.environment.clientOrigin,

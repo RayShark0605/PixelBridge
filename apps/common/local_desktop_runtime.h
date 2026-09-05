@@ -36,8 +36,8 @@ struct EncoderConfig
     std::optional<pbrenderd3d::PhysicalPoint> monitorClientOrigin;
     std::optional<MonitorSafetySelection> monitorSafety;
     // Explicit sender-only kiosk authority. This permits one selected monitor
-    // to be occupied by the LF4 raster and therefore cannot satisfy the
-    // dual-monitor ProtectedMonitor field-gate contract.
+    // to be occupied by the Unified or historical LF4 raster and therefore
+    // cannot satisfy the dual-monitor ProtectedMonitor field-gate contract.
     std::optional<MonitorInfo> singleMonitorFullscreen;
     std::string runId;
     RemoteRunMetadata remoteMetadata;

@@ -46,12 +46,15 @@ finally { $file.Dispose(); $random.Dispose() }
 $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
 $reportPath = Join-Path $runRoot 'encoder-report.json'
 $journalPath = Join-Path $runRoot 'encoder-evidence.jsonl'
-$command = @('--headless-broadcast', '--source', $source, '--profile', 'unified', '--logical-fps', '15', '--seconds', '600', '--manual-stop', '--run-id', $runId, '--report', $reportPath, '--journal', $journalPath)
+$command = @('--headless-broadcast', '--source', $source, '--profile', 'unified', '--channel', 'remote', '--remote-provider', 'UnknownRemoteLink',
+    '--single-monitor-fullscreen', 'primary', '--logical-fps', '15', '--seconds', '600', '--manual-stop', '--run-id', $runId,
+    '--report', $reportPath, '--journal', $journalPath)
 $manifest = [ordered]@{
     schema = 'PixelBridge.G21.SenderFixture.1'; stage = $Stage; runId = $runId
     sourceName = [IO.Path]::GetFileName($source); bytes = $size; sha256 = $sourceHash
     generator = 'Remote-host OS CSPRNG; bounded 1 MiB buffer; fresh source per run'
     sourceTransferredToDecoder = $false; configuredLogicalFps = 15; hardMaximumBroadcastSeconds = 600
+    presentationMode = 'Primary monitor borderless fullscreen; exact 1920x1080 canvas centered at 1:1 in neutral matte'
     build = $identity; encoderSha256 = $actualHash; arguments = $command
 }
 WriteNewText (Join-Path $runRoot 'source-manifest.json') ($manifest | ConvertTo-Json -Depth 5)
