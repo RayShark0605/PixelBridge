@@ -48,9 +48,11 @@ static_assert(senderCarouselRepairPercentDenominator % senderCarouselRepairPerce
 }
 
 [[nodiscard]] pbmodulation::UnifiedControlPriority GetControlPriority(
-    const std::uint64_t controlItemIndex, const std::uint32_t controlRepetitions) noexcept
+    const std::uint64_t controlItemIndex, const std::uint64_t controlRecordKindCount) noexcept
 {
-    const std::uint64_t recordIndex = controlItemIndex / controlRepetitions;
+    // Interleave record kinds before repeating one kind. With the product's four repetitions and
+    // eight-slot cap, either Control-bearing frame contains every descriptor despite periodic frame decimation.
+    const std::uint64_t recordIndex = controlItemIndex % controlRecordKindCount;
     if (recordIndex == 0)
     {
         return pbmodulation::UnifiedControlPriority::SessionDescriptor;
@@ -436,6 +438,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         remainingControlItems, static_cast<std::uint64_t>(maximumControlSlots)));
     const std::uint32_t codewordCount = static_cast<std::uint32_t>(
         pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount);
+    const std::uint64_t controlRecordKindCount = config_.systematicBlockCount == 0 ? 2 : 3;
     if ((controlBurstActive && controlSlotCount == 0) || controlSlotCount >= codewordCount)
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
@@ -454,7 +457,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         if (codewordSlot < controlSlotCount)
         {
             slot.assignment = {codewordSlot, pbmodulation::UnifiedSlotKind::Control,
-                GetControlPriority(controlItemOffset + codewordSlot, config_.controlRepetitions)};
+                GetControlPriority(controlItemOffset + codewordSlot, controlRecordKindCount)};
             slot.transportDisposition = SenderUnifiedTransportSlotDisposition::NotTransport;
             continue;
         }

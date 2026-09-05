@@ -532,3 +532,91 @@ build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[appli
 结果分别为 6 cases / 239,188 assertions、1 / 37、1 / 128，全部通过。新增 G21 单例自身为 1 case / 17,506 assertions，逐 slot 验证首轮与后续轮的 equation kind/offset、full-round 数量、padding，以及 `0..958` 与 `959..1917` 两个不相交 ID 区间；DirectRepeat 和零字节 Session 即使位于后续 Carousel pass 也保持各自原有语义。Release Encoder 编译通过。
 
 没有运行 full CTest、ASan、GPU/CPU corpus、native 屏幕、额外 capture、64 MiB、20 GiB 或 G22。本节两次 live 均属于修正前 `6addde6`；它们权威证明远控失真下 whole-file 正确发布，也权威证明旧调度没有达到 16 KiB 硬门。修正提交后必须重建同身份完整 Encoder/Decoder，再执行 receiver-first 的 1 MiB / 15 Hz live 复验；通过后仍需 64 MiB RAW 与 chroma/Base-only 证据。因此 **G21 继续 PARTIAL，G22 未开始**。
+
+## 13. FullRepair live 与 Control burst 抽帧别名
+
+### 13.1 第三轮同身份 live 结果
+
+`5cedd15649582d8fd73f84fc34b8578646c07c5f` 的完整 Encoder 包通过无副作用 `00_Check.bat` 后，先启动本机
+DISPLAY2-only Decoder，再由用户启动远端 1 MiB / 15 Hz Encoder。Receiver 比 sender 早启动 93.677 秒；sender
+保持 15.000659 Hz，Decoder 从真实 WGC 像素观察到 3.575722 unique Hz。运行最终状态为 `Completed`，但 Gate
+因性能硬门返回 1，而不是崩溃或超时：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Unique logical frames | 192 |
+| Verified encoded B/unique | 5,461.3333 |
+| 16 KiB hard gate | FAIL |
+| Accepted Control / Transport | 52 / 2,833 |
+| Capture admission drops / expired | 0 / 0 |
+| Demod pending / result queue high-water | 1 / 1 |
+| Whole digest / rename / final reopen | true / true / true |
+| Base/Fine/Chroma FEC, CRC, identity failures | 0 / 0 / 0（每条 lane） |
+| Outer conflict rejections | 0 |
+
+画布为稳定约 1.33333x，marker residual 为 0.069..0.352 px；没有裁切、积压或 250 ms admission 失败证据。
+source 与 published 文件均为 1,048,576 bytes，外部 SHA-256 均为
+`8f846bc1a98ed6c23af74ca3a2ff7c8b663dbeb2a8cb4f083dc83b5e3de75812`；sender/receiver/published BLAKE3
+均为 `b1c5872d55af8edabbda061cf01f2ae28719dc3e4289a81932c933e6fe9fbb4d`。提交、profile/layout、SessionId、
+SessionTag、source filename 与大小全部严格配对。证据封存于：
+
+```text
+build-unified-release/g21-sc6-v3-live-full-repair-1/
+  smoke-1mib-15hz-19de4398558a4dfb9a79c74dbb1b8fd0/
+```
+
+其中 `sender-evidence/` 是桌面报告的哈希一致副本，`paired-run-audit.json` 同时记录外部双摘要、身份、时序和
+Control 状态变化；原 `failure-final.json` / `failure.txt` 未覆盖。
+
+### 13.2 现场时序定位出的根因
+
+FullRepair 修正后的新方程可以收敛并正确发布，但没有缩短到 64 unique frames。进一步核对 scheduler 与每秒
+receiver samples 后得到可复现的窄链路：
+
+1. 产品 `controlRepetitions=4`，非空 Session 每个 burst 共 12 slots；
+2. 旧顺序按 record kind 分组为 `Session×4 → Manifest×4 → Segment×4`；
+3. mixed Control 上限为 8，因此第一帧恰好只有 4 Session + 4 Manifest，第二帧才有 4 Segment；
+4. live 在 8/16/24 accepted Control slots 时仍为 `ReceivingControl`；首次采样到 `Recovering` 时为 36 slots，
+   与多次只抓到 8-slot 首帧、最终才抓到一次 4-slot Segment 帧完全一致；
+5. 进入 `Recovering` 时 unique frames 已达 147、Transport blocks 已达 2,184。没有 SegmentDescriptor 时不能创建
+   正式 Wirehair decoder，早到数据只能进入有界 orphan 路径，不能把合法 block 数直接等同于可用于恢复的独立方程数。
+
+所以第三轮的决定性瓶颈是 Control burst 与远控周期抽帧发生别名，导致当前 SegmentDescriptor 长期不可见；不是
+FullRepair ID 再次重复，也不是 SC6、QC-LDPC、CRC、identity、几何或在途背压失败。
+
+### 13.3 最小修正与定向验证
+
+总 Control 数仍为 12，只把次序改为按 record kind 交织：
+
+```text
+frame 0: Session, Manifest, Segment, Session, Manifest, Segment, Session, Manifest
+frame 1: Segment, Session, Manifest, Segment
+```
+
+因此两个 Control-bearing frames 的任意一个都同时含 Session、Manifest、Segment；远控只保留任意一帧即可建立
+完整控制状态。零字节 Session 同理只交织 Session/Manifest。下列项目均未改变：Control repetitions=4、每轮 Control
+slots=12、10 秒 cadence、15 codewords、Transport 方程顺序和总预算、FullRepair 新 ID、SC6 V3 identity/layout、
+QC-LDPC/Wirehair 参数、质量门、单 owner/250 ms、摘要和发布门；没有 provider-specific 分支或隐藏 IPC。
+
+只执行受影响的最小 Release 验证：
+
+```powershell
+cmake --build build-unified-release --config Release --target PBUnifiedSenderSchedulerTests --parallel 2
+build-unified-release\tests\PBApplication\Release\PBUnifiedSenderSchedulerTests.exe "[g21]" --rng-seed 21092026 --reporter console
+build-unified-release\tests\PBApplication\Release\PBUnifiedSenderSchedulerTests.exe --rng-seed 21092026 --reporter console
+cmake --build build-unified-release --config Release --target PBApplicationTests PixelBridgeEncoder --parallel 2
+build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][g15][scheduler]" --rng-seed 21092026 --reporter console
+build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][g15][pixels][runtime]" --rng-seed 21092026 --reporter console
+```
+
+结果分别为 2 cases / 17,667 assertions、7 / 239,349、1 / 37、1 / 128，全部通过；Release Encoder 构建通过。
+新增测试显式验证两个 burst frames 各自包含全部三类 descriptor，合计仍严格为每类 4 次、12 slots。第一次构建
+只因新增测试把 `uint32_t` 与有符号字面量比较而被 `/WX` 拒绝；改用 `8U/4U` 后通过，失败日志原样保留在
+`build-unified-release/g21-control-interleave-1/build-scheduler.log`。
+
+### 13.4 当前退出边界
+
+没有运行 full CTest、ASan、GPU/CPU corpus、额外实屏、64 MiB、Base-only、20 GiB 或 G22。第三轮 live 权威证明
+`5cedd15` FullRepair 可以在真实失真链发布正确文件，也权威证明旧 Control 排列低于硬门；调度修正目前只有定向
+Release 证据，必须在提交后重建同身份 Encoder/Decoder 并再跑 1 MiB / 15 Hz live。通过后仍需 64 MiB RAW 与
+chroma/Base-only 证据。因此 **G21 继续 PARTIAL，G22 未开始**。

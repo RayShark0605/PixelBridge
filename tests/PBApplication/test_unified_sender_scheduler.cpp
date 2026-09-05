@@ -208,12 +208,18 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
             {
                 REQUIRE(frame.controlSlotCount == maximumControlSlots);
                 REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - maximumControlSlots);
-                for (std::uint32_t slot = 0; slot < 4; slot++)
+                constexpr std::array expectedPriorities{
+                    pbmodulation::UnifiedControlPriority::SessionDescriptor,
+                    pbmodulation::UnifiedControlPriority::FinalManifest,
+                    pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor,
+                    pbmodulation::UnifiedControlPriority::SessionDescriptor,
+                    pbmodulation::UnifiedControlPriority::FinalManifest,
+                    pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor,
+                    pbmodulation::UnifiedControlPriority::SessionDescriptor,
+                    pbmodulation::UnifiedControlPriority::FinalManifest};
+                for (std::size_t slot = 0; slot < expectedPriorities.size(); slot++)
                 {
-                    REQUIRE(frame.slots[slot].assignment.controlPriority ==
-                        pbmodulation::UnifiedControlPriority::SessionDescriptor);
-                    REQUIRE(frame.slots[slot + 4].assignment.controlPriority ==
-                        pbmodulation::UnifiedControlPriority::FinalManifest);
+                    REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
                 controlBearingFrames++;
             }
@@ -221,10 +227,14 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
             {
                 REQUIRE(frame.controlSlotCount == 4);
                 REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 4);
-                for (std::uint32_t slot = 0; slot < 4; slot++)
+                constexpr std::array expectedPriorities{
+                    pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor,
+                    pbmodulation::UnifiedControlPriority::SessionDescriptor,
+                    pbmodulation::UnifiedControlPriority::FinalManifest,
+                    pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor};
+                for (std::size_t slot = 0; slot < expectedPriorities.size(); slot++)
                 {
-                    REQUIRE(frame.slots[slot].assignment.controlPriority ==
-                        pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
+                    REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
                 controlBearingFrames++;
             }
@@ -295,6 +305,41 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
     pbapp::SenderLogicalFrameTick noCatchUp;
     REQUIRE(clock.Acquire(startNanoseconds + 5 * pbapp::senderLogicalFrameNanosecondsPerSecond, noCatchUp));
     REQUIRE(noCatchUp.disposition == pbapp::SenderLogicalFrameTickDisposition::NotDue);
+}
+
+TEST_CASE("Unified control repetitions survive either two-frame burst sample under temporal decimation",
+    "[application][g21][scheduler][control][temporal-decimation]")
+{
+    constexpr std::array requiredPriorities{
+        pbmodulation::UnifiedControlPriority::SessionDescriptor,
+        pbmodulation::UnifiedControlPriority::FinalManifest,
+        pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor};
+    pbapp::SenderUnifiedCarouselScheduler scheduler;
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({799, 4, 15, true}, scheduler));
+
+    std::array<std::uint32_t, requiredPriorities.size()> totalPriorityCounts{};
+    for (std::uint64_t logicalTickOrdinal = 0; logicalTickOrdinal < 2; logicalTickOrdinal++)
+    {
+        pbapp::SenderUnifiedScheduledFrame frame;
+        REQUIRE(scheduler.PrepareFrame(logicalTickOrdinal, frame));
+        RequireExactSlotAccounting(frame);
+        REQUIRE(frame.controlSlotCount == (logicalTickOrdinal == 0 ? 8U : 4U));
+        for (std::size_t priorityIndex = 0; priorityIndex < requiredPriorities.size(); priorityIndex++)
+        {
+            const auto priority = requiredPriorities[priorityIndex];
+            const auto priorityCount = static_cast<std::uint32_t>(std::ranges::count_if(
+                frame.slots.begin(), frame.slots.begin() + frame.controlSlotCount,
+                [priority](const pbapp::SenderUnifiedScheduledSlot& slot)
+                {
+                    return slot.assignment.controlPriority == priority;
+                }));
+            REQUIRE(priorityCount > 0);
+            totalPriorityCounts[priorityIndex] += priorityCount;
+        }
+        REQUIRE(scheduler.CommitPreparedFrame());
+    }
+    REQUIRE(totalPriorityCounts == std::array<std::uint32_t, 3>{4, 4, 4});
+    REQUIRE(scheduler.GetSnapshot().controlSlotCount == 12);
 }
 
 TEST_CASE("Unified logical FPS changes apply after the pending complete frame and never create a catch-up queue",

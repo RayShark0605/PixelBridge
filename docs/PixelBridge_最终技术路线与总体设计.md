@@ -1810,6 +1810,19 @@ RepairPassSymbolBudget = K + Rpass
 
 这些属于低开销、强健控制平面。
 
+`PB-Unified-SC6-V3` 的同一 Control burst 必须先交织 record kind，再重复同一种 record，禁止按
+`SessionDescriptor × N → FinalManifest × N → SegmentDescriptor × N` 分组。产品固定 `N=4`、每帧最多 8 个
+Control slots，因此非空 Session 的 12 个 slots 按下列顺序装入两个 mixed frames：
+
+```text
+Session, Manifest, Segment, Session, Manifest, Segment, Session, Manifest
+Segment, Session, Manifest, Segment
+```
+
+这样远控链即使周期性抽帧、只保留 burst 的任意一帧，也能同时取得建立当前 Segment decoder 所需的三类描述符。
+总重复数、Control slot 总量、Control cadence 与 Transport 容量预算不因此增加。零字节 Session 仍仅交织
+`SessionDescriptor + FinalManifest`。该顺序属于无反馈调度合同，不进入 provider-specific 分支。
+
 ---
 
 ## 11.4 无 ACK 的停止条件
