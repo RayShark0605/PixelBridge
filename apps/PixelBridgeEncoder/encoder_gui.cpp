@@ -422,7 +422,7 @@ private:
         const QString outer = snapshot.segmentCount == 0 ? QStringLiteral("无 Segment") :
             snapshot.outerFecMode == pbprotocol::OuterFecMode::WirehairV2 ? QStringLiteral("Wirehair V2") : QStringLiteral("DirectRepeat");
         advancedText_->setPlainText(QStringLiteral(
-            "Profile: PB-Unified-SC6-V2 / layout 9 / 1920×1080 BGRA8 SDR\n"
+            "Profile: PB-Unified-SC6-V3 / layout 10 / 1920×1080 BGRA8 SDR\n"
             "Inner FEC: Robust DVB-S2 Short QC-LDPC；Base 9 / Fine 1 / Chroma 5\n"
             "Outer FEC（当前 Segment）: %1\n"
             "自动压缩: RAW %2 Segment / zstd %3 Segment（固定 level 3；预扫描决定）\n"

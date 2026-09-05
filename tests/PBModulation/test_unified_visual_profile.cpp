@@ -117,9 +117,9 @@ TEST_CASE("Unified SC6 manifest pins every product and geometry constant", "[pbm
         UnifiedViewportFilter::Point, UnifiedViewportFit::PreserveAspectRatio,
         UnifiedViewportPlacement::CenteredLetterbox, UnifiedUndersizeBehavior::NeutralMattePauseWithoutBootstrap};
 
-    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.name == std::string_view{"PB-Unified-SC6-V2"});
-    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualProfileId == 0x5042554E49534332ULL);
-    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualLayoutVersion == 9);
+    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.name == std::string_view{"PB-Unified-SC6-V3"});
+    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualProfileId == 0x5042554E49534333ULL);
+    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualLayoutVersion == 10);
     STATIC_REQUIRE(kUnifiedVisualProfile.pixelFormat == UnifiedPixelFormat::Bgra8UnormSdr);
     STATIC_REQUIRE(kUnifiedVisualProfile.canvasWidth == 1920);
     STATIC_REQUIRE(kUnifiedVisualProfile.canvasHeight == 1080);
@@ -140,8 +140,8 @@ TEST_CASE("Unified SC6 manifest pins every product and geometry constant", "[pbm
     STATIC_REQUIRE(kUnifiedVisualProfile.presentation == expectedPresentation);
     STATIC_REQUIRE(kUnifiedVisualProfileCatalog.size() == 1);
     STATIC_REQUIRE(kUnifiedVisualProfileCatalog.front() == &kUnifiedVisualProfile);
-    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E49534332ULL, 9) == &kUnifiedVisualProfile);
-    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E49534332ULL, 8) == nullptr);
+    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E49534333ULL, 10) == &kUnifiedVisualProfile);
+    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E49534333ULL, 9) == nullptr);
     STATIC_REQUIRE(FindUnifiedVisualProfile(kRemoteVisualLowFpsProfileId, kRemoteVisualLowFpsLayoutVersion) == nullptr);
     STATIC_REQUIRE(HasUnifiedPilotContent(UnifiedPilotContent::CalibrationReferences,
         UnifiedPilotContent::BlackWhiteMidGray));

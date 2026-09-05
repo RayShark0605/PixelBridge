@@ -12,15 +12,23 @@
 namespace pbmodulation
 {
 
-inline constexpr std::uint32_t kUnifiedMappingVersion = 2;
-inline constexpr std::uint32_t kUnifiedMappingPhaseCount = 16;
-inline constexpr std::uint32_t kUnifiedBaseDedicatedLumaBits = 125616;
-inline constexpr std::uint32_t kUnifiedBaseSharedLumaBits = 20184;
-inline constexpr std::uint32_t kUnifiedFinePlaneThreeFirstPosition = 20184;
-inline constexpr std::uint32_t kUnifiedFinePlaneThreeEndPosition = 36384;
-inline constexpr std::uint32_t kUnifiedChromaUsedTiles = 40500;
+inline constexpr std::uint32_t kUnifiedMappingVersion = 3;
+inline constexpr std::uint32_t kUnifiedMappingSequencePeriod = 16;
+inline constexpr std::uint32_t kUnifiedBaseLumaBits = 145800;
+inline constexpr std::uint32_t kUnifiedFineLumaBits = 16200;
+inline constexpr std::uint32_t kUnifiedChromaBits = 81000;
+inline constexpr std::uint32_t kUnifiedLumaCarrierPlanes = 4;
+inline constexpr std::uint32_t kUnifiedChromaCarrierPlanes = 2;
+inline constexpr std::uint32_t kUnifiedLumaDeficitBits = 3816;
+inline constexpr std::uint32_t kUnifiedLumaSurplusBits = 25504;
+inline constexpr std::uint32_t kUnifiedUnusedLumaCarrierBits = 5488;
+inline constexpr std::uint32_t kUnifiedUnusedChromaCarrierBits = 2744;
+// Bit 0 enables a FrameSequence permutation contained inside each codeword,
+// bit 1 assigns each Base codeword primarily to its matching freshness region,
+// and bit 2 concatenates Chroma sites in kUnifiedChromaRegionOrder.
+inline constexpr std::uint32_t kUnifiedMappingContractFlags = 0x00000007U;
 inline constexpr std::string_view kUnifiedMappingStreamFrameSequenceZeroBlake3{
-    "8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc"};
+    "4b06ec15c338a4f18502b49a7d5947bd33b4e79fd1a7f73c53c682dfa2283639"};
 
 // Label n is encoded by mask[n]. Bit n within a mask addresses the row-major
 // 5x5 chip at (n % 5, n / 5); one selects the foreground carrier. The sixth
@@ -51,37 +59,33 @@ inline constexpr std::array<UnifiedChromaState, 4> kUnifiedChromaStatesByLabel{
     UnifiedChromaState{67, 193, 81, 2},
     UnifiedChromaState{67, 146, 239, 3}};
 
-struct UnifiedTilePermutation
+struct UnifiedLaneMappingContract
+{
+    UnifiedLane lane = UnifiedLane::BaseLuma;
+    std::uint32_t logicalBits = 0;
+
+    bool operator==(const UnifiedLaneMappingContract&) const = default;
+};
+
+inline constexpr std::array<UnifiedLaneMappingContract, 3> kUnifiedLaneMappings{
+    UnifiedLaneMappingContract{UnifiedLane::BaseLuma, kUnifiedBaseLumaBits},
+    UnifiedLaneMappingContract{UnifiedLane::FineLuma, kUnifiedFineLumaBits},
+    UnifiedLaneMappingContract{UnifiedLane::Chroma, kUnifiedChromaBits}};
+
+struct UnifiedCodewordInterleaveContract
 {
     std::uint32_t modulus = 0;
     std::uint32_t multiplier = 0;
     std::uint32_t inverse = 0;
     std::uint32_t offset = 0;
-
-    bool operator==(const UnifiedTilePermutation&) const = default;
-};
-
-inline constexpr UnifiedTilePermutation kUnifiedPlaneThreeTileOrder{41872, 31439, 6879, 34120};
-inline constexpr UnifiedTilePermutation kUnifiedChromaTileOrder{41872, 23661, 41557, 9489};
-
-struct UnifiedLaneInterleaveContract
-{
-    UnifiedLane lane = UnifiedLane::BaseLuma;
-    std::uint32_t logicalBits = 0;
-    std::uint32_t multiplier = 0;
-    std::uint32_t inverse = 0;
-    std::uint32_t offset = 0;
     std::uint32_t phaseStep = 0;
     std::uint32_t phaseCount = 0;
-    std::uint32_t sequenceOffset = 0;
 
-    bool operator==(const UnifiedLaneInterleaveContract&) const = default;
+    bool operator==(const UnifiedCodewordInterleaveContract&) const = default;
 };
 
-inline constexpr std::array<UnifiedLaneInterleaveContract, 3> kUnifiedLaneInterleaves{
-    UnifiedLaneInterleaveContract{UnifiedLane::BaseLuma, 145800, 48467, 38003, 17811, 84229, 16, 3},
-    UnifiedLaneInterleaveContract{UnifiedLane::FineLuma, 16200, 2159, 14039, 4198, 9953, 16, 14},
-    UnifiedLaneInterleaveContract{UnifiedLane::Chroma, 81000, 71357, 67493, 71539, 50837, 16, 15}};
+inline constexpr UnifiedCodewordInterleaveContract kUnifiedCodewordInterleave{
+    16200, 16067, 5603, 7919, 1009, kUnifiedMappingSequencePeriod};
 
 struct UnifiedPhysicalCarrierSite
 {
@@ -102,8 +106,85 @@ struct UnifiedLogicalCarrierBit
     bool operator==(const UnifiedLogicalCarrierBit&) const = default;
 };
 
+inline constexpr std::uint32_t kUnifiedMappingFreshnessRegionCount = 9;
+inline constexpr std::array<std::uint32_t, 2> kUnifiedMappingFreshnessColumnBoundaries{560, 1360};
+inline constexpr std::array<std::uint32_t, 2> kUnifiedMappingFreshnessRowBoundaries{382, 698};
+inline constexpr std::array<std::uint8_t, kUnifiedMappingFreshnessRegionCount> kUnifiedChromaRegionOrder{
+    0, 1, 2, 3, 6, 8, 4, 5, 7};
+
+struct UnifiedFreshnessTileCatalog
+{
+    std::array<std::uint32_t, kUnifiedVisualProfile.dataTileCount> groupedTileOrdinals{};
+    std::array<std::uint32_t, kUnifiedVisualProfile.dataTileCount> rankByTileOrdinal{};
+    std::array<std::uint8_t, kUnifiedVisualProfile.dataTileCount> regionByTileOrdinal{};
+    std::array<std::uint32_t, kUnifiedMappingFreshnessRegionCount> tileCounts{};
+    std::array<std::uint32_t, kUnifiedMappingFreshnessRegionCount + 1> groupedOffsets{};
+};
+
+[[nodiscard]] consteval std::uint8_t GetUnifiedMappingFreshnessRegion(
+    const std::uint32_t centerX, const std::uint32_t centerY) noexcept
+{
+    const std::uint8_t column = centerX < kUnifiedMappingFreshnessColumnBoundaries[0] ? 0 :
+        centerX < kUnifiedMappingFreshnessColumnBoundaries[1] ? 1 : 2;
+    const std::uint8_t row = centerY < kUnifiedMappingFreshnessRowBoundaries[0] ? 0 :
+        centerY < kUnifiedMappingFreshnessRowBoundaries[1] ? 1 : 2;
+    return static_cast<std::uint8_t>(row * 3 + column);
+}
+
+[[nodiscard]] consteval UnifiedFreshnessTileCatalog BuildUnifiedFreshnessTileCatalog() noexcept
+{
+    UnifiedFreshnessTileCatalog catalog;
+    std::uint32_t tileOrdinal = 0;
+    for (const UnifiedRegionContract& contract : kUnifiedVisualProfile.regions)
+    {
+        if (contract.kind != UnifiedRegionKind::Data)
+        {
+            continue;
+        }
+        const std::uint32_t tilesPerRow = contract.bounds.width / kUnifiedVisualProfile.tileWidth;
+        const std::uint32_t tileRows = contract.bounds.height / kUnifiedVisualProfile.tileHeight;
+        for (std::uint32_t tileRow = 0; tileRow < tileRows; tileRow++)
+        {
+            for (std::uint32_t tileColumn = 0; tileColumn < tilesPerRow; tileColumn++)
+            {
+                const std::uint32_t centerX = contract.bounds.x + tileColumn * kUnifiedVisualProfile.tileWidth +
+                    kUnifiedVisualProfile.tileWidth / 2;
+                const std::uint32_t centerY = contract.bounds.y + tileRow * kUnifiedVisualProfile.tileHeight +
+                    kUnifiedVisualProfile.tileHeight / 2;
+                const std::uint8_t region = GetUnifiedMappingFreshnessRegion(centerX, centerY);
+                catalog.regionByTileOrdinal[tileOrdinal] = region;
+                catalog.rankByTileOrdinal[tileOrdinal] = catalog.tileCounts[region];
+                catalog.tileCounts[region]++;
+                tileOrdinal++;
+            }
+        }
+    }
+    for (std::size_t region = 0; region < catalog.tileCounts.size(); region++)
+    {
+        catalog.groupedOffsets[region + 1] = catalog.groupedOffsets[region] + catalog.tileCounts[region];
+    }
+    std::array<std::uint32_t, kUnifiedMappingFreshnessRegionCount> cursors{};
+    for (std::size_t region = 0; region < cursors.size(); region++)
+    {
+        cursors[region] = catalog.groupedOffsets[region];
+    }
+    for (std::uint32_t sourceTile = 0; sourceTile < tileOrdinal; sourceTile++)
+    {
+        const std::uint8_t region = catalog.regionByTileOrdinal[sourceTile];
+        catalog.groupedTileOrdinals[cursors[region]] = sourceTile;
+        cursors[region]++;
+    }
+    return catalog;
+}
+
+inline constexpr UnifiedFreshnessTileCatalog kUnifiedFreshnessTileCatalog = BuildUnifiedFreshnessTileCatalog();
+inline constexpr std::array<std::uint32_t, kUnifiedMappingFreshnessRegionCount> kUnifiedExpectedFreshnessTileCounts{
+    3850, 5836, 3850, 4291, 6506, 4291, 3773, 5702, 3773};
+
 namespace unified_mapping_detail
 {
+
+inline constexpr std::uint32_t kCodewordBits = kUnifiedVisualProfile.innerCodewordBits;
 
 [[nodiscard]] constexpr std::uint32_t MultiplyModulo(
     const std::uint32_t left, const std::uint32_t right, const std::uint32_t modulus) noexcept
@@ -119,31 +200,190 @@ namespace unified_mapping_detail
         (static_cast<std::uint64_t>(left) + right) % modulus);
 }
 
-[[nodiscard]] constexpr std::uint32_t ResolvePhase(
-    const UnifiedLaneInterleaveContract& contract, const std::uint64_t frameSequence) noexcept
+[[nodiscard]] constexpr std::uint32_t PermuteLaneCodewordBit(
+    const std::uint32_t logicalBit, const std::uint64_t frameSequence) noexcept
 {
-    return contract.phaseCount == 0 ? 0 : static_cast<std::uint32_t>(
-        (frameSequence % contract.phaseCount + contract.sequenceOffset) % contract.phaseCount);
+    const std::uint32_t codewordSlot = logicalBit / kCodewordBits;
+    const std::uint32_t codewordBit = logicalBit % kCodewordBits;
+    const std::uint32_t phase = static_cast<std::uint32_t>(frameSequence % kUnifiedCodewordInterleave.phaseCount);
+    const std::uint32_t phaseOffset = AddModulo(kUnifiedCodewordInterleave.offset,
+        MultiplyModulo(phase, kUnifiedCodewordInterleave.phaseStep, kCodewordBits), kCodewordBits);
+    const std::uint32_t domainBit = AddModulo(
+        MultiplyModulo(codewordBit, kUnifiedCodewordInterleave.multiplier, kCodewordBits), phaseOffset, kCodewordBits);
+    return codewordSlot * kCodewordBits + domainBit;
 }
 
-[[nodiscard]] constexpr std::uint32_t PermuteTile(
-    const UnifiedTilePermutation& permutation, const std::uint32_t position) noexcept
+[[nodiscard]] constexpr std::uint32_t InvertLaneCodewordBit(
+    const std::uint32_t domainLogicalBit, const std::uint64_t frameSequence) noexcept
 {
-    return AddModulo(MultiplyModulo(position, permutation.multiplier, permutation.modulus),
-        permutation.offset, permutation.modulus);
-}
-
-[[nodiscard]] constexpr std::uint32_t InvertTile(
-    const UnifiedTilePermutation& permutation, const std::uint32_t tileOrdinal) noexcept
-{
+    const std::uint32_t codewordSlot = domainLogicalBit / kCodewordBits;
+    const std::uint32_t domainBit = domainLogicalBit % kCodewordBits;
+    const std::uint32_t phase = static_cast<std::uint32_t>(frameSequence % kUnifiedCodewordInterleave.phaseCount);
+    const std::uint32_t phaseOffset = AddModulo(kUnifiedCodewordInterleave.offset,
+        MultiplyModulo(phase, kUnifiedCodewordInterleave.phaseStep, kCodewordBits), kCodewordBits);
     const std::uint32_t shifted = static_cast<std::uint32_t>(
-        (static_cast<std::uint64_t>(tileOrdinal) + permutation.modulus - permutation.offset) % permutation.modulus);
-    return MultiplyModulo(shifted, permutation.inverse, permutation.modulus);
+        (static_cast<std::uint64_t>(domainBit) + kCodewordBits - phaseOffset) % kCodewordBits);
+    return codewordSlot * kCodewordBits + MultiplyModulo(
+        shifted, kUnifiedCodewordInterleave.inverse, kCodewordBits);
 }
 
-[[nodiscard]] constexpr const UnifiedLaneInterleaveContract* FindLane(const UnifiedLane lane) noexcept
+[[nodiscard]] constexpr std::uint32_t GetPrimaryLumaBits(const std::uint32_t region) noexcept
 {
-    for (const UnifiedLaneInterleaveContract& contract : kUnifiedLaneInterleaves)
+    const std::uint32_t capacity = kUnifiedFreshnessTileCatalog.tileCounts[region] * kUnifiedLumaCarrierPlanes;
+    return capacity < kCodewordBits ? capacity : kCodewordBits;
+}
+
+[[nodiscard]] constexpr std::uint32_t GetLumaDeficitPrefix(const std::uint32_t endRegion) noexcept
+{
+    std::uint32_t result = 0;
+    for (std::uint32_t region = 0; region < endRegion; region++)
+    {
+        result += kCodewordBits - GetPrimaryLumaBits(region);
+    }
+    return result;
+}
+
+[[nodiscard]] constexpr std::uint32_t GetLumaSurplusPrefix(const std::uint32_t endRegion) noexcept
+{
+    std::uint32_t result = 0;
+    for (std::uint32_t region = 0; region < endRegion; region++)
+    {
+        const std::uint32_t capacity = kUnifiedFreshnessTileCatalog.tileCounts[region] * kUnifiedLumaCarrierPlanes;
+        result += capacity > kCodewordBits ? capacity - kCodewordBits : 0;
+    }
+    return result;
+}
+
+[[nodiscard]] constexpr UnifiedPhysicalCarrierSite GetRegionLumaSite(
+    const std::uint32_t region, const std::uint32_t regionBit) noexcept
+{
+    const std::uint32_t tileRank = regionBit / kUnifiedLumaCarrierPlanes;
+    if (region >= kUnifiedMappingFreshnessRegionCount ||
+        tileRank >= kUnifiedFreshnessTileCatalog.tileCounts[region])
+    {
+        return {};
+    }
+    const std::uint32_t tileOrdinal = kUnifiedFreshnessTileCatalog.groupedTileOrdinals[
+        kUnifiedFreshnessTileCatalog.groupedOffsets[region] + tileRank];
+    return {true, UnifiedCarrier::Luma, tileOrdinal,
+        static_cast<std::uint8_t>(regionBit % kUnifiedLumaCarrierPlanes)};
+}
+
+[[nodiscard]] constexpr UnifiedPhysicalCarrierSite GetLumaSurplusSite(std::uint32_t surplusBit) noexcept
+{
+    for (std::uint32_t region = 0; region < kUnifiedMappingFreshnessRegionCount; region++)
+    {
+        const std::uint32_t capacity = kUnifiedFreshnessTileCatalog.tileCounts[region] * kUnifiedLumaCarrierPlanes;
+        const std::uint32_t surplus = capacity > kCodewordBits ? capacity - kCodewordBits : 0;
+        if (surplusBit < surplus)
+        {
+            return GetRegionLumaSite(region, kCodewordBits + surplusBit);
+        }
+        surplusBit -= surplus;
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr UnifiedPhysicalCarrierSite GetRegionLocalizedBaseSite(
+    const std::uint32_t logicalBit) noexcept
+{
+    const std::uint32_t codewordSlot = logicalBit / kCodewordBits;
+    const std::uint32_t codewordBit = logicalBit % kCodewordBits;
+    if (codewordSlot >= kUnifiedMappingFreshnessRegionCount)
+    {
+        return {};
+    }
+    const std::uint32_t primaryBits = GetPrimaryLumaBits(codewordSlot);
+    if (codewordBit < primaryBits)
+    {
+        return GetRegionLumaSite(codewordSlot, codewordBit);
+    }
+    return GetLumaSurplusSite(GetLumaDeficitPrefix(codewordSlot) + codewordBit - primaryBits);
+}
+
+[[nodiscard]] constexpr UnifiedLogicalCarrierBit InvertRegionLocalizedLumaSite(
+    const UnifiedPhysicalCarrierSite& site) noexcept
+{
+    const std::uint32_t region = kUnifiedFreshnessTileCatalog.regionByTileOrdinal[site.tileOrdinal];
+    const std::uint32_t rank = kUnifiedFreshnessTileCatalog.rankByTileOrdinal[site.tileOrdinal];
+    const std::uint32_t regionBit = rank * kUnifiedLumaCarrierPlanes + site.bitPlane;
+    const std::uint32_t primaryBits = GetPrimaryLumaBits(region);
+    if (regionBit < primaryBits)
+    {
+        return {true, UnifiedLane::BaseLuma, region * kCodewordBits + regionBit};
+    }
+    const std::uint32_t capacity = kUnifiedFreshnessTileCatalog.tileCounts[region] * kUnifiedLumaCarrierPlanes;
+    if (regionBit >= capacity || capacity <= kCodewordBits)
+    {
+        return {};
+    }
+    const std::uint32_t surplusBit = GetLumaSurplusPrefix(region) + regionBit - kCodewordBits;
+    const std::uint32_t totalDeficit = GetLumaDeficitPrefix(kUnifiedMappingFreshnessRegionCount);
+    if (surplusBit < totalDeficit)
+    {
+        std::uint32_t remaining = surplusBit;
+        for (std::uint32_t deficitRegion = 0; deficitRegion < kUnifiedMappingFreshnessRegionCount; deficitRegion++)
+        {
+            const std::uint32_t deficit = kCodewordBits - GetPrimaryLumaBits(deficitRegion);
+            if (remaining < deficit)
+            {
+                return {true, UnifiedLane::BaseLuma,
+                    deficitRegion * kCodewordBits + GetPrimaryLumaBits(deficitRegion) + remaining};
+            }
+            remaining -= deficit;
+        }
+        return {};
+    }
+    const std::uint32_t fineBit = surplusBit - totalDeficit;
+    return fineBit < kCodewordBits ? UnifiedLogicalCarrierBit{true, UnifiedLane::FineLuma, fineBit} :
+        UnifiedLogicalCarrierBit{};
+}
+
+[[nodiscard]] constexpr UnifiedPhysicalCarrierSite GetRegionOrderedChromaSite(std::uint32_t logicalBit) noexcept
+{
+    if (logicalBit >= kUnifiedChromaBits)
+    {
+        return {};
+    }
+    for (const std::uint8_t region : kUnifiedChromaRegionOrder)
+    {
+        const std::uint32_t capacity = kUnifiedFreshnessTileCatalog.tileCounts[region] * kUnifiedChromaCarrierPlanes;
+        if (logicalBit < capacity)
+        {
+            const std::uint32_t tileRank = logicalBit / kUnifiedChromaCarrierPlanes;
+            const std::uint32_t tileOrdinal = kUnifiedFreshnessTileCatalog.groupedTileOrdinals[
+                kUnifiedFreshnessTileCatalog.groupedOffsets[region] + tileRank];
+            return {true, UnifiedCarrier::Chroma, tileOrdinal,
+                static_cast<std::uint8_t>(logicalBit % kUnifiedChromaCarrierPlanes)};
+        }
+        logicalBit -= capacity;
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr UnifiedLogicalCarrierBit InvertRegionOrderedChromaSite(
+    const UnifiedPhysicalCarrierSite& site) noexcept
+{
+    const std::uint32_t siteRegion = kUnifiedFreshnessTileCatalog.regionByTileOrdinal[site.tileOrdinal];
+    std::uint32_t logicalBit = 0;
+    for (const std::uint8_t region : kUnifiedChromaRegionOrder)
+    {
+        if (region == siteRegion)
+        {
+            logicalBit += kUnifiedFreshnessTileCatalog.rankByTileOrdinal[site.tileOrdinal] *
+                kUnifiedChromaCarrierPlanes +
+                site.bitPlane;
+            return logicalBit < kUnifiedChromaBits ?
+                UnifiedLogicalCarrierBit{true, UnifiedLane::Chroma, logicalBit} : UnifiedLogicalCarrierBit{};
+        }
+        logicalBit += kUnifiedFreshnessTileCatalog.tileCounts[region] * kUnifiedChromaCarrierPlanes;
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr const UnifiedLaneMappingContract* FindLaneMapping(const UnifiedLane lane) noexcept
+{
+    for (const UnifiedLaneMappingContract& contract : kUnifiedLaneMappings)
     {
         if (contract.lane == lane)
         {
@@ -151,29 +391,6 @@ namespace unified_mapping_detail
         }
     }
     return nullptr;
-}
-
-[[nodiscard]] constexpr std::uint32_t PermuteLaneBit(
-    const UnifiedLaneInterleaveContract& contract, const std::uint32_t logicalBit,
-    const std::uint64_t frameSequence) noexcept
-{
-    const std::uint32_t phase = ResolvePhase(contract, frameSequence);
-    const std::uint32_t phaseOffset = AddModulo(contract.offset,
-        MultiplyModulo(phase, contract.phaseStep, contract.logicalBits), contract.logicalBits);
-    return AddModulo(MultiplyModulo(logicalBit, contract.multiplier, contract.logicalBits),
-        phaseOffset, contract.logicalBits);
-}
-
-[[nodiscard]] constexpr std::uint32_t InvertLaneBit(
-    const UnifiedLaneInterleaveContract& contract, const std::uint32_t domainBit,
-    const std::uint64_t frameSequence) noexcept
-{
-    const std::uint32_t phase = ResolvePhase(contract, frameSequence);
-    const std::uint32_t phaseOffset = AddModulo(contract.offset,
-        MultiplyModulo(phase, contract.phaseStep, contract.logicalBits), contract.logicalBits);
-    const std::uint32_t shifted = static_cast<std::uint32_t>(
-        (static_cast<std::uint64_t>(domainBit) + contract.logicalBits - phaseOffset) % contract.logicalBits);
-    return MultiplyModulo(shifted, contract.inverse, contract.logicalBits);
 }
 
 [[nodiscard]] constexpr bool HasNoIsolatedCells(const std::uint32_t mask) noexcept
@@ -210,41 +427,33 @@ namespace unified_mapping_detail
 
 } // namespace unified_mapping_detail
 
-[[nodiscard]] constexpr const UnifiedLaneInterleaveContract* GetUnifiedLaneInterleave(
+[[nodiscard]] constexpr const UnifiedLaneMappingContract* GetUnifiedLaneMapping(
     const UnifiedLane lane) noexcept
 {
-    return unified_mapping_detail::FindLane(lane);
+    return unified_mapping_detail::FindLaneMapping(lane);
 }
 
 [[nodiscard]] constexpr UnifiedPhysicalCarrierSite GetUnifiedPhysicalCarrierSite(
     const UnifiedLane lane, const std::uint32_t logicalBit, const std::uint64_t frameSequence) noexcept
 {
-    const UnifiedLaneInterleaveContract* const contract = unified_mapping_detail::FindLane(lane);
+    const UnifiedLaneMappingContract* const contract = unified_mapping_detail::FindLaneMapping(lane);
     if (contract == nullptr || logicalBit >= contract->logicalBits)
     {
         return {};
     }
-    const std::uint32_t domainBit = unified_mapping_detail::PermuteLaneBit(*contract, logicalBit, frameSequence);
+    const std::uint32_t domainLogicalBit = unified_mapping_detail::PermuteLaneCodewordBit(
+        logicalBit, frameSequence);
     if (lane == UnifiedLane::BaseLuma)
     {
-        if (domainBit < kUnifiedBaseDedicatedLumaBits)
-        {
-            return {true, UnifiedCarrier::Luma, domainBit / 3, static_cast<std::uint8_t>(domainBit % 3)};
-        }
-        const std::uint32_t planeThreePosition = domainBit - kUnifiedBaseDedicatedLumaBits;
-        return {true, UnifiedCarrier::Luma,
-            unified_mapping_detail::PermuteTile(kUnifiedPlaneThreeTileOrder, planeThreePosition), 3};
+        return unified_mapping_detail::GetRegionLocalizedBaseSite(domainLogicalBit);
     }
     if (lane == UnifiedLane::FineLuma)
     {
-        const std::uint32_t planeThreePosition = domainBit + kUnifiedFinePlaneThreeFirstPosition;
-        return {true, UnifiedCarrier::Luma,
-            unified_mapping_detail::PermuteTile(kUnifiedPlaneThreeTileOrder, planeThreePosition), 3};
+        const std::uint32_t totalDeficit = unified_mapping_detail::GetLumaDeficitPrefix(
+            kUnifiedMappingFreshnessRegionCount);
+        return unified_mapping_detail::GetLumaSurplusSite(totalDeficit + domainLogicalBit);
     }
-    const std::uint32_t usedTilePosition = domainBit / 2;
-    return {true, UnifiedCarrier::Chroma,
-        unified_mapping_detail::PermuteTile(kUnifiedChromaTileOrder, usedTilePosition),
-        static_cast<std::uint8_t>(domainBit % 2)};
+    return unified_mapping_detail::GetRegionOrderedChromaSite(domainLogicalBit);
 }
 
 [[nodiscard]] constexpr UnifiedLogicalCarrierBit GetUnifiedLogicalCarrierBit(
@@ -254,75 +463,86 @@ namespace unified_mapping_detail
     {
         return {};
     }
-    UnifiedLane lane = UnifiedLane::BaseLuma;
-    std::uint32_t domainBit = 0;
+    UnifiedLogicalCarrierBit domainLogical;
     if (site.carrier == UnifiedCarrier::Luma)
     {
-        if (site.bitPlane < 3)
-        {
-            lane = UnifiedLane::BaseLuma;
-            domainBit = site.tileOrdinal * 3 + site.bitPlane;
-        }
-        else if (site.bitPlane == 3)
-        {
-            const std::uint32_t planeThreePosition = unified_mapping_detail::InvertTile(
-                kUnifiedPlaneThreeTileOrder, site.tileOrdinal);
-            if (planeThreePosition < kUnifiedBaseSharedLumaBits)
-            {
-                lane = UnifiedLane::BaseLuma;
-                domainBit = kUnifiedBaseDedicatedLumaBits + planeThreePosition;
-            }
-            else if (planeThreePosition < kUnifiedFinePlaneThreeEndPosition)
-            {
-                lane = UnifiedLane::FineLuma;
-                domainBit = planeThreePosition - kUnifiedFinePlaneThreeFirstPosition;
-            }
-            else
-            {
-                return {};
-            }
-        }
-        else
+        if (site.bitPlane >= kUnifiedLumaCarrierPlanes)
         {
             return {};
         }
+        domainLogical = unified_mapping_detail::InvertRegionLocalizedLumaSite(site);
     }
     else if (site.carrier == UnifiedCarrier::Chroma)
     {
-        if (site.bitPlane >= 2)
+        if (site.bitPlane >= kUnifiedChromaCarrierPlanes)
         {
             return {};
         }
-        const std::uint32_t usedTilePosition = unified_mapping_detail::InvertTile(
-            kUnifiedChromaTileOrder, site.tileOrdinal);
-        if (usedTilePosition >= kUnifiedChromaUsedTiles)
-        {
-            return {};
-        }
-        lane = UnifiedLane::Chroma;
-        domainBit = usedTilePosition * 2 + site.bitPlane;
+        domainLogical = unified_mapping_detail::InvertRegionOrderedChromaSite(site);
     }
-    else
+    if (!domainLogical.valid)
     {
         return {};
     }
-    const UnifiedLaneInterleaveContract* const contract = unified_mapping_detail::FindLane(lane);
-    if (contract == nullptr || domainBit >= contract->logicalBits)
-    {
-        return {};
-    }
-    return {true, lane, unified_mapping_detail::InvertLaneBit(*contract, domainBit, frameSequence)};
+    domainLogical.logicalBit = unified_mapping_detail::InvertLaneCodewordBit(
+        domainLogical.logicalBit, frameSequence);
+    return domainLogical;
 }
 
 [[nodiscard]] constexpr bool ValidateUnifiedVisualMappingStaticContract() noexcept
 {
     if (!kUnifiedFrameCapacity.valid || kUnifiedVisualProfile.dataTileCount != 41872 ||
-        kUnifiedMappingPhaseCount != 16 || kUnifiedBaseDedicatedLumaBits != kUnifiedVisualProfile.dataTileCount * 3 ||
-        kUnifiedBaseDedicatedLumaBits + kUnifiedBaseSharedLumaBits != 145800 ||
-        kUnifiedFinePlaneThreeFirstPosition != kUnifiedBaseSharedLumaBits ||
-        kUnifiedFinePlaneThreeEndPosition != kUnifiedFinePlaneThreeFirstPosition + 16200 ||
-        kUnifiedFinePlaneThreeEndPosition > kUnifiedVisualProfile.dataTileCount ||
-        kUnifiedChromaUsedTiles * 2 != 81000)
+        kUnifiedMappingVersion != 3 || kUnifiedMappingSequencePeriod != 16 ||
+        kUnifiedFreshnessTileCatalog.tileCounts != kUnifiedExpectedFreshnessTileCounts ||
+        kUnifiedFreshnessTileCatalog.groupedOffsets.back() != kUnifiedVisualProfile.dataTileCount ||
+        kUnifiedLumaCarrierPlanes != 4 || kUnifiedChromaCarrierPlanes != 2 ||
+        kUnifiedCodewordInterleave.modulus != kUnifiedVisualProfile.innerCodewordBits ||
+        kUnifiedCodewordInterleave.multiplier == 0 || kUnifiedCodewordInterleave.inverse == 0 ||
+        kUnifiedCodewordInterleave.offset >= kUnifiedCodewordInterleave.modulus ||
+        kUnifiedCodewordInterleave.phaseStep == 0 ||
+        kUnifiedCodewordInterleave.phaseStep >= kUnifiedCodewordInterleave.modulus ||
+        kUnifiedCodewordInterleave.phaseCount != kUnifiedMappingSequencePeriod ||
+        unified_mapping_detail::MultiplyModulo(kUnifiedCodewordInterleave.multiplier,
+            kUnifiedCodewordInterleave.inverse, kUnifiedCodewordInterleave.modulus) != 1)
+    {
+        return false;
+    }
+    for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
+    {
+        const std::uint8_t region = kUnifiedFreshnessTileCatalog.regionByTileOrdinal[tileOrdinal];
+        const std::uint32_t rank = kUnifiedFreshnessTileCatalog.rankByTileOrdinal[tileOrdinal];
+        if (region >= kUnifiedMappingFreshnessRegionCount ||
+            rank >= kUnifiedFreshnessTileCatalog.tileCounts[region] ||
+            kUnifiedFreshnessTileCatalog.groupedTileOrdinals[
+                kUnifiedFreshnessTileCatalog.groupedOffsets[region] + rank] != tileOrdinal)
+        {
+            return false;
+        }
+    }
+    std::array<bool, kUnifiedMappingFreshnessRegionCount> seenChromaRegions{};
+    for (const std::uint8_t region : kUnifiedChromaRegionOrder)
+    {
+        if (region >= seenChromaRegions.size() || seenChromaRegions[region])
+        {
+            return false;
+        }
+        seenChromaRegions[region] = true;
+    }
+    std::uint32_t lumaDeficitBits = 0;
+    std::uint32_t lumaSurplusBits = 0;
+    for (std::uint32_t region = 0; region < kUnifiedMappingFreshnessRegionCount; region++)
+    {
+        const std::uint32_t capacity = kUnifiedFreshnessTileCatalog.tileCounts[region] * kUnifiedLumaCarrierPlanes;
+        const std::uint32_t primaryBits = unified_mapping_detail::GetPrimaryLumaBits(region);
+        lumaDeficitBits += kUnifiedVisualProfile.innerCodewordBits - primaryBits;
+        lumaSurplusBits += capacity - primaryBits;
+    }
+    const std::uint32_t totalLumaCarrierBits = kUnifiedVisualProfile.dataTileCount * kUnifiedLumaCarrierPlanes;
+    const std::uint32_t totalChromaCarrierBits = kUnifiedVisualProfile.dataTileCount * kUnifiedChromaCarrierPlanes;
+    if (lumaDeficitBits != kUnifiedLumaDeficitBits || lumaSurplusBits != kUnifiedLumaSurplusBits ||
+        kUnifiedLumaDeficitBits + kUnifiedFineLumaBits + kUnifiedUnusedLumaCarrierBits != kUnifiedLumaSurplusBits ||
+        kUnifiedBaseLumaBits + kUnifiedFineLumaBits + kUnifiedUnusedLumaCarrierBits != totalLumaCarrierBits ||
+        kUnifiedChromaBits + kUnifiedUnusedChromaCarrierBits != totalChromaCarrierBits)
     {
         return false;
     }
@@ -350,24 +570,12 @@ namespace unified_mapping_detail
             return false;
         }
     }
-    for (const UnifiedTilePermutation permutation : {kUnifiedPlaneThreeTileOrder, kUnifiedChromaTileOrder})
+    for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneMappings.size(); laneIndex++)
     {
-        if (permutation.modulus != kUnifiedVisualProfile.dataTileCount || permutation.multiplier == 0 ||
-            permutation.inverse == 0 || permutation.offset >= permutation.modulus ||
-            unified_mapping_detail::MultiplyModulo(permutation.multiplier, permutation.inverse, permutation.modulus) != 1)
-        {
-            return false;
-        }
-    }
-    for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneInterleaves.size(); laneIndex++)
-    {
-        const UnifiedLaneInterleaveContract& interleave = kUnifiedLaneInterleaves[laneIndex];
+        const UnifiedLaneMappingContract& mapping = kUnifiedLaneMappings[laneIndex];
         const UnifiedLaneCapacity capacity = GetUnifiedLaneCapacity(static_cast<UnifiedLane>(laneIndex));
-        if (!capacity.valid || interleave.lane != static_cast<UnifiedLane>(laneIndex) ||
-            interleave.logicalBits != capacity.codedBits || interleave.multiplier == 0 || interleave.inverse == 0 ||
-            interleave.offset >= interleave.logicalBits || interleave.phaseStep >= interleave.logicalBits ||
-            interleave.phaseCount != kUnifiedMappingPhaseCount || interleave.sequenceOffset >= interleave.phaseCount ||
-            unified_mapping_detail::MultiplyModulo(interleave.multiplier, interleave.inverse, interleave.logicalBits) != 1)
+        if (!capacity.valid || mapping.lane != static_cast<UnifiedLane>(laneIndex) ||
+            mapping.logicalBits != capacity.codedBits)
         {
             return false;
         }
@@ -377,7 +585,7 @@ namespace unified_mapping_detail
 
 static_assert(ValidateUnifiedVisualMappingStaticContract());
 static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 0, 0).valid);
-static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::FineLuma, 16200, 0).valid == false);
-static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::Chroma, 81000, 0).valid == false);
+static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::FineLuma, kUnifiedFineLumaBits, 0).valid == false);
+static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::Chroma, kUnifiedChromaBits, 0).valid == false);
 
 } // namespace pbmodulation

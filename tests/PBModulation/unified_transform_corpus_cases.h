@@ -16,13 +16,14 @@ namespace unifiedtransformtest
 
 inline constexpr pbprotocol::SessionTag kCorpusSessionTag{0x4754313053455353ULL};
 inline constexpr std::uint64_t kCorpusCaptureEpoch = 1;
-inline constexpr std::size_t kMandatoryTransformCaseCount = 21;
+inline constexpr std::size_t kMandatoryTransformCaseCount = 24;
 
 enum class MandatoryTransformExpectation : std::uint8_t
 {
     FullRecovery,
     BaseCapacity,
     MinimumPayloadCapacity,
+    RemoteTemporalBlendCapacity,
     NeutralChromaBaseCapacity,
     LocalizedStale,
     CropNoOutput,
@@ -89,6 +90,24 @@ struct MandatoryTransformCase
             ChromaSubsample420Transform{1, 1}, Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1},
             ChannelQuantizationTransform{5}}, std::nullopt, {}, false, std::nullopt,
         MandatoryTransformExpectation::MinimumPayloadCapacity});
+    cases.push_back({"right-screen-1333-previous-30of255-box-chroma420-quant5-sequence41", 41,
+        {ReferenceBlendTransform{30},
+            ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0, ResampleFilter::Bilinear, matte},
+            ChromaSubsample420Transform{1, 1}, Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1},
+            ChannelQuantizationTransform{5}}, 40, {}, false, std::nullopt,
+        MandatoryTransformExpectation::RemoteTemporalBlendCapacity});
+    cases.push_back({"right-screen-1333-previous-30of255-box-chroma420-quant5-sequence51", 51,
+        {ReferenceBlendTransform{30},
+            ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0, ResampleFilter::Bilinear, matte},
+            ChromaSubsample420Transform{1, 1}, Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1},
+            ChannelQuantizationTransform{5}}, 50, {}, false, std::nullopt,
+        MandatoryTransformExpectation::RemoteTemporalBlendCapacity});
+    cases.push_back({"right-screen-1333-previous-30of255-box-chroma420-quant5-sequence64", 64,
+        {ReferenceBlendTransform{30},
+            ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0, ResampleFilter::Bilinear, matte},
+            ChromaSubsample420Transform{1, 1}, Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1},
+            ChannelQuantizationTransform{5}}, 63, {}, false, std::nullopt,
+        MandatoryTransformExpectation::RemoteTemporalBlendCapacity});
     cases.push_back({"chroma420-misaligned-phase-11", 41, {ChromaSubsample420Transform{1, 1}},
         std::nullopt, {}, false, std::nullopt, MandatoryTransformExpectation::BaseCapacity});
     cases.push_back({"neutral-chroma-scale-100", 41, {NeutralChromaTransform{}},

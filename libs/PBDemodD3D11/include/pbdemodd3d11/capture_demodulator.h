@@ -156,7 +156,7 @@ struct CaptureDemodulatorSnapshot
 
 // Same-frame LocalDesktop Bootstrap plus D3D11 metric/FEC consumer. Strict 1:1
 // profiles queue Bootstrap staging and GPU demodulation in Submit. LF4 and
-// Unified layout 9 queue only Bootstrap staging there; their first staged
+// Unified layout 10 queue only Bootstrap staging there; their first staged
 // completion resolves continuous geometry and then submits direct-texture GPU
 // work while the exact ROI remains leased. Results enter a fixed ring after a
 // retirement marker. TelemetryOnly reports a Bootstrap/signal erasure or a

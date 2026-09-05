@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <string>
 #include <vector>
@@ -90,7 +91,7 @@ void AppendLe32(std::array<std::byte, 12>& record, const std::size_t offset, con
 
 } // namespace
 
-TEST_CASE("Unified SC6 codebook labels and compact mapping match the independent Golden",
+TEST_CASE("Unified SC6 V3 codebook and region-local mapping match the independent Golden",
     "[pbmodulation][unified][mapping][golden]")
 {
     using namespace pbmodulation;
@@ -116,47 +117,66 @@ TEST_CASE("Unified SC6 codebook labels and compact mapping match the independent
     }
 
     const std::vector<std::byte> mapping = ReadGolden("mapping-contract.bin");
-    REQUIRE(mapping.size() == 128);
-    constexpr std::array<char, 8> magic{'P', 'B', 'U', 'S', 'C', '6', 'M', '2'};
+    REQUIRE(mapping.size() == 160);
+    constexpr std::array<char, 8> magic{'P', 'B', 'U', 'S', 'C', '6', 'M', '3'};
     REQUIRE(std::equal(mapping.begin(), mapping.begin() + 8,
         reinterpret_cast<const std::byte*>(magic.data()), reinterpret_cast<const std::byte*>(magic.data()) + magic.size()));
     REQUIRE(ReadLe32(mapping, 8) == kUnifiedMappingVersion);
     REQUIRE(ReadLe32(mapping, 12) == kUnifiedVisualProfile.dataTileCount);
-    REQUIRE(ReadLe32(mapping, 16) == kUnifiedPlaneThreeTileOrder.multiplier);
-    REQUIRE(ReadLe32(mapping, 20) == kUnifiedPlaneThreeTileOrder.offset);
-    REQUIRE(ReadLe32(mapping, 24) == kUnifiedChromaTileOrder.multiplier);
-    REQUIRE(ReadLe32(mapping, 28) == kUnifiedChromaTileOrder.offset);
-    for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneInterleaves.size(); laneIndex++)
+    REQUIRE(ReadLe32(mapping, 16) == kUnifiedMappingFreshnessRegionCount);
+    REQUIRE(ReadLe32(mapping, 20) == kUnifiedLumaCarrierPlanes);
+    REQUIRE(ReadLe32(mapping, 24) == kUnifiedChromaCarrierPlanes);
+    REQUIRE(ReadLe32(mapping, 28) == kUnifiedMappingSequencePeriod);
+    for (std::size_t region = 0; region < kUnifiedMappingFreshnessRegionCount; region++)
     {
-        const std::size_t offset = 32 + laneIndex * 32;
-        const UnifiedLaneInterleaveContract& expected = kUnifiedLaneInterleaves[laneIndex];
-        REQUIRE(ReadLe32(mapping, offset) == static_cast<std::uint32_t>(expected.lane));
-        REQUIRE(ReadLe32(mapping, offset + 4) == expected.logicalBits);
-        REQUIRE(ReadLe32(mapping, offset + 8) == expected.multiplier);
-        REQUIRE(ReadLe32(mapping, offset + 12) == expected.inverse);
-        REQUIRE(ReadLe32(mapping, offset + 16) == expected.offset);
-        REQUIRE(ReadLe32(mapping, offset + 20) == expected.phaseStep);
-        REQUIRE(ReadLe32(mapping, offset + 24) == expected.phaseCount);
-        REQUIRE(ReadLe32(mapping, offset + 28) == expected.sequenceOffset);
+        REQUIRE(ReadLe32(mapping, 32 + region * 4) == kUnifiedFreshnessTileCatalog.tileCounts[region]);
     }
+    for (std::size_t boundary = 0; boundary < kUnifiedMappingFreshnessColumnBoundaries.size(); boundary++)
+    {
+        REQUIRE(ReadLe32(mapping, 68 + boundary * 4) == kUnifiedMappingFreshnessColumnBoundaries[boundary]);
+        REQUIRE(ReadLe32(mapping, 76 + boundary * 4) == kUnifiedMappingFreshnessRowBoundaries[boundary]);
+    }
+    for (std::size_t region = 0; region < kUnifiedChromaRegionOrder.size(); region++)
+    {
+        REQUIRE(std::to_integer<std::uint8_t>(mapping[84 + region]) == kUnifiedChromaRegionOrder[region]);
+    }
+    REQUIRE(std::ranges::all_of(std::span<const std::byte>{mapping}.subspan(93, 3),
+        [](const std::byte value) { return value == std::byte{0}; }));
+    for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneMappings.size(); laneIndex++)
+    {
+        REQUIRE(ReadLe32(mapping, 96 + laneIndex * 4) == kUnifiedLaneMappings[laneIndex].logicalBits);
+    }
+    REQUIRE(ReadLe32(mapping, 108) == kUnifiedVisualProfile.innerCodewordBits);
+    REQUIRE(ReadLe32(mapping, 112) == kUnifiedLumaDeficitBits);
+    REQUIRE(ReadLe32(mapping, 116) == kUnifiedUnusedLumaCarrierBits);
+    REQUIRE(ReadLe32(mapping, 120) == kUnifiedUnusedChromaCarrierBits);
+    REQUIRE(ReadLe32(mapping, 124) == kUnifiedMappingContractFlags);
+    REQUIRE(ReadLe32(mapping, 128) == kUnifiedCodewordInterleave.modulus);
+    REQUIRE(ReadLe32(mapping, 132) == kUnifiedCodewordInterleave.multiplier);
+    REQUIRE(ReadLe32(mapping, 136) == kUnifiedCodewordInterleave.inverse);
+    REQUIRE(ReadLe32(mapping, 140) == kUnifiedCodewordInterleave.offset);
+    REQUIRE(ReadLe32(mapping, 144) == kUnifiedCodewordInterleave.phaseStep);
+    REQUIRE(ReadLe32(mapping, 148) == kUnifiedCodewordInterleave.phaseCount);
+    REQUIRE(std::ranges::all_of(std::span<const std::byte>{mapping}.subspan(152, 8),
+        [](const std::byte value) { return value == std::byte{0}; }));
 
     const std::vector<std::byte> digestFile = ReadGolden("mapping-stream.blake3");
     const std::string expectedDigest(kUnifiedMappingStreamFrameSequenceZeroBlake3);
     REQUIRE(std::string(reinterpret_cast<const char*>(digestFile.data()), digestFile.size()) == expectedDigest + "\n");
 }
 
-TEST_CASE("Unified SC6 lane mapping is collision-free and exactly invertible in every phase",
+TEST_CASE("Unified SC6 V3 mapping is collision-free, invertible and sequence-stable",
     "[pbmodulation][unified][mapping][bijection]")
 {
     using namespace pbmodulation;
-    for (std::uint64_t frameSequence = 0; frameSequence < kUnifiedMappingPhaseCount; frameSequence++)
+    for (std::uint64_t frameSequence = 0; frameSequence < kUnifiedMappingSequencePeriod; frameSequence++)
     {
         std::vector<std::uint8_t> lumaOwners(static_cast<std::size_t>(kUnifiedVisualProfile.dataTileCount) * 4);
         std::vector<std::uint8_t> chromaOwners(static_cast<std::size_t>(kUnifiedVisualProfile.dataTileCount) * 2);
-        for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneInterleaves.size(); laneIndex++)
+        for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneMappings.size(); laneIndex++)
         {
             const UnifiedLane lane = static_cast<UnifiedLane>(laneIndex);
-            const UnifiedLaneInterleaveContract& contract = kUnifiedLaneInterleaves[laneIndex];
+            const UnifiedLaneMappingContract& contract = kUnifiedLaneMappings[laneIndex];
             for (std::uint32_t logicalBit = 0; logicalBit < contract.logicalBits; logicalBit++)
             {
                 const UnifiedPhysicalCarrierSite site = GetUnifiedPhysicalCarrierSite(lane, logicalBit, frameSequence);
@@ -186,19 +206,62 @@ TEST_CASE("Unified SC6 lane mapping is collision-free and exactly invertible in 
     REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, UnifiedCarrier::Luma, 0, 4}, 0).valid);
     REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, UnifiedCarrier::Chroma, 0, 2}, 0).valid);
     REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, static_cast<UnifiedCarrier>(0xFF), 0, 0}, 0).valid);
+    REQUIRE(GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 0, 0) !=
+        GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 0, 1));
+    REQUIRE(GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 0, 0) ==
+        GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 0, kUnifiedMappingSequencePeriod));
 }
 
-TEST_CASE("Unified SC6 public mapping rebuilds the frozen frame-zero stream digest",
+TEST_CASE("Unified SC6 V3 keeps Base and Chroma damage inside bounded freshness regions",
+    "[pbmodulation][unified][mapping][locality]")
+{
+    using namespace pbmodulation;
+    constexpr std::uint32_t codewordBits = kUnifiedVisualProfile.innerCodewordBits;
+    std::array<std::array<std::uint32_t, kUnifiedMappingFreshnessRegionCount>, 9> baseRegionBits{};
+    for (std::uint32_t logicalBit = 0; logicalBit < kUnifiedBaseLumaBits; logicalBit++)
+    {
+        const UnifiedPhysicalCarrierSite site = GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, logicalBit, 0);
+        REQUIRE(site.valid);
+        const std::uint32_t slot = logicalBit / codewordBits;
+        const std::uint8_t region = kUnifiedFreshnessTileCatalog.regionByTileOrdinal[site.tileOrdinal];
+        baseRegionBits[slot][region]++;
+    }
+    for (std::uint32_t slot = 0; slot < baseRegionBits.size(); slot++)
+    {
+        const std::uint32_t regionCapacity = kUnifiedFreshnessTileCatalog.tileCounts[slot] *
+            kUnifiedLumaCarrierPlanes;
+        const std::uint32_t expectedPrimaryBits = std::min(codewordBits, regionCapacity);
+        REQUIRE(baseRegionBits[slot][slot] == expectedPrimaryBits);
+        REQUIRE(baseRegionBits[slot][slot] * 100 >= codewordBits * 93);
+        REQUIRE(std::accumulate(baseRegionBits[slot].begin(), baseRegionBits[slot].end(), 0U) == codewordBits);
+    }
+
+    std::array<std::array<bool, kUnifiedMappingFreshnessRegionCount>, 5> chromaRegions{};
+    for (std::uint32_t logicalBit = 0; logicalBit < kUnifiedChromaBits; logicalBit++)
+    {
+        const UnifiedPhysicalCarrierSite site = GetUnifiedPhysicalCarrierSite(UnifiedLane::Chroma, logicalBit, 0);
+        REQUIRE(site.valid);
+        const std::uint32_t slot = logicalBit / codewordBits;
+        const std::uint8_t region = kUnifiedFreshnessTileCatalog.regionByTileOrdinal[site.tileOrdinal];
+        chromaRegions[slot][region] = true;
+    }
+    for (const auto& regions : chromaRegions)
+    {
+        REQUIRE(std::ranges::count(regions, true) <= 3);
+    }
+}
+
+TEST_CASE("Unified SC6 V3 public mapping rebuilds the frozen frame-zero stream digest",
     "[pbmodulation][unified][mapping][digest]")
 {
     using namespace pbmodulation;
-    constexpr char domain[] = "PixelBridge.UnifiedSc6MappingStream.2";
+    constexpr char domain[] = "PixelBridge.UnifiedSc6MappingStream.3";
     pbprotocol::Blake3Hasher hasher;
     hasher.Update(std::as_bytes(std::span{domain, sizeof(domain)}));
-    for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneInterleaves.size(); laneIndex++)
+    for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneMappings.size(); laneIndex++)
     {
         const UnifiedLane lane = static_cast<UnifiedLane>(laneIndex);
-        for (std::uint32_t logicalBit = 0; logicalBit < kUnifiedLaneInterleaves[laneIndex].logicalBits; logicalBit++)
+        for (std::uint32_t logicalBit = 0; logicalBit < kUnifiedLaneMappings[laneIndex].logicalBits; logicalBit++)
         {
             const UnifiedPhysicalCarrierSite site = GetUnifiedPhysicalCarrierSite(lane, logicalBit, 0);
             REQUIRE(site.valid);

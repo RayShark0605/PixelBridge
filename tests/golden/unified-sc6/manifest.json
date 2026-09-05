@@ -8,33 +8,77 @@
   "files": [
     {
       "bytes": 16,
-      "domainBlake3": "797d208d28ac3251a76c6060b80757644b4b4b087b3f66f96b76117e06290ac3",
+      "domainBlake3": "ec2eccafe4d88012994b7abaec6e75deeb6b81d027ffa5b41275bde42683cf81",
       "file": "chroma-states.bin"
     },
     {
       "bytes": 64,
-      "domainBlake3": "e32c4792e0afdd14071782a899e30218ea938ed9bd0796573bb889db21d2ed78",
+      "domainBlake3": "654a5e6a468e89ee5512121ed7eeb8fa7bbdd1f507fedc844bae9e3ae226379b",
       "file": "codebook.bin"
     },
     {
-      "bytes": 128,
-      "domainBlake3": "198abcda9a0eb64f925710767074b3ebb410442424adad5d5f4c2abe7e1b1246",
+      "bytes": 160,
+      "domainBlake3": "6914eec950133b169330cfbe551032a7ca8ca42c5dff5031408b30ad6bc1f19f",
       "file": "mapping-contract.bin"
     },
     {
       "bytes": 65,
-      "domainBlake3": "f331fc7f7aa1f891418eed36a04d620472f4362fde2b7833e754bf6e366f7c07",
+      "domainBlake3": "3cb6f1c72f32639e6199503f5238dcbdcb139b09c0e56d31d319effad7b63034",
       "file": "mapping-stream.blake3"
     }
   ],
   "independentRebuild": "tests/PBModulation/generate_unified_sc6_mapping_golden.py --check",
   "mappingStreamFormat": "BLAKE3(domain || repeated LE lane/carrier/plane/reserved/logical/tile records)",
-  "mappingStreamFrameSequenceZeroBlake3": "8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc",
+  "mappingStreamFrameSequenceZeroBlake3": "4b06ec15c338a4f18502b49a7d5947bd33b4e79fd1a7f73c53c682dfa2283639",
   "profile": {
-    "layoutVersion": 9,
-    "name": "PB-Unified-SC6-V2",
-    "profileIdHex": "5042554e49534332"
+    "layoutVersion": 10,
+    "name": "PB-Unified-SC6-V3",
+    "profileIdHex": "5042554e49534333"
   },
-  "schema": "PixelBridge.UnifiedSc6MappingGolden.1",
+  "regionLocalization": {
+    "basePrimaryRegionByCodeword": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "chromaRegionOrder": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      8,
+      4,
+      5,
+      7
+    ],
+    "codewordInterleave": {
+      "inverse": 5603,
+      "modulus": 16200,
+      "multiplier": 16067,
+      "offset": 7919,
+      "phaseCount": 16,
+      "phaseStep": 1009
+    },
+    "freshnessTileCounts": [
+      3850,
+      5836,
+      3850,
+      4291,
+      6506,
+      4291,
+      3773,
+      5702,
+      3773
+    ],
+    "sequencePeriod": 16
+  },
+  "schema": "PixelBridge.UnifiedSc6MappingGolden.2",
   "status": "DeterministicIndependentContract"
 }

@@ -172,12 +172,12 @@ struct UnifiedVisualProfileManifest
     bool operator==(const UnifiedVisualProfileManifest&) const = default;
 };
 
-// Layout 9 keeps the established locator, bootstrap, calibration and freshness
+// Layout 10 keeps the established locator, bootstrap, calibration and freshness
 // scaffold while replacing the fragile 4x4 Data carrier with separated 6x6
 // cells. Twelve Data entries leave explicit guard space around the nine
 // TimingFreshness entries. All canvas pixels not listed here are reserved
 // guard/matte space; the Unified raster contract freezes their exact signal
-// values. Control has no separate pixel rectangle in layout 9: it is
+// values. Control has no separate pixel rectangle in layout 10: it is
 // reserved in Base Luma codeword slot space by mixedSlots, so its capacity is
 // counted exactly once.
 inline constexpr UnifiedVisualProfileManifest kUnifiedVisualProfile{

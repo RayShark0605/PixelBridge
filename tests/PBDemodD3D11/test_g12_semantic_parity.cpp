@@ -621,11 +621,23 @@ struct PreparedMandatoryCase
             dynamicFrame.emplace(BuildCorpusFrame(transformCase.sequence));
             source = &*dynamicFrame;
         }
-        const bool invalidReference = transformCase.referenceSequence.has_value() &&
-            *transformCase.referenceSequence != frame40.sequence;
-        REQUIRE_FALSE(invalidReference);
-        const std::optional<BgraImageView> reference = transformCase.referenceSequence ?
-            std::optional<BgraImageView>{MakeCorpusView(frame40)} : std::nullopt;
+        std::optional<CorpusFrame> dynamicReference;
+        const CorpusFrame* referenceFrame = nullptr;
+        if (transformCase.referenceSequence == frame40.sequence)
+        {
+            referenceFrame = &frame40;
+        }
+        else if (transformCase.referenceSequence == frame41.sequence)
+        {
+            referenceFrame = &frame41;
+        }
+        else if (transformCase.referenceSequence)
+        {
+            dynamicReference.emplace(BuildCorpusFrame(*transformCase.referenceSequence));
+            referenceFrame = &*dynamicReference;
+        }
+        const std::optional<BgraImageView> reference = referenceFrame ?
+            std::optional<BgraImageView>{MakeCorpusView(*referenceFrame)} : std::nullopt;
         auto executionResult = ExecuteChannelTransformPlan(MakeCorpusView(*source), reference,
             {unifiedtransformtest::MakeCorpusSeed(transformCase.name, source->sequence), transformCase.transforms});
         INFO(transformCase.name);
@@ -1176,6 +1188,7 @@ struct PerformanceControls
 struct PerformanceFrame
 {
     pbremotevisualsimulator::BgraImage image;
+    std::vector<std::byte> canonicalPixels;
     std::array<std::vector<std::byte>, pbmodulation::kUnifiedCodewordCount> blocks;
     std::array<bool, pbmodulation::kUnifiedCodewordCount> transportSlots{};
 };
@@ -1184,15 +1197,16 @@ enum class PerformanceChannel
 {
     Clean,
     BaseOnlyRemoteDistortion,
-    AllLanesRemoteDistortion
+    AllLanesRemoteTemporalDistortion
 };
 
 [[nodiscard]] PerformanceFrame BuildPerformanceFrame(pbouterfec::WirehairV2Encoder& encoder,
     const PerformanceControls& controls, const pbprotocol::SessionTag sessionTag,
     const std::uint64_t frameSequence, const PerformanceChannel channel,
-    std::uint32_t& nextUniqueEquationId)
+    std::uint32_t& nextUniqueEquationId, const std::span<const std::byte> previousCanonicalPixels = {})
 {
     const bool baseOnlyUniqueEquations = channel == PerformanceChannel::BaseOnlyRemoteDistortion;
+    const bool temporalRemoteDistortion = channel == PerformanceChannel::AllLanesRemoteTemporalDistortion;
     constexpr std::uint32_t initialControlSlotCount = 3;
     const std::uint32_t controlSlotCount = frameSequence == 1 ? initialControlSlotCount : 0;
     PerformanceFrame frame;
@@ -1263,25 +1277,46 @@ enum class PerformanceChannel
         using namespace pbremotevisualsimulator;
         const std::array<std::byte, 4> matte{
             std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}};
-        std::array<ChannelTransform, 4> transforms;
+        std::vector<ChannelTransform> transforms;
+        transforms.reserve(temporalRemoteDistortion ? 5 : 4);
+        std::optional<BgraImageView> reference;
+        if (temporalRemoteDistortion)
+        {
+            const std::span<const std::byte> referencePixels = previousCanonicalPixels.empty() ?
+                std::span<const std::byte>(canonicalPixels) : previousCanonicalPixels;
+            REQUIRE(referencePixels.size() == canonicalPixels.size());
+            reference = BgraImageView{referencePixels, pbmodulation::kUnifiedVisualProfile.canvasWidth,
+                pbmodulation::kUnifiedVisualProfile.canvasHeight,
+                static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4};
+            transforms.emplace_back(ReferenceBlendTransform{30});
+        }
         if (baseOnlyUniqueEquations)
         {
-            transforms = {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0,
-                ResampleFilter::Bilinear, matte}, NeutralChromaTransform{},
-                Kernel3x3Transform{FixedKernel3x3::GaussianBlur, 1}, ChannelQuantizationTransform{6}};
+            transforms.emplace_back(ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0,
+                ResampleFilter::Bilinear, matte});
+            transforms.emplace_back(NeutralChromaTransform{});
+            transforms.emplace_back(Kernel3x3Transform{FixedKernel3x3::GaussianBlur, 1});
+            transforms.emplace_back(ChannelQuantizationTransform{6});
         }
         else
         {
-            transforms = {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0,
-                ResampleFilter::Bilinear, matte}, ChromaSubsample420Transform{1, 1},
-                Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1}, ChannelQuantizationTransform{5}};
+            transforms.emplace_back(ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0,
+                ResampleFilter::Bilinear, matte});
+            transforms.emplace_back(ChromaSubsample420Transform{1, 1});
+            transforms.emplace_back(Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1});
+            transforms.emplace_back(ChannelQuantizationTransform{5});
         }
         const BgraImageView source{canonicalPixels, pbmodulation::kUnifiedVisualProfile.canvasWidth,
             pbmodulation::kUnifiedVisualProfile.canvasHeight,
             static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4};
-        auto result = ExecuteChannelTransformPlan(source, std::nullopt, {0xB125000000000000ULL ^ frameSequence, transforms});
+        auto result = ExecuteChannelTransformPlan(source, reference,
+            {0xB125000000000000ULL ^ frameSequence, transforms});
         REQUIRE(result);
         frame.image = std::move(result).Value().output;
+        if (temporalRemoteDistortion)
+        {
+            frame.canonicalPixels = std::move(canonicalPixels);
+        }
     }
     else
     {
@@ -1330,8 +1365,9 @@ struct PerformanceResult
 {
     const bool baseOnlyUniqueEquations = channel == PerformanceChannel::BaseOnlyRemoteDistortion;
     const bool remoteDistortion = channel != PerformanceChannel::Clean;
+    const bool temporalRemoteDistortion = channel == PerformanceChannel::AllLanesRemoteTemporalDistortion;
     const std::string name = baseOnlyUniqueEquations ? "base-only-right-screen-neutral-chroma-gaussian-quant6" :
-        remoteDistortion ? "all-lanes-right-screen-box-chroma420-quant5" : "clean-all-lanes";
+        temporalRemoteDistortion ? "all-lanes-right-screen-previous-30of255-box-chroma420-quant5" : "clean-all-lanes";
     const wchar_t* const scratchName = baseOnlyUniqueEquations ? L"g12-base-only-publish" :
         remoteDistortion ? L"g21-remote-distortion-publish" : L"g12-clean-publish";
     ScratchDirectory scratch(scratchName);
@@ -1406,10 +1442,15 @@ struct PerformanceResult
     std::uint64_t truthMismatchedBlocks = 0;
     std::uint32_t nextUniqueEquationId = 0;
     std::uint64_t frameSequence = 1;
+    std::vector<std::byte> previousCanonicalPixels;
     for (; frameSequence <= maximumLogicalFrames && !completedSegment; frameSequence++)
     {
-        const PerformanceFrame performanceFrame = BuildPerformanceFrame(encoder, controls, sessionTag,
-            frameSequence, channel, nextUniqueEquationId);
+        PerformanceFrame performanceFrame = BuildPerformanceFrame(encoder, controls, sessionTag,
+            frameSequence, channel, nextUniqueEquationId, previousCanonicalPixels);
+        if (temporalRemoteDistortion)
+        {
+            previousCanonicalPixels = std::move(performanceFrame.canonicalPixels);
+        }
         const pbmodulation::LumaView view = MakeLumaView(performanceFrame.image);
         const pbmodulation::LocalDesktopBootstrapBinding binding{
             pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
@@ -1433,6 +1474,14 @@ struct PerformanceResult
             REQUIRE(gpuResult.unifiedObservation.baseLuma.erasureReason == pbmodulation::UnifiedErasureReason::None);
             REQUIRE(gpuResult.unifiedObservation.chroma.erasureReason ==
                 pbmodulation::UnifiedErasureReason::ChromaPilotFailure);
+        }
+        else if (temporalRemoteDistortion)
+        {
+            REQUIRE(gpuResult.unifiedObservation.baseLuma.erasureReason == pbmodulation::UnifiedErasureReason::None);
+            REQUIRE((gpuResult.unifiedObservation.fineLuma.erasureReason == pbmodulation::UnifiedErasureReason::None ||
+                gpuResult.unifiedObservation.fineLuma.erasureReason ==
+                    pbmodulation::UnifiedErasureReason::FineLumaPilotFailure));
+            REQUIRE(gpuResult.unifiedObservation.chroma.erasureReason == pbmodulation::UnifiedErasureReason::None);
         }
         else
         {
@@ -1548,6 +1597,7 @@ struct PerformanceResult
     REQUIRE(engineeringProduct);
     const bool hardThresholdPassed = encodedBytes >= hardProduct.Value();
     const bool cleanTargetPassed = encodedBytes >= engineeringProduct.Value();
+    CAPTURE(name, encodedBytes, uniqueFrames, hardThresholdBytes, hardProduct.Value());
     REQUIRE(hardThresholdPassed);
     const double metric = static_cast<double>(encodedBytes) / static_cast<double>(uniqueFrames);
     const pbdemodd3d11::DemodSnapshot demodSnapshot = demodulator->GetSnapshot();
@@ -1568,6 +1618,7 @@ struct PerformanceResult
          << ",\"wholeFileBlake3\":\"" << HexBytes(manifest.wholeFileDigest.bytes) << "\""
          << ",\"chromaNeutralized\":" << (baseOnlyUniqueEquations ? "true" : "false")
          << ",\"remoteDistortion\":" << (remoteDistortion ? "true" : "false")
+         << ",\"previousFrameBlendWeight255\":" << (temporalRemoteDistortion ? 30 : 0)
          << ",\"scale\":" << (remoteDistortion ? "1.3333333333333333" : "1.0")
          << ",\"initialControlSlots\":3,\"uniqueEquationPolicy\":\""
          << (baseOnlyUniqueEquations ? "base-luma-only-other-lanes-identical-duplicate" : "all-lanes") << "\""
@@ -1707,7 +1758,8 @@ TEST_CASE("G21 one MiB CSPRNG RAW survives severe right-screen remote distortion
     D3DEnvironment warp = CreateWarpEnvironment();
     const AdapterFingerprint fingerprint = GetEnvironmentFingerprint(warp, "warp", true);
     const PerformanceResult result = RunPublishedPerformanceCase(warp, fingerprint,
-        PerformanceChannel::AllLanesRemoteDistortion, 1ULL * 1024 * 1024, 16ULL * 1024, 32ULL * 1024, 128, report);
+        PerformanceChannel::AllLanesRemoteTemporalDistortion, 1ULL * 1024 * 1024,
+        16ULL * 1024, 32ULL * 1024, 128, report);
     REQUIRE(result.hardThresholdPassed);
     REQUIRE_FALSE(result.cleanTargetPassed);
     REQUIRE(result.uniqueBaseEquations > 0);

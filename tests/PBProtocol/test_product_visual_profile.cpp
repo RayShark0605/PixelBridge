@@ -10,9 +10,9 @@
 TEST_CASE("Product visual profile catalog contains only Unified SC6", "[pbprotocol][product-profile]")
 {
     STATIC_REQUIRE(pbprotocol::kProductVisualProfiles.size() == 1);
-    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileName == std::string_view{"PB-Unified-SC6-V2"});
-    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileId == 0x5042554E49534332ULL);
-    STATIC_REQUIRE(pbprotocol::kUnifiedVisualLayoutVersion == 9);
+    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileName == std::string_view{"PB-Unified-SC6-V3"});
+    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileId == 0x5042554E49534333ULL);
+    STATIC_REQUIRE(pbprotocol::kUnifiedVisualLayoutVersion == 10);
     STATIC_REQUIRE(pbprotocol::kProductVisualProfiles.front() == pbprotocol::kUnifiedProductVisualProfile);
     STATIC_REQUIRE(pbprotocol::IsProductSessionVisualProfileId(pbprotocol::kUnifiedVisualProfileId));
     STATIC_REQUIRE(pbprotocol::FindProductVisualProfile(pbprotocol::kUnifiedVisualProfileId) ==

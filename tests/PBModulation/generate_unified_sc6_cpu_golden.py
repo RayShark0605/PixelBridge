@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent PB-Unified-SC6-V2 CPU-raster oracle.
+"""Independent PB-Unified-SC6-V3 CPU-raster oracle.
 
 The generator imports only earlier independent Python oracles. It does not read
 C++ headers, invoke a PixelBridge executable, or use generated build artifacts.
@@ -22,7 +22,7 @@ import generate_unified_sc6_mapping_golden as mapping
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "golden" / "unified-sc6-cpu-oracle"
-PROFILE_ID = 0x5042554E49534332
+PROFILE_ID = 0x5042554E49534333
 SESSION_TAG = 0x1122334455667788
 CODEWORD_BYTES = 2025
 INFO_BYTES = 1350
@@ -41,7 +41,7 @@ VARIANTS = ("clean", "chroma-neutralized", "base-neutralized", "fine-neutralized
 
 
 def Record(sequence: int) -> bytes:
-    prefix = struct.pack("<4sBBBBQQQII", b"PBRG", 1, 1, 0, 9, PROFILE_ID,
+    prefix = struct.pack("<4sBBBBQQQII", b"PBRG", 1, 1, 0, 10, PROFILE_ID,
                          SESSION_TAG, sequence, 0x21222324, 0)
     assert len(prefix) == 40
     return prefix + struct.pack("<I", scaffold.Crc32C(prefix))
@@ -236,7 +236,7 @@ def BuildFiles() -> dict[str, bytes]:
     current = Raster(41, current_record, codewords)
     digest_bytes, digest_map = RasterDigests(previous, current)
     contract = {
-        "artifact": "PB-Unified-SC6-V2 CPU oracle Golden",
+        "artifact": "PB-Unified-SC6-V3 CPU oracle Golden",
         "canvas": {"width": 1920, "height": 1080, "pixelFormat": "BGRA8_UNORM_SDR"},
         "codewords": {"count": 15, "bytesEach": 2025, "informationBytesEach": 1350,
                       "innerFecProfile": "DVB-S2-Short-N16200-K10800"},

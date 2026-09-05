@@ -70,7 +70,7 @@
 
 ### 4.2 统一产品与历史 Profile 的关系
 
-当前唯一产品 Profile 是 `PB-Unified-SC6-V2`、layout 9：6×6 分隔单元、Base/Fine/Chroma 独立 lane、1.0x..2.0x 和 mixed Control/Transport slots。LC4/layout 8 与旧 LF4 只保留为历史 Golden/回归，不能覆盖当前合同；SC6 的真实远程最终发布仍须由 G21 关闭。
+当前唯一产品 Profile 是 `PB-Unified-SC6-V3`、layout 10：6×6 分隔单元、Base/Fine/Chroma 独立 lane、region-local placement、codeword-local sequence permutation、1.0x..2.0x 和 mixed Control/Transport slots。SC6 V2/layout 9、LC4/layout 8 与旧 LF4 只保留为历史 Golden/回归，不能覆盖当前合同；SC6 V3 的真实远程最终发布仍须由 G21 关闭。
 
 旧 Direct、Shape+Chroma、RemoteVisual 8x8 和 `PB-RemoteVisual-LF4-X1`：
 

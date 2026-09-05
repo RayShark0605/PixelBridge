@@ -309,6 +309,23 @@ void RequireRasterDigest(const std::span<const std::byte> digests, const std::si
 
 } // namespace
 
+TEST_CASE("Unified decode policy validates the independent freshness residual gate", "[unified][cpu][policy]")
+{
+    UnifiedVisualDecodePolicy policy;
+    REQUIRE(ValidateUnifiedVisualDecodePolicy(policy));
+    REQUIRE(policy.maximumFreshnessResidual == 0.075);
+    REQUIRE(policy.maximumFreshnessResidual != policy.maximumTimingBitErrorFraction);
+
+    policy.maximumFreshnessResidual = 0.25;
+    REQUIRE(ValidateUnifiedVisualDecodePolicy(policy));
+    policy.maximumFreshnessResidual = std::nextafter(0.25, 1.0);
+    REQUIRE_FALSE(ValidateUnifiedVisualDecodePolicy(policy));
+    policy.maximumFreshnessResidual = -std::numeric_limits<double>::epsilon();
+    REQUIRE_FALSE(ValidateUnifiedVisualDecodePolicy(policy));
+    policy.maximumFreshnessResidual = std::numeric_limits<double>::quiet_NaN();
+    REQUIRE_FALSE(ValidateUnifiedVisualDecodePolicy(policy));
+}
+
 TEST_CASE("Unified CPU raster freezes data geometry and complete tile ownership", "[unified][cpu][modulation]")
 {
     std::array<std::uint32_t, kUnifiedDataRegionCount> regionCounts{};
@@ -541,7 +558,7 @@ TEST_CASE("Unified prepared metrics preserve reference metadata and fail-closed 
     const auto clearedMetrics = invalidReference.GetSoftMetrics();
     std::vector<float> logicalMetrics(kUnifiedSoftMetricCount);
     std::vector<std::uint8_t> samplingFailures(kUnifiedVisualProfile.dataTileCount, 0);
-    for (std::uint64_t phase = 0; phase < kUnifiedMappingPhaseCount; phase++)
+    for (std::uint64_t phase = 0; phase < kUnifiedPhasePilotSequencePeriod; phase++)
     {
         CAPTURE(phase);
         const auto fixture = BuildFixture(40 + phase);
@@ -726,11 +743,11 @@ TEST_CASE("Unified mixed decoder infers canonical slot types and rejects illegal
     }
 }
 
-TEST_CASE("Unified CPU raster round-trips all 16 FrameSequence mapping phases", "[unified][cpu][mapping]")
+TEST_CASE("Unified CPU raster round-trips all 16 phase-pilot states", "[unified][cpu][mapping]")
 {
     Fixture fixture = GetFixture41();
     UnifiedVisualCpuOracle oracle = MakeOracle();
-    for (std::uint64_t sequence = 0; sequence < kUnifiedMappingPhaseCount; sequence++)
+    for (std::uint64_t sequence = 0; sequence < kUnifiedPhasePilotSequencePeriod; sequence++)
     {
         fixture.bootstrap = MakeBootstrap(sequence);
         const std::vector<std::byte> pixels = Render(fixture);
@@ -829,6 +846,7 @@ TEST_CASE("Unified stale and wrong-sequence mixtures fail closed without cross-f
 {
     const Fixture& previousFixture = GetFixture40();
     const Fixture& currentFixture = GetFixture41();
+    const Fixture phaseAliasFixture = BuildFixture(48);
     const std::vector<std::byte> previous = Render(previousFixture);
     const std::vector<std::byte> current = Render(currentFixture);
     UnifiedVisualCpuOracle oracle = MakeOracle();
@@ -883,6 +901,27 @@ TEST_CASE("Unified stale and wrong-sequence mixtures fail closed without cross-f
         policy.maximumFecIterations = 1;
         const UnifiedVisualObservation observation = oracle.Decode(View(pixels), currentFixture.plan, {}, policy);
         REQUIRE(observation.IsFrameAvailable());
+        REQUIRE(observation.acceptedBlocks == 0);
+        REQUIRE(observation.acceptedControlRecords == 0);
+        REQUIRE(observation.acceptedTransportBlocks == 0);
+        REQUIRE(oracle.GetAcceptedBlocks().empty());
+    }
+
+    SECTION("phase-pilot alias with previous-sequence data accepts no block")
+    {
+        std::vector<std::byte> pixels = Render(phaseAliasFixture);
+        for (const UnifiedRegionContract& contract : kUnifiedVisualProfile.regions)
+        {
+            if (contract.kind == UnifiedRegionKind::Data)
+            {
+                CopyRegion(previous, pixels, contract.bounds);
+            }
+        }
+        const UnifiedVisualObservation observation = oracle.Decode(View(pixels), phaseAliasFixture.plan);
+        REQUIRE(observation.IsFrameAvailable());
+        REQUIRE(observation.baseLuma.IsAvailable());
+        REQUIRE(observation.fineLuma.IsAvailable());
+        REQUIRE(observation.chroma.IsAvailable());
         REQUIRE(observation.acceptedBlocks == 0);
         REQUIRE(observation.acceptedControlRecords == 0);
         REQUIRE(observation.acceptedTransportBlocks == 0);

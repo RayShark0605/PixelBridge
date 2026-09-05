@@ -1,5 +1,5 @@
 {
-  "artifact": "PB-Unified-SC6-V2 CPU oracle Golden",
+  "artifact": "PB-Unified-SC6-V3 CPU oracle Golden",
   "canvas": {
     "height": 1080,
     "pixelFormat": "BGRA8_UNORM_SDR",
@@ -43,12 +43,12 @@
     "neutralRows": 8
   },
   "rasterBlake3": {
-    "base-neutralized": "fcecadc8a7cc3a3942b8480c0b8d421757181ab63ffc8131ac345ef743fff159",
-    "chroma-neutralized": "2e15ff79eb989624542fa208c9bbc3f7a18d9de25fda0472a8816b40a4f75ef5",
-    "clean": "68051c662cb2c80dd104970656fc9ddd897220e7f60e78dd67a6173b488f92e3",
-    "fine-neutralized": "dbf334ba164f58a973cfed59efb2ddc4a4c932058792d56bb3d9473223110a34",
-    "localized-stale": "6ee3cdf232b2db40fe06e7c114fb3a08ec3909d1e3e1fa1546e5d6f1b54af1ad",
-    "wrong-sequence": "e03e31cefa327f579a95c111cb4a625a242ace5341cd2231040d5797dce96ce3"
+    "base-neutralized": "e1948b5f59243563a4ed21f024daf2f8e28d5e9d4c4adb474dc6ae92c0eb7bfd",
+    "chroma-neutralized": "4472b2a6cb78d0125407c0c99e9069e1b10abbb40ae61a6272f88e82f483c6a4",
+    "clean": "5ad5e2f9c90bcdd8be8c689a1a5c66498f623448b887fd1818e571a4b9bcef58",
+    "fine-neutralized": "4cb4c68c2659563004dee4e3f82f1bb9dbc0af411105be04e112845168ac210e",
+    "localized-stale": "c98e68253174a95a23c57b058cf92f9eb4e4fdb0c7671f8b9ce7c07f86ba9687",
+    "wrong-sequence": "69f045060861d9f394c100e08224319b4592fb564e66adc037669cadbe1d69bf"
   },
   "slotPlan": {
     "slot0": "Control/SessionDescriptor",

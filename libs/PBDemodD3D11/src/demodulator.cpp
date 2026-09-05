@@ -2021,7 +2021,7 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
             freshness[region].current = samplesValid &&
                 static_cast<double>(freshness[region].bitErrors) / pbmodulation::kLocalDesktopTimingBits <=
                     slot.unifiedPolicy.maximumTimingBitErrorFraction &&
-                freshness[region].residual <= slot.unifiedPolicy.locator.maximumTimingResidual;
+                freshness[region].residual <= slot.unifiedPolicy.maximumFreshnessResidual;
         }
         const auto metadata = slot.frame.metadata;
         const auto unifiedBootstrap = slot.unifiedBootstrap;

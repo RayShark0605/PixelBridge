@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -97,6 +98,8 @@ struct CorpusRecord
     std::uint32_t internalFalseAcceptedBlocks = 0;
     std::uint32_t truthMismatchedAcceptedBlocks = 0;
     std::uint32_t freshnessCurrentRegions = 0;
+    std::array<std::uint16_t, kUnifiedFreshnessRegionCount> freshnessBitErrors{};
+    std::array<std::string, kUnifiedFreshnessRegionCount> freshnessResidualBinary64{};
     bool conflictExpected = false;
     std::uint32_t conflictOutputBlocks = 0;
     std::string temporalDisposition;
@@ -268,6 +271,11 @@ CorpusRecord RunCase(UnifiedVisualCpuOracle& oracle, const std::string& name, co
         {
             return freshness.current;
         }));
+    for (std::size_t region = 0; region < observation.freshness.size(); region++)
+    {
+        record.freshnessBitErrors[region] = observation.freshness[region].bitErrors;
+        record.freshnessResidualBinary64[region] = HexBinary64(observation.freshness[region].residual);
+    }
     record.conflictExpected = conflictExpected;
     record.conflictOutputBlocks = conflictExpected ? observation.acceptedBlocks : 0;
     record.temporalDisposition = temporalDisposition ? GetTemporalDispositionName(*temporalDisposition) : "not-observed";
@@ -332,7 +340,8 @@ CorpusRecord RunCase(UnifiedVisualCpuOracle& oracle, const std::string& name, co
     CAPTURE(record.name, record.frameErasure, record.bootstrapErasure, record.laneErasure,
         record.acceptedBlocks, record.acceptedPayloadBytes, record.erasedMetrics, record.hardBitErrors,
         record.fecValidSlots, record.crcValidSlots, record.internalFalseAcceptedBlocks,
-        record.truthMismatchedAcceptedBlocks, record.freshnessCurrentRegions);
+        record.truthMismatchedAcceptedBlocks, record.freshnessCurrentRegions, record.freshnessBitErrors,
+        record.freshnessResidualBinary64);
     return record;
 }
 
@@ -378,7 +387,10 @@ void RequireMinimumPayloadCapacity(const CorpusRecord& record)
     RequireFrameAvailable(record);
     const std::uint64_t acceptedPayloadBytes = record.acceptedPayloadBytes[0] +
         record.acceptedPayloadBytes[1] + record.acceptedPayloadBytes[2];
-    CAPTURE(record.name, record.acceptedPayloadBytes, acceptedPayloadBytes);
+    CAPTURE(record.name, record.frameErasure, record.bootstrapErasure, record.laneErasure,
+        record.acceptedBlocks, record.acceptedPayloadBytes, record.erasedMetrics, record.hardBitErrors,
+        record.fecValidSlots, record.crcValidSlots, record.acceptedSlots, record.freshnessCurrentRegions,
+        record.freshnessBitErrors, record.freshnessResidualBinary64, acceptedPayloadBytes);
     REQUIRE(acceptedPayloadBytes >= kMinimumPayloadBytes);
 }
 
@@ -452,6 +464,9 @@ std::string BuildReport(const std::span<const CorpusRecord> records, const Visua
     std::uint64_t truthMismatchedAcceptedBlocks = 0;
     std::uint64_t conflictOutputBlocks = 0;
     std::uint64_t neutralChromaBasePayloadBytes = 0;
+    std::uint64_t minimumRemoteTemporalBlendPayloadBytes = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t minimumRemoteTemporalBlendBasePayloadBytes = std::numeric_limits<std::uint64_t>::max();
+    std::uint32_t remoteTemporalBlendCases = 0;
     for (const CorpusRecord& record : records)
     {
         internalFalseAcceptedBlocks += record.internalFalseAcceptedBlocks;
@@ -461,11 +476,22 @@ std::string BuildReport(const std::span<const CorpusRecord> records, const Visua
         {
             neutralChromaBasePayloadBytes = record.acceptedPayloadBytes[LaneIndex(UnifiedLane::BaseLuma)];
         }
+        if (record.name.starts_with("right-screen-1333-previous-30of255-"))
+        {
+            const std::uint64_t acceptedPayloadBytes = record.acceptedPayloadBytes[0] +
+                record.acceptedPayloadBytes[1] + record.acceptedPayloadBytes[2];
+            minimumRemoteTemporalBlendPayloadBytes =
+                std::min(minimumRemoteTemporalBlendPayloadBytes, acceptedPayloadBytes);
+            minimumRemoteTemporalBlendBasePayloadBytes = std::min(minimumRemoteTemporalBlendBasePayloadBytes,
+                record.acceptedPayloadBytes[LaneIndex(UnifiedLane::BaseLuma)]);
+            remoteTemporalBlendCases++;
+        }
     }
+    REQUIRE(remoteTemporalBlendCases == 3);
 
     std::string output;
     output.reserve(65536);
-    output.append("{\"schema\":\"PixelBridge.UnifiedTransformCorpus.2\",\"profile\":{\"name\":");
+    output.append("{\"schema\":\"PixelBridge.UnifiedTransformCorpus.3\",\"profile\":{\"name\":");
     AppendJsonString(output, kUnifiedVisualProfile.productProfile.name);
     output.append(",\"visualProfileIdHex\":");
     AppendJsonString(output, HexUint64(kUnifiedVisualProfile.productProfile.visualProfileId));
@@ -491,6 +517,12 @@ std::string BuildReport(const std::span<const CorpusRecord> records, const Visua
     output.append(std::to_string(kMinimumPayloadBytes));
     output.append(",\"neutralChromaBasePayloadBytes\":");
     output.append(std::to_string(neutralChromaBasePayloadBytes));
+    output.append(",\"remoteTemporalBlendCases\":");
+    output.append(std::to_string(remoteTemporalBlendCases));
+    output.append(",\"minimumRemoteTemporalBlendPayloadBytes\":");
+    output.append(std::to_string(minimumRemoteTemporalBlendPayloadBytes));
+    output.append(",\"minimumRemoteTemporalBlendBasePayloadBytes\":");
+    output.append(std::to_string(minimumRemoteTemporalBlendBasePayloadBytes));
     output.append("},\"temporal\":{\"uniqueFrames\":");
     output.append(std::to_string(temporalSnapshot.uniqueFrames));
     output.append(",\"duplicateFrames\":");
@@ -566,6 +598,10 @@ std::string BuildReport(const std::span<const CorpusRecord> records, const Visua
         output.append(std::to_string(record.conflictOutputBlocks));
         output.append("},\"freshnessCurrentRegions\":");
         output.append(std::to_string(record.freshnessCurrentRegions));
+        output.append(",\"freshnessBitErrors\":");
+        AppendNumberArray(output, record.freshnessBitErrors);
+        output.append(",\"freshnessResidualBinary64\":");
+        AppendStringArray(output, record.freshnessResidualBinary64);
         output.append(",\"temporalDisposition\":");
         AppendJsonString(output, record.temporalDisposition);
         output.append(",\"channelManifest\":");
@@ -624,10 +660,21 @@ TEST_CASE("Unified provider-generic transform corpus closes CPU admission and ca
             dynamicFrame.emplace(BuildFrame(transformCase.sequence));
             source = &*dynamicFrame;
         }
-        const FrameFixture* reference = transformCase.referenceSequence ? &frame40 : nullptr;
-        const bool invalidReference = transformCase.referenceSequence.has_value() &&
-            *transformCase.referenceSequence != frame40.sequence;
-        REQUIRE_FALSE(invalidReference);
+        std::optional<FrameFixture> dynamicReference;
+        const FrameFixture* reference = nullptr;
+        if (transformCase.referenceSequence == frame40.sequence)
+        {
+            reference = &frame40;
+        }
+        else if (transformCase.referenceSequence == frame41.sequence)
+        {
+            reference = &frame41;
+        }
+        else if (transformCase.referenceSequence)
+        {
+            dynamicReference.emplace(BuildFrame(*transformCase.referenceSequence));
+            reference = &*dynamicReference;
+        }
 
         std::optional<VisualIdentityDisposition> temporalDisposition;
         if (transformCase.expectedTemporalDisposition)
@@ -650,6 +697,18 @@ TEST_CASE("Unified provider-generic transform corpus closes CPU admission and ca
         case unifiedtransformtest::MandatoryTransformExpectation::MinimumPayloadCapacity:
             RequireMinimumPayloadCapacity(record);
             break;
+        case unifiedtransformtest::MandatoryTransformExpectation::RemoteTemporalBlendCapacity:
+        {
+            RequireMinimumPayloadCapacity(record);
+            CAPTURE(record.name, record.acceptedPayloadBytes, record.acceptedSlots,
+                record.freshnessCurrentRegions, record.freshnessBitErrors, record.freshnessResidualBinary64);
+            REQUIRE(record.freshnessCurrentRegions >= 6);
+            REQUIRE(std::ranges::all_of(record.freshnessBitErrors,
+                [](const std::uint16_t errors) { return errors == 0; }));
+            REQUIRE(record.acceptedPayloadBytes[LaneIndex(UnifiedLane::BaseLuma)] >= kMinimumBasePayloadBytes);
+            REQUIRE(record.acceptedSlots[LaneIndex(UnifiedLane::Chroma)] > 0);
+            break;
+        }
         case unifiedtransformtest::MandatoryTransformExpectation::NeutralChromaBaseCapacity:
             RequireBaseCapacity(record);
             REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::Chroma)] ==

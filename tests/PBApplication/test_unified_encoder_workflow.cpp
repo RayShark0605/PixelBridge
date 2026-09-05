@@ -265,7 +265,7 @@ TEST_CASE("Unified Encoder product policy is shared and rejects legacy tuning", 
     REQUIRE(pbapp::ValidateEncoderConfig(config));
     REQUIRE(pbapp::ParseVisualProfileToken("unified") == config.visualProfile);
     REQUIRE(pbapp::ParseVisualProfileToken(L"unified") == config.visualProfile);
-    REQUIRE(std::string_view(pbapp::GetVisualProfileName(config.visualProfile)) == "PB-Unified-SC6-V2");
+    REQUIRE(std::string_view(pbapp::GetVisualProfileName(config.visualProfile)) == "PB-Unified-SC6-V3");
     REQUIRE_FALSE(pbapp::IsRemoteVisualProfile(config.visualProfile));
     for (const std::uint32_t fps : {0U, 61U, 240U})
     {

@@ -2,7 +2,7 @@
 
 ## 1. 当前状态与前置
 
-**2026-09-05：PARTIAL / 三次 LC4 真实远程 smoke 均未发布；SC6 抗失真替代方案已完成离线闭环，尚待新的真实远程复验。** 前两次 15 Hz 与一次严格时段包含的 5 Hz 接收都没有绑定 Session。5 Hz 证明仅降频不能修复物理符号失真；用户随后提供真实失真截图、libcimbar 参考截图和 `D:\libcimbar` 源码，并明确允许修改视觉/协议合同且不要求兼容。当前唯一产品 Profile 已替换为 `PB-Unified-SC6-V2`/layout 9，最强合成远控链三次恢复 1 MiB 并超过 16 KiB 硬门；这是 headless synthetic WARP，不是 live。初始准备及失败保留在第 2–8 节，第 9 节记录失真诊断、源码参考、实现和离线证据。
+**2026-09-05：PARTIAL / 三次 LC4 真实远程 smoke 均未发布；SC6 V3 跨帧抗失真方案已完成离线闭环，尚待新的真实远程复验。** 前两次 15 Hz 与一次严格时段包含的 5 Hz 接收都没有绑定 Session。5 Hz 证明仅降频不能修复物理符号失真；用户随后提供真实失真截图、libcimbar 参考截图和 `D:\libcimbar` 源码，并明确允许修改视觉/协议合同且不要求兼容。当前唯一产品 Profile 已替换为 `PB-Unified-SC6-V3`/layout 10；区域局部映射、三 backend 跨帧 parity 和三次 1 MiB 时域失真完整发布均通过 16 KiB 硬门。这仍是 headless synthetic WARP，不是 live。初始准备及失败保留在第 2–8 节，第 9 节是首版 SC6 V2 历史，第 10 节记录当前 V3 诊断、实现与证据。
 
 - 前置 G20：`e94da7f1d68fd3b410c180ac71201716c11bb9d7`，在途背压修复与本地功能收口已提交。原证据见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 16 节。
 - G20 的 2.0x 是用户豁免、未验证；letterbox 的 15,420.2353 B/unique 不是性能通过。G21 的 16 KiB 硬门仍然有效。
@@ -268,9 +268,9 @@ receiver 正常期限退出 1，没有 watchdog 强杀、输出文件或错误�
 
 审计摘要保存在 `build-unified-release/g21-libcimbar-source-audit-1/`。PixelBridge 没有引入 OpenCV、libcimbar wire 或源代码依赖；这里只采用通用信号处理结论，并继续使用既有 QC-LDPC/Wirehair/Receiver/Storage 安全链。
 
-### 9.4 当前唯一 Profile：`PB-Unified-SC6-V2`
+### 9.4 首版离线 Profile：`PB-Unified-SC6-V2`（历史，已由第 10 节取代）
 
-用户明确允许修改整个项目并声明不要求兼容后，LC4/layout 8 从产品 admission 移除，历史源码生成器和 Golden 仅保留为内部回归。SC6/layout 9 的冻结合同为：
+用户明确允许修改整个项目并声明不要求兼容后，LC4/layout 8 从产品 admission 移除，历史源码生成器和 Golden 仅保留为内部回归。下表是当时 SC6 V2/layout 9 的冻结合同，不是当前产品 identity：
 
 | 项目 | 当前值 |
 | --- | ---: |
@@ -331,3 +331,87 @@ whole digest / safe publish / final reopen: true / true / true
 5. live `>=16 KiB/unique logical frame`、稳定态 250 ms admission 和 cold-start 丢帧后的收敛证明。
 
 在用户恢复可配合前不启动屏幕/capture、不操作输入。提交后可生成自包含的新远端 Encoder ZIP 和本机 receiver worker，但它们的加载检查仍不是 live 成功。下一目标仍是 G21，不进入 G22。
+
+## 10. SC6 V3：跨帧远控失真的定向修复
+
+### 10.1 从截图到可重放的时域失真模型
+
+用户追加的四张真实运行截图证明 LC4 Data 区不是稳定的均匀模糊：碎片方向和局部清晰度会随截图变化，符合远控视频链在缩放、低通、色度抽样和帧间预测/插值共同作用下产生的内容相关时域污染。截图没有 sender truth，不能直接计算 BER；因此把它转成确定、可复核且比第 9 节更强的模拟链：
+
+```text
+current canonical frame + previous canonical frame * 30/255
+-> 2560x1440 bilinear (4/3)
+-> centered 4:2:0, phase (1,1)
+-> one 3x3 box blur
+-> 5-bit BGR quantization
+```
+
+reference blend 明确使用每个测试帧自己的上一逻辑帧，而不是固定噪声图；三条 mandatory case 分别覆盖 sequence `41<-40`、`51<-50`、`64<-63`。这不是声称未知远控 provider 正好使用 30/255，而是把此前缺失的“上一帧残留”维度纳入产品回归。provider 名称仍不进入 wire、Profile、阈值或分支。
+
+### 10.2 V2 全局交织为什么失败
+
+V2 在 30/255 blend 下可出现 6 个 current、3 个 stale freshness regions；每个 region 的 hard timing bits 仍可能全对，但 analog residual 不同。全局 affine interleave 把三个 stale regions 的 zero metrics 均匀撒到全部 15 个 QC-LDPC codeword，结果不是只损失局部容量，而是所有 codeword 同时失去足够信息。临时静态 region mapping 能恢复 9 个 Base blocks / 11,826 B，却让既有“当前 Bootstrap + 完整上一帧 Data”负例错误接受 15 blocks，因此没有保留该不安全方案。
+
+当前唯一产品身份原子替换为：
+
+| 项目 | 当前值 |
+| --- | ---: |
+| Name | `PB-Unified-SC6-V3` |
+| VisualProfileId / layout | `0x5042554E49534333` / 10 |
+| Mapping version / sequence period | 3 / 16 |
+| Base / Fine / Chroma codewords | 9 / 1 / 5 |
+| Mapping digest | `4b06ec15c338a4f18502b49a7d5947bd33b4e79fd1a7f73c53c682dfa2283639` |
+| Freshness residual / phase residual | `0.075` / `0.125` |
+| Minimum decision metric | 64 |
+
+V3 先把 Base codeword 0..8 分别放入对应 freshness region；边角 region 容量不足的部分只溢出到确定的 luma surplus，故每个 Base codeword 至少 93% 位于本 region。Chroma 按冻结 region 顺序串接，使每个 codeword 最多跨三个 regions。随后只在**各自 16,200-bit codeword 内**按 `FrameSequence mod 16` 置换；不会把一个 region 的擦除扩散到所有 codeword，同时完整旧帧仍因错相位、QC-LDPC、CRC 和 identity fail closed。Golden generator 独立重建 tile ownership、region ordering、置换及 160-byte contract，不调用生产 mapping。
+
+freshness analog residual 从 Bootstrap timing 判断中拆为独立 `maximumFreshnessResidual=0.075`；Bootstrap timing、phase residual、decision metric、QC-LDPC、Transport/Control CRC、identity 和 250 ms admission 均未降低。Data glyph 与 phase checker 都可比较原始样本和同一和为 1 的结构化锐化模型：
+
+```text
+clamp(5 * center - left - right - top - bottom, 0, 255)
+```
+
+phase checker 仍必须让预期 phase 严格优于其余七个 phase，且 normalized residual 仍不超过 `0.125`。这修复了“Data 已按低通模型恢复、Fine phase pilot 却因仍看原始模糊样本而整 lane 擦除”的观测模型不一致，不是扩大容差。错误序列负例继续要求 0 accepted blocks；新增的 `40 -> 48` 相位别名负例在 phase pilot 仍有效时替换全部 Data，直接证明 16-phase codeword-local permutation 不会退化为可拼接的静态 region mapping。
+
+### 10.3 冻结验证
+
+本轮只执行 G21 受影响的最小验证，没有运行 full CTest、ASan、真实屏幕、live remote 或 64 MiB：
+
+| 验证 | 结果 |
+| --- | --- |
+| 独立 mapping Golden `--check` | PASS；5 files；digest `4b06ec...3639` |
+| 独立 CPU raster Golden `--check` | PASS；6 files |
+| SC6 mapping | PASS；4 cases / 19,910,103 assertions |
+| SC6 profile / product profile | PASS；8 / 823，3 / 16 assertions |
+| CPU oracle（含 policy 和完整错序负例） | PASS；15 cases / 494,588 assertions |
+| mandatory transform corpus | PASS；24 cases encoded in 1 corpus / 5,833,845 assertions |
+| shader bytecode | PASS；1 / 61 assertions |
+| WARP + AMD + NVIDIA semantic parity | PASS；24 mandatory + 2 semantic mutation scenarios / 19,395 assertions |
+| Application 产品身份 | PASS；1 / 23 assertions |
+
+三条时域 mandatory records 均为 `falseAcceptance=0`、`freshnessBitErrors=[0,0,0,0,0,0,0,0,0]`；accepted payload 分别为 19,710、15,768、17,082 B，其中 Base 分别为 11,826、10,512、10,512 B。WARP、AMD Radeon 和 NVIDIA 对每条记录的 accepted block count 与 accepted-set BLAKE3 完全相同。corpus Golden 为 `PixelBridge.UnifiedTransformCorpus.3`，SHA-256 `fa2ce4d94279b71eb18d111ccf0efcfbe59ab266a81e4a4f697d4a4299a75b87`。
+
+### 10.4 三次时域完整文件发布
+
+隐藏 Gate 使用每帧真实上一 canonical frame 做 30/255 blend，并继续走正式 1 MiB OS-CSPRNG RAW、Session/Segment/FinalManifest Control、Wirehair V2、WARP demod、ReceiverIngress、PBStorage、whole-file BLAKE3、安全发布、final reopen 和逐字节比较。三次独立 source/run 结果：
+
+| Run | Unique logical frames | Verified encoded B/unique frame | 16 KiB | 32 KiB |
+| --- | ---: | ---: | --- | --- |
+| 01 | 60 | 17,476.2667 | PASS | MISS |
+| 02 | 63 | 16,644.0635 | PASS | MISS |
+| 03 | 59 | 17,772.4746 | PASS | MISS |
+
+三次的 whole digest / safe publish / final reopen / byte equality 均为 true，false accepted / truth mismatch / conflict output 均为 0。报告和 stdout 位于 `build-unified-release/g21-sc6-v3-temporal-distortion-1/run-01..03/`；每份 authority 都是 `headless synthetic WARP; not live remote capture`。首次在 phase-pilot 修复前的运行虽完成发布但在 16 KiB 计算处失败，修复后一次早期成功未作为三次冻结组混入；原失败不删除、不改写。
+
+### 10.5 当前边界和下一步
+
+V3 已证明能在显式跨帧残留与原最强空间/色度链叠加时完整恢复文件，并且三次均超过 G21 的 16 KiB 硬门；这解决的是可重放的根因和实现缺口，不等于未知 live 链已经通过。仍待用户恢复配合后执行：
+
+1. 用提交后相同 V3 identity 的完整 Encoder 包跑真实远程 1 MiB / 默认 15 Hz；
+2. 审核 live whole digest、安全发布、final reopen、外部 SHA-256/BLAKE3、错误文件数和实际 unique FPS；
+3. 同链 64 MiB RAW；
+4. live chroma 可用和 Base-only（或同一 actual capture 的 neutralized 派生）；
+5. 核对 250 ms admission、cold-start 丢帧后的收敛以及 `>=16 KiB/unique logical frame`。
+
+在用户明确恢复配合前不启动 capture、不显示窗口、不操作输入。上述 live 项缺一不可，故 **G21 仍为 PARTIAL，G22 未开始**。

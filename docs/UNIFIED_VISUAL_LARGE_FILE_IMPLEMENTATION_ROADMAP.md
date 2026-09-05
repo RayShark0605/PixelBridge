@@ -6,7 +6,7 @@
 > 代码起点：`1445f9b`（正式 Descriptor 与可恢复 Segment 基础）
 > 目标程序：`PixelBridgeEncoder.exe`、`PixelBridgeDecoder.exe`
 > 适用平台：Windows x64 / C++20 / Qt Widgets / D3D11
-> 当前结论（2026-09-05）：**G00..G20 已完成并有独立提交；G21 正在用 `PB-Unified-SC6-V2`/layout 9 修复真实远控低通失真。离线合成失真闭环已通过，但新的真实远程 1 MiB/64 MiB 最终发布尚未执行，因此 G21 仍为 PARTIAL，G22 未开始。**
+> 当前结论（2026-09-05）：**G00..G20 已完成并有独立提交；G21 当前唯一产品合同为 `PB-Unified-SC6-V3`/layout 10。区域局部映射、结构化 phase-pilot 锐化、跨帧混合 CPU/GPU parity 和重复 1 MiB headless 完整文件闭环已通过，但新的真实远程 1 MiB/64 MiB 最终发布尚未执行，因此 G21 仍为 PARTIAL，G22 未开始。**
 
 ---
 
@@ -109,14 +109,14 @@ git log -5 --oneline
 
 ### 1.5 唯一产品视觉 Profile
 
-> **G21 合同替换（2026-09-05）：** 首轮真实远程运行证明 LC4/layout 8 的连续 4×4 微纹理经远控缩放/低通/4:2:0/量化后不可可靠恢复。用户明确允许修改整个视觉/协议合同且不要求兼容，因此下列 SC6/layout 9 是当前唯一产品合同；本路线后文 G06..G20 的 LC4 数字只保留为当时的历史证据，不再约束当前产品。
+> **G21 合同替换（2026-09-05）：** 首轮真实远程运行证明 LC4/layout 8 的连续 4×4 微纹理经远控缩放/低通/4:2:0/量化后不可可靠恢复；后续跨帧混合诊断又证明首版 SC6 V2 的全局交织会把局部旧帧污染扩散到每个 codeword。用户明确允许修改整个视觉/协议合同且不要求兼容，因此下列 SC6 V3/layout 10 是当前唯一产品合同；本路线后文 G06..G20 的 LC4 数字和 G21 的 V2 记录只保留为当时的历史证据，不再约束当前产品。
 
 正式产品仅公开：
 
 ```text
-Name                  PB-Unified-SC6-V2
-VisualProfileId       0x5042554E49534332
-VisualLayoutVersion   9
+Name                  PB-Unified-SC6-V3
+VisualProfileId       0x5042554E49534333
+VisualLayoutVersion   10
 Canvas                1920 x 1080 BGRA8 SDR
 Inner FEC             Robust DVB-S2 Short QC-LDPC
 Outer payload         1314 bytes
@@ -137,7 +137,8 @@ Inner codeword        2025 bytes
 - 16 个 5×5 glyph 组成互补对，前景数为 8..17、pairwise Hamming distance `>=9` 且无孤立同值像素；label、lane mapping、交织置换和摘要一经选择即冻结，运行时不自学习。
 - label/mapping 的搜索在固定 Train/Validation/Holdout 上确定性完成；查看 Holdout 前冻结选择规则。
 - 优先最大化 Base Luma 最小 bit margin，再优化 Fine Luma，最后评估 Chroma；同分按字典序 tie-break。
-- Base/Fine/Chroma 使用不同 `FrameSequence` 派生置换。
+- Base codeword 主要落在对应 freshness region，Chroma codeword 最多跨三个 freshness regions；`FrameSequence` 只在每个 codeword 内做 16 相位置换，禁止重新引入把局部旧帧污染扩散到所有 codeword 的全局交织。
+- phase pilot 同时比较原始与同一和为 1 的十字锐化观测模型，仍受原 `0.125` residual 和唯一最近 phase 约束；不按 provider 名称放宽门限。
 - Chroma pilot 失败只擦除 Chroma；局部 stale 只清零对应 soft metrics；不得跨 `FrameSequence` 拼接区域。
 - 仅 locator/bootstrap 失败、画布裁切或身份冲突允许整帧擦除。
 - Control 与 Transport 可在同一逻辑帧的不同 Base Luma codeword slot 中出现。
@@ -165,7 +166,7 @@ Inner codeword        2025 bytes
 | 活动 decoder 满时延迟 | 已实现 | `DeferredResourceBusy` tests | Carousel 端到端重试/收敛 |
 | Whole-file digest 与安全发布 | 已有并扩展 | PBStorage 定向测试 | 多 Segment、大文件、rename 前后故障注入与外部哈希 |
 | 历史 LF4/Direct/Shape 视觉路径 | 已存在实验实现 | 历史 Golden、CPU/GPU/Replay/实屏证据 | 仅可作为比较基础；不是统一产品 Profile |
-| PB-Unified-SC6-V2 | G21 当前实现 | layout 9 manifest、独立 Golden、CPU/GPU parity、合成远控失真完整文件闭环 | 真实远程 G21 最终发布 |
+| PB-Unified-SC6-V3 | G21 当前实现 | layout 10 manifest、独立 Golden、区域局部映射、跨帧混合 CPU/GPU parity、合成远控失真完整文件闭环 | 真实远程 G21 最终发布 |
 | 可缩放普通 Data Window | 未实现 | 旧窗口/呈现基础可复用 | G13 |
 | WGC 自动转 DXGI | 未实现 | 两个 backend 各自存在 | G14 |
 | 最终 Qt 产品流程 | 未实现 | Phase 1.5 GUI 仍暴露旧 Profile/backend/压缩项 | G15..G16 |
@@ -848,11 +849,17 @@ ctest --test-dir build-unified-release -C Release `
 
 **远程目录删除与全新完整包（2026-09-05）：** 用户随后明确说明远程原 `remote-encoder` 整个目录已经删除，故其中的旧 CSPRNG source 也不可再用，前段同源计划停止；不从摘要伪造或替代原文。按用户要求制作不依赖旧目录的完整 remote Encoder ZIP：冻结 `e94da7f` EXE、全部 42 个 `bin/` 文件、identity metadata、package manifest、说明和 fresh-source 5 Hz 检查/启动脚本齐全；解压根可直接运行。它只生成新的 1 MiB CSPRNG source，manifest 明确 `strictSameSourceComparison=false` / `G21AcceptanceRun=false`。最终包 `build-unified-release/g21-5hz-fresh-full-2/PixelBridge-G21-RemoteEncoder-e94da7f-Fresh5Hz-Full.zip`，26,714,458 bytes，SHA-256 `93123440c769031ecc1ebe73755d087a4a9c939ce1bb71ee51c82583d4982e2c`；48 entries / 61,461,871 uncompressed bytes。PowerShell 5.1 AST、组装目录 batch check、ZIP 逐 entry 验证及全新解压目录 batch check 均通过，检查路径没有 source/run/广播。首个 `full-1` 组装因验证 PATH 漏掉 PowerShell 返回 9009，无 ZIP/副作用；改用系统绝对路径后从新目录重做，原失败保留。详情见 `UNIFIED_REMOTE_GATE.md` 第 8 节。等待用户远程 `Fresh5Hz_00_Check.bat` 结果；未启动正常 sender 或 live Decoder，单 owner、250 ms 及全部质量/摘要/发布门不变，未运行 full CTest、ASan、native 回归、64 MiB、20 GiB 或 G22。
 
-**SC6 抗失真重构与离线闭环（2026-09-05）：** 用户提供四张 LC4 真实远控失真截图和四张 libcimbar 网页端参考截图，随后明确允许修改视觉合同/底层协议且不要求兼容。对本地 `D:\libcimbar` 源码的只读核对确认其实际采用 5×5 symbol、6 px spacing、符号网格锐化、adaptive threshold、fuzzy average-hash/drift 和分块 ECC，而不是仅靠降低动画频率。PixelBridge 因此用 `PB-Unified-SC6-V2`/layout 9 原子替换唯一产品 manifest：41,872 个 6×6 分隔单元，5×5 glyph 承载 4 luma+2 chroma bits，15 个 QC-LDPC codeword 按 9/1/5 分 lane，最大净载荷 19,710 B/frame，mapping digest `8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc`。CPU/HLSL 只在 shape luma 打分前应用和为 1 的十字反卷积，chroma 保持原采样；不存在 provider 名称/品牌分支。独立 point 采样证明 0.75x 会跨 SC6 单元边界，故产品可解码尺度改为 1.0x..2.0x，小于 1.0x 仍 neutral matte 且不推进序列。
+**SC6 V2 首轮抗失真重构与离线闭环（2026-09-05，历史）：** 用户提供四张 LC4 真实远控失真截图和四张 libcimbar 网页端参考截图，随后明确允许修改视觉合同/底层协议且不要求兼容。对本地 `D:\libcimbar` 源码的只读核对确认其实际采用 5×5 symbol、6 px spacing、符号网格锐化、adaptive threshold、fuzzy average-hash/drift 和分块 ECC，而不是仅靠降低动画频率。PixelBridge 当时用 `PB-Unified-SC6-V2`/layout 9 原子替换产品 manifest：41,872 个 6×6 分隔单元，5×5 glyph 承载 4 luma+2 chroma bits，15 个 QC-LDPC codeword 按 9/1/5 分 lane，最大净载荷 19,710 B/frame，mapping digest `8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc`。CPU/HLSL 只在 shape luma 打分前应用和为 1 的十字反卷积，chroma 保持原采样；不存在 provider 名称/品牌分支。独立 point 采样证明 0.75x 会跨 SC6 单元边界，故产品可解码尺度改为 1.0x..2.0x，小于 1.0x 仍 neutral matte 且不推进序列。该 V2 身份和全局交织现已被下段 V3 取代，只保留为诊断历史。
 
 最强新增合成链为 `2560×1440 bilinear + centered 4:2:0 phase(1,1) + one box blur + 5-bit BGR quantization`：锐化前仅接受 8/15，Base/Fine/Chroma hard errors=15/3/0；当前 CPU 与 WARP/AMD/NVIDIA 均接受 15/15，hard errors=0/0/0，accepted bytes 逐字节相同，false accepted/truth mismatch/conflict output 均为 0。真实 Robust QC-LDPC layered decoder 的 check-node 更新由每条边重复扫描整行改为等价的行级 sign parity + first/second minima，复杂度从 O(degree²) 降为 O(degree)，全部 Inner-FEC 结果不变；严重场景稳定态从约 241..243 ms 降到约 50..64 ms，三个 GPU backend 的关键失真帧约 29..31 ms。首次硬件 dispatch 仍观测到冷启动尖峰，不据此声称所有帧低于 250 ms。
 
 新增隐藏 G21 离线完整文件 Gate 使用 1 MiB OS-CSPRNG RAW、正式 Control/Transport/Wirehair V2、WARP、ReceiverIngress、PBStorage、whole digest、安全发布和 final reopen，以上述 all-lanes 失真链独立运行五次；每次均在 54 个唯一逻辑帧后逐字节发布，`1,048,576 / 54 = 19,418.074074 B/unique logical frame`，超过 16 KiB 硬门但低于 32 KiB 工程目标。五次分别为 12,725 / 12,715 / 12,735 / 12,737 / 12,735 assertions，证据封存于 `build-unified-release/g21-sc6-offline-distortion-1/`，authority 明确为 headless synthetic WARP。另有 SC6 transform corpus 5,104,511 assertions、三 backend parity 16,729 assertions、Inner FEC 47,202 assertions、profile/mapping/CPU Golden、scheduler/telemetry/application 和 RenderD3D 定向通过。**这些证明修复可以进入下一次 live 验证，但不能替代真实远程 1 MiB/64 MiB、外部摘要或 Base-only 证据；G21 继续 PARTIAL，G22 未开始。** 详细命令、历史失败和证据边界见 `UNIFIED_REMOTE_GATE.md` 第 9 节。
+
+**SC6 V3 跨帧失真闭环（2026-09-05）：** 用户追加的运行截图显示失真随帧变化，故新增前一逻辑帧占 `30/255` 的显式 reference-blend，再串联 `2560×1440 bilinear + centered 4:2:0 phase(1,1) + one box blur + 5-bit BGR quantization`。诊断证明 V2 的全局 affine interleave 会把少数 stale freshness regions 的 zero metrics 撒入全部 codeword；静态 region mapping 虽恢复容量，却会让“当前 Bootstrap + 完整上一帧 Data”负例错误接受。当前 `PB-Unified-SC6-V3`/layout 10 因而采用 **region-local placement + codeword-local 16-phase permutation**：Base 每个 codeword 至少 93% 位于对应 freshness region，Chroma 每个 codeword 最多跨三个 freshness regions，同时完整旧帧仍因相位、FEC、CRC 和身份门 fail closed。新 identity 为 `0x5042554E49534333`，mapping digest 为 `4b06ec15c338a4f18502b49a7d5947bd33b4e79fd1a7f73c53c682dfa2283639`；V2 不再进入产品 admission。
+
+freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap timing、`0.125` phase residual、`64` minimum decision metric、FEC/CRC/identity 或 250 ms admission。phase checker 与 Data glyph 现在都可在原始和同一 `clamp(5*center-left-right-top-bottom,0,255)` 结构化观测中择优，但仍要求预期 phase 严格优于所有其他 phase。三种独立序列的时域混合 corpus 均为 0 freshness hard-bit error、0 false acceptance；每帧恢复 15,768..19,710 B，Base 为 10,512..11,826 B。最终 24 场景 CPU corpus **5,833,845 assertions** 通过；WARP/AMD/NVIDIA 对 24 场景和两种语义突变的 accepted bytes/digest 完全一致，**19,395 assertions** 通过；包含 `40 -> 48` phase-pilot 别名的完整错误序列负例 **282,462 assertions** 通过。
+
+隐藏 1 MiB OS-CSPRNG 全文件 Gate 进一步把 reference-blend 放进每一帧而不是只做单帧 corpus。三次独立 source/run 分别在 60 / 63 / 59 个唯一逻辑帧完成正式 Wirehair V2、ReceiverIngress、whole digest、安全发布、final reopen 与逐字节比对，得到 **17,476.267 / 16,644.063 / 17,772.475 B/unique logical frame**，均越过 16 KiB 硬门；false accepted/truth mismatch/conflict output 均为 0，32 KiB 工程目标仍未达到。证据封存于 `build-unified-release/g21-sc6-v3-temporal-distortion-1/`，authority 明确是 headless synthetic WARP，不是 live。真实远程 1 MiB/64 MiB、外部摘要和 Base-only 仍未执行，因此 **G21 继续 PARTIAL，G22 未开始**；详见 `UNIFIED_REMOTE_GATE.md` 第 10 节。
 
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。

@@ -2,7 +2,7 @@
 
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
 
-> **开发中，不是最终 Release。** G00..G20 已建立正式 Descriptor、多 Segment/双端恢复、简化 Qt 产品入口和本地 Release/native 能力；当前唯一产品 Profile 是抗远控低通的 `PB-Unified-SC6-V2`（layout 9）。G21 仍缺真实远程 1 MiB/64 MiB 最终发布门，G22 尚未开始。不要把离线合成、历史 Phase 1.5 或 RemoteVisual 实验入口当作最终产品认证。
+> **开发中，不是最终 Release。** G00..G20 已建立正式 Descriptor、多 Segment/双端恢复、简化 Qt 产品入口和本地 Release/native 能力；当前唯一产品 Profile 是抗远控空间与跨帧失真的 `PB-Unified-SC6-V3`（layout 10）。G21 仍缺真实远程 1 MiB/64 MiB 最终发布门，G22 尚未开始。不要把离线合成、历史 Phase 1.5 或 RemoteVisual 实验入口当作最终产品认证。
 
 快速入口：
 
@@ -45,7 +45,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 ### 当前仍未关闭
 
-- `PB-Unified-SC6-V2` layout 9 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
+- `PB-Unified-SC6-V3` layout 10 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、region-local placement、codeword-local sequence permutation、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
 - 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
 - G21 真实远控 1 MiB/64 MiB、外部摘要、Base Luma 独立恢复和 `>=16 KiB/unique logical frame` 硬门尚未完成；
 - G22 独立发布包、SBOM、用户文档和发布候选尚未开始；项目自身 LICENSE 与仓库可见性仍需维护者决定。

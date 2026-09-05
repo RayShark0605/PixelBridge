@@ -3,7 +3,7 @@
 > 状态：G02/G09 合同已接入 G15 Unified Encoder 产品 runtime，并通过定向非显示验证（2026-09-04）
 > 性质：Encoder 本地实现/持久状态及 Unified scheduler 规范；G15 产品接线与安全删除见 [Unified Encoder 工作流](UNIFIED_ENCODER_WORKFLOW.md)，不是实屏或吞吐认证。
 > 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`、`libs/PBModulation/src/unified_visual.cpp`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`
-> G21 更新（2026-09-05）：下节当前调度合同已随唯一产品 manifest 改为 SC6/layout 9；后文 G02/G09 的旧 LC4 测试计数保留为历史证据。
+> G21 更新（2026-09-05）：下节当前调度合同已随唯一产品 manifest 改为 SC6 V3/layout 10；后文 G02/G09 的旧 LC4 测试计数保留为历史证据。
 
 ## 1. 已关闭的发送端合同
 
@@ -20,7 +20,7 @@ DirectRepeat 仍由 `ChooseOuterFecMode` 决定。它只调度固定 `[0,K)`，�
 
 ### 1.1 G09 Unified mixed-slot 调度合同
 
-1. 每个 `PB-Unified-SC6-V2` 逻辑帧固定含 15 个显式 slot：Base Luma 9、Fine Luma 1、Chroma 5。Control 只能占用 Base Luma 的前部连续 slots，最多 8 个，因此任何帧都至少保留 7 个 Transport slots；不存在整帧 Control 分支。
+1. 每个 `PB-Unified-SC6-V3` 逻辑帧固定含 15 个显式 slot：Base Luma 9、Fine Luma 1、Chroma 5。Control 只能占用 Base Luma 的前部连续 slots，最多 8 个，因此任何帧都至少保留 7 个 Transport slots；不存在整帧 Control 分支。
 2. 一轮默认 Control burst 按优先级放置 4 份 SessionDescriptor、4 份 FinalManifest、4 份当前 SegmentDescriptor：首帧为 8 Control + 7 Transport，次帧为 4 Control + 11 Transport；长 Segment 从 burst 首帧起每 `logicalFps * 10` ticks 再发一轮。零字节 Session 不存在 SegmentDescriptor，只发送 4 份 Session 与 4 份 Manifest。
 3. PB-Control-1 原始记录进入 1,350-byte Robust Inner-FEC information block 时只增加规范零尾部，不修改 Control envelope 或 wire CRC。FEC 成功后，Decoder 依据原有互斥规范前缀自分类：Control 从 `PBCR` 开始，Transport 从固定 BlockType 开始；因此不需要 sender slot plan、ACK 或其他隐藏信道，也没有压缩 1,314-byte Transport payload。
 4. `PrepareFrame(logicalTick)` 冻结同一 tick 的完整 15-slot 计划且重复调用逐值一致；它不推进任何 Carousel 状态。调用方只有在整张规范 raster 已成功构建后才能调用 `CommitPreparedFrame()`，该提交才一次性推进帧计数、Control offset 与真正新调度的 equation IDs。Control 与尾帧 systematic duplicates 均不分配新 ID。

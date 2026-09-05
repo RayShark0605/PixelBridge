@@ -2,13 +2,13 @@
 
 > 状态：2026-09-04，G15 的定向 headless/controller/GUI smoke 验证通过。
 > 边界：已接通 Encoder 产品发送路径；不代表 G16 Decoder GUI、G20 实屏、GPU/远程通道或吞吐门禁通过。
-> G21 更新（2026-09-05）：产品绑定已随唯一 manifest 原子替换为 `PB-Unified-SC6-V2`/layout 9、15 slots 和 1.0x..2.0x；下方 G15 测试数字仍是当时的历史证据，不冒充 SC6 实屏认证。
+> G21 更新（2026-09-05）：产品绑定已随唯一 manifest 原子替换为 `PB-Unified-SC6-V3`/layout 10、15 slots 和 1.0x..2.0x；下方 G15 测试数字仍是当时的历史证据，不冒充 SC6 实屏认证。
 
 ## 1. 产品入口与真实绑定
 
 无参数运行 `PixelBridgeEncoder.exe` 打开 Qt Widgets 界面。基础区只有源文件、逻辑刷新率 `1..60 Hz`（默认 15）、开始/停止，以及本地准备/广播状态。
 
-- `MakeUnifiedEncoderConfig` 是 Qt 与 CLI 共用的产品策略；固定 `PB-Unified-SC6-V2`、layout 9、自动 RAW/zstd(level 3)、Control repetitions=4。
+- `MakeUnifiedEncoderConfig` 是 Qt 与 CLI 共用的产品策略；固定 `PB-Unified-SC6-V3`、layout 10、自动 RAW/zstd(level 3)、Control repetitions=4。
 - `EncoderApplicationController` 仅调用 Qt-free `EncoderRuntime`，不包含协议、压缩、FEC 或 raster 实现。
 - 基础状态来自 `EncoderSnapshot`：文件大小、Segment 数、预扫描字节/段数/耗时/速度、Carousel pass/ordinal、实际逻辑帧的本次广播平均 FPS、源文件稳定性。预扫描百分比不是 Decoder 接收进度。
 - 高级信息只读：Profile、Robust Inner FEC、当前 Segment 的 Outer FEC、整个文件 RAW/zstd 决策计数、Session/resume、whole-file BLAKE3 与 durable lease。

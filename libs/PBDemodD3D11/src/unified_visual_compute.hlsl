@@ -55,6 +55,8 @@ RWStructuredBuffer<float4> FreshnessOutput : register(u3);
 RWStructuredBuffer<float4> PhaseOutput : register(u4);
 
 static const uint UnifiedMetricCount = 243000;
+static const uint UnifiedBaseLumaMetricCount = 145800;
+static const uint UnifiedLumaMetricCount = 162000;
 static const uint2 CalibrationOrigins[4] =
 {
     uint2(736, 16), uint2(1696, 16), uint2(96, 1000), uint2(1056, 1000)
@@ -108,6 +110,20 @@ bool ReadSample(float logicalX, float logicalY, out float3 blueGreenRed)
         (right == left ? bottomLeft : RoiTexture.Load(int3(right, bottom, 0)).bgr * 255.0);
     blueGreenRed = lerp(lerp(topLeft, topRight, horizontal), lerp(bottomLeft, bottomRight, horizontal), vertical);
     return true;
+}
+
+bool ReadSharpenedLuma(float logicalX, float logicalY, out float luma)
+{
+    float3 sample = 0.0;
+    float3 left = 0.0;
+    float3 right = 0.0;
+    float3 top = 0.0;
+    float3 bottom = 0.0;
+    const bool valid = ReadSample(logicalX, logicalY, sample) &&
+        ReadSample(logicalX - 1.0, logicalY, left) && ReadSample(logicalX + 1.0, logicalY, right) &&
+        ReadSample(logicalX, logicalY - 1.0, top) && ReadSample(logicalX, logicalY + 1.0, bottom);
+    luma = clamp(5.0 * Luma(sample) - Luma(left) - Luma(right) - Luma(top) - Luma(bottom), 0.0, 255.0);
+    return valid;
 }
 
 uint ProjectLumaChip(uint2 tileOrigin, uint chip, uint model)
@@ -283,6 +299,7 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float low = GetLumaCentroid(0);
     const float high = GetLumaCentroid(2);
     float distance = 0.0;
+    float sharpenedDistance = 0.0;
     bool valid = true;
     for (uint tileOrdinal = 0; tileOrdinal < 210; tileOrdinal++)
     {
@@ -294,13 +311,19 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         for (uint chip = 0; chip < 25; chip++)
         {
             float3 sample = 0.0;
-            valid = ReadSample((float)(tileOrigin.x + chip % 5),
-                (float)(tileOrigin.y + chip / 5), sample) && valid;
+            float sharpenedLuma = 0.0;
+            const float logicalX = (float)(tileOrigin.x + chip % 5);
+            const float logicalY = (float)(tileOrigin.y + chip / 5);
+            valid = ReadSample(logicalX, logicalY, sample) && valid;
+            valid = ReadSharpenedLuma(logicalX, logicalY, sharpenedLuma) && valid;
             const float expected = ((mask >> chip) & 1) != 0 ? high : low;
             const float difference = Luma(sample) - expected;
+            const float sharpenedDifference = sharpenedLuma - expected;
             distance += difference * difference;
+            sharpenedDistance += sharpenedDifference * sharpenedDifference;
         }
     }
+    distance = min(distance, sharpenedDistance);
     CanonicalPhaseDistances[entry] = distance;
     GroupMemoryBarrierWithGroupSync();
     const uint expectedPhase = InterleavePhase & 7;
@@ -324,6 +347,7 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         for (uint model = 1; model <= 4; model++)
         {
             float candidateDistance = 0.0;
+            float candidateSharpenedDistance = 0.0;
             bool candidateValid = true;
             for (uint tileOrdinal = 0; tileOrdinal < 210; tileOrdinal++)
             {
@@ -333,15 +357,21 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                 for (uint chip = 0; chip < 25; chip++)
                 {
                     float3 sample = 0.0;
+                    float sharpenedLuma = 0.0;
                     const uint projected = ProjectLumaChip(tileOrigin, chip, model);
                     candidateValid = projected < 25 && candidateValid;
-                    candidateValid = ReadSample((float)(tileOrigin.x + chip % 5),
-                        (float)(tileOrigin.y + chip / 5), sample) && candidateValid;
+                    const float logicalX = (float)(tileOrigin.x + chip % 5);
+                    const float logicalY = (float)(tileOrigin.y + chip / 5);
+                    candidateValid = ReadSample(logicalX, logicalY, sample) && candidateValid;
+                    candidateValid = ReadSharpenedLuma(logicalX, logicalY, sharpenedLuma) && candidateValid;
                     const float expected = ((mask >> min(projected, 24)) & 1) != 0 ? high : low;
                     const float difference = Luma(sample) - expected;
+                    const float sharpenedDifference = sharpenedLuma - expected;
                     candidateDistance += difference * difference;
+                    candidateSharpenedDistance += sharpenedDifference * sharpenedDifference;
                 }
             }
+            candidateDistance = min(candidateDistance, candidateSharpenedDistance);
             if (candidateValid && candidateDistance < distance)
             {
                 distance = candidateDistance;
@@ -435,6 +465,8 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     [unroll]
     for (uint bitPlane = 0; bitPlane < 4; bitPlane++)
     {
+        const bool fineLane = lumaBits[bitPlane] >= UnifiedBaseLumaMetricCount &&
+            lumaBits[bitPlane] < UnifiedLumaMetricCount;
         float zeroDistance = 3.402823466e+38;
         float oneDistance = 3.402823466e+38;
         [unroll]
@@ -442,11 +474,11 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         {
             if (((labelIndex >> bitPlane) & 1) != 0)
             {
-                oneDistance = min(oneDistance, bitPlane < 3 ? baseDistances[labelIndex] : fineDistances[labelIndex]);
+                oneDistance = min(oneDistance, fineLane ? fineDistances[labelIndex] : baseDistances[labelIndex]);
             }
             else
             {
-                zeroDistance = min(zeroDistance, bitPlane < 3 ? baseDistances[labelIndex] : fineDistances[labelIndex]);
+                zeroDistance = min(zeroDistance, fineLane ? fineDistances[labelIndex] : baseDistances[labelIndex]);
             }
         }
         if (lumaBits[bitPlane] < UnifiedMetricCount)

@@ -7,7 +7,7 @@
 > 核心输入模型：Decoder 对用户指定的**屏幕矩形区域进行高速桌面捕获**，不使用摄像头  
 > 支持模式：**即时视觉流模式**、**离线 MP4 模式**  
 > 设计日期：2026-08-21  
-> 文档状态：**通用架构与安全不变量继续有效；当前产品合同和实施顺序以第 0 节及 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 为准。2026-09-05 的 G21 失真诊断已用 SC6/layout 9 取代 2026-09-03 冻结的 LC4/layout 8；旧 ChannelClass、Phase 1.5、LC4 与 RemoteVisual 路线只保留为历史设计/证据。**
+> 文档状态：**通用架构与安全不变量继续有效；当前产品合同和实施顺序以第 0 节及 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 为准。2026-09-05 的 G21 失真诊断已用 SC6 V3/layout 10 取代 2026-09-03 冻结的 LC4/layout 8，并以 region-local placement + codeword-local sequence permutation 取代 SC6 V2 的全局交织；旧 ChannelClass、Phase 1.5、LC4、SC6 V2 与 RemoteVisual 路线只保留为历史设计/证据。**
 
 ---
 
@@ -18,8 +18,10 @@
 从 2026-09-03 起，PixelBridge 的正式 Windows 产品路线冻结为：
 
 - 交付 `PixelBridgeEncoder.exe` 与 `PixelBridgeDecoder.exe` 两个 Qt Widgets 程序；
-- 正式产品只公开一个视觉 Profile：`PB-Unified-SC6-V2`，`VisualProfileId=0x5042554E49534332`，`VisualLayoutVersion=9`；旧 LC4/layout 8 只保留为历史 Golden/回归，产品入口明确拒绝；
+- 正式产品只公开一个视觉 Profile：`PB-Unified-SC6-V3`，`VisualProfileId=0x5042554E49534333`，`VisualLayoutVersion=10`；旧 SC6 V2/layout 9 与 LC4/layout 8 只保留为历史 Golden/回归，产品入口明确拒绝；
 - 规范画布固定为 1920×1080 BGRA8 SDR，使用 Base Luma、Fine Luma、Chroma 三个可独立擦除的 lane；颜色损坏不能拖累必选 Base Luma；
+- 6×6 分隔单元使用 5×5 glyph；Base 按 freshness region 局部放置、Chroma 每个 codeword 最多跨三个 regions，`FrameSequence` 置换严格限制在单个 codeword 内，避免把局部跨帧污染扩散到全部 FEC codeword；
+- Data 和 phase-pilot shape scoring 可在原始与同一和为 1 的十字锐化模型中择优；phase 仍需唯一最近且不超过原 residual 门，禁止按 provider 放宽；
 - Encoder 逻辑刷新率为 1..60 Hz，默认 15 Hz；重复 Present 不产生新 equation，不推进 FrameSequence 或 Carousel；
 - Data Window 是普通可缩放窗口，规范 raster 通过 point sampling 等比缩放并 letterbox；正式可解码尺度为 1.0×..2.0×，小于 1.0×时暂停逻辑广播；独立采样证明 0.75×会跨 SC6 单元边界，不能作为可解码尺度；
 - Control 与 Transport 可在同一逻辑帧的不同 Base Luma slots 中复用，避免低刷新率下整帧 Control；
@@ -52,7 +54,7 @@
 
 代码提交 `1445f9b` 是正式 Descriptor、流式多 Segment sender、durable lease、random-access `.part`、decoder resume journal 和 `DeferredResourceBusy` 的历史起点；其后 G00..G20 已按统一路线逐目标实现并提交。
 
-这仍不代表最终产品已完成：当前 SC6/layout 9 的 CPU/GPU/合成失真闭环已经建立，但真实远程 1 MiB/64 MiB 最终发布、外部摘要、Base-only 证据和 16 KiB 硬门仍属于 G21；G22 包/SBOM/发布候选尚未开始。精确状态见统一路线 G21。
+这仍不代表最终产品已完成：当前 SC6 V3/layout 10 的 CPU/GPU/空间加跨帧合成失真闭环已经建立，但真实远程 1 MiB/64 MiB 最终发布、外部摘要、Base-only 证据和 16 KiB 硬门仍属于 G21；G22 包/SBOM/发布候选尚未开始。精确状态见统一路线 G21。
 
 ---
 

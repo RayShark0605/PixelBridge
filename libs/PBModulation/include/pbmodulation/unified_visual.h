@@ -31,6 +31,7 @@ inline constexpr std::uint32_t kUnifiedDataGlyphWidth = 5;
 inline constexpr std::uint32_t kUnifiedDataGlyphCells = kUnifiedDataGlyphWidth * kUnifiedDataGlyphWidth;
 inline constexpr std::uint32_t kUnifiedDataTileCells = 6 * 6;
 inline constexpr std::uint32_t kUnifiedPhasePilotTilesPerRegion = (128 / 6) * (64 / 6);
+inline constexpr std::uint32_t kUnifiedPhasePilotSequencePeriod = 16;
 
 // Calibration regions use this exact vertical micro-layout. The first 24
 // rows are four 32-pixel-wide grayscale cells in kUnifiedLumaPilotLevels
@@ -54,7 +55,7 @@ struct UnifiedDataTile
     bool operator==(const UnifiedDataTile&) const = default;
 };
 
-// Tile ordinal is the layout-9 manifest Data-region order followed by row-major
+// Tile ordinal is the layout-10 manifest Data-region order followed by row-major
 // order within each region. Regions, not a bounding-box fill convention, own
 // the physical carrier sites.
 [[nodiscard]] UnifiedDataTile GetUnifiedDataTile(std::uint32_t tileOrdinal) noexcept;
@@ -77,6 +78,11 @@ struct UnifiedVisualDecodePolicy
     double minimumChromaSeparation = 16;
     double maximumPhasePilotResidual = 0.125;
     double maximumTimingBitErrorFraction = 0.02;
+    // This local gate is intentionally distinct from the Bootstrap timing
+    // residual. Dominant-current remote blends may retain correct hard timing
+    // bits while raising analogue residual; codeword-local sequence interleave,
+    // Inner FEC and wire CRC still reject stale Data.
+    double maximumFreshnessResidual = 0.075;
     std::int16_t minimumDecisionMetric = 64;
     std::uint32_t maximumFecIterations = 12;
 };

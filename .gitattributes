@@ -20,3 +20,4 @@ tests/golden/remote-visual/lf4/*.bin binary
 tests/golden/remote-visual/lf4/*.blake3 text eol=lf
 tests/golden/remote-visual/lf4/manifest.json text eol=lf
 tests/golden/unified-lc4/*.blake3 text eol=lf
+tests/golden/unified-sc6/*.blake3 text eol=lf
