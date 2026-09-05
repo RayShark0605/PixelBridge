@@ -408,11 +408,11 @@ TEST_CASE("Viewport geometry preserves aspect ratio, centers letterbox and enfor
         PresentationViewportDisposition::Active, 0, 1, 8, 4, 1});
     REQUIRE(ResolvePresentationViewport(config, 12, 4) == PresentationViewportGeometry{
         PresentationViewportDisposition::Active, 2, 0, 8, 4, 1});
-    REQUIRE(ResolvePresentationViewport(config, 6, 3) == PresentationViewportGeometry{
-        PresentationViewportDisposition::Active, 0, 0, 6, 3, 0.75});
+    REQUIRE(ResolvePresentationViewport(config, 6, 3).disposition ==
+        PresentationViewportDisposition::PausedBelowMinimumScale);
     REQUIRE(ResolvePresentationViewport(config, 20, 12) == PresentationViewportGeometry{
         PresentationViewportDisposition::ActiveClampedToMaximumScale, 2, 2, 16, 8, 2});
-    REQUIRE(ResolvePresentationViewport(config, 5, 3).disposition ==
+    REQUIRE(ResolvePresentationViewport(config, 7, 4).disposition ==
         PresentationViewportDisposition::PausedBelowMinimumScale);
     REQUIRE(ResolvePresentationViewport(config, 6, 2).disposition ==
         PresentationViewportDisposition::PausedBelowMinimumScale);

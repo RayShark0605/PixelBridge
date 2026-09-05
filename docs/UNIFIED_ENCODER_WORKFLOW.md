@@ -2,12 +2,13 @@
 
 > 状态：2026-09-04，G15 的定向 headless/controller/GUI smoke 验证通过。
 > 边界：已接通 Encoder 产品发送路径；不代表 G16 Decoder GUI、G20 实屏、GPU/远程通道或吞吐门禁通过。
+> G21 更新（2026-09-05）：产品绑定已随唯一 manifest 原子替换为 `PB-Unified-SC6-V2`/layout 9、15 slots 和 1.0x..2.0x；下方 G15 测试数字仍是当时的历史证据，不冒充 SC6 实屏认证。
 
 ## 1. 产品入口与真实绑定
 
 无参数运行 `PixelBridgeEncoder.exe` 打开 Qt Widgets 界面。基础区只有源文件、逻辑刷新率 `1..60 Hz`（默认 15）、开始/停止，以及本地准备/广播状态。
 
-- `MakeUnifiedEncoderConfig` 是 Qt 与 CLI 共用的产品策略；固定 `PB-Unified-LC4-V1`、layout 8、自动 RAW/zstd(level 3)、Control repetitions=4。
+- `MakeUnifiedEncoderConfig` 是 Qt 与 CLI 共用的产品策略；固定 `PB-Unified-SC6-V2`、layout 9、自动 RAW/zstd(level 3)、Control repetitions=4。
 - `EncoderApplicationController` 仅调用 Qt-free `EncoderRuntime`，不包含协议、压缩、FEC 或 raster 实现。
 - 基础状态来自 `EncoderSnapshot`：文件大小、Segment 数、预扫描字节/段数/耗时/速度、Carousel pass/ordinal、实际逻辑帧的本次广播平均 FPS、源文件稳定性。预扫描百分比不是 Decoder 接收进度。
 - 高级信息只读：Profile、Robust Inner FEC、当前 Segment 的 Outer FEC、整个文件 RAW/zstd 决策计数、Session/resume、whole-file BLAKE3 与 durable lease。
@@ -29,7 +30,7 @@ CLI 共用同一 runtime，例：
 1. 以只共享 read 的 Win32 源文件句柄完成整个文件的 8 MiB 分段预扫描；冻结正式 Session/Segment/Manifest、精确压缩字节摘要、FEC descriptor 和依赖身份。
 2. 预扫描失败时不建立新 Session、不调用 presentation factory；已存在的恢复状态不被普通失败或停止删除。Session 成功持久化后立即发布其身份，即使后续 presenter 创建失败，也能解释和管理这个真实 Session。
 3. 复用 `SenderFrameBuilder` 的 current/next 双 Segment 缓冲与原 durable lease；不建立平行发送管线。
-4. Unified 分支调用 `SenderUnifiedCarouselScheduler`，把原 PB-Control-1 与 Transport 放入 31 个 mixed slots，再调用现有 `EncodeUnifiedVisualFrame`。Control 不分配 OuterBlockId，尾部 filler 只重复 systematic ID；0-byte 无 Transport equation。
+4. Unified 分支调用 `SenderUnifiedCarouselScheduler`，把原 PB-Control-1 与 Transport 放入 15 个 mixed slots（Base/Fine/Chroma 为 9/1/5），再调用现有 `EncodeUnifiedVisualFrame`。Control 不分配 OuterBlockId，尾部 filler 只重复 systematic ID；0-byte 无 Transport equation。
 5. `PrepareFrameAt(logicalTick, monotonicNanoseconds)` 以单调时间决定长 round 的约 10 秒 Control cadence，与运行中 FPS 修改/丢弃 ticks 解耦。历史 tick API 保留；同一 round 不允许混用时间基准。重试 pending frame 时冻结原 slot plan 与时间。
 6. 只有完整 raster 被 `SubmitFrame` 成功接收后，才 commit scheduler/clock 并推进 FrameSequence、equation 和 Carousel。epoch mismatch/窗口太小时保留同一 pending raster，重复 Present 不推进发送状态。精确 round frame 总数随时间而变，因此 `cycleFrameCount=0` 表示不可提前确定，不伪报预计值。
 7. `EnsureFrameSequenceLease` 成功后立即刷新快照中的 durable endpoint，不等第一次 Submit 成功才显示。

@@ -18,6 +18,7 @@
 #include <fstream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -215,20 +216,21 @@ void FlipLumaCarrierBit(const Fixture& fixture, std::vector<std::byte>& pixels,
     }
     lumaLabel = static_cast<std::uint8_t>(lumaLabel ^ (1U << target.bitPlane));
     const UnifiedDataTile tile = GetUnifiedDataTile(target.tileOrdinal);
-    const std::uint16_t mask = kUnifiedSymbolMasksByLabel[lumaLabel];
+    const std::uint32_t mask = kUnifiedSymbolMasksByLabel[lumaLabel];
     const UnifiedChromaState state = kUnifiedChromaStatesByLabel[chromaLabel];
-    for (std::uint32_t row = 0; row < 4; row++)
+    for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
     {
-        for (std::uint32_t column = 0; column < 4; column++)
+        for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
         {
-            const std::uint32_t chip = row * 4 + column;
-            const std::int32_t base = ((mask >> chip) & 1U) != 0 ? kUnifiedDataHighLuma : kUnifiedDataLowLuma;
+            const bool glyphCell = row < kUnifiedDataGlyphWidth && column < kUnifiedDataGlyphWidth;
+            const std::uint32_t chip = row * kUnifiedDataGlyphWidth + column;
+            const bool foreground = glyphCell && ((mask >> chip) & 1U) != 0;
             std::byte* const pixel = pixels.data() +
                 (static_cast<std::size_t>(tile.bounds.y + row) * kUnifiedVisualProfile.canvasWidth +
                     tile.bounds.x + column) * 4;
-            pixel[0] = static_cast<std::byte>(base + state.blueOffset);
-            pixel[1] = static_cast<std::byte>(base + state.greenOffset);
-            pixel[2] = static_cast<std::byte>(base + state.redOffset);
+            pixel[0] = static_cast<std::byte>(foreground ? state.blue : kUnifiedDataLowLuma);
+            pixel[1] = static_cast<std::byte>(foreground ? state.green : kUnifiedDataLowLuma);
+            pixel[2] = static_cast<std::byte>(foreground ? state.red : kUnifiedDataLowLuma);
             pixel[3] = std::byte{255};
         }
     }
@@ -319,8 +321,8 @@ TEST_CASE("Unified CPU raster freezes data geometry and complete tile ownership"
         REQUIRE(tile.valid);
         REQUIRE(tile.dataRegion < regionCounts.size());
         REQUIRE(tile.freshnessRegion < freshnessCounts.size());
-        REQUIRE(tile.bounds.width == 4);
-        REQUIRE(tile.bounds.height == 4);
+        REQUIRE(tile.bounds.width == 6);
+        REQUIRE(tile.bounds.height == 6);
         regionCounts[tile.dataRegion]++;
         freshnessCounts[tile.freshnessRegion]++;
         tileOrigins.push_back(tile.bounds.y * kUnifiedVisualProfile.canvasWidth + tile.bounds.x);
@@ -376,7 +378,56 @@ TEST_CASE("Unified CPU oracle recovers every clean mixed Control and Transport s
     }));
 }
 
-TEST_CASE("Unified point-downscaled pixels retain mixed blocks using same-frame point sampling models", "[unified][g20][point-downscale]")
+TEST_CASE("Unified CPU erases a Data tile with no foreground carrier", "[unified][cpu][sampling][negative]")
+{
+    const Fixture& fixture = GetFixture41();
+    std::optional<std::uint32_t> targetTileOrdinal;
+    for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount && !targetTileOrdinal; tileOrdinal++)
+    {
+        bool allSitesMapped = true;
+        for (std::uint8_t bitPlane = 0; bitPlane < 4; bitPlane++)
+        {
+            allSitesMapped = allSitesMapped && GetUnifiedLogicalCarrierBit(
+                UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, bitPlane}, 41).valid;
+        }
+        for (std::uint8_t bitPlane = 0; bitPlane < 2; bitPlane++)
+        {
+            allSitesMapped = allSitesMapped && GetUnifiedLogicalCarrierBit(
+                UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, 41).valid;
+        }
+        if (allSitesMapped)
+        {
+            targetTileOrdinal = tileOrdinal;
+        }
+    }
+    REQUIRE(targetTileOrdinal.has_value());
+    std::vector<std::byte> pixels = Render(fixture);
+    FillGray(pixels, GetUnifiedDataTile(*targetTileOrdinal).bounds, kUnifiedDataLowLuma);
+    UnifiedVisualCpuOracle oracle = MakeOracle();
+    const UnifiedExpectedFrameIdentity identity{true, pbprotocol::SessionTag{0x1122334455667788ULL}, true, 41};
+    static_cast<void>(oracle.Decode(View(pixels), fixture.plan, identity));
+    const auto metrics = oracle.GetSoftMetrics();
+    const auto requireSamplingFailure = [&](const UnifiedCarrier carrier, const std::uint8_t bitPlane)
+    {
+        const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
+            UnifiedPhysicalCarrierSite{true, carrier, *targetTileOrdinal, bitPlane}, 41);
+        REQUIRE(logical.valid);
+        const UnifiedLaneCapacity capacity = GetUnifiedLaneCapacity(logical.lane);
+        const std::size_t globalBit = static_cast<std::size_t>(capacity.firstCodewordSlot) *
+            kUnifiedVisualProfile.innerCodewordBits + logical.logicalBit;
+        REQUIRE(metrics[globalBit].erasureReason == UnifiedErasureReason::LocalSamplingFailure);
+    };
+    for (std::uint8_t bitPlane = 0; bitPlane < 4; bitPlane++)
+    {
+        requireSamplingFailure(UnifiedCarrier::Luma, bitPlane);
+    }
+    for (std::uint8_t bitPlane = 0; bitPlane < 2; bitPlane++)
+    {
+        requireSamplingFailure(UnifiedCarrier::Chroma, bitPlane);
+    }
+}
+
+TEST_CASE("Unified SC6 rejects point-downscaled pixels below its certified one-to-one scale", "[unified][point-downscale]")
 {
     const auto& fixture = GetFixture41();
     const auto pixels = Render(fixture);
@@ -392,27 +443,10 @@ TEST_CASE("Unified point-downscaled pixels retain mixed blocks using same-frame 
         auto pointPixels = Downscale(pixels);
         auto oracle = MakeOracle();
         const LumaView view{pointPixels, width, height, static_cast<std::size_t>(width) * 4, LumaPixelFormat::Bgra8};
-        const auto clean = oracle.DecodeMixedFrame(view);
-        REQUIRE(clean.IsFrameAvailable());
-        REQUIRE(clean.baseLuma.IsAvailable());
-        REQUIRE(clean.fineLuma.IsAvailable());
-        REQUIRE(clean.acceptedBlocks == kUnifiedCodewordCount);
-        for (const auto& block : oracle.GetAcceptedBlocks())
-        {
-            REQUIRE(block.size == fixture.expected[block.codewordSlot].size());
-            REQUIRE(std::equal(fixture.expected[block.codewordSlot].begin(), fixture.expected[block.codewordSlot].end(), block.bytes.begin()));
-        }
-        const auto wrongPhase = Downscale(Render(GetFixture40()));
-        for (std::uint32_t row = 12; row < 60; row++)
-        {
-            const std::size_t offset = (static_cast<std::size_t>(row) * width + 672) * 4;
-            std::copy_n(wrongPhase.begin() + offset, 96 * 4, pointPixels.begin() + offset);
-        }
         const auto rejected = oracle.DecodeMixedFrame(view);
-        REQUIRE(rejected.IsFrameAvailable());
-        REQUIRE(rejected.baseLuma.erasureReason == UnifiedErasureReason::BaseLumaPilotFailure);
-        REQUIRE(rejected.acceptedControlRecords == 0);
-        REQUIRE(rejected.chroma.IsAvailable());
+        REQUIRE_FALSE(rejected.IsFrameAvailable());
+        REQUIRE(rejected.acceptedBlocks == 0);
+        REQUIRE(oracle.GetAcceptedBlocks().empty());
     }
 }
 
@@ -607,14 +641,14 @@ TEST_CASE("Unified frame input packs explicit slot kinds into the frozen referen
         REQUIRE(mixedObservation.slots[slotIndex].kind == fixture.plan[slotIndex].kind);
     }
 
-    std::swap(inputs[0], inputs[30]);
+    std::swap(inputs[0], inputs[14]);
     std::fill(packed.begin(), packed.end(), std::byte{0});
     REQUIRE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
     REQUIRE(packed == fixture.coded);
 
     SECTION("priority and wire type must agree before output mutation")
     {
-        inputs[30].assignment.controlPriority = UnifiedControlPriority::FinalManifest;
+        inputs[14].assignment.controlPriority = UnifiedControlPriority::FinalManifest;
         std::fill(packed.begin(), packed.end(), std::byte{0x5A});
         const auto unchanged = packed;
         REQUIRE_FALSE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
@@ -623,13 +657,13 @@ TEST_CASE("Unified frame input packs explicit slot kinds into the frozen referen
 
     SECTION("inactive is explicit and is legal only for a Transport slot")
     {
-        inputs[30].active = false;
-        inputs[30].block = {};
+        inputs[14].active = false;
+        inputs[14].block = {};
         std::fill(packed.begin(), packed.end(), std::byte{0});
         REQUIRE_FALSE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
 
-        inputs[30].assignment = {0, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
-        inputs[30].active = false;
+        inputs[14].assignment = {0, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
+        inputs[14].active = false;
         std::fill(packed.begin(), packed.end(), std::byte{0});
         REQUIRE(PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed));
         REQUIRE(std::ranges::all_of(std::span(packed).first(kUnifiedCodewordBytes),
@@ -640,7 +674,7 @@ TEST_CASE("Unified frame input packs explicit slot kinds into the frozen referen
     {
         std::vector<std::byte> corruptedControl = fixture.expected[0];
         corruptedControl.back() ^= std::byte{0x01};
-        inputs[30].block = corruptedControl;
+        inputs[14].block = corruptedControl;
         std::fill(packed.begin(), packed.end(), std::byte{0x3C});
         const auto unchanged = packed;
         const ModulationStatus status = PackUnifiedVisualFrame({fixture.bootstrap, inputs}, packed);
@@ -660,10 +694,10 @@ TEST_CASE("Unified mixed decoder infers canonical slot types and rejects illegal
     std::array<std::byte, kUnifiedInformationBytes> information{};
     REQUIRE(pbprotocol::FrameControlRecordIntoInfoBlock(control, information.size(), information));
 
-    SECTION("all seventeen Base slots cannot become Control")
+    SECTION("all nine Base slots cannot become Control")
     {
         std::array<std::byte, kUnifiedCodedFrameBytes> coded = fixture.coded;
-        for (std::uint32_t slot = 0; slot < 17; slot++)
+        for (std::uint32_t slot = 0; slot < 9; slot++)
         {
             EncodeInformation(information, slot, coded);
         }
@@ -673,22 +707,22 @@ TEST_CASE("Unified mixed decoder infers canonical slot types and rejects illegal
         const UnifiedVisualObservation observation = oracle.DecodeMixedFrame(View(pixels));
         REQUIRE(observation.IsFrameAvailable());
         REQUIRE(observation.acceptedControlRecords == 0);
-        REQUIRE(observation.acceptedTransportBlocks == 14);
-        REQUIRE(observation.acceptedBlocks == 14);
+        REQUIRE(observation.acceptedTransportBlocks == 6);
+        REQUIRE(observation.acceptedBlocks == 6);
     }
 
     SECTION("Control cannot cross into Fine Luma")
     {
         std::array<std::byte, kUnifiedCodedFrameBytes> coded = fixture.coded;
-        EncodeInformation(information, 17, coded);
+        EncodeInformation(information, 9, coded);
         std::vector<std::byte> pixels(kUnifiedFrameBgraBytes);
         REQUIRE(EncodeUnifiedVisualFrame(fixture.bootstrap, coded, pixels));
         UnifiedVisualCpuOracle oracle = MakeOracle();
         const UnifiedVisualObservation observation = oracle.DecodeMixedFrame(View(pixels));
         REQUIRE(observation.IsFrameAvailable());
         REQUIRE(observation.acceptedControlRecords == 0);
-        REQUIRE(observation.acceptedTransportBlocks == 29);
-        REQUIRE(observation.acceptedBlocks == 29);
+        REQUIRE(observation.acceptedTransportBlocks == 13);
+        REQUIRE(observation.acceptedBlocks == 13);
     }
 }
 
@@ -744,9 +778,9 @@ TEST_CASE("Unified lane pilot failures erase only their own lane", "[unified][cp
         REQUIRE(observation.fineLuma.IsAvailable());
         REQUIRE_FALSE(observation.chroma.IsAvailable());
         REQUIRE(observation.chroma.erasureReason == UnifiedErasureReason::ChromaPilotFailure);
-        REQUIRE(observation.acceptedBlocks == 21);
+        REQUIRE(observation.acceptedBlocks == 10);
         REQUIRE(observation.acceptedControlRecords == 1);
-        REQUIRE(observation.acceptedTransportBlocks == 20);
+        REQUIRE(observation.acceptedTransportBlocks == 9);
     }
 
     SECTION("Base checker failure preserves Fine and Chroma")
@@ -757,7 +791,7 @@ TEST_CASE("Unified lane pilot failures erase only their own lane", "[unified][cp
         REQUIRE_FALSE(observation.baseLuma.IsAvailable());
         REQUIRE(observation.fineLuma.IsAvailable());
         REQUIRE(observation.chroma.IsAvailable());
-        REQUIRE(observation.acceptedBlocks == 14);
+        REQUIRE(observation.acceptedBlocks == 6);
     }
 
     SECTION("shared luma calibration loss erases luma lanes but preserves Chroma")
@@ -776,7 +810,7 @@ TEST_CASE("Unified lane pilot failures erase only their own lane", "[unified][cp
         REQUIRE_FALSE(observation.baseLuma.IsAvailable());
         REQUIRE_FALSE(observation.fineLuma.IsAvailable());
         REQUIRE(observation.chroma.IsAvailable());
-        REQUIRE(observation.acceptedBlocks == 10);
+        REQUIRE(observation.acceptedBlocks == 5);
     }
 
     SECTION("Fine checker failure never clears Base")
@@ -787,7 +821,7 @@ TEST_CASE("Unified lane pilot failures erase only their own lane", "[unified][cp
         REQUIRE(observation.baseLuma.IsAvailable());
         REQUIRE_FALSE(observation.fineLuma.IsAvailable());
         REQUIRE(observation.chroma.IsAvailable());
-        REQUIRE(observation.acceptedBlocks == 27);
+        REQUIRE(observation.acceptedBlocks == 14);
     }
 }
 

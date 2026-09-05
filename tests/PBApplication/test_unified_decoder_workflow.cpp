@@ -104,11 +104,18 @@ TEST_CASE("G16 actual mixed pixels reach Decoder runtime final publish and reope
     {
         bytes = RawBytes(20000);
     }
-    auto frames = MakeFrames(scratch.Directory(L"tx"), bytes);
-    auto& blocks = frames[0].demodulation.acceptedUnifiedBlocks;
-    std::reverse(blocks.begin(), blocks.begin() + frames[0].demodulation.acceptedUnifiedBlockCount);
+    const std::uint32_t frameCount = bytes.empty() ? 1 : 2;
+    auto frames = MakeFrames(scratch.Directory(L"tx"), bytes, frameCount);
+    for (auto& frame : frames)
+    {
+        auto& blocks = frame.demodulation.acceptedUnifiedBlocks;
+        std::reverse(blocks.begin(), blocks.begin() + frame.demodulation.acceptedUnifiedBlockCount);
+    }
     const auto state = std::make_shared<ReceiveState>();
-    state->Push(frames[0]);
+    for (const auto& frame : frames)
+    {
+        state->Push(frame);
+    }
     pbapp::DecoderRuntime runtime(Services(state));
     const auto config = pbapp::MakeUnifiedDecoderConfig(scratch.Directory(L"out").wstring(), Region());
     REQUIRE(runtime.Start(config));
@@ -136,7 +143,7 @@ TEST_CASE("G16 pending output locks its Session and applies one explicit small-t
 {
     Scratch scratch;
     const auto bytes = RawBytes(20000);
-    const auto frames = MakeFrames(scratch.Directory(L"tx"), bytes);
+    const auto frames = MakeFrames(scratch.Directory(L"tx"), bytes, 4);
     const auto foreignFrames = MakeFrames(scratch.Directory(L"foreign-tx"), bytes);
     const auto directory = scratch.Directory(L"out");
     const auto state = std::make_shared<ReceiveState>();
@@ -165,10 +172,12 @@ TEST_CASE("G16 pending output locks its Session and applies one explicit small-t
     REQUIRE(std::filesystem::is_empty(directory));
     REQUIRE_FALSE(runtime.ResolveLargeOutputConfirmation(pending.runGeneration + 1, pending.largeOutputConfirmationRequestId, true));
     REQUIRE_FALSE(runtime.ResolveLargeOutputConfirmation(pending.runGeneration, pending.largeOutputConfirmationRequestId + 1, true));
-    SECTION("accept then publish through retained same-frame Control and Transport")
+    SECTION("accept then publish when the retained Session rejoins the next Carousel pass")
     {
         REQUIRE(runtime.ResolveLargeOutputConfirmation(pending.runGeneration, pending.largeOutputConfirmationRequestId, true));
-        state->Push(frames[0]);
+        state->Push(frames[1]);
+        state->Push(frames[2]);
+        state->Push(frames[3]);
         REQUIRE(WaitFor([&]()
         {
             return CompletedOrFailed(runtime);
@@ -193,7 +202,7 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
     Scratch scratch;
     std::vector<std::byte> bytes(8ULL * 1024 * 1024 + 1, std::byte{0x31});
     bytes.back() = std::byte{0xF3};
-    const auto frames = MakeFrames(scratch.Directory(L"tx"), bytes, 2);
+    const auto frames = MakeFrames(scratch.Directory(L"tx"), bytes, 4);
     const auto foreign = MakeFrames(scratch.Directory(L"foreign"), RawBytes(100));
     const auto directory = scratch.Directory(L"out");
     const auto config = pbapp::MakeUnifiedDecoderConfig(directory.wstring(), Region());
@@ -210,6 +219,7 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
         const auto state = std::make_shared<ReceiveState>();
         state->failWgc = failInitialization;
         state->Push(frames[0]);
+        state->Push(frames[1]);
         pbapp::DecoderRuntime runtime(Services(state));
         REQUIRE(runtime.Start(config));
         REQUIRE(WaitFor([&]()
@@ -242,8 +252,8 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
         REQUIRE(pbapp::IsDecoderStateActive(runtime.GetSnapshot().state));
         REQUIRE(runtime.GetSnapshot().verifiedRawBytes == before.verifiedRawBytes);
         const auto deliveredBeforeDuplicates = state->Delivered();
-        state->Push(frames[0]);
-        state->Push(frames[0]);
+        state->Push(frames[1]);
+        state->Push(frames[1]);
         state->Push(foreign[0]);
         REQUIRE(WaitFor([&]()
         {
@@ -261,7 +271,8 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
         REQUIRE(std::filesystem::exists(std::filesystem::path(std::u8string(stopped.resumeStatePath.begin(), stopped.resumeStatePath.end()))));
     }
     const auto state = std::make_shared<ReceiveState>();
-    state->Push(frames[1]);
+    state->Push(frames[2]);
+    state->Push(frames[3]);
     pbapp::DecoderRuntime resumed(Services(state));
     REQUIRE(resumed.Start(config));
     REQUIRE(WaitFor([&]()

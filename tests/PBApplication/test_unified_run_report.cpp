@@ -120,7 +120,7 @@ TEST_CASE("G17 report has a versioned Unified boundary and never upgrades legacy
     encoder.cycleCount = 3;
     encoder.durableRepairIdLeaseEnd = 123;
     const auto populated = Json(pbapp::BuildEncoderRunReportJson(context, encoder));
-    REQUIRE(populated["scheduler"].toObject()["controlSlotOccupancy"].toDouble() == 12.0 / 62.0);
+    REQUIRE(populated["scheduler"].toObject()["controlSlotOccupancy"].toDouble() == 12.0 / 30.0);
     REQUIRE(populated["scheduler"].toObject()["repairIdLeaseEnd"].toInt() == 123);
     REQUIRE(populated["preparation"].toObject()["resumeVerificationMilliseconds"].toInt() == 8);
     encoder.controlSlotCounterOverflow = true;
@@ -139,14 +139,18 @@ TEST_CASE("G17 actual Unified pixels feed truthful final reports independently o
         bytes = g16test::RawBytes(20000);
     }
     pbapp::EncoderSnapshot encoderSnapshot;
-    const auto frames = g16test::MakeFrames(scratch.Directory(L"tx"), bytes, 1, &encoderSnapshot);
-    const std::uint64_t expectedControlSlots = bytes.empty() ? 8 : 12;
+    const std::uint32_t frameCount = bytes.empty() ? 1 : 2;
+    const auto frames = g16test::MakeFrames(scratch.Directory(L"tx"), bytes, frameCount, &encoderSnapshot);
+    std::uint64_t expectedControlSlots = 0;
+    for (const auto& frame : frames)
+    {
+        expectedControlSlots += frame.demodulation.unifiedObservation.acceptedControlRecords;
+    }
     REQUIRE(encoderSnapshot.state == pbapp::EncoderState::Stopped);
     REQUIRE(encoderSnapshot.errorDetail.empty());
     REQUIRE(encoderSnapshot.preparationComplete);
-    REQUIRE(encoderSnapshot.submittedLogicalFrames == 1);
+    REQUIRE(encoderSnapshot.submittedLogicalFrames == frameCount);
     REQUIRE(encoderSnapshot.submittedControlSlots == expectedControlSlots);
-    REQUIRE(encoderSnapshot.submittedControlSlots == frames[0].demodulation.unifiedObservation.acceptedControlRecords);
     REQUIRE(encoderSnapshot.durableFrameSequenceLeaseEnd > 0);
     const auto encoderReport = pbapp::BuildEncoderRunReportJson(context, encoderSnapshot);
     REQUIRE(Json(encoderReport)["scheduler"].toObject()["submittedControlSlots"].toDouble() == static_cast<double>(expectedControlSlots));
@@ -160,7 +164,10 @@ TEST_CASE("G17 actual Unified pixels feed truthful final reports independently o
     for (int provider = 0; provider < 2; provider++)
     {
         const auto state = std::make_shared<g16test::ReceiveState>();
-        state->Push(frames[0]);
+        for (const auto& frame : frames)
+        {
+            state->Push(frame);
+        }
         auto config = pbapp::MakeUnifiedDecoderConfig(scratch.Directory(provider == 0 ? L"first" : L"second").wstring(), g16test::Region());
         config.remoteMetadata.remoteProvider = provider == 0 ? "Fixture A" : "Fixture B \"quoted\"\nUTF8 provider";
         config.remoteMetadata.remoteMode = provider == 0 ? "quality" : "speed";
@@ -179,24 +186,26 @@ TEST_CASE("G17 actual Unified pixels feed truthful final reports independently o
         REQUIRE(snapshot.finalRenameSucceeded == true);
         REQUIRE(snapshot.finalReopenVerified == true);
         REQUIRE(snapshot.verifiedEncodedSegmentBytes == bytes.size());
-        REQUIRE(snapshot.unifiedTelemetry.uniqueFrames == 1);
-        REQUIRE(snapshot.unifiedTelemetry.observations == 1);
+        REQUIRE(snapshot.unifiedTelemetry.uniqueFrames == frameCount);
+        REQUIRE(snapshot.unifiedTelemetry.observations == frameCount);
         const auto report = Json(pbapp::BuildDecoderRunReportJson(context, snapshot));
-        REQUIRE(report["verifiedEncodedBytesPerUniqueFrame"].toDouble(-1) == static_cast<double>(bytes.size()));
+        REQUIRE(report["verifiedEncodedBytesPerUniqueFrame"].toDouble(-1) == static_cast<double>(bytes.size()) / frameCount);
         REQUIRE(report["NonDecodingOperatorMetadata"].toObject()["remoteProvider"].toString().toStdString() == config.remoteMetadata.remoteProvider);
         const auto telemetry = report["unifiedTelemetry"].toObject();
+        auto providerIndependentTelemetry = telemetry;
+        providerIndependentTelemetry.remove("uniqueVisualFps");
         for (const auto& lane : telemetry["lanes"].toArray())
         {
             REQUIRE(lane.toObject()["metrics"].toObject()["samples"].toDouble() > 0);
         }
         if (provider == 0)
         {
-            firstTelemetry = telemetry;
+            firstTelemetry = providerIndependentTelemetry;
             firstDemod = state->requestedDemod;
         }
         else
         {
-            REQUIRE(firstTelemetry == telemetry);
+            REQUIRE(firstTelemetry == providerIndependentTelemetry);
             REQUIRE(DecodeParameters(firstDemod) == DecodeParameters(state->requestedDemod));
         }
         REQUIRE(state->requestedDemod.visualProfileId == pbprotocol::kUnifiedVisualProfileId);
@@ -214,12 +223,13 @@ TEST_CASE("G17 fallback duplicates and resumed completion retain honest frame co
 {
     G17Scratch scratch;
     const std::vector<std::byte> bytes(8ULL * 1024 * 1024 + 1, std::byte{0x31});
-    const auto frames = g16test::MakeFrames(scratch.Directory(L"tx"), bytes, 2);
+    const auto frames = g16test::MakeFrames(scratch.Directory(L"tx"), bytes, 4);
     const auto config = pbapp::MakeUnifiedDecoderConfig(scratch.Directory(L"out").wstring(), g16test::Region());
     bool publishedInSameRun = false;
     {
         const auto state = std::make_shared<g16test::ReceiveState>();
         state->Push(frames[0]);
+        state->Push(frames[1]);
         pbapp::DecoderRuntime runtime(g16test::Services(state));
         REQUIRE(runtime.Start(config));
         REQUIRE(g16test::WaitFor([&]()
@@ -238,18 +248,19 @@ TEST_CASE("G17 fallback duplicates and resumed completion retain honest frame co
             return runtime.GetSnapshot().actualBackend == pbapp::CaptureBackend::Dxgi || Terminal(runtime);
         }));
         REQUIRE(runtime.GetSnapshot().actualBackend == pbapp::CaptureBackend::Dxgi);
-        state->Push(frames[0]);
+        state->Push(frames[1]);
         REQUIRE(g16test::WaitFor([&]()
         {
             return runtime.GetSnapshot().unifiedTelemetry.duplicateObservations == 1 || Terminal(runtime);
         }));
         SECTION("same-run completion counts Bootstrap-only erasure without synthetic lane samples")
         {
-            auto erased = frames[1];
+            auto erased = frames[2];
             erased.kind = pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly;
             erased.demodulation = {};
             state->Push(erased);
-            state->Push(frames[1]);
+            state->Push(frames[2]);
+            state->Push(frames[3]);
             const bool completed = g16test::WaitFor([&]()
             {
                 return Terminal(runtime);
@@ -269,17 +280,17 @@ TEST_CASE("G17 fallback duplicates and resumed completion retain honest frame co
             const auto snapshot = runtime.GetSnapshot();
             INFO(snapshot.errorDetail);
             REQUIRE(g16test::VerifyOutput(snapshot, bytes));
-            REQUIRE(snapshot.unifiedTelemetry.observations == 4);
-            REQUIRE(snapshot.unifiedTelemetry.uniqueFrames == 2);
+            REQUIRE(snapshot.unifiedTelemetry.observations == 6);
+            REQUIRE(snapshot.unifiedTelemetry.uniqueFrames == 4);
             REQUIRE(snapshot.unifiedTelemetry.duplicateObservations == 2);
             REQUIRE(snapshot.unifiedTelemetry.frameErasedObservations == 1);
-            REQUIRE(snapshot.unifiedTelemetry.lanes[0].metricObservations == 3);
+            REQUIRE(snapshot.unifiedTelemetry.lanes[0].metricObservations == 5);
             REQUIRE(snapshot.unifiedTelemetry.uniqueVisualFps.has_value());
             REQUIRE(snapshot.uniqueVisualFps == snapshot.unifiedTelemetry.uniqueVisualFps);
             REQUIRE(snapshot.verifiedEncodedSegmentBytes.has_value());
             const auto report = pbapp::BuildDecoderRunReportJson(context, snapshot);
             REQUIRE(Json(report)["verifiedEncodedBytesPerUniqueFrame"].toDouble(-1) ==
-                static_cast<double>(*snapshot.verifiedEncodedSegmentBytes) / 2.0);
+                static_cast<double>(*snapshot.verifiedEncodedSegmentBytes) / 4.0);
             std::ofstream evidence(std::filesystem::path(PB_TEST_SCRATCH_ROOT) / L"g17-fallback-published.json");
             evidence << report;
             REQUIRE(evidence.good());
@@ -288,7 +299,7 @@ TEST_CASE("G17 fallback duplicates and resumed completion retain honest frame co
         SECTION("stop and resume has no lifetime frame coverage")
         {
             runtime.Stop();
-            REQUIRE(runtime.GetSnapshot().unifiedTelemetry.uniqueFrames == 1);
+            REQUIRE(runtime.GetSnapshot().unifiedTelemetry.uniqueFrames == 2);
             REQUIRE(runtime.GetSnapshot().unifiedTelemetry.duplicateObservations == 1);
             REQUIRE(Json(pbapp::BuildDecoderRunReportJson(context, runtime.GetSnapshot()))["verifiedEncodedBytesPerUniqueFrame"].isNull());
         }
@@ -296,7 +307,8 @@ TEST_CASE("G17 fallback duplicates and resumed completion retain honest frame co
     if (!publishedInSameRun)
     {
         const auto state = std::make_shared<g16test::ReceiveState>();
-        state->Push(frames[1]);
+        state->Push(frames[2]);
+        state->Push(frames[3]);
         pbapp::DecoderRuntime runtime(g16test::Services(state));
         REQUIRE(runtime.Start(config));
         REQUIRE(g16test::WaitFor([&]()
@@ -323,10 +335,11 @@ TEST_CASE("G17 invalid telemetry withdraws performance without changing actual p
 {
     G17Scratch scratch;
     const auto bytes = g16test::RawBytes(128);
-    auto frames = g16test::MakeFrames(scratch.Directory(L"tx"), bytes);
+    auto frames = g16test::MakeFrames(scratch.Directory(L"tx"), bytes, 2);
     frames[0].demodulation.unifiedObservation.laneMetrics[0].samples++;
     const auto state = std::make_shared<g16test::ReceiveState>();
     state->Push(frames[0]);
+    state->Push(frames[1]);
     pbapp::DecoderRuntime runtime(g16test::Services(state));
     REQUIRE(runtime.Start(pbapp::MakeUnifiedDecoderConfig(scratch.Directory(L"out").wstring(), g16test::Region())));
     REQUIRE(g16test::WaitFor([&]()

@@ -422,14 +422,14 @@ private:
         const QString outer = snapshot.segmentCount == 0 ? QStringLiteral("无 Segment") :
             snapshot.outerFecMode == pbprotocol::OuterFecMode::WirehairV2 ? QStringLiteral("Wirehair V2") : QStringLiteral("DirectRepeat");
         advancedText_->setPlainText(QStringLiteral(
-            "Profile: PB-Unified-LC4-V1 / layout 8 / 1920×1080 BGRA8 SDR\n"
-            "Inner FEC: Robust DVB-S2 Short QC-LDPC；Base 17 / Fine 4 / Chroma 10\n"
+            "Profile: PB-Unified-SC6-V2 / layout 9 / 1920×1080 BGRA8 SDR\n"
+            "Inner FEC: Robust DVB-S2 Short QC-LDPC；Base 9 / Fine 1 / Chroma 5\n"
             "Outer FEC（当前 Segment）: %1\n"
             "自动压缩: RAW %2 Segment / zstd %3 Segment（固定 level 3；预扫描决定）\n"
             "Session: %4\n恢复已有会话: %5\n持久状态: %6\n"
             "Durable lease（exclusive）: FrameSequence %7 / 当前 repair ID %8\n"
             "Whole-file BLAKE3: %9\n"
-            "缩放: point sampling + letterbox；小于 0.75×暂停，不推进逻辑帧。\n"
+            "缩放: point sampling + letterbox；小于 1.0×暂停，不推进逻辑帧。\n"
             "停止保留 Session；需删除时使用“会话 → 结束并删除会话”。")
             .arg(outer).arg(snapshot.rawSegmentCount).arg(snapshot.zstdSegmentCount)
             .arg(snapshot.sessionIdHex.empty() ? QStringLiteral("尚未建立") : FromUtf8(snapshot.sessionIdHex))

@@ -10,7 +10,7 @@ namespace
 {
 
 constexpr VisualProfileOption unifiedProfileOption{
-    VisualProfile::UnifiedLc4, "unified", "PB-Unified-LC4-V1", false, 15, 4};
+    VisualProfile::UnifiedLc4, "unified", "PB-Unified-SC6-V2", false, 15, 4};
 
 // Historical diagnostic selectors remain unchanged until their respective
 // product GUI migrations. The Encoder product binds Unified explicitly.

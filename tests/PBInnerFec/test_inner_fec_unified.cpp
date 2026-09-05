@@ -9,9 +9,9 @@
 #include <cstdint>
 #include <span>
 
-TEST_CASE("Robust Inner FEC preserves all 31 Unified lane slot boundaries", "[inner-fec][unified]")
+TEST_CASE("Robust Inner FEC preserves all 15 Unified lane slot boundaries", "[inner-fec][unified]")
 {
-    constexpr std::uint32_t unifiedCodewordCount = 31;
+    constexpr std::uint32_t unifiedCodewordCount = 15;
     constexpr std::uint32_t codewordBytes = 2025;
     constexpr std::uint32_t informationBytes = 1350;
     std::array<std::byte, static_cast<std::size_t>(unifiedCodewordCount) * codewordBytes> coded{};

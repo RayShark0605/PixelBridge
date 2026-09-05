@@ -242,9 +242,9 @@ struct SenderUnifiedCarouselSnapshot
     bool operator==(const SenderUnifiedCarouselSnapshot&) const = default;
 };
 
-// Product scheduler for PB-Unified-LC4-V1. It schedules one Segment round, or
+// Product scheduler for PB-Unified-SC6-V2. It schedules one Segment round, or
 // one zero-byte Control round, and never emits a whole-frame Control mode.
-// PrepareFrame is idempotent for one tick and freezes the exact 31-slot plan;
+// PrepareFrame is idempotent for one tick and freezes the exact 15-slot plan;
 // CommitPreparedFrame is the sole state transition and must be called only
 // after the complete canonical raster is ready.
 class SenderUnifiedCarouselScheduler

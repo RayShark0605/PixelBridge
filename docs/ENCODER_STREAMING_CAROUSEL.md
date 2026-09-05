@@ -3,6 +3,7 @@
 > 状态：G02/G09 合同已接入 G15 Unified Encoder 产品 runtime，并通过定向非显示验证（2026-09-04）
 > 性质：Encoder 本地实现/持久状态及 Unified scheduler 规范；G15 产品接线与安全删除见 [Unified Encoder 工作流](UNIFIED_ENCODER_WORKFLOW.md)，不是实屏或吞吐认证。
 > 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`、`libs/PBModulation/src/unified_visual.cpp`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`
+> G21 更新（2026-09-05）：下节当前调度合同已随唯一产品 manifest 改为 SC6/layout 9；后文 G02/G09 的旧 LC4 测试计数保留为历史证据。
 
 ## 1. 已关闭的发送端合同
 
@@ -19,11 +20,11 @@ DirectRepeat 仍由 `ChooseOuterFecMode` 决定。它只调度固定 `[0,K)`，�
 
 ### 1.1 G09 Unified mixed-slot 调度合同
 
-1. 每个 `PB-Unified-LC4-V1` 逻辑帧固定含 31 个显式 slot：Base Luma 17、Fine Luma 4、Chroma 10。Control 只能占用 Base Luma 的前部连续 slots，最多 16 个，因此任何帧都至少保留 15 个 Transport slots；不存在整帧 Control 分支。
-2. 一轮默认 Control burst 按优先级放置 4 份 SessionDescriptor、4 份 FinalManifest、4 份当前 SegmentDescriptor，即 cadence 帧为 12 Control + 19 Transport；长 Segment 从 burst 首帧起每 `logicalFps * 10` ticks 再发一轮。零字节 Session 不存在 SegmentDescriptor，只发送 4 份 Session 与 4 份 Manifest。
+1. 每个 `PB-Unified-SC6-V2` 逻辑帧固定含 15 个显式 slot：Base Luma 9、Fine Luma 1、Chroma 5。Control 只能占用 Base Luma 的前部连续 slots，最多 8 个，因此任何帧都至少保留 7 个 Transport slots；不存在整帧 Control 分支。
+2. 一轮默认 Control burst 按优先级放置 4 份 SessionDescriptor、4 份 FinalManifest、4 份当前 SegmentDescriptor：首帧为 8 Control + 7 Transport，次帧为 4 Control + 11 Transport；长 Segment 从 burst 首帧起每 `logicalFps * 10` ticks 再发一轮。零字节 Session 不存在 SegmentDescriptor，只发送 4 份 Session 与 4 份 Manifest。
 3. PB-Control-1 原始记录进入 1,350-byte Robust Inner-FEC information block 时只增加规范零尾部，不修改 Control envelope 或 wire CRC。FEC 成功后，Decoder 依据原有互斥规范前缀自分类：Control 从 `PBCR` 开始，Transport 从固定 BlockType 开始；因此不需要 sender slot plan、ACK 或其他隐藏信道，也没有压缩 1,314-byte Transport payload。
-4. `PrepareFrame(logicalTick)` 冻结同一 tick 的完整 31-slot 计划且重复调用逐值一致；它不推进任何 Carousel 状态。调用方只有在整张规范 raster 已成功构建后才能调用 `CommitPreparedFrame()`，该提交才一次性推进帧计数、Control offset 与真正新调度的 equation IDs。Control 与尾帧 systematic duplicates 均不分配新 ID。
-5. `SenderLogicalFrameClock` 只接受 1..60 Hz。一次 `Acquire(now)` 最多返回已经到期的最新 tick，并显式计数中间错过的 ticks；旧 tick 直接丢弃，不进入 catch-up queue。Scheduler 自身仅持有一个 prepared frame 和固定 31-slot 数组。
+4. `PrepareFrame(logicalTick)` 冻结同一 tick 的完整 15-slot 计划且重复调用逐值一致；它不推进任何 Carousel 状态。调用方只有在整张规范 raster 已成功构建后才能调用 `CommitPreparedFrame()`，该提交才一次性推进帧计数、Control offset 与真正新调度的 equation IDs。Control 与尾帧 systematic duplicates 均不分配新 ID。
+5. `SenderLogicalFrameClock` 只接受 1..60 Hz。一次 `Acquire(now)` 最多返回已经到期的最新 tick，并显式计数中间错过的 ticks；旧 tick 直接丢弃，不进入 catch-up queue。Scheduler 自身仅持有一个 prepared frame 和固定 15-slot 数组。
 6. 零字节 Session 的剩余 Transport slots 使用显式 inactive disposition，并编码为确定性全零 information word。它们不能形成有效 Transport Block；Session/Manifest 仍走既有 `ControlPlaneReceiver`，未扩大 control record、reassembly 或其他 receiver resource policy。
 
 G09 关闭 scheduler、protocol packing 与 CPU reference-raster 合同；G15 已把它接入 Encoder 生命周期/GUI/默认 CLI。生产路径使用 `PrepareFrameAt(logicalTick, monotonicNanoseconds)`：长 round 的 Control cadence 按 burst 起点约 10 秒调度，不因动态 FPS/丢弃 tick 改变。slot plan 在 pending retry 时保持冻结，只有完整 raster 成功 Submit 后才 commit。历史 tick API 保留用于原 fixture，不能在同一 round 混用两种时间基准。Decoder 产品自动接线和实屏/capture 仍由后续目标完成。
@@ -147,7 +148,7 @@ cmake --build build-unified-release --config Release --target PBApplicationTests
 
 三个完整 8 MiB Segment 均为 RAW、`K=6,385`、每轮 `R=1,277`；pass 0 首个 repair ID 为 6,385，pass 1 为 7,662，落盘/restart 起点为 12,288。最后 4 KiB Segment 为 RAW、`K=4`、`R=16`，两轮首个 repair ID 为 4/20，落盘/restart 起点为 4,096。
 
-测试使用现有四-slot carrier 参数只为覆盖生产 `SenderFrameBuilder` 接线，但从未调用 raster `Build()`。它不能证明最终 `PB-Unified-LC4-V1` mixed-slot mapping、Data Window、真实显示、接收端恢复、20 GiB/500 GiB 长运行、吞吐或断电一致性；这些仍分别属于后续 G04、G05、G06..G14、G18..G22。
+此处 G02 历史测试使用四-slot carrier 参数只为覆盖生产 `SenderFrameBuilder` 接线，从未调用 raster `Build()`；它当时不能证明随后实现的 Unified mixed-slot mapping、Data Window、真实显示、接收端恢复、20 GiB/500 GiB 长运行、吞吐或断电一致性。其证据边界不因当前 SC6 替换而扩大。
 
 ### 6.2 G09 Unified mixed-slot scheduler/reference raster
 

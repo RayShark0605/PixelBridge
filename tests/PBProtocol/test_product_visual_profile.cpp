@@ -7,12 +7,12 @@
 #include <cstdint>
 #include <string_view>
 
-TEST_CASE("Product visual profile catalog contains only Unified LC4", "[pbprotocol][product-profile]")
+TEST_CASE("Product visual profile catalog contains only Unified SC6", "[pbprotocol][product-profile]")
 {
     STATIC_REQUIRE(pbprotocol::kProductVisualProfiles.size() == 1);
-    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileName == std::string_view{"PB-Unified-LC4-V1"});
-    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileId == 0x5042554E494C4331ULL);
-    STATIC_REQUIRE(pbprotocol::kUnifiedVisualLayoutVersion == 8);
+    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileName == std::string_view{"PB-Unified-SC6-V2"});
+    STATIC_REQUIRE(pbprotocol::kUnifiedVisualProfileId == 0x5042554E49534332ULL);
+    STATIC_REQUIRE(pbprotocol::kUnifiedVisualLayoutVersion == 9);
     STATIC_REQUIRE(pbprotocol::kProductVisualProfiles.front() == pbprotocol::kUnifiedProductVisualProfile);
     STATIC_REQUIRE(pbprotocol::IsProductSessionVisualProfileId(pbprotocol::kUnifiedVisualProfileId));
     STATIC_REQUIRE(pbprotocol::FindProductVisualProfile(pbprotocol::kUnifiedVisualProfileId) ==
@@ -24,7 +24,7 @@ TEST_CASE("Product visual profile admission rejects unknown identity and layout"
     using pbprotocol::ProductVisualProfileAdmission;
     STATIC_REQUIRE(pbprotocol::ValidateProductVisualProfile(
         pbprotocol::kUnifiedVisualProfileId, pbprotocol::kUnifiedVisualLayoutVersion) == ProductVisualProfileAdmission::Accepted);
-    STATIC_REQUIRE(pbprotocol::ValidateProductVisualProfile(pbprotocol::kUnifiedVisualProfileId, 7) ==
+    STATIC_REQUIRE(pbprotocol::ValidateProductVisualProfile(pbprotocol::kUnifiedVisualProfileId, 8) ==
         ProductVisualProfileAdmission::UnsupportedLayout);
     STATIC_REQUIRE(pbprotocol::ValidateProductVisualProfile(0, pbprotocol::kUnifiedVisualLayoutVersion) ==
         ProductVisualProfileAdmission::UnsupportedProfile);

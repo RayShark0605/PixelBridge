@@ -200,8 +200,11 @@ void WriteContext(std::ostream& stream, const RunReportContext& context, const b
 void WriteUnifiedIdentity(std::ostream& stream, const std::string& runId, const std::string& sessionId,
     const std::uint64_t sessionTag, const std::uint64_t started, const std::optional<std::uint64_t>& ended)
 {
-    stream << ",\"profile\":\"PB-Unified-LC4-V1\",\"visualProfileId\":" << pbprotocol::kUnifiedVisualProfileId
-        << ",\"visualLayoutVersion\":8,\"runId\":";
+    stream << ",\"profile\":";
+    WriteEscaped(stream, pbprotocol::kUnifiedVisualProfileName);
+    stream << ",\"visualProfileId\":" << pbprotocol::kUnifiedVisualProfileId
+        << ",\"visualLayoutVersion\":" << static_cast<unsigned int>(pbprotocol::kUnifiedVisualLayoutVersion)
+        << ",\"runId\":";
     WriteEscaped(stream, runId);
     stream << ",\"sessionId\":";
     WriteEscaped(stream, sessionId);
@@ -259,7 +262,8 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
     WriteOptionalNumber(stream, !snapshot.controlSlotCounterOverflow && snapshot.submittedLogicalFrames != 0 ?
         std::optional<double>(static_cast<double>(snapshot.submittedControlSlots) /
             (static_cast<double>(snapshot.submittedLogicalFrames) * pbmodulation::kUnifiedCodewordCount)) : std::nullopt);
-    stream << ",\"occupancyBasis\":\"Control slots in successfully submitted complete logical rasters / (31 * submittedLogicalFrames); repeated Presents excluded\"}"
+    stream << ",\"occupancyBasis\":\"Control slots in successfully submitted complete logical rasters / ("
+        << pbmodulation::kUnifiedCodewordCount << " * submittedLogicalFrames); repeated Presents excluded\"}"
         << ",\"configuredLogicalFps\":" << snapshot.configuredLogicalVisualFps << ",\"observedSubmittedLogicalFps\":";
     WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);
     stream << ",\"sourceWholeFileDigest\":";

@@ -72,7 +72,7 @@
 Schema 1 字节的解释。
 
 PBProtocol 故意不把 `SessionVisualProfileId` 限死为 Unified ID。协议层只验证它非零；
-`PB-Unified-LC4-V1` 是产品 application admission 规则，历史内部 A/B 工具仍可生成正式 schema，
+`PB-Unified-SC6-V2`/layout 9 是产品 application admission 规则，历史内部 A/B 工具仍可生成正式 schema，
 但不能因此成为最终产品可选项。
 
 ## 3. Session optional TLV

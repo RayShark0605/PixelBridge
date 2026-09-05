@@ -1,6 +1,6 @@
 # PixelBridge GitHub 首次发布检查清单
 
-> 状态日期：2026-09-03
+> 状态日期：2026-09-05
 > 适用范围：源码仓库首次推送，不包含正式二进制 Release 认证
 > 当前本地分支：`master`
 > 当前 remote：未配置
@@ -11,7 +11,7 @@
 本仓库可以作为**开发中的源码项目**推送到 GitHub，但不能把当前状态描述为最终可用版本：
 
 - 正式 Descriptor、多 Segment sender 和 decoder resume/storage 已有基础实现；
-- 统一 `PB-Unified-LC4-V1` 视觉层、最终 Qt 收敛和完整产品 Gate 尚未完成；
+- 统一 `PB-Unified-SC6-V2`/layout 9 视觉层和最终 Qt 入口已实现，但 G21 真实远程恢复、G22 包/SBOM 和完整发布候选仍未完成；
 - 构建目录、vcpkg 安装目录和本地运行 artifact 已由 `.gitignore` 排除；
 - 当前最大受管文件远低于 GitHub 单文件限制，不需要为了现有源码/Golden 引入 Git LFS；
 - Git remote 尚未配置，因此本次整理不会也不能自动 push；

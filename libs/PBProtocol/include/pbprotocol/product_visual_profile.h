@@ -20,9 +20,9 @@ struct ProductVisualProfile
 // validation. PBProtocol continues to parse any non-zero profile identity so
 // internal historical tools can explicitly exercise their frozen profiles;
 // product application entry points must pass this catalog gate.
-inline constexpr std::string_view kUnifiedVisualProfileName = "PB-Unified-LC4-V1";
-inline constexpr std::uint64_t kUnifiedVisualProfileId = 0x5042554E494C4331ULL;
-inline constexpr std::uint8_t kUnifiedVisualLayoutVersion = 8;
+inline constexpr std::string_view kUnifiedVisualProfileName = "PB-Unified-SC6-V2";
+inline constexpr std::uint64_t kUnifiedVisualProfileId = 0x5042554E49534332ULL;
+inline constexpr std::uint8_t kUnifiedVisualLayoutVersion = 9;
 inline constexpr ProductVisualProfile kUnifiedProductVisualProfile{
     kUnifiedVisualProfileName, kUnifiedVisualProfileId, kUnifiedVisualLayoutVersion};
 inline constexpr std::array<ProductVisualProfile, 1> kProductVisualProfiles{kUnifiedProductVisualProfile};

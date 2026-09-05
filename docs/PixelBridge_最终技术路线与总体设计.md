@@ -7,7 +7,7 @@
 > 核心输入模型：Decoder 对用户指定的**屏幕矩形区域进行高速桌面捕获**，不使用摄像头  
 > 支持模式：**即时视觉流模式**、**离线 MP4 模式**  
 > 设计日期：2026-08-21  
-> 文档状态：**通用架构与安全不变量继续有效；2026-09-03 起，当前产品合同和实施顺序以第 0 节及 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 为准。旧 ChannelClass、Phase 1.5 与 RemoteVisual 路线保留为历史设计/证据。**
+> 文档状态：**通用架构与安全不变量继续有效；当前产品合同和实施顺序以第 0 节及 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 为准。2026-09-05 的 G21 失真诊断已用 SC6/layout 9 取代 2026-09-03 冻结的 LC4/layout 8；旧 ChannelClass、Phase 1.5、LC4 与 RemoteVisual 路线只保留为历史设计/证据。**
 
 ---
 
@@ -18,10 +18,10 @@
 从 2026-09-03 起，PixelBridge 的正式 Windows 产品路线冻结为：
 
 - 交付 `PixelBridgeEncoder.exe` 与 `PixelBridgeDecoder.exe` 两个 Qt Widgets 程序；
-- 正式产品只公开一个视觉 Profile：`PB-Unified-LC4-V1`，`VisualProfileId=0x5042554E494C4331`，`VisualLayoutVersion=8`；
+- 正式产品只公开一个视觉 Profile：`PB-Unified-SC6-V2`，`VisualProfileId=0x5042554E49534332`，`VisualLayoutVersion=9`；旧 LC4/layout 8 只保留为历史 Golden/回归，产品入口明确拒绝；
 - 规范画布固定为 1920×1080 BGRA8 SDR，使用 Base Luma、Fine Luma、Chroma 三个可独立擦除的 lane；颜色损坏不能拖累必选 Base Luma；
 - Encoder 逻辑刷新率为 1..60 Hz，默认 15 Hz；重复 Present 不产生新 equation，不推进 FrameSequence 或 Carousel；
-- Data Window 是普通可缩放窗口，规范 raster 通过 point sampling 等比缩放并 letterbox；正式可解码尺度为 0.75×..2.0×，小于 0.75×时暂停逻辑广播；
+- Data Window 是普通可缩放窗口，规范 raster 通过 point sampling 等比缩放并 letterbox；正式可解码尺度为 1.0×..2.0×，小于 1.0×时暂停逻辑广播；独立采样证明 0.75×会跨 SC6 单元边界，不能作为可解码尺度；
 - Control 与 Transport 可在同一逻辑帧的不同 Base Luma slots 中复用，避免低刷新率下整帧 Control；
 - 文件固定按 8 MiB Segment 流式处理，支持 0-byte 和至少 20 GiB 的真实能力验证，不设置 20 GB 产品硬上限；默认资源上限仍为 500 GiB；
 - Encoder 预扫描、双 Segment 广播缓冲和 durable ID lease 必须支持崩溃恢复；
@@ -50,9 +50,9 @@
 
 ## 0.3 当前实现事实边界
 
-代码提交 `1445f9b` 已建立正式 Descriptor、流式多 Segment sender、durable lease、random-access `.part`、decoder resume journal 和 `DeferredResourceBusy` 的基础实现，并通过 PBProtocol/PBStorage/PBReceiver/PBApplication 的一次定向检查。
+代码提交 `1445f9b` 是正式 Descriptor、流式多 Segment sender、durable lease、random-access `.part`、decoder resume journal 和 `DeferredResourceBusy` 的历史起点；其后 G00..G20 已按统一路线逐目标实现并提交。
 
-这不代表统一产品已完成：layout 8 lane mapping、mixed slots、Unified CPU/GPU 解调、0.75× 可缩放窗口、自动 capture fallback、最终 Qt 页面、20 GiB/进程故障注入、完整 Release CTest、DISPLAY2 native 和真实远程门禁仍未关闭。精确状态见统一实施路线第 2 节。
+这仍不代表最终产品已完成：当前 SC6/layout 9 的 CPU/GPU/合成失真闭环已经建立，但真实远程 1 MiB/64 MiB 最终发布、外部摘要、Base-only 证据和 16 KiB 硬门仍属于 G21；G22 包/SBOM/发布候选尚未开始。精确状态见统一路线 G21。
 
 ---
 

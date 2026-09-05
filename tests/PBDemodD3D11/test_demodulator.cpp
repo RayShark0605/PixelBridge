@@ -3084,7 +3084,7 @@ TEST_CASE("D3D11 demod configuration is bounded and failure leaves output owners
     REQUIRE(output->Shutdown(environment.context.Get()));
 }
 
-TEST_CASE("Unified layout-8 D3D11 demod hands compact same-frame metrics to the canonical mixed-block gate",
+TEST_CASE("Unified layout-9 D3D11 demod hands compact same-frame metrics to the canonical mixed-block gate",
     "[demod][d3d11][unified][warp][fec][transport][control][lifetime]")
 {
     auto environment = CreateWarpEnvironment();
@@ -3156,8 +3156,8 @@ TEST_CASE("Unified layout-8 D3D11 demod hands compact same-frame metrics to the 
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
-TEST_CASE("Unified D3D11 point downscale selects same-frame models and rejects a wrong phase",
-    "[demod][d3d11][unified][warp][g20][point-downscale]")
+TEST_CASE("Unified D3D11 point resampling selects same-frame models and rejects a wrong phase",
+    "[demod][d3d11][unified][warp][g20][point-resampling]")
 {
     auto environment = CreateWarpEnvironment();
     const auto fixture = MakeUnifiedFixture(41);
@@ -3173,10 +3173,10 @@ TEST_CASE("Unified D3D11 point downscale selects same-frame models and rejects a
     std::uint64_t observation = 1;
     const auto Verify = [&](const std::vector<std::byte>& pixels, const bool wrongPhase)
     {
-        const pbmodulation::LumaView view{pixels, 1440, 810, 1440 * 4, pbmodulation::LumaPixelFormat::Bgra8};
+        const pbmodulation::LumaView view{pixels, 2160, 1215, 2160 * 4, pbmodulation::LumaPixelFormat::Bgra8};
         const auto bootstrap = pbmodulation::DecodeLocalDesktopBootstrap(view, binding);
         REQUIRE(bootstrap.IsAccepted());
-        const auto texture = UploadBgraTexture(environment.device.Get(), pixels, 1440, 810, 1440 * 4);
+        const auto texture = UploadBgraTexture(environment.device.Get(), pixels, 2160, 1215, 2160 * 4);
         const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, observation++);
         pbdemodd3d11::DemodSubmission submission;
         REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, {}, submission));
@@ -3186,7 +3186,9 @@ TEST_CASE("Unified D3D11 point downscale selects same-frame models and rejects a
             pbmodulation::UnifiedErasureReason::BaseLumaPilotFailure : pbmodulation::UnifiedErasureReason::None));
         REQUIRE(result.unifiedObservation.fineLuma.IsAvailable());
         REQUIRE(result.unifiedObservation.chroma.IsAvailable());
-        REQUIRE(result.acceptedUnifiedBlockCount == (wrongPhase ? 14U : 31U));
+        REQUIRE(result.acceptedUnifiedBlockCount == (wrongPhase ?
+            pbmodulation::kUnifiedCodewordCount - pbmodulation::kUnifiedLaneCapacities[0].codewordCount :
+            pbmodulation::kUnifiedCodewordCount));
         REQUIRE(result.unifiedObservation.acceptedControlRecords == (wrongPhase ? 0U : 1U));
         for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
         {
@@ -3200,13 +3202,13 @@ TEST_CASE("Unified D3D11 point downscale selects same-frame models and rejects a
     for (std::uint32_t tie = 0; tie < 4; tie++)
     {
         CAPTURE(tie);
-        auto pixels = pbtest::DownscaleUnifiedPoint(fixture.pixels, (tie & 1) != 0, (tie & 2) != 0);
+        auto pixels = pbtest::UpscaleUnifiedPoint(fixture.pixels, (tie & 1) != 0, (tie & 2) != 0);
         Verify(pixels, false);
-        const auto wrongPhase = pbtest::DownscaleUnifiedPoint(previous.pixels, (tie & 1) != 0, (tie & 2) != 0);
-        for (std::uint32_t row = 12; row < 60; row++)
+        const auto wrongPhase = pbtest::UpscaleUnifiedPoint(previous.pixels, (tie & 1) != 0, (tie & 2) != 0);
+        for (std::uint32_t row = 18; row < 90; row++)
         {
-            const std::size_t offset = (static_cast<std::size_t>(row) * 1440 + 672) * 4;
-            std::copy_n(wrongPhase.begin() + offset, 96 * 4, pixels.begin() + offset);
+            const std::size_t offset = (static_cast<std::size_t>(row) * 2160 + 1008) * 4;
+            std::copy_n(wrongPhase.begin() + offset, 144 * 4, pixels.begin() + offset);
         }
         Verify(pixels, true);
     }
@@ -3290,7 +3292,7 @@ TEST_CASE("Unified D3D11 accepts point-constrained coverage but rejects integer-
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
-TEST_CASE("Unified layout-8 D3D11 demod preserves mixed blocks at bounded scale and fractional letterbox geometry",
+TEST_CASE("Unified layout-9 D3D11 demod preserves mixed blocks at bounded scale and fractional letterbox geometry",
     "[demod][d3d11][unified][warp][geometry][letterbox][scale]")
 {
     auto environment = CreateWarpEnvironment();
@@ -3320,9 +3322,8 @@ TEST_CASE("Unified layout-8 D3D11 demod preserves mixed blocks at bounded scale 
         pbmodulation::UnifiedErasureReason expectedChromaReason;
     };
     const std::array cases{
-        GeometryCase{1476, 840, 0.75, 17.25, 13.5, 10,
-            pbmodulation::UnifiedErasureReason::BaseLumaPilotFailure,
-            pbmodulation::UnifiedErasureReason::FineLumaPilotFailure,
+        GeometryCase{1956, 1108, 1.0, 17.25, 13.5, pbmodulation::kUnifiedCodewordCount,
+            pbmodulation::UnifiedErasureReason::None, pbmodulation::UnifiedErasureReason::None,
             pbmodulation::UnifiedErasureReason::None},
         GeometryCase{3840, 2160, 2.0, 0.0, 0.0, pbmodulation::kUnifiedCodewordCount,
             pbmodulation::UnifiedErasureReason::None, pbmodulation::UnifiedErasureReason::None,
@@ -3349,7 +3350,7 @@ TEST_CASE("Unified layout-8 D3D11 demod preserves mixed blocks at bounded scale 
             bootstrap.geometry.originX, bootstrap.geometry.originY, bootstrap.geometry.scaleX,
             bootstrap.geometry.scaleY);
         REQUIRE(bootstrap.IsAccepted());
-        REQUIRE(bootstrap.geometry.scaleX >= 0.75 - 1e-12);
+        REQUIRE(bootstrap.geometry.scaleX >= 1.0 - 1e-12);
         REQUIRE(bootstrap.geometry.scaleX <= 2.0 + 1e-12);
         auto cpuOracleResult = pbmodulation::UnifiedVisualCpuOracle::Create(
             pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
@@ -3415,7 +3416,7 @@ TEST_CASE("Unified layout-8 D3D11 demod preserves mixed blocks at bounded scale 
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
-TEST_CASE("Unified layout-8 D3D11 demod completes one headless hardware-adapter smoke",
+TEST_CASE("Unified layout-9 D3D11 demod completes one headless hardware-adapter smoke",
     "[.unified-hardware-smoke]")
 {
     auto candidates = EnumerateHardwareAdapters();

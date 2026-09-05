@@ -160,7 +160,7 @@ public:
         ID3D11DeviceContext* context, std::span<const std::byte> bootstrapRecord,
         const pbmodulation::LocalDesktopGeometry& geometry,
         const pbmodulation::RemoteVisualLowFpsDecodePolicy& policy, DemodSubmission& output) noexcept;
-    // Unified layout-8 path. bootstrap must be the accepted observation
+    // Unified layout-9 path. bootstrap must be the accepted observation
     // recovered from this exact ROI lease. The GPU reads that PB-owned texture
     // directly and hands only compact observations to the canonical CPU
     // QC-LDPC/mixed Control+Transport gate.

@@ -6,7 +6,7 @@
 > 代码起点：`1445f9b`（正式 Descriptor 与可恢复 Segment 基础）
 > 目标程序：`PixelBridgeEncoder.exe`、`PixelBridgeDecoder.exe`
 > 适用平台：Windows x64 / C++20 / Qt Widgets / D3D11
-> 当前结论：**基础协议、流式发送和恢复存储已经落地一部分；统一视觉 Profile、完整产品接线及最终实屏门禁尚未完成。**
+> 当前结论（2026-09-05）：**G00..G20 已完成并有独立提交；G21 正在用 `PB-Unified-SC6-V2`/layout 9 修复真实远控低通失真。离线合成失真闭环已通过，但新的真实远程 1 MiB/64 MiB 最终发布尚未执行，因此 G21 仍为 PARTIAL，G22 未开始。**
 
 ---
 
@@ -109,44 +109,48 @@ git log -5 --oneline
 
 ### 1.5 唯一产品视觉 Profile
 
+> **G21 合同替换（2026-09-05）：** 首轮真实远程运行证明 LC4/layout 8 的连续 4×4 微纹理经远控缩放/低通/4:2:0/量化后不可可靠恢复。用户明确允许修改整个视觉/协议合同且不要求兼容，因此下列 SC6/layout 9 是当前唯一产品合同；本路线后文 G06..G20 的 LC4 数字只保留为当时的历史证据，不再约束当前产品。
+
 正式产品仅公开：
 
 ```text
-Name                  PB-Unified-LC4-V1
-VisualProfileId       0x5042554E494C4331
-VisualLayoutVersion   8
+Name                  PB-Unified-SC6-V2
+VisualProfileId       0x5042554E49534332
+VisualLayoutVersion   9
 Canvas                1920 x 1080 BGRA8 SDR
 Inner FEC             Robust DVB-S2 Short QC-LDPC
 Outer payload         1314 bytes
 Inner codeword        2025 bytes
 ```
 
-载波复用当前 4x4 Shape 几何的 86,688 个数据 tile，但 codeword 不得跨可靠性 lane：
+载波使用 41,872 个 6×6 单元：5×5 glyph 承载 4 个 shape/luma bits 与 2 个 chroma bits，第六行/列为暗隔离带。codeword 不得跨可靠性 lane：
 
 | Lane | Codeword 数 | 最大 Transport payload/逻辑帧 | 合同 |
 | --- | ---: | ---: | --- |
-| Base Luma | 17 | 22,338 B | 必选恢复层；chroma 完全中和时仍独立工作 |
-| Fine Luma | 4 | 5,256 B | 模糊或缩放过强时可独立擦除 |
-| Chroma | 10 | 13,140 B | 色度分离不足或 4:2:0 损伤时独立擦除 |
-| 合计 | 31 | 40,734 B | 尚未扣除 mixed control 与 Outer repair 代价 |
+| Base Luma | 9 | 11,826 B | 必选恢复层；chroma 完全中和时仍独立工作 |
+| Fine Luma | 1 | 1,314 B | 模糊或缩放过强时可独立擦除 |
+| Chroma | 5 | 6,570 B | 色度分离不足或 4:2:0 损伤时独立擦除 |
+| 合计 | 15 | 19,710 B | 尚未扣除 mixed control 与 Outer repair 代价 |
 
 硬约束：
 
-- 16 个平衡 4x4 bitmap mask、label、lane mapping、交织置换和摘要一经选择即冻结；运行时不自学习。
+- 16 个 5×5 glyph 组成互补对，前景数为 8..17、pairwise Hamming distance `>=9` 且无孤立同值像素；label、lane mapping、交织置换和摘要一经选择即冻结，运行时不自学习。
 - label/mapping 的搜索在固定 Train/Validation/Holdout 上确定性完成；查看 Holdout 前冻结选择规则。
 - 优先最大化 Base Luma 最小 bit margin，再优化 Fine Luma，最后评估 Chroma；同分按字典序 tie-break。
 - Base/Fine/Chroma 使用不同 `FrameSequence` 派生置换。
 - Chroma pilot 失败只擦除 Chroma；局部 stale 只清零对应 soft metrics；不得跨 `FrameSequence` 拼接区域。
 - 仅 locator/bootstrap 失败、画布裁切或身份冲突允许整帧擦除。
 - Control 与 Transport 可在同一逻辑帧的不同 Base Luma codeword slot 中出现。
-- 产品逻辑尺度为 `0.75x..2.0x`；小于 0.75x 时不生成有效 Bootstrap、不推进 FrameSequence。
+- 产品逻辑尺度为 `1.0x..2.0x`；小于 1.0x 时不生成有效 Bootstrap、不推进 FrameSequence。0.75x 对 SC6 会让独立 point samples 跨单元边界，不能通过扩大容差伪装成可解码尺度。
 - 远控软件名称、品牌、画质档位只能是 `NonDecodingOperatorMetadata`，不得进入协议或解码分支。
 
 ---
 
 ## 2. 当前实现基线与事实边界
 
-### 2.1 `1445f9b` 已有基础
+### 2.1 `1445f9b` 历史起点快照
+
+本节表格记录路线启动时的快照，不能覆盖后续 Goal 的实现事实；当前进度以各 Goal 的最新状态段为准。
 
 | 能力 | 状态 | 当前证据 | 仍需完成 |
 | --- | --- | --- | --- |
@@ -161,7 +165,7 @@ Inner codeword        2025 bytes
 | 活动 decoder 满时延迟 | 已实现 | `DeferredResourceBusy` tests | Carousel 端到端重试/收敛 |
 | Whole-file digest 与安全发布 | 已有并扩展 | PBStorage 定向测试 | 多 Segment、大文件、rename 前后故障注入与外部哈希 |
 | 历史 LF4/Direct/Shape 视觉路径 | 已存在实验实现 | 历史 Golden、CPU/GPU/Replay/实屏证据 | 仅可作为比较基础；不是统一产品 Profile |
-| PB-Unified-LC4-V1 | 未实现 | 仅协议常量及本路线合同 | G06..G12 |
+| PB-Unified-SC6-V2 | G21 当前实现 | layout 9 manifest、独立 Golden、CPU/GPU parity、合成远控失真完整文件闭环 | 真实远程 G21 最终发布 |
 | 可缩放普通 Data Window | 未实现 | 旧窗口/呈现基础可复用 | G13 |
 | WGC 自动转 DXGI | 未实现 | 两个 backend 各自存在 | G14 |
 | 最终 Qt 产品流程 | 未实现 | Phase 1.5 GUI 仍暴露旧 Profile/backend/压缩项 | G15..G16 |
@@ -183,15 +187,11 @@ ctest --test-dir build-desktop-levels-release -C Release `
 
 ### 2.3 当前已知阻塞与未关闭项
 
-1. `PB-Unified-LC4-V1` 的 lane layout、codebook mapping、mixed slots 和 layout 8 尚未实现。
-2. 统一 Profile 的 CPU oracle 与 D3D11 Compute accepted-byte parity 尚未建立。
-3. Data Window 尚未满足普通 resizable、letterbox、0.75x 下限暂停、presentation epoch 原子替换合同。
-4. GUI 仍是 Phase 1.5 过渡入口，仍可见旧 Profile/backend/压缩选择。
-5. WGC→DXGI 自动 fallback 尚未接入统一 CaptureEpoch 状态机。
-6. 大于 4 GiB 的一次性确认尚未成为产品状态机；当前自动接受策略不能作为最终产品依据。
-7. 最终 rename 成功但 resume journal 尚未删除时的重启恢复未完全关闭。
-8. 256 MiB、20 GiB、进程终止注入、完整 CTest、定向 ASan、右屏 native 和真实远程门禁均未在本基线执行。
-9. 项目仓库尚未配置 Git remote；根目录尚未选择项目自身 LICENSE。LICENSE 属于维护者法律/发布决策，不在实现目标中擅自选择。
+1. SC6 尚未在真实远程链上完成 1 MiB 和 64 MiB 的 whole digest、安全发布、final reopen 与外部摘要核对。
+2. 真实链路的 Base Luma 独立恢复、false accepted/conflict=0 和 `>=16 KiB/unique logical frame` 尚无权威 live 证据；离线合成结果不能替代。
+3. 新 shader 的首次硬件 dispatch 有冷启动尖峰；既有单在途和 250 ms admission 会安全丢弃过期结果，但尚未用真实远程运行证明稳定态不会持续过期。
+4. G22 包、SBOM、third-party notices、最终用户文档和发布候选尚未开始。
+5. 项目仓库尚未配置 Git remote；根目录尚未选择项目自身 LICENSE。LICENSE 属于维护者法律/发布决策，不在实现目标中擅自选择。
 
 ---
 
@@ -838,7 +838,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G21 — 真实远程像素链
 
-**状态（2026-09-05）：** PARTIAL / 接收准备完成、真实远程恢复未开始。前置 G20 `e94da7f` 已提交；用户回报远程 Encoder 的 `00_Check.bat` 加载与提交身份检查通过，未生成 source 或广播。用户批准专用测试构建接收入口：`PBUnifiedRemoteGate` 复用完整生产 `DecoderRuntime`/Auto，无产品 CLI/Replay/monitor 接口变更，外层严格限定 DISPLAY2。最小 build/无捕获策略及参数负例/只读 monitor preflight 通过，未执行 full CTest 或实屏恢复；1 MiB、64 MiB、Base/chroma、外部摘要及 16 KiB 硬门仍待验收。操作顺序、冻结交付与证据边界见 [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md)。G22 未开始。
+**准备阶段历史状态（2026-09-05）：** PARTIAL / 接收准备完成、真实远程恢复当时尚未开始。前置 G20 `e94da7f` 已提交；用户回报远程 Encoder 的 `00_Check.bat` 加载与提交身份检查通过，未生成 source 或广播。用户批准专用测试构建接收入口：`PBUnifiedRemoteGate` 复用完整生产 `DecoderRuntime`/Auto，无产品 CLI/Replay/monitor 接口变更，外层严格限定 DISPLAY2。最小 build/无捕获策略及参数负例/只读 monitor preflight 通过，当时未执行 full CTest 或实屏恢复；后续真实 smoke、发送节奏核对、5 Hz 诊断及 SC6 抗失真重构进展见下列连续记录。操作顺序、冻结交付与证据边界见 [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md)。G22 未开始。
 
 **真实 smoke 后续（2026-09-05）：** 上段“未开始”仅为准备阶段状态。现以冻结 `83bffb3` worker 执行两次 180 秒真实 WGC 接收，均 exit 1、没有发布或生成输出文件，未强杀。首次 Bootstrap 0/3,369，右屏单帧位置图显示底部 finder 被任务栏裁挡；用户手动调整后第二次 Bootstrap 360/185，但最终 admissionDrops=359，尚未绑定 Session。累计后 GPU/FEC 时间按 accepted Bootstrap 粗算约 387.557 ms/帧，提示结果超龄风险，但缺少逐结果时间戳，不把全部拒绝归因为 age 的推断写成已证实根因。两个位置截图仅为右屏 GDI 布局证据，不是 same-capture WGC replay。用户要求固定约 15 Hz；交付脚本本来已传入 `--logical-fps 15`，正在等待同次远程 `encoder-report.json` 和 source manifest 核对实际 cadence，不擅自改阈值或降 FPS。原失败封存于 `build-unified-release/g21-remote-smoke-1/`、`g21-remote-smoke-2/`；完整边界见 `UNIFIED_REMOTE_GATE.md` 第 6 节。G21 继续 PARTIAL，64 MiB/Base-only/外部摘要/性能门及 G22 均未关闭。
 
@@ -847,6 +847,12 @@ ctest --test-dir build-unified-release -C Release `
 **5 Hz 同源对照准备（2026-09-05）：** 用户已批准同源降到 5 Hz。新增 `03_Check_SameSource_5Hz.bat` / `04_Start_SameSource_5Hz.bat` / `Start-G21SameSource5Hz.ps1` 附加包，固定校验报告对应的原 1 MiB source，再使用原 Encoder 传入 `--logical-fps 5`；不生成或回传源文件，不覆盖原 15 Hz 包/脚本/证据。PowerShell 5.1 AST 和五个定向 policy 检查已关闭；其中两项初次被本机继承的模块路径阻断，修正验证子进程环境后只复核这两项通过，原失败保留。正例仅是合成 fixture 的 `-CheckOnly` 加载，不是远程原文件或实屏成功。封存根 `build-unified-release/g21-5hz-handoff-1/`，ZIP SHA-256 `bc7672c3d99bde5e89f0cf431d11afe5da8c635becdd254886558ab304ff45b3`；详情和操作顺序见 `UNIFIED_REMOTE_GATE.md` 第 7 节。等待用户远程检查及“5Hz 右屏已就绪”后，用冻结 `83bffb3` receiver 执行同一 180 秒 / 210 秒 watchdog 诊断；单 owner、250 ms 和全部质量/摘要/发布门不变。未开始 5 Hz live，不将其替代默认 15 Hz 验收；未运行额外 full CTest、ASan、native 回归、64 MiB 或 G22。
 
 **远程目录删除与全新完整包（2026-09-05）：** 用户随后明确说明远程原 `remote-encoder` 整个目录已经删除，故其中的旧 CSPRNG source 也不可再用，前段同源计划停止；不从摘要伪造或替代原文。按用户要求制作不依赖旧目录的完整 remote Encoder ZIP：冻结 `e94da7f` EXE、全部 42 个 `bin/` 文件、identity metadata、package manifest、说明和 fresh-source 5 Hz 检查/启动脚本齐全；解压根可直接运行。它只生成新的 1 MiB CSPRNG source，manifest 明确 `strictSameSourceComparison=false` / `G21AcceptanceRun=false`。最终包 `build-unified-release/g21-5hz-fresh-full-2/PixelBridge-G21-RemoteEncoder-e94da7f-Fresh5Hz-Full.zip`，26,714,458 bytes，SHA-256 `93123440c769031ecc1ebe73755d087a4a9c939ce1bb71ee51c82583d4982e2c`；48 entries / 61,461,871 uncompressed bytes。PowerShell 5.1 AST、组装目录 batch check、ZIP 逐 entry 验证及全新解压目录 batch check 均通过，检查路径没有 source/run/广播。首个 `full-1` 组装因验证 PATH 漏掉 PowerShell 返回 9009，无 ZIP/副作用；改用系统绝对路径后从新目录重做，原失败保留。详情见 `UNIFIED_REMOTE_GATE.md` 第 8 节。等待用户远程 `Fresh5Hz_00_Check.bat` 结果；未启动正常 sender 或 live Decoder，单 owner、250 ms 及全部质量/摘要/发布门不变，未运行 full CTest、ASan、native 回归、64 MiB、20 GiB 或 G22。
+
+**SC6 抗失真重构与离线闭环（2026-09-05）：** 用户提供四张 LC4 真实远控失真截图和四张 libcimbar 网页端参考截图，随后明确允许修改视觉合同/底层协议且不要求兼容。对本地 `D:\libcimbar` 源码的只读核对确认其实际采用 5×5 symbol、6 px spacing、符号网格锐化、adaptive threshold、fuzzy average-hash/drift 和分块 ECC，而不是仅靠降低动画频率。PixelBridge 因此用 `PB-Unified-SC6-V2`/layout 9 原子替换唯一产品 manifest：41,872 个 6×6 分隔单元，5×5 glyph 承载 4 luma+2 chroma bits，15 个 QC-LDPC codeword 按 9/1/5 分 lane，最大净载荷 19,710 B/frame，mapping digest `8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc`。CPU/HLSL 只在 shape luma 打分前应用和为 1 的十字反卷积，chroma 保持原采样；不存在 provider 名称/品牌分支。独立 point 采样证明 0.75x 会跨 SC6 单元边界，故产品可解码尺度改为 1.0x..2.0x，小于 1.0x 仍 neutral matte 且不推进序列。
+
+最强新增合成链为 `2560×1440 bilinear + centered 4:2:0 phase(1,1) + one box blur + 5-bit BGR quantization`：锐化前仅接受 8/15，Base/Fine/Chroma hard errors=15/3/0；当前 CPU 与 WARP/AMD/NVIDIA 均接受 15/15，hard errors=0/0/0，accepted bytes 逐字节相同，false accepted/truth mismatch/conflict output 均为 0。真实 Robust QC-LDPC layered decoder 的 check-node 更新由每条边重复扫描整行改为等价的行级 sign parity + first/second minima，复杂度从 O(degree²) 降为 O(degree)，全部 Inner-FEC 结果不变；严重场景稳定态从约 241..243 ms 降到约 50..64 ms，三个 GPU backend 的关键失真帧约 29..31 ms。首次硬件 dispatch 仍观测到冷启动尖峰，不据此声称所有帧低于 250 ms。
+
+新增隐藏 G21 离线完整文件 Gate 使用 1 MiB OS-CSPRNG RAW、正式 Control/Transport/Wirehair V2、WARP、ReceiverIngress、PBStorage、whole digest、安全发布和 final reopen，以上述 all-lanes 失真链独立运行五次；每次均在 54 个唯一逻辑帧后逐字节发布，`1,048,576 / 54 = 19,418.074074 B/unique logical frame`，超过 16 KiB 硬门但低于 32 KiB 工程目标。五次分别为 12,725 / 12,715 / 12,735 / 12,737 / 12,735 assertions，证据封存于 `build-unified-release/g21-sc6-offline-distortion-1/`，authority 明确为 headless synthetic WARP。另有 SC6 transform corpus 5,104,511 assertions、三 backend parity 16,729 assertions、Inner FEC 47,202 assertions、profile/mapping/CPU Golden、scheduler/telemetry/application 和 RenderD3D 定向通过。**这些证明修复可以进入下一次 live 验证，但不能替代真实远程 1 MiB/64 MiB、外部摘要或 Base-only 证据；G21 继续 PARTIAL，G22 未开始。** 详细命令、历史失败和证据边界见 `UNIFIED_REMOTE_GATE.md` 第 9 节。
 
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。
@@ -935,7 +941,7 @@ sum(最终成功发布的所有 Segment EncodedSize)
 
 遇到以下情况，不得自行选择一个高影响方案继续：
 
-1. Base Luma 在正式 0.75x mandatory corpus 无法达到 16 KiB/unique frame；
+1. Base Luma 在正式 1.0x mandatory corpus 无法达到 16 KiB/unique frame；
 2. 两种 wire/layout 方案都会改变公开 schema 或已冻结 ID；
 3. 要删除历史 Profile、Golden 或证据，而不是从产品入口隐藏；
 4. 大文件预分配策略会改变磁盘实际占用、用户确认或恢复语义；
@@ -997,7 +1003,7 @@ sum(最终成功发布的所有 Segment EncodedSize)
 - [ ] 双端跨进程恢复成立；source 变化和 corrupt resume fail closed。
 - [ ] Unified 是唯一产品 Profile；旧 provisional descriptor 明确拒绝。
 - [ ] WGC 默认且只在明确失败时 DXGI fallback。
-- [ ] 0.75x..2.0x、letterbox、resize epoch、低于 0.75x 暂停合同成立。
+- [ ] 1.0x..2.0x、letterbox、resize epoch、低于 1.0x 暂停合同成立。
 - [ ] WholeFileDigest、安全发布、final reopen 与外部哈希一致。
 
 ### 9.2 正确性与性能

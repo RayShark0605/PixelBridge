@@ -12,40 +12,44 @@
 namespace pbmodulation
 {
 
-inline constexpr std::uint32_t kUnifiedMappingVersion = 1;
+inline constexpr std::uint32_t kUnifiedMappingVersion = 2;
 inline constexpr std::uint32_t kUnifiedMappingPhaseCount = 16;
-inline constexpr std::uint32_t kUnifiedBaseDedicatedLumaBits = 260064;
-inline constexpr std::uint32_t kUnifiedBaseSharedLumaBits = 15336;
-inline constexpr std::uint32_t kUnifiedFinePlaneThreeFirstPosition = 15336;
-inline constexpr std::uint32_t kUnifiedFinePlaneThreeEndPosition = 80136;
-inline constexpr std::uint32_t kUnifiedChromaUsedTiles = 81000;
+inline constexpr std::uint32_t kUnifiedBaseDedicatedLumaBits = 125616;
+inline constexpr std::uint32_t kUnifiedBaseSharedLumaBits = 20184;
+inline constexpr std::uint32_t kUnifiedFinePlaneThreeFirstPosition = 20184;
+inline constexpr std::uint32_t kUnifiedFinePlaneThreeEndPosition = 36384;
+inline constexpr std::uint32_t kUnifiedChromaUsedTiles = 40500;
 inline constexpr std::string_view kUnifiedMappingStreamFrameSequenceZeroBlake3{
-    "cd8444d1513640cb0b01d58dd5a8b984d54457d78ba49331c7def9f676cd1801"};
+    "8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc"};
 
 // Label n is encoded by mask[n]. Bit n within a mask addresses the row-major
-// 4x4 chip at (n % 4, n / 4); one selects high luma. Selection used only the
-// sealed Train set to construct candidates/labels and Validation to rank them.
-inline constexpr std::array<std::uint16_t, 16> kUnifiedSymbolMasksByLabel{
-    0x07DC, 0x08EF, 0x1337, 0x6666, 0x34D3, 0x3BE0, 0x62B9, 0x718E,
-    0xF823, 0xF710, 0xECC8, 0x9999, 0xCB2C, 0xC41F, 0x9D46, 0x8E71};
+// 5x5 chip at (n % 5, n / 5); one selects the foreground carrier. The sixth
+// row and column are fixed dark separators. Complement pairs and a minimum
+// Hamming distance of nine preserve shape identity after lossy resampling.
+inline constexpr std::array<std::uint32_t, 16> kUnifiedSymbolMasksByLabel{
+    0x0F6A100U, 0x004A5BFU, 0x00F731CU, 0x0073C61U,
+    0x0F78E3FU, 0x00218CEU, 0x0319980U, 0x033BDEFU,
+    0x1095EFFU, 0x1FB5A40U, 0x1F08CE3U, 0x1F8C39EU,
+    0x10871C0U, 0x1FDE731U, 0x1CE667FU, 0x1CC4210U};
 
 struct UnifiedChromaState
 {
-    std::int16_t blueOffset = 0;
-    std::int16_t greenOffset = 0;
-    std::int16_t redOffset = 0;
+    std::uint8_t blue = 0;
+    std::uint8_t green = 0;
+    std::uint8_t red = 0;
     std::uint8_t label = 0;
 
     bool operator==(const UnifiedChromaState&) const = default;
 };
 
-// The four approximately iso-luma historical Shape/Chroma states are retained,
-// but stored by their two-bit label. Their cycle in capture space is 0,1,3,2.
+// Strong, approximately iso-luma foreground states separate the two chroma
+// bits from the dark background. The values stay away from gamut endpoints so
+// video range conversion and ringing do not immediately clip the carrier.
 inline constexpr std::array<UnifiedChromaState, 4> kUnifiedChromaStatesByLabel{
-    UnifiedChromaState{-24, 7, -16, 0},
-    UnifiedChromaState{24, 2, -16, 1},
-    UnifiedChromaState{-24, -2, 16, 2},
-    UnifiedChromaState{24, -7, 16, 3}};
+    UnifiedChromaState{253, 127, 239, 0},
+    UnifiedChromaState{253, 174, 81, 1},
+    UnifiedChromaState{67, 193, 81, 2},
+    UnifiedChromaState{67, 146, 239, 3}};
 
 struct UnifiedTilePermutation
 {
@@ -57,8 +61,8 @@ struct UnifiedTilePermutation
     bool operator==(const UnifiedTilePermutation&) const = default;
 };
 
-inline constexpr UnifiedTilePermutation kUnifiedPlaneThreeTileOrder{86688, 31439, 15215, 76408};
-inline constexpr UnifiedTilePermutation kUnifiedChromaTileOrder{86688, 65533, 14965, 51321};
+inline constexpr UnifiedTilePermutation kUnifiedPlaneThreeTileOrder{41872, 31439, 6879, 34120};
+inline constexpr UnifiedTilePermutation kUnifiedChromaTileOrder{41872, 23661, 41557, 9489};
 
 struct UnifiedLaneInterleaveContract
 {
@@ -75,9 +79,9 @@ struct UnifiedLaneInterleaveContract
 };
 
 inline constexpr std::array<UnifiedLaneInterleaveContract, 3> kUnifiedLaneInterleaves{
-    UnifiedLaneInterleaveContract{UnifiedLane::BaseLuma, 275400, 194267, 200003, 163611, 230029, 16, 3},
-    UnifiedLaneInterleaveContract{UnifiedLane::FineLuma, 64800, 34559, 30239, 52798, 26153, 16, 14},
-    UnifiedLaneInterleaveContract{UnifiedLane::Chroma, 162000, 152357, 148493, 152539, 50837, 16, 15}};
+    UnifiedLaneInterleaveContract{UnifiedLane::BaseLuma, 145800, 48467, 38003, 17811, 84229, 16, 3},
+    UnifiedLaneInterleaveContract{UnifiedLane::FineLuma, 16200, 2159, 14039, 4198, 9953, 16, 14},
+    UnifiedLaneInterleaveContract{UnifiedLane::Chroma, 81000, 71357, 67493, 71539, 50837, 16, 15}};
 
 struct UnifiedPhysicalCarrierSite
 {
@@ -172,29 +176,29 @@ namespace unified_mapping_detail
     return MultiplyModulo(shifted, contract.inverse, contract.logicalBits);
 }
 
-[[nodiscard]] constexpr bool HasNoIsolatedCells(const std::uint16_t mask) noexcept
+[[nodiscard]] constexpr bool HasNoIsolatedCells(const std::uint32_t mask) noexcept
 {
-    for (std::uint32_t index = 0; index < 16; index++)
+    for (std::uint32_t index = 0; index < 25; index++)
     {
         const bool value = ((mask >> index) & 1U) != 0;
-        const std::uint32_t x = index % 4;
-        const std::uint32_t y = index / 4;
+        const std::uint32_t x = index % 5;
+        const std::uint32_t y = index / 5;
         bool hasEqualNeighbor = false;
         if (x > 0)
         {
             hasEqualNeighbor = hasEqualNeighbor || (((mask >> (index - 1)) & 1U) != 0) == value;
         }
-        if (x < 3)
+        if (x < 4)
         {
             hasEqualNeighbor = hasEqualNeighbor || (((mask >> (index + 1)) & 1U) != 0) == value;
         }
         if (y > 0)
         {
-            hasEqualNeighbor = hasEqualNeighbor || (((mask >> (index - 4)) & 1U) != 0) == value;
+            hasEqualNeighbor = hasEqualNeighbor || (((mask >> (index - 5)) & 1U) != 0) == value;
         }
-        if (y < 3)
+        if (y < 4)
         {
-            hasEqualNeighbor = hasEqualNeighbor || (((mask >> (index + 4)) & 1U) != 0) == value;
+            hasEqualNeighbor = hasEqualNeighbor || (((mask >> (index + 5)) & 1U) != 0) == value;
         }
         if (!hasEqualNeighbor)
         {
@@ -312,27 +316,28 @@ namespace unified_mapping_detail
 
 [[nodiscard]] constexpr bool ValidateUnifiedVisualMappingStaticContract() noexcept
 {
-    if (!kUnifiedFrameCapacity.valid || kUnifiedVisualProfile.dataTileCount != 86688 ||
+    if (!kUnifiedFrameCapacity.valid || kUnifiedVisualProfile.dataTileCount != 41872 ||
         kUnifiedMappingPhaseCount != 16 || kUnifiedBaseDedicatedLumaBits != kUnifiedVisualProfile.dataTileCount * 3 ||
-        kUnifiedBaseDedicatedLumaBits + kUnifiedBaseSharedLumaBits != 275400 ||
+        kUnifiedBaseDedicatedLumaBits + kUnifiedBaseSharedLumaBits != 145800 ||
         kUnifiedFinePlaneThreeFirstPosition != kUnifiedBaseSharedLumaBits ||
-        kUnifiedFinePlaneThreeEndPosition != kUnifiedFinePlaneThreeFirstPosition + 64800 ||
+        kUnifiedFinePlaneThreeEndPosition != kUnifiedFinePlaneThreeFirstPosition + 16200 ||
         kUnifiedFinePlaneThreeEndPosition > kUnifiedVisualProfile.dataTileCount ||
-        kUnifiedChromaUsedTiles * 2 != 162000)
+        kUnifiedChromaUsedTiles * 2 != 81000)
     {
         return false;
     }
     for (std::size_t label = 0; label < kUnifiedSymbolMasksByLabel.size(); label++)
     {
-        const std::uint16_t mask = kUnifiedSymbolMasksByLabel[label];
-        if (std::popcount(mask) != 8 || !unified_mapping_detail::HasNoIsolatedCells(mask) ||
-            (label < 8 && static_cast<std::uint16_t>(mask ^ kUnifiedSymbolMasksByLabel[label + 8]) != 0xFFFFU))
+        const std::uint32_t mask = kUnifiedSymbolMasksByLabel[label];
+        const int foregroundCells = std::popcount(mask);
+        if (foregroundCells < 8 || foregroundCells > 17 || !unified_mapping_detail::HasNoIsolatedCells(mask) ||
+            (label < 8 && (mask ^ kUnifiedSymbolMasksByLabel[label + 8]) != 0x1FFFFFFU))
         {
             return false;
         }
         for (std::size_t previous = 0; previous < label; previous++)
         {
-            if (std::popcount(static_cast<std::uint16_t>(mask ^ kUnifiedSymbolMasksByLabel[previous])) < 8)
+            if (std::popcount(mask ^ kUnifiedSymbolMasksByLabel[previous]) < 9)
             {
                 return false;
             }
@@ -372,7 +377,7 @@ namespace unified_mapping_detail
 
 static_assert(ValidateUnifiedVisualMappingStaticContract());
 static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 0, 0).valid);
-static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::FineLuma, 64800, 0).valid == false);
-static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::Chroma, 162000, 0).valid == false);
+static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::FineLuma, 16200, 0).valid == false);
+static_assert(GetUnifiedPhysicalCarrierSite(UnifiedLane::Chroma, 81000, 0).valid == false);
 
 } // namespace pbmodulation

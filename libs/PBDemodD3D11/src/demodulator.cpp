@@ -83,9 +83,9 @@ static_assert(pbmodulation::kRemoteVisualLadders[2].x == 96 && pbmodulation::kRe
 static_assert(pbmodulation::kRemoteVisualLadders[3].x == 1056 && pbmodulation::kRemoteVisualLadders[3].y == 1000);
 static_assert(std::ranges::all_of(pbmodulation::kRemoteVisualLadders,
     [](const pbmodulation::LocalDesktopRegion& region) { return region.width == 128 && region.height == 64; }));
-static_assert(pbmodulation::kUnifiedVisualProfile.tileWidth == 4 && pbmodulation::kUnifiedVisualProfile.tileHeight == 4);
-static_assert(pbmodulation::kUnifiedVisualProfile.dataTileCount == 86688);
-static_assert(pbmodulation::kUnifiedSoftMetricCount == 502200);
+static_assert(pbmodulation::kUnifiedVisualProfile.tileWidth == 6 && pbmodulation::kUnifiedVisualProfile.tileHeight == 6);
+static_assert(pbmodulation::kUnifiedVisualProfile.dataTileCount == 41872);
+static_assert(pbmodulation::kUnifiedSoftMetricCount == 243000);
 static_assert(pbmodulation::kUnifiedFreshnessRegionCount == 9 && pbmodulation::kLocalDesktopTimingBits == 256);
 static_assert(pbmodulation::kUnifiedSymbolMasksByLabel.size() == 16);
 static_assert(pbmodulation::kUnifiedCalibrationLumaRows == 24 && pbmodulation::kUnifiedCalibrationNeutralRows == 8 &&
@@ -650,7 +650,7 @@ DemodStatus ApplyUnifiedPhaseObservations(
     double high = 0;
     for (std::size_t pilot = 0; pilot < 4; pilot++)
     {
-        low += static_cast<double>(calibration[pilot * 4 + 1][0]) / 4;
+        low += static_cast<double>(calibration[pilot * 4][0]) / 4;
         high += static_cast<double>(calibration[pilot * 4 + 2][0]) / 4;
     }
     const double gap = high - low;
@@ -662,7 +662,8 @@ DemodStatus ApplyUnifiedPhaseObservations(
         for (std::size_t phase = 0; phase < 8; phase++)
         {
             const auto& entry = phases[phasePilot * 8 + phase];
-            entriesValid = entriesValid && entry[0] >= 0 && entry[1] == 512.0f && entry[2] == 1.0f &&
+            entriesValid = entriesValid && entry[0] >= 0 &&
+                entry[1] == static_cast<float>(pbmodulation::kUnifiedPhasePilotTilesPerRegion) && entry[2] == 1.0f &&
                 entry[3] >= 0 && entry[3] <= 4 && std::floor(entry[3]) == entry[3];
             if (phase != expectedPhase)
             {
@@ -670,7 +671,9 @@ DemodStatus ApplyUnifiedPhaseObservations(
             }
         }
         const double expectedDistance = phases[phasePilot * 8 + expectedPhase][0];
-        const double normalizedResidual = gap > 0 ? expectedDistance / (512.0 * 16.0 * gap * gap) :
+        const double normalizedResidual = gap > 0 ? expectedDistance /
+            (static_cast<double>(pbmodulation::kUnifiedPhasePilotTilesPerRegion) *
+                pbmodulation::kUnifiedDataGlyphCells * gap * gap) :
             (std::numeric_limits<double>::infinity)();
         const bool valid = entriesValid && expectedDistance < nearestOther &&
             normalizedResidual <= policy.maximumPhasePilotResidual;
@@ -1175,7 +1178,7 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
         }
         std::array<std::uint32_t, pbmodulation::kUnifiedSymbolMasksByLabel.size()> unifiedSymbolMasks{};
         std::transform(pbmodulation::kUnifiedSymbolMasksByLabel.begin(), pbmodulation::kUnifiedSymbolMasksByLabel.end(),
-            unifiedSymbolMasks.begin(), [](const std::uint16_t mask) { return static_cast<std::uint32_t>(mask); });
+            unifiedSymbolMasks.begin(), [](const std::uint32_t mask) { return mask; });
         if (status)
         {
             status = CreateImmutableStructuredBuffer(device, unifiedSymbolMaskBytes, sizeof(std::uint32_t),

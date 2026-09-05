@@ -2,7 +2,7 @@
 
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
 
-> **开发中，不是最终 Release。** 当前已经具备正式 Descriptor、分段发送、恢复存储和历史视觉链基础，但唯一产品 Profile `PB-Unified-LC4-V1`、最终简化 Qt 界面、可缩放窗口及完整大文件/实屏/远程门禁仍在实施路线中。不要把现有 Phase 1.5 或 RemoteVisual 实验入口当作最终产品。
+> **开发中，不是最终 Release。** G00..G20 已建立正式 Descriptor、多 Segment/双端恢复、简化 Qt 产品入口和本地 Release/native 能力；当前唯一产品 Profile 是抗远控低通的 `PB-Unified-SC6-V2`（layout 9）。G21 仍缺真实远程 1 MiB/64 MiB 最终发布门，G22 尚未开始。不要把离线合成、历史 Phase 1.5 或 RemoteVisual 实验入口当作最终产品认证。
 
 快速入口：
 
@@ -18,10 +18,10 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 | 路径 | 用途 |
 | --- | --- |
-| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | Qt Widgets、CLI adapter 和应用 controller；当前仍含待收敛的 Phase 1.5 选项 |
+| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | Qt Widgets 产品入口、内部诊断 CLI adapter 和应用 controller |
 | `apps/common` | Qt-free application runtime/model/report、Encoder Session persistence、Decoder resume journal |
 | `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver`、`libs/PBStorage` | 核心静态库（禁止依赖 Qt）；PBStorage 负责 `.part`、random verified writes、WholeFileDigest 与 safe publish |
-| `libs/PBModulation`、`libs/PBInnerFec`、`libs/PBInterleave`、`libs/PBDemodD3D11` | CPU 视觉参考、QC-LDPC、交织和 D3D11 Compute 解调；Unified Profile 尚待 G06..G12 完成 |
+| `libs/PBModulation`、`libs/PBInnerFec`、`libs/PBInterleave`、`libs/PBDemodD3D11` | Unified CPU 视觉参考、QC-LDPC、交织和 D3D11 Compute 解调 |
 | `libs/PBPresentTiming`、`libs/PBRenderD3D` | 有界 DXGI observation 计时与独立原生 D3D11 数据窗口；不依赖 Qt |
 | `libs/PBScreenRegion`、`libs/PBScreenCaptureWgc`、`libs/PBScreenCaptureDxgi`、`libs/PBCaptureNormalize` | 物理像素选区、WGC/DXGI、CaptureEpoch 与 GPU 退休保护的 ROI texture ring；不依赖 Qt |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
@@ -31,7 +31,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 ## 当前开发状态
 
-### 已建立的基础（`1445f9b`）
+### 已建立的基础（历史起点 `1445f9b`）
 
 - Protocol 1.0 Descriptor Schema 1：显式 little-endian、schema/header/total length、内层 CRC、Session Visual Profile、UTF-8 basename、Segment/Manifest 绑定；
 - 旧 37-byte provisional SessionDescriptor 保留为确定拒绝 fixture，返回 `UnsupportedDescriptorSchema`；
@@ -43,14 +43,12 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 该基础在提交前只执行了 `PBProtocolTests`、`PBStorageTests`、`PBReceiverTests`、`PBApplicationTests` 的一次定向 Release 检查（4/4 PASS）。它不是 full CTest、ASan、Qt/native、20 GiB 或远程链路证据。
 
-### 尚未完成
+### 当前仍未关闭
 
-- `PB-Unified-LC4-V1` layout 8、17/4/10 Base/Fine/Chroma codewords、mixed Control/Transport slots；
-- Unified CPU oracle、D3D11 accepted-byte parity 与 16 KiB/unique-frame 硬门槛；
-- 0.75x..2.0x resizable/letterboxed Data Window 与低于 0.75x 暂停；
-- WGC 默认、明确失败后 DXGI fallback 的统一状态机；
-- Encoder/Decoder 最终简化 Qt 页面和 >4 GiB 一次性确认；
-- 256 MiB/20 GiB、进程终止注入、完整 Release、DISPLAY2 native 与真实远程 Gate。
+- `PB-Unified-SC6-V2` layout 9 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
+- 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
+- G21 真实远控 1 MiB/64 MiB、外部摘要、Base Luma 独立恢复和 `>=16 KiB/unique logical frame` 硬门尚未完成；
+- G22 独立发布包、SBOM、用户文档和发布候选尚未开始；项目自身 LICENSE 与仓库可见性仍需维护者决定。
 
 完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明仍保留在 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)，但不得作为当前正式 Descriptor 规范引用。
 

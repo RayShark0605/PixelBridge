@@ -2,14 +2,14 @@
 
 ## 1. 当前状态与前置
 
-**2026-09-05：PARTIAL / 两次真实远程 smoke 均未发布；用户随后提供的 Encoder 报告已核实配置 15 Hz、实际平均约 15.0023 Hz。** 该报告不能与此前两次接收完整关联。用户原先批准同一远程源文件的 5 Hz 对照，但随后明确说明远程原安装目录及其中的 source 已删除；该受控同源条件不再可执行。现已改为全新、自包含的远程 Encoder 完整包，使用新的 1 MiB CSPRNG source 做 5 Hz 定向诊断，尚未运行广播或接收。初始准备和未运行边界保留在下文，第 6 节记录两次 live 结果，第 7 节记录已失去远程前置的附加包，第 8 节记录新完整包。
+**2026-09-05：PARTIAL / 三次 LC4 真实远程 smoke 均未发布；SC6 抗失真替代方案已完成离线闭环，尚待新的真实远程复验。** 前两次 15 Hz 与一次严格时段包含的 5 Hz 接收都没有绑定 Session。5 Hz 证明仅降频不能修复物理符号失真；用户随后提供真实失真截图、libcimbar 参考截图和 `D:\libcimbar` 源码，并明确允许修改视觉/协议合同且不要求兼容。当前唯一产品 Profile 已替换为 `PB-Unified-SC6-V2`/layout 9，最强合成远控链三次恢复 1 MiB 并超过 16 KiB 硬门；这是 headless synthetic WARP，不是 live。初始准备及失败保留在第 2–8 节，第 9 节记录失真诊断、源码参考、实现和离线证据。
 
 - 前置 G20：`e94da7f1d68fd3b410c180ac71201716c11bb9d7`，在途背压修复与本地功能收口已提交。原证据见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 16 节。
 - G20 的 2.0x 是用户豁免、未验证；letterbox 的 15,420.2353 B/unique 不是性能通过。G21 的 16 KiB 硬门仍然有效。
 - 用户确认两端由本项目提供：Encoder 由用户放到远程机、启动和摆放；Decoder 由本机控制，只捕获本机右屏。远程连接已经可用、具体类型未知。不自动连接远程、不操作用户输入。
 - 用户回报远程 `00_Check.bat`：`PASS: Encoder loads; commit e94da7f1d68fd3b410c180ac71201716c11bb9d7`，`Script exit: 0`；未生成 source、未启动窗口或广播。这是**用户回报的远程加载证据**，不是已观察到的像素链。
 - 用户随后明确同意：接收入口仅在专用测试构建启用，内部使用完整生产 `DecoderRuntime` 和 Auto 捕获；外层保护右屏，不扩展产品公共 CLI/Replay/monitor 配置。
-- G21 的 1 MiB、64 MiB、chroma/Base Luma、外部摘要与远程性能门均未关闭。1 MiB 已有两次失败 live 记录，不能按准备检查通过收口。G22 未开始。
+- G21 的新 SC6 真实 1 MiB、64 MiB、chroma/Base Luma、外部摘要与远程性能门均未关闭。旧 LC4 的 1 MiB 已有三次失败 live 记录，不能按离线修复通过收口。G22 未开始。
 
 ## 2. 已交付的远程 Encoder 不变
 
@@ -230,3 +230,104 @@ ZIP 根目录直接包含 `Fresh5Hz_00_Check.bat` 和 `Fresh5Hz_01_Start_1MiB.ba
 5. 收到停止指令后正常停止远程 Encoder，只提供新 run 的 `source-manifest.json` 与 `encoder-report.json`，不提供 `.bin`。
 
 fresh-source 诊断可以观察 5 Hz 下的画面及接收行为，但失去严格 same-source 差分能力。它仍不能替代 G21 默认 15 Hz、64 MiB、Base-only/chroma、外部发布摘要或 16 KiB 硬门；G21 继续 PARTIAL，G22 未开始。
+
+## 9. 远控失真根因与 SC6 替代方案
+
+### 9.1 5 Hz live 排除了“只需降频”
+
+用户在全新完整包检查通过后启动 5 Hz 画面，本机以冻结 `83bffb3` receiver 对整块右屏执行 180 秒接收。用户指定的两个 sender JSON 在事后原样封存，sender 区间完整包含 receiver 区间：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Sender configured / observed | 5 Hz / 5.0014566 Hz |
+| Sender submitted frames / duration | 1,273 / 254.617 s |
+| Receiver WGC duration | 180.528 s |
+| Capture arrived / copied / delivered | 5,890 / 198 / 198 |
+| Bootstrap accepted / rejected | 198 / 0 |
+| Capture admission drops | 197 |
+| Post-GPU/FEC CPU 平均 | 836.25 ms / accepted Bootstrap |
+| Accepted Transport / Session / publish | 0 / 未绑定 / 否 |
+
+receiver 正常期限退出 1，没有 watchdog 强杀、输出文件或错误发布。严格配对审计位于 `build-unified-release/g21-remote-smoke-5hz-fresh-1/paired-run-audit.json`。该运行把“原 sender 实际远高于设置”排除掉：15 Hz 报告约 15.0023 Hz，5 Hz 报告约 5.0015 Hz，二者都符合配置；降低到 5 Hz 仍无法让 LC4 建立 Session，因此 cadence 不是充分修复。
+
+### 9.2 真实截图的可证事实
+
+用户提供的四张 2560×1440 LC4 运行截图原样封存于忽略目录 `build-unified-release/g21-user-distortion-samples-1/`。四角 locator、Bootstrap 条带和较大的 freshness patches 仍可辨认，但大面积连续 4×4 Data 微纹理被远控链变成方向相关、相邻相关且随帧变化的灰色碎片；这与“Bootstrap 198/0 而 Transport 0”的 live 计数一致。截图本身不是同一 WGC frame 的 sender truth，不能用于统计 false acceptance 或反推原始 payload。
+
+用户提供的四张 libcimbar 网页端参考截图封存于 `build-unified-release/g21-libcimbar-reference-screenshots-1/`。它们显示数据单元之间存在稳定黑色间隔、符号轮廓与高饱和色差，视觉上没有 LC4 那种跨单元连续灰色微纹理；这里只把它用作设计方向，不把截图当成 PixelBridge 性能证据。
+
+### 9.3 对本地 libcimbar 源码的只读核对
+
+审计对象为用户提供的 `D:\libcimbar` 和 `D:\libcimbar\cimbar_js.html`；没有修改或构建该仓库。关键运行事实：
+
+- `src/lib/cimb_translator/GridConf.h` 的 `Conf5x5` 使用 `cell_size=5`、`cell_spacing_x/y=6`，即 5×5 symbol 外有 1 px 间隔；
+- `src/lib/cimb_translator/CimbReader.cpp` 在需要时对灰度 symbol grid 使用 3×3 十字锐化核，再做局部 adaptive threshold；
+- `src/lib/image_hash/average_hash.h` 与 `CimbDecoder.cpp` 从含边界的局部窗口生成 fuzzy average hashes，并按中心/邻位 drift 候选选择最小 Hamming distance；
+- `src/lib/cimbar_js/cimbar_recv_js.cpp` 的网页接收入口在 extractor 请求时启用上述 preprocess，再进入 fountain decode；
+- `GridConf.h` 同时给每帧块配置显式 ECC 和 fountain chunks。因此其鲁棒性来自物理间隔、形状判决、预处理、局部漂移和两层冗余的组合，而不是某个网页 CSS 或动画频率。
+
+审计摘要保存在 `build-unified-release/g21-libcimbar-source-audit-1/`。PixelBridge 没有引入 OpenCV、libcimbar wire 或源代码依赖；这里只采用通用信号处理结论，并继续使用既有 QC-LDPC/Wirehair/Receiver/Storage 安全链。
+
+### 9.4 当前唯一 Profile：`PB-Unified-SC6-V2`
+
+用户明确允许修改整个项目并声明不要求兼容后，LC4/layout 8 从产品 admission 移除，历史源码生成器和 Golden 仅保留为内部回归。SC6/layout 9 的冻结合同为：
+
+| 项目 | 当前值 |
+| --- | ---: |
+| VisualProfileId / layout | `0x5042554E49534332` / 9 |
+| Canvas / pixel format | 1920×1080 / BGRA8 SDR |
+| Data 单元 | 6×6；5×5 glyph + 第六行/列暗隔离带 |
+| Data tiles | 41,872 |
+| 每 tile | 4 shape/luma bits + 2 chroma bits |
+| Base / Fine / Chroma codewords | 9 / 1 / 5 |
+| 全帧 codewords / payload | 15 / 19,710 B |
+| 最大 Control / 最小 Transport slots | 8 / 7 |
+| 当前 mapping digest | `8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc` |
+| 可解码尺度 | 1.0x..2.0x；低于 1.0x neutral matte pause |
+
+16 个 5×5 glyph 为互补对，前景数 8..17、pairwise Hamming distance `>=9` 且无孤立同值像素。Base/Fine/Chroma 使用不同置换且 codeword 不跨 lane。独立 point-sampling 夹具证明 0.75x 的 SC6 采样点会跨过物理单元边界；因此最小尺度改为 1.0x，而不是扩大误差容忍、让错误像素进入 FEC。右屏 2560×1440 的 4/3 等比呈现是 1.3333x，不受下限变化影响。
+
+CPU 与 HLSL 在 shape luma 模板打分前应用同一个十字反卷积：`clamp(5*center-left-right-top-bottom, 0, 255)`。核系数和为 1，平坦 calibration levels 不变；它只抵消远控低通，chroma 判决仍使用未锐化 RGB，避免放大色噪声。算法及阈值没有 provider 名称、品牌或模式分支。
+
+QC-LDPC layered min-sum 的 check-node 更新原来为每个目标 edge 重扫本行其他 edges，严重帧约 241..243 ms。当前实现先为整行计算 sign parity、第一/第二绝对最小值及其唯一索引，再为每条 edge 排除自身，数学结果相同而复杂度由 O(degree²) 降为 O(degree)。Inner-FEC 全部旧/新断言通过；严重场景稳定态约 50..64 ms，三种 GPU backend 的关键失真帧约 29..31 ms。AMD/NVIDIA 首个 dispatch 分别出现约 631/408 ms 冷启动尖峰，故仍保留单在途与 250 ms fail-closed admission，不声称所有帧均实时通过，也没有拆分 FEC owner。
+
+### 9.5 最小验证和完整文件离线证据
+
+本轮遵守 G21 定向预算，没有运行 full CTest、ASan、真实 UI/屏幕或 64 MiB。核心命令：
+
+```powershell
+<python> tests\PBModulation\generate_unified_sc6_mapping_golden.py --check
+<python> tests\PBModulation\generate_unified_sc6_cpu_golden.py --check
+cmake --build build-presentation-release --config Release --target PBUnifiedTransformCorpusTests PBDemodD3D11Tests PBDemodShaderBytecodeTests PBInnerFecTests --parallel 4
+.\build-presentation-release\tests\PBModulation\Release\PBUnifiedTransformCorpusTests.exe --rng-seed 21092026
+.\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe '[.unified-g12]' --rng-seed 12122026
+.\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe '[.unified-g21-offline]' --rng-seed 21092026
+.\build-presentation-release\tests\PBDemodD3D11\Release\PBDemodShaderBytecodeTests.exe
+.\build-presentation-release\tests\PBInnerFec\Release\PBInnerFecTests.exe
+```
+
+定向结果：SC6 transform corpus 1 case / 5,104,511 assertions；WARP+AMD+NVIDIA parity 21 scenarios / 16,729 assertions；shader bytecode 61 assertions；Inner FEC 37 cases / 47,202 assertions；全部通过，false accepted/truth mismatch/conflict output 为 0。Profile、mapping 和 CPU oracle 分别为 8 cases / 823、3 / 19,683,249、14 / 493,327 assertions；RenderD3D 为 20 cases / 376，WARP offscreen 为 1 / 14；scheduler 5 / 186,681，G17 telemetry 6 / 4,202，G15/G16/G17 application 分别为 11 / 505、5 / 212、6 / 272；均通过。
+
+新增隐藏 G21 Gate 使用真实 1 MiB OS-CSPRNG RAW、正式 Session/Manifest/Segment Control、Wirehair V2、GPU WARP 解调、ReceiverIngress、PBStorage、whole-file BLAKE3、安全发布和 final reopen。失真链固定为 `2560×1440 bilinear + centered 4:2:0 phase(1,1) + one box blur + 5-bit BGR quantization`。五次独立 source/run 均在 54 个唯一逻辑帧后发布逐字节正确文件：
+
+```text
+1,048,576 / 54 = 19,418.074074 B/unique logical frame
+hard 16 KiB: PASS
+engineering 32 KiB: MISS
+false accepted / truth mismatch / conflict output: 0 / 0 / 0
+whole digest / safe publish / final reopen: true / true / true
+```
+
+五次分别为 12,725、12,715、12,735、12,737、12,735 assertions，报告位于 `build-unified-release/g21-sc6-offline-distortion-1/run-{1,2,3,4,5}.jsonl`；每份都明确写入 `authority="headless synthetic WARP; not live remote capture"`。最强单帧在锐化前只接受 8/15（Base/Fine/Chroma hard errors 15/3/0），当前 CPU 与三个 GPU backend 均接受 15/15、hard errors 0/0/0。
+
+### 9.6 当前退出边界
+
+该方案已经用独立 Golden、CPU/GPU parity、严重失真和五次完整文件发布证明“值得进入 live”，但 G21 仍不能关闭。尚未执行：
+
+1. 用提交后同身份的完整 SC6 Encoder 包重新跑真实远程 1 MiB；
+2. 真实 64 MiB RAW；
+3. live 外部 SHA-256/BLAKE3、错误文件数与正式 Session identity 核对；
+4. live Base Luma 独立恢复或同一实际 capture 的 neutralized 派生；
+5. live `>=16 KiB/unique logical frame`、稳定态 250 ms admission 和 cold-start 丢帧后的收敛证明。
+
+在用户恢复可配合前不启动屏幕/capture、不操作输入。提交后可生成自包含的新远端 Encoder ZIP 和本机 receiver worker，但它们的加载检查仍不是 live 成功。下一目标仍是 G21，不进入 G22。

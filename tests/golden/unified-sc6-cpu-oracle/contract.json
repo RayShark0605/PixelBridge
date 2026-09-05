@@ -1,0 +1,73 @@
+{
+  "artifact": "PB-Unified-SC6-V2 CPU oracle Golden",
+  "canvas": {
+    "height": 1080,
+    "pixelFormat": "BGRA8_UNORM_SDR",
+    "width": 1920
+  },
+  "codewords": {
+    "bytesEach": 2025,
+    "count": 15,
+    "informationBytesEach": 1350,
+    "innerFecProfile": "DVB-S2-Short-N16200-K10800"
+  },
+  "data": {
+    "glyphPixels": 5,
+    "highLuma": 160,
+    "lowLuma": 8,
+    "neutralLuma": 128,
+    "separatorPixels": 1,
+    "tilePixels": 6,
+    "tiles": 41872
+  },
+  "freshnessPartition": {
+    "columnBoundaries": [
+      560,
+      1360
+    ],
+    "rowBoundaries": [
+      382,
+      698
+    ]
+  },
+  "independentRebuild": "tests/PBModulation/generate_unified_sc6_cpu_golden.py --check",
+  "pilots": {
+    "chromaRows": 32,
+    "lumaLevels": [
+      8,
+      64,
+      160,
+      232
+    ],
+    "lumaRows": 24,
+    "neutralRows": 8
+  },
+  "rasterBlake3": {
+    "base-neutralized": "fcecadc8a7cc3a3942b8480c0b8d421757181ab63ffc8131ac345ef743fff159",
+    "chroma-neutralized": "2e15ff79eb989624542fa208c9bbc3f7a18d9de25fda0472a8816b40a4f75ef5",
+    "clean": "68051c662cb2c80dd104970656fc9ddd897220e7f60e78dd67a6173b488f92e3",
+    "fine-neutralized": "dbf334ba164f58a973cfed59efb2ddc4a4c932058792d56bb3d9473223110a34",
+    "localized-stale": "6ee3cdf232b2db40fe06e7c114fb3a08ec3909d1e3e1fa1546e5d6f1b54af1ad",
+    "wrong-sequence": "e03e31cefa327f579a95c111cb4a625a242ace5341cd2231040d5797dce96ce3"
+  },
+  "slotPlan": {
+    "slot0": "Control/SessionDescriptor",
+    "slots1To14": "Transport"
+  },
+  "variantTransforms": {
+    "base-neutralized": "replace top 128x64 phase checker by neutral 128",
+    "chroma-neutralized": "replace every BGR triple by rounded BT.709 luma",
+    "clean": "sequence41 canonical raster",
+    "fine-neutralized": "replace bottom 128x64 phase checker by neutral 128",
+    "localized-stale": "copy sequence40 center timing patch and freshness-region-4 data tiles",
+    "wrong-sequence": "copy every sequence40 data rectangle under sequence41 Bootstrap and pilots"
+  },
+  "variants": [
+    "clean",
+    "chroma-neutralized",
+    "base-neutralized",
+    "fine-neutralized",
+    "localized-stale",
+    "wrong-sequence"
+  ]
+}

@@ -14,10 +14,10 @@
 namespace pbmodulation
 {
 
-inline constexpr std::uint8_t kUnifiedDataLowLuma = 80;
-inline constexpr std::uint8_t kUnifiedDataHighLuma = 176;
+inline constexpr std::uint8_t kUnifiedDataLowLuma = 8;
+inline constexpr std::uint8_t kUnifiedDataHighLuma = 160;
 inline constexpr std::uint8_t kUnifiedNeutralLuma = 128;
-inline constexpr std::array<std::uint8_t, 4> kUnifiedLumaPilotLevels{32, 80, 176, 224};
+inline constexpr std::array<std::uint8_t, 4> kUnifiedLumaPilotLevels{8, 64, 160, 232};
 inline constexpr std::uint32_t kUnifiedCodewordBytes = kUnifiedVisualProfile.innerCodewordBits / 8;
 inline constexpr std::uint32_t kUnifiedInformationBytes = kUnifiedVisualProfile.innerInformationBits / 8;
 inline constexpr std::uint32_t kUnifiedCodewordCount = static_cast<std::uint32_t>(kUnifiedFrameCapacity.capacity.codewordCount);
@@ -25,14 +25,18 @@ inline constexpr std::size_t kUnifiedCodedFrameBytes = static_cast<std::size_t>(
 inline constexpr std::size_t kUnifiedSoftMetricCount = static_cast<std::size_t>(kUnifiedCodewordCount) * kUnifiedVisualProfile.innerCodewordBits;
 inline constexpr std::size_t kUnifiedFrameBgraBytes = static_cast<std::size_t>(kUnifiedVisualProfile.canvasWidth) *
     kUnifiedVisualProfile.canvasHeight * 4;
-inline constexpr std::uint32_t kUnifiedDataRegionCount = 10;
+inline constexpr std::uint32_t kUnifiedDataRegionCount = 12;
 inline constexpr std::uint32_t kUnifiedFreshnessRegionCount = 9;
+inline constexpr std::uint32_t kUnifiedDataGlyphWidth = 5;
+inline constexpr std::uint32_t kUnifiedDataGlyphCells = kUnifiedDataGlyphWidth * kUnifiedDataGlyphWidth;
+inline constexpr std::uint32_t kUnifiedDataTileCells = 6 * 6;
+inline constexpr std::uint32_t kUnifiedPhasePilotTilesPerRegion = (128 / 6) * (64 / 6);
 
 // Calibration regions use this exact vertical micro-layout. The first 24
 // rows are four 32-pixel-wide grayscale cells in kUnifiedLumaPilotLevels
 // order, the next eight rows are neutral gray, and the final 32 rows are the
 // four active chroma labels in numeric label order. Phase checker regions are
-// complete 4x4 tiles; their labels are a deterministic function of tile index
+// complete 6x6 separated tiles; their labels are a deterministic function of tile index
 // and FrameSequence as implemented by GetUnifiedPhasePilotLabel.
 inline constexpr std::uint32_t kUnifiedCalibrationLumaRows = 24;
 inline constexpr std::uint32_t kUnifiedCalibrationNeutralRows = 8;
@@ -50,10 +54,9 @@ struct UnifiedDataTile
     bool operator==(const UnifiedDataTile&) const = default;
 };
 
-// Tile ordinal is the G07-frozen historical 4x4 physical order: full-width
-// bands are row-major; rows intersecting timing patches enumerate their left
-// and right data spans on that same row before advancing vertically. The ten
-// manifest rectangles are metadata regions and never redefine this ordering.
+// Tile ordinal is the layout-9 manifest Data-region order followed by row-major
+// order within each region. Regions, not a bounding-box fill convention, own
+// the physical carrier sites.
 [[nodiscard]] UnifiedDataTile GetUnifiedDataTile(std::uint32_t tileOrdinal) noexcept;
 [[nodiscard]] std::uint8_t GetUnifiedPhasePilotLabel(bool finePilot, std::uint32_t tileOrdinal,
     std::uint64_t frameSequence) noexcept;
@@ -208,7 +211,7 @@ struct UnifiedFrameSlotInput
 
 // The spans borrow caller-owned storage for the duration of the call. Slot
 // entries may be in any order, but their assignment.codewordSlot values must
-// form the exact 0..30 set required by ValidateUnifiedMixedSlotPlan.
+// form the exact 0..14 set required by ValidateUnifiedMixedSlotPlan.
 struct UnifiedVisualFrameInput
 {
     std::span<const std::byte> bootstrapRecord;
@@ -228,7 +231,7 @@ struct UnifiedVisualFrameInput
 [[nodiscard]] ModulationStatus EncodeUnifiedVisualFrame(
     const UnifiedVisualFrameInput& input, std::span<std::byte> outBgra) noexcept;
 
-// Maps exactly 31 packed Robust codewords, in global slot order, into one
+// Maps exactly 15 packed Robust codewords, in global slot order, into one
 // complete 1920x1080 BGRA8 canonical raster. The renderer redraws every pixel.
 // Slot scheduling and Control repetition policy are deliberately outside this
 // modulation layer.
@@ -289,9 +292,10 @@ private:
 
 static_assert(kUnifiedCodewordBytes == 2025);
 static_assert(kUnifiedInformationBytes == 1350);
-static_assert(kUnifiedCodewordCount == 31);
-static_assert(kUnifiedCodedFrameBytes == 62775);
-static_assert(kUnifiedSoftMetricCount == 502200);
+static_assert(kUnifiedCodewordCount == 15);
+static_assert(kUnifiedCodedFrameBytes == 30375);
+static_assert(kUnifiedSoftMetricCount == 243000);
+static_assert(kUnifiedPhasePilotTilesPerRegion == 210);
 static_assert(kUnifiedCalibrationLumaRows + kUnifiedCalibrationNeutralRows + kUnifiedCalibrationChromaRows == 64);
 
 } // namespace pbmodulation

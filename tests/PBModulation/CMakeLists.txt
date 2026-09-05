@@ -75,13 +75,13 @@ set_tests_properties(PBUnifiedVisualProfileTests PROPERTIES LABELS "modulation;p
 PbAddUnitTest(PBUnifiedVisualMappingTests test_unified_visual_mapping.cpp)
 target_link_libraries(PBUnifiedVisualMappingTests PRIVATE PB::PBModulation PB::PBProtocol)
 target_compile_definitions(PBUnifiedVisualMappingTests PRIVATE
-    PB_UNIFIED_LC4_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-lc4")
+    PB_UNIFIED_SC6_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-sc6")
 set_tests_properties(PBUnifiedVisualMappingTests PROPERTIES LABELS "golden;mapping;modulation;unified" TIMEOUT 120)
 
 PbAddUnitTest(PBUnifiedVisualCpuTests test_unified_visual.cpp)
 target_link_libraries(PBUnifiedVisualCpuTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
 target_compile_definitions(PBUnifiedVisualCpuTests PRIVATE
-    PB_UNIFIED_CPU_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-lc4-cpu-oracle")
+    PB_UNIFIED_CPU_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-sc6-cpu-oracle")
 set_tests_properties(PBUnifiedVisualCpuTests PROPERTIES LABELS "control;fec;golden;modulation;transport;unified" TIMEOUT 240)
 
 PbAddUnitTest(PBUnifiedTransformCorpusTests test_unified_transform_corpus.cpp)
@@ -91,7 +91,7 @@ target_link_libraries(PBUnifiedTransformCorpusTests PRIVATE
     PB::PBProtocol
     PB::PBInnerFec)
 target_compile_definitions(PBUnifiedTransformCorpusTests PRIVATE
-    PB_UNIFIED_TRANSFORM_MANIFEST="${PROJECT_SOURCE_DIR}/tests/golden/unified-transform-corpus/manifest.json"
+    PB_UNIFIED_TRANSFORM_MANIFEST="${PROJECT_SOURCE_DIR}/tests/golden/unified-sc6-transform-corpus/manifest.json"
     PB_UNIFIED_TRANSFORM_REPORT="${CMAKE_CURRENT_BINARY_DIR}/g10-unified-transform-corpus.actual.json")
 set_tests_properties(PBUnifiedTransformCorpusTests PROPERTIES LABELS "corpus;modulation;remote-visual;transform;unified" TIMEOUT 600)
 

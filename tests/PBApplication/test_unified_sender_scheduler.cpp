@@ -173,6 +173,9 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
         REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(config, scheduler));
 
         const std::uint64_t logicalTickCount = simulationSeconds * logicalFramesPerSecond;
+        const std::uint64_t controlCadenceTicks =
+            logicalFramesPerSecond * pbapp::senderCarouselControlCadenceSeconds;
+        const std::uint32_t maximumControlSlots = pbmodulation::GetUnifiedMaximumControlSlots();
         std::uint64_t expectedEquationIndex = 0;
         std::uint64_t controlBearingFrames = 0;
         for (std::uint64_t logicalTickOrdinal = 0; logicalTickOrdinal < logicalTickCount; logicalTickOrdinal++)
@@ -194,17 +197,27 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
             REQUIRE(scheduler.PrepareFrame(tick.logicalTickOrdinal, frame));
             RequireExactSlotAccounting(frame);
             REQUIRE(frame.firstEquationIndex == expectedEquationIndex);
-            if (logicalTickOrdinal % (logicalFramesPerSecond * pbapp::senderCarouselControlCadenceSeconds) == 0)
+            const std::uint64_t cadenceOffset = logicalTickOrdinal % controlCadenceTicks;
+            if (cadenceOffset == 0)
             {
-                REQUIRE(frame.controlSlotCount == 12);
-                REQUIRE(frame.transportSlotCount == 19);
+                REQUIRE(frame.controlSlotCount == maximumControlSlots);
+                REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - maximumControlSlots);
                 for (std::uint32_t slot = 0; slot < 4; slot++)
                 {
                     REQUIRE(frame.slots[slot].assignment.controlPriority ==
                         pbmodulation::UnifiedControlPriority::SessionDescriptor);
                     REQUIRE(frame.slots[slot + 4].assignment.controlPriority ==
                         pbmodulation::UnifiedControlPriority::FinalManifest);
-                    REQUIRE(frame.slots[slot + 8].assignment.controlPriority ==
+                }
+                controlBearingFrames++;
+            }
+            else if (cadenceOffset == 1)
+            {
+                REQUIRE(frame.controlSlotCount == 4);
+                REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 4);
+                for (std::uint32_t slot = 0; slot < 4; slot++)
+                {
+                    REQUIRE(frame.slots[slot].assignment.controlPriority ==
                         pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
                 }
                 controlBearingFrames++;
@@ -255,7 +268,9 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
     pbapp::SenderUnifiedScheduledFrame firstFrame;
     REQUIRE(scheduler.PrepareFrame(tick.logicalTickOrdinal, firstFrame));
     REQUIRE(firstFrame.firstEquationIndex == 0);
-    REQUIRE(firstFrame.scheduledEquationCount == 19);
+    REQUIRE(firstFrame.controlSlotCount == pbmodulation::GetUnifiedMaximumControlSlots());
+    REQUIRE(firstFrame.scheduledEquationCount ==
+        pbapp::senderUnifiedCodewordSlotCount - pbmodulation::GetUnifiedMaximumControlSlots());
     REQUIRE(scheduler.CommitPreparedFrame());
     REQUIRE(clock.Commit(startNanoseconds));
 
@@ -264,9 +279,10 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
     REQUIRE(tick.droppedTickCount == 299);
     pbapp::SenderUnifiedScheduledFrame afterStall;
     REQUIRE(scheduler.PrepareFrame(tick.logicalTickOrdinal, afterStall));
-    REQUIRE(afterStall.controlSlotCount == 0);
-    REQUIRE(afterStall.firstEquationIndex == 19);
-    REQUIRE(afterStall.scheduledEquationCount == 31);
+    REQUIRE(afterStall.controlSlotCount == 4);
+    REQUIRE(afterStall.firstEquationIndex ==
+        pbapp::senderUnifiedCodewordSlotCount - pbmodulation::GetUnifiedMaximumControlSlots());
+    REQUIRE(afterStall.scheduledEquationCount == pbapp::senderUnifiedCodewordSlotCount - 4);
     REQUIRE(scheduler.CommitPreparedFrame());
     REQUIRE(clock.Commit(startNanoseconds + 5 * pbapp::senderLogicalFrameNanosecondsPerSecond));
     REQUIRE(clock.GetSnapshot().droppedTickCount == 299);
@@ -353,13 +369,13 @@ TEST_CASE("Unified mixed scheduler converges independent Segment rounds without 
         }
         const pbapp::SenderUnifiedCarouselSnapshot snapshot = scheduler.GetSnapshot();
         REQUIRE(snapshot.complete);
-        REQUIRE(snapshot.committedFrameCount == 2);
+        REQUIRE(snapshot.committedFrameCount == 3);
         REQUIRE(snapshot.controlBurstCount == 1);
         REQUIRE(snapshot.controlSlotCount == 12);
-        REQUIRE(snapshot.transportSlotCount == 50);
+        REQUIRE(snapshot.transportSlotCount == 33);
         REQUIRE(snapshot.scheduledEquationCount == 33);
         REQUIRE(snapshot.committedEquationCount == 33);
-        REQUIRE(snapshot.paddingDuplicateSlotCount == 17);
+        REQUIRE(snapshot.paddingDuplicateSlotCount == 0);
         REQUIRE(snapshot.repairEquationCount == 0);
         REQUIRE(expectedEquationIndex == 33);
     }
@@ -381,6 +397,12 @@ TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Con
 
     REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
         {1, pbapp::senderUnifiedMaximumControlRepetitions, 1, false}, scheduler));
+    const std::uint64_t controlItemsPerBurst =
+        3ULL * pbapp::senderUnifiedMaximumControlRepetitions;
+    const std::uint64_t expectedControlFrames =
+        controlItemsPerBurst / pbmodulation::GetUnifiedMaximumControlSlots();
+    const std::uint64_t transportSlotsPerControlFrame =
+        pbapp::senderUnifiedCodewordSlotCount - pbmodulation::GetUnifiedMaximumControlSlots();
     std::uint64_t logicalTickOrdinal = 0;
     std::uint64_t scheduledEquationSlots = 0;
     while (!scheduler.IsComplete())
@@ -389,18 +411,19 @@ TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Con
         REQUIRE(scheduler.PrepareFrame(logicalTickOrdinal, frame));
         RequireExactSlotAccounting(frame);
         REQUIRE(frame.controlSlotCount == pbmodulation::GetUnifiedMaximumControlSlots());
-        REQUIRE(frame.transportSlotCount == 15);
+        REQUIRE(frame.transportSlotCount == transportSlotsPerControlFrame);
         REQUIRE(frame.scheduledEquationCount == static_cast<std::uint32_t>(logicalTickOrdinal == 0));
         scheduledEquationSlots += frame.scheduledEquationCount;
         REQUIRE(scheduler.CommitPreparedFrame());
         logicalTickOrdinal++;
     }
     const pbapp::SenderUnifiedCarouselSnapshot snapshot = scheduler.GetSnapshot();
-    REQUIRE(snapshot.committedFrameCount == 12);
-    REQUIRE(snapshot.controlSlotCount == 192);
-    REQUIRE(snapshot.transportSlotCount == 180);
+    REQUIRE(snapshot.committedFrameCount == expectedControlFrames);
+    REQUIRE(snapshot.controlSlotCount == controlItemsPerBurst);
+    REQUIRE(snapshot.transportSlotCount == expectedControlFrames * transportSlotsPerControlFrame);
     REQUIRE(snapshot.committedEquationCount == 1);
-    REQUIRE(snapshot.paddingDuplicateSlotCount == 179);
+    REQUIRE(snapshot.paddingDuplicateSlotCount ==
+        expectedControlFrames * transportSlotsPerControlFrame - 1);
     REQUIRE(scheduledEquationSlots == 1);
 
     pbapp::SenderUnifiedScheduledFrame completedFrame;
@@ -413,7 +436,8 @@ TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Con
     REQUIRE(scheduler.GetSnapshot().framePrepared);
     REQUIRE(scheduler.GetSnapshot().committedEquationCount == 0);
     REQUIRE(scheduler.CommitPreparedFrame());
-    REQUIRE(scheduler.GetSnapshot().committedEquationCount == 19);
+    REQUIRE(scheduler.GetSnapshot().committedEquationCount ==
+        pbapp::senderUnifiedCodewordSlotCount - pbmodulation::GetUnifiedMaximumControlSlots());
     const auto regressionStatus = scheduler.PrepareFrame(50, frame);
     REQUIRE_FALSE(regressionStatus);
     REQUIRE(regressionStatus.code == pbapp::SenderCarouselSchedulerError::LogicalTickRegression);
@@ -437,9 +461,9 @@ TEST_CASE("Zero-byte Unified Session recovers Session and Manifest from one mixe
     REQUIRE(scheduler.PrepareFrame(0, frame));
     RequireExactSlotAccounting(frame);
     REQUIRE(frame.controlSlotCount == 8);
-    REQUIRE(frame.transportSlotCount == 23);
+    REQUIRE(frame.transportSlotCount == 7);
     REQUIRE(frame.scheduledEquationCount == 0);
-    REQUIRE(frame.inactiveTransportSlotCount == 23);
+    REQUIRE(frame.inactiveTransportSlotCount == 7);
 
     const auto bootstrap = MakeBootstrap(controls.sessionTag, 0);
     std::array<pbmodulation::UnifiedFrameSlotInput, pbapp::senderUnifiedCodewordSlotCount> inputs{};
@@ -518,5 +542,5 @@ TEST_CASE("Zero-byte Unified Session recovers Session and Manifest from one mixe
     const pbapp::SenderUnifiedCarouselSnapshot completed = scheduler.GetSnapshot();
     REQUIRE(completed.committedFrameCount == 1);
     REQUIRE(completed.committedEquationCount == 0);
-    REQUIRE(completed.inactiveTransportSlotCount == 23);
+    REQUIRE(completed.inactiveTransportSlotCount == 7);
 }

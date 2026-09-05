@@ -22,9 +22,9 @@ namespace
 
 using namespace pbmodulation;
 
-[[nodiscard]] constexpr std::array<UnifiedSlotAssignment, 31> MakeTransportSlotPlan() noexcept
+[[nodiscard]] constexpr std::array<UnifiedSlotAssignment, 15> MakeTransportSlotPlan() noexcept
 {
-    std::array<UnifiedSlotAssignment, 31> assignments{};
+    std::array<UnifiedSlotAssignment, 15> assignments{};
     for (std::size_t slot = 0; slot < assignments.size(); slot++)
     {
         assignments[slot] = UnifiedSlotAssignment{
@@ -69,10 +69,10 @@ using namespace pbmodulation;
 
 } // namespace
 
-TEST_CASE("Unified LC4 manifest pins every product and geometry constant", "[pbmodulation][unified][profile]")
+TEST_CASE("Unified SC6 manifest pins every product and geometry constant", "[pbmodulation][unified][profile]")
 {
     using namespace pbmodulation;
-    constexpr std::array<UnifiedRegionContract, 31> expectedRegions{
+    constexpr std::array<UnifiedRegionContract, 33> expectedRegions{
         UnifiedRegionContract{UnifiedRegionKind::Locator, UnifiedPilotContent::None, UnifiedPixelRegion{16, 16, 64, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Locator, UnifiedPilotContent::None, UnifiedPixelRegion{1840, 16, 64, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Locator, UnifiedPilotContent::None, UnifiedPixelRegion{16, 1000, 64, 64}},
@@ -94,52 +94,54 @@ TEST_CASE("Unified LC4 manifest pins every product and geometry constant", "[pbm
         UnifiedRegionContract{UnifiedRegionKind::Pilot, UnifiedPilotContent::CalibrationReferences, UnifiedPixelRegion{1056, 1000, 128, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Pilot, UnifiedPilotContent::PhaseChecker, UnifiedPixelRegion{896, 16, 128, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Pilot, UnifiedPilotContent::PhaseChecker, UnifiedPixelRegion{896, 1000, 128, 64}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 96, 1728, 64}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 160, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 160, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 288, 1728, 188}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 476, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 476, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 604, 1728, 188}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 792, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 792, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 920, 1728, 64}}};
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 96, 1728, 60}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 160, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 160, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 288, 1728, 186}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 476, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 476, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 604, 1728, 186}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 792, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 792, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 920, 1728, 60}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{6, 96, 84, 888}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1830, 96, 84, 888}}};
     constexpr std::array<UnifiedCarrierContract, 2> expectedCarriers{
         UnifiedCarrierContract{UnifiedCarrier::Luma, 4},
         UnifiedCarrierContract{UnifiedCarrier::Chroma, 2}};
     constexpr std::array<UnifiedLaneContract, 3> expectedLanes{
-        UnifiedLaneContract{UnifiedLane::BaseLuma, UnifiedCarrier::Luma, 0, 17},
-        UnifiedLaneContract{UnifiedLane::FineLuma, UnifiedCarrier::Luma, 17, 4},
-        UnifiedLaneContract{UnifiedLane::Chroma, UnifiedCarrier::Chroma, 21, 10}};
-    constexpr UnifiedPresentationContract expectedPresentation{3, 4, 2, 1, 1, 15, 60,
+        UnifiedLaneContract{UnifiedLane::BaseLuma, UnifiedCarrier::Luma, 0, 9},
+        UnifiedLaneContract{UnifiedLane::FineLuma, UnifiedCarrier::Luma, 9, 1},
+        UnifiedLaneContract{UnifiedLane::Chroma, UnifiedCarrier::Chroma, 10, 5}};
+    constexpr UnifiedPresentationContract expectedPresentation{1, 1, 2, 1, 1, 15, 60,
         UnifiedViewportFilter::Point, UnifiedViewportFit::PreserveAspectRatio,
         UnifiedViewportPlacement::CenteredLetterbox, UnifiedUndersizeBehavior::NeutralMattePauseWithoutBootstrap};
 
-    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.name == std::string_view{"PB-Unified-LC4-V1"});
-    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualProfileId == 0x5042554E494C4331ULL);
-    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualLayoutVersion == 8);
+    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.name == std::string_view{"PB-Unified-SC6-V2"});
+    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualProfileId == 0x5042554E49534332ULL);
+    STATIC_REQUIRE(kUnifiedVisualProfile.productProfile.visualLayoutVersion == 9);
     STATIC_REQUIRE(kUnifiedVisualProfile.pixelFormat == UnifiedPixelFormat::Bgra8UnormSdr);
     STATIC_REQUIRE(kUnifiedVisualProfile.canvasWidth == 1920);
     STATIC_REQUIRE(kUnifiedVisualProfile.canvasHeight == 1080);
     STATIC_REQUIRE(kUnifiedVisualProfile.alphaCodeValue == 255);
-    STATIC_REQUIRE(kUnifiedVisualProfile.tileWidth == 4);
-    STATIC_REQUIRE(kUnifiedVisualProfile.tileHeight == 4);
-    STATIC_REQUIRE(kUnifiedVisualProfile.dataTileCount == 86688);
+    STATIC_REQUIRE(kUnifiedVisualProfile.tileWidth == 6);
+    STATIC_REQUIRE(kUnifiedVisualProfile.tileHeight == 6);
+    STATIC_REQUIRE(kUnifiedVisualProfile.dataTileCount == 41872);
     STATIC_REQUIRE(kUnifiedVisualProfile.innerFecProfileId == 0x36BC661265E826C3ULL);
     STATIC_REQUIRE(kUnifiedVisualProfile.innerCodewordBits == 16200);
     STATIC_REQUIRE(kUnifiedVisualProfile.innerInformationBits == 10800);
     STATIC_REQUIRE(kUnifiedVisualProfile.transportOverheadBytes == 36);
-    STATIC_REQUIRE(kUnifiedVisualProfile.dataGridBounds == UnifiedPixelRegion{96, 96, 1728, 888});
+    STATIC_REQUIRE(kUnifiedVisualProfile.dataGridBounds == UnifiedPixelRegion{6, 96, 1908, 888});
     STATIC_REQUIRE(kUnifiedVisualProfile.regions == expectedRegions);
     STATIC_REQUIRE(kUnifiedVisualProfile.carriers == expectedCarriers);
     STATIC_REQUIRE(kUnifiedVisualProfile.lanes == expectedLanes);
     STATIC_REQUIRE(kUnifiedVisualProfile.mixedSlots ==
-        UnifiedMixedSlotContract{UnifiedControlSlotRegion{UnifiedLane::BaseLuma, 0, 17}, 1});
+        UnifiedMixedSlotContract{UnifiedControlSlotRegion{UnifiedLane::BaseLuma, 0, 9}, 1});
     STATIC_REQUIRE(kUnifiedVisualProfile.presentation == expectedPresentation);
     STATIC_REQUIRE(kUnifiedVisualProfileCatalog.size() == 1);
     STATIC_REQUIRE(kUnifiedVisualProfileCatalog.front() == &kUnifiedVisualProfile);
-    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E494C4331ULL, 8) == &kUnifiedVisualProfile);
-    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E494C4331ULL, 7) == nullptr);
+    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E49534332ULL, 9) == &kUnifiedVisualProfile);
+    STATIC_REQUIRE(FindUnifiedVisualProfile(0x5042554E49534332ULL, 8) == nullptr);
     STATIC_REQUIRE(FindUnifiedVisualProfile(kRemoteVisualLowFpsProfileId, kRemoteVisualLowFpsLayoutVersion) == nullptr);
     STATIC_REQUIRE(HasUnifiedPilotContent(UnifiedPilotContent::CalibrationReferences,
         UnifiedPilotContent::BlackWhiteMidGray));
@@ -155,44 +157,43 @@ TEST_CASE("Unified LC4 manifest pins every product and geometry constant", "[pbm
     REQUIRE(ValidateUnifiedVisualProfile());
 }
 
-TEST_CASE("Unified LC4 capacity is exact and codewords never cross lanes", "[pbmodulation][unified][capacity]")
+TEST_CASE("Unified SC6 capacity is exact and codewords never cross lanes", "[pbmodulation][unified][capacity]")
 {
     using namespace pbmodulation;
     STATIC_REQUIRE(kUnifiedFrameCapacity.valid);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.dataPixels == 1387008);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.dataTiles == 86688);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.rawLumaBits == 346752);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.rawChromaBits == 173376);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.rawVisualBits == 520128);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.codewordCount == 31);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.usedLumaBits == 340200);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.usedChromaBits == 162000);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.usedCodedBits == 502200);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.reservedLumaBits == 6552);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.reservedChromaBits == 11376);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.reservedVisualBits == 17928);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.codedBytes == 62775);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.informationBytes == 41850);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.transportOverheadBytes == 1116);
-    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.transportPayloadBytes == 40734);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.dataPixels == 1507392);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.dataTiles == 41872);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.rawLumaBits == 167488);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.rawChromaBits == 83744);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.rawVisualBits == 251232);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.codewordCount == 15);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.usedLumaBits == 162000);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.usedChromaBits == 81000);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.usedCodedBits == 243000);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.reservedLumaBits == 5488);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.reservedChromaBits == 2744);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.reservedVisualBits == 8232);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.codedBytes == 30375);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.informationBytes == 20250);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.transportOverheadBytes == 540);
+    STATIC_REQUIRE(kUnifiedFrameCapacity.capacity.transportPayloadBytes == 19710);
     STATIC_REQUIRE(kUnifiedVisualProfile.innerCodewordBits / 8 == 2025);
     STATIC_REQUIRE(kUnifiedVisualProfile.innerInformationBits / 8 == 1350);
     STATIC_REQUIRE(kUnifiedVisualProfile.innerInformationBits / 8 - kUnifiedVisualProfile.transportOverheadBytes == 1314);
 
     STATIC_REQUIRE(kUnifiedLaneCapacities[0] == UnifiedLaneCapacity{
-        true, UnifiedLane::BaseLuma, 0, 17, 275400, 34425, 22950, 22338});
+        true, UnifiedLane::BaseLuma, 0, 9, 145800, 18225, 12150, 11826});
     STATIC_REQUIRE(kUnifiedLaneCapacities[1] == UnifiedLaneCapacity{
-        true, UnifiedLane::FineLuma, 17, 4, 64800, 8100, 5400, 5256});
+        true, UnifiedLane::FineLuma, 9, 1, 16200, 2025, 1350, 1314});
     STATIC_REQUIRE(kUnifiedLaneCapacities[2] == UnifiedLaneCapacity{
-        true, UnifiedLane::Chroma, 21, 10, 162000, 20250, 13500, 13140});
-    STATIC_REQUIRE(GetUnifiedMaximumControlSlots() == 16);
+        true, UnifiedLane::Chroma, 10, 5, 81000, 10125, 6750, 6570});
+    STATIC_REQUIRE(GetUnifiedMaximumControlSlots() == 8);
     STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(0)->lane == UnifiedLane::BaseLuma);
-    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(16)->lane == UnifiedLane::BaseLuma);
-    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(17)->lane == UnifiedLane::FineLuma);
-    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(20)->lane == UnifiedLane::FineLuma);
-    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(21)->lane == UnifiedLane::Chroma);
-    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(30)->lane == UnifiedLane::Chroma);
-    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(31) == nullptr);
+    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(8)->lane == UnifiedLane::BaseLuma);
+    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(9)->lane == UnifiedLane::FineLuma);
+    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(10)->lane == UnifiedLane::Chroma);
+    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(14)->lane == UnifiedLane::Chroma);
+    STATIC_REQUIRE(FindUnifiedLaneForCodewordSlot(15) == nullptr);
 
     const pbinnerfec::InnerFecProfile* const robust =
         pbinnerfec::GetInnerFecProfile(pbinnerfec::kInnerFecProfileIdRobust);
@@ -238,7 +239,7 @@ TEST_CASE("Unified capacity calculation rejects overflow and impossible packing"
     CHECK_FALSE(CalculateUnifiedFrameCapacity(unknownLaneCarrier).valid);
 }
 
-TEST_CASE("Unified region catalog independently partitions the data grid", "[pbmodulation][unified][regions]")
+TEST_CASE("Unified region catalog separates data, timing and guard pixels", "[pbmodulation][unified][regions]")
 {
     using namespace pbmodulation;
     const UnifiedPixelRegion grid = kUnifiedVisualProfile.dataGridBounds;
@@ -293,28 +294,27 @@ TEST_CASE("Unified region catalog independently partitions the data grid", "[pbm
         }
     }
 
-    bool fullyOwned = true;
+    std::uint64_t guardPixels = 0;
     for (const std::uint8_t owner : ownership)
     {
-        if (owner != 1 && owner != 2)
+        if (owner == 0)
         {
-            fullyOwned = false;
-            break;
+            guardPixels++;
         }
     }
     REQUIRE_FALSE(overlappingOwnership);
-    REQUIRE(fullyOwned);
-    CHECK(dataPixels == 1387008);
+    CHECK(dataPixels == 1507392);
     CHECK(timingPixels == 147456);
-    CHECK(dataPixels + timingPixels == static_cast<std::uint64_t>(grid.width) * grid.height);
-    CHECK(dataPixels / (kUnifiedVisualProfile.tileWidth * kUnifiedVisualProfile.tileHeight) == 86688);
+    CHECK(guardPixels == 39456);
+    CHECK(dataPixels + timingPixels + guardPixels == static_cast<std::uint64_t>(grid.width) * grid.height);
+    CHECK(dataPixels / (kUnifiedVisualProfile.tileWidth * kUnifiedVisualProfile.tileHeight) == 41872);
 }
 
 TEST_CASE("Unified mixed slot plans retain Transport and reject cross-lane Control",
     "[pbmodulation][unified][mixed-slots]")
 {
     using namespace pbmodulation;
-    constexpr std::array<UnifiedSlotAssignment, 31> allTransport = MakeTransportSlotPlan();
+    constexpr std::array<UnifiedSlotAssignment, 15> allTransport = MakeTransportSlotPlan();
     STATIC_REQUIRE(ValidateUnifiedMixedSlotPlan(allTransport));
     STATIC_REQUIRE(static_cast<std::uint8_t>(UnifiedControlPriority::SessionDescriptor) <
         static_cast<std::uint8_t>(UnifiedControlPriority::FinalManifest));
@@ -328,7 +328,7 @@ TEST_CASE("Unified mixed slot plans retain Transport and reject cross-lane Contr
     REQUIRE(ValidateUnifiedMixedSlotPlan(mixed));
 
     auto allBaseControl = allTransport;
-    for (std::uint32_t slot = 0; slot < 17; slot++)
+    for (std::uint32_t slot = 0; slot < 9; slot++)
     {
         allBaseControl[slot] = UnifiedSlotAssignment{slot, UnifiedSlotKind::Control,
             UnifiedControlPriority::CurrentSegmentDescriptor};
@@ -336,11 +336,11 @@ TEST_CASE("Unified mixed slot plans retain Transport and reject cross-lane Contr
     REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(allBaseControl));
 
     auto fineControl = mixed;
-    fineControl[17] = UnifiedSlotAssignment{17, UnifiedSlotKind::Control, UnifiedControlPriority::SessionDescriptor};
+    fineControl[9] = UnifiedSlotAssignment{9, UnifiedSlotKind::Control, UnifiedControlPriority::SessionDescriptor};
     REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(fineControl));
 
     auto transportWithPriority = mixed;
-    transportWithPriority[30].controlPriority = UnifiedControlPriority::SessionDescriptor;
+    transportWithPriority[14].controlPriority = UnifiedControlPriority::SessionDescriptor;
     REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(transportWithPriority));
 
     auto controlWithoutPriority = mixed;
@@ -348,18 +348,18 @@ TEST_CASE("Unified mixed slot plans retain Transport and reject cross-lane Contr
     REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(controlWithoutPriority));
 
     auto duplicateSlot = mixed;
-    duplicateSlot[30].codewordSlot = 29;
+    duplicateSlot[14].codewordSlot = 13;
     REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(duplicateSlot));
     auto outOfRangeSlot = mixed;
-    outOfRangeSlot[30].codewordSlot = 31;
+    outOfRangeSlot[14].codewordSlot = 15;
     REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(outOfRangeSlot));
     auto unknownKind = mixed;
     unknownKind[0].kind = static_cast<UnifiedSlotKind>(0xFF);
     REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(unknownKind));
-    REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(std::span<const UnifiedSlotAssignment>(mixed).first(30)));
+    REQUIRE_FALSE(ValidateUnifiedMixedSlotPlan(std::span<const UnifiedSlotAssignment>(mixed).first(14)));
 }
 
-TEST_CASE("Unified viewport contract centers letterbox and pauses below 0.75x",
+TEST_CASE("Unified viewport contract centers letterbox and pauses below 1.0x",
     "[pbmodulation][unified][viewport]")
 {
     using namespace pbmodulation;
@@ -372,14 +372,14 @@ TEST_CASE("Unified viewport contract centers letterbox and pauses below 0.75x",
     constexpr UnifiedViewportGeometry horizontalLetterbox = ResolveUnifiedViewport(2560, 1080);
     STATIC_REQUIRE(horizontalLetterbox == UnifiedViewportGeometry{
         UnifiedViewportDisposition::Active, 320, 0, 1920, 1080, 1});
-    constexpr UnifiedViewportGeometry minimum = ResolveUnifiedViewport(1440, 810);
+    constexpr UnifiedViewportGeometry minimum = ResolveUnifiedViewport(1920, 1080);
     STATIC_REQUIRE(minimum == UnifiedViewportGeometry{
-        UnifiedViewportDisposition::Active, 0, 0, 1440, 810, 0.75});
+        UnifiedViewportDisposition::Active, 0, 0, 1920, 1080, 1});
     constexpr UnifiedViewportGeometry oversized = ResolveUnifiedViewport(4000, 2400);
     STATIC_REQUIRE(oversized == UnifiedViewportGeometry{
         UnifiedViewportDisposition::ActiveClampedToMaximumScale, 80, 120, 3840, 2160, 2});
-    STATIC_REQUIRE(ResolveUnifiedViewport(1439, 810).disposition == UnifiedViewportDisposition::PausedBelowMinimumScale);
-    STATIC_REQUIRE(ResolveUnifiedViewport(1440, 809).disposition == UnifiedViewportDisposition::PausedBelowMinimumScale);
+    STATIC_REQUIRE(ResolveUnifiedViewport(1919, 1080).disposition == UnifiedViewportDisposition::PausedBelowMinimumScale);
+    STATIC_REQUIRE(ResolveUnifiedViewport(1920, 1079).disposition == UnifiedViewportDisposition::PausedBelowMinimumScale);
     STATIC_REQUIRE(ResolveUnifiedViewport(0, 1080).disposition == UnifiedViewportDisposition::InvalidClientArea);
     STATIC_REQUIRE_FALSE(CanAdvanceUnifiedFrameSequence(UnifiedViewportDisposition::PausedBelowMinimumScale));
     STATIC_REQUIRE(CanAdvanceUnifiedFrameSequence(UnifiedViewportDisposition::Active));

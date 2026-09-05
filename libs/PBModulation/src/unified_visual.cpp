@@ -96,11 +96,6 @@ struct UnifiedCalibration
         firstAddress - secondAddress < second.size();
 }
 
-[[nodiscard]] std::uint8_t CodeValue(const std::uint8_t base, const std::int16_t offset) noexcept
-{
-    return static_cast<std::uint8_t>(static_cast<std::int32_t>(base) + offset);
-}
-
 [[nodiscard]] bool ReadBit(const std::span<const std::byte> bytes, const std::size_t bitIndex) noexcept
 {
     return ((std::to_integer<std::uint8_t>(bytes[bitIndex / 8]) >> (bitIndex % 8)) & 1U) != 0;
@@ -161,10 +156,7 @@ void RenderCalibrationPilots(const std::span<std::byte> pixels) noexcept
             {
                 const std::uint32_t label = column / (region.width / 4);
                 const UnifiedChromaState state = kUnifiedChromaStatesByLabel[label];
-                FillPixel(pixels, region.x + column, region.y + row,
-                    CodeValue(kUnifiedNeutralLuma, state.blueOffset),
-                    CodeValue(kUnifiedNeutralLuma, state.greenOffset),
-                    CodeValue(kUnifiedNeutralLuma, state.redOffset));
+                FillPixel(pixels, region.x + column, region.y + row, state.blue, state.green, state.red);
             }
         }
     }
@@ -189,13 +181,14 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
             {
                 const std::uint32_t tileOrdinal = tileRow * tilesPerRow + tileColumn;
                 const std::uint8_t label = GetUnifiedPhasePilotLabel(finePilot, tileOrdinal, frameSequence);
-                const std::uint16_t mask = kUnifiedSymbolMasksByLabel[label];
+                const std::uint32_t mask = kUnifiedSymbolMasksByLabel[label];
                 for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
                 {
                     for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
                     {
-                        const std::uint32_t chip = row * kUnifiedVisualProfile.tileWidth + column;
-                        const std::uint8_t level = ((mask >> chip) & 1U) != 0 ?
+                        const bool glyphCell = row < kUnifiedDataGlyphWidth && column < kUnifiedDataGlyphWidth;
+                        const std::uint32_t chip = row * kUnifiedDataGlyphWidth + column;
+                        const std::uint8_t level = glyphCell && ((mask >> chip) & 1U) != 0 ?
                             kUnifiedDataHighLuma : kUnifiedDataLowLuma;
                         FillPixel(pixels, region.x + tileColumn * kUnifiedVisualProfile.tileWidth + column,
                             region.y + tileRow * kUnifiedVisualProfile.tileHeight + row, level, level, level);
@@ -228,7 +221,7 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     }
     // A provider downscale has already integrated source support into each
     // captured pixel. Bilinear interpolation on that axis would apply a second
-    // low-pass filter and corrupt the frozen 4x4 chip decisions; select the
+    // low-pass filter and corrupt the frozen glyph decisions; select the
     // nearest captured coordinate while retaining continuous geometry on an
     // independently magnified axis.
     const bool horizontalDownscale = geometry.scaleX < 1;
@@ -292,11 +285,14 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
         constexpr double tieTolerance = 1.0 / 4096;
         return upperTie ? std::floor(source + tieTolerance) : std::ceil(source - tieTolerance) - 1;
     };
-    const double column = ProjectAxis(geometry.originX, geometry.scaleX, tileX + (chip & 3), ((model - 1) & 1) != 0) - tileX;
-    const double row = ProjectAxis(geometry.originY, geometry.scaleY, tileY + (chip >> 2), ((model - 1) & 2) != 0) - tileY;
+    const double column = ProjectAxis(geometry.originX, geometry.scaleX,
+        tileX + chip % kUnifiedDataGlyphWidth, ((model - 1) & 1) != 0) - tileX;
+    const double row = ProjectAxis(geometry.originY, geometry.scaleY,
+        tileY + chip / kUnifiedDataGlyphWidth, ((model - 1) & 2) != 0) - tileY;
     // Neighbouring tiles contain independent symbols: never invent their bits.
-    return column >= 0 && column < 4 && row >= 0 && row < 4 ?
-        static_cast<std::uint32_t>(row) * 4 + static_cast<std::uint32_t>(column) : 16;
+    return column >= 0 && column < kUnifiedDataGlyphWidth && row >= 0 && row < kUnifiedDataGlyphWidth ?
+        static_cast<std::uint32_t>(row) * kUnifiedDataGlyphWidth + static_cast<std::uint32_t>(column) :
+        kUnifiedDataGlyphCells;
 }
 
 [[nodiscard]] std::array<double, 2> Opponent(const Sample& sample) noexcept
@@ -311,12 +307,6 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     const double blue = left[0] - right[0];
     const double red = left[1] - right[1];
     return blue * blue + red * red;
-}
-
-[[nodiscard]] bool IsClipped(const Sample& sample) noexcept
-{
-    return sample.blue <= 0 || sample.blue >= 255 || sample.green <= 0 || sample.green >= 255 ||
-        sample.red <= 0 || sample.red >= 255;
 }
 
 [[nodiscard]] double GetUnifiedMinimumScale() noexcept
@@ -408,7 +398,6 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     std::array<std::array<double, 4>, 4> localLumaMeans{};
     std::array<std::array<std::array<double, 2>, 4>, 4> localChromaMeans{};
     std::size_t pilotIndex = 0;
-    bool clipped = false;
     bool samplesValid = true;
     for (const UnifiedRegionContract& contract : kUnifiedVisualProfile.regions)
     {
@@ -472,7 +461,6 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
                     chromaRedStatistics[label].Add(opponent[1]);
                     localChromaBlue[label].Add(opponent[0]);
                     localChromaRed[label].Add(opponent[1]);
-                    clipped = clipped || IsClipped(sample);
                 }
             }
         }
@@ -487,7 +475,7 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
 
     UnifiedCalibration calibration;
     calibration.lumaValid = pilotIndex == 4 && samplesValid;
-    calibration.chromaValid = pilotIndex == 4 && samplesValid && !clipped;
+    calibration.chromaValid = pilotIndex == 4 && samplesValid;
     for (std::size_t label = 0; label < 4; label++)
     {
         calibration.lumaLevels[label] = lumaStatistics[label].Mean();
@@ -532,22 +520,23 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
 {
     const std::uint32_t tilesPerRow = region.width / kUnifiedVisualProfile.tileWidth;
     const std::uint32_t tileRows = region.height / kUnifiedVisualProfile.tileHeight;
-    const double low = calibration.lumaLevels[1];
+    const double low = calibration.lumaLevels[0];
     const double high = calibration.lumaLevels[2];
     for (std::uint32_t tileRow = 0; tileRow < tileRows; tileRow++)
     {
         for (std::uint32_t tileColumn = 0; tileColumn < tilesPerRow; tileColumn++)
         {
             const std::uint32_t tileOrdinal = tileRow * tilesPerRow + tileColumn;
-            const std::uint32_t tileX = region.x + tileColumn * 4;
-            const std::uint32_t tileY = region.y + tileRow * 4;
-            std::array<double, 16> samples{};
-            std::array<std::uint32_t, 16> projected{};
-            for (std::uint32_t chip = 0; chip < 16; chip++)
+            const std::uint32_t tileX = region.x + tileColumn * kUnifiedVisualProfile.tileWidth;
+            const std::uint32_t tileY = region.y + tileRow * kUnifiedVisualProfile.tileHeight;
+            std::array<double, kUnifiedDataGlyphCells> samples{};
+            std::array<std::uint32_t, kUnifiedDataGlyphCells> projected{};
+            for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
             {
                 Sample sample;
                 projected[chip] = ProjectLumaChip(geometry, tileX, tileY, chip, model);
-                if (projected[chip] >= 16 || !ReadSample(view, geometry, tileX + (chip & 3), tileY + (chip >> 2), sample))
+                if (projected[chip] >= kUnifiedDataGlyphCells || !ReadSample(view, geometry,
+                        tileX + chip % kUnifiedDataGlyphWidth, tileY + chip / kUnifiedDataGlyphWidth, sample))
                 {
                     return false;
                 }
@@ -556,7 +545,7 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
             std::array<double, 16> distances{};
             for (std::size_t label = 0; label < distances.size(); label++)
             {
-                const std::uint16_t mask = kUnifiedSymbolMasksByLabel[label];
+                const std::uint32_t mask = kUnifiedSymbolMasksByLabel[label];
                 for (std::size_t chip = 0; chip < samples.size(); chip++)
                 {
                     const double expected = ((mask >> projected[chip]) & 1U) != 0 ? high : low;
@@ -580,7 +569,7 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     const UnifiedCalibration& calibration, const UnifiedVisualDecodePolicy& policy, std::uint32_t& selectedModel) noexcept
 {
     selectedModel = 0;
-    const double gap = calibration.lumaLevels[2] - calibration.lumaLevels[1];
+    const double gap = calibration.lumaLevels[2] - calibration.lumaLevels[0];
     std::array<double, 8> phaseDistances{};
     if (!(gap > 0) || !MeasurePhasePilot(view, geometry, region, finePilot, frameSequence, calibration, 0, phaseDistances))
     {
@@ -598,7 +587,9 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
             }
         }
         const double expectedDistance = phaseDistances[expectedPhase];
-        const double residual = expectedDistance / (static_cast<double>(region.width) * region.height * gap * gap);
+        const double sampledCells = static_cast<double>((region.width / kUnifiedVisualProfile.tileWidth) *
+            (region.height / kUnifiedVisualProfile.tileHeight) * kUnifiedDataGlyphCells);
+        const double residual = expectedDistance / (sampledCells * gap * gap);
         return expectedDistance < nearestOther && residual <= policy.maximumPhasePilotResidual;
     };
     if (Accepted())
@@ -753,7 +744,7 @@ void InitializeMetrics(const std::uint64_t frameSequence, const UnifiedErasureRe
 }
 
 void StoreMetric(const UnifiedLogicalCarrierBit logical, const UnifiedDataTile& tile,
-    const std::int16_t value, const bool clipped, const std::array<UnifiedFreshnessObservation,
+    const std::int16_t value, const bool samplingFailed, const std::array<UnifiedFreshnessObservation,
     kUnifiedFreshnessRegionCount>& freshness, const UnifiedVisualDecodePolicy& policy,
     const UnifiedBaseLumaObservation& base, const UnifiedFineLumaObservation& fine,
     const UnifiedChromaObservation& chroma, const std::span<UnifiedSoftMetric> metrics) noexcept
@@ -774,7 +765,7 @@ void StoreMetric(const UnifiedLogicalCarrierBit logical, const UnifiedDataTile& 
     {
         metric.erasureReason = UnifiedErasureReason::LocalStaleRegion;
     }
-    else if (clipped)
+    else if (samplingFailed)
     {
         metric.erasureReason = UnifiedErasureReason::LocalSamplingFailure;
     }
@@ -796,29 +787,51 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
     const UnifiedChromaObservation& chroma, const std::array<std::uint32_t, 2>& lumaModels,
     const std::span<UnifiedSoftMetric> metrics) noexcept
 {
-    const double low = calibration.lumaLevels[1];
+    const double low = calibration.lumaLevels[0];
     const double high = calibration.lumaLevels[2];
     const double lumaGap = high - low;
     const double lumaScale = calibration.lumaValid && lumaGap > 0 ? 2048 / (lumaGap * lumaGap) : 0;
     for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
     {
         const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
-        std::array<Sample, 16> samples{};
-        bool clipped = false;
+        std::array<Sample, kUnifiedDataGlyphCells> samples{};
+        std::array<double, kUnifiedDataGlyphCells> lumaSamples{};
         bool samplingFailed = false;
-        for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
+        for (std::uint32_t row = 0; row < kUnifiedDataGlyphWidth; row++)
         {
-            for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
+            for (std::uint32_t column = 0; column < kUnifiedDataGlyphWidth; column++)
             {
-                Sample& sample = samples[row * kUnifiedVisualProfile.tileWidth + column];
-                if (!ReadSample(view, geometry, tile.bounds.x + column, tile.bounds.y + row, sample))
+                Sample& sample = samples[row * kUnifiedDataGlyphWidth + column];
+                const double logicalX = static_cast<double>(tile.bounds.x + column);
+                const double logicalY = static_cast<double>(tile.bounds.y + row);
+                if (!ReadSample(view, geometry, logicalX, logicalY, sample))
                 {
                     samplingFailed = true;
-                    continue;
                 }
-                clipped = clipped || IsClipped(sample);
+                Sample left;
+                Sample right;
+                Sample top;
+                Sample bottom;
+                if (!ReadSample(view, geometry, logicalX - 1, logicalY, left) ||
+                    !ReadSample(view, geometry, logicalX + 1, logicalY, right) ||
+                    !ReadSample(view, geometry, logicalX, logicalY - 1, top) ||
+                    !ReadSample(view, geometry, logicalX, logicalY + 1, bottom))
+                {
+                    samplingFailed = true;
+                }
+                // The cross kernel sums to one, so flat calibrated levels remain unchanged while provider low-pass
+                // blur is counteracted before shape scoring. Chroma decisions continue to use the original samples.
+                lumaSamples[row * kUnifiedDataGlyphWidth + column] = std::clamp(
+                    5 * Luma(sample) - Luma(left) - Luma(right) - Luma(top) - Luma(bottom), 0.0, 255.0);
             }
         }
+        const double foregroundThreshold = (low + high) * 0.5;
+        const std::uint32_t foregroundSamples = static_cast<std::uint32_t>(std::ranges::count_if(samples,
+            [foregroundThreshold](const Sample& sample)
+            {
+                return Luma(sample) >= foregroundThreshold;
+            }));
+        const bool tileSamplingFailed = samplingFailed || foregroundSamples == 0;
 
         std::array<std::array<double, 16>, 2> lumaDistances{};
         std::array<bool, 2> modelValid{true, true};
@@ -830,11 +843,11 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                 modelValid[1] = modelValid[0];
                 continue;
             }
-            std::array<std::uint32_t, 16> projected{};
-            for (std::uint32_t chip = 0; chip < 16; chip++)
+            std::array<std::uint32_t, kUnifiedDataGlyphCells> projected{};
+            for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
             {
                 projected[chip] = ProjectLumaChip(geometry, tile.bounds.x, tile.bounds.y, chip, lumaModels[lane]);
-                modelValid[lane] = modelValid[lane] && projected[chip] < 16;
+                modelValid[lane] = modelValid[lane] && projected[chip] < kUnifiedDataGlyphCells;
             }
             if (!modelValid[lane])
             {
@@ -845,11 +858,11 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             }
             for (std::size_t label = 0; label < 16; label++)
             {
-                const std::uint16_t mask = kUnifiedSymbolMasksByLabel[label];
+                const std::uint32_t mask = kUnifiedSymbolMasksByLabel[label];
                 for (std::size_t chip = 0; chip < samples.size(); chip++)
                 {
                     const double expected = ((mask >> projected[chip]) & 1U) != 0 ? high : low;
-                    const double difference = Luma(samples[chip]) - expected;
+                    const double difference = lumaSamples[chip] - expected;
                     lumaDistances[lane][label] += difference * difference;
                 }
             }
@@ -867,15 +880,24 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * lumaScale);
             const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
                 UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, bitPlane}, frameSequence);
-            StoreMetric(logical, tile, metric, clipped || samplingFailed, freshness, policy, base, fine, chroma, metrics);
+            StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
         }
 
         std::array<double, 2> averageOpponent{};
         for (const Sample& sample : samples)
         {
+            if (Luma(sample) < foregroundThreshold)
+            {
+                continue;
+            }
             const std::array<double, 2> opponent = Opponent(sample);
-            averageOpponent[0] += opponent[0] / static_cast<double>(samples.size());
-            averageOpponent[1] += opponent[1] / static_cast<double>(samples.size());
+            averageOpponent[0] += opponent[0];
+            averageOpponent[1] += opponent[1];
+        }
+        if (foregroundSamples != 0)
+        {
+            averageOpponent[0] /= foregroundSamples;
+            averageOpponent[1] /= foregroundSamples;
         }
         std::array<double, 4> chromaDistances{};
         for (std::size_t label = 0; label < chromaDistances.size(); label++)
@@ -894,7 +916,7 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * 4);
             const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
                 UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, frameSequence);
-            StoreMetric(logical, tile, metric, clipped || samplingFailed, freshness, policy, base, fine, chroma, metrics);
+            StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
         }
     }
 }
@@ -1086,11 +1108,6 @@ bool BuildUnifiedFreshnessBits(const std::span<const std::byte> canonicalRecord,
 
 UnifiedDataTile GetUnifiedDataTile(std::uint32_t tileOrdinal) noexcept
 {
-    LocalDesktopRegion historicalTile;
-    if (!GetLocalDesktopDataTile(kUnifiedVisualProfile.tileWidth, tileOrdinal, historicalTile))
-    {
-        return {};
-    }
     std::uint8_t dataRegion = 0;
     for (const UnifiedRegionContract& contract : kUnifiedVisualProfile.regions)
     {
@@ -1098,12 +1115,15 @@ UnifiedDataTile GetUnifiedDataTile(std::uint32_t tileOrdinal) noexcept
         {
             continue;
         }
-        if (historicalTile.x >= contract.bounds.x && historicalTile.y >= contract.bounds.y &&
-            historicalTile.x + historicalTile.width <= contract.bounds.x + contract.bounds.width &&
-            historicalTile.y + historicalTile.height <= contract.bounds.y + contract.bounds.height)
+        const std::uint32_t tilesPerRow = contract.bounds.width / kUnifiedVisualProfile.tileWidth;
+        const std::uint32_t tileRows = contract.bounds.height / kUnifiedVisualProfile.tileHeight;
+        const std::uint32_t regionTiles = tilesPerRow * tileRows;
+        if (tileOrdinal < regionTiles)
         {
-            const std::uint32_t x = historicalTile.x;
-            const std::uint32_t y = historicalTile.y;
+            const std::uint32_t tileColumn = tileOrdinal % tilesPerRow;
+            const std::uint32_t tileRow = tileOrdinal / tilesPerRow;
+            const std::uint32_t x = contract.bounds.x + tileColumn * kUnifiedVisualProfile.tileWidth;
+            const std::uint32_t y = contract.bounds.y + tileRow * kUnifiedVisualProfile.tileHeight;
             const std::uint32_t centerX = x + kUnifiedVisualProfile.tileWidth / 2;
             const std::uint32_t centerY = y + kUnifiedVisualProfile.tileHeight / 2;
             const std::uint8_t freshnessColumn = centerX < kUnifiedFreshnessColumnBoundaries[0] ? 0 :
@@ -1114,6 +1134,7 @@ UnifiedDataTile GetUnifiedDataTile(std::uint32_t tileOrdinal) noexcept
                 UnifiedPixelRegion{x, y, kUnifiedVisualProfile.tileWidth, kUnifiedVisualProfile.tileHeight},
                 dataRegion, static_cast<std::uint8_t>(freshnessRow * 3 + freshnessColumn)};
         }
+        tileOrdinal -= regionTiles;
         dataRegion++;
     }
     return {};
@@ -1316,18 +1337,19 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
             }
         }
         const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
-        const std::uint16_t mask = kUnifiedSymbolMasksByLabel[lumaLabel];
+        const std::uint32_t mask = kUnifiedSymbolMasksByLabel[lumaLabel];
         const UnifiedChromaState state = kUnifiedChromaStatesByLabel[chromaLabel];
         for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
         {
             for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
             {
-                const std::uint32_t chip = row * kUnifiedVisualProfile.tileWidth + column;
-                const std::uint8_t base = ((mask >> chip) & 1U) != 0 ?
-                    kUnifiedDataHighLuma : kUnifiedDataLowLuma;
+                const bool glyphCell = row < kUnifiedDataGlyphWidth && column < kUnifiedDataGlyphWidth;
+                const std::uint32_t chip = row * kUnifiedDataGlyphWidth + column;
+                const bool foreground = glyphCell && ((mask >> chip) & 1U) != 0;
                 FillPixel(outBgra, tile.bounds.x + column, tile.bounds.y + row,
-                    CodeValue(base, state.blueOffset), CodeValue(base, state.greenOffset),
-                    CodeValue(base, state.redOffset));
+                    foreground ? state.blue : kUnifiedDataLowLuma,
+                    foreground ? state.green : kUnifiedDataLowLuma,
+                    foreground ? state.red : kUnifiedDataLowLuma);
             }
         }
     }

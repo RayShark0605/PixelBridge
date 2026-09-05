@@ -551,48 +551,49 @@ InnerFecResult<InnerFecDecodeOutcome> QcLdpcDecoder::Decode(
                 impl.checkOffsets[checkIndex];
             const std::uint32_t slotEnd =
                 impl.checkOffsets[checkIndex + 1];
+            std::int64_t minimumMagnitude = (std::numeric_limits<std::int64_t>::max)();
+            std::int64_t secondMinimumMagnitude = (std::numeric_limits<std::int64_t>::max)();
+            std::uint32_t minimumMagnitudeCount = 0;
+            bool negativeParity = false;
+            for (std::uint32_t slotIndex = slotBegin; slotIndex < slotEnd; slotIndex++)
+            {
+                const std::uint32_t variableIndex = impl.checkVariableIds[slotIndex];
+                const std::int64_t variableToCheck =
+                    static_cast<std::int64_t>(impl.variableTotals[variableIndex]) - impl.checkMessages[slotIndex];
+                if (variableToCheck < 0)
+                {
+                    negativeParity = !negativeParity;
+                }
+                const std::int64_t absoluteMessage = variableToCheck < 0 ? -variableToCheck : variableToCheck;
+                if (absoluteMessage < minimumMagnitude)
+                {
+                    secondMinimumMagnitude = minimumMagnitude;
+                    minimumMagnitude = absoluteMessage;
+                    minimumMagnitudeCount = 1;
+                }
+                else if (absoluteMessage == minimumMagnitude)
+                {
+                    minimumMagnitudeCount++;
+                }
+                else if (absoluteMessage < secondMinimumMagnitude)
+                {
+                    secondMinimumMagnitude = absoluteMessage;
+                }
+            }
             for (std::uint32_t targetSlot = slotBegin;
                 targetSlot < slotEnd; targetSlot++)
             {
-                // Exact min-sum over the variable->check messages of the
-                // other variables of this check (order-independent):
-                // magnitude = min |m_{u->c}|, sign = XOR of their signs.
-                // m_{u->c} is read through the compact invariant
-                // total(u) - m_{c->u}; this value is unchanged by this
-                // check's own in-row updates (total and stored message move
-                // by the same delta), so the layered in-row slot order is
-                // well defined. Every check has degree >= 2 (staircase
-                // parity structure), so the minimum is over a non-empty set.
-                std::int64_t magnitude = 0;
-                bool hasMagnitude = false;
-                bool positiveSign = true;
-                for (std::uint32_t otherSlot = slotBegin;
-                    otherSlot < slotEnd; otherSlot++)
-                {
-                    if (otherSlot == targetSlot)
-                    {
-                        continue;
-                    }
-                    const std::uint32_t otherVariable =
-                        impl.checkVariableIds[otherSlot];
-                    const std::int64_t variableToCheck =
-                        static_cast<std::int64_t>(
-                            impl.variableTotals[otherVariable]) -
-                        impl.checkMessages[otherSlot];
-                    if (variableToCheck < 0)
-                    {
-                        positiveSign = !positiveSign;
-                    }
-                    const std::int64_t absMessage =
-                        variableToCheck < 0
-                            ? -variableToCheck
-                            : variableToCheck;
-                    if (!hasMagnitude || absMessage < magnitude)
-                    {
-                        magnitude = absMessage;
-                        hasMagnitude = true;
-                    }
-                }
+                // total(v) - message(c->v) is invariant while this check row is updated because both terms
+                // receive the same delta. One row-wide sign and two-minimum reduction is therefore exactly
+                // equivalent to rescanning every other edge for each target, but is linear in check degree.
+                const std::uint32_t targetVariable = impl.checkVariableIds[targetSlot];
+                const std::int64_t targetVariableToCheck =
+                    static_cast<std::int64_t>(impl.variableTotals[targetVariable]) - impl.checkMessages[targetSlot];
+                const std::int64_t targetMagnitude =
+                    targetVariableToCheck < 0 ? -targetVariableToCheck : targetVariableToCheck;
+                std::int64_t magnitude = targetMagnitude == minimumMagnitude && minimumMagnitudeCount == 1 ?
+                    secondMinimumMagnitude : minimumMagnitude;
+                const bool positiveSign = !(negativeParity != (targetVariableToCheck < 0));
                 // Fixed-point scale (never amplifying: scaleNum <= scaleDen)
                 // and the offset min-sum magnitude reduction.
                 magnitude = magnitude * scaleNum / scaleDen;

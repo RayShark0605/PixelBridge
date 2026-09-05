@@ -16,7 +16,7 @@ pbmodulation::UnifiedVisualObservation Observation(const std::uint64_t sequence)
     observation.bootstrapRecord.sessionTag.value = 7;
     observation.bootstrapRecord.frameSequence = sequence;
     observation.bootstrapRecord.visualProfileId = pbprotocol::kUnifiedVisualProfileId;
-    observation.bootstrapRecord.visualLayoutVersion = 8;
+    observation.bootstrapRecord.visualLayoutVersion = pbprotocol::kUnifiedVisualLayoutVersion;
     for (std::uint32_t index = 0; index < observation.slots.size(); index++)
     {
         auto& slot = observation.slots[index];
@@ -26,10 +26,13 @@ pbmodulation::UnifiedVisualObservation Observation(const std::uint64_t sequence)
         slot.acceptedBytes = 100;
     }
     observation.slots[0].kind = pbmodulation::UnifiedSlotKind::Control;
-    observation.acceptedBlocks = 31;
-    observation.acceptedTransportBlocks = 30;
+    observation.acceptedBlocks = static_cast<std::uint32_t>(observation.slots.size());
+    observation.acceptedTransportBlocks = observation.acceptedBlocks - 1;
     observation.acceptedControlRecords = 1;
-    constexpr std::array<std::uint32_t, 3> codewords{17, 4, 10};
+    constexpr std::array<std::uint32_t, 3> codewords{
+        pbmodulation::kUnifiedLaneCapacities[0].codewordCount,
+        pbmodulation::kUnifiedLaneCapacities[1].codewordCount,
+        pbmodulation::kUnifiedLaneCapacities[2].codewordCount};
     for (std::size_t lane = 0; lane < codewords.size(); lane++)
     {
         const std::uint32_t samples = codewords[lane] * 16200;
@@ -52,9 +55,10 @@ TEST_CASE("G17 counts actual observed frames across capture epochs without extra
     REQUIRE(snapshot.duplicateObservations == 2);
     REQUIRE(snapshot.uniqueVisualFps.has_value());
     REQUIRE(*snapshot.uniqueVisualFps == Catch::Approx(1.0));
-    REQUIRE(snapshot.lanes[0].evaluatedSlots == 68);
-    REQUIRE(snapshot.lanes[1].acceptedSlots == 16);
-    REQUIRE(snapshot.lanes[2].metricSamples == 4 * 10 * 16200);
+    REQUIRE(snapshot.lanes[0].evaluatedSlots == 4 * pbmodulation::kUnifiedLaneCapacities[0].codewordCount);
+    REQUIRE(snapshot.lanes[1].acceptedSlots == 4 * pbmodulation::kUnifiedLaneCapacities[1].codewordCount);
+    REQUIRE(snapshot.lanes[2].metricSamples ==
+        4 * pbmodulation::kUnifiedLaneCapacities[2].codewordCount * 16200);
     REQUIRE(snapshot.acceptedControlSlots == 4);
     REQUIRE(snapshot.lanes[0].fecFailures == 0);
     REQUIRE(pbtelemetry::EvaluatePublishedFrameMetric(snapshot, 20000, true, true, true, false).bytesPerUniqueFrame == 10000.0);
@@ -78,7 +82,7 @@ TEST_CASE("G17 malformed observations cannot partially mutate lane counters", "[
     }
     SECTION("accepted FEC conflict")
     {
-        invalid.slots[30].fecValid = false;
+        invalid.slots.back().fecValid = false;
     }
     SECTION("accepted total conflict")
     {
@@ -86,11 +90,11 @@ TEST_CASE("G17 malformed observations cannot partially mutate lane counters", "[
     }
     SECTION("unknown slot kind")
     {
-        invalid.slots[30].kind = static_cast<pbmodulation::UnifiedSlotKind>(255);
+        invalid.slots.back().kind = static_cast<pbmodulation::UnifiedSlotKind>(255);
     }
     SECTION("unknown rejection")
     {
-        invalid.slots[30].rejection = static_cast<pbmodulation::UnifiedSlotRejection>(255);
+        invalid.slots.back().rejection = static_cast<pbmodulation::UnifiedSlotRejection>(255);
     }
     SECTION("erased frame cannot report accepted bytes")
     {
@@ -110,7 +114,7 @@ TEST_CASE("G17 lane failures and Bootstrap-only erasures keep separate measured 
     pbtelemetry::UnifiedTelemetryAccumulator telemetry;
     REQUIRE(telemetry.BindSession(7));
     auto observation = Observation(1);
-    constexpr std::array<std::uint32_t, 5> failedSlots{1, 17, 21, 22, 23};
+    constexpr std::array<std::uint32_t, 5> failedSlots{1, 9, 10, 11, 12};
     for (const auto slot : failedSlots)
     {
         observation.slots[slot].accepted = false;
@@ -119,13 +123,13 @@ TEST_CASE("G17 lane failures and Bootstrap-only erasures keep separate measured 
     observation.slots[1].rejection = pbmodulation::UnifiedSlotRejection::InnerFecFailure;
     observation.slots[1].fecValid = false;
     observation.slots[1].iterationsUsed = 12;
-    observation.slots[17].rejection = pbmodulation::UnifiedSlotRejection::TransportCrcFailure;
-    observation.slots[17].crcValid = false;
-    observation.slots[21].rejection = pbmodulation::UnifiedSlotRejection::LaneErasure;
-    observation.slots[21].fecValid = false;
-    observation.slots[22].rejection = pbmodulation::UnifiedSlotRejection::IdentityFailure;
-    observation.slots[22].identityValid = false;
-    observation.slots[23].rejection = pbmodulation::UnifiedSlotRejection::InvalidInformation;
+    observation.slots[9].rejection = pbmodulation::UnifiedSlotRejection::TransportCrcFailure;
+    observation.slots[9].crcValid = false;
+    observation.slots[10].rejection = pbmodulation::UnifiedSlotRejection::LaneErasure;
+    observation.slots[10].fecValid = false;
+    observation.slots[11].rejection = pbmodulation::UnifiedSlotRejection::IdentityFailure;
+    observation.slots[11].identityValid = false;
+    observation.slots[12].rejection = pbmodulation::UnifiedSlotRejection::InvalidInformation;
     observation.acceptedBlocks -= static_cast<std::uint32_t>(failedSlots.size());
     observation.acceptedTransportBlocks -= static_cast<std::uint32_t>(failedSlots.size());
     REQUIRE(telemetry.Record(observation, 1, 0));
@@ -139,7 +143,7 @@ TEST_CASE("G17 lane failures and Bootstrap-only erasures keep separate measured 
     REQUIRE(snapshot.lanes[0].fecIterations == 12);
     REQUIRE(snapshot.lanes[1].crcFailures == 1);
     REQUIRE(snapshot.lanes[2].identityFailures == 1);
-    REQUIRE(snapshot.lanes[2].fecAttempts == 9);
+    REQUIRE(snapshot.lanes[2].fecAttempts == 4);
     REQUIRE(snapshot.lanes[2].erasedSlots == 3);
     REQUIRE(snapshot.unclassifiedSlots == 3);
     REQUIRE(snapshot.classifiedControlSlots == 1);

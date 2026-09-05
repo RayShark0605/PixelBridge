@@ -1,0 +1,40 @@
+{
+  "cell": {
+    "glyphPixels": 5,
+    "minimumMaskHammingDistance": 9,
+    "separatorPixels": 1,
+    "tilePixels": 6
+  },
+  "files": [
+    {
+      "bytes": 16,
+      "domainBlake3": "797d208d28ac3251a76c6060b80757644b4b4b087b3f66f96b76117e06290ac3",
+      "file": "chroma-states.bin"
+    },
+    {
+      "bytes": 64,
+      "domainBlake3": "e32c4792e0afdd14071782a899e30218ea938ed9bd0796573bb889db21d2ed78",
+      "file": "codebook.bin"
+    },
+    {
+      "bytes": 128,
+      "domainBlake3": "198abcda9a0eb64f925710767074b3ebb410442424adad5d5f4c2abe7e1b1246",
+      "file": "mapping-contract.bin"
+    },
+    {
+      "bytes": 65,
+      "domainBlake3": "f331fc7f7aa1f891418eed36a04d620472f4362fde2b7833e754bf6e366f7c07",
+      "file": "mapping-stream.blake3"
+    }
+  ],
+  "independentRebuild": "tests/PBModulation/generate_unified_sc6_mapping_golden.py --check",
+  "mappingStreamFormat": "BLAKE3(domain || repeated LE lane/carrier/plane/reserved/logical/tile records)",
+  "mappingStreamFrameSequenceZeroBlake3": "8718eb1c1b43764160f8a79b437cec0ac5cee46072aeb7d08ef0930fbe450fbc",
+  "profile": {
+    "layoutVersion": 9,
+    "name": "PB-Unified-SC6-V2",
+    "profileIdHex": "5042554e49534332"
+  },
+  "schema": "PixelBridge.UnifiedSc6MappingGolden.1",
+  "status": "DeterministicIndependentContract"
+}

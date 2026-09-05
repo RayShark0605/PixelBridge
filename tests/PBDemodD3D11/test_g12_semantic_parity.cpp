@@ -59,6 +59,10 @@ using Microsoft::WRL::ComPtr;
 #error PB_G12_PERFORMANCE_REPORT must name the generated G12 performance report
 #endif
 
+#ifndef PB_G21_OFFLINE_REPORT
+#error PB_G21_OFFLINE_REPORT must name the generated G21 offline distortion report
+#endif
+
 #ifndef PB_G12_SCRATCH_ROOT
 #error PB_G12_SCRATCH_ROOT must name the G12 scratch root
 #endif
@@ -530,6 +534,8 @@ void RequireSameObservation(const pbmodulation::UnifiedVisualObservation& cpu,
     }
     for (std::size_t slot = 0; slot < cpu.slots.size(); slot++)
     {
+        CAPTURE(slot, cpu.slots[slot].rejection, gpu.slots[slot].rejection,
+            cpu.slots[slot].iterationsUsed, gpu.slots[slot].iterationsUsed);
         REQUIRE(gpu.slots[slot].lane == cpu.slots[slot].lane);
         REQUIRE(gpu.slots[slot].kind == cpu.slots[slot].kind);
         REQUIRE(gpu.slots[slot].rejection == cpu.slots[slot].rejection);
@@ -702,6 +708,7 @@ struct MandatoryParityRunSummary
     {
         INFO(prepared.name);
         bool gpuSubmitted = false;
+        std::optional<std::uint64_t> demodWallNanoseconds;
         std::span<const pbmodulation::UnifiedAcceptedBlock> gpuAccepted;
         std::optional<pbdemodd3d11::DemodFrameResult> gpuResult;
         const bool identityValid = prepared.bootstrap.IsAccepted() &&
@@ -713,8 +720,11 @@ struct MandatoryParityRunSummary
             const pbcapturenormalize::ScreenCaptureFrame frame = MakeFrame(
                 texture.Get(), environment.adapterLuid, domain, observation);
             pbdemodd3d11::DemodSubmission submission;
+            const auto demodStarted = std::chrono::steady_clock::now();
             REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), prepared.bootstrap, {}, submission));
             gpuResult.emplace(PollUntilReady(*demodulator, environment.context.Get(), submission));
+            demodWallNanoseconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - demodStarted).count());
             RequireSameObservation(prepared.cpuObservation, gpuResult->unifiedObservation);
             gpuAccepted = std::span(gpuResult->acceptedUnifiedBlocks).first(gpuResult->acceptedUnifiedBlockCount);
             RequireSameAcceptedBlocks(prepared.cpuAccepted, gpuAccepted);
@@ -764,6 +774,16 @@ struct MandatoryParityRunSummary
              << ",\"channelManifestBlake3\":\"" << prepared.channelManifestBlake3 << "\""
              << ",\"gpuSubmitted\":" << (gpuSubmitted ? "true" : "false")
              << ",\"preGpuAdmission\":\"" << (gpuSubmitted ? "accepted" : "rejected") << "\""
+             << ",\"demodWallNanoseconds\":";
+        if (demodWallNanoseconds)
+        {
+            line << *demodWallNanoseconds;
+        }
+        else
+        {
+            line << "null";
+        }
+        line
              << ",\"frameErasure\":" << static_cast<std::uint32_t>(prepared.cpuObservation.frameErasure)
              << ",\"laneErasure\":[" << static_cast<std::uint32_t>(prepared.cpuObservation.baseLuma.erasureReason)
              << ',' << static_cast<std::uint32_t>(prepared.cpuObservation.fineLuma.erasureReason)
@@ -1160,17 +1180,25 @@ struct PerformanceFrame
     std::array<bool, pbmodulation::kUnifiedCodewordCount> transportSlots{};
 };
 
+enum class PerformanceChannel
+{
+    Clean,
+    BaseOnlyRemoteDistortion,
+    AllLanesRemoteDistortion
+};
+
 [[nodiscard]] PerformanceFrame BuildPerformanceFrame(pbouterfec::WirehairV2Encoder& encoder,
     const PerformanceControls& controls, const pbprotocol::SessionTag sessionTag,
-    const std::uint64_t frameSequence, const bool baseOnlyUniqueEquations,
+    const std::uint64_t frameSequence, const PerformanceChannel channel,
     std::uint32_t& nextUniqueEquationId)
 {
-    constexpr std::uint32_t initialControlSlotCount = 12;
+    const bool baseOnlyUniqueEquations = channel == PerformanceChannel::BaseOnlyRemoteDistortion;
+    constexpr std::uint32_t initialControlSlotCount = 3;
     const std::uint32_t controlSlotCount = frameSequence == 1 ? initialControlSlotCount : 0;
     PerformanceFrame frame;
     std::array<pbmodulation::UnifiedFrameSlotInput, pbmodulation::kUnifiedCodewordCount> inputs{};
     std::vector<std::uint32_t> baseEquationIds;
-    baseEquationIds.reserve(17);
+    baseEquationIds.reserve(pbmodulation::kUnifiedLaneCapacities[0].codewordCount);
     std::size_t duplicateIndex = 0;
     for (std::uint32_t slot = 0; slot < pbmodulation::kUnifiedCodewordCount; slot++)
     {
@@ -1179,12 +1207,12 @@ struct PerformanceFrame
         if (slot < controlSlotCount)
         {
             input.assignment.kind = pbmodulation::UnifiedSlotKind::Control;
-            if (slot < 4)
+            if (slot == 0)
             {
                 input.assignment.controlPriority = pbmodulation::UnifiedControlPriority::SessionDescriptor;
                 frame.blocks[slot] = controls.session;
             }
-            else if (slot < 8)
+            else if (slot == 1)
             {
                 input.assignment.controlPriority = pbmodulation::UnifiedControlPriority::FinalManifest;
                 frame.blocks[slot] = controls.manifest;
@@ -1230,19 +1258,28 @@ struct PerformanceFrame
     std::vector<std::byte> canonicalPixels(pbmodulation::kUnifiedFrameBgraBytes);
     const std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bootstrap = MakeBootstrap(frameSequence, sessionTag);
     REQUIRE(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, inputs}, canonicalPixels));
-    if (baseOnlyUniqueEquations)
+    if (channel != PerformanceChannel::Clean)
     {
         using namespace pbremotevisualsimulator;
         const std::array<std::byte, 4> matte{
             std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}};
-        const std::array<ChannelTransform, 2> transforms{
-            ResampleTransform{1920, 1080, 0.75, 0.75, 240, 135, ResampleFilter::Area, matte},
-            NeutralChromaTransform{}};
+        std::array<ChannelTransform, 4> transforms;
+        if (baseOnlyUniqueEquations)
+        {
+            transforms = {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0,
+                ResampleFilter::Bilinear, matte}, NeutralChromaTransform{},
+                Kernel3x3Transform{FixedKernel3x3::GaussianBlur, 1}, ChannelQuantizationTransform{6}};
+        }
+        else
+        {
+            transforms = {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0,
+                ResampleFilter::Bilinear, matte}, ChromaSubsample420Transform{1, 1},
+                Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1}, ChannelQuantizationTransform{5}};
+        }
         const BgraImageView source{canonicalPixels, pbmodulation::kUnifiedVisualProfile.canvasWidth,
             pbmodulation::kUnifiedVisualProfile.canvasHeight,
             static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4};
-        auto result = ExecuteChannelTransformPlan(source, std::nullopt,
-            {0xB125000000000000ULL ^ frameSequence, transforms});
+        auto result = ExecuteChannelTransformPlan(source, std::nullopt, {0xB125000000000000ULL ^ frameSequence, transforms});
         REQUIRE(result);
         frame.image = std::move(result).Value().output;
     }
@@ -1287,14 +1324,17 @@ struct PerformanceResult
 };
 
 [[nodiscard]] PerformanceResult RunPublishedPerformanceCase(D3DEnvironment& environment,
-    const AdapterFingerprint& fingerprint, const bool baseOnlyUniqueEquations, std::ofstream& report)
+    const AdapterFingerprint& fingerprint, const PerformanceChannel channel, const std::size_t sourceBytes,
+    const std::uint64_t hardThresholdBytes, const std::uint64_t engineeringTargetBytes,
+    const std::uint64_t maximumLogicalFrames, std::ofstream& report)
 {
-    constexpr std::size_t sourceBytes = 256ULL * 1024;
-    constexpr std::uint64_t hardThresholdBytes = 16ULL * 1024;
-    constexpr std::uint64_t cleanTargetBytes = 32ULL * 1024;
-    constexpr std::uint64_t maximumLogicalFrames = 64;
-    const std::string name = baseOnlyUniqueEquations ? "base-only-neutral-chroma-scale-075" : "clean-all-lanes";
-    ScratchDirectory scratch(baseOnlyUniqueEquations ? L"g12-base-only-publish" : L"g12-clean-publish");
+    const bool baseOnlyUniqueEquations = channel == PerformanceChannel::BaseOnlyRemoteDistortion;
+    const bool remoteDistortion = channel != PerformanceChannel::Clean;
+    const std::string name = baseOnlyUniqueEquations ? "base-only-right-screen-neutral-chroma-gaussian-quant6" :
+        remoteDistortion ? "all-lanes-right-screen-box-chroma420-quant5" : "clean-all-lanes";
+    const wchar_t* const scratchName = baseOnlyUniqueEquations ? L"g12-base-only-publish" :
+        remoteDistortion ? L"g21-remote-distortion-publish" : L"g12-clean-publish";
+    ScratchDirectory scratch(scratchName);
     std::vector<std::byte> source(sourceBytes);
     FillCsprng(source);
     const pbprotocol::ReceiverResourcePolicy resourcePolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
@@ -1305,13 +1345,15 @@ struct PerformanceResult
     sessionDescriptor.segmentCount = 1;
     sessionDescriptor.digestAlgorithm = pbprotocol::DigestAlgorithm::Blake3_256;
     sessionDescriptor.sessionVisualProfileId = pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId;
-    sessionDescriptor.fileNameUtf8 = baseOnlyUniqueEquations ? "g12-base-only.bin" : "g12-clean.bin";
+    sessionDescriptor.fileNameUtf8 = baseOnlyUniqueEquations ? "g12-base-only.bin" :
+        remoteDistortion ? "g21-remote-distortion.bin" : "g12-clean.bin";
     const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(sessionDescriptor.sessionId);
     auto encoderResult = pbouterfec::WirehairV2Encoder::Create(source,
         static_cast<std::uint32_t>(kTransportPayloadBytes));
     REQUIRE(encoderResult);
     pbouterfec::WirehairV2Encoder encoder = std::move(encoderResult).Value();
-    REQUIRE(encoder.GetBlockCount() == 200);
+    const std::uint64_t expectedBlockCount = (sourceBytes + kTransportPayloadBytes - 1) / kTransportPayloadBytes;
+    REQUIRE(encoder.GetBlockCount() == expectedBlockCount);
     pbprotocol::SegmentDescriptor segmentDescriptor;
     segmentDescriptor.sessionTag = sessionTag;
     segmentDescriptor.segmentOrdinal = 0;
@@ -1352,8 +1394,9 @@ struct PerformanceResult
     std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
     REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), demodConfig, demodulator));
     pbcapturenormalize::ScreenCaptureDomain domain;
-    domain.sourceId[0] = baseOnlyUniqueEquations ? std::byte{0xB1} : std::byte{0xC1};
-    domain.captureEpoch = baseOnlyUniqueEquations ? 1301 : 1302;
+    domain.sourceId[0] = baseOnlyUniqueEquations ? std::byte{0xB1} :
+        remoteDistortion ? std::byte{0xD1} : std::byte{0xC1};
+    domain.captureEpoch = baseOnlyUniqueEquations ? 1301 : remoteDistortion ? 1303 : 1302;
     pbmodulation::VisualIdentityTracker identityTracker;
     std::optional<pbreceiver::ReceiverCompletedSegment> completedSegment;
     std::set<std::uint32_t> uniqueOuterBlockIds;
@@ -1366,7 +1409,7 @@ struct PerformanceResult
     for (; frameSequence <= maximumLogicalFrames && !completedSegment; frameSequence++)
     {
         const PerformanceFrame performanceFrame = BuildPerformanceFrame(encoder, controls, sessionTag,
-            frameSequence, baseOnlyUniqueEquations, nextUniqueEquationId);
+            frameSequence, channel, nextUniqueEquationId);
         const pbmodulation::LumaView view = MakeLumaView(performanceFrame.image);
         const pbmodulation::LocalDesktopBootstrapBinding binding{
             pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
@@ -1455,7 +1498,7 @@ struct PerformanceResult
         if (frameSequence == 1)
         {
             REQUIRE(receiver.GetTelemetry().activeSessionCount == 1);
-            REQUIRE(gpuResult.unifiedObservation.acceptedControlRecords == 12);
+            REQUIRE(gpuResult.unifiedObservation.acceptedControlRecords == 3);
         }
     }
     REQUIRE(completedSegment.has_value());
@@ -1500,11 +1543,11 @@ struct PerformanceResult
     const std::uint64_t uniqueFrames = identitySnapshot.uniqueFrames;
     const std::uint64_t encodedBytes = segmentDescriptor.encodedSize;
     const auto hardProduct = pbprotocol::CheckedMultiplyUint64(uniqueFrames, hardThresholdBytes);
-    const auto cleanProduct = pbprotocol::CheckedMultiplyUint64(uniqueFrames, cleanTargetBytes);
+    const auto engineeringProduct = pbprotocol::CheckedMultiplyUint64(uniqueFrames, engineeringTargetBytes);
     REQUIRE(hardProduct);
-    REQUIRE(cleanProduct);
+    REQUIRE(engineeringProduct);
     const bool hardThresholdPassed = encodedBytes >= hardProduct.Value();
-    const bool cleanTargetPassed = encodedBytes >= cleanProduct.Value();
+    const bool cleanTargetPassed = encodedBytes >= engineeringProduct.Value();
     REQUIRE(hardThresholdPassed);
     const double metric = static_cast<double>(encodedBytes) / static_cast<double>(uniqueFrames);
     const pbdemodd3d11::DemodSnapshot demodSnapshot = demodulator->GetSnapshot();
@@ -1524,8 +1567,9 @@ struct PerformanceResult
          << ",\"sourceBlake3\":\"" << HexBytes(sourceDigest) << "\""
          << ",\"wholeFileBlake3\":\"" << HexBytes(manifest.wholeFileDigest.bytes) << "\""
          << ",\"chromaNeutralized\":" << (baseOnlyUniqueEquations ? "true" : "false")
-         << ",\"scale\":" << (baseOnlyUniqueEquations ? "0.75" : "1.0")
-         << ",\"initialControlSlots\":12,\"uniqueEquationPolicy\":\""
+         << ",\"remoteDistortion\":" << (remoteDistortion ? "true" : "false")
+         << ",\"scale\":" << (remoteDistortion ? "1.3333333333333333" : "1.0")
+         << ",\"initialControlSlots\":3,\"uniqueEquationPolicy\":\""
          << (baseOnlyUniqueEquations ? "base-luma-only-other-lanes-identical-duplicate" : "all-lanes") << "\""
          << ",\"systematicBlocks\":" << encoder.GetBlockCount()
          << ",\"uniqueBaseEquations\":" << uniqueBaseEquations
@@ -1535,8 +1579,8 @@ struct PerformanceResult
          << ",\"verifiedEncodedBytesPerUniqueFrame\":" << metric
          << ",\"hardThresholdBytesPerFrame\":" << hardThresholdBytes
          << ",\"hardThresholdPassed\":" << (hardThresholdPassed ? "true" : "false")
-         << ",\"cleanEngineeringTargetBytesPerFrame\":" << cleanTargetBytes
-         << ",\"cleanEngineeringTargetPassed\":" << (cleanTargetPassed ? "true" : "false")
+         << ",\"engineeringTargetBytesPerFrame\":" << engineeringTargetBytes
+         << ",\"engineeringTargetPassed\":" << (cleanTargetPassed ? "true" : "false")
          << ",\"falseAcceptedBlocks\":" << falseAcceptedBlocks
          << ",\"truthMismatchedBlocks\":" << truthMismatchedBlocks
          << ",\"conflictOutputBlocks\":0,\"wholeDigestVerified\":true,\"safePublish\":true"
@@ -1632,8 +1676,10 @@ TEST_CASE("G12 CSPRNG RAW Unified WARP recovery publishes before reporting verif
     REQUIRE(report);
     D3DEnvironment warp = CreateWarpEnvironment();
     const AdapterFingerprint fingerprint = GetEnvironmentFingerprint(warp, "warp", true);
-    const PerformanceResult baseResult = RunPublishedPerformanceCase(warp, fingerprint, true, report);
-    const PerformanceResult cleanResult = RunPublishedPerformanceCase(warp, fingerprint, false, report);
+    const PerformanceResult baseResult = RunPublishedPerformanceCase(warp, fingerprint,
+        PerformanceChannel::BaseOnlyRemoteDistortion, 256ULL * 1024, 10ULL * 1024, 18ULL * 1024, 64, report);
+    const PerformanceResult cleanResult = RunPublishedPerformanceCase(warp, fingerprint,
+        PerformanceChannel::Clean, 256ULL * 1024, 10ULL * 1024, 18ULL * 1024, 64, report);
     REQUIRE(baseResult.hardThresholdPassed);
     REQUIRE(baseResult.uniqueNonBaseEquations == 0);
     REQUIRE(cleanResult.hardThresholdPassed);
@@ -1651,4 +1697,33 @@ TEST_CASE("G12 CSPRNG RAW Unified WARP recovery publishes before reporting verif
     report.flush();
     REQUIRE(report);
     std::cout << "PB_G12_UNIFIED_PERFORMANCE_JSON=" << summaryLine.str() << '\n';
+}
+
+TEST_CASE("G21 one MiB CSPRNG RAW survives severe right-screen remote distortion before safe publish",
+    "[.unified-g21-offline][g21][unified][warp][receiver][storage][remote-distortion]")
+{
+    std::ofstream report(PB_G21_OFFLINE_REPORT, std::ios::binary | std::ios::trunc);
+    REQUIRE(report);
+    D3DEnvironment warp = CreateWarpEnvironment();
+    const AdapterFingerprint fingerprint = GetEnvironmentFingerprint(warp, "warp", true);
+    const PerformanceResult result = RunPublishedPerformanceCase(warp, fingerprint,
+        PerformanceChannel::AllLanesRemoteDistortion, 1ULL * 1024 * 1024, 16ULL * 1024, 32ULL * 1024, 128, report);
+    REQUIRE(result.hardThresholdPassed);
+    REQUIRE_FALSE(result.cleanTargetPassed);
+    REQUIRE(result.uniqueBaseEquations > 0);
+    REQUIRE(result.uniqueNonBaseEquations > 0);
+    std::ostringstream summaryLine;
+    summaryLine << std::setprecision(17)
+                << "{\"schema\":\"PixelBridge.G21.OfflineRemoteDistortion.Summary.1\""
+                << ",\"sourceBytes\":" << result.encodedBytes
+                << ",\"uniqueLogicalFrames\":" << result.uniqueFrames
+                << ",\"verifiedEncodedBytesPerUniqueFrame\":" << result.verifiedEncodedBytesPerUniqueFrame
+                << ",\"hard16KiBFrameMetricPassed\":" << (result.hardThresholdPassed ? "true" : "false")
+                << ",\"engineering32KiBTargetReached\":" << (result.cleanTargetPassed ? "true" : "false")
+                << ",\"wholeDigestVerified\":true,\"safePublish\":true,\"finalReopenVerified\":true"
+                << ",\"authority\":\"headless synthetic WARP; not live remote capture\"}";
+    WriteJsonLine(report, summaryLine.str());
+    report.flush();
+    REQUIRE(report);
+    std::cout << "PB_G21_OFFLINE_REMOTE_DISTORTION_JSON=" << summaryLine.str() << '\n';
 }

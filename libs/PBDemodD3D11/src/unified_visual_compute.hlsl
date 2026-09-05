@@ -54,7 +54,7 @@ RWStructuredBuffer<uint> TileSamplingFailures : register(u2);
 RWStructuredBuffer<float4> FreshnessOutput : register(u3);
 RWStructuredBuffer<float4> PhaseOutput : register(u4);
 
-static const uint UnifiedMetricCount = 502200;
+static const uint UnifiedMetricCount = 243000;
 static const uint2 CalibrationOrigins[4] =
 {
     uint2(736, 16), uint2(1696, 16), uint2(96, 1000), uint2(1056, 1000)
@@ -78,11 +78,6 @@ float2 Opponent(float3 blueGreenRed)
     return float2(blueGreenRed.x - luma, blueGreenRed.z - luma);
 }
 
-bool IsClipped(float3 blueGreenRed)
-{
-    return any(blueGreenRed <= 0.0) || any(blueGreenRed >= 255.0);
-}
-
 bool ReadSample(float logicalX, float logicalY, out float3 blueGreenRed)
 {
     const float physicalX = OriginX + ScaleX * (logicalX + 0.5) - 0.5;
@@ -103,11 +98,14 @@ bool ReadSample(float logicalX, float logicalY, out float3 blueGreenRed)
     const float vertical = verticalDownscale ? 0.0 : physicalY - (float)top;
     const uint right = horizontal == 0.0 ? left : left + 1;
     const uint bottom = vertical == 0.0 ? top : top + 1;
-    const float3 topLeft = RoiTexture.Load(int3(left, top, 0)).rgb * 255.0;
-    const float3 topRight = right == left ? topLeft : RoiTexture.Load(int3(right, top, 0)).rgb * 255.0;
-    const float3 bottomLeft = bottom == top ? topLeft : RoiTexture.Load(int3(left, bottom, 0)).rgb * 255.0;
+    // A B8G8R8A8 SRV exposes logical RGB components. Normalize them back to
+    // the BGRA byte-order contract used by the CPU oracle before applying the
+    // shared B,G,R luma and opponent coefficients.
+    const float3 topLeft = RoiTexture.Load(int3(left, top, 0)).bgr * 255.0;
+    const float3 topRight = right == left ? topLeft : RoiTexture.Load(int3(right, top, 0)).bgr * 255.0;
+    const float3 bottomLeft = bottom == top ? topLeft : RoiTexture.Load(int3(left, bottom, 0)).bgr * 255.0;
     const float3 bottomRight = bottom == top ? topRight :
-        (right == left ? bottomLeft : RoiTexture.Load(int3(right, bottom, 0)).rgb * 255.0);
+        (right == left ? bottomLeft : RoiTexture.Load(int3(right, bottom, 0)).bgr * 255.0);
     blueGreenRed = lerp(lerp(topLeft, topRight, horizontal), lerp(bottomLeft, bottomRight, horizontal), vertical);
     return true;
 }
@@ -118,7 +116,7 @@ uint ProjectLumaChip(uint2 tileOrigin, uint chip, uint model)
     {
         return chip;
     }
-    const float2 logical = (float2)(tileOrigin + uint2(chip & 3, chip >> 2));
+    const float2 logical = (float2)(tileOrigin + uint2(chip % 5, chip / 5));
     const float2 origin = float2(OriginX, OriginY);
     const float2 scale = float2(ScaleX, ScaleY);
     const float2 pixel = floor(origin + scale * (logical + 0.5));
@@ -130,7 +128,7 @@ uint ProjectLumaChip(uint2 tileOrigin, uint chip, uint model)
     const float2 upper = floor(source + tieTolerance);
     const float column = (ScaleX >= 1.0 ? logical.x : (((model - 1) & 1) != 0 ? upper.x : lower.x)) - (float)tileOrigin.x;
     const float row = (ScaleY >= 1.0 ? logical.y : (((model - 1) & 2) != 0 ? upper.y : lower.y)) - (float)tileOrigin.y;
-    return column >= 0.0 && column < 4.0 && row >= 0.0 && row < 4.0 ? (uint)row * 4 + (uint)column : 16;
+    return column >= 0.0 && column < 5.0 && row >= 0.0 && row < 5.0 ? (uint)row * 5 + (uint)column : 25;
 }
 
 float GetLumaCentroid(uint label)
@@ -170,7 +168,6 @@ void CalibrateUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     float2 squareSum = 0.0;
     uint samples = 0;
     bool valid = true;
-    bool clipped = false;
     if (entry < 16)
     {
         for (uint row = 4; row < 20; row++)
@@ -201,14 +198,13 @@ void CalibrateUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                 const float2 value = Opponent(sample);
                 sum += value;
                 squareSum += value * value;
-                clipped = clipped || IsClipped(sample);
                 samples++;
             }
         }
         const float2 mean = samples == 0 ? 0.0 : sum / (float)samples;
         const float2 variance = samples == 0 ? 0.0 : max(0.0, squareSum / (float)samples - mean * mean);
         CalibrationOutput[entry] = float4(mean, variance);
-        if (!valid || clipped)
+        if (!valid)
         {
             CalibrationOutput[entry].w = -1.0;
         }
@@ -284,22 +280,22 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     const uint pilot = entry >> 3;
     const uint phase = entry & 7;
     const uint2 origin = PhaseOrigins[pilot];
-    const float low = GetLumaCentroid(1);
+    const float low = GetLumaCentroid(0);
     const float high = GetLumaCentroid(2);
     float distance = 0.0;
     bool valid = true;
-    for (uint tileOrdinal = 0; tileOrdinal < 512; tileOrdinal++)
+    for (uint tileOrdinal = 0; tileOrdinal < 210; tileOrdinal++)
     {
-        const uint2 tileOrigin = origin + uint2((tileOrdinal & 31) * 4, (tileOrdinal >> 5) * 4);
+        const uint2 tileOrigin = origin + uint2((tileOrdinal % 21) * 6, (tileOrdinal / 21) * 6);
         const uint mask = SymbolMasks[GetPhaseLabel(pilot, tileOrdinal, phase)];
-        // Keep the bounded sampling loop compact: expanding ReadSample sixteen
+        // Keep the bounded sampling loop compact: expanding ReadSample twenty-five
         // times makes shader initialization dominate the first-frame deadline.
         [loop]
-        for (uint chip = 0; chip < 16; chip++)
+        for (uint chip = 0; chip < 25; chip++)
         {
             float3 sample = 0.0;
-            valid = ReadSample((float)(tileOrigin.x + (chip & 3)),
-                (float)(tileOrigin.y + (chip >> 2)), sample) && valid;
+            valid = ReadSample((float)(tileOrigin.x + chip % 5),
+                (float)(tileOrigin.y + chip / 5), sample) && valid;
             const float expected = ((mask >> chip) & 1) != 0 ? high : low;
             const float difference = Luma(sample) - expected;
             distance += difference * difference;
@@ -320,7 +316,7 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
     const float gap = high - low;
     const bool canonicalAccepted = valid && gap > 0.0 && expectedDistance < nearestOther &&
-        expectedDistance / (8192.0 * gap * gap) <= MinimumSymbolRms;
+        expectedDistance / (5250.0 * gap * gap) <= MinimumSymbolRms;
     uint selectedModel = 0;
     if (!canonicalAccepted && (ScaleX < 1.0 || ScaleY < 1.0))
     {
@@ -329,19 +325,19 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         {
             float candidateDistance = 0.0;
             bool candidateValid = true;
-            for (uint tileOrdinal = 0; tileOrdinal < 512; tileOrdinal++)
+            for (uint tileOrdinal = 0; tileOrdinal < 210; tileOrdinal++)
             {
-                const uint2 tileOrigin = origin + uint2((tileOrdinal & 31) * 4, (tileOrdinal >> 5) * 4);
+                const uint2 tileOrigin = origin + uint2((tileOrdinal % 21) * 6, (tileOrdinal / 21) * 6);
                 const uint mask = SymbolMasks[GetPhaseLabel(pilot, tileOrdinal, phase)];
                 [loop]
-                for (uint chip = 0; chip < 16; chip++)
+                for (uint chip = 0; chip < 25; chip++)
                 {
                     float3 sample = 0.0;
                     const uint projected = ProjectLumaChip(tileOrigin, chip, model);
-                    candidateValid = projected < 16 && candidateValid;
-                    candidateValid = ReadSample((float)(tileOrigin.x + (chip & 3)),
-                        (float)(tileOrigin.y + (chip >> 2)), sample) && candidateValid;
-                    const float expected = ((mask >> min(projected, 15)) & 1) != 0 ? high : low;
+                    candidateValid = projected < 25 && candidateValid;
+                    candidateValid = ReadSample((float)(tileOrigin.x + chip % 5),
+                        (float)(tileOrigin.y + chip / 5), sample) && candidateValid;
+                    const float expected = ((mask >> min(projected, 24)) & 1) != 0 ? high : low;
                     const float difference = Luma(sample) - expected;
                     candidateDistance += difference * difference;
                 }
@@ -353,7 +349,7 @@ void EvaluateUnifiedPhaseCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             }
         }
     }
-    PhaseOutput[entry] = float4(distance, 512.0, valid ? 1.0 : 0.0, (float)selectedModel);
+    PhaseOutput[entry] = float4(distance, 210.0, valid ? 1.0 : 0.0, (float)selectedModel);
 }
 
 [numthreads(64, 1, 1)]
@@ -365,38 +361,50 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
     const UnifiedTileBinding binding = UnifiedBindings[tileOrdinal];
-    float3 samples[16];
+    float3 samples[25];
+    float lumaSamples[25];
     bool valid = true;
-    bool clipped = false;
-    [unroll]
-    for (uint chip = 0; chip < 16; chip++)
+    [loop]
+    for (uint chip = 0; chip < 25; chip++)
     {
-        valid = ReadSample((float)(binding.OriginX + (chip & 3)),
-            (float)(binding.OriginY + (chip >> 2)), samples[chip]) && valid;
-        clipped = clipped || IsClipped(samples[chip]);
+        valid = ReadSample((float)(binding.OriginX + chip % 5),
+            (float)(binding.OriginY + chip / 5), samples[chip]) && valid;
+        const float logicalX = (float)(binding.OriginX + chip % 5);
+        const float logicalY = (float)(binding.OriginY + chip / 5);
+        float3 left = 0.0;
+        float3 right = 0.0;
+        float3 top = 0.0;
+        float3 bottom = 0.0;
+        valid = ReadSample(logicalX - 1.0, logicalY, left) && valid;
+        valid = ReadSample(logicalX + 1.0, logicalY, right) && valid;
+        valid = ReadSample(logicalX, logicalY - 1.0, top) && valid;
+        valid = ReadSample(logicalX, logicalY + 1.0, bottom) && valid;
+        // This sum-one cross kernel preserves flat calibration levels while counteracting provider low-pass blur
+        // before shape scoring. The original RGB samples remain authoritative for the chroma decision below.
+        lumaSamples[chip] = clamp(5.0 * Luma(samples[chip]) - Luma(left) - Luma(right) - Luma(top) - Luma(bottom), 0.0, 255.0);
     }
-    TileSamplingFailures[tileOrdinal] = valid && !clipped ? 0 : 1;
+    TileSamplingFailures[tileOrdinal] = valid ? 0 : 1;
     if (!valid)
     {
         return;
     }
-    const float low = GetLumaCentroid(1);
+    const float low = GetLumaCentroid(0);
     const float high = GetLumaCentroid(2);
     const float lumaGap = high - low;
     const uint baseModel = (uint)PhaseOutput[InterleavePhase & 7].w;
     const uint fineModel = (uint)PhaseOutput[8 + (InterleavePhase & 7)].w;
-    uint baseChips[16];
-    uint fineChips[16];
+    uint baseChips[25];
+    uint fineChips[25];
     bool baseValid = true;
     bool fineValid = true;
-    [unroll]
-    for (uint sourceChip = 0; sourceChip < 16; sourceChip++)
+    [loop]
+    for (uint sourceChip = 0; sourceChip < 25; sourceChip++)
     {
         baseChips[sourceChip] = ProjectLumaChip(uint2(binding.OriginX, binding.OriginY), sourceChip, baseModel);
         fineChips[sourceChip] = baseModel == fineModel ? baseChips[sourceChip] :
             ProjectLumaChip(uint2(binding.OriginX, binding.OriginY), sourceChip, fineModel);
-        baseValid = baseValid && baseChips[sourceChip] < 16;
-        fineValid = fineValid && fineChips[sourceChip] < 16;
+        baseValid = baseValid && baseChips[sourceChip] < 25;
+        fineValid = fineValid && fineChips[sourceChip] < 25;
     }
     float baseDistances[16];
     float fineDistances[16];
@@ -406,16 +414,16 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         float baseDistance = 0.0;
         float fineDistance = 0.0;
         const uint mask = SymbolMasks[label];
-        [unroll]
-        for (uint chipIndex = 0; chipIndex < 16; chipIndex++)
+        [loop]
+        for (uint chipIndex = 0; chipIndex < 25; chipIndex++)
         {
-            const float value = Luma(samples[chipIndex]);
-            const float baseExpected = ((mask >> min(baseChips[chipIndex], 15)) & 1) != 0 ? high : low;
+            const float value = lumaSamples[chipIndex];
+            const float baseExpected = ((mask >> min(baseChips[chipIndex], 24)) & 1) != 0 ? high : low;
             const float baseDifference = value - baseExpected;
             baseDistance += baseDifference * baseDifference;
             if (baseModel != fineModel)
             {
-                const float fineExpected = ((mask >> min(fineChips[chipIndex], 15)) & 1) != 0 ? high : low;
+                const float fineExpected = ((mask >> min(fineChips[chipIndex], 24)) & 1) != 0 ? high : low;
                 const float fineDifference = value - fineExpected;
                 fineDistance += fineDifference * fineDifference;
             }
@@ -448,11 +456,22 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
     }
     float2 averageOpponent = 0.0;
-    [unroll]
-    for (uint opponentChip = 0; opponentChip < 16; opponentChip++)
+    uint foregroundSamples = 0;
+    const float foregroundThreshold = (low + high) * 0.5;
+    [loop]
+    for (uint opponentChip = 0; opponentChip < 25; opponentChip++)
     {
-        averageOpponent += Opponent(samples[opponentChip]) / 16.0;
+        if (Luma(samples[opponentChip]) >= foregroundThreshold)
+        {
+            averageOpponent += Opponent(samples[opponentChip]);
+            foregroundSamples++;
+        }
     }
+    if (foregroundSamples != 0)
+    {
+        averageOpponent /= (float)foregroundSamples;
+    }
+    TileSamplingFailures[tileOrdinal] = valid && foregroundSamples != 0 ? 0 : 1;
     float chromaDistances[4];
     [unroll]
     for (uint chromaLabel = 0; chromaLabel < 4; chromaLabel++)
@@ -480,7 +499,8 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
         if (chromaBits[chromaPlane] < UnifiedMetricCount)
         {
-            MetricOutput[chromaBits[chromaPlane]] = (oneDistance - zeroDistance) * 4.0;
+            MetricOutput[chromaBits[chromaPlane]] = foregroundSamples == 0 ? 0.0 :
+                (oneDistance - zeroDistance) * 4.0;
         }
     }
 }

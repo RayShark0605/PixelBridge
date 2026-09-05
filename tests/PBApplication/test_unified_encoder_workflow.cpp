@@ -265,7 +265,7 @@ TEST_CASE("Unified Encoder product policy is shared and rejects legacy tuning", 
     REQUIRE(pbapp::ValidateEncoderConfig(config));
     REQUIRE(pbapp::ParseVisualProfileToken("unified") == config.visualProfile);
     REQUIRE(pbapp::ParseVisualProfileToken(L"unified") == config.visualProfile);
-    REQUIRE(std::string_view(pbapp::GetVisualProfileName(config.visualProfile)) == "PB-Unified-LC4-V1");
+    REQUIRE(std::string_view(pbapp::GetVisualProfileName(config.visualProfile)) == "PB-Unified-SC6-V2");
     REQUIRE_FALSE(pbapp::IsRemoteVisualProfile(config.visualProfile));
     for (const std::uint32_t fps : {0U, 61U, 240U})
     {
@@ -428,23 +428,28 @@ TEST_CASE("Unified prescan visits two fixed size Segments and reports automatic 
     const auto source = scratch.Path() / L"source.bin";
     const std::vector<std::byte> bytes(8 * 1024 * 1024 + 1, std::byte{0x35});
     WriteBytes(source, bytes);
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    constexpr std::uint32_t expectedSegmentCount = 2;
+    const std::uint32_t maximumControlSlots = pbmodulation::GetUnifiedMaximumControlSlots();
+    const std::uint32_t controlRecordsPerSegment = 3 * config.controlRepetitions;
+    const std::uint32_t controlFramesPerSegment =
+        (controlRecordsPerSegment + maximumControlSlots - 1) / maximumControlSlots;
     auto state = std::make_shared<PresentationState>();
-    state->maximumFrames = 2;
+    state->maximumFrames = expectedSegmentCount * controlFramesPerSegment;
     pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
     {
         return std::make_unique<MockPresentation>(state);
     });
-    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
-    config.sessionStateRoot = scratch.Path() / L"sessions";
     REQUIRE(runtime.Start(config));
     REQUIRE(WaitFor([&]()
     {
-        return runtime.GetSnapshot().submittedFrames == 2;
+        return runtime.GetSnapshot().submittedFrames == state->maximumFrames;
     }));
     runtime.Stop();
     const auto stopped = runtime.GetSnapshot();
     REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
-    REQUIRE(stopped.preparedSegmentCount == 2);
+    REQUIRE(stopped.preparedSegmentCount == expectedSegmentCount);
     REQUIRE(stopped.preparedSourceBytes == bytes.size());
     REQUIRE(stopped.zstdSegmentCount == 1);
     REQUIRE(stopped.rawSegmentCount == 1);
@@ -501,7 +506,7 @@ TEST_CASE("Unified Control cadence follows monotonic time across rate changes an
     pbapp::SenderUnifiedScheduledFrame frame;
     REQUIRE(clock.Acquire(0, tick));
     REQUIRE(scheduler.PrepareFrameAt(tick.logicalTickOrdinal, 0, frame));
-    REQUIRE(frame.controlSlotCount == 12);
+    REQUIRE(frame.controlSlotCount == pbmodulation::GetUnifiedMaximumControlSlots());
     REQUIRE(frame.firstEquationIndex == 0);
     REQUIRE(scheduler.CommitPreparedFrame());
     REQUIRE(clock.Commit(0));
@@ -509,8 +514,9 @@ TEST_CASE("Unified Control cadence follows monotonic time across rate changes an
     REQUIRE(clock.Acquire(9 * second, tick));
     REQUIRE(tick.disposition == pbapp::SenderLogicalFrameTickDisposition::Ready);
     REQUIRE(scheduler.PrepareFrameAt(tick.logicalTickOrdinal, 9 * second, frame));
-    REQUIRE(frame.controlSlotCount == 0);
-    REQUIRE(frame.firstEquationIndex == 19);
+    REQUIRE(frame.controlSlotCount == 4);
+    REQUIRE(frame.firstEquationIndex ==
+        pbapp::senderUnifiedCodewordSlotCount - pbmodulation::GetUnifiedMaximumControlSlots());
     REQUIRE(clock.RequestFramesPerSecond(60, 9 * second));
     pbapp::SenderUnifiedScheduledFrame repeated;
     REQUIRE(scheduler.PrepareFrameAt(tick.logicalTickOrdinal, 25 * second, repeated));
@@ -521,16 +527,18 @@ TEST_CASE("Unified Control cadence follows monotonic time across rate changes an
     REQUIRE(clock.Commit(9 * second));
     REQUIRE(clock.Acquire(10 * second, tick));
     REQUIRE(scheduler.PrepareFrameAt(tick.logicalTickOrdinal, 10 * second, frame));
-    REQUIRE(frame.controlSlotCount == 12);
-    REQUIRE(frame.firstEquationIndex == 50);
+    REQUIRE(frame.controlSlotCount == pbmodulation::GetUnifiedMaximumControlSlots());
+    REQUIRE(frame.firstEquationIndex == 18);
     REQUIRE(scheduler.CommitPreparedFrame());
     REQUIRE(clock.Commit(10 * second));
     REQUIRE_FALSE(scheduler.PrepareFrameAt(tick.logicalTickOrdinal + 1, 9 * second, frame));
     REQUIRE(scheduler.GetSnapshot().committedFrameCount == 3);
-    REQUIRE(scheduler.GetSnapshot().committedEquationCount == 69);
+    REQUIRE(scheduler.GetSnapshot().committedEquationCount == 25);
     REQUIRE(scheduler.GetSnapshot().controlBurstCount == 2);
     REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true}, scheduler));
     REQUIRE(scheduler.PrepareFrameAt(0, (std::numeric_limits<std::uint64_t>::max)() - 1, frame));
+    REQUIRE(scheduler.CommitPreparedFrame());
+    REQUIRE(scheduler.PrepareFrameAt(1, (std::numeric_limits<std::uint64_t>::max)(), frame));
     const auto before = scheduler.GetSnapshot();
     REQUIRE_FALSE(scheduler.CommitPreparedFrame());
     REQUIRE(scheduler.GetSnapshot() == before);

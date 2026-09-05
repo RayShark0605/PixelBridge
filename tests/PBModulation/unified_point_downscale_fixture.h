@@ -11,7 +11,7 @@
 namespace pbtest
 {
 
-// Independent integer projection: each canonical 4x4 tile becomes 3x3. The
+// Independent integer projection: each four canonical pixels become three. The
 // center source coordinate is exactly on a texel boundary, so exercise both
 // legal tie directions on each axis rather than copying receiver arithmetic.
 inline std::vector<std::byte> DownscaleUnifiedPoint(const std::span<const std::byte> source,

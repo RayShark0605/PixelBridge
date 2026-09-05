@@ -502,7 +502,7 @@ private:
         messageLabel_->setText(FromUtf8(snapshot.statusMessage) + (snapshot.errorDetail.empty() ? QString() : QStringLiteral("\n") + FromUtf8(snapshot.errorDetail)));
         completionLabel_->setText(IsComplete(snapshot) ? QStringLiteral("最终路径：%1\n长度：%2 B\nBLAKE3：%3\nWholeFileDigest、安全发布和重新打开复验均通过。")
             .arg(FromUtf8(snapshot.outputPath)).arg(snapshot.originalFileBytes).arg(FromUtf8(snapshot.wholeFileDigestHex)) : QString());
-        details_->setPlainText(QStringLiteral("Profile: PB-Unified-LC4-V1 / layout 8（只读）\nCapture policy: Auto（不依赖 Encoder FPS）\n%1\nSession: %2\nCaptureEpoch: %3\nResume generation: %4\nResume path: %5\nUniqueVisualFPS: %6\n停止不会删除恢复状态；丢帧或等待不会自动停止。")
+        details_->setPlainText(QStringLiteral("Profile: PB-Unified-SC6-V2 / layout 9（只读）\nCapture policy: Auto（不依赖 Encoder FPS）\n%1\nSession: %2\nCaptureEpoch: %3\nResume generation: %4\nResume path: %5\nUniqueVisualFPS: %6\n停止不会删除恢复状态；丢帧或等待不会自动停止。")
             .arg(FromUtf8(snapshot.backendReason)).arg(FromUtf8(snapshot.sessionIdHex)).arg(snapshot.captureEpoch)
             .arg(snapshot.resumeStateGeneration).arg(FromUtf8(snapshot.resumeStatePath))
             .arg(snapshot.uniqueVisualFps ? QString::number(*snapshot.uniqueVisualFps, 'f', 2) : QStringLiteral("不可用")));

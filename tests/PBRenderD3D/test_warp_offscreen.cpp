@@ -97,10 +97,10 @@ TEST_CASE("WARP renders the canonical raster through the production point-sample
             config, canonicalPixels, targetWidth, targetHeight, result.viewport));
     }
 
-    SECTION("below 0.75x contains neutral matte and no source raster")
+    SECTION("below 1.0x contains neutral matte and no source raster")
     {
-        constexpr std::uint32_t targetWidth = 1439;
-        constexpr std::uint32_t targetHeight = 810;
+        constexpr std::uint32_t targetWidth = 1919;
+        constexpr std::uint32_t targetHeight = 1080;
         auto rendered = RenderWarpOffscreenForTest(config, {}, targetWidth, targetHeight, true);
         REQUIRE(rendered);
         const WarpOffscreenRenderResult& result = rendered.Value();

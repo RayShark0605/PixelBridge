@@ -16,8 +16,8 @@
 #include <string>
 #include <vector>
 
-#ifndef PB_UNIFIED_LC4_GOLDEN_DIR
-#error PB_UNIFIED_LC4_GOLDEN_DIR must name the independent Unified LC4 Golden directory
+#ifndef PB_UNIFIED_SC6_GOLDEN_DIR
+#error PB_UNIFIED_SC6_GOLDEN_DIR must name the independent Unified SC6 Golden directory
 #endif
 
 namespace
@@ -25,7 +25,7 @@ namespace
 
 std::filesystem::path GoldenPath(const char* const name)
 {
-    return std::filesystem::path(PB_UNIFIED_LC4_GOLDEN_DIR) / name;
+    return std::filesystem::path(PB_UNIFIED_SC6_GOLDEN_DIR) / name;
 }
 
 std::vector<std::byte> ReadGolden(const char* const name)
@@ -90,34 +90,34 @@ void AppendLe32(std::array<std::byte, 12>& record, const std::size_t offset, con
 
 } // namespace
 
-TEST_CASE("Unified LC4 codebook labels and compact mapping match the independent Golden",
+TEST_CASE("Unified SC6 codebook labels and compact mapping match the independent Golden",
     "[pbmodulation][unified][mapping][golden]")
 {
     using namespace pbmodulation;
     STATIC_REQUIRE(ValidateUnifiedVisualMappingStaticContract());
 
     const std::vector<std::byte> codebook = ReadGolden("codebook.bin");
-    REQUIRE(codebook.size() == kUnifiedSymbolMasksByLabel.size() * 2);
+    REQUIRE(codebook.size() == kUnifiedSymbolMasksByLabel.size() * 4);
     for (std::size_t label = 0; label < kUnifiedSymbolMasksByLabel.size(); label++)
     {
-        REQUIRE(ReadLe16(codebook, label * 2) == kUnifiedSymbolMasksByLabel[label]);
+        REQUIRE(ReadLe32(codebook, label * 4) == kUnifiedSymbolMasksByLabel[label]);
     }
 
     const std::vector<std::byte> chroma = ReadGolden("chroma-states.bin");
-    REQUIRE(chroma.size() == kUnifiedChromaStatesByLabel.size() * 7);
+    REQUIRE(chroma.size() == kUnifiedChromaStatesByLabel.size() * 4);
     for (std::size_t label = 0; label < kUnifiedChromaStatesByLabel.size(); label++)
     {
-        const std::size_t offset = label * 7;
+        const std::size_t offset = label * 4;
         const UnifiedChromaState& expected = kUnifiedChromaStatesByLabel[label];
-        REQUIRE(std::bit_cast<std::int16_t>(ReadLe16(chroma, offset)) == expected.blueOffset);
-        REQUIRE(std::bit_cast<std::int16_t>(ReadLe16(chroma, offset + 2)) == expected.greenOffset);
-        REQUIRE(std::bit_cast<std::int16_t>(ReadLe16(chroma, offset + 4)) == expected.redOffset);
-        REQUIRE(std::to_integer<std::uint8_t>(chroma[offset + 6]) == expected.label);
+        REQUIRE(std::to_integer<std::uint8_t>(chroma[offset]) == expected.blue);
+        REQUIRE(std::to_integer<std::uint8_t>(chroma[offset + 1]) == expected.green);
+        REQUIRE(std::to_integer<std::uint8_t>(chroma[offset + 2]) == expected.red);
+        REQUIRE(std::to_integer<std::uint8_t>(chroma[offset + 3]) == expected.label);
     }
 
     const std::vector<std::byte> mapping = ReadGolden("mapping-contract.bin");
     REQUIRE(mapping.size() == 128);
-    constexpr std::array<char, 8> magic{'P', 'B', 'U', 'L', 'C', '4', 'M', '1'};
+    constexpr std::array<char, 8> magic{'P', 'B', 'U', 'S', 'C', '6', 'M', '2'};
     REQUIRE(std::equal(mapping.begin(), mapping.begin() + 8,
         reinterpret_cast<const std::byte*>(magic.data()), reinterpret_cast<const std::byte*>(magic.data()) + magic.size()));
     REQUIRE(ReadLe32(mapping, 8) == kUnifiedMappingVersion);
@@ -145,7 +145,7 @@ TEST_CASE("Unified LC4 codebook labels and compact mapping match the independent
     REQUIRE(std::string(reinterpret_cast<const char*>(digestFile.data()), digestFile.size()) == expectedDigest + "\n");
 }
 
-TEST_CASE("Unified LC4 lane mapping is collision-free and exactly invertible in every phase",
+TEST_CASE("Unified SC6 lane mapping is collision-free and exactly invertible in every phase",
     "[pbmodulation][unified][mapping][bijection]")
 {
     using namespace pbmodulation;
@@ -172,27 +172,27 @@ TEST_CASE("Unified LC4 lane mapping is collision-free and exactly invertible in 
                 REQUIRE(inverse == UnifiedLogicalCarrierBit{true, lane, logicalBit});
             }
         }
-        REQUIRE(std::ranges::count_if(lumaOwners, [](const std::uint8_t owner) { return owner != 0; }) == 340200);
-        REQUIRE(std::ranges::count_if(chromaOwners, [](const std::uint8_t owner) { return owner != 0; }) == 162000);
-        REQUIRE(std::ranges::count(lumaOwners, 0) == 6552);
-        REQUIRE(std::ranges::count(chromaOwners, 0) == 11376);
+        REQUIRE(std::ranges::count_if(lumaOwners, [](const std::uint8_t owner) { return owner != 0; }) == 162000);
+        REQUIRE(std::ranges::count_if(chromaOwners, [](const std::uint8_t owner) { return owner != 0; }) == 81000);
+        REQUIRE(std::ranges::count(lumaOwners, 0) == 5488);
+        REQUIRE(std::ranges::count(chromaOwners, 0) == 2744);
     }
 
-    REQUIRE_FALSE(GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 275400, 0).valid);
-    REQUIRE_FALSE(GetUnifiedPhysicalCarrierSite(UnifiedLane::FineLuma, 64800, 0).valid);
-    REQUIRE_FALSE(GetUnifiedPhysicalCarrierSite(UnifiedLane::Chroma, 162000, 0).valid);
+    REQUIRE_FALSE(GetUnifiedPhysicalCarrierSite(UnifiedLane::BaseLuma, 145800, 0).valid);
+    REQUIRE_FALSE(GetUnifiedPhysicalCarrierSite(UnifiedLane::FineLuma, 16200, 0).valid);
+    REQUIRE_FALSE(GetUnifiedPhysicalCarrierSite(UnifiedLane::Chroma, 81000, 0).valid);
     REQUIRE_FALSE(GetUnifiedPhysicalCarrierSite(static_cast<UnifiedLane>(0xFF), 0, 0).valid);
-    REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, UnifiedCarrier::Luma, 86688, 0}, 0).valid);
+    REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, UnifiedCarrier::Luma, 41872, 0}, 0).valid);
     REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, UnifiedCarrier::Luma, 0, 4}, 0).valid);
     REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, UnifiedCarrier::Chroma, 0, 2}, 0).valid);
     REQUIRE_FALSE(GetUnifiedLogicalCarrierBit({true, static_cast<UnifiedCarrier>(0xFF), 0, 0}, 0).valid);
 }
 
-TEST_CASE("Unified LC4 public mapping rebuilds the frozen frame-zero stream digest",
+TEST_CASE("Unified SC6 public mapping rebuilds the frozen frame-zero stream digest",
     "[pbmodulation][unified][mapping][digest]")
 {
     using namespace pbmodulation;
-    constexpr char domain[] = "PixelBridge.UnifiedLc4MappingStream.1";
+    constexpr char domain[] = "PixelBridge.UnifiedSc6MappingStream.2";
     pbprotocol::Blake3Hasher hasher;
     hasher.Update(std::as_bytes(std::span{domain, sizeof(domain)}));
     for (std::size_t laneIndex = 0; laneIndex < kUnifiedLaneInterleaves.size(); laneIndex++)

@@ -163,8 +163,8 @@ struct DataWindowConfig
     std::optional<PhysicalPoint> clientOrigin;
 };
 
-inline constexpr std::uint32_t dataWindowMinimumScaleNumerator = 3;
-inline constexpr std::uint32_t dataWindowMinimumScaleDenominator = 4;
+inline constexpr std::uint32_t dataWindowMinimumScaleNumerator = 1;
+inline constexpr std::uint32_t dataWindowMinimumScaleDenominator = 1;
 inline constexpr std::uint32_t dataWindowMaximumScaleNumerator = 2;
 inline constexpr std::uint32_t dataWindowMaximumScaleDenominator = 1;
 inline constexpr std::uint8_t dataWindowNeutralMatteCodeValue = 128;

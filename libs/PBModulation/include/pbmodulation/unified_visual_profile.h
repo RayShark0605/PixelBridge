@@ -163,7 +163,7 @@ struct UnifiedVisualProfileManifest
     std::uint32_t innerInformationBits = 0;
     std::uint32_t transportOverheadBytes = 0;
     UnifiedPixelRegion dataGridBounds;
-    std::array<UnifiedRegionContract, 31> regions;
+    std::array<UnifiedRegionContract, 33> regions;
     std::array<UnifiedCarrierContract, 2> carriers;
     std::array<UnifiedLaneContract, 3> lanes;
     UnifiedMixedSlotContract mixedSlots;
@@ -172,11 +172,12 @@ struct UnifiedVisualProfileManifest
     bool operator==(const UnifiedVisualProfileManifest&) const = default;
 };
 
-// The region table reuses only the historical 4x4 Shape geometry, not its
-// experimental masks, labels, lane mapping or interleave. The ten Data entries
-// and nine TimingFreshness entries exactly partition dataGridBounds. All canvas
-// pixels not listed here are reserved guard/matte space; the Unified raster
-// contract freezes their exact signal values. Control has no separate pixel rectangle in layout 8: it is
+// Layout 9 keeps the established locator, bootstrap, calibration and freshness
+// scaffold while replacing the fragile 4x4 Data carrier with separated 6x6
+// cells. Twelve Data entries leave explicit guard space around the nine
+// TimingFreshness entries. All canvas pixels not listed here are reserved
+// guard/matte space; the Unified raster contract freezes their exact signal
+// values. Control has no separate pixel rectangle in layout 9: it is
 // reserved in Base Luma codeword slot space by mixedSlots, so its capacity is
 // counted exactly once.
 inline constexpr UnifiedVisualProfileManifest kUnifiedVisualProfile{
@@ -185,15 +186,15 @@ inline constexpr UnifiedVisualProfileManifest kUnifiedVisualProfile{
     1920,
     1080,
     255,
-    4,
-    4,
-    86688,
+    6,
+    6,
+    41872,
     0x36BC661265E826C3ULL,
     16200,
     10800,
     36,
-    UnifiedPixelRegion{96, 96, 1728, 888},
-    std::array<UnifiedRegionContract, 31>{
+    UnifiedPixelRegion{6, 96, 1908, 888},
+    std::array<UnifiedRegionContract, 33>{
         UnifiedRegionContract{UnifiedRegionKind::Locator, UnifiedPilotContent::None, UnifiedPixelRegion{16, 16, 64, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Locator, UnifiedPilotContent::None, UnifiedPixelRegion{1840, 16, 64, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Locator, UnifiedPilotContent::None, UnifiedPixelRegion{16, 1000, 64, 64}},
@@ -215,25 +216,27 @@ inline constexpr UnifiedVisualProfileManifest kUnifiedVisualProfile{
         UnifiedRegionContract{UnifiedRegionKind::Pilot, UnifiedPilotContent::CalibrationReferences, UnifiedPixelRegion{1056, 1000, 128, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Pilot, UnifiedPilotContent::PhaseChecker, UnifiedPixelRegion{896, 16, 128, 64}},
         UnifiedRegionContract{UnifiedRegionKind::Pilot, UnifiedPilotContent::PhaseChecker, UnifiedPixelRegion{896, 1000, 128, 64}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 96, 1728, 64}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 160, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 160, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 288, 1728, 188}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 476, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 476, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 604, 1728, 188}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 792, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 792, 672, 128}},
-        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 920, 1728, 64}}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 96, 1728, 60}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 160, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 160, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 288, 1728, 186}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 476, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 476, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 604, 1728, 186}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{224, 792, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1024, 792, 672, 126}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{96, 920, 1728, 60}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{6, 96, 84, 888}},
+        UnifiedRegionContract{UnifiedRegionKind::Data, UnifiedPilotContent::None, UnifiedPixelRegion{1830, 96, 84, 888}}},
     std::array<UnifiedCarrierContract, 2>{
         UnifiedCarrierContract{UnifiedCarrier::Luma, 4},
         UnifiedCarrierContract{UnifiedCarrier::Chroma, 2}},
     std::array<UnifiedLaneContract, 3>{
-        UnifiedLaneContract{UnifiedLane::BaseLuma, UnifiedCarrier::Luma, 0, 17},
-        UnifiedLaneContract{UnifiedLane::FineLuma, UnifiedCarrier::Luma, 17, 4},
-        UnifiedLaneContract{UnifiedLane::Chroma, UnifiedCarrier::Chroma, 21, 10}},
-    UnifiedMixedSlotContract{UnifiedControlSlotRegion{UnifiedLane::BaseLuma, 0, 17}, 1},
-    UnifiedPresentationContract{3, 4, 2, 1, 1, 15, 60, UnifiedViewportFilter::Point,
+        UnifiedLaneContract{UnifiedLane::BaseLuma, UnifiedCarrier::Luma, 0, 9},
+        UnifiedLaneContract{UnifiedLane::FineLuma, UnifiedCarrier::Luma, 9, 1},
+        UnifiedLaneContract{UnifiedLane::Chroma, UnifiedCarrier::Chroma, 10, 5}},
+    UnifiedMixedSlotContract{UnifiedControlSlotRegion{UnifiedLane::BaseLuma, 0, 9}, 1},
+    UnifiedPresentationContract{1, 1, 2, 1, 1, 15, 60, UnifiedViewportFilter::Point,
         UnifiedViewportFit::PreserveAspectRatio, UnifiedViewportPlacement::CenteredLetterbox,
         UnifiedUndersizeBehavior::NeutralMattePauseWithoutBootstrap}};
 
@@ -363,29 +366,35 @@ namespace unified_detail
     {
         return result;
     }
+    std::uint64_t tilePixels = 0;
+    if (!unified_detail::CheckedMultiply(profile.tileWidth, profile.tileHeight, tilePixels) || tilePixels == 0)
+    {
+        return result;
+    }
     for (const UnifiedRegionContract& region : profile.regions)
     {
         if (region.kind != UnifiedRegionKind::Data)
         {
             continue;
         }
-        std::uint64_t regionArea = 0;
-        std::uint64_t nextDataPixels = 0;
-        if (!unified_detail::TryGetRegionArea(region.bounds, regionArea) ||
-            !unified_detail::CheckedAdd(capacity.dataPixels, regionArea, nextDataPixels))
+        if (region.bounds.width % profile.tileWidth != 0 || region.bounds.height % profile.tileHeight != 0)
         {
             return result;
         }
-        capacity.dataPixels = nextDataPixels;
+        std::uint64_t regionTiles = 0;
+        std::uint64_t nextDataTiles = 0;
+        if (!unified_detail::CheckedMultiply(region.bounds.width / profile.tileWidth,
+                region.bounds.height / profile.tileHeight, regionTiles) ||
+            !unified_detail::CheckedAdd(capacity.dataTiles, regionTiles, nextDataTiles))
+        {
+            return result;
+        }
+        capacity.dataTiles = nextDataTiles;
     }
-
-    std::uint64_t tilePixels = 0;
-    if (!unified_detail::CheckedMultiply(profile.tileWidth, profile.tileHeight, tilePixels) || tilePixels == 0 ||
-        capacity.dataPixels % tilePixels != 0)
+    if (!unified_detail::CheckedMultiply(capacity.dataTiles, tilePixels, capacity.dataPixels))
     {
         return result;
     }
-    capacity.dataTiles = capacity.dataPixels / tilePixels;
 
     const UnifiedCarrierContract* const luma = unified_detail::FindCarrierContract(profile, UnifiedCarrier::Luma);
     const UnifiedCarrierContract* const chroma = unified_detail::FindCarrierContract(profile, UnifiedCarrier::Chroma);
@@ -812,11 +821,6 @@ template <UnifiedLane LaneValue>
         case UnifiedRegionKind::Pilot:
             if (region.pilotContent == UnifiedPilotContent::TimingFreshness)
             {
-                if (region.bounds.x % profile.tileWidth != 0 || region.bounds.y % profile.tileHeight != 0 ||
-                    region.bounds.width % profile.tileWidth != 0 || region.bounds.height % profile.tileHeight != 0)
-                {
-                    return false;
-                }
                 timingPilotRegions++;
             }
             else if (region.pilotContent == UnifiedPilotContent::CalibrationReferences)
@@ -833,8 +837,7 @@ template <UnifiedLane LaneValue>
             }
             break;
         case UnifiedRegionKind::Data:
-            if (region.pilotContent != UnifiedPilotContent::None || region.bounds.x % profile.tileWidth != 0 ||
-                region.bounds.y % profile.tileHeight != 0 || region.bounds.width % profile.tileWidth != 0 ||
+            if (region.pilotContent != UnifiedPilotContent::None || region.bounds.width % profile.tileWidth != 0 ||
                 region.bounds.height % profile.tileHeight != 0)
             {
                 return false;
@@ -845,9 +848,9 @@ template <UnifiedLane LaneValue>
     }
 
     std::uint64_t dataGridPixels = 0;
-    if (!unified_detail::TryGetRegionArea(profile.dataGridBounds, dataGridPixels) || dataGridOwnedPixels != dataGridPixels ||
+    if (!unified_detail::TryGetRegionArea(profile.dataGridBounds, dataGridPixels) || dataGridOwnedPixels > dataGridPixels ||
         locatorRegions != 4 || bootstrapARegions != 1 || bootstrapBRegions != 1 || timingPilotRegions != 9 ||
-        calibrationPilotRegions != 4 || phasePilotRegions != 2 || dataRegions != 10)
+        calibrationPilotRegions != 4 || phasePilotRegions != 2 || dataRegions != 12)
     {
         return false;
     }

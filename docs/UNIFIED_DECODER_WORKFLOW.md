@@ -2,12 +2,13 @@
 
 > 状态：2026-09-04，G16 的定向 application/controller/offscreen GUI smoke 验证通过。
 > 边界：按用户确认扩展了真实 Unified 接收接线，不只是 Qt 页面；未运行真实 selector/capture、GPU parity 重跑、实屏/远程或大文件门禁。
+> G21 更新（2026-09-05）：产品绑定已随唯一 manifest 原子替换为 `PB-Unified-SC6-V2`/layout 9、15 slots 和 1.0x..2.0x；下方 G16 测试数字仍是当时的历史证据，不冒充 SC6 实屏认证。
 
 ## 1. 产品入口与公共接口
 
 无参数运行 `PixelBridgeDecoder.exe` 打开 Qt Widgets 界面。基础区只有输出目录、选择 ROI、开始/停止，以及真实文件恢复状态。
 
-- `MakeUnifiedDecoderConfig(outputDirectory, region)` 固定 `PB-Unified-LC4-V1`、layout 8 和 `CaptureBackend::Auto`。没有 Encoder FPS、Profile、显式 backend、provider 或 Replay 选择。
+- `MakeUnifiedDecoderConfig(outputDirectory, region)` 固定 `PB-Unified-SC6-V2`、layout 9 和 `CaptureBackend::Auto`。没有 Encoder FPS、Profile、显式 backend、provider 或 Replay 选择。
 - `DecoderApplicationController` 只负责启动/停止、转交大输出确认及轮询 `DecoderSnapshot`；Qt 不实现解调、协议、FEC、写入或发布。
 - 只有点击“选择 ROI”才调用既有 PMv2 `SelectScreenCaptureRegion`；高级页的物理坐标后备调用同一个 `ResolveScreenCaptureRegion`。开始时重新解析 ROI，过期/跨屏/不合法区域拒绝启动。
 - Unified 准入范围是单显示器、identity rotation、`1440..3840 × 810..2160` 物理像素的 ROI；这是资源和几何准入边界，不表示任意其中区域都能解码。缩放/letterbox/locator 的实际可用性仍由既有 Unified 解调规则判定。

@@ -5,6 +5,7 @@ target_link_libraries(PBDemodD3D11Tests PRIVATE PB::PBDemodD3D11 PB::PBModulatio
 target_compile_definitions(PBDemodD3D11Tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
     "PB_G12_PARITY_REPORT=\"${CMAKE_CURRENT_BINARY_DIR}/g12-unified-gpu-parity.actual.jsonl\""
     "PB_G12_PERFORMANCE_REPORT=\"${CMAKE_CURRENT_BINARY_DIR}/g12-unified-publish-metrics.actual.jsonl\""
+    "PB_G21_OFFLINE_REPORT=\"${CMAKE_CURRENT_BINARY_DIR}/g21-unified-remote-distortion.actual.jsonl\""
     "PB_G12_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
 PbInstrumentPresentationTest(PBDemodD3D11Tests)
 set(pbDemodD3D11TestTimeout 180)

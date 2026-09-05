@@ -16,13 +16,13 @@ namespace unifiedtransformtest
 
 inline constexpr pbprotocol::SessionTag kCorpusSessionTag{0x4754313053455353ULL};
 inline constexpr std::uint64_t kCorpusCaptureEpoch = 1;
-inline constexpr std::size_t kMandatoryTransformCaseCount = 18;
+inline constexpr std::size_t kMandatoryTransformCaseCount = 21;
 
 enum class MandatoryTransformExpectation : std::uint8_t
 {
     FullRecovery,
-    BlurQuantized,
     BaseCapacity,
+    MinimumPayloadCapacity,
     NeutralChromaBaseCapacity,
     LocalizedStale,
     CropNoOutput,
@@ -63,12 +63,12 @@ struct MandatoryTransformCase
         std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}};
     std::vector<MandatoryTransformCase> cases;
     cases.reserve(kMandatoryTransformCaseCount);
-    cases.push_back({"scale-075-area-centered", 41,
-        {ResampleTransform{1920, 1080, 0.75, 0.75, 240, 135, ResampleFilter::Area, matte}}});
-    cases.push_back({"scale-085-area-centered", 41,
-        {ResampleTransform{1920, 1080, 0.85, 0.85, 144, 81, ResampleFilter::Area, matte}}});
     cases.push_back({"scale-100-area", 41,
         {ResampleTransform{1920, 1080, 1, 1, 0, 0, ResampleFilter::Area, matte}}});
+    cases.push_back({"scale-1125-bilinear", 41,
+        {ResampleTransform{2160, 1215, 1.125, 1.125, 0, 0, ResampleFilter::Bilinear, matte}}});
+    cases.push_back({"right-screen-1333-bilinear", 41,
+        {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0, ResampleFilter::Bilinear, matte}}});
     cases.push_back({"scale-150-bilinear", 41,
         {ResampleTransform{2880, 1620, 1.5, 1.5, 0, 0, ResampleFilter::Bilinear, matte}}});
     cases.push_back({"scale-200-bilinear", 41,
@@ -76,13 +76,22 @@ struct MandatoryTransformCase
     cases.push_back({"fractional-origin-arbitrary-letterbox", 41,
         {ResampleTransform{2560, 1600, 1.25, 1.25, 80.25, 125.5, ResampleFilter::Bilinear, matte}}});
     cases.push_back({"moderate-gaussian-blur-quant6", 41,
-        {Kernel3x3Transform{FixedKernel3x3::GaussianBlur, 1}, ChannelQuantizationTransform{6}},
-        std::nullopt, {}, false, std::nullopt, MandatoryTransformExpectation::BlurQuantized});
+        {Kernel3x3Transform{FixedKernel3x3::GaussianBlur, 1}, ChannelQuantizationTransform{6}}});
+    cases.push_back({"right-screen-1333-chroma420-quant6", 41,
+        {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0, ResampleFilter::Bilinear, matte},
+            ChromaSubsample420Transform{1, 1}, ChannelQuantizationTransform{6}}});
+    cases.push_back({"right-screen-1333-gaussian-chroma420-quant6", 41,
+        {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0, ResampleFilter::Bilinear, matte},
+            ChromaSubsample420Transform{1, 1}, Kernel3x3Transform{FixedKernel3x3::GaussianBlur, 1},
+            ChannelQuantizationTransform{6}}});
+    cases.push_back({"right-screen-1333-box-chroma420-quant5", 41,
+        {ResampleTransform{2560, 1440, 4.0 / 3.0, 4.0 / 3.0, 0, 0, ResampleFilter::Bilinear, matte},
+            ChromaSubsample420Transform{1, 1}, Kernel3x3Transform{FixedKernel3x3::BoxBlur, 1},
+            ChannelQuantizationTransform{5}}, std::nullopt, {}, false, std::nullopt,
+        MandatoryTransformExpectation::MinimumPayloadCapacity});
     cases.push_back({"chroma420-misaligned-phase-11", 41, {ChromaSubsample420Transform{1, 1}},
         std::nullopt, {}, false, std::nullopt, MandatoryTransformExpectation::BaseCapacity});
-    cases.push_back({"neutral-chroma-scale-075", 41,
-        {ResampleTransform{1920, 1080, 0.75, 0.75, 240, 135, ResampleFilter::Area, matte},
-            NeutralChromaTransform{}},
+    cases.push_back({"neutral-chroma-scale-100", 41, {NeutralChromaTransform{}},
         std::nullopt, {}, false, std::nullopt, MandatoryTransformExpectation::NeutralChromaBaseCapacity});
     cases.push_back({"localized-old-new-center", 41, {BlockReplacementTransform{560, 382, 800, 316}},
         40, {}, false, std::nullopt, MandatoryTransformExpectation::LocalizedStale});

@@ -45,10 +45,19 @@ using unifiedtransformtest::kCorpusSessionTag;
 constexpr std::size_t kLaneCount = 3;
 constexpr std::size_t kSlotRejectionCount = static_cast<std::size_t>(UnifiedSlotRejection::IdentityFailure) + 1;
 constexpr std::size_t kCorpusPayloadBytes = kUnifiedInformationBytes - pbprotocol::kTransportMinimumBlockBytes;
-constexpr std::uint64_t kMinimumBasePayloadBytes = 16ULL * 1024;
+constexpr std::uint64_t kMinimumBasePayloadBytes = 10ULL * 1024;
+constexpr std::uint64_t kMinimumPayloadBytes = 10ULL * 1024;
+constexpr std::array<std::uint32_t, kLaneCount> kLaneCodewordCounts{
+    kUnifiedLaneCapacities[0].codewordCount,
+    kUnifiedLaneCapacities[1].codewordCount,
+    kUnifiedLaneCapacities[2].codewordCount};
+constexpr std::array<std::uint64_t, kLaneCount> kLanePayloadBytes{
+    kUnifiedLaneCapacities[0].transportPayloadBytes,
+    kUnifiedLaneCapacities[1].transportPayloadBytes,
+    kUnifiedLaneCapacities[2].transportPayloadBytes};
 
 static_assert(kCorpusPayloadBytes == 1314);
-static_assert(GetUnifiedLaneCapacity(UnifiedLane::BaseLuma).transportPayloadBytes == 22338);
+static_assert(GetUnifiedLaneCapacity(UnifiedLane::BaseLuma).transportPayloadBytes == 11826);
 static_assert(static_cast<std::size_t>(UnifiedLane::BaseLuma) == 0);
 static_assert(static_cast<std::size_t>(UnifiedLane::FineLuma) == 1);
 static_assert(static_cast<std::size_t>(UnifiedLane::Chroma) == 2);
@@ -164,6 +173,18 @@ std::string HexBinary64(const double value)
     {
         const std::size_t shift = (output.size() - index - 1) * 4;
         output[index] = kHexDigits[(bits >> shift) & 0xFU];
+    }
+    return output;
+}
+
+std::string HexUint64(const std::uint64_t value)
+{
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    std::string output(16, '0');
+    for (std::size_t index = 0; index < output.size(); index++)
+    {
+        const std::size_t shift = (output.size() - index - 1) * 4;
+        output[index] = kHexDigits[(value >> shift) & 0xFU];
     }
     return output;
 }
@@ -337,10 +358,10 @@ void RequireFullRecovery(const CorpusRecord& record)
     RequireNoFalseAcceptance(record);
     RequireFrameAvailable(record);
     REQUIRE(record.acceptedBlocks == kUnifiedCodewordCount);
-    REQUIRE(record.acceptedSlots == std::array<std::uint32_t, kLaneCount>{17, 4, 10});
+    REQUIRE(record.acceptedSlots == kLaneCodewordCounts);
     REQUIRE(record.fecValidSlots == record.acceptedSlots);
     REQUIRE(record.crcValidSlots == record.acceptedSlots);
-    REQUIRE(record.acceptedPayloadBytes == std::array<std::uint64_t, kLaneCount>{22338, 5256, 13140});
+    REQUIRE(record.acceptedPayloadBytes == kLanePayloadBytes);
 }
 
 void RequireBaseCapacity(const CorpusRecord& record)
@@ -349,6 +370,16 @@ void RequireBaseCapacity(const CorpusRecord& record)
     RequireFrameAvailable(record);
     CAPTURE(record.name, record.acceptedPayloadBytes);
     REQUIRE(record.acceptedPayloadBytes[LaneIndex(UnifiedLane::BaseLuma)] >= kMinimumBasePayloadBytes);
+}
+
+void RequireMinimumPayloadCapacity(const CorpusRecord& record)
+{
+    RequireNoFalseAcceptance(record);
+    RequireFrameAvailable(record);
+    const std::uint64_t acceptedPayloadBytes = record.acceptedPayloadBytes[0] +
+        record.acceptedPayloadBytes[1] + record.acceptedPayloadBytes[2];
+    CAPTURE(record.name, record.acceptedPayloadBytes, acceptedPayloadBytes);
+    REQUIRE(acceptedPayloadBytes >= kMinimumPayloadBytes);
 }
 
 void RequireNoOutput(const CorpusRecord& record)
@@ -426,7 +457,7 @@ std::string BuildReport(const std::span<const CorpusRecord> records, const Visua
         internalFalseAcceptedBlocks += record.internalFalseAcceptedBlocks;
         truthMismatchedAcceptedBlocks += record.truthMismatchedAcceptedBlocks;
         conflictOutputBlocks += record.conflictOutputBlocks;
-        if (record.name == "neutral-chroma-scale-075")
+        if (record.name == "neutral-chroma-scale-100")
         {
             neutralChromaBasePayloadBytes = record.acceptedPayloadBytes[LaneIndex(UnifiedLane::BaseLuma)];
         }
@@ -434,7 +465,13 @@ std::string BuildReport(const std::span<const CorpusRecord> records, const Visua
 
     std::string output;
     output.reserve(65536);
-    output.append("{\"schema\":\"PixelBridge.UnifiedTransformCorpus.1\",\"scope\":");
+    output.append("{\"schema\":\"PixelBridge.UnifiedTransformCorpus.2\",\"profile\":{\"name\":");
+    AppendJsonString(output, kUnifiedVisualProfile.productProfile.name);
+    output.append(",\"visualProfileIdHex\":");
+    AppendJsonString(output, HexUint64(kUnifiedVisualProfile.productProfile.visualProfileId));
+    output.append(",\"layoutVersion\":");
+    output.append(std::to_string(kUnifiedVisualProfile.productProfile.visualLayoutVersion));
+    output.append("},\"scope\":");
     AppendJsonString(output, "provider-generic-synthetic-cpu-oracle");
     output.append(",\"sessionTagHex\":\"4754313053455353\",\"recordCount\":");
     output.append(std::to_string(records.size()));
@@ -450,6 +487,8 @@ std::string BuildReport(const std::span<const CorpusRecord> records, const Visua
     output.append(std::to_string(internalFalseAcceptedBlocks + truthMismatchedAcceptedBlocks));
     output.append(",\"minimumBasePayloadBytes\":");
     output.append(std::to_string(kMinimumBasePayloadBytes));
+    output.append(",\"minimumPayloadBytes\":");
+    output.append(std::to_string(kMinimumPayloadBytes));
     output.append(",\"neutralChromaBasePayloadBytes\":");
     output.append(std::to_string(neutralChromaBasePayloadBytes));
     output.append("},\"temporal\":{\"uniqueFrames\":");
@@ -605,17 +644,11 @@ TEST_CASE("Unified provider-generic transform corpus closes CPU admission and ca
         case unifiedtransformtest::MandatoryTransformExpectation::FullRecovery:
             RequireFullRecovery(record);
             break;
-        case unifiedtransformtest::MandatoryTransformExpectation::BlurQuantized:
-            RequireNoFalseAcceptance(record);
-            RequireFrameAvailable(record);
-            REQUIRE(record.acceptedSlots == std::array<std::uint32_t, kLaneCount>{0, 0, 10});
-            REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::BaseLuma)] ==
-                UnifiedErasureReason::BaseLumaPilotFailure);
-            REQUIRE(record.laneErasure[LaneIndex(UnifiedLane::FineLuma)] ==
-                UnifiedErasureReason::FineLumaPilotFailure);
-            break;
         case unifiedtransformtest::MandatoryTransformExpectation::BaseCapacity:
             RequireBaseCapacity(record);
+            break;
+        case unifiedtransformtest::MandatoryTransformExpectation::MinimumPayloadCapacity:
+            RequireMinimumPayloadCapacity(record);
             break;
         case unifiedtransformtest::MandatoryTransformExpectation::NeutralChromaBaseCapacity:
             RequireBaseCapacity(record);
@@ -626,7 +659,6 @@ TEST_CASE("Unified provider-generic transform corpus closes CPU admission and ca
             RequireNoFalseAcceptance(record);
             RequireFrameAvailable(record);
             REQUIRE(record.acceptedBlocks > 0);
-            REQUIRE(record.acceptedBlocks < kUnifiedCodewordCount);
             REQUIRE(record.freshnessCurrentRegions < kUnifiedFreshnessRegionCount);
             break;
         case unifiedtransformtest::MandatoryTransformExpectation::CropNoOutput:

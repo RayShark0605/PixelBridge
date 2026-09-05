@@ -1,13 +1,17 @@
 #include "application_build_identity.h"
 #include "diagnostic_file.h"
 #include "local_desktop_runtime.h"
+#include "pbprotocol/checked_integer.h"
 #include "run_report.h"
 
 #include <Windows.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -15,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -22,6 +27,7 @@ namespace
 using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t minimumRunSeconds = 30;
 constexpr std::uint32_t maximumRunSeconds = 600;
+constexpr std::uint32_t maximumDiagnosticDimension = 4096;
 constexpr std::size_t maximumSampleBytes = 24 * 1024;
 constexpr std::size_t maximumSampleCount = maximumRunSeconds + 2;
 constexpr std::size_t maximumEvidenceBytes = pbdiagnostic::DiagnosticFile::maximumBytes;
@@ -49,6 +55,21 @@ std::uint32_t ParseTimeout(const std::wstring_view text)
         value = value * 10 + digit;
     }
     Require(value >= minimumRunSeconds, "timeout must be at least 30 seconds");
+    return value;
+}
+
+std::uint32_t ParseDiagnosticDimension(const std::wstring_view text)
+{
+    Require(!text.empty(), "empty diagnostic dimension");
+    std::uint32_t value = 0;
+    for (const wchar_t character : text)
+    {
+        Require(character >= L'0' && character <= L'9', "invalid diagnostic dimension");
+        const auto digit = static_cast<std::uint32_t>(character - L'0');
+        Require(value <= (maximumDiagnosticDimension - digit) / 10, "diagnostic dimension exceeds 4096 pixels");
+        value = value * 10 + digit;
+    }
+    Require(value != 0, "diagnostic dimension must be positive");
     return value;
 }
 
@@ -244,6 +265,119 @@ std::string GateReport(const pbapp::DecoderSnapshot& snapshot)
     return stream.str();
 }
 
+void WriteLaneMetricReport(std::ostream& stream, const pbmodulation::UnifiedLaneMetricObservation& metrics)
+{
+    stream << std::boolalpha << "{\"available\":" << metrics.available << ",\"samples\":" << metrics.samples
+        << ",\"zeroMetrics\":" << metrics.zeroMetrics << ",\"erasedMetrics\":" << metrics.erasedMetrics
+        << ",\"minimumAbsoluteMetric\":" << metrics.minimumAbsoluteMetric << ",\"meanAbsoluteMetric\":";
+    if (metrics.samples == 0)
+    {
+        stream << "null";
+    }
+    else
+    {
+        stream << static_cast<double>(metrics.absoluteMetricSum) / metrics.samples;
+    }
+    stream << '}';
+}
+
+void WriteSlotReport(std::ostream& stream, const pbmodulation::UnifiedSlotObservation& slot)
+{
+    stream << std::boolalpha << "{\"lane\":" << static_cast<unsigned int>(slot.lane)
+        << ",\"kind\":" << static_cast<unsigned int>(slot.kind)
+        << ",\"rejection\":" << static_cast<unsigned int>(slot.rejection)
+        << ",\"iterationsUsed\":" << slot.iterationsUsed << ",\"acceptedBytes\":" << slot.acceptedBytes
+        << ",\"fecValid\":" << slot.fecValid << ",\"paddingValid\":" << slot.paddingValid
+        << ",\"crcValid\":" << slot.crcValid << ",\"identityValid\":" << slot.identityValid
+        << ",\"accepted\":" << slot.accepted << '}';
+}
+
+void InspectRemotePixels(const std::filesystem::path& inputPath, const std::filesystem::path& reportPath,
+    const std::uint32_t width, const std::uint32_t height)
+{
+    Require(inputPath.is_absolute() && reportPath.is_absolute(), "diagnostic paths must be absolute");
+    Require(std::filesystem::is_regular_file(inputPath), "diagnostic BGRA input must be a regular file");
+    Require(std::filesystem::is_directory(reportPath.parent_path()) && !std::filesystem::exists(reportPath),
+        "diagnostic report parent must exist and report must be new");
+    const auto pixels = pbprotocol::CheckedMultiplyUint64(width, height);
+    Require(static_cast<bool>(pixels), "diagnostic BGRA dimensions overflow");
+    const auto expectedBytes = pbprotocol::CheckedMultiplyUint64(pixels.Value(), 4);
+    Require(expectedBytes && expectedBytes.Value() <= 64ULL * 1024ULL * 1024ULL &&
+        std::filesystem::file_size(inputPath) == expectedBytes.Value(), "diagnostic BGRA size mismatch");
+    std::vector<std::byte> bgra(static_cast<std::size_t>(expectedBytes.Value()));
+    std::ifstream input(inputPath, std::ios::binary);
+    Require(static_cast<bool>(input.read(reinterpret_cast<char*>(bgra.data()), static_cast<std::streamsize>(bgra.size()))) &&
+        input.peek() == std::ifstream::traits_type::eof(), "diagnostic BGRA read failed");
+
+    auto oracleResult = pbmodulation::UnifiedVisualCpuOracle::Create(pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
+    Require(static_cast<bool>(oracleResult), "diagnostic CPU oracle creation failed");
+    auto oracle = std::move(oracleResult).Value();
+    const auto decodeStarted = Clock::now();
+    const auto observation = oracle.DecodeMixedFrame({bgra, width, height, static_cast<std::size_t>(width) * 4,
+        pbmodulation::LumaPixelFormat::Bgra8});
+    const auto decodeNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - decodeStarted).count();
+    const auto metrics = oracle.GetSoftMetrics();
+    std::array<std::array<std::uint32_t, 11>, 3> erasuresByLane{};
+    for (const auto& metric : metrics)
+    {
+        const std::size_t laneIndex = metric.lane == pbmodulation::UnifiedLane::BaseLuma ? 0 :
+            metric.lane == pbmodulation::UnifiedLane::FineLuma ? 1 : 2;
+        const auto reason = static_cast<std::size_t>(metric.erasureReason);
+        Require(reason < erasuresByLane[laneIndex].size(), "unknown diagnostic metric erasure");
+        erasuresByLane[laneIndex][reason]++;
+    }
+    std::uint64_t fecIterations = 0;
+    for (const auto& slot : observation.slots)
+    {
+        fecIterations = pbprotocol::SaturatingAddUnsigned(fecIterations, static_cast<std::uint64_t>(slot.iterationsUsed));
+    }
+
+    std::ostringstream stream;
+    stream.precision(17);
+    stream << std::boolalpha << "{\"schema\":\"PixelBridge.G21.RemotePixelOfflineDiagnostic.1\""
+        << ",\"authority\":\"Stored diagnostic BGRA pixels; not live capture and not sender truth\""
+        << ",\"width\":" << width << ",\"height\":" << height << ",\"inputBytes\":" << bgra.size()
+        << ",\"decodeNanoseconds\":" << decodeNanoseconds << ",\"inputValid\":" << observation.inputValid
+        << ",\"frameErasure\":" << static_cast<unsigned int>(observation.frameErasure)
+        << ",\"bootstrapErasure\":" << static_cast<unsigned int>(observation.bootstrap.erasure)
+        << ",\"frameSequence\":" << observation.bootstrapRecord.frameSequence
+        << ",\"sessionTag\":" << observation.bootstrapRecord.sessionTag.value
+        << ",\"geometry\":{\"originX\":" << observation.bootstrap.geometry.originX
+        << ",\"originY\":" << observation.bootstrap.geometry.originY << ",\"scaleX\":" << observation.bootstrap.geometry.scaleX
+        << ",\"scaleY\":" << observation.bootstrap.geometry.scaleY
+        << ",\"markerResidualPixels\":" << observation.bootstrap.geometry.markerResidualPixels << "}"
+        << ",\"laneErasures\":{\"base\":" << static_cast<unsigned int>(observation.baseLuma.erasureReason)
+        << ",\"fine\":" << static_cast<unsigned int>(observation.fineLuma.erasureReason)
+        << ",\"chroma\":" << static_cast<unsigned int>(observation.chroma.erasureReason) << "}"
+        << ",\"laneMetrics\":[";
+    for (std::size_t lane = 0; lane < observation.laneMetrics.size(); lane++)
+    {
+        stream << (lane == 0 ? "" : ",");
+        WriteLaneMetricReport(stream, observation.laneMetrics[lane]);
+    }
+    stream << "],\"metricErasureHistograms\":[";
+    for (std::size_t lane = 0; lane < erasuresByLane.size(); lane++)
+    {
+        stream << (lane == 0 ? "[" : ",[");
+        for (std::size_t reason = 0; reason < erasuresByLane[lane].size(); reason++)
+        {
+            stream << (reason == 0 ? "" : ",") << erasuresByLane[lane][reason];
+        }
+        stream << ']';
+    }
+    stream << "],\"fecIterations\":" << fecIterations << ",\"acceptedBlocks\":" << observation.acceptedBlocks
+        << ",\"acceptedTransportBlocks\":" << observation.acceptedTransportBlocks
+        << ",\"acceptedControlRecords\":" << observation.acceptedControlRecords << ",\"slots\":[";
+    for (std::size_t slot = 0; slot < observation.slots.size(); slot++)
+    {
+        stream << (slot == 0 ? "" : ",");
+        WriteSlotReport(stream, observation.slots[slot]);
+    }
+    stream << "]}";
+    WriteNew(reportPath, stream.str());
+    std::cout << stream.str() << '\n';
+}
+
 void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
 {
     const auto safety = ResolveSafety();
@@ -319,6 +453,21 @@ void RunPolicyChecks()
         }
         Require(rejected, "invalid timeout accepted");
     }
+    Require(ParseDiagnosticDimension(L"1") == 1 && ParseDiagnosticDimension(L"4096") == maximumDiagnosticDimension,
+        "diagnostic dimension boundary mismatch");
+    for (const std::wstring_view invalid : {L"", L"0", L"4097", L"-1", L"1x", L"4294967296"})
+    {
+        bool rejected = false;
+        try
+        {
+            static_cast<void>(ParseDiagnosticDimension(invalid));
+        }
+        catch (const std::exception&)
+        {
+            rejected = true;
+        }
+        Require(rejected, "invalid diagnostic dimension accepted");
+    }
     Require(CanAppendSample(0, 0, maximumSampleBytes - 1) && !CanAppendSample(0, 0, maximumSampleBytes) &&
         !CanAppendSample(maximumSampleCount, 0, 1) && !CanAppendSample(0, maximumEvidenceBytes, 1) &&
         !CanAppendSample(0, maximumEvidenceBytes + 1, 0), "evidence bounds mismatch");
@@ -387,7 +536,7 @@ int wmain(const int count, wchar_t* arguments[])
 {
     try
     {
-        Require(count >= 2, "expected --build-identity, --self-test, --preflight NEW_RUN or --receive NEW_RUN SECONDS");
+        Require(count >= 2, "expected --build-identity, --self-test, --inspect-bgra INPUT NEW_REPORT WIDTH HEIGHT, --preflight NEW_RUN or --receive NEW_RUN SECONDS");
         const std::wstring_view role(arguments[1]);
         if (role == L"--build-identity" && count == 2)
         {
@@ -405,6 +554,11 @@ int wmain(const int count, wchar_t* arguments[])
             Evidence evidence(arguments[2]);
             evidence.Record("preflight.json", PreflightReport(safety));
             std::cout << "PASS: current right-monitor preflight only; capture not started\n";
+        }
+        else if (role == L"--inspect-bgra" && count == 6)
+        {
+            InspectRemotePixels(arguments[2], arguments[3], ParseDiagnosticDimension(arguments[4]),
+                ParseDiagnosticDimension(arguments[5]));
         }
         else if (role == L"--receive" && count == 4)
         {
