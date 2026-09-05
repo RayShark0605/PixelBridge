@@ -1,5 +1,5 @@
 #include "decoder_resume_store.h"
-#include "encoder_atomic_replace_retry.h"
+#include "atomic_replace_retry.h"
 #include "encoder_session_store.h"
 #include "sender_carousel_scheduler.h"
 
@@ -442,7 +442,7 @@ TEST_CASE("Encoder atomic replacement retry policy is bounded and preserves the 
     std::size_t calls = 0;
     std::uint32_t waits = 0;
     std::uint64_t requestedWaitMilliseconds = 0;
-    const auto result = pbapp::detail::RetryEncoderStateReplace([&]() noexcept
+    const auto result = pbapp::detail::RetryAtomicReplace([&]() noexcept
     {
         now += operationTime;
         const DWORD error = errors[(std::min)(calls, errors.size() - 1)];
@@ -460,7 +460,7 @@ TEST_CASE("Encoder atomic replacement retry policy is bounded and preserves the 
     REQUIRE(result.firstError == errors.front());
     REQUIRE(result.error == errors.back());
     REQUIRE(result.elapsedMilliseconds == now);
-    REQUIRE(requestedWaitMilliseconds <= pbapp::detail::encoderReplaceBudgetMilliseconds);
+    REQUIRE(requestedWaitMilliseconds <= pbapp::detail::atomicReplaceBudgetMilliseconds);
 }
 
 TEST_CASE("Encoder retries the same flushed temporary file after a controlled native rename denial",
@@ -490,10 +490,66 @@ TEST_CASE("Encoder retries the same flushed temporary file after a controlled na
     std::uint32_t attempts = 0;
     std::uint64_t now = 0;
     bool released = false;
-    const auto result = pbapp::detail::RetryEncoderStateReplace([&]() noexcept
+    const auto result = pbapp::detail::RetryAtomicReplace([&]() noexcept
     {
         const DWORD error = MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
             ERROR_SUCCESS : GetLastError();
+        if (attempts == 0)
+        {
+            firstNativeError = error;
+        }
+        attempts++;
+        return error;
+    }, [&]() noexcept { return now; }, [&](const DWORD milliseconds) noexcept
+    {
+        released = reader.Close();
+        now += milliseconds;
+    });
+    REQUIRE(firstNativeError == ERROR_ACCESS_DENIED);
+    REQUIRE(released);
+    REQUIRE(result.error == ERROR_SUCCESS);
+    REQUIRE(result.attempts == 2);
+    REQUIRE(ReadAllBytes(target) == newBytes);
+    REQUIRE_FALSE(std::filesystem::exists(temporary));
+    REQUIRE(oldBytes != newBytes);
+}
+
+TEST_CASE("Decoder resume replacement retries the same flushed candidate after a transient native reader",
+    "[application][decoder][resume][atomic-replace][g21]")
+{
+    ScratchDirectory scratch(L"decoder-resume-replace-native");
+    const std::filesystem::path target = scratch.GetPath() / L"PixelBridge-test.resume";
+    const std::filesystem::path temporary = target.wstring() + L".tmp";
+    const std::vector<std::byte> oldBytes = MakeBytes(41);
+    std::vector<std::byte> newBytes = MakeBytes(73);
+    newBytes.front() ^= std::byte{0x80};
+    const auto writeNewDurableFile = [](const std::filesystem::path& path,
+        const std::span<const std::byte> bytes)
+    {
+        const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        REQUIRE(file != INVALID_HANDLE_VALUE);
+        DWORD writtenBytes = 0;
+        const bool written = WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &writtenBytes, nullptr) != FALSE;
+        const bool flushed = FlushFileBuffers(file) != FALSE;
+        const bool closed = CloseHandle(file) != FALSE;
+        REQUIRE(written);
+        REQUIRE(writtenBytes == bytes.size());
+        REQUIRE(flushed);
+        REQUIRE(closed);
+    };
+    writeNewDurableFile(target, oldBytes);
+    writeNewDurableFile(temporary, newBytes);
+
+    ScopedStateReader reader(target, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    DWORD firstNativeError = ERROR_SUCCESS;
+    std::uint32_t attempts = 0;
+    std::uint64_t now = 0;
+    bool released = false;
+    const auto result = pbapp::detail::RetryAtomicReplace([&]() noexcept
+    {
+        const DWORD error = MoveFileExW(temporary.c_str(), target.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? ERROR_SUCCESS : GetLastError();
         if (attempts == 0)
         {
             firstNativeError = error;

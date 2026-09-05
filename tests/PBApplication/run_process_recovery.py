@@ -33,7 +33,7 @@ MINIMUM_COMPLETED = dict(zip(POINTS, (0, 0, 2, 2, 2, 3, 32, 32, 32)))
 NEGATIVE_CASES = ("torn-final-tail", "internal-crc", "forged-length", "over-active-quota", "changed-source")
 SOURCE_FILES = (
     "apps/common/local_desktop_runtime.cpp", "apps/common/decoder_resume_store.cpp",
-    "apps/common/encoder_session_store.cpp", "apps/common/encoder_atomic_replace_retry.h",
+    "apps/common/encoder_session_store.cpp", "apps/common/atomic_replace_retry.h",
     "libs/PBStorage/src/output_file.cpp",
     "tests/PBApplication/CMakeLists.txt", "tests/PBApplication/process_fault_test_hook.h",
     "tests/PBApplication/process_recovery_test_access.h", "tests/PBApplication/process_recovery_runtime.inc",

@@ -873,6 +873,8 @@ freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap t
 
 **Striped-W8 live 的远控冻结与亚像素覆盖修正（2026-09-06）：** `8bf9b89` 同身份 64 MiB CSPRNG/RAW 运行中，sender 在 1,800.702 秒提交 26,962 frames（14.978263 Hz），Receiver 只观察到 367 unique frames（sender 的 1.3612%，0.236819 unique Hz），0/8 Segment 完成且未发布。8 个正式 decoder 均已建立，证明 W=8 路径可达；但 descriptor 到达前有界 orphan cache 产生 1,076 次资源拒绝，最长采样无新 unique 进度达 776.4 秒。DISPLAY2 在 4.476 秒内三张只读截图逐字节相同，直接证明远控展示冻结。旧版对其中原始 2560×1440 BGRA 可接受 Bootstrap，却因拟合 `originY=-0.016942 px` 误报 `CanvasClipped`；仅加 1 px 外围诊断边框后同一内部像素可接受全部 15/15 codewords。当前覆盖判定只吸收严格小于半个 point sample 的边缘量化，恰好半像素、任何整像素裁剪及更严格 caller residual 仍拒绝；修正版直接重放未补边原帧同样接受 15/15。Release 定向 9 / 306 / 372 assertions 全通过。该修正不替代 live，minute-scale 冻结与入场资源拒绝仍待解决；未跑 full CTest、ASan、GPU、新实屏、Base-only 或 G22。因此 **G21 继续 PARTIAL，G22 未开始**。详见 `UNIFIED_REMOTE_GATE.md` 第 16 节。
 
+**亚像素修正 live 与 Decoder resume replace 修正（2026-09-06）：** `caba104` 同身份默认 15 Hz / 64 MiB CSPRNG/RAW 运行稳定观察 3,665 unique frames @ 8.226447 Hz，并完成 6/8 Segment、48 MiB；Base/Fine/Chroma FEC failures 为 0/0/17，CRC/identity/conflict 为 0，证明上一轮 0.236819 Hz/minute-scale 冻结已不再出现。最终未发布的决定性原因不是像素，而是第六个完成 Segment 的 `.resume` compact rename 返回 `win32=5`。现场 resume 属性与 ACL 正常、同路径此前多次 compact 成功、无残留 tmp；错误点与已原生复现的 Encoder target-reader 瞬时竞争相同。当前把内部 atomic-replace retry 泛化给 Encoder/Decoder 复用：只重试同一个已 flush candidate 的 rename，25 ms、最多 11 次/250 ms，仅处理 Win32 5/32；不重写、不删目标、不消耗 generation，其他错误或预算耗尽仍 fail closed。Release Decoder native 23、Encoder 184、resume journal 243 assertions 和 8-Segment headless checkpoint 全通过。提交后仍需最后一次同身份 64 MiB live 与 Base-only；未跑 full CTest、ASan、GPU、20 GiB 或 G22。因此 **G21 继续 PARTIAL，G22 未开始**。详见 `UNIFIED_REMOTE_GATE.md` 第 17 节。
+
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。
 

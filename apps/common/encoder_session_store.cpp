@@ -1,5 +1,5 @@
 #include "encoder_session_store.h"
-#include "encoder_atomic_replace_retry.h"
+#include "atomic_replace_retry.h"
 
 #ifdef PB_PROCESS_FAULT_TESTS
 #include "process_fault_test_hook.h"
@@ -374,7 +374,7 @@ struct ParsedRuntimeState
     // An ordinary target reader can transiently deny replacement even when it
     // shares DELETE. Keep the same flushed candidate and durable transaction;
     // no target deletion, copy fallback, reserialization or lease use on failure.
-    const auto replacement = detail::RetryEncoderStateReplace([&]() noexcept
+    const auto replacement = detail::RetryAtomicReplace([&]() noexcept
     {
         return MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
             ERROR_SUCCESS : GetLastError();

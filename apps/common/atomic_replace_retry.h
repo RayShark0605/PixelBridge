@@ -10,11 +10,11 @@ namespace pbapp::detail
 
 // Internal scheduling policy, not a persistence format or a public API. Never
 // retry the write/flush or allocate a new generation: retry only the same rename.
-inline constexpr std::uint32_t encoderReplaceMaximumAttempts = 11;
-inline constexpr std::uint64_t encoderReplaceBudgetMilliseconds = 250;
-inline constexpr DWORD encoderReplaceDelayMilliseconds = 25;
+inline constexpr std::uint32_t atomicReplaceMaximumAttempts = 11;
+inline constexpr std::uint64_t atomicReplaceBudgetMilliseconds = 250;
+inline constexpr DWORD atomicReplaceDelayMilliseconds = 25;
 
-struct EncoderReplaceResult
+struct AtomicReplaceResult
 {
     DWORD error = ERROR_SUCCESS;
     DWORD firstError = ERROR_SUCCESS;
@@ -26,13 +26,13 @@ struct EncoderReplaceResult
 // hooks. A stalled clock is also bounded by the attempt limit. The budget does
 // not bound time spent inside Windows or scheduler oversleep.
 template <typename Replace, typename Clock, typename Wait>
-[[nodiscard]] EncoderReplaceResult RetryEncoderStateReplace(Replace&& replace, Clock&& clock, Wait&& wait) noexcept
+[[nodiscard]] AtomicReplaceResult RetryAtomicReplace(Replace&& replace, Clock&& clock, Wait&& wait) noexcept
 {
-    EncoderReplaceResult result;
+    AtomicReplaceResult result;
     const std::uint64_t started = clock();
-    while (result.attempts < encoderReplaceMaximumAttempts)
+    while (result.attempts < atomicReplaceMaximumAttempts)
     {
-        if (result.attempts != 0 && result.elapsedMilliseconds >= encoderReplaceBudgetMilliseconds)
+        if (result.attempts != 0 && result.elapsedMilliseconds >= atomicReplaceBudgetMilliseconds)
         {
             break;
         }
@@ -45,13 +45,13 @@ template <typename Replace, typename Clock, typename Wait>
         result.elapsedMilliseconds = clock() - started;
         if (result.error == ERROR_SUCCESS ||
             (result.error != ERROR_ACCESS_DENIED && result.error != ERROR_SHARING_VIOLATION) ||
-            result.attempts == encoderReplaceMaximumAttempts ||
-            result.elapsedMilliseconds >= encoderReplaceBudgetMilliseconds)
+            result.attempts == atomicReplaceMaximumAttempts ||
+            result.elapsedMilliseconds >= atomicReplaceBudgetMilliseconds)
         {
             break;
         }
-        wait(static_cast<DWORD>((std::min)(static_cast<std::uint64_t>(encoderReplaceDelayMilliseconds),
-            encoderReplaceBudgetMilliseconds - result.elapsedMilliseconds)));
+        wait(static_cast<DWORD>((std::min)(static_cast<std::uint64_t>(atomicReplaceDelayMilliseconds),
+            atomicReplaceBudgetMilliseconds - result.elapsedMilliseconds)));
         result.elapsedMilliseconds = clock() - started;
     }
     return result;

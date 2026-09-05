@@ -1,5 +1,6 @@
 #include "decoder_resume_store.h"
 
+#include "atomic_replace_retry.h"
 #include "sender_carousel_scheduler.h"
 
 #include "pbprotocol/bootstrap_control_codec.h"
@@ -229,11 +230,18 @@ template <typename Integer>
         DeleteFileW(temporaryPath.c_str());
         return DecoderResumeStoreStatus::Failure(NativeFailure("resume compact close", error));
     }
-    if (MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
+    // A short-lived scanner or reader can race the interval after the append
+    // handle closes. Retry only this already-flushed candidate rename; never
+    // rebuild the document, delete the durable target, or advance generation.
+    const auto replacement = detail::RetryAtomicReplace([&]() noexcept
     {
-        const DWORD error = GetLastError();
+        return MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
+            ERROR_SUCCESS : GetLastError();
+    }, []() noexcept { return GetTickCount64(); }, [](const DWORD milliseconds) noexcept { Sleep(milliseconds); });
+    if (replacement.error != ERROR_SUCCESS)
+    {
         DeleteFileW(temporaryPath.c_str());
-        return DecoderResumeStoreStatus::Failure(NativeFailure("resume compact replace", error));
+        return DecoderResumeStoreStatus::Failure(NativeFailure("resume compact replace", replacement.error));
     }
     return {};
 }

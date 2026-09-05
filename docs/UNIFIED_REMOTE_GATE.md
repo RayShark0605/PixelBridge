@@ -800,3 +800,71 @@ build-unified-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe "[g20][po
 没有运行 full CTest、ASan、GPU/corpus、新一次实屏、Base-only、20 GiB 或 G22。上述离线重放只关闭真实像素上的
 边界误杀，不是新 live 成功；minute-scale 远控冻结和 1,076 次入场资源拒绝仍未解决，64 MiB 未发布。因此
 **G21 继续 PARTIAL，G22 未开始**。
+
+## 17. 亚像素修正后的 64 MiB live 与 Decoder resume replace 故障
+
+### 17.1 同身份运行结果
+
+`caba104fb3b851975dee4b13fa5ab9e984b89303` 的同身份 Encoder/Decoder 以默认 15 Hz 再跑真实远程
+64 MiB CSPRNG/RAW。Sender/Receiver 的 commit、profile/layout、SessionId、SessionTag、文件名、大小和时段均严格
+配对；source 未提供给 Decoder。Sender 提交 10,453 frames @ 14.984235 Hz，Receiver 在 542.793 秒内观察到
+3,665 unique frames @ 8.226447 Hz，完成 6/8 Segment、50,331,648 raw bytes 后 fail closed，未发布文件。
+
+| 项目 | 结果 |
+| --- | ---: |
+| Accepted Transport | 52,564 |
+| Base/Fine/Chroma FEC failures | 0 / 0 / 17 |
+| CRC / identity / Outer conflict | 0 / 0 / 0 |
+| Capture admission drops | 97 |
+| Outer resource rejections | 71（启动后不再增长） |
+| Active decoder peak | 8 |
+| Sender / receiver whole digest | 相同：`b7568844...e324d` |
+| Whole digest / publish / final reopen | unavailable / false / unavailable |
+
+与上一轮 0.236819 unique Hz 和 776.4 秒无进度相比，本轮稳定保持约 8.23 unique Hz，直接证明亚像素覆盖修正后的
+真实视觉链不再表现为 minute-scale 冻结；但是 64 MiB 仍不能关闭，因为第六个 Segment 的 resume commit 失败。
+配对证据封存于：
+
+```text
+build-unified-release/g21-sc6-v3-live-subpixel-64mib-1/
+  full-64mib-15hz-5bcb20f6a0e743f6b5c7e6f5a21b3aa1/
+```
+
+`paired-failure-audit.json` 固结三份 sender JSON、terminal receiver、`.part/.resume` 及其哈希；错误文件为 0。
+
+### 17.2 决定性故障与最小修正
+
+最终错误为：
+
+```text
+completed Segment resume commit failed: resume compact replace failed; win32=5
+```
+
+现场 `.resume` 为 17,423,982 bytes、普通 Archive 属性、ACL 允许 Modify、无残留 `.tmp`；同一路径此前多次 compact
+成功。失败发生在独占 append handle 已关闭、临时文档已 write/flush/close 后的
+`MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`。这与 Encoder `runtime.state` 已通过原生 reader fixture 复现的 Windows
+短时 target reader/scanner 竞争相同：错误为 `ERROR_ACCESS_DENIED` 或 `ERROR_SHARING_VIOLATION`，不是文档损坏、空间
+不足、权限永久丢失或 FEC 失败。
+
+内部 helper 因而从 Encoder 专名泛化为 `atomic_replace_retry.h`，Encoder 与 Decoder 复用同一策略：只对同一个已经
+flush 的 candidate rename 重试，25 ms 间隔、最多 11 attempts、总预算 250 ms；非 5/32 错误立即返回。绝不重复
+write/flush、删除 durable target、copy fallback、重新序列化、递增 generation 或放宽恢复/发布门。预算耗尽仍保留
+原 durable journal 并 fail closed。
+
+### 17.3 定向验证与边界
+
+只执行受影响的最小 Release 验证：
+
+```powershell
+cmake --build build-unified-release --config Release --target PBApplicationTests --parallel 2
+build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][decoder][resume][atomic-replace][g21]" --rng-seed 21092026 --reporter console
+build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][encoder][atomic-replace]" --rng-seed 21092026 --reporter console
+build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][decoder][resume][journal]" --rng-seed 21092026 --reporter console
+cmake --build build-unified-release --config Release --target PBHeadlessMultiSegmentCheckpoint --parallel 2
+ctest --test-dir build-unified-release -C Release -R "^PBHeadlessMultiSegmentCheckpoint$" --output-on-failure
+```
+
+结果依次为 1 case / 23 assertions、4 / 184、4 / 243，以及 8-Segment headless checkpoint 1/1，全部通过。
+没有运行 full CTest、ASan、GPU/corpus、Base-only、20 GiB 或 G22。该修正仍需提交后重建同身份 Encoder/Decoder，
+再做最后一次真实 64 MiB；在 whole digest、安全发布、final reopen 和外部 SHA-256/BLAKE3 全部通过前，
+**G21 继续 PARTIAL，G22 未开始**。

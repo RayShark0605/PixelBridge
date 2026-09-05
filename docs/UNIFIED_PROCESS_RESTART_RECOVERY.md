@@ -326,7 +326,7 @@ foreach ($attempt in 1..3) {
 
 确定的应用缺陷是：`AtomicWriteFile` 对可短暂恢复的原子替换拒绝只尝试一次，导致整个 Carousel 退出。原自然失败的具体占用进程/过滤驱动仍未知；不将其归因给安全软件。原 target-reader 小探针证明本机 Windows 的目标读句柄即使允许 `FILE_SHARE_DELETE`，仍能令旧的 `MoveFileExW` replacement 返回 error 5。新增生产 state-store 测试把该句柄限制为约 50 ms：**接入修复前仍失败，错误与自然故障相同**。
 
-修复只改变 `apps/common/encoder_session_store.cpp` 中 rename 的错误处理，内部策略在 `encoder_atomic_replace_retry.h`：
+修复只改变 `apps/common/encoder_session_store.cpp` 中 rename 的错误处理，内部策略现由 Encoder 与 Decoder 共同复用，位于 `atomic_replace_retry.h`：
 
 - 仍为原 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`；只对 `ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION` 重试。
 - **最多 11 次调用、250 ms 重试调度预算、每次最多等待 25 ms**；同时检查尝试数和单调时钟，时钟停滞也不能无限循环，超时唤醒后不再开始新的调用。
