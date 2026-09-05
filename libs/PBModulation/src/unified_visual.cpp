@@ -352,16 +352,21 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     LocalDesktopGeometry candidate = geometry;
     candidate.scaleX = std::clamp(candidate.scaleX, GetUnifiedMinimumScale(), GetUnifiedMaximumScale());
     candidate.scaleY = std::clamp(candidate.scaleY, GetUnifiedMinimumScale(), GetUnifiedMaximumScale());
-    // Candidate residual tolerance must not become crop tolerance. Only absorb
-    // sub-pixel refinement noise at a frame edge; even a one-pixel crop remains
-    // a decisive CanvasClipped failure.
-    const double boundaryTolerance = std::min(locatorPolicy.maximumGeometryResidualPixels,
-        kLocalDesktopGeometryRefinementConvergencePixels);
-    const auto SnapAxisToFrame = [boundaryTolerance](const double framePixels, const double canvasPixels,
+    // A point-sampled integer ROI cannot remove less than one complete physical
+    // pixel. A fitted boundary that is strictly inside the half-pixel support of
+    // the edge sample is therefore estimator quantization, not proof of a crop.
+    // The strict limit keeps a half-pixel blurred edge and every integer crop
+    // fail closed; a stricter caller residual budget remains authoritative.
+    constexpr double pointSampleExteriorLimitPixels = 0.5;
+    const double boundaryLimit = std::min(locatorPolicy.maximumGeometryResidualPixels,
+        pointSampleExteriorLimitPixels);
+    const auto SnapAxisToFrame = [boundaryLimit](const double framePixels, const double canvasPixels,
         double& origin, double& scale) noexcept
     {
         const double farBoundary = origin + scale * canvasPixels;
-        if (origin < -boundaryTolerance || farBoundary > framePixels + boundaryTolerance ||
+        const double nearExterior = std::max(0.0, -origin);
+        const double farExterior = std::max(0.0, farBoundary - framePixels);
+        if (nearExterior >= boundaryLimit || farExterior >= boundaryLimit ||
             !std::isfinite(farBoundary))
         {
             return false;

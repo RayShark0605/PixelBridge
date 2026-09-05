@@ -731,3 +731,72 @@ report 112、单 Segment scheduler/raster 邻接 37/128，以及 `PBUnifiedRemot
 该 probe 没有编码/显示/捕获屏幕像素，所以只关闭调度、Outer FEC、资源和 digest 的确定性回归，不冒充 live。
 本轮没有运行 full CTest、ASan、GPU/corpus、实际屏幕或 G22。提交后必须重建同身份 Encoder/Decoder，再跑真实
 64 MiB；还需 Base Luma 独立恢复（或同一 actual capture 的 neutralized 派生）。因此 **G21 继续 PARTIAL，G22 未开始**。
+
+## 16. Striped-W8 真实 64 MiB 失败与远控边界误判
+
+### 16.1 同身份 live 结果
+
+`8bf9b8904cc2bd6a871a652076472f2544202f20` 的同身份 Encoder/Decoder 使用 Striped-W8 再跑一次真实远程
+64 MiB CSPRNG/RAW。Sender 正常运行到用户停止，Receiver 在确认远端停止后人工终止；两侧都没有 watchdog 强杀，
+也没有发布错误文件。冻结身份为 SessionId `772e5846039d4dab4ddd469ace45ad30`、SessionTag
+`948397703782286348`，source manifest SHA-256 为
+`be3b8b461345b7ad9b039ce485116a07816aa0be199858772826de849defca49`，sender BLAKE3 为
+`1998a8f0bea21f6a4fcd0e3466292d16d962839d4ee62270ba411a66026cd5bc`；source bytes 从未提供给 Decoder。
+
+| 项目 | 结果 |
+| --- | ---: |
+| Sender submitted logical frames | 26,962 @ 14.978263 Hz |
+| Receiver unique logical frames | 367（sender 的 1.3612%）@ 0.236819 Hz |
+| Verified Segments / raw bytes | 0 / 8；0 B |
+| Accepted Control / Transport | 186 / 5,304 |
+| Active decoder current / peak | 8 / 8 |
+| Outer resource / conflict rejections | 1,076 / 0 |
+| Longest sampled no-new-unique interval | 776.4 s |
+| Whole digest / publish / final reopen | unavailable / false / unavailable |
+
+8 个 SegmentDescriptor 最终都已进入正式状态，说明 W=8 sender striping 与 8-decoder 配额确实生效；但是远控只以
+少量突发方式送达新画面，SegmentDescriptor 建立前的陌生 Segment 数据填满有界 orphan cache，产生 1,076 次
+资源拒绝。`VerifiedEncodedBytesPerUniqueFrame` 正确保持 `null / NotPublished`。证据封存于：
+
+```text
+build-unified-release/g21-sc6-v3-live-striped-window-1/
+  full-64mib-15hz-26c31b02ec674e299e5942f36e488e72/
+```
+
+其中 `paired-failure-audit.json` 固结 sender/receiver 身份、计数、报告哈希和证据边界；原始三份远端 JSON 以
+`remote-*` 文件名原样保留。该运行证明 ActiveSegmentWindow 的产品路径已经可达，但没有证明 64 MiB 恢复成功。
+
+### 16.2 同一真实失真帧定位出的几何误杀
+
+Receiver 运行期间只读捕获 DISPLAY2，并在约 4.476 秒内连续保存三张截图；三者 SHA-256 均为
+`586467bca17850ebabe75400f5f21f54715d432a0dbfe5f0e4f8e857e5e98172`，逐字节相同。这是远控展示冻结的直接证据，
+没有使用鼠标、键盘或窗口激活。另保存一张原始 2560×1440 BGRA 帧，经冻结旧版 `PBUnifiedRemoteGate
+--inspect-bgra` 得到：Bootstrap 接受、FrameSequence=25,631、SessionTag 匹配、marker residual=0.283718 px，
+但拟合原点 `(-0.001565, -0.016942)` 被 `CanvasClipped` 拒绝，因而 0 block 进入 FEC。
+
+只在该 BGRA 外围添加 1 个像素的诊断边框、完全不改内部像素后，冻结旧版即可接受全部 15/15 codewords：
+11 Transport + 4 Control，Base/Fine/Chroma、padding、CRC、identity 全部通过。这一单变量对照证明真实远控 payload
+本身可解，失败点是整数 point-sampled ROI 上的亚像素几何估计被错误当成真实裁剪，而不是以扩大 FEC、CRC 或
+admission 容差掩盖失真。
+
+### 16.3 最小几何修正与验证边界
+
+覆盖判定现在只吸收**严格小于半个物理像素**的外侧拟合量：整数 ROI 不可能只裁掉一小部分 point sample，
+因此该范围属于边缘采样量化；恰好 0.5 px、任何整像素宽高缺失，以及调用方更严格的 residual budget 仍 fail closed。
+修正后的 Release `PBUnifiedRemoteGate` 直接重放原始、未补边的真实 BGRA，即接受 15/15 codewords，结果与补边对照
+一致。定向 Release 验证为：
+
+```powershell
+build-unified-release\tests\PBModulation\Release\PBUnifiedVisualCpuTests.exe "[g21][remote-coverage]"
+build-unified-release\tests\PBModulation\Release\PBUnifiedVisualCpuTests.exe "[g20][point-coverage]"
+build-unified-release\tests\PBDemodD3D11\Release\PBDemodD3D11Tests.exe "[g20][point-coverage]"
+```
+
+结果分别为 1 case / 9 assertions、1 / 306、1 / 372，全部通过；受影响的三个 Release targets 构建通过。
+第一次误把不存在的 `PBModulationTests` 当测试名，CTest 返回 no tests / exit 2；修正命令后通过，原失败日志仍保留。
+修复后真实帧的离线报告位于
+`build-unified-release/g21-live-geometry-repair-1/remote-stall-unpadded-after-fix.json`。
+
+没有运行 full CTest、ASan、GPU/corpus、新一次实屏、Base-only、20 GiB 或 G22。上述离线重放只关闭真实像素上的
+边界误杀，不是新 live 成功；minute-scale 远控冻结和 1,076 次入场资源拒绝仍未解决，64 MiB 未发布。因此
+**G21 继续 PARTIAL，G22 未开始**。

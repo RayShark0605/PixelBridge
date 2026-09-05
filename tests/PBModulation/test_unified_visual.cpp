@@ -548,6 +548,29 @@ TEST_CASE("Unified point edge quantization distinguishes complete canvas coverag
     }
 }
 
+TEST_CASE("Unified remote full-frame fit accepts sub-half-pixel estimator excursion without accepting a crop",
+    "[unified][g21][remote-coverage]")
+{
+    const LocalDesktopGeometry observedRemoteGeometry{-0.0015652126851364301, -0.01694170371627024,
+        1.3333321795175241, 1.3333412923675088, 0.28371804486323526};
+    UnifiedVisualDecodePolicy policy;
+    LocalDesktopGeometry resolved;
+    REQUIRE(ResolveUnifiedVisualSamplingGeometry(observedRemoteGeometry, 2560, 1440, policy, resolved));
+    REQUIRE(resolved.originX == 0);
+    REQUIRE(resolved.originY == 0);
+    REQUIRE(resolved.scaleX > 1.3333);
+    REQUIRE(resolved.scaleY > 1.3333);
+
+    auto halfPixelOutside = observedRemoteGeometry;
+    halfPixelOutside.originY = -0.5;
+    REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(halfPixelOutside, 2560, 1440, policy, resolved));
+    REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(observedRemoteGeometry, 2559, 1440, policy, resolved));
+    REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(observedRemoteGeometry, 2560, 1439, policy, resolved));
+
+    policy.locator.maximumGeometryResidualPixels = 0.01;
+    REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(observedRemoteGeometry, 2560, 1440, policy, resolved));
+}
+
 TEST_CASE("Unified prepared metrics preserve reference metadata and fail-closed reuse across phases",
     "[unified][g20][prepared-metadata]")
 {
