@@ -193,6 +193,8 @@ struct SenderUnifiedScheduledSlot
     SenderUnifiedTransportSlotDisposition transportDisposition =
         SenderUnifiedTransportSlotDisposition::NotTransport;
     std::uint64_t equationIndex = 0;
+    std::uint64_t repairEquationOffset = 0;
+    bool repairEquation = false;
 
     bool operator==(const SenderUnifiedScheduledSlot&) const = default;
 };
@@ -219,6 +221,9 @@ struct SenderUnifiedCarouselSchedulerConfig
     std::uint32_t controlRepetitions = 4;
     std::uint32_t logicalFramesPerSecond = 15;
     bool wirehair = false;
+    // Pass 0 includes systematic equations. A later Wirehair FullRepairPass
+    // keeps the same K+R budget but maps every equation to a fresh repair ID.
+    std::uint64_t carouselPass = 0;
 };
 
 struct SenderUnifiedCarouselSnapshot
@@ -274,6 +279,7 @@ private:
     SenderUnifiedCarouselSchedulerConfig config_{};
     SenderUnifiedScheduledFrame preparedFrame_{};
     std::uint64_t scheduledEquationCount_ = 0;
+    std::uint64_t systematicEquationCount_ = 0;
     std::uint64_t repairEquationCount_ = 0;
     std::uint64_t committedEquationCount_ = 0;
     std::uint64_t committedFrameCount_ = 0;

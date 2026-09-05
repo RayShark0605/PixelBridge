@@ -378,6 +378,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     }
 
     std::uint64_t scheduledEquationCount = 0;
+    std::uint64_t systematicEquationCount = config.systematicBlockCount;
     std::uint64_t repairEquationCount = 0;
     if (config.systematicBlockCount != 0)
     {
@@ -386,6 +387,11 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
         if (!equationStatus)
         {
             return equationStatus;
+        }
+        if (config.wirehair && config.carouselPass != 0)
+        {
+            systematicEquationCount = 0;
+            repairEquationCount = scheduledEquationCount;
         }
     }
     const std::uint64_t controlRecordKindCount = config.systematicBlockCount == 0 ? 2 : 3;
@@ -400,6 +406,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     SenderUnifiedCarouselScheduler scheduler;
     scheduler.config_ = config;
     scheduler.scheduledEquationCount_ = scheduledEquationCount;
+    scheduler.systematicEquationCount_ = systematicEquationCount;
     scheduler.repairEquationCount_ = repairEquationCount;
     scheduler.totalControlItemsPerBurst_ = totalControlItemsPerBurst;
     scheduler.complete_ = false;
@@ -462,6 +469,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         {
             slot.transportDisposition = SenderUnifiedTransportSlotDisposition::ScheduledEquation;
             slot.equationIndex = nextEquationIndex;
+            slot.repairEquation = nextEquationIndex >= systematicEquationCount_;
+            slot.repairEquationOffset = slot.repairEquation ? nextEquationIndex - systematicEquationCount_ : 0;
             nextEquationIndex++;
             frame.scheduledEquationCount++;
         }
@@ -470,6 +479,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
             slot.transportDisposition = SenderUnifiedTransportSlotDisposition::PaddingDuplicate;
             slot.equationIndex = (paddingDuplicateSlotCount_ + localPaddingDuplicateCount) %
                 config_.systematicBlockCount;
+            slot.repairEquation = slot.equationIndex >= systematicEquationCount_;
+            slot.repairEquationOffset = slot.repairEquation ? slot.equationIndex - systematicEquationCount_ : 0;
             localPaddingDuplicateCount++;
             frame.paddingDuplicateSlotCount++;
         }
@@ -643,7 +654,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
 SenderUnifiedCarouselSnapshot SenderUnifiedCarouselScheduler::GetSnapshot() const noexcept
 {
     return {committedFrameCount_, controlBurstCount_, controlBearingFrameCount_, controlSlotCount_,
-        transportSlotCount_, scheduledEquationCount_, committedEquationCount_, config_.systematicBlockCount,
+        transportSlotCount_, scheduledEquationCount_, committedEquationCount_, systematicEquationCount_,
         repairEquationCount_, paddingDuplicateSlotCount_, inactiveTransportSlotCount_,
         lastCommittedLogicalTickOrdinal_, hasCommittedLogicalTick_, framePrepared_, complete_};
 }

@@ -6,7 +6,7 @@
 > 代码起点：`1445f9b`（正式 Descriptor 与可恢复 Segment 基础）
 > 目标程序：`PixelBridgeEncoder.exe`、`PixelBridgeDecoder.exe`
 > 适用平台：Windows x64 / C++20 / Qt Widgets / D3D11
-> 当前结论（2026-09-05）：**G00..G20 已完成并有独立提交；G21 当前唯一产品合同为 `PB-Unified-SC6-V3`/layout 10。区域局部映射、结构化 phase-pilot 锐化、跨帧混合 CPU/GPU parity 和重复 1 MiB headless 完整文件闭环已通过，但新的真实远程 1 MiB/64 MiB 最终发布尚未执行，因此 G21 仍为 PARTIAL，G22 未开始。**
+> 当前结论（2026-09-05）：**G00..G20 已完成并有独立提交；G21 当前唯一产品合同为 `PB-Unified-SC6-V3`/layout 10。区域局部映射、结构化 phase-pilot 锐化、跨帧混合 CPU/GPU parity 和重复 1 MiB headless 完整文件闭环已通过。两次真实远程 1 MiB 均完成 whole digest、安全发布、final reopen 和外部双摘要，但分别需要 116/72 个唯一逻辑帧，仍未越过 16 KiB 硬门；当前已按 canonical FullRepairPass 规则修正后续 Carousel 的重复 systematic 方程，等待同身份 live 复验。64 MiB/Base-only 仍未执行，因此 G21 继续 PARTIAL，G22 未开始。**
 
 ---
 
@@ -862,6 +862,8 @@ freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap t
 隐藏 1 MiB OS-CSPRNG 全文件 Gate 进一步把 reference-blend 放进每一帧而不是只做单帧 corpus。三次独立 source/run 分别在 60 / 63 / 59 个唯一逻辑帧完成正式 Wirehair V2、ReceiverIngress、whole digest、安全发布、final reopen 与逐字节比对，得到 **17,476.267 / 16,644.063 / 17,772.475 B/unique logical frame**，均越过 16 KiB 硬门；false accepted/truth mismatch/conflict output 均为 0，32 KiB 工程目标仍未达到。证据封存于 `build-unified-release/g21-sc6-v3-temporal-distortion-1/`，authority 明确是 headless synthetic WARP，不是 live。真实远程 1 MiB/64 MiB、外部摘要和 Base-only 仍未执行，因此 **G21 继续 PARTIAL，G22 未开始**；详见 `UNIFIED_REMOTE_GATE.md` 第 10 节。
 
 **SC6 V3 旧包纯灰与全屏入口修正（2026-09-05）：** `bba268e` 完整包的 15 Hz 脚本仍创建 1920×1080 带边框窗口；远控/DPI/任务栏使 client area 任一轴低于 1.0 时，既有 fail-closed 合同会进入 `PausedBelowMinimumScale` 并呈现 code value 128 的中性灰，所以纯灰不是 payload。Unified CLI/运行时现支持受约束的 primary/DEVICE 单显示器无边框全屏：精确绑定未旋转的 1920×1080..3840×2160 物理 monitor，把 canonical 画布 1:1 居中到同尺寸 framebuffer，启动及运行期复核 identity/RECT；不放宽尺度、裁剪、质量、250 ms、FEC、摘要或发布门。Release 定向 3 cases / 35 assertions、三个 PowerShell 5.1 AST 及不可见私有 desktop 产品启动路径通过；私有 desktop 没有切换用户屏幕且不冒充 live。提交后仍须重新构建同身份完整包并做真实远端 1 MiB/64 MiB，故 **G21 继续 PARTIAL，G22 未开始**；详见 `UNIFIED_REMOTE_GATE.md` 第 11 节。
+
+**两次真实 1 MiB 发布与 FullRepairPass 修正（2026-09-05）：** `6addde6` 同身份 Encoder/Decoder 在未知远控链上完成两次独立 OS-CSPRNG 1 MiB 发布；两次 Session、文件名、大小、profile/layout 与外部 SHA-256/BLAKE3 均严格配对，whole digest/safe publish/final reopen 为 true，三 lane 的 FEC/CRC/identity failures、admission drops 和 Outer conflict 均为 0。sender-first/迟加入运行用了 116 个唯一帧（9,039.4483 B/unique），receiver-first 运行用了 72 个唯一帧（14,563.5556 B/unique），后者仍比 16 KiB 硬门允许的最多 64 帧多 8 帧，因此不能关闭 G21。代码审计确认 Unified 后续 Carousel 错误重复每轮前 `K` 个 systematic IDs，与总体设计 11.2 节“Pass N>0 只产生新 repair IDs”冲突。当前修正保持 `K+R` full-round budget、Pass 0 systematic+repair、DirectRepeat、15 Hz、SC6 V3、质量/250 ms/FEC/摘要/发布门不变；Pass N>0 全部映射到 durable lease 中从未使用的新 repair IDs，padding 只重复本轮已有方程。以 live 1 MiB 的 `K=799/R=160` 为例，首轮 IDs 为 `0..958`，第二轮为 `959..1917`。Release scheduler 6 cases / 239,188 assertions 及两个 Application 邻接单例 37/128 assertions 通过；未运行 full CTest、ASan、GPU、实屏或 64 MiB。修正后的真实 1 MiB 尚待提交后同身份包复验，Base-only/64 MiB 仍缺，故 **G21 继续 PARTIAL，G22 未开始**；详见 `UNIFIED_REMOTE_GATE.md` 第 12 节。
 
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。

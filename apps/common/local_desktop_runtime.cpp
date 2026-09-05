@@ -1624,7 +1624,8 @@ private:
     void InitializeUnifiedScheduler()
     {
         Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
-            {blockCount_, controlRepetitions_, logicalVisualFps_, static_cast<bool>(wirehair_)}, unifiedScheduler_)),
+            {blockCount_, controlRepetitions_, logicalVisualFps_, static_cast<bool>(wirehair_), carouselPass_},
+            unifiedScheduler_)),
             "Unified Carousel scheduler creation failed");
         unifiedFrame_ = {};
         cyclePosition_ = 0;
@@ -1654,7 +1655,29 @@ private:
             Require(scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation ||
                 scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::PaddingDuplicate,
                 "Control/inactive slot cannot allocate an OuterBlockId");
-            return MapEquationToOuterBlockId(scheduled.equationIndex);
+            if (!wirehair_)
+            {
+                Require(!scheduled.repairEquation && scheduled.repairEquationOffset == 0,
+                    "DirectRepeat slot was marked as a repair equation");
+                return static_cast<std::uint32_t>(scheduled.equationIndex % blockCount_);
+            }
+            const SenderUnifiedCarouselSnapshot round = unifiedScheduler_.GetSnapshot();
+            if (!scheduled.repairEquation)
+            {
+                Require(scheduled.repairEquationOffset == 0 && scheduled.equationIndex < round.systematicEquationCount,
+                    "Unified systematic equation metadata is inconsistent");
+                return static_cast<std::uint32_t>(scheduled.equationIndex);
+            }
+            Require(scheduled.equationIndex >= round.systematicEquationCount &&
+                scheduled.repairEquationOffset == scheduled.equationIndex - round.systematicEquationCount &&
+                scheduled.repairEquationOffset < round.repairEquationCount,
+                "Unified repair equation metadata is inconsistent");
+            const auto repairId = pbprotocol::CheckedAddUint64(
+                nextRepairIds_[currentSegmentOrdinal_], scheduled.repairEquationOffset);
+            RequireResult(repairId, "Unified Wirehair repair ID overflow inside a visual frame");
+            Require(repairId.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Unified Wirehair repair ID space exhausted inside a visual frame");
+            return static_cast<std::uint32_t>(repairId.Value());
         }
         SenderScheduledFrame scheduledFrame;
         const SenderCarouselSchedulerStatus frameStatus = roundScheduler_.GetCurrentFrame(scheduledFrame);
@@ -1678,11 +1701,12 @@ private:
         {
             return static_cast<std::uint32_t>(equationIndex);
         }
-        const std::uint64_t repairId = static_cast<std::uint64_t>(nextRepairIds_[currentSegmentOrdinal_]) +
-            equationIndex - blockCount_;
-        Require(repairId <= (std::numeric_limits<std::uint32_t>::max)(),
+        const auto repairId = pbprotocol::CheckedAddUint64(
+            nextRepairIds_[currentSegmentOrdinal_], equationIndex - blockCount_);
+        RequireResult(repairId, "Wirehair repair ID overflow inside a visual frame");
+        Require(repairId.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
             "Wirehair repair ID space exhausted inside a visual frame");
-        return static_cast<std::uint32_t>(repairId);
+        return static_cast<std::uint32_t>(repairId.Value());
     }
 
     ProfileBinding profile_;

@@ -468,3 +468,67 @@ cmake --build build-unified-release --config Release --target PBApplicationTests
 
 没有切换用户桌面、显示窗口、执行 capture 或操作鼠标键盘；没有运行 full CTest、ASan、native/remote live、64 MiB 或 G22。
 新包仍需真实远端显示和 Decoder 恢复验证；本节只关闭“旧包为什么纯灰”和产品全屏入口缺失，**G21 继续 PARTIAL，G22 未开始**。
+
+## 12. 两次真实 1 MiB 发布与 FullRepairPass 方程修正
+
+### 12.1 两轮 live 证据
+
+`6addde627bfbc8457ad748fc4a39fe8eafe295ae` 的同身份 Encoder/Decoder 在未知远控链上完成两次独立的 1 MiB OS-CSPRNG RAW 运行。Decoder 始终只读取本机右侧 `DISPLAY2` 的真实 WGC 像素；sender source 未传给 Decoder，用户事后只复制 `encoder-report.json` 和 `source-manifest.json` 用于配对与外部摘要核验。
+
+| 项目 | Run 1：sender-first / late join | Run 2：receiver-first |
+| --- | ---: | ---: |
+| Sender 相对 Receiver 启动 | 提前 165.677 s | 延后 49.694 s |
+| Configured / observed sender FPS | 15 / 15.000343 | 15 / 15.000575 |
+| Receiver unique visual FPS | 1.573692 | 9.012836 |
+| Unique logical frames | 116 | 72 |
+| Verified encoded B/unique | 9,039.4483 | 14,563.5556 |
+| 1 MiB 硬门允许的最大帧数 | 64 | 64 |
+| Capture admission drops | 0 | 0 |
+| Accepted Control / Transport | 20 / 1,726 | 28 / 1,055 |
+| Bootstrap accepted / rejected | 142 / 887 | 76 / 708 |
+| Whole digest / rename / final reopen | true / true / true | true / true / true |
+| 16 KiB hard gate | FAIL | FAIL（多 8 unique frames） |
+
+两轮的 commit、profile `PB-Unified-SC6-V3`、layout 10、SessionId、SessionTag、source filename 和 1,048,576 bytes 均逐项匹配。三条 lane 的 QC-LDPC failures、Transport CRC failures 和 identity failures 均为 0，Outer conflict rejections 为 0；每个输出目录只产生一个与本轮 source 对应的正确最终文件，没有错误发布。
+
+Run 1 的 source/published SHA-256 均为 `2d8cf3a2ca8a54f6f5f4266b353918a44b5cb23516a62beaf3115f9c7c0c0226`，sender/receiver/published BLAKE3 均为 `4263910735b9e103183685251efdb08a9284b261856d0d9807d72948f3b19e36`。Run 2 的 SHA-256 均为 `cae80bc40d28467760ea1b35ca6ad522e57c43e53efd3b694dc269fb94b46ee1`，BLAKE3 均为 `d2f3a23883b7ca452d40d240ed4386b797140323e3e43fde1cd1e093963fc4d4`。
+
+证据分别封存于：
+
+- `build-unified-release/g21-sc6-v3-live-1/smoke-1mib-15hz-ecbbfc084f734b22b57c8b103477bd20/`
+- `build-unified-release/g21-sc6-v3-live-1/smoke-1mib-15hz-240984e5f7294b5aad7cf11cbb4b7357/`
+
+首轮 `paired-run-audit.json` 曾把 RunReport 根级性能字段误从 `unifiedTelemetry` 提取，导致两个辅助计数字段写成 0；原 receiver/sender 报告、9,039.4483 指标和 Gate 判定未受影响。该文件原样保留，修正值另存于 `paired-run-audit-corrected.json`，没有覆盖失败证据。第二轮 `paired-run-audit.json` 已直接使用正确根级字段。
+
+### 12.2 已确认根因
+
+receiver-first 将 116 unique frames 降到 72，证明启动顺序会影响 Control 获取和有效采样，但仍无法解释最后 8 帧开销。1 MiB RAW 的正式 Outer payload 为 1,314 B/symbol，Wirehair `K=ceil(1,048,576/1,314)=799`，20% 初始冗余 `R=160`，所以每个 full round 恰为 959 个方程，相当于 64 个全 Transport frame-equivalents；实际 mixed scheduler 的初始 Control 占用使完整一轮跨 65 个 logical frames，不能把 64 个 frame-equivalents 冒充完整调度轮长度。
+
+总体设计 11.1/11.2 节要求：Pass 0 发送 `K systematic + R0 repair`；Pass N>0 的 `K+Rpass` 预算必须**全部**使用从未用过的新 repair IDs。实现审计发现 `SenderUnifiedCarouselScheduler` 过去每轮都报告 `systematicEquationCount=K`，`SenderFrameBuilder::MapEquationToOuterBlockId` 又把每轮局部索引 `0..K-1` 固定映射回 systematic IDs。远控链只保留约 9 个 accepted unique frames/s 时，跨轮采样因此反复收到相同方程；Run 2 虽接收 1,055 个合法 Transport blocks，仍需要 72 帧才积累足够独立 Wirehair 方程。
+
+这不是 SC6、QC-LDPC 或远控图像判决失败：两轮全部 lane FEC/CRC/identity failures 为 0，且最终字节严格正确。根因位于无反馈 Carousel 的方程新鲜度。
+
+### 12.3 最小修正
+
+- `SenderUnifiedCarouselSchedulerConfig` 新增默认值为 0 的 `carouselPass`；所有旧调用保持 Pass 0 行为，调度器只在 Wirehair 且 `carouselPass>0` 时进入 repair-only。
+- Pass 0 仍调度 799 systematic + 160 repair；Pass N>0 保持相同的 959-equation FullRepairPass 物理预算，但 snapshot 为 0 systematic + 959 repair。
+- 每个 transport slot 显式携带 `repairEquation` 和 `repairEquationOffset`。运行时直接用 durable `NextRepairOuterBlockId + repairEquationOffset` 分配 ID，不再用 `equationIndex < K` 猜测方程类型。
+- 初始轮使用 IDs `0..958`；下一轮从 durable high-water 959 开始，使用 `959..1917`。每轮完成后按实际 repair equation count 推进 high-water；崩溃/重启继续从已持久化 lease end 分配，不复用可能已经展示过的 repair ID。
+- 最后一物理帧的 padding 不获取新 ID，只重复本轮已经调度的方程：Pass 0 重复已有 systematic，FullRepairPass 重复本轮开头的 repair。
+- DirectRepeat、零字节 Session、Control cadence、15 Hz、SC6 V3 identity/layout、slot 数、QC-LDPC、Wirehair 参数、质量阈值、250 ms admission、摘要和安全发布门均未改变；没有 provider-specific 分支。
+
+### 12.4 定向验证与退出边界
+
+只执行 G21 受影响的最小 Release 验证：
+
+```powershell
+cmake --build build-unified-release --config Release --target PBUnifiedSenderSchedulerTests --parallel 2
+cmake --build build-unified-release --config Release --target PBApplicationTests PixelBridgeEncoder --parallel 2
+build-unified-release\tests\PBApplication\Release\PBUnifiedSenderSchedulerTests.exe --rng-seed 21092026 --reporter console
+build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][g15][scheduler]" --rng-seed 21092026 --reporter console
+build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe "[application][g15][pixels][runtime]" --rng-seed 21092026 --reporter console
+```
+
+结果分别为 6 cases / 239,188 assertions、1 / 37、1 / 128，全部通过。新增 G21 单例自身为 1 case / 17,506 assertions，逐 slot 验证首轮与后续轮的 equation kind/offset、full-round 数量、padding，以及 `0..958` 与 `959..1917` 两个不相交 ID 区间；DirectRepeat 和零字节 Session 即使位于后续 Carousel pass 也保持各自原有语义。Release Encoder 编译通过。
+
+没有运行 full CTest、ASan、GPU/CPU corpus、native 屏幕、额外 capture、64 MiB、20 GiB 或 G22。本节两次 live 均属于修正前 `6addde6`；它们权威证明远控失真下 whole-file 正确发布，也权威证明旧调度没有达到 16 KiB 硬门。修正提交后必须重建同身份完整 Encoder/Decoder，再执行 receiver-first 的 1 MiB / 15 Hz live 复验；通过后仍需 64 MiB RAW 与 chroma/Base-only 证据。因此 **G21 继续 PARTIAL，G22 未开始**。

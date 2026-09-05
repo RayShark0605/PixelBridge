@@ -50,6 +50,8 @@ void RequireExactSlotAccounting(const pbapp::SenderUnifiedScheduledFrame& frame)
             controlSlots++;
             REQUIRE(slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::NotTransport);
             REQUIRE(slot.assignment.controlPriority != pbmodulation::UnifiedControlPriority::NotApplicable);
+            REQUIRE_FALSE(slot.repairEquation);
+            REQUIRE(slot.repairEquationOffset == 0);
         }
         else
         {
@@ -62,6 +64,10 @@ void RequireExactSlotAccounting(const pbapp::SenderUnifiedScheduledFrame& frame)
                 slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::PaddingDuplicate);
             inactiveTransportSlots += static_cast<std::uint32_t>(
                 slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession);
+            if (!slot.repairEquation)
+            {
+                REQUIRE(slot.repairEquationOffset == 0);
+            }
         }
     }
     REQUIRE(pbmodulation::ValidateUnifiedMixedSlotPlan(assignments));
@@ -381,6 +387,84 @@ TEST_CASE("Unified mixed scheduler converges independent Segment rounds without 
     }
 }
 
+TEST_CASE("Unified Wirehair full repair passes spend the complete round budget on fresh repair IDs",
+    "[application][g21][scheduler][carousel][repair-only]")
+{
+    constexpr std::uint32_t systematicBlockCount = 799;
+    constexpr std::uint64_t initialRepairEquationCount = 160;
+    constexpr std::uint64_t fullRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
+    constexpr std::uint32_t firstInitialRepairId = systematicBlockCount;
+    constexpr std::uint32_t firstFullRepairId = static_cast<std::uint32_t>(fullRoundEquationCount);
+
+    const auto runRound = [](const std::uint64_t carouselPass, const std::uint32_t firstRepairId)
+    {
+        const bool includeSystematicEquations = carouselPass == 0;
+        pbapp::SenderUnifiedCarouselScheduler scheduler;
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
+            {systematicBlockCount, 4, 15, true, carouselPass}, scheduler));
+        const pbapp::SenderUnifiedCarouselSnapshot initial = scheduler.GetSnapshot();
+        const std::uint64_t expectedSystematicCount = includeSystematicEquations ? systematicBlockCount : 0;
+        const std::uint64_t expectedRepairCount = includeSystematicEquations ?
+            initialRepairEquationCount : fullRoundEquationCount;
+        REQUIRE(initial.scheduledEquationCount == fullRoundEquationCount);
+        REQUIRE(initial.systematicEquationCount == expectedSystematicCount);
+        REQUIRE(initial.repairEquationCount == expectedRepairCount);
+
+        std::vector<std::uint32_t> scheduledOuterBlockIds;
+        std::uint64_t expectedEquationIndex = 0;
+        std::uint64_t logicalTickOrdinal = 0;
+        while (!scheduler.IsComplete())
+        {
+            pbapp::SenderUnifiedScheduledFrame frame;
+            REQUIRE(scheduler.PrepareFrame(logicalTickOrdinal, frame));
+            RequireExactSlotAccounting(frame);
+            for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.slots)
+            {
+                if (slot.transportDisposition != pbapp::SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+                {
+                    if (slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::PaddingDuplicate)
+                    {
+                        REQUIRE(slot.equationIndex < systematicBlockCount);
+                        REQUIRE(slot.repairEquation == !includeSystematicEquations);
+                        REQUIRE(slot.repairEquationOffset == (includeSystematicEquations ? 0 : slot.equationIndex));
+                    }
+                    continue;
+                }
+                REQUIRE(slot.equationIndex == expectedEquationIndex);
+                const bool expectedRepairEquation = expectedEquationIndex >= expectedSystematicCount;
+                REQUIRE(slot.repairEquation == expectedRepairEquation);
+                const std::uint64_t expectedRepairOffset = expectedRepairEquation ?
+                    expectedEquationIndex - expectedSystematicCount : 0;
+                REQUIRE(slot.repairEquationOffset == expectedRepairOffset);
+                const std::uint64_t outerBlockId = expectedRepairEquation ?
+                    static_cast<std::uint64_t>(firstRepairId) + expectedRepairOffset : expectedEquationIndex;
+                REQUIRE(outerBlockId <= (std::numeric_limits<std::uint32_t>::max)());
+                scheduledOuterBlockIds.push_back(static_cast<std::uint32_t>(outerBlockId));
+                expectedEquationIndex++;
+            }
+            REQUIRE(scheduler.CommitPreparedFrame());
+            logicalTickOrdinal++;
+        }
+        const pbapp::SenderUnifiedCarouselSnapshot final = scheduler.GetSnapshot();
+        REQUIRE(final.complete);
+        REQUIRE(final.committedEquationCount == fullRoundEquationCount);
+        REQUIRE(final.systematicEquationCount == expectedSystematicCount);
+        REQUIRE(final.repairEquationCount == expectedRepairCount);
+        REQUIRE(expectedEquationIndex == fullRoundEquationCount);
+        REQUIRE(scheduledOuterBlockIds.size() == fullRoundEquationCount);
+        return scheduledOuterBlockIds;
+    };
+
+    const std::vector<std::uint32_t> initialIds = runRound(0, firstInitialRepairId);
+    const std::vector<std::uint32_t> fullRepairIds = runRound(1, firstFullRepairId);
+    for (std::uint32_t equationIndex = 0; equationIndex < fullRoundEquationCount; equationIndex++)
+    {
+        REQUIRE(initialIds[equationIndex] == equationIndex);
+        REQUIRE(fullRepairIds[equationIndex] == firstFullRepairId + equationIndex);
+    }
+    REQUIRE(initialIds.back() < fullRepairIds.front());
+}
+
 TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Control bursts without data starvation",
     "[application][g09][scheduler][boundary]")
 {
@@ -394,6 +478,10 @@ TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Con
     REQUIRE_FALSE(pbapp::SenderUnifiedCarouselScheduler::Create(
         {pbapp::senderCarouselMaximumSystematicBlockCount + 1, 4, 15, false}, scheduler));
     REQUIRE_FALSE(pbapp::SenderUnifiedCarouselScheduler::Create({1, 4, 15, true}, scheduler));
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({33, 4, 15, false, 1}, scheduler));
+    REQUIRE(scheduler.GetSnapshot().systematicEquationCount == 33);
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({0, 4, 15, false, 1}, scheduler));
+    REQUIRE(scheduler.GetSnapshot().repairEquationCount == 0);
 
     REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
         {1, pbapp::senderUnifiedMaximumControlRepetitions, 1, false}, scheduler));
