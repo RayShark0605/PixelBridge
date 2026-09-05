@@ -868,3 +868,96 @@ ctest --test-dir build-unified-release -C Release -R "^PBHeadlessMultiSegmentChe
 没有运行 full CTest、ASan、GPU/corpus、Base-only、20 GiB 或 G22。该修正仍需提交后重建同身份 Encoder/Decoder，
 再做最后一次真实 64 MiB；在 whole digest、安全发布、final reopen 和外部 SHA-256/BLAKE3 全部通过前，
 **G21 继续 PARTIAL，G22 未开始**。
+
+## 18. `433bccf` 最终 64 MiB 发布、外部配对与未关闭的启动期 resource 门
+
+### 18.1 同身份运行与权威终态
+
+Decoder resume replace 修正提交为 `433bccf42df29c54ae326f0e01296ab22a8258ef`。提交后重新 configure/build，
+并制作完整自包含包：
+
+```text
+C:\Users/<user>\Desktop\PixelBridge-G21-RemoteEncoder-433bccf-SC6V3-Final64MiB-Full.zip
+ZIP SHA-256:     555068278780e4a9ad57abe6e22634541fbd0225400ed28262685f5f9cdec67e
+Encoder SHA-256: 053b13ba545f315635117802e868fe9a8483eedd78e64723f0d23ce9783a06d1
+```
+
+package 组装目录和 fresh extract 各执行一次 Check，远端用户再执行一次 `00_Check.bat`，三者均报告同一 commit、
+SC6 V3/layout 10/1920×1080/6×6，且不生成 source、run、窗口或广播。Decoder 先在本机隐藏启动、只捕捉
+`\\.\DISPLAY2`，用户随后只运行 `02_Start_Full_64MiB_15Hz.bat`。
+
+权威运行根：
+
+```text
+build-unified-release/g21-sc6-v3-live-final-64mib-1/
+  full-64mib-15hz-a4ae1abe75b942e9be3517ddb73e70c8/
+```
+
+`receiver/final.json` 和随后封存的 `failure-final.json` 均为 `state=Completed`：8/8 Segment、67,108,864 raw/encoded
+bytes、WholeFileDigest=true、rename=true、final reopen=true、published=true；最终目录只有发布文件，没有 `.part` 或
+`.resume`。这次成功越过旧轮在第六个 Segment 后发生的 `.resume` compact `win32=5`。
+
+### 18.2 Sender/Receiver 与外部双摘要
+
+用户停止 Sender 后回传的三份 JSON 已按原文件 SHA-256 只读封存为 `remote-*.json`。严格配对结果：
+
+| 项目 | 结果 |
+| --- | --- |
+| Sender / Receiver commit | `433bccf42df29c54ae326f0e01296ab22a8258ef` / 相同 |
+| Sender RunId / Receiver RunId | `42618932829c435e8f1bb3ba98989dc3` / `7f184af71b73f1f1f277fe66ff92ed00` |
+| SessionId | `cc55f8afc83400af586a792bcac02665` |
+| SessionTag | `8060370733226332123` |
+| source | `g21-sc6-v3-acceptance-full-64mib-15hz-42618932829c435e8f1bb3ba98989dc3.bin` |
+| bytes | 67,108,864 |
+| external SHA-256 | `4dd1b87cbaf6872d07a4fee05297468224661748dffcf5a72de791976ab39708` |
+| external BLAKE3 | `deb2bf110d067de24e457770089bc0ece89546cb6736e9639eee1f529d1ad494` |
+
+SHA-256 与 sender source manifest 一致；BLAKE3 与 sender/receiver whole digest 一致。Decoder 参数和 launch evidence
+都没有 source、摘要、SessionId 或 sender oracle。`paired-publication-audit.json` 的所有 required publication/pairing
+checks 为 true，文件 SHA-256 为 `9c0de74228ec5c39f5343a3136482e2ba9e1effa69d138ace7398b9c7d714810`。
+
+Sender 提交 10,196 logical frames @ 14.983399 Hz，停止后 exit 0；Receiver 在约 503.6 秒完成：
+
+| 指标 | 结果 |
+| --- | ---: |
+| observations / unique | 3,840 / 3,771 |
+| UniqueVisualFPS | 8.9218175573 |
+| VerifiedEncodedBytesPerUniqueFrame | 17,796.039246884116 |
+| accepted Transport | 54,148 |
+| Base/Fine/Chroma FEC failures | 0 / 0 / 18 |
+| lane CRC / identity failures | 全部 0 / 全部 0 |
+| capture admission drops | 47 |
+| Outer conflict / deferred / quota | 0 / 0 / 0 |
+| active decoder / reserved bytes peak | 8 / 457,201,696 |
+
+17,796.039 B/unique 高于 16 KiB 硬门；32 KiB 工程目标未达到。根据路线 G21 退出标准，未达 32 KiB 必须记录，
+但不是关闭首版的硬阻塞。
+
+### 18.3 为什么 Gate 仍 exit 1
+
+后置 `ReceiverChecksPassed()` 还要求 `outerResourceRejections == 0`。本轮为 416，所以 `receiver-checks.json` 的
+`receiverLocalChecksPassed=false`，进程生成 `failure.txt` 并 exit 1；这不是 publish 回滚，也不是 32 KiB 检查。
+
+从 `samples.jsonl` 提取的唯一资源计数转换如下：
+
+| resource rejects | active decoder | unique | accepted Transport | verified Segment |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 | 0 | 0 | 0 |
+| 86 | 6 | 51 | 722 | 0 |
+| 281 | 7 | 108 | 1,521 | 0 |
+| 386 | 7 | 160 | 2,301 | 0 |
+| 416 | 8 | 212 | 3,029 | 0 |
+
+第八个 decoder 建立后，计数直到 8/8 发布不再增长。该形状强烈支持“其他 Segment 的 Transport 在对应
+SegmentDescriptor 到达前挤满 bounded orphan cache”，而不是持续总内存不足；但当前 snapshot 只聚合多类 resource
+错误，仍需 no-raster 顺序 fixture 或细分 telemetry 确认。不能只删除 Gate 条件；应优先验证 descriptor prelude/
+每个 Control-bearing frame 覆盖当前 W=8 descriptor 集的最小调度修正，同时保持未知 Segment 不触发大 allocation、
+bounded memory、单 owner、250 ms、质量/FEC/摘要/发布门不变。
+
+### 18.4 交接边界
+
+Base Luma 独立恢复和独立 false-accepted codeword oracle 仍缺；当前 run 没有保存可用于完整文件 Base-only 派生的
+实际 captured frame 序列。G21 因 416 次启动期 resource rejection、Base-only 和 oracle 边界继续 PARTIAL，G22 未开始。
+用户在结束当前对话前授权下一任务在其睡眠期间使用本机双屏和输入自动化，优先在本机右屏以 15 Hz 依次完成
+64 MiB、500 MiB、1 GiB；本机结果不能冒充带远控因素的复验。完整运行方式、证据路径、踩坑与临时交互限制见
+`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`。

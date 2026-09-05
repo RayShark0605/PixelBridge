@@ -10,9 +10,10 @@
 2. [`../README.md`](../README.md)：项目入口、目录、构建方式和当前事实边界；
 3. [`../CONTRIBUTING.md`](../CONTRIBUTING.md)：面向 GitHub 贡献者的范围、构建、测试和提交约定；
 4. [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)：**当前唯一 Goal/目标模式实施路线**；
-5. [`PixelBridge_最终技术路线与总体设计.md`](PixelBridge_最终技术路线与总体设计.md)：完整总体架构与长期不变量；
-6. [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md)：当前工作树仍可到达的旧/过渡 UI、CLI 和 runtime 绑定；
-7. 与当前目标直接相关的模块文档和测试。
+5. [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md)：G21 最新远程 64 MiB 证据、未关闭门、踩坑与睡眠期间本机阶梯交接；
+6. [`PixelBridge_最终技术路线与总体设计.md`](PixelBridge_最终技术路线与总体设计.md)：完整总体架构与长期不变量；
+7. [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md)：当前工作树仍可到达的旧/过渡 UI、CLI 和 runtime 绑定；
+8. 与当前目标直接相关的模块文档和测试。
 
 发生冲突时，优先遵循当次用户要求、`AGENTS.md`、统一路线，再使用总体设计中未被新路线取代的内容。Phase 0、Phase 1.5、RemoteVisual Step 文档不得反向覆盖新产品合同。
 
@@ -21,6 +22,7 @@
 | 文档 | 作用 | 当前状态 |
 | --- | --- | --- |
 | [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | 冻结最终产品行为；将实现拆为 G00..G22；规定每步最小测试和退出条件 | **当前执行入口** |
+| [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md) | 最新真实远程发布证据、剩余 resource/Base-only 门、踩坑与下一任务操作顺序 | **当前 G21 交接入口** |
 | [`PixelBridge_最终技术路线与总体设计.md`](PixelBridge_最终技术路线与总体设计.md) | 协议、FEC、视觉、GPU/capture、线程、存储、安全、验收的总架构 | 权威背景；顶部 supersession 规则优先 |
 | [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md) | 说明工作树中实际存在的 GUI/CLI/实验路径和未接通能力 | 过渡实现清单，不是最终产品说明 |
 | [`GITHUB_PUBLISH_CHECKLIST.md`](GITHUB_PUBLISH_CHECKLIST.md) | 首次推送前、GitHub 仓库配置和源码发布检查 | 当前发布准备入口 |
