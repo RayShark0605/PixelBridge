@@ -33,6 +33,8 @@
 namespace
 {
 
+constexpr std::uint32_t maximumBroadcastSeconds = 3600;
+
 struct Options
 {
     std::wstring sourcePath;
@@ -376,7 +378,7 @@ private:
         {
             const wchar_t* const value = nextArgument();
             if (value == nullptr || !ParseUnsigned(value, options.seconds) || options.seconds == 0 ||
-                options.seconds > 600)
+                options.seconds > maximumBroadcastSeconds)
             {
                 return false;
             }
@@ -587,11 +589,11 @@ void Usage()
     std::cerr << "product: PixelBridgeEncoder --headless-broadcast --source PATH [--profile unified] "
                  "[--logical-fps 1..60; default=15] [--origin X Y | --single-monitor-fullscreen primary|DEVICE] "
                  "[--channel local|remote] [--remote-provider NAME | --remote-metadata PATH] "
-                 "[--seconds 1..600; default=30] "
+                 "[--seconds 1..3600; default=30] "
                  "[--report NEW_PATH]; automatic RAW/zstd level 3, Control repetitions=4\n"
                  "historical diagnostics: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
                  "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on "
-                 "(--origin X Y --seconds 1..600 | --single-monitor-fullscreen primary|DEVICE --manual-stop --loop) "
+                 "(--origin X Y --seconds 1..3600 | --single-monitor-fullscreen primary|DEVICE --manual-stop --loop) "
                  "[--logical-fps 0..240; remote=1..5] "
                  "[--protected-monitor DEVICE --experiment-monitor DEVICE; strict dual-monitor remote-lf4 only] "
                  "[--control-repetitions 1..64] [--run-id 32_LOWERCASE_HEX] "
