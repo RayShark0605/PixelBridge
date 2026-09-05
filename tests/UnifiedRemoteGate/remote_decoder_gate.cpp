@@ -236,7 +236,25 @@ std::string DecoderReport(const pbapp::DecoderSnapshot& snapshot, const std::uin
         << ",\"resultQueueHighWater\":" << snapshot.resultQueueHighWater << ",\"staleResultDrops\":" << snapshot.staleResultDrops
         << ",\"acceptedTransportBlocks\":" << snapshot.acceptedTransportBlocks
         << ",\"outerResourceRejections\":" << snapshot.outerResourceRejections
+        << ",\"outerProtocolResourceLimitExceededRejections\":"
+        << snapshot.outerProtocolResourceLimitExceededRejections
+        << ",\"outerProtocolResourceExhaustedRejections\":" << snapshot.outerProtocolResourceExhaustedRejections
+        << ",\"outerControlReassemblyQuotaExceededRejections\":"
+        << snapshot.outerControlReassemblyQuotaExceededRejections
+        << ",\"outerFecOutOfMemoryRejections\":" << snapshot.outerFecOutOfMemoryRejections
+        << ",\"outerFecDecoderQuotaExceededRejections\":" << snapshot.outerFecDecoderQuotaExceededRejections
+        << ",\"outerFecExtraInsufficientRejections\":" << snapshot.outerFecExtraInsufficientRejections
         << ",\"outerConflictRejections\":" << snapshot.outerConflictRejections
+        << ",\"receiverResourcePolicyRejectedCount\":" << snapshot.receiverResourcePolicyRejectedCount
+        << ",\"receiverControlRejectedByResourcePolicyCount\":"
+        << snapshot.receiverControlRejectedByResourcePolicyCount
+        << ",\"outerOrphanAdmittedBlockCount\":" << snapshot.outerOrphanAdmittedBlockCount
+        << ",\"outerOrphanDroppedByQuotaCount\":" << snapshot.outerOrphanDroppedByQuotaCount
+        << ",\"outerOrphanResourceExhaustedCount\":" << snapshot.outerOrphanResourceExhaustedCount
+        << ",\"outerOrphanConflictRejectionCount\":" << snapshot.outerOrphanConflictRejectionCount
+        << ",\"outerOrphanCachedBlockCount\":" << snapshot.outerOrphanCachedBlockCount
+        << ",\"outerOrphanCachedBytes\":" << snapshot.outerOrphanCachedBytes
+        << ",\"outerPeakOrphanCachedBytes\":" << snapshot.outerPeakOrphanCachedBytes
         << ",\"outerDeferredResourceBusyCount\":" << snapshot.outerDeferredResourceBusyCount
         << ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount
         << ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit
@@ -251,9 +269,21 @@ std::string DecoderReport(const pbapp::DecoderSnapshot& snapshot, const std::uin
 
 bool ReceiverChecksPassed(const pbapp::DecoderSnapshot& snapshot) noexcept
 {
+    std::uint64_t detailedResourceRejections = 0;
+    for (const std::uint64_t count : {snapshot.outerProtocolResourceLimitExceededRejections,
+        snapshot.outerProtocolResourceExhaustedRejections,
+        snapshot.outerControlReassemblyQuotaExceededRejections, snapshot.outerFecOutOfMemoryRejections,
+        snapshot.outerFecDecoderQuotaExceededRejections, snapshot.outerFecExtraInsufficientRejections})
+    {
+        detailedResourceRejections = pbprotocol::SaturatingAddUnsigned(detailedResourceRejections, count);
+    }
     return snapshot.state == pbapp::DecoderState::Completed && snapshot.wholeFileDigestCheck.value_or(false) &&
         snapshot.finalPublishSucceeded && snapshot.finalReopenVerified.value_or(false) &&
         !snapshot.resumeStateLoaded && !snapshot.outputRecoveredAfterPublish && snapshot.outerResourceRejections == 0 &&
+        detailedResourceRejections == snapshot.outerResourceRejections &&
+        snapshot.receiverResourcePolicyRejectedCount == 0 && snapshot.outerOrphanDroppedByQuotaCount == 0 &&
+        snapshot.outerOrphanResourceExhaustedCount == 0 && snapshot.outerOrphanConflictRejectionCount == 0 &&
+        snapshot.outerOrphanCachedBlockCount == 0 && snapshot.outerOrphanCachedBytes == 0 &&
         snapshot.outerConflictRejections == 0 && snapshot.outerDeferredResourceBusyCount == 0 &&
         snapshot.outerFecQuotaExceededCount == 0 && snapshot.errorDetail.empty();
 }
@@ -545,8 +575,16 @@ void RunPolicyChecks()
     Require(!ReceiverChecksPassed(snapshot), "conflict accepted by remote gate");
     snapshot.outerConflictRejections = 0;
     snapshot.outerResourceRejections = 1;
+    snapshot.outerProtocolResourceLimitExceededRejections = 1;
     Require(!ReceiverChecksPassed(snapshot), "Outer FEC resource rejection accepted by remote gate");
     snapshot.outerResourceRejections = 0;
+    snapshot.outerProtocolResourceLimitExceededRejections = 0;
+    snapshot.receiverResourcePolicyRejectedCount = 1;
+    Require(!ReceiverChecksPassed(snapshot), "Receiver resource-policy rejection accepted by remote gate");
+    snapshot.receiverResourcePolicyRejectedCount = 0;
+    snapshot.outerOrphanDroppedByQuotaCount = 1;
+    Require(!ReceiverChecksPassed(snapshot), "orphan-cache quota drop accepted by remote gate");
+    snapshot.outerOrphanDroppedByQuotaCount = 0;
     snapshot.outerDeferredResourceBusyCount = 1;
     Require(!ReceiverChecksPassed(snapshot), "deferred Outer FEC resource pressure accepted by remote gate");
     snapshot.outerDeferredResourceBusyCount = 0;
@@ -565,6 +603,8 @@ void RunPolicyChecks()
     Require(decoderReport.find("\"safetyRevalidations\":7") != std::string::npos &&
         decoderReport.find("\"outerDeferredResourceBusyCount\":0") != std::string::npos &&
         decoderReport.find("\"outerFecQuotaExceededCount\":0") != std::string::npos &&
+        decoderReport.find("\"outerProtocolResourceLimitExceededRejections\":0") != std::string::npos &&
+        decoderReport.find("\"outerOrphanDroppedByQuotaCount\":0") != std::string::npos &&
         decoderReport.find("\"outerActiveDecoderLimit\":8") != std::string::npos &&
         decoderReport.find("\"outerTotalDecoderByteLimit\":1073741824") != std::string::npos &&
         decoderReport.find("\"outerPeakActiveDecoderCount\":8") != std::string::npos &&

@@ -350,6 +350,26 @@ struct UnifiedLargeWindowRecoveryProbeSnapshot
     bool everySegmentDigestVerified = false;
 };
 
+struct UnifiedDescriptorPreludeProbeSnapshot
+{
+    std::uint64_t observedLogicalFrames = 0;
+    std::uint64_t resourceLimitExceededCount = 0;
+    std::uint64_t resourceExhaustedCount = 0;
+    std::uint64_t resourceLimitExceededWhileSixActive = 0;
+    std::uint64_t resourceLimitExceededWhileSevenActive = 0;
+    std::uint64_t resourceLimitExceededAfterEightActive = 0;
+    std::uint64_t orphanAdmittedBlockCount = 0;
+    std::uint64_t orphanDroppedByQuotaCount = 0;
+    std::uint64_t orphanResourceExhaustedCount = 0;
+    std::uint64_t orphanCachedBlockCount = 0;
+    std::uint64_t orphanCachedBytes = 0;
+    std::uint64_t totalResourcePolicyRejectedCount = 0;
+    std::uint64_t outerFecQuotaExceededCount = 0;
+    std::uint64_t deferredResourceBusyCount = 0;
+    std::uint64_t finalActiveDecoderCount = 0;
+    std::vector<std::uint64_t> activeDecoderTransitions;
+};
+
 struct ApplicationLargeOutputConfirmationProbeSnapshot
 {
     DecoderSnapshot awaitingDecision;
@@ -392,6 +412,8 @@ public:
         UnifiedTemporalStripingProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeUnifiedLargeWindowRecovery(
         UnifiedLargeWindowRecoveryProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedDescriptorPrelude(
+        UnifiedDescriptorPreludeProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeHeadlessMultiSegmentFile(const std::wstring& sourcePath,
         const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
         const ApplicationHeadlessProbeOptions& options, ApplicationHeadlessProbeSnapshot& output) noexcept;

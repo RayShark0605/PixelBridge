@@ -434,12 +434,15 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     const std::uint64_t remainingControlItems = controlBurstActive ?
         totalControlItemsPerBurst_ - controlItemOffset : 0;
     const std::uint32_t maximumControlSlots = pbmodulation::GetUnifiedMaximumControlSlots();
-    const std::uint32_t controlSlotCount = static_cast<std::uint32_t>((std::min)(
+    const std::uint32_t controlBurstSlotCount = static_cast<std::uint32_t>((std::min)(
         remainingControlItems, static_cast<std::uint64_t>(maximumControlSlots)));
+    const std::uint32_t descriptorPreludeSlotCount =
+        !controlBurstActive && config_.systematicBlockCount != 0 ? 1U : 0U;
+    const std::uint32_t controlSlotCount = controlBurstSlotCount + descriptorPreludeSlotCount;
     const std::uint32_t codewordCount = static_cast<std::uint32_t>(
         pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount);
     const std::uint64_t controlRecordKindCount = config_.systematicBlockCount == 0 ? 2 : 3;
-    if ((controlBurstActive && controlSlotCount == 0) || controlSlotCount >= codewordCount)
+    if ((controlBurstActive && controlBurstSlotCount == 0) || controlSlotCount >= codewordCount)
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
     }
@@ -447,6 +450,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     SenderUnifiedScheduledFrame frame;
     frame.logicalTickOrdinal = logicalTickOrdinal;
     frame.firstEquationIndex = committedEquationCount_;
+    frame.controlBurstSlotCount = controlBurstSlotCount;
     frame.controlSlotCount = controlSlotCount;
     frame.transportSlotCount = codewordCount - controlSlotCount;
     std::uint64_t nextEquationIndex = committedEquationCount_;
@@ -457,7 +461,9 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         if (codewordSlot < controlSlotCount)
         {
             slot.assignment = {codewordSlot, pbmodulation::UnifiedSlotKind::Control,
-                GetControlPriority(controlItemOffset + codewordSlot, controlRecordKindCount)};
+                codewordSlot < controlBurstSlotCount ?
+                    GetControlPriority(controlItemOffset + codewordSlot, controlRecordKindCount) :
+                    pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor};
             slot.transportDisposition = SenderUnifiedTransportSlotDisposition::NotTransport;
             continue;
         }
@@ -494,6 +500,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         assignments[slotIndex] = frame.slots[slotIndex].assignment;
     }
     if (!pbmodulation::ValidateUnifiedMixedSlotPlan(assignments) ||
+        frame.controlBurstSlotCount > frame.controlSlotCount ||
         frame.controlSlotCount + frame.transportSlotCount != frame.slots.size())
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
@@ -564,7 +571,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
     std::uint64_t currentControlBurstStartPosition = currentControlBurstStartPosition_;
     std::uint64_t nextControlBurstPosition = nextControlBurstPosition_;
     std::uint64_t controlBurstCount = controlBurstCount_;
-    if (preparedFrame_.controlSlotCount != 0)
+    if (preparedFrame_.controlBurstSlotCount != 0)
     {
         if (!inControlBurst)
         {
@@ -582,7 +589,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
             currentControlBurstCounted = true;
         }
         if (!AssignChecked(pbprotocol::CheckedAddUint64(
-            currentControlItemOffset, preparedFrame_.controlSlotCount), currentControlItemOffset) ||
+            currentControlItemOffset, preparedFrame_.controlBurstSlotCount), currentControlItemOffset) ||
             currentControlItemOffset > totalControlItemsPerBurst_)
         {
             return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);

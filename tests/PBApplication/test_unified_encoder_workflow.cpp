@@ -318,6 +318,42 @@ TEST_CASE("Unified eight-Segment window recovers 64 MiB through sparse observati
     REQUIRE(probe.verifiedEncodedBytesPerUniqueFrame >= 16.0 * 1024.0);
 }
 
+TEST_CASE("Unified current-Segment descriptor precedes Transport after a bounded capture gap",
+    "[application][g21][unified][descriptor-prelude][receiver-resource]")
+{
+    pbapp::UnifiedDescriptorPreludeProbeSnapshot probe;
+    const pbapp::RuntimeStatus status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedDescriptorPrelude(probe);
+    INFO(status.message);
+    INFO("resourceLimitExceededCount=" << probe.resourceLimitExceededCount);
+    INFO("resourceLimitExceededWhileSixActive=" << probe.resourceLimitExceededWhileSixActive);
+    INFO("resourceLimitExceededWhileSevenActive=" << probe.resourceLimitExceededWhileSevenActive);
+    INFO("resourceLimitExceededAfterEightActive=" << probe.resourceLimitExceededAfterEightActive);
+    INFO("orphanAdmittedBlockCount=" << probe.orphanAdmittedBlockCount);
+    INFO("orphanDroppedByQuotaCount=" << probe.orphanDroppedByQuotaCount);
+    INFO("orphanCachedBlockCount=" << probe.orphanCachedBlockCount);
+    INFO("finalActiveDecoderCount=" << probe.finalActiveDecoderCount);
+    REQUIRE(status);
+    REQUIRE(probe.observedLogicalFrames > 0);
+    REQUIRE(probe.activeDecoderTransitions.size() >= 3);
+    REQUIRE(probe.activeDecoderTransitions[probe.activeDecoderTransitions.size() - 3] == 6);
+    REQUIRE(probe.activeDecoderTransitions[probe.activeDecoderTransitions.size() - 2] == 7);
+    REQUIRE(probe.activeDecoderTransitions.back() == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.finalActiveDecoderCount == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.resourceLimitExceededCount == 0);
+    REQUIRE(probe.resourceExhaustedCount == 0);
+    REQUIRE(probe.resourceLimitExceededWhileSixActive == 0);
+    REQUIRE(probe.resourceLimitExceededWhileSevenActive == 0);
+    REQUIRE(probe.resourceLimitExceededAfterEightActive == 0);
+    REQUIRE(probe.orphanAdmittedBlockCount == 0);
+    REQUIRE(probe.orphanDroppedByQuotaCount == 0);
+    REQUIRE(probe.orphanResourceExhaustedCount == 0);
+    REQUIRE(probe.orphanCachedBlockCount == 0);
+    REQUIRE(probe.orphanCachedBytes == 0);
+    REQUIRE(probe.totalResourcePolicyRejectedCount == 0);
+    REQUIRE(probe.outerFecQuotaExceededCount == 0);
+    REQUIRE(probe.deferredResourceBusyCount == 0);
+}
+
 TEST_CASE("Unified Encoder product policy is shared and rejects legacy tuning", "[application][g15][model]")
 {
     Scratch scratch;

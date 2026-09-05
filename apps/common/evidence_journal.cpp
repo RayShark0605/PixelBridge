@@ -385,7 +385,25 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"outerAlreadyCompletedSymbols\":" << snapshot.outerAlreadyCompletedSymbols <<
         ",\"outerRecoveryReadyEvents\":" << snapshot.outerRecoveryReadyEvents <<
         ",\"outerResourceRejections\":" << snapshot.outerResourceRejections <<
+        ",\"outerProtocolResourceLimitExceededRejections\":" <<
+            snapshot.outerProtocolResourceLimitExceededRejections <<
+        ",\"outerProtocolResourceExhaustedRejections\":" << snapshot.outerProtocolResourceExhaustedRejections <<
+        ",\"outerControlReassemblyQuotaExceededRejections\":" <<
+            snapshot.outerControlReassemblyQuotaExceededRejections <<
+        ",\"outerFecOutOfMemoryRejections\":" << snapshot.outerFecOutOfMemoryRejections <<
+        ",\"outerFecDecoderQuotaExceededRejections\":" << snapshot.outerFecDecoderQuotaExceededRejections <<
+        ",\"outerFecExtraInsufficientRejections\":" << snapshot.outerFecExtraInsufficientRejections <<
         ",\"outerConflictRejections\":" << snapshot.outerConflictRejections <<
+        ",\"receiverResourcePolicyRejectedCount\":" << snapshot.receiverResourcePolicyRejectedCount <<
+        ",\"receiverControlRejectedByResourcePolicyCount\":" <<
+            snapshot.receiverControlRejectedByResourcePolicyCount <<
+        ",\"outerOrphanAdmittedBlockCount\":" << snapshot.outerOrphanAdmittedBlockCount <<
+        ",\"outerOrphanDroppedByQuotaCount\":" << snapshot.outerOrphanDroppedByQuotaCount <<
+        ",\"outerOrphanResourceExhaustedCount\":" << snapshot.outerOrphanResourceExhaustedCount <<
+        ",\"outerOrphanConflictRejectionCount\":" << snapshot.outerOrphanConflictRejectionCount <<
+        ",\"outerOrphanCachedBlockCount\":" << snapshot.outerOrphanCachedBlockCount <<
+        ",\"outerOrphanCachedBytes\":" << snapshot.outerOrphanCachedBytes <<
+        ",\"outerPeakOrphanCachedBytes\":" << snapshot.outerPeakOrphanCachedBytes <<
         ",\"outerDeferredResourceBusyCount\":" << snapshot.outerDeferredResourceBusyCount <<
         ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount <<
         ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit <<

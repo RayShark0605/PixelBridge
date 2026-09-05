@@ -638,21 +638,49 @@ void ApplyCaptureComponentSnapshot(const pbcapturenormalize::CaptureSnapshot& ca
     return false;
 }
 
-[[nodiscard]] bool IsOuterResourceError(const pbreceiver::ReceiverError& error) noexcept
+enum class OuterResourceRejectionReason : std::uint8_t
+{
+    None,
+    ProtocolResourceLimitExceeded,
+    ProtocolResourceExhausted,
+    ControlReassemblyQuotaExceeded,
+    OuterFecOutOfMemory,
+    OuterFecDecoderQuotaExceeded,
+    OuterFecExtraInsufficient
+};
+
+[[nodiscard]] OuterResourceRejectionReason GetOuterResourceRejectionReason(
+    const pbreceiver::ReceiverError& error) noexcept
 {
     if (const auto* protocol = std::get_if<pbprotocol::ProtocolError>(&error))
     {
-        return protocol->code == pbprotocol::ProtocolErrorCode::ResourceLimitExceeded ||
-            protocol->code == pbprotocol::ProtocolErrorCode::ResourceExhausted ||
-            protocol->code == pbprotocol::ProtocolErrorCode::ControlReassemblyQuotaExceeded;
+        switch (protocol->code)
+        {
+        case pbprotocol::ProtocolErrorCode::ResourceLimitExceeded:
+            return OuterResourceRejectionReason::ProtocolResourceLimitExceeded;
+        case pbprotocol::ProtocolErrorCode::ResourceExhausted:
+            return OuterResourceRejectionReason::ProtocolResourceExhausted;
+        case pbprotocol::ProtocolErrorCode::ControlReassemblyQuotaExceeded:
+            return OuterResourceRejectionReason::ControlReassemblyQuotaExceeded;
+        default:
+            return OuterResourceRejectionReason::None;
+        }
     }
     if (const auto* outerFec = std::get_if<pbouterfec::OuterFecError>(&error))
     {
-        return outerFec->code == pbouterfec::OuterFecErrorCode::OutOfMemory ||
-            outerFec->code == pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded ||
-            outerFec->code == pbouterfec::OuterFecErrorCode::ExtraInsufficient;
+        switch (outerFec->code)
+        {
+        case pbouterfec::OuterFecErrorCode::OutOfMemory:
+            return OuterResourceRejectionReason::OuterFecOutOfMemory;
+        case pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded:
+            return OuterResourceRejectionReason::OuterFecDecoderQuotaExceeded;
+        case pbouterfec::OuterFecErrorCode::ExtraInsufficient:
+            return OuterResourceRejectionReason::OuterFecExtraInsufficient;
+        default:
+            return OuterResourceRejectionReason::None;
+        }
     }
-    return false;
+    return OuterResourceRejectionReason::None;
 }
 
 class UniqueHandle
@@ -3193,6 +3221,12 @@ public:
         outerAlreadyCompletedSymbols_ = 0;
         outerRecoveryReadyEvents_ = 0;
         outerResourceRejections_ = 0;
+        outerProtocolResourceLimitExceededRejections_ = 0;
+        outerProtocolResourceExhaustedRejections_ = 0;
+        outerControlReassemblyQuotaExceededRejections_ = 0;
+        outerFecOutOfMemoryRejections_ = 0;
+        outerFecDecoderQuotaExceededRejections_ = 0;
+        outerFecExtraInsufficientRejections_ = 0;
         outerConflictRejections_ = 0;
         remoteRefinement_.ResetEpoch();
         unifiedFrameIdentity_.reset();
@@ -3244,6 +3278,12 @@ public:
             value.outerAlreadyCompletedSymbols = 0;
             value.outerRecoveryReadyEvents = 0;
             value.outerResourceRejections = 0;
+            value.outerProtocolResourceLimitExceededRejections = 0;
+            value.outerProtocolResourceExhaustedRejections = 0;
+            value.outerControlReassemblyQuotaExceededRejections = 0;
+            value.outerFecOutOfMemoryRejections = 0;
+            value.outerFecDecoderQuotaExceededRejections = 0;
+            value.outerFecExtraInsufficientRejections = 0;
             value.outerConflictRejections = 0;
             value.preFecBerEstimate.reset();
             value.fecFrameErrorRate.reset();
@@ -4166,10 +4206,36 @@ private:
                 {
                     pbprotocol::SaturatingIncrementUnsigned(outerConflictRejections_);
                 }
-                if (IsOuterResourceError(admission.Error()))
+                const OuterResourceRejectionReason resourceReason =
+                    GetOuterResourceRejectionReason(admission.Error());
+                if (resourceReason != OuterResourceRejectionReason::None)
                 {
                     pbprotocol::SaturatingIncrementUnsigned(outerResourceRejections_);
+                    switch (resourceReason)
+                    {
+                    case OuterResourceRejectionReason::ProtocolResourceLimitExceeded:
+                        pbprotocol::SaturatingIncrementUnsigned(outerProtocolResourceLimitExceededRejections_);
+                        break;
+                    case OuterResourceRejectionReason::ProtocolResourceExhausted:
+                        pbprotocol::SaturatingIncrementUnsigned(outerProtocolResourceExhaustedRejections_);
+                        break;
+                    case OuterResourceRejectionReason::ControlReassemblyQuotaExceeded:
+                        pbprotocol::SaturatingIncrementUnsigned(outerControlReassemblyQuotaExceededRejections_);
+                        break;
+                    case OuterResourceRejectionReason::OuterFecOutOfMemory:
+                        pbprotocol::SaturatingIncrementUnsigned(outerFecOutOfMemoryRejections_);
+                        break;
+                    case OuterResourceRejectionReason::OuterFecDecoderQuotaExceeded:
+                        pbprotocol::SaturatingIncrementUnsigned(outerFecDecoderQuotaExceededRejections_);
+                        break;
+                    case OuterResourceRejectionReason::OuterFecExtraInsufficient:
+                        pbprotocol::SaturatingIncrementUnsigned(outerFecExtraInsufficientRejections_);
+                        break;
+                    case OuterResourceRejectionReason::None:
+                        break;
+                    }
                 }
+                UpdateReceiverResourceHighWater();
                 UpdateOuterAdmissionSnapshot();
                 const auto* protocol = std::get_if<pbprotocol::ProtocolError>(&admission.Error());
                 if (protocol != nullptr &&
@@ -4278,6 +4344,12 @@ private:
         value.outerAlreadyCompletedSymbols = outerAlreadyCompletedSymbols_;
         value.outerRecoveryReadyEvents = outerRecoveryReadyEvents_;
         value.outerResourceRejections = outerResourceRejections_;
+        value.outerProtocolResourceLimitExceededRejections = outerProtocolResourceLimitExceededRejections_;
+        value.outerProtocolResourceExhaustedRejections = outerProtocolResourceExhaustedRejections_;
+        value.outerControlReassemblyQuotaExceededRejections = outerControlReassemblyQuotaExceededRejections_;
+        value.outerFecOutOfMemoryRejections = outerFecOutOfMemoryRejections_;
+        value.outerFecDecoderQuotaExceededRejections = outerFecDecoderQuotaExceededRejections_;
+        value.outerFecExtraInsufficientRejections = outerFecExtraInsufficientRejections_;
         value.outerConflictRejections = outerConflictRejections_;
     }
 
@@ -4302,6 +4374,15 @@ private:
                 value.outerPeakActiveDecoderCount = peakActiveOuterFecDecoderCount_;
                 value.outerReservedDecoderBytes = telemetry.reservedOuterFecDecoderBytes;
                 value.outerPeakReservedDecoderBytes = peakReservedOuterFecDecoderBytes_;
+                value.receiverResourcePolicyRejectedCount = telemetry.totalResourcePolicyRejectedCount;
+                value.receiverControlRejectedByResourcePolicyCount = telemetry.controlRejectedByResourcePolicyCount;
+                value.outerOrphanAdmittedBlockCount = telemetry.orphanAdmittedBlockCount;
+                value.outerOrphanDroppedByQuotaCount = telemetry.orphanDroppedByQuotaCount;
+                value.outerOrphanResourceExhaustedCount = telemetry.orphanResourceExhaustedCount;
+                value.outerOrphanConflictRejectionCount = telemetry.orphanConflictRejectionCount;
+                value.outerOrphanCachedBlockCount = telemetry.orphanCachedBlockCount;
+                value.outerOrphanCachedBytes = telemetry.orphanCachedBytes;
+                value.outerPeakOrphanCachedBytes = peakOrphanCachedBytes_;
                 value.outerDeferredResourceBusyCount = telemetry.deferredResourceBusyCount;
                 value.outerFecQuotaExceededCount = telemetry.outerFecQuotaExceededCount;
             }
@@ -4766,6 +4847,12 @@ private:
     std::uint64_t outerAlreadyCompletedSymbols_ = 0;
     std::uint64_t outerRecoveryReadyEvents_ = 0;
     std::uint64_t outerResourceRejections_ = 0;
+    std::uint64_t outerProtocolResourceLimitExceededRejections_ = 0;
+    std::uint64_t outerProtocolResourceExhaustedRejections_ = 0;
+    std::uint64_t outerControlReassemblyQuotaExceededRejections_ = 0;
+    std::uint64_t outerFecOutOfMemoryRejections_ = 0;
+    std::uint64_t outerFecDecoderQuotaExceededRejections_ = 0;
+    std::uint64_t outerFecExtraInsufficientRejections_ = 0;
     std::uint64_t outerConflictRejections_ = 0;
     std::uint64_t peakActiveOuterFecDecoderCount_ = 0;
     std::uint64_t peakReservedOuterFecDecoderBytes_ = 0;
@@ -5955,6 +6042,116 @@ void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot&
     });
 }
 
+void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& result)
+{
+    constexpr std::uint64_t lastLogicalTick = 335;
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedLc4);
+    UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(64U * 1024U);
+    const TransferDescription& description = fixture.description;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
+    const pbprotocol::ReceiverResourcePolicy unifiedPolicy =
+        MakeReceiverResourcePolicyForVisualProfile(VisualProfile::UnifiedLc4);
+    auto receiverResult = pbreceiver::ReceiverIngress::Create(unifiedPolicy, outerBlockBytes);
+    RequireResult(receiverResult, "Unified descriptor-prelude ReceiverIngress creation failed");
+    pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
+    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, 15);
+
+    result = {};
+    std::uint64_t previousActiveDecoderCount = 0;
+    for (std::uint64_t logicalTick = 0; logicalTick <= lastLogicalTick; logicalTick++)
+    {
+        const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
+        const bool observeFrame = logicalTick <= 5 ||
+            (logicalTick >= 16 && logicalTick != 159 && logicalTick != 167);
+        if (observeFrame)
+        {
+            result.observedLogicalFrames++;
+            for (const SenderUnifiedScheduledSlot& slot : frame.slots)
+            {
+                if (slot.assignment.kind != pbmodulation::UnifiedSlotKind::Control)
+                {
+                    continue;
+                }
+                const std::span<const std::byte> controlBytes =
+                    slot.assignment.controlPriority == pbmodulation::UnifiedControlPriority::SessionDescriptor ?
+                        std::span<const std::byte>(description.sessionControl) :
+                    slot.assignment.controlPriority == pbmodulation::UnifiedControlPriority::FinalManifest ?
+                        std::span<const std::byte>(description.manifestControl) :
+                        std::span<const std::byte>(description.segments.at(segmentOrdinal).control);
+                const auto controlResult = receiver.ReceiveControlRecord(controlBytes);
+                RequireResult(controlResult, "Unified descriptor-prelude Control admission failed");
+            }
+
+            for (std::uint32_t slotIndex = 0; slotIndex < frame.slots.size(); slotIndex++)
+            {
+                const SenderUnifiedScheduledSlot& slot = frame.slots[slotIndex];
+                if (slot.transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation &&
+                    slot.transportDisposition != SenderUnifiedTransportSlotDisposition::PaddingDuplicate)
+                {
+                    continue;
+                }
+                std::array<std::byte, outerBlockBytes> payload{};
+                const std::uint32_t outerBlockId = builder.GetOuterBlockIdForSlot(slotIndex);
+                const std::uint32_t declaredPayloadBytes = builder.EncodeOuterPayloadForSlot(slotIndex, payload);
+                Require(declaredPayloadBytes > 0 && declaredPayloadBytes <= (std::numeric_limits<std::uint16_t>::max)(),
+                    "Unified descriptor-prelude payload size is invalid");
+                const pbreceiver::ReceivedTransportBlock transport{sessionTag, segmentOrdinal, outerBlockId,
+                    static_cast<std::uint16_t>(declaredPayloadBytes), payload};
+                const auto dataResult = receiver.ReceiveDataBlock(transport, logicalTick);
+                if (!dataResult)
+                {
+                    const auto* protocolError = std::get_if<pbprotocol::ProtocolError>(&dataResult.Error());
+                    Require(protocolError != nullptr, "Unified descriptor-prelude Transport returned a non-protocol error");
+                    const std::uint64_t activeDecoderCount = receiver.GetTelemetry().activeOuterFecDecoderCount;
+                    if (protocolError->code == pbprotocol::ProtocolErrorCode::ResourceLimitExceeded)
+                    {
+                        result.resourceLimitExceededCount++;
+                        if (activeDecoderCount == 6)
+                        {
+                            result.resourceLimitExceededWhileSixActive++;
+                        }
+                        else if (activeDecoderCount == 7)
+                        {
+                            result.resourceLimitExceededWhileSevenActive++;
+                        }
+                        else if (activeDecoderCount >= senderUnifiedActiveSegmentWindowSize)
+                        {
+                            result.resourceLimitExceededAfterEightActive++;
+                        }
+                        continue;
+                    }
+                    if (protocolError->code == pbprotocol::ProtocolErrorCode::ResourceExhausted)
+                    {
+                        result.resourceExhaustedCount++;
+                        continue;
+                    }
+                    RequireResult(dataResult, "Unified descriptor-prelude Transport admission failed");
+                }
+            }
+        }
+
+        const pbreceiver::ReceiverResourceTelemetrySnapshot frameTelemetry = receiver.GetTelemetry();
+        if (frameTelemetry.activeOuterFecDecoderCount != previousActiveDecoderCount)
+        {
+            result.activeDecoderTransitions.push_back(frameTelemetry.activeOuterFecDecoderCount);
+            previousActiveDecoderCount = frameTelemetry.activeOuterFecDecoderCount;
+        }
+        builder.Advance();
+    }
+
+    const pbreceiver::ReceiverResourceTelemetrySnapshot telemetry = receiver.GetTelemetry();
+    result.orphanAdmittedBlockCount = telemetry.orphanAdmittedBlockCount;
+    result.orphanDroppedByQuotaCount = telemetry.orphanDroppedByQuotaCount;
+    result.orphanResourceExhaustedCount = telemetry.orphanResourceExhaustedCount;
+    result.orphanCachedBlockCount = telemetry.orphanCachedBlockCount;
+    result.orphanCachedBytes = telemetry.orphanCachedBytes;
+    result.totalResourcePolicyRejectedCount = telemetry.totalResourcePolicyRejectedCount;
+    result.outerFecQuotaExceededCount = telemetry.outerFecQuotaExceededCount;
+    result.deferredResourceBusyCount = telemetry.deferredResourceBusyCount;
+    result.finalActiveDecoderCount = telemetry.activeOuterFecDecoderCount;
+}
+
 } // namespace
 
 #ifdef PB_PROCESS_FAULT_TESTS
@@ -6000,6 +6197,27 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedLargeWindowRecovery(
     catch (...)
     {
         return RuntimeStatus::Failure("Unified large-window recovery probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedDescriptorPrelude(
+    UnifiedDescriptorPreludeProbeSnapshot& output) noexcept
+{
+    output = {};
+    try
+    {
+        UnifiedDescriptorPreludeProbeSnapshot result;
+        RunUnifiedDescriptorPreludeProbe(result);
+        output = std::move(result);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified descriptor-prelude probe failed with an unknown error");
     }
 }
 

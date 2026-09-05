@@ -208,6 +208,9 @@ struct SenderUnifiedScheduledFrame
     std::uint64_t logicalTickOrdinal = 0;
     std::uint64_t firstEquationIndex = 0;
     std::uint32_t scheduledEquationCount = 0;
+    // Control slots consumed from the periodic repetition burst. Any remaining
+    // Control slot is the mandatory current-Segment prelude for this frame.
+    std::uint32_t controlBurstSlotCount = 0;
     std::uint32_t controlSlotCount = 0;
     std::uint32_t transportSlotCount = 0;
     std::uint32_t paddingDuplicateSlotCount = 0;
@@ -252,7 +255,9 @@ struct SenderUnifiedCarouselSnapshot
 };
 
 // Product scheduler for PB-Unified-SC6-V3. It schedules one Segment round, or
-// one zero-byte Control round, and never emits a whole-frame Control mode.
+// one zero-byte Control round, and never emits a whole-frame Control mode. Each
+// non-empty mixed frame carries its current SegmentDescriptor, so the Decoder's
+// Control-before-Transport pass can bind the Segment without orphan admission.
 // PrepareFrame is idempotent for one tick and freezes the exact 15-slot plan;
 // CommitPreparedFrame is the sole state transition and must be called only
 // after the complete canonical raster is ready.

@@ -72,6 +72,7 @@ void RequireExactSlotAccounting(const pbapp::SenderUnifiedScheduledFrame& frame)
     }
     REQUIRE(pbmodulation::ValidateUnifiedMixedSlotPlan(assignments));
     REQUIRE(controlSlots == frame.controlSlotCount);
+    REQUIRE(frame.controlBurstSlotCount <= frame.controlSlotCount);
     REQUIRE(transportSlots == frame.transportSlotCount);
     REQUIRE(scheduledEquations == frame.scheduledEquationCount);
     REQUIRE(paddingDuplicates == frame.paddingDuplicateSlotCount);
@@ -206,6 +207,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
             const std::uint64_t cadenceOffset = logicalTickOrdinal % controlCadenceTicks;
             if (cadenceOffset == 0)
             {
+                REQUIRE(frame.controlBurstSlotCount == maximumControlSlots);
                 REQUIRE(frame.controlSlotCount == maximumControlSlots);
                 REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - maximumControlSlots);
                 constexpr std::array expectedPriorities{
@@ -221,10 +223,10 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
                 {
                     REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
-                controlBearingFrames++;
             }
             else if (cadenceOffset == 1)
             {
+                REQUIRE(frame.controlBurstSlotCount == 4);
                 REQUIRE(frame.controlSlotCount == 4);
                 REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 4);
                 constexpr std::array expectedPriorities{
@@ -236,13 +238,16 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
                 {
                     REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
-                controlBearingFrames++;
             }
             else
             {
-                REQUIRE(frame.controlSlotCount == 0);
-                REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount);
+                REQUIRE(frame.controlBurstSlotCount == 0);
+                REQUIRE(frame.controlSlotCount == 1);
+                REQUIRE(frame.slots.front().assignment.controlPriority ==
+                    pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
+                REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 1);
             }
+            controlBearingFrames++;
             for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.slots)
             {
                 if (slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::ScheduledEquation)
@@ -266,7 +271,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
         REQUIRE(snapshot.committedFrameCount == logicalTickCount);
         REQUIRE(snapshot.controlBurstCount == 3);
         REQUIRE(snapshot.controlBearingFrameCount == controlBearingFrames);
-        REQUIRE(snapshot.controlSlotCount == 36);
+        REQUIRE(snapshot.controlSlotCount == logicalTickCount + 30);
         REQUIRE(snapshot.transportSlotCount + snapshot.controlSlotCount ==
             logicalTickCount * pbapp::senderUnifiedCodewordSlotCount);
         REQUIRE(snapshot.committedEquationCount == expectedEquationIndex);
@@ -420,13 +425,13 @@ TEST_CASE("Unified mixed scheduler converges independent Segment rounds without 
         }
         const pbapp::SenderUnifiedCarouselSnapshot snapshot = scheduler.GetSnapshot();
         REQUIRE(snapshot.complete);
-        REQUIRE(snapshot.committedFrameCount == 3);
+        REQUIRE(snapshot.committedFrameCount == 4);
         REQUIRE(snapshot.controlBurstCount == 1);
-        REQUIRE(snapshot.controlSlotCount == 12);
-        REQUIRE(snapshot.transportSlotCount == 33);
+        REQUIRE(snapshot.controlSlotCount == 14);
+        REQUIRE(snapshot.transportSlotCount == 46);
         REQUIRE(snapshot.scheduledEquationCount == 33);
         REQUIRE(snapshot.committedEquationCount == 33);
-        REQUIRE(snapshot.paddingDuplicateSlotCount == 0);
+        REQUIRE(snapshot.paddingDuplicateSlotCount == 13);
         REQUIRE(snapshot.repairEquationCount == 0);
         REQUIRE(expectedEquationIndex == 33);
     }
