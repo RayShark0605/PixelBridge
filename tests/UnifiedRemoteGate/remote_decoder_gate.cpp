@@ -26,14 +26,18 @@ namespace
 
 using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t minimumRunSeconds = 30;
-constexpr std::uint32_t maximumRunSeconds = 600;
+constexpr std::uint32_t maximumHighResolutionRunSeconds = 600;
+constexpr std::uint32_t maximumRunSeconds = 3600;
 constexpr std::uint32_t maximumDiagnosticDimension = 4096;
 constexpr std::size_t maximumSampleBytes = 24 * 1024;
-constexpr std::size_t maximumSampleCount = maximumRunSeconds + 2;
+constexpr std::size_t maximumSampleCount = maximumHighResolutionRunSeconds + 2;
 constexpr std::size_t maximumEvidenceBytes = pbdiagnostic::DiagnosticFile::maximumBytes;
 constexpr auto safetyInterval = std::chrono::milliseconds(200);
 constexpr auto sampleInterval = std::chrono::seconds(1);
+constexpr std::uint32_t extendedRunSampleIntervalSeconds = 6;
+constexpr auto extendedRunSampleInterval = std::chrono::seconds(extendedRunSampleIntervalSeconds);
 static_assert(maximumSampleBytes * maximumSampleCount <= maximumEvidenceBytes);
+static_assert(static_cast<std::size_t>(maximumRunSeconds / extendedRunSampleIntervalSeconds) + 2 <= maximumSampleCount);
 
 void Require(const bool condition, const std::string& message)
 {
@@ -51,11 +55,16 @@ std::uint32_t ParseTimeout(const std::wstring_view text)
     {
         Require(character >= L'0' && character <= L'9', "invalid timeout");
         const auto digit = static_cast<std::uint32_t>(character - L'0');
-        Require(value <= (maximumRunSeconds - digit) / 10, "timeout exceeds 600 seconds");
+        Require(value <= (maximumRunSeconds - digit) / 10, "timeout exceeds 3600 seconds");
         value = value * 10 + digit;
     }
     Require(value >= minimumRunSeconds, "timeout must be at least 30 seconds");
     return value;
+}
+
+std::chrono::seconds SelectSampleInterval(const std::uint32_t seconds) noexcept
+{
+    return seconds <= maximumHighResolutionRunSeconds ? sampleInterval : extendedRunSampleInterval;
 }
 
 std::uint32_t ParseDiagnosticDimension(const std::wstring_view text)
@@ -396,6 +405,7 @@ void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
         Require(static_cast<bool>(started), started.message);
         const auto began = Clock::now();
         const auto deadline = began + std::chrono::seconds(seconds);
+        const auto runSampleInterval = SelectSampleInterval(seconds);
         auto nextSample = began;
         while (Clock::now() < deadline)
         {
@@ -405,7 +415,7 @@ void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
             if (Clock::now() >= nextSample)
             {
                 evidence.Sample(DecoderReport(snapshot, safetyChecks));
-                nextSample = Clock::now() + sampleInterval;
+                nextSample = Clock::now() + runSampleInterval;
             }
             if (snapshot.state == pbapp::DecoderState::Completed || snapshot.state == pbapp::DecoderState::Failed)
             {
@@ -439,8 +449,10 @@ void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
 
 void RunPolicyChecks()
 {
-    Require(ParseTimeout(L"30") == minimumRunSeconds && ParseTimeout(L"600") == maximumRunSeconds, "timeout boundary mismatch");
-    for (const std::wstring_view invalid : {L"", L"0", L"29", L"601", L"-1", L"+30", L"30x", L"4294967296"})
+    Require(ParseTimeout(L"30") == minimumRunSeconds && ParseTimeout(L"3600") == maximumRunSeconds, "timeout boundary mismatch");
+    Require(SelectSampleInterval(600) == sampleInterval && SelectSampleInterval(601) == extendedRunSampleInterval &&
+        SelectSampleInterval(maximumRunSeconds) == extendedRunSampleInterval, "timeout sample interval boundary mismatch");
+    for (const std::wstring_view invalid : {L"", L"0", L"29", L"3601", L"-1", L"+30", L"30x", L"4294967296"})
     {
         bool rejected = false;
         try
