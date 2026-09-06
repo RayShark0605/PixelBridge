@@ -156,6 +156,31 @@ public:
         return true;
     }
 
+    // The full-width marker scans never request clipping information. Keep the
+    // common BGRA path small enough to inline without the cold FP16/pow branch;
+    // arithmetic, coordinate checks and per-read work charging match Pixel.
+    [[nodiscard]] bool ScanPixel(const std::uint32_t x, const std::uint32_t y, double& output) noexcept
+    {
+        if (view_.pixelFormat != LumaPixelFormat::Bgra8)
+        {
+            return Pixel(x, y, output);
+        }
+        if (x >= view_.width || y >= view_.height)
+        {
+            error_ = Erasure::SampleOutOfBounds;
+            return false;
+        }
+        if (!Charge())
+        {
+            return false;
+        }
+        const auto* bytes = view_.pixels.data() + static_cast<std::size_t>(y) * view_.rowPitch + static_cast<std::size_t>(x) * 4;
+        output = exactIntegerLuma_ ? (722u * std::to_integer<unsigned>(bytes[0]) + 7152u * std::to_integer<unsigned>(bytes[1]) +
+            2126u * std::to_integer<unsigned>(bytes[2])) / 10000.0 :
+            0.0722 * std::to_integer<std::uint8_t>(bytes[0]) + 0.7152 * std::to_integer<std::uint8_t>(bytes[1]) + 0.2126 * std::to_integer<std::uint8_t>(bytes[2]);
+        return true;
+    }
+
     [[nodiscard]] bool Sample(const double x, const double y, double& output) noexcept
     {
         if (!Contains(x, y))

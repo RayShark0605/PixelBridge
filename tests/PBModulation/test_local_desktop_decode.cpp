@@ -1,16 +1,20 @@
 #include "local_desktop_resample_fixtures.h"
 #include "local_desktop_test_fixtures.h"
 #include "pbmodulation/local_desktop_decode.h"
+#include "../../libs/PBModulation/src/luma_reader.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <iostream>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -78,6 +82,78 @@ GrayImage TwoFrames(const GrayImage& first, const GrayImage& second)
 static_assert(std::is_trivially_copyable_v<LumaView>);
 static_assert(std::is_trivially_copyable_v<LocalDesktopObservation>);
 static_assert(sizeof(LocalDesktopObservation) < 1024);
+
+TEST_CASE("BGRA scan specialization is bit-exact for all RGB codes with the original per-read budget",
+    "[pbmodulation][localdesktop][scan-pixel]")
+{
+    constexpr std::uint32_t width = 256;
+    constexpr std::uint32_t height = 256;
+    constexpr std::uint32_t pitch = width * 4 + 7;
+    constexpr std::uint64_t pixelsPerImage = width * height;
+    std::vector<std::byte> pixels(static_cast<std::size_t>(pitch) * height, std::byte{0xA5});
+    const LumaView view{pixels, width, height, pitch, LumaPixelFormat::Bgra8};
+    REQUIRE(ValidateLumaView(view) == Erasure::None);
+    for (const bool exactIntegerLuma : {false, true})
+    {
+        std::uint64_t mismatches = 0;
+        for (std::uint32_t red = 0; red < 256; red++)
+        {
+            detail::LumaReader reference(view, pixelsPerImage, exactIntegerLuma);
+            detail::LumaReader optimized(view, pixelsPerImage, exactIntegerLuma);
+            for (std::uint32_t green = 0; green < height; green++)
+            {
+                for (std::uint32_t blue = 0; blue < width; blue++)
+                {
+                    const std::size_t offset = static_cast<std::size_t>(green) * pitch + blue * 4;
+                    pixels[offset] = static_cast<std::byte>(blue);
+                    pixels[offset + 1] = static_cast<std::byte>(green);
+                    pixels[offset + 2] = static_cast<std::byte>(red);
+                    double expected = 0;
+                    double observed = 0;
+                    if (!reference.Pixel(blue, green, expected) || !optimized.ScanPixel(blue, green, observed) ||
+                        std::bit_cast<std::uint64_t>(expected) != std::bit_cast<std::uint64_t>(observed))
+                    {
+                        mismatches++;
+                    }
+                }
+            }
+            REQUIRE(reference.WorkUnits() == optimized.WorkUnits());
+            double unchanged = -1;
+            REQUIRE_FALSE(optimized.ScanPixel(0, 0, unchanged));
+            REQUIRE(optimized.Error() == Erasure::WorkBudgetExceeded);
+            REQUIRE(unchanged == -1);
+        }
+        REQUIRE(mismatches == 0);
+    }
+    detail::LumaReader boundary(view, pixelsPerImage);
+    double unchanged = -1;
+    REQUIRE_FALSE(boundary.ScanPixel(width, 0, unchanged));
+    REQUIRE(boundary.Error() == Erasure::SampleOutOfBounds);
+    REQUIRE(boundary.WorkUnits() == 0);
+    REQUIRE(unchanged == -1);
+}
+
+TEST_CASE("G21 full-view Bootstrap locator cost keeps all threshold and ambiguity passes",
+    "[.g21-bootstrap-cost]")
+{
+    const auto source = GrayFromGolden(MakeGoldenRaster());
+    GrayImage canvas(2560, 1440);
+    CopyBlock(source, canvas, 0, 0, 1920, 1080, 320, 180);
+    const auto encoded = ConvertFormat(canvas, LumaPixelFormat::Bgra8);
+    const auto expected = LoadGoldenRecord();
+    constexpr std::uint32_t iterations = 32;
+    const auto started = std::chrono::steady_clock::now();
+    std::uint64_t totalWorkUnits = 0;
+    for (std::uint32_t iteration = 0; iteration < iterations; iteration++)
+    {
+        const auto observation = DecodeLocalDesktopBootstrap(encoded.View());
+        RequireAccepted(observation, expected);
+        totalWorkUnits += observation.workUnits;
+    }
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    std::cout << "G21_BOOTSTRAP_COST frames=" << iterations << " meanMilliseconds=" << elapsed / iterations
+        << " workUnits=" << totalWorkUnits << '\n';
+}
 
 TEST_CASE("LocalDesktop portable samples honor footprint, pitch, format and immutable failures", "[pbmodulation][localdesktop][sampling]")
 {

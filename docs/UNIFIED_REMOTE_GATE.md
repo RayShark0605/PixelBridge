@@ -1188,3 +1188,19 @@ live window 每秒仍会再写一遍。空 checkpoint 的 generation 2,054→3,0
 Segment completed、torn-tail 仍立即 compact，不削弱 flush/CRC/maxResumeBytes/crash-safe commit。
 `compaction-growth-final-g21-resume.txt` 为 10/2,630，`compaction-decoder-resume-adjacent.txt` 为 8/2,503。
 需要新提交、重构建、同身份 64 MiB→500 MiB→1 GiB 重跑才能确认实际改善；G21 不关闭，不声称 remote pass。
+
+
+### 20.5 21b3591 本机复核与 Bootstrap 扫描优化
+
+正式 21b3591 的 fresh 64 MiB root 为
+`<repo>\build-unified-release\g21-21b3591-staircase-64mib-8985c739d1964bd182501ec3c20d7eff`。
+8/8、279,568 ms、3,748 unique @13.547948 Hz、17,905.247 B/unique，外部 bytes/SHA256/BLAKE3、所有发布/资源门
+通过且exit0/0，但 pass1 前仍0/8，故500 MiB/1GiB没有启动。Receiver peak working set/private=396,500,992 /
+520,880,128 bytes；Encoder=276,525,056 /303,112,192。完整双摘要和字段见 independent-postrun-audit.json 与交接0.11。
+最终 generation=350,489、admission drops=2；compaction 改善并不等于全部捕获问题解决。
+
+下一项仅对完整 Bootstrap marker scan 提取小 BGRA 读取函数，保留通用 Pixel reference。所有3个 threshold passes、
+像素/候选顺序、work token、bounds、ambiguity、CRC都不改变，不缓存ROI跳过搜索。两种luma算法各穷举全部24-bit RGB
+逐位一致；相同32帧2560×1440 Golden全视图基准从21.078降到10.2191 ms/帧，work units同为185,997,856。
+localdesktop 17/3,900、scan+cost 2/2,503、无分配1,070 checks通过。此为CPU成本证据，需新候选同身份实屏验证，不据此
+升级大档或宣布G21完成。

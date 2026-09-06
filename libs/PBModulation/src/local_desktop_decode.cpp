@@ -276,7 +276,7 @@ Erasure ScanMarkers(LumaReader& reader, const LocalDesktopDecodePolicy& policy, 
         std::size_t runCount = 0;
         std::uint32_t runBegin = 0;
         double first = 0;
-        if (!reader.Pixel(0, static_cast<std::uint32_t>(row), first))
+        if (!reader.ScanPixel(0, static_cast<std::uint32_t>(row), first))
         {
             return reader.Error();
         }
@@ -284,7 +284,7 @@ Erasure ScanMarkers(LumaReader& reader, const LocalDesktopDecodePolicy& policy, 
         for (std::uint64_t column = 1; column <= reader.Width(); column++)
         {
             double value = 0;
-            if (column < reader.Width() && !reader.Pixel(static_cast<std::uint32_t>(column), static_cast<std::uint32_t>(row), value))
+            if (column < reader.Width() && !reader.ScanPixel(static_cast<std::uint32_t>(column), static_cast<std::uint32_t>(row), value))
             {
                 return reader.Error();
             }

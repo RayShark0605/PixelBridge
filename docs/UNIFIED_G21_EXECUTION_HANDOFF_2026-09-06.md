@@ -5,12 +5,12 @@
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
 > [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
 
-## 0. 最新权威增量（20:25 交接基线；22:00 的实屏后修正见 0.10）
+## 0. 最新权威增量（20:25 交接基线；22:20 的 Bootstrap 热路径候选见 0.11）
 
 > **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
 > “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
 > 后续第 1～8 节继续保留，作为真实远控链历史、原始失败形状和操作背景，不得反向覆盖本节。
-> **继续执行后的最新状态优先读 0.10，再读 0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
+> **继续执行后的最新状态优先读 0.11，再读 0.10、0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
 
 ### 0.1 当前结论与 Git 边界
 
@@ -334,6 +334,39 @@ growth 仍触发 compact、restart、completed 后释放。G21+journal=10 cases 
 这是消除重复持久化开销的证据，不声称它已解释或消除全部 capture loss。下一步提交此候选、重构建身份、复核窄测和
 16-Segment probe，再重新开始 64/500 MiB/1 GiB 同身份阶梯；若 64 MiB 仍靠 pass1，先继续修正，不盲跑下一档。
 保护文件 SHA-256 未变；测试结束没有自己启动的 Encoder/Decoder/Gate 遗留。G21 仍 PARTIAL、G22 未开始。
+
+### 0.11 21b3591 实屏复核与位精确 Bootstrap 热路径（2026-09-06 22:20 CST）
+
+0.10 的正式提交为 `21b35913f0c3a6a3a3342f2a33715b36f5d263fd`，提交后完整重构建三 EXE 身份与全部 formal
+窄测通过，证据在 0.9 根下 `formal-21b3591/`。clean/phase3 transition 仍通过。
+
+本候选实际右屏 64 MiB root：
+`<repo>\build-unified-release\g21-21b3591-staircase-64mib-8985c739d1964bd182501ec3c20d7eff`。
+8/8、67,108,864 bytes、279,568 ms、3,748 unique、13.547948201896428 Hz、17,905.24653148346 B/unique，
+whole/publish/reopen/coverage/外部 exact bytes+SHA256+BLAKE3 均通过；lane CRC/identity、resource/conflict/deferred/
+quota/orphan=0，exit0/0。Sender=4,161 frames @14.983885481307 Hz（配置15）。Receiver peak working set/private=
+396,500,992 / 520,880,128 bytes；Encoder=276,525,056 / 303,112,192；decoder-owned 8 / 457,201,696 bytes。
+source/published SHA256=`754db279513b1f8ac207229604813fa755127a02a00832d39bc01d2f7de011c9`，
+BLAKE3=`a5ea89d16a395cc2e01cb31c7120749415be92181d94a4dd0a620367a293882d`。
+
+`pass0-safety-postrun-analysis.json` 仍显示 pass1 前 0/8、active8，后续才完成；因此 500 MiB/1 GiB 仍未启动。
+与前轮相比，最终 generation 降至 350,489、capture admission drops 由76降到2，证明重复 compact 已消除；但这不是
+全部 capture loss 的解释。当前每帧 Bootstrap CPU（含 staging Map）约36 ms，是下一个可优化热点。
+
+本段同提交只优化 `LumaReader::ScanPixel` 的 BGRA full-view 热路径：把不请求 clipping 的扫描读取从含 FP16/pow
+的通用函数中分离，原 `Pixel` reference/其他格式 fallback 保留。**所有三轮阈值扫描、所有像素、marker/geometry
+顺序、ambiguity/contrast/timing/CRC/work budget 均不变**；没有 cached-ROI 快捷接受、没有丢弃 unique frames，也无
+image-sized scratch 或 allocation。两种 luma 算法分别穷举全部 16,777,216 RGB 代码，double bits 与 reference 完全
+相同，并检查 row padding、work charging、输出不变与 bounds/budget failure。
+
+相同32帧 2560×1440 离线 Golden full-view probe：原扫描21.078 ms/帧，新扫描10.2191 ms/帧；total work units 均为
+185,997,856。这里只是同夹具 CPU 成本，不冒充 live 时延或 goodput。证据在 0.9 根的
+`bootstrap-scan-reference.txt`、`bootstrap-scan-optimized.txt`：2 cases/2,503 assertions；
+`bootstrap-scan-all-local-gates.txt`：17 cases/3,900；`bootstrap-scan-no-allocation.txt`：1,070 checks、0 allocations。
+现有不同格式、torn/mixed frame、threshold、ambiguity 和 budget tests 全通过，未放宽任何门。
+
+新候选仍需独立提交、重构建、正式 identity/窄测复核，并重新从64 MiB开始同身份三档。保护文件 hash 未变；没有残留
+产品/Gate进程。G21 PARTIAL，所有本机结果明确为 LocalDesktop，仍不是 remote field pass。
 
 ## 1. 交接时结论
 
