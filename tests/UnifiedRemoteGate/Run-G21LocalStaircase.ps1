@@ -335,7 +335,9 @@ try
                     $sample = $null
                 }
             }
-            if ($sample -and ([int64]$sample.remoteGate.outerResourceRejections -ne 0 -or
+            $frameCoverageFailure = $sample -and [bool]$sample.unifiedTelemetry.observationAvailable -and
+                -not [bool]$sample.unifiedTelemetry.frameCoverageComplete
+            $resourceOrConflictFailure = $sample -and ([int64]$sample.remoteGate.outerResourceRejections -ne 0 -or
                 [int64]$sample.remoteGate.receiverResourcePolicyRejectedCount -ne 0 -or
                 [int64]$sample.remoteGate.receiverControlRejectedByResourcePolicyCount -ne 0 -or
                 [int64]$sample.remoteGate.outerOrphanDroppedByQuotaCount -ne 0 -or
@@ -343,9 +345,17 @@ try
                 [int64]$sample.remoteGate.outerOrphanConflictRejectionCount -ne 0 -or
                 [int64]$sample.remoteGate.outerConflictRejections -ne 0 -or
                 [int64]$sample.remoteGate.outerDeferredResourceBusyCount -ne 0 -or
-                [int64]$sample.remoteGate.outerFecQuotaExceededCount -ne 0))
+                [int64]$sample.remoteGate.outerFecQuotaExceededCount -ne 0)
+            if ($frameCoverageFailure -or $resourceOrConflictFailure)
             {
-                $receiverGateFailure = "Receiver reported an irreversible G21 resource/conflict failure: resource=$([int64]$sample.remoteGate.outerResourceRejections), conflict=$([int64]$sample.remoteGate.outerConflictRejections), deferred=$([int64]$sample.remoteGate.outerDeferredResourceBusyCount), FEC quota=$([int64]$sample.remoteGate.outerFecQuotaExceededCount)."
+                $receiverGateFailure = if ($frameCoverageFailure)
+                {
+                    'Receiver reported incomplete observed-frame coverage; the published-frame metric would be unavailable.'
+                }
+                else
+                {
+                    "Receiver reported an irreversible G21 resource/conflict failure: resource=$([int64]$sample.remoteGate.outerResourceRejections), conflict=$([int64]$sample.remoteGate.outerConflictRejections), deferred=$([int64]$sample.remoteGate.outerDeferredResourceBusyCount), FEC quota=$([int64]$sample.remoteGate.outerFecQuotaExceededCount)."
+                }
                 Write-NewUtf8 -Path (Join-Path $runRoot 'receiver-gate-failure-snapshot.json') -Text ($sampleText + "`n")
                 Stop-Process -Id $receiver.Id -Force -ErrorAction SilentlyContinue
                 [void]$receiver.WaitForExit(5000)
