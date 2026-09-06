@@ -282,15 +282,26 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
     REQUIRE(probe.repairIdLeaseEnds.size() == probe.blockCounts.size());
     for (std::size_t segmentIndex = 0; segmentIndex < probe.blockCounts.size(); segmentIndex++)
     {
+        const std::uint64_t expectedInitialRepairEquations =
+            (std::max)(static_cast<std::uint64_t>(pbapp::senderUnifiedMinimumInitialRepairBlocks),
+                (static_cast<std::uint64_t>(probe.blockCounts[segmentIndex]) - 1ULL) /
+                    (pbapp::senderUnifiedInitialRepairPercentDenominator /
+                        pbapp::senderUnifiedInitialRepairPercentNumerator) + 1ULL);
         CHECK(probe.blockCounts[segmentIndex] > 2);
+        CHECK(probe.passZeroScheduledEquationCounts[segmentIndex] ==
+            probe.blockCounts[segmentIndex] + expectedInitialRepairEquations);
         CHECK(probe.passZeroScheduledEquationCounts[segmentIndex] ==
             probe.passZeroUniqueOuterBlockCounts[segmentIndex]);
         CHECK(probe.passZeroMaximumOuterBlockIds[segmentIndex] + 1ULL ==
             probe.passZeroScheduledEquationCounts[segmentIndex]);
         CHECK(probe.passOneFirstRepairIds[segmentIndex] ==
             probe.passZeroMaximumOuterBlockIds[segmentIndex] + 1ULL);
+        const std::uint64_t expectedFullRepairPassEquations = probe.blockCounts[segmentIndex] +
+            (std::max)(static_cast<std::uint64_t>(pbapp::senderCarouselMinimumRepairBlocks),
+                (static_cast<std::uint64_t>(probe.blockCounts[segmentIndex]) - 1ULL) /
+                    (pbapp::senderCarouselRepairPercentDenominator / pbapp::senderCarouselRepairPercentNumerator) + 1ULL);
         CHECK(probe.repairIdLeaseEnds[segmentIndex] ==
-            probe.passOneFirstRepairIds[segmentIndex] + probe.passZeroScheduledEquationCounts[segmentIndex]);
+            probe.passOneFirstRepairIds[segmentIndex] + expectedFullRepairPassEquations);
     }
 }
 

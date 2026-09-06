@@ -12,6 +12,8 @@ namespace
 
 static_assert(senderCarouselRepairPercentNumerator != 0);
 static_assert(senderCarouselRepairPercentDenominator % senderCarouselRepairPercentNumerator == 0);
+static_assert(senderUnifiedInitialRepairPercentNumerator != 0);
+static_assert(senderUnifiedInitialRepairPercentDenominator % senderUnifiedInitialRepairPercentNumerator == 0);
 
 [[nodiscard]] bool AssignChecked(
     const pbprotocol::ProtocolResult<std::uint64_t>& result,
@@ -33,12 +35,14 @@ static_assert(senderCarouselRepairPercentDenominator % senderCarouselRepairPerce
 
 [[nodiscard]] SenderCarouselSchedulerStatus CalculateEquationCounts(
     const std::uint32_t systematicBlockCount, const bool wirehair,
+    const std::uint32_t repairPercentNumerator, const std::uint32_t repairPercentDenominator,
+    const std::uint32_t minimumRepairBlocks,
     std::uint64_t& scheduledEquationCount, std::uint64_t& repairEquationCount) noexcept
 {
     repairEquationCount = wirehair ?
-        (std::max)(static_cast<std::uint64_t>(senderCarouselMinimumRepairBlocks),
+        (std::max)(static_cast<std::uint64_t>(minimumRepairBlocks),
             (static_cast<std::uint64_t>(systematicBlockCount) - 1ULL) /
-                (senderCarouselRepairPercentDenominator / senderCarouselRepairPercentNumerator) + 1ULL) : 0;
+                (repairPercentDenominator / repairPercentNumerator) + 1ULL) : 0;
     if (!AssignChecked(pbprotocol::CheckedAddUint64(systematicBlockCount, repairEquationCount),
         scheduledEquationCount))
     {
@@ -84,7 +88,9 @@ SenderCarouselSchedulerStatus SenderCarouselScheduler::Create(
     std::uint64_t repairEquationCount = 0;
     std::uint64_t scheduledEquationCount = 0;
     const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
-        config.systematicBlockCount, config.wirehair, scheduledEquationCount, repairEquationCount);
+        config.systematicBlockCount, config.wirehair, senderCarouselRepairPercentNumerator,
+        senderCarouselRepairPercentDenominator, senderCarouselMinimumRepairBlocks,
+        scheduledEquationCount, repairEquationCount);
     if (!equationStatus)
     {
         return equationStatus;
@@ -384,13 +390,17 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     std::uint64_t repairEquationCount = 0;
     if (config.systematicBlockCount != 0)
     {
-        const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
-            config.systematicBlockCount, config.wirehair, scheduledEquationCount, repairEquationCount);
+        const bool initialPass = config.carouselPass == 0;
+        const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(config.systematicBlockCount,
+            config.wirehair, initialPass ? senderUnifiedInitialRepairPercentNumerator : senderCarouselRepairPercentNumerator,
+            initialPass ? senderUnifiedInitialRepairPercentDenominator : senderCarouselRepairPercentDenominator,
+            initialPass ? senderUnifiedMinimumInitialRepairBlocks : senderCarouselMinimumRepairBlocks,
+            scheduledEquationCount, repairEquationCount);
         if (!equationStatus)
         {
             return equationStatus;
         }
-        if (config.wirehair && config.carouselPass != 0)
+        if (config.wirehair && !initialPass)
         {
             systematicEquationCount = 0;
             repairEquationCount = scheduledEquationCount;

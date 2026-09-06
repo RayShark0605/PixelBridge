@@ -441,10 +441,12 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
     "[application][g21][scheduler][carousel][repair-only]")
 {
     constexpr std::uint32_t systematicBlockCount = 799;
-    constexpr std::uint64_t initialRepairEquationCount = 160;
-    constexpr std::uint64_t fullRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
+    constexpr std::uint64_t initialRepairEquationCount = 40;
+    constexpr std::uint64_t initialRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
+    constexpr std::uint64_t fullRepairOverheadEquationCount = 160;
+    constexpr std::uint64_t fullRepairRoundEquationCount = systematicBlockCount + fullRepairOverheadEquationCount;
     constexpr std::uint32_t firstInitialRepairId = systematicBlockCount;
-    constexpr std::uint32_t firstFullRepairId = static_cast<std::uint32_t>(fullRoundEquationCount);
+    constexpr std::uint32_t firstFullRepairId = static_cast<std::uint32_t>(initialRoundEquationCount);
 
     const auto runRound = [](const std::uint64_t carouselPass, const std::uint32_t firstRepairId)
     {
@@ -455,8 +457,10 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
         const pbapp::SenderUnifiedCarouselSnapshot initial = scheduler.GetSnapshot();
         const std::uint64_t expectedSystematicCount = includeSystematicEquations ? systematicBlockCount : 0;
         const std::uint64_t expectedRepairCount = includeSystematicEquations ?
-            initialRepairEquationCount : fullRoundEquationCount;
-        REQUIRE(initial.scheduledEquationCount == fullRoundEquationCount);
+            initialRepairEquationCount : fullRepairRoundEquationCount;
+        const std::uint64_t expectedRoundEquationCount = includeSystematicEquations ?
+            initialRoundEquationCount : fullRepairRoundEquationCount;
+        REQUIRE(initial.scheduledEquationCount == expectedRoundEquationCount);
         REQUIRE(initial.systematicEquationCount == expectedSystematicCount);
         REQUIRE(initial.repairEquationCount == expectedRepairCount);
 
@@ -497,19 +501,22 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
         }
         const pbapp::SenderUnifiedCarouselSnapshot final = scheduler.GetSnapshot();
         REQUIRE(final.complete);
-        REQUIRE(final.committedEquationCount == fullRoundEquationCount);
+        REQUIRE(final.committedEquationCount == expectedRoundEquationCount);
         REQUIRE(final.systematicEquationCount == expectedSystematicCount);
         REQUIRE(final.repairEquationCount == expectedRepairCount);
-        REQUIRE(expectedEquationIndex == fullRoundEquationCount);
-        REQUIRE(scheduledOuterBlockIds.size() == fullRoundEquationCount);
+        REQUIRE(expectedEquationIndex == expectedRoundEquationCount);
+        REQUIRE(scheduledOuterBlockIds.size() == expectedRoundEquationCount);
         return scheduledOuterBlockIds;
     };
 
     const std::vector<std::uint32_t> initialIds = runRound(0, firstInitialRepairId);
     const std::vector<std::uint32_t> fullRepairIds = runRound(1, firstFullRepairId);
-    for (std::uint32_t equationIndex = 0; equationIndex < fullRoundEquationCount; equationIndex++)
+    for (std::uint32_t equationIndex = 0; equationIndex < initialRoundEquationCount; equationIndex++)
     {
         REQUIRE(initialIds[equationIndex] == equationIndex);
+    }
+    for (std::uint32_t equationIndex = 0; equationIndex < fullRepairRoundEquationCount; equationIndex++)
+    {
         REQUIRE(fullRepairIds[equationIndex] == firstFullRepairId + equationIndex);
     }
     REQUIRE(initialIds.back() < fullRepairIds.front());
