@@ -263,14 +263,19 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
     REQUIRE(probe.legacyReceiverActiveDecoderLimit == 4);
     REQUIRE(probe.receiverActiveDecoderCount == pbapp::senderUnifiedActiveSegmentWindowSize);
     REQUIRE(probe.receiverDeferredResourceBusyCount == 0);
-    REQUIRE(probe.initialSegmentOrdinals.size() == 2 * pbapp::senderUnifiedActiveSegmentWindowSize);
+    const std::uint64_t windowSize = pbapp::senderUnifiedActiveSegmentWindowSize;
+    REQUIRE(probe.initialSegmentOrdinals.size() == windowSize * windowSize);
     REQUIRE(probe.initialCheckpointSegmentOrdinals.size() == probe.initialSegmentOrdinals.size());
     for (std::size_t index = 0; index < probe.initialSegmentOrdinals.size(); index++)
     {
-        CHECK(probe.initialSegmentOrdinals[index] == index % pbapp::senderUnifiedActiveSegmentWindowSize);
+        const std::uint64_t sweepOrdinal = index / windowSize;
+        const std::uint64_t phaseEpoch = sweepOrdinal / pbapp::senderUnifiedSweepPhaseHold;
+        const std::uint64_t positionInSweep = index % windowSize;
+        CHECK(probe.initialSegmentOrdinals[index] ==
+            (phaseEpoch * pbapp::senderUnifiedSweepPhaseStep + positionInSweep) % windowSize);
         CHECK(probe.initialCheckpointSegmentOrdinals[index] == 0);
     }
-    REQUIRE(probe.passZeroLogicalFrames > probe.initialSegmentOrdinals.size());
+    REQUIRE(probe.passZeroLogicalFrames >= probe.initialSegmentOrdinals.size());
     REQUIRE(probe.durablePositionUpdateCount == 1);
     REQUIRE(probe.peakResidentEncodedSegmentCount == pbapp::senderUnifiedActiveSegmentWindowSize);
     REQUIRE(probe.peakResidentEncodedSegmentBytes == 8ULL * 64ULL * 1024ULL);
@@ -328,6 +333,19 @@ TEST_CASE("Unified eight-Segment window recovers 64 MiB through sparse observati
     REQUIRE(probe.receiverDeferredResourceBusyCount == 0);
     REQUIRE(probe.receiverOuterFecQuotaExceededCount == 0);
     REQUIRE(probe.verifiedEncodedBytesPerUniqueFrame >= 16.0 * 1024.0);
+    const std::uint64_t windowSize = pbapp::senderUnifiedActiveSegmentWindowSize;
+    REQUIRE(probe.phaseVisitCounts.size() == windowSize * windowSize);
+    for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < windowSize; segmentOrdinal++)
+    {
+        std::uint64_t visitedPhaseCount = 0;
+        for (std::uint64_t framePhase = 0; framePhase < windowSize; framePhase++)
+        {
+            visitedPhaseCount += static_cast<std::uint64_t>(
+                probe.phaseVisitCounts[segmentOrdinal * windowSize + framePhase] != 0);
+        }
+        INFO("segmentOrdinal=" << segmentOrdinal);
+        CHECK(visitedPhaseCount >= 4);
+    }
 }
 
 TEST_CASE("Unified current-Segment descriptor precedes Transport after a bounded capture gap",

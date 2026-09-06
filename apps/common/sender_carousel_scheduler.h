@@ -28,9 +28,15 @@ inline constexpr std::uint32_t senderUnifiedMinimumLogicalFramesPerSecond = 1;
 inline constexpr std::uint32_t senderUnifiedMaximumLogicalFramesPerSecond = 60;
 inline constexpr std::uint32_t senderUnifiedMaximumControlRepetitions = 64;
 // The certified Unified sender stripes one logical frame at a time across this
-// bounded Segment window. The matching Decoder policy and resume cache must
-// cover the same count; this is scheduler tuning and does not alter wire data.
+// bounded Segment window and rotates the sweep start to avoid fixed capture-
+// phase aliasing. The matching Decoder policy and resume cache must cover the
+// same count; this is scheduler tuning and does not alter wire data.
 inline constexpr std::uint32_t senderUnifiedActiveSegmentWindowSize = 8;
+// One sweep gives every active Segment one frame. Holding a phase for 128
+// sweeps preserves the bounded sparse-observation recovery margin while still
+// moving every Segment away from a persistently unfavorable capture phase.
+inline constexpr std::uint32_t senderUnifiedSweepPhaseHold = 128;
+inline constexpr std::uint32_t senderUnifiedSweepPhaseStep = 1;
 inline constexpr std::uint64_t senderLogicalFrameNanosecondsPerSecond = 1000000000ULL;
 inline constexpr std::size_t senderUnifiedCodewordSlotCount =
     static_cast<std::size_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount);

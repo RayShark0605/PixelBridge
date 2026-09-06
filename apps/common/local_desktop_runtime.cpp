@@ -1748,9 +1748,16 @@ private:
 
     [[nodiscard]] bool SelectNextUnifiedSegment()
     {
-        for (std::size_t offset = 1; offset <= unifiedSegmentStates_.size(); offset++)
+        const std::uint64_t windowSize = unifiedSegmentStates_.size();
+        Require(windowSize != 0, "Unified Segment selection requires a non-empty window");
+        const std::uint64_t sweepOrdinal = cyclePosition_ / windowSize;
+        const std::uint64_t phaseEpoch = sweepOrdinal / senderUnifiedSweepPhaseHold;
+        const std::uint64_t positionInSweep = cyclePosition_ % windowSize;
+        const std::size_t plannedIndex = static_cast<std::size_t>(
+            (phaseEpoch * senderUnifiedSweepPhaseStep + positionInSweep) % windowSize);
+        for (std::size_t offset = 0; offset < unifiedSegmentStates_.size(); offset++)
         {
-            const std::size_t candidateIndex = (unifiedCurrentStateIndex_ + offset) % unifiedSegmentStates_.size();
+            const std::size_t candidateIndex = (plannedIndex + offset) % unifiedSegmentStates_.size();
             if (!unifiedSegmentStates_[candidateIndex].scheduler.IsComplete())
             {
                 unifiedCurrentStateIndex_ = candidateIndex;
@@ -5859,7 +5866,7 @@ void RunUnifiedTemporalStripingProbe(UnifiedTemporalStripingProbeSnapshot& resul
         const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
         const std::size_t segmentIndex = static_cast<std::size_t>(segmentOrdinal);
         result.blockCounts[segmentIndex] = builder.GetBlockCount();
-        if (result.initialSegmentOrdinals.size() < 16)
+        if (result.initialSegmentOrdinals.size() < segmentCount * segmentCount)
         {
             result.initialSegmentOrdinals.push_back(segmentOrdinal);
             result.initialCheckpointSegmentOrdinals.push_back(builder.GetCheckpointSegmentOrdinal());
@@ -5986,6 +5993,7 @@ void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot&
     std::vector<bool> completedSegments(segmentCount, false);
     result = {};
     result.sourceBytes = source.size();
+    result.phaseVisitCounts.resize(segmentCount * segmentCount, 0);
     while (result.completedSegments < segmentCount)
     {
         Require(result.senderLogicalFrames < maximumSenderLogicalFrames,
@@ -5993,6 +6001,12 @@ void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot&
         const std::uint64_t logicalTick = result.senderLogicalFrames;
         const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
         Require(segmentOrdinal < segmentCount, "Unified large-window sender Segment ordinal is out of bounds");
+        if (builder.GetCarouselSnapshot().cycleCount == 0)
+        {
+            const std::size_t phaseIndex = static_cast<std::size_t>(
+                segmentOrdinal * segmentCount + logicalTick % segmentCount);
+            result.phaseVisitCounts[phaseIndex]++;
+        }
         const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
         const bool observedByReceiver = (MixLogicalTick(logicalTick) & 3ULL) == 0;
         if (!observedByReceiver)

@@ -350,6 +350,7 @@ struct UnifiedLargeWindowRecoveryProbeSnapshot
     std::uint64_t receiverOuterFecQuotaExceededCount = 0;
     double verifiedEncodedBytesPerUniqueFrame = 0;
     bool everySegmentDigestVerified = false;
+    std::vector<std::uint64_t> phaseVisitCounts;
 };
 
 struct UnifiedDescriptorPreludeProbeSnapshot

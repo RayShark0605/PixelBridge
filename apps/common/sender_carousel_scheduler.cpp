@@ -14,6 +14,8 @@ static_assert(senderCarouselRepairPercentNumerator != 0);
 static_assert(senderCarouselRepairPercentDenominator % senderCarouselRepairPercentNumerator == 0);
 static_assert(senderUnifiedInitialRepairPercentNumerator != 0);
 static_assert(senderUnifiedInitialRepairPercentDenominator % senderUnifiedInitialRepairPercentNumerator == 0);
+static_assert(senderUnifiedSweepPhaseHold != 0);
+static_assert(senderUnifiedSweepPhaseStep != 0 && senderUnifiedSweepPhaseStep < senderUnifiedActiveSegmentWindowSize);
 
 [[nodiscard]] bool AssignChecked(
     const pbprotocol::ProtocolResult<std::uint64_t>& result,
