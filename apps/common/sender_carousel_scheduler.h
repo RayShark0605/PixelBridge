@@ -14,7 +14,7 @@ inline constexpr std::uint32_t senderCarouselRepairPercentDenominator = 100;
 inline constexpr std::uint32_t senderCarouselMinimumRepairBlocks = 16;
 // Unified Pass 0 is a short benchmark-frozen LocalRepairBurst. Later passes
 // retain the complete K + 20% FullRepairPass budget for late join and loss.
-inline constexpr std::uint32_t senderUnifiedInitialRepairPercentNumerator = 5;
+inline constexpr std::uint32_t senderUnifiedInitialRepairPercentNumerator = 10;
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentDenominator = 100;
 inline constexpr std::uint32_t senderUnifiedMinimumInitialRepairBlocks = 16;
 inline constexpr std::uint32_t senderCarouselControlCadenceSeconds = 10;

@@ -441,7 +441,7 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
     "[application][g21][scheduler][carousel][repair-only]")
 {
     constexpr std::uint32_t systematicBlockCount = 799;
-    constexpr std::uint64_t initialRepairEquationCount = 40;
+    constexpr std::uint64_t initialRepairEquationCount = 80;
     constexpr std::uint64_t initialRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
     constexpr std::uint64_t fullRepairOverheadEquationCount = 160;
     constexpr std::uint64_t fullRepairRoundEquationCount = systematicBlockCount + fullRepairOverheadEquationCount;
