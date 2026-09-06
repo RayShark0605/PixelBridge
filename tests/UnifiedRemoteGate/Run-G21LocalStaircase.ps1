@@ -70,6 +70,24 @@ function Update-ProcessMemoryPeak
     $State.peakPrivateBytes = [Math]::Max([int64]$State.peakPrivateBytes, [int64]$Process.PrivateMemorySize64)
 }
 
+function Get-ExitedProcessCode
+{
+    param([Diagnostics.Process]$Process)
+    if (-not $Process)
+    {
+        return $null
+    }
+    try
+    {
+        $Process.Refresh()
+        return $Process.HasExited ? [int]$Process.ExitCode : $null
+    }
+    catch
+    {
+        return $null
+    }
+}
+
 if (-not ('PixelBridgeConsoleStopInjector' -as [type]))
 {
     Add-Type -TypeDefinition @'
@@ -222,6 +240,8 @@ if ((Get-Item -LiteralPath $sourcePath).Length -ne $sourceBytes)
 $sourceLease = [IO.File]::Open($sourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
 $receiver = $null
 $sender = $null
+$receiverForcedTermination = $false
+$encoderForcedTermination = $false
 $receiverMemory = [ordered]@{ samples = 0L; peakWorkingSetBytes = 0L; peakPrivateBytes = 0L }
 $senderMemory = [ordered]@{ samples = 0L; peakWorkingSetBytes = 0L; peakPrivateBytes = 0L }
 try
@@ -292,7 +312,9 @@ try
     }
     if (-not $receiver.HasExited)
     {
-        Stop-Process -Id $receiver.Id -Force
+        Stop-Process -Id $receiver.Id -Force -ErrorAction SilentlyContinue
+        [void]$receiver.WaitForExit(5000)
+        $receiverForcedTermination = $true
         throw 'Receiver supervisor deadline exceeded.'
     }
     if (-not $sender.HasExited)
@@ -302,7 +324,9 @@ try
     }
     if (-not $sender.WaitForExit(30000))
     {
-        Stop-Process -Id $sender.Id -Force
+        Stop-Process -Id $sender.Id -Force -ErrorAction SilentlyContinue
+        [void]$sender.WaitForExit(5000)
+        $encoderForcedTermination = $true
         throw 'Encoder did not stop within 30 seconds of the bounded supervisor signal.'
     }
     $encoderStdout = $sender.StandardOutput.ReadToEnd()
@@ -398,20 +422,45 @@ try
 }
 catch
 {
+    $failure = $_
     if ($receiver -and -not $receiver.HasExited)
     {
         Stop-Process -Id $receiver.Id -Force -ErrorAction SilentlyContinue
+        [void]$receiver.WaitForExit(5000)
+        $receiverForcedTermination = $true
     }
     if ($sender -and -not $sender.HasExited)
     {
         Stop-Process -Id $sender.Id -Force -ErrorAction SilentlyContinue
+        [void]$sender.WaitForExit(5000)
+        $encoderForcedTermination = $true
+    }
+    $failureProcessPath = Join-Path $runRoot 'failure-process-state.json'
+    if (-not (Test-Path -LiteralPath $failureProcessPath))
+    {
+        try
+        {
+            Write-NewJson -Path $failureProcessPath -Value ([ordered]@{
+                schema = 'PixelBridge.G21.LocalStaircaseFailureProcessState.1'
+                failure = $failure.Exception.Message
+                receiverExit = Get-ExitedProcessCode -Process $receiver
+                encoderExit = Get-ExitedProcessCode -Process $sender
+                receiverForcedTermination = $receiverForcedTermination
+                encoderForcedTermination = $encoderForcedTermination
+                memorySampleIntervalMilliseconds = 1000
+                receiverMemory = $receiverMemory; encoderMemory = $senderMemory
+            })
+        }
+        catch
+        {
+        }
     }
     $failurePath = Join-Path $runRoot 'supervisor-failure.txt'
     if (-not (Test-Path -LiteralPath $failurePath))
     {
-        Write-NewUtf8 -Path $failurePath -Text ($_.Exception.ToString() + "`n")
+        Write-NewUtf8 -Path $failurePath -Text ($failure.Exception.ToString() + "`n")
     }
-    throw
+    throw $failure
 }
 finally
 {
