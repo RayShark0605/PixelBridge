@@ -2,6 +2,7 @@
 #include "pbprotocol/transport_block_codec.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fstream>
 #include <limits>
 #include <iostream>
 
@@ -85,6 +86,20 @@ TEST_CASE("G16 Unified Decoder policy selects real automatic runtime and bounded
     config.replayOutputPath = L"not-a-product-option.pbrv2";
     REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
     config.replayOutputPath.clear();
+
+    const auto replayPath = scratch.Directory(L"test-only-replay") / L"bounded.pbrv2";
+    std::ofstream(replayPath, std::ios::binary).close();
+    std::filesystem::resize_file(replayPath, 16ULL * 1024ULL * 1024ULL);
+    auto replayConfig = pbapp::MakeUnifiedDecoderConfig(scratch.Directory(L"test-only-output").wstring(), Region());
+    replayConfig.replayInputPath = replayPath.wstring();
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(replayConfig));
+    REQUIRE(pbapp::ApplicationRuntimeTestAccess::ValidateUnifiedReplayConfig(replayConfig));
+    replayConfig.replayOutputPath = (scratch.Directory(L"invalid-duplex") / L"output.pbrv2").wstring();
+    REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ValidateUnifiedReplayConfig(replayConfig));
+    replayConfig.replayOutputPath.clear();
+    replayConfig.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ValidateUnifiedReplayConfig(replayConfig));
+
     const auto state = std::make_shared<ReceiveState>();
     auto services = Services(state);
     services.outputConfirmationThresholdBytes = (std::numeric_limits<std::uint64_t>::max)();

@@ -27,6 +27,8 @@
 namespace pbapp
 {
 
+class DecoderRuntime;
+
 struct EncoderConfig
 {
     std::wstring sourcePath;
@@ -420,6 +422,12 @@ public:
     [[nodiscard]] static RuntimeStatus ProbeLargeOutputConfirmation(std::span<const std::byte> rawBytes,
         const std::wstring& outputDirectory, bool accepted,
         ApplicationLargeOutputConfirmationProbeSnapshot& output) noexcept;
+    // Dedicated G21 evidence seam. Public product validation continues to
+    // reject Unified Replay configuration; this path only permits bounded,
+    // receiver-side actual-capture recording or sealed offline playback.
+    [[nodiscard]] static RuntimeStatus ValidateUnifiedReplayConfig(const DecoderConfig& config) noexcept;
+    [[nodiscard]] static RuntimeStatus StartUnifiedReplay(DecoderRuntime& runtime,
+        const DecoderConfig& config, bool baseLumaOnly) noexcept;
 };
 
 // Qt-free application controller. Start launches one bounded worker and
@@ -470,7 +478,11 @@ public:
     [[nodiscard]] DecoderSnapshot GetSnapshot() const;
 
 private:
-    void Run(const DecoderConfig& config, std::uint64_t runGeneration) noexcept;
+    friend class ApplicationRuntimeTestAccess;
+    [[nodiscard]] RuntimeStatus StartInternal(const DecoderConfig& config,
+        bool testOnlyUnifiedReplay, bool baseLumaOnly);
+    void Run(const DecoderConfig& config, std::uint64_t runGeneration,
+        bool testOnlyUnifiedReplay, bool baseLumaOnly) noexcept;
     mutable std::mutex lifecycleMutex_;
     SnapshotStore<DecoderSnapshot> snapshot_;
     std::thread worker_;

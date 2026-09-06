@@ -2,6 +2,8 @@
 #include "diagnostic_file.h"
 #include "local_desktop_runtime.h"
 #include "pbprotocol/checked_integer.h"
+#include "pbprotocol/session_random.h"
+#include "pbrealcapturereplay/replay_v2.h"
 #include "run_report.h"
 #include "sender_carousel_scheduler.h"
 
@@ -14,7 +16,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -30,6 +34,9 @@ constexpr std::uint32_t minimumRunSeconds = 30;
 constexpr std::uint32_t maximumHighResolutionRunSeconds = 600;
 constexpr std::uint32_t maximumRunSeconds = 3600;
 constexpr std::uint32_t maximumDiagnosticDimension = 4096;
+constexpr std::uint32_t actualCaptureReplayFrames = 256;
+constexpr std::uint32_t actualCaptureReplayFramesPerSecond = 15;
+constexpr std::uint64_t actualCaptureReplayMaximumFileBytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr std::size_t maximumSampleBytes = 24 * 1024;
 constexpr std::size_t maximumSampleCount = maximumHighResolutionRunSeconds + 2;
 constexpr std::size_t maximumEvidenceBytes = pbdiagnostic::DiagnosticFile::maximumBytes;
@@ -94,6 +101,24 @@ void WriteNew(const std::filesystem::path& path, const std::string& text)
     pbdiagnostic::DiagnosticFile file(path.c_str());
     file.Write(text);
     file.Finish();
+}
+
+void RequireReplay(const pbrealcapturereplay::ReplayStatus status, const char* const operation)
+{
+    Require(static_cast<bool>(status), std::string(operation) + ": " +
+        pbrealcapturereplay::GetReplayErrorName(status.code));
+}
+
+std::int64_t CurrentUtcFileTime100ns()
+{
+    FILETIME fileTime{};
+    GetSystemTimeAsFileTime(&fileTime);
+    ULARGE_INTEGER value{};
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    Require(value.QuadPart <= static_cast<ULONGLONG>((std::numeric_limits<std::int64_t>::max)()),
+        "UTC FILETIME exceeds signed evidence range");
+    return static_cast<std::int64_t>(value.QuadPart);
 }
 
 class Evidence
@@ -429,6 +454,116 @@ void InspectRemotePixels(const std::filesystem::path& inputPath, const std::file
     std::cout << stream.str() << '\n';
 }
 
+std::uint8_t NeutralBt709Luma(const std::byte blue, const std::byte green, const std::byte red) noexcept
+{
+    const std::uint32_t value = 19U * std::to_integer<std::uint8_t>(blue) +
+        183U * std::to_integer<std::uint8_t>(green) + 54U * std::to_integer<std::uint8_t>(red) + 128U;
+    return static_cast<std::uint8_t>(value / 256U);
+}
+
+void NeutralizeActualCaptureChroma(const std::filesystem::path& inputPath,
+    const std::filesystem::path& outputPath, const std::filesystem::path& reportPath)
+{
+    Require(inputPath.is_absolute() && outputPath.is_absolute() && reportPath.is_absolute(),
+        "Replay derivation paths must be absolute");
+    Require(std::filesystem::is_regular_file(inputPath), "actual-capture Replay input must be a regular file");
+    Require(std::filesystem::is_directory(outputPath.parent_path()) &&
+        std::filesystem::is_directory(reportPath.parent_path()) && !std::filesystem::exists(outputPath) &&
+        !std::filesystem::exists(reportPath), "Replay derivation outputs must be new files in existing directories");
+
+    pbrealcapturereplay::ReplayV2Limits limits;
+    limits.maximumFileBytes = pbrealcapturereplay::kReplayV2HardMaximumFileBytes;
+    limits.maximumTotalRasterBytes = pbrealcapturereplay::kReplayV2HardMaximumFileBytes;
+    limits.maximumCaptureFrames = pbrealcapturereplay::kReplayV2HardMaximumCaptureFrames;
+    std::unique_ptr<pbrealcapturereplay::ReplayV2Reader> reader;
+    RequireReplay(pbrealcapturereplay::ReplayV2Reader::Open(inputPath, limits, reader),
+        "open sealed actual-capture Replay");
+    const auto inputSnapshot = reader->GetSnapshot();
+    Require(inputSnapshot.descriptor.visualProfileId == pbprotocol::kUnifiedVisualProfileId,
+        "Replay derivation requires a Unified capture dataset");
+
+    auto descriptor = inputSnapshot.descriptor;
+    const auto datasetId = pbprotocol::GenerateRandomSessionId();
+    Require(static_cast<bool>(datasetId), "Replay derivation dataset CSPRNG failed");
+    descriptor.datasetId = datasetId.Value().bytes;
+    descriptor.createdUtc100ns = CurrentUtcFileTime100ns();
+    descriptor.remoteMetadataJsonUtf8 =
+        R"({"schema":"PixelBridge.G21.ActualCaptureChromaNeutralization.1","authority":"receiver-side captured pixels only","transform":"B=G=R=round(BT.709 luma); alpha and metadata preserved","senderSourceOrRasterUsed":false})";
+    std::unique_ptr<pbrealcapturereplay::ReplayV2Writer> writer;
+    RequireReplay(pbrealcapturereplay::ReplayV2Writer::Create(outputPath, descriptor, limits, writer),
+        "create chroma-neutralized Replay");
+
+    std::uint64_t captureFrames = 0;
+    std::uint64_t skippedDemodObservations = 0;
+    std::uint64_t pixelsNeutralized = 0;
+    std::uint64_t changedColorComponents = 0;
+    for (;;)
+    {
+        pbrealcapturereplay::ReplayV2Record record;
+        const auto readStatus = reader->ReadNext(record);
+        if (!readStatus)
+        {
+            Require(readStatus.code == pbrealcapturereplay::ReplayError::EndOfFile,
+                "actual-capture Replay record validation failed");
+            break;
+        }
+        if (record.type == pbrealcapturereplay::ReplayV2RecordType::DemodObservation)
+        {
+            skippedDemodObservations++;
+            continue;
+        }
+        auto& capture = record.capture;
+        auto& raster = capture.capturedRoi;
+        Require(!capture.senderCanonicalRaster && capture.canonicalBootstrap.empty() &&
+            raster.pixelFormat == DXGI_FORMAT_B8G8R8A8_UNORM && raster.rowPitch >= raster.width * 4ULL,
+            "Replay derivation rejected sender truth or a non-BGRA8 capture record");
+        for (std::uint32_t row = 0; row < raster.height; row++)
+        {
+            std::byte* const rowPixels = raster.pixels.data() + static_cast<std::size_t>(row) * raster.rowPitch;
+            for (std::uint32_t column = 0; column < raster.width; column++)
+            {
+                std::byte* const pixel = rowPixels + static_cast<std::size_t>(column) * 4;
+                const std::byte neutral = static_cast<std::byte>(NeutralBt709Luma(pixel[0], pixel[1], pixel[2]));
+                changedColorComponents += static_cast<std::uint64_t>(pixel[0] != neutral) +
+                    static_cast<std::uint64_t>(pixel[1] != neutral) + static_cast<std::uint64_t>(pixel[2] != neutral);
+                pixel[0] = neutral;
+                pixel[1] = neutral;
+                pixel[2] = neutral;
+                pixelsNeutralized++;
+            }
+        }
+        const pbrealcapturereplay::ReplayV2CaptureView outputCapture{capture.capture, capture.dpiX,
+            capture.dpiY, capture.scaleX, capture.scaleY, capture.displayIdentityUtf8,
+            {raster.width, raster.height, raster.rowPitch, raster.pixelFormat, raster.pixels},
+            std::nullopt, {}};
+        RequireReplay(writer->AppendCapture(outputCapture), "append chroma-neutralized capture");
+        captureFrames++;
+    }
+    const auto finalInputSnapshot = reader->GetSnapshot();
+    Require(finalInputSnapshot.complete && captureFrames != 0 && captureFrames == finalInputSnapshot.captureFrames,
+        "Replay derivation did not consume the complete sealed capture sequence");
+    RequireReplay(writer->Finalize(), "finalize chroma-neutralized Replay");
+    const auto outputSnapshot = writer->GetSnapshot();
+    Require(outputSnapshot.complete && outputSnapshot.captureFrames == finalInputSnapshot.captureFrames &&
+        outputSnapshot.demodObservations == 0, "derived Replay footer counts are inconsistent");
+
+    std::ostringstream stream;
+    stream << std::boolalpha << "{\"schema\":\"PixelBridge.G21.ActualCaptureChromaNeutralization.1\""
+        << ",\"inputWasSealed\":" << finalInputSnapshot.complete << ",\"inputFileBytes\":" << finalInputSnapshot.fileBytes
+        << ",\"outputFileBytes\":" << outputSnapshot.fileBytes << ",\"captureFrames\":" << captureFrames
+        << ",\"skippedInputDemodObservations\":" << skippedDemodObservations
+        << ",\"pixelsNeutralized\":" << pixelsNeutralized
+        << ",\"changedColorComponents\":" << changedColorComponents
+        << ",\"transform\":\"B=G=R=(19*B+183*G+54*R+128)/256; alpha, row padding and capture metadata preserved\""
+        << ",\"senderCanonicalRasterPresent\":false,\"canonicalBootstrapPresent\":false"
+        << ",\"senderSourceOrIdealRasterUsed\":false,\"demodObservationsCopied\":false"
+        << ",\"maximumCaptureFrames\":" << limits.maximumCaptureFrames
+        << ",\"maximumFileBytes\":" << limits.maximumFileBytes
+        << ",\"maximumRasterBytesPerFrame\":" << limits.maximumRasterBytesPerFrame << '}';
+    WriteNew(reportPath, stream.str());
+    std::cout << stream.str() << '\n';
+}
+
 void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
 {
     const auto safety = ResolveSafety();
@@ -489,8 +624,169 @@ void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
     }
 }
 
+void RunReceiveWithActualCaptureRecorder(const std::filesystem::path& root, const std::uint32_t seconds)
+{
+    const auto safety = ResolveSafety();
+    const auto region = ResolveRegion(safety);
+    Evidence evidence(root);
+    evidence.Record("preflight.json", PreflightReport(safety));
+    const auto output = root / "recovered";
+    const auto replayPath = root / "actual-capture.pbrv2";
+    Require(std::filesystem::create_directory(output), "output directory must be new");
+    std::ostringstream contract;
+    contract << "{\"schema\":\"PixelBridge.G21.ActualCaptureRecorderContract.1\",\"testOnly\":true"
+        << ",\"receiverSidePixelsOnly\":true,\"senderSourceOrRasterProvided\":false"
+        << ",\"captureFrames\":" << actualCaptureReplayFrames
+        << ",\"maximumCaptureFramesPerSecond\":" << actualCaptureReplayFramesPerSecond
+        << ",\"maximumFileBytes\":" << actualCaptureReplayMaximumFileBytes
+        << ",\"postCompletionMaximumMilliseconds\":60000} ";
+    evidence.Record("capture-contract.json", contract.str());
+
+    pbapp::DecoderRuntime runtime;
+    std::uint64_t safetyChecks = 1;
+    try
+    {
+        auto config = pbapp::MakeUnifiedDecoderConfig(output.wstring(), region);
+        config.monitorSafety = safety;
+        config.replayOutputPath = replayPath.wstring();
+        config.replayMaximumCaptureFrames = actualCaptureReplayFrames;
+        config.replayMaximumFileBytes = actualCaptureReplayMaximumFileBytes;
+        config.replayMaximumCaptureFramesPerSecond = actualCaptureReplayFramesPerSecond;
+        const auto validation = pbapp::ApplicationRuntimeTestAccess::ValidateUnifiedReplayConfig(config);
+        Require(static_cast<bool>(validation), validation.message);
+        const auto started = pbapp::ApplicationRuntimeTestAccess::StartUnifiedReplay(runtime, config, false);
+        Require(static_cast<bool>(started), started.message);
+        const auto began = Clock::now();
+        const auto deadline = began + std::chrono::seconds(seconds);
+        const auto runSampleInterval = SelectSampleInterval(seconds);
+        auto nextSample = began;
+        while (Clock::now() < deadline)
+        {
+            CheckTarget(safety);
+            safetyChecks++;
+            const auto snapshot = runtime.GetSnapshot();
+            if (Clock::now() >= nextSample)
+            {
+                evidence.Sample(DecoderReport(snapshot, safetyChecks));
+                nextSample = Clock::now() + runSampleInterval;
+            }
+            if (snapshot.state == pbapp::DecoderState::Failed || snapshot.replayFinalized)
+            {
+                break;
+            }
+            Require(snapshot.largeOutputConfirmationState != pbapp::LargeOutputConfirmationState::AwaitingDecision,
+                "unexpected large-output confirmation; no automatic approval in the actual-capture gate");
+            std::this_thread::sleep_for(safetyInterval);
+        }
+        runtime.Stop();
+        CheckTarget(safety);
+        safetyChecks++;
+        evidence.Finish();
+        const auto snapshot = runtime.GetSnapshot();
+        evidence.Record("final.json", DecoderReport(snapshot, safetyChecks));
+        Require(ReceiverChecksPassed(snapshot), "actual-capture run did not complete authoritative publication checks");
+        Require(snapshot.replayFinalized && snapshot.replayEvidenceValid && snapshot.replayError.empty() &&
+            snapshot.replayWrittenFrames == actualCaptureReplayFrames && std::filesystem::is_regular_file(replayPath),
+            "bounded actual-capture Replay did not seal the required frame sequence");
+        std::ostringstream checks;
+        checks << std::boolalpha << "{\"schema\":\"PixelBridge.G21.ActualCaptureRecorderChecks.1\""
+            << ",\"receiverChecksPassed\":true,\"replayFinalized\":" << snapshot.replayFinalized
+            << ",\"replayEvidenceValid\":" << snapshot.replayEvidenceValid
+            << ",\"writtenFrames\":" << snapshot.replayWrittenFrames
+            << ",\"fileBytes\":" << snapshot.replayFileBytes
+            << ",\"sourceOrOracleProvided\":false,\"actualCaptureAuthority\":true} ";
+        evidence.Record("actual-capture-checks.json", checks.str());
+        std::cout << "PASS: Unified publication plus sealed receiver-side actual-capture Replay\n";
+    }
+    catch (const std::exception& exception)
+    {
+        runtime.Stop();
+        evidence.Record("failure-final.json", DecoderReport(runtime.GetSnapshot(), safetyChecks));
+        evidence.Record("failure.txt", exception.what());
+        throw;
+    }
+}
+
+void RunBaseLumaReplay(const std::filesystem::path& replayPath,
+    const std::filesystem::path& root, const std::uint32_t seconds)
+{
+    Require(replayPath.is_absolute() && std::filesystem::is_regular_file(replayPath),
+        "Base Luma Replay input must be an absolute regular file");
+    Evidence evidence(root);
+    const auto output = root / "recovered";
+    Require(std::filesystem::create_directory(output), "Base Luma output directory must be new");
+    pbapp::DecoderConfig config;
+    config.outputDirectory = output.wstring();
+    config.captureBackend = pbapp::CaptureBackend::Auto;
+    config.visualProfile = pbapp::VisualProfile::UnifiedLc4;
+    config.replayInputPath = replayPath.wstring();
+    config.replayMaximumCaptureFrames = actualCaptureReplayFrames;
+    config.replayMaximumFileBytes = actualCaptureReplayMaximumFileBytes;
+    const auto validation = pbapp::ApplicationRuntimeTestAccess::ValidateUnifiedReplayConfig(config);
+    Require(static_cast<bool>(validation), validation.message);
+
+    pbapp::DecoderRuntime runtime;
+    try
+    {
+        const auto started = pbapp::ApplicationRuntimeTestAccess::StartUnifiedReplay(runtime, config, true);
+        Require(static_cast<bool>(started), started.message);
+        const auto began = Clock::now();
+        const auto deadline = began + std::chrono::seconds(seconds);
+        const auto runSampleInterval = SelectSampleInterval(seconds);
+        auto nextSample = began;
+        while (Clock::now() < deadline)
+        {
+            const auto snapshot = runtime.GetSnapshot();
+            if (Clock::now() >= nextSample)
+            {
+                evidence.Sample(DecoderReport(snapshot, 0));
+                nextSample = Clock::now() + runSampleInterval;
+            }
+            if (snapshot.state == pbapp::DecoderState::Completed || snapshot.state == pbapp::DecoderState::Failed ||
+                snapshot.state == pbapp::DecoderState::Stopped)
+            {
+                break;
+            }
+            Require(snapshot.largeOutputConfirmationState != pbapp::LargeOutputConfirmationState::AwaitingDecision,
+                "unexpected large-output confirmation in bounded Base Luma Replay");
+            std::this_thread::sleep_for(safetyInterval);
+        }
+        runtime.Stop();
+        evidence.Finish();
+        const auto snapshot = runtime.GetSnapshot();
+        evidence.Record("final.json", DecoderReport(snapshot, 0));
+        Require(ReceiverChecksPassed(snapshot) && snapshot.replayFinalized && snapshot.replayEvidenceValid &&
+            snapshot.replayOfflineCaptureFrames == actualCaptureReplayFrames,
+            "Base-Luma-only Replay did not complete digest, publish, reopen and full sealed-input consumption");
+        std::ostringstream checks;
+        checks << std::boolalpha << "{\"schema\":\"PixelBridge.G21.BaseLumaActualCaptureChecks.1\""
+            << ",\"completed\":true,\"baseLumaOnlyReceiverAdmission\":true"
+            << ",\"pixelDerivationOnlyNeutralizedChroma\":true,\"fineLumaAndChromaAdmissionsDisabled\":true"
+            << ",\"captureFramesConsumed\":" << snapshot.replayOfflineCaptureFrames
+            << ",\"wholeFileDigestVerified\":" << snapshot.wholeFileDigestVerified
+            << ",\"finalPublishSucceeded\":" << snapshot.finalPublishSucceeded
+            << ",\"finalReopenVerified\":" << snapshot.finalReopenVerified.value_or(false)
+            << ",\"outerResourceRejections\":" << snapshot.outerResourceRejections
+            << ",\"outerConflictRejections\":" << snapshot.outerConflictRejections
+            << ",\"senderSourceOrIdealRasterProvided\":false} ";
+        evidence.Record("base-luma-checks.json", checks.str());
+        std::cout << "PASS: sealed chroma-neutralized actual capture recovered through Base-Luma-only admission\n";
+    }
+    catch (const std::exception& exception)
+    {
+        runtime.Stop();
+        evidence.Record("failure-final.json", DecoderReport(runtime.GetSnapshot(), 0));
+        evidence.Record("failure.txt", exception.what());
+        throw;
+    }
+}
+
 void RunPolicyChecks()
 {
+    Require(NeutralBt709Luma(std::byte{0}, std::byte{0}, std::byte{0}) == 0 &&
+        NeutralBt709Luma(std::byte{255}, std::byte{255}, std::byte{255}) == 255 &&
+        NeutralBt709Luma(std::byte{0}, std::byte{0}, std::byte{255}) == 54,
+        "BT.709 integer chroma-neutralization contract mismatch");
     Require(ParseTimeout(L"30") == minimumRunSeconds && ParseTimeout(L"3600") == maximumRunSeconds, "timeout boundary mismatch");
     Require(SelectSampleInterval(600) == sampleInterval && SelectSampleInterval(601) == extendedRunSampleInterval &&
         SelectSampleInterval(maximumRunSeconds) == extendedRunSampleInterval, "timeout sample interval boundary mismatch");
@@ -618,7 +914,7 @@ int wmain(const int count, wchar_t* arguments[])
 {
     try
     {
-        Require(count >= 2, "expected --build-identity, --self-test, --inspect-bgra INPUT NEW_REPORT WIDTH HEIGHT, --preflight NEW_RUN or --receive NEW_RUN SECONDS");
+        Require(count >= 2, "expected --build-identity, --self-test, --inspect-bgra, --neutralize-chroma, --preflight, --receive, --receive-record or --replay-base-only");
         const std::wstring_view role(arguments[1]);
         if (role == L"--build-identity" && count == 2)
         {
@@ -646,6 +942,20 @@ int wmain(const int count, wchar_t* arguments[])
         {
             const auto seconds = ParseTimeout(arguments[3]);
             RunReceive(arguments[2], seconds);
+        }
+        else if (role == L"--receive-record" && count == 4)
+        {
+            const auto seconds = ParseTimeout(arguments[3]);
+            RunReceiveWithActualCaptureRecorder(arguments[2], seconds);
+        }
+        else if (role == L"--neutralize-chroma" && count == 5)
+        {
+            NeutralizeActualCaptureChroma(arguments[2], arguments[3], arguments[4]);
+        }
+        else if (role == L"--replay-base-only" && count == 5)
+        {
+            const auto seconds = ParseTimeout(arguments[4]);
+            RunBaseLumaReplay(arguments[2], arguments[3], seconds);
         }
         else
         {

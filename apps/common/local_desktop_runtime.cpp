@@ -105,6 +105,7 @@ inline constexpr std::uint64_t maximumProductionReplayProcessorResidentBytes = 1
 inline constexpr std::uint64_t maximumRoiResidentBytes = 128ULL * mebibyte;
 inline constexpr std::uint32_t remoteVisualReplayRecorderQueueCapacity = 2;
 inline constexpr std::uint32_t remoteVisualReplayPostCompletionTailMilliseconds = 2000;
+inline constexpr std::uint32_t unifiedTestReplayPostCompletionTailMilliseconds = 60000;
 inline constexpr std::uint32_t minimumRemoteVisualLowFpsRoiWidth = phase1CanvasWidth / 2;
 inline constexpr std::uint32_t minimumRemoteVisualLowFpsRoiHeight = phase1CanvasHeight / 2;
 inline constexpr std::uint32_t maximumRemoteVisualLowFpsRoiWidth = phase1CanvasWidth * 2;
@@ -4902,10 +4903,11 @@ void ValidateReplayProductionCapture(const pbrealcapturereplay::ReplayV2Capture&
         [](const std::byte value) { return value != std::byte{0}; });
     const auto rasterBytes = pbprotocol::CheckedMultiplyUint64(raster.rowPitch, raster.height);
     const bool lowFps = expectedVisualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId;
+    const bool unified = expectedVisualProfileId == pbprotocol::kUnifiedVisualProfileId;
     const bool strictProfile = expectedVisualProfileId == pbmodulation::kDesktopLevels2ProfileId ||
         expectedVisualProfileId == pbmodulation::kShapeChromaProfileId ||
         expectedVisualProfileId == pbmodulation::kRemoteVisualProfileId;
-    Require(strictProfile || lowFps, "Offline replay attempted an unknown production profile binding");
+    Require(strictProfile || lowFps || unified, "Offline replay attempted an unknown production profile binding");
     Require(nonzeroSourceId && metadata.domain.captureEpoch != 0 && metadata.captureObservation != 0,
         "Replay capture identity is incomplete");
     Require(physicalWidth == metadata.roiSize.width && physicalHeight == metadata.roiSize.height &&
@@ -4918,10 +4920,10 @@ void ValidateReplayProductionCapture(const pbrealcapturereplay::ReplayV2Capture&
             replayCapture.scaleX == 1.0 && replayCapture.scaleY == 1.0,
             "Geometry incompatible with strict production profile: replay ROI is not exact 1920x1080 at 1:1");
     }
-    else
+    else if (lowFps || unified)
     {
         Require(raster.width <= 3840 && raster.height <= 2160,
-            "LF4 Replay selected ROI exceeds the production continuous-geometry reservation");
+            "Replay selected ROI exceeds the production continuous-geometry reservation");
     }
     Require(replayCapture.dpiX != 0 && replayCapture.dpiY != 0 &&
         metadata.displayRotation == DXGI_MODE_ROTATION_IDENTITY &&
@@ -5048,12 +5050,37 @@ void ApplyOfflineDemodSnapshot(const pbdemodd3d11::CaptureDemodulatorSnapshot& d
     snapshot.postGpuFecCpuTimeTotal100ns = demod.demodulationCpuTimeTotal100ns;
 }
 
+void RetainUnifiedBaseLumaBlocks(pbdemodd3d11::CaptureDemodulatorResult& result)
+{
+    auto& demodulation = result.demodulation;
+    Require(demodulation.acceptedUnifiedBlockCount <= demodulation.acceptedUnifiedBlocks.size(),
+        "Base Luma test filter received an invalid accepted-block count");
+    if (result.kind != pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame)
+    {
+        Require(demodulation.acceptedUnifiedBlockCount == 0,
+            "Base Luma test filter received accepted blocks in a non-Unified result");
+        return;
+    }
+    std::uint32_t retainedCount = 0;
+    for (std::uint32_t index = 0; index < demodulation.acceptedUnifiedBlockCount; index++)
+    {
+        const auto& candidate = demodulation.acceptedUnifiedBlocks[index];
+        const auto* const lane = pbmodulation::FindUnifiedLaneForCodewordSlot(candidate.codewordSlot);
+        Require(lane != nullptr, "Base Luma test filter received an unknown codeword slot");
+        if (lane->lane == pbmodulation::UnifiedLane::BaseLuma)
+        {
+            demodulation.acceptedUnifiedBlocks[retainedCount++] = candidate;
+        }
+    }
+    demodulation.acceptedUnifiedBlockCount = retainedCount;
+}
+
 void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::ReplayV2Reader& reader,
     const ProfileBinding& profile, ReceiverPipeline& pipeline,
     const std::shared_ptr<pbdemodd3d11::CaptureDemodulator>& demodulator,
     SnapshotStore<DecoderSnapshot>& snapshot, const std::uint64_t runGeneration,
     const std::chrono::steady_clock::time_point started, ProcessResourceSampler& resourceSampler,
-    const std::atomic<bool>& stopRequested)
+    const std::atomic<bool>& stopRequested, const bool baseLumaOnly)
 {
     std::optional<ReplayD3dDevice> replayDevice;
     std::optional<pbcapturenormalize::ScreenCaptureDomain> activeDomain;
@@ -5164,7 +5191,11 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
         auto texture = CreateReplayTexture(replayDevice->device.Get(), record.capture.capturedRoi);
         RunReplayProductionDemod(demodulator, replayDevice->device.Get(), replayDevice->context.Get(),
             metadata, texture, *demodResultsScratch);
-        const auto& result = (*demodResultsScratch)[0];
+        auto& result = (*demodResultsScratch)[0];
+        if (baseLumaOnly)
+        {
+            RetainUnifiedBaseLumaBlocks(result);
+        }
         const ReceiverProcessResult receiverResult = pipeline.Process(result);
         actualObservations.push_back(MakeReplayDemodObservation(result, profile.visualProfileId, receiverResult));
         demodResults++;
@@ -5198,7 +5229,9 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
             value.remoteMetadata.estimatedScaleY = record.capture.scaleY;
             value.remoteMetadata.geometryStatus = profile.profile == VisualProfile::RemoteVisualLowFps ?
                 "ProductionLF4ContinuousGeometry (sealed Replay v2 ROI)" :
-                "CompatibleStrict1:1 (sealed Replay v2 ROI)";
+                profile.profile == VisualProfile::UnifiedLc4 ?
+                    "UnifiedContinuousGeometry (sealed actual-capture Replay v2 ROI)" :
+                    "CompatibleStrict1:1 (sealed Replay v2 ROI)";
             value.remoteMetadata.geometryProvenance = MetadataProvenance::PixelBridgeObserved;
             ApplyOfflineDemodSnapshot(demodSnapshot, value);
             ApplyProcessResourceSample(resourceSampler.GetSnapshot(), value);
@@ -5235,7 +5268,9 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
         {
             value.state = DecoderState::Completed;
             value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
-            value.statusMessage = "Offline Replay 完整消费并复现 WholeFileDigest 与 final publish";
+            value.statusMessage = baseLumaOnly ?
+                "Chroma-neutralized actual-capture Replay 完整消费，并仅以 Base Luma admission 复现 WholeFileDigest 与 final publish" :
+                "Offline Replay 完整消费并复现 WholeFileDigest 与 final publish";
         }
         else if (pipeline.IsCompleted())
         {
@@ -7410,7 +7445,7 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     return {};
 }
 
-RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
+RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const bool testOnlyUnifiedReplay)
 {
     if (!IsValidRunId(config.runId))
     {
@@ -7440,16 +7475,26 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
     {
         return RuntimeStatus::Failure("输出目录路径无效");
     }
-    if (config.visualProfile == VisualProfile::UnifiedLc4 &&
+    const bool offlineReplay = !config.replayInputPath.empty();
+    const bool unifiedReplayShape = config.visualProfile == VisualProfile::UnifiedLc4 &&
+        config.captureBackend == CaptureBackend::Auto && !config.diagnosticCaptureOnly &&
+        !config.replayEvidenceVisualProfileId && config.remoteMetadata.channelType == ChannelType::LocalDesktop &&
+        (offlineReplay != !config.replayOutputPath.empty()) &&
+        (offlineReplay ? !config.monitorSafety : config.monitorSafety.has_value());
+    if (testOnlyUnifiedReplay && !unifiedReplayShape)
+    {
+        return RuntimeStatus::Failure(
+            "Unified test Replay authority only permits one bounded local actual-capture output or one sealed offline input");
+    }
+    if (config.visualProfile == VisualProfile::UnifiedLc4 && !testOnlyUnifiedReplay &&
         (config.captureBackend != CaptureBackend::Auto || config.monitorSafety || config.diagnosticCaptureOnly ||
-         !config.replayInputPath.empty() || !config.replayOutputPath.empty() || config.replayEvidenceVisualProfileId))
+         offlineReplay || !config.replayOutputPath.empty() || config.replayEvidenceVisualProfileId))
     {
         return RuntimeStatus::Failure("Unified 产品固定 Auto capture，不启用旧 Profile/Replay/monitor 实验入口");
     }
-    const bool offlineReplay = !config.replayInputPath.empty();
     const bool sampledProductionReplay = !config.replayOutputPath.empty() &&
-        config.remoteMetadata.channelType == ChannelType::RemoteVisual && !config.diagnosticCaptureOnly &&
-        FindVisualProfileOption(config.visualProfile) != nullptr;
+        !config.diagnosticCaptureOnly && FindVisualProfileOption(config.visualProfile) != nullptr &&
+        (config.remoteMetadata.channelType == ChannelType::RemoteVisual || testOnlyUnifiedReplay);
     if (config.replayMaximumCaptureFramesPerSecond > maximumReplayCaptureFramesPerSecond ||
         (config.replayMaximumCaptureFramesPerSecond != 0 && !config.diagnosticCaptureOnly &&
          !sampledProductionReplay))
@@ -7472,7 +7517,8 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
         const bool supportedReplayProfile = config.visualProfile == VisualProfile::DirectLevels2x2 ||
             config.visualProfile == VisualProfile::ShapeChroma ||
             config.visualProfile == VisualProfile::RemoteVisualResilient ||
-            config.visualProfile == VisualProfile::RemoteVisualLowFps;
+            config.visualProfile == VisualProfile::RemoteVisualLowFps ||
+            (testOnlyUnifiedReplay && config.visualProfile == VisualProfile::UnifiedLc4);
         if (!supportedReplayProfile ||
             config.replayMaximumCaptureFrames == 0 ||
             config.replayMaximumCaptureFrames > pbrealcapturereplay::kReplayV2HardMaximumCaptureFrames ||
@@ -7584,18 +7630,32 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
             }
         }
     }
+    if (testOnlyUnifiedReplay)
+    {
+        const MonitorInfo& experimentMonitor = config.monitorSafety->experimentMonitor;
+        const MonitorSafetyStatus monitorSafety = ValidateMonitorSafetyTarget(*config.monitorSafety, rect,
+            config.region.monitor);
+        if (!monitorSafety || EqualRect(&experimentMonitor.physicalRect, &monitorRect) == FALSE ||
+            experimentMonitor.dpiX != config.region.dpiX || experimentMonitor.dpiY != config.region.dpiY ||
+            experimentMonitor.rotation != config.region.rotation)
+        {
+            return RuntimeStatus::Failure(std::string("Unified actual-capture Replay target violates monitor containment: ") +
+                GetMonitorSafetyErrorName(monitorSafety.code));
+        }
+    }
     if (!config.replayOutputPath.empty())
     {
         const bool supportedReplayMode = config.diagnosticCaptureOnly ?
             config.visualProfile == VisualProfile::RemoteVisualResilient :
             FindVisualProfileOption(config.visualProfile) != nullptr;
-        if (config.remoteMetadata.channelType != ChannelType::RemoteVisual || !supportedReplayMode ||
+        if ((!testOnlyUnifiedReplay && config.remoteMetadata.channelType != ChannelType::RemoteVisual) ||
+            !supportedReplayMode ||
             config.replayMaximumCaptureFrames == 0 ||
             config.replayMaximumCaptureFrames > pbrealcapturereplay::kReplayV2HardMaximumCaptureFrames ||
             config.replayMaximumFileBytes < 16ULL * mebibyte ||
             config.replayMaximumFileBytes > pbrealcapturereplay::kReplayV2HardMaximumFileBytes)
         {
-            return RuntimeStatus::Failure("Replay v2 仅用于旧 RemoteVisual capture-only 或 RemoteVisual production diagnostic fan-out，且必须满足 1..2048 帧、16 MiB..16 GiB 的有界配置");
+            return RuntimeStatus::Failure("Replay v2 必须是受支持的 diagnostic fan-out，且满足 1..2048 帧、16 MiB..16 GiB 的有界配置");
         }
         try
         {
@@ -7638,6 +7698,11 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
             " capture resource contract invalid: " + DescribeCaptureStatus(captureStatus));
     }
     return {};
+}
+
+RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
+{
+    return ValidateDecoderConfigInternal(config, false);
 }
 
 pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSegment(
@@ -8648,6 +8713,39 @@ DecoderRuntime::DecoderRuntime(DecoderRuntimeServices services) : services_(std:
     }
 }
 
+RuntimeStatus ApplicationRuntimeTestAccess::ValidateUnifiedReplayConfig(const DecoderConfig& config) noexcept
+{
+    try
+    {
+        return ValidateDecoderConfigInternal(config, true);
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified test Replay validation failed");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::StartUnifiedReplay(DecoderRuntime& runtime,
+    const DecoderConfig& config, const bool baseLumaOnly) noexcept
+{
+    try
+    {
+        return runtime.StartInternal(config, true, baseLumaOnly);
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified test Replay startup failed");
+    }
+}
+
 DecoderRuntime::~DecoderRuntime()
 {
     Stop();
@@ -8655,13 +8753,23 @@ DecoderRuntime::~DecoderRuntime()
 
 RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
 {
+    return StartInternal(config, false, false);
+}
+
+RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
+    const bool testOnlyUnifiedReplay, const bool baseLumaOnly)
+{
     const auto defaultPolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
     if (!services_.captureFactory || (services_.outputConfirmationThresholdBytes &&
         *services_.outputConfirmationThresholdBytes > defaultPolicy.maxOutputPreallocationBytesWithoutPrompt))
     {
         return RuntimeStatus::Failure("Decoder services cannot disable capture ownership or raise the output confirmation threshold");
     }
-    const RuntimeStatus validation = ValidateDecoderConfig(config);
+    if (baseLumaOnly && (!testOnlyUnifiedReplay || config.replayInputPath.empty()))
+    {
+        return RuntimeStatus::Failure("Base Luma admission filter is restricted to sealed Unified offline Replay");
+    }
+    const RuntimeStatus validation = ValidateDecoderConfigInternal(config, testOnlyUnifiedReplay);
     if (!validation)
     {
         return validation;
@@ -8698,8 +8806,12 @@ RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
     const bool offlineReplay = !config.replayInputPath.empty();
     if (offlineReplay)
     {
-        initial.backendReason = "Offline Replay v2 adapter; no live WGC/DXGI capture and no monitor pixels are accessed";
-        initial.statusMessage = "Validating sealed Replay v2 before production demodulation";
+        initial.backendReason = testOnlyUnifiedReplay ?
+            "Test-only sealed actual-capture Replay adapter; no live WGC/DXGI capture and no sender source or raster" :
+            "Offline Replay v2 adapter; no live WGC/DXGI capture and no monitor pixels are accessed";
+        initial.statusMessage = baseLumaOnly ?
+            "Validating sealed chroma-neutralized actual capture before Base-Luma-only receiver admission" :
+            "Validating sealed Replay v2 before production demodulation";
         initial.monitorSafetyStatus = "NotApplicableOfflineReplay";
     }
     else
@@ -8722,11 +8834,13 @@ RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
         initial.dpiX = config.region.dpiX;
         initial.dpiY = config.region.dpiY;
         initial.rotation = static_cast<std::uint32_t>(config.region.rotation);
-        initial.statusMessage = config.diagnosticCaptureOnly ?
+        initial.statusMessage = testOnlyUnifiedReplay ?
+            "Recording bounded receiver-side actual captures while the unchanged Unified receiver runs" : config.diagnosticCaptureOnly ?
             "Recording RemoteVisual ROI in bounded replay capture-only mode; Bootstrap/demod/FEC/Receiver/publish disabled" :
             "Waiting for same-profile Bootstrap pixels";
         initial.monitorSafetyPreflightPassed = false;
-        initial.monitorSafetyStatus = config.remoteMetadata.channelType == ChannelType::RemoteVisual ?
+        initial.monitorSafetyStatus = (config.remoteMetadata.channelType == ChannelType::RemoteVisual ||
+            testOnlyUnifiedReplay) ?
             "Pending" : "NotRequired";
     }
     initial.replayEnabled = offlineReplay || !config.replayOutputPath.empty();
@@ -8758,7 +8872,8 @@ RuntimeStatus DecoderRuntime::Start(const DecoderConfig& config)
     workerRunning_ = true;
     try
     {
-        worker_ = std::thread(&DecoderRuntime::Run, this, config, runGeneration);
+        worker_ = std::thread(&DecoderRuntime::Run, this, config, runGeneration,
+            testOnlyUnifiedReplay, baseLumaOnly);
     }
     catch (const std::exception& exception)
     {
@@ -8877,7 +8992,8 @@ DecoderSnapshot DecoderRuntime::GetSnapshot() const
     return snapshot_.Get();
 }
 
-void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGeneration) noexcept
+void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGeneration,
+    const bool testOnlyUnifiedReplay, const bool baseLumaOnly) noexcept
 {
     WorkerRunningGuard runningGuard(workerRunning_);
     AuthoritativeCompletion completion;
@@ -8980,7 +9096,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
             const auto status = pbdemodd3d11::CaptureDemodulator::Create(demodConfig, offlineDemodulator);
             Require(static_cast<bool>(status), "Replay CaptureDemodulator creation failed: " + DescribeCaptureStatus(status));
             RunOfflineReplayDataset(config, *replayReader, profile, pipeline, offlineDemodulator,
-                snapshot_, runGeneration, started, resourceSampler, stopRequested_);
+                snapshot_, runGeneration, started, resourceSampler, stopRequested_, baseLumaOnly);
             return;
         }
         std::shared_ptr<DecoderDemodulator> demodulator;
@@ -9075,6 +9191,8 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         std::uint64_t receiverCaptureEpoch = 1;
         auto nextMonitorSafetyCheck = started;
         std::optional<std::chrono::steady_clock::time_point> replayTailDeadline;
+        const auto replayPostCompletionTail = std::chrono::milliseconds(testOnlyUnifiedReplay ?
+            unifiedTestReplayPostCompletionTailMilliseconds : remoteVisualReplayPostCompletionTailMilliseconds);
         // A stack local here reserves its large Unified result even in the
         // early-return offline branch. One run-owned buffer also bounds live reuse.
         const auto resultStorage = std::make_unique<pbdemodd3d11::CaptureDemodulatorResult>();
@@ -9089,6 +9207,12 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 break;
             }
             if (replayTailDeadline && now >= *replayTailDeadline)
+            {
+                capture.RequestStop();
+                break;
+            }
+            if (replayTailDeadline && testOnlyUnifiedReplay && replayRecorder &&
+                replayRecorder->GetSnapshot().enqueuedFrames >= config.replayMaximumCaptureFrames)
             {
                 capture.RequestStop();
                 break;
@@ -9181,7 +9305,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                     if (!replayTailDeadline)
                     {
                         replayTailDeadline = std::chrono::steady_clock::now() +
-                            std::chrono::milliseconds(remoteVisualReplayPostCompletionTailMilliseconds);
+                            replayPostCompletionTail;
                     }
                     break;
                 }
@@ -9242,7 +9366,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 if (!replayTailDeadline)
                 {
                     replayTailDeadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(remoteVisualReplayPostCompletionTailMilliseconds);
+                        replayPostCompletionTail;
                 }
             }
             if (stopRequested_)
