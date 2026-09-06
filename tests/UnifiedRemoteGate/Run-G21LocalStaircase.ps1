@@ -242,6 +242,8 @@ $receiver = $null
 $sender = $null
 $receiverForcedTermination = $false
 $encoderForcedTermination = $false
+$receiverGateFailure = ''
+$nextReceiverGateCheck = [DateTime]::MinValue
 $receiverMemory = [ordered]@{ samples = 0L; peakWorkingSetBytes = 0L; peakPrivateBytes = 0L }
 $senderMemory = [ordered]@{ samples = 0L; peakWorkingSetBytes = 0L; peakPrivateBytes = 0L }
 try
@@ -305,6 +307,52 @@ try
         {
             throw "Encoder exited before Receiver with code $($sender.ExitCode)."
         }
+        if ([DateTime]::UtcNow -ge $nextReceiverGateCheck)
+        {
+            $nextReceiverGateCheck = [DateTime]::UtcNow.AddSeconds(12)
+            $sampleText = ''
+            try
+            {
+                $samplePath = Join-Path $receiverRoot 'samples.jsonl'
+                if (Test-Path -LiteralPath $samplePath -PathType Leaf)
+                {
+                    $sampleText = [string](Get-Content -LiteralPath $samplePath -Tail 1)
+                }
+            }
+            catch
+            {
+                $sampleText = ''
+            }
+            $sample = $null
+            if (-not [string]::IsNullOrWhiteSpace($sampleText))
+            {
+                try
+                {
+                    $sample = $sampleText | ConvertFrom-Json
+                }
+                catch
+                {
+                    $sample = $null
+                }
+            }
+            if ($sample -and ([int64]$sample.remoteGate.outerResourceRejections -ne 0 -or
+                [int64]$sample.remoteGate.receiverResourcePolicyRejectedCount -ne 0 -or
+                [int64]$sample.remoteGate.receiverControlRejectedByResourcePolicyCount -ne 0 -or
+                [int64]$sample.remoteGate.outerOrphanDroppedByQuotaCount -ne 0 -or
+                [int64]$sample.remoteGate.outerOrphanResourceExhaustedCount -ne 0 -or
+                [int64]$sample.remoteGate.outerOrphanConflictRejectionCount -ne 0 -or
+                [int64]$sample.remoteGate.outerConflictRejections -ne 0 -or
+                [int64]$sample.remoteGate.outerDeferredResourceBusyCount -ne 0 -or
+                [int64]$sample.remoteGate.outerFecQuotaExceededCount -ne 0))
+            {
+                $receiverGateFailure = "Receiver reported an irreversible G21 resource/conflict failure: resource=$([int64]$sample.remoteGate.outerResourceRejections), conflict=$([int64]$sample.remoteGate.outerConflictRejections), deferred=$([int64]$sample.remoteGate.outerDeferredResourceBusyCount), FEC quota=$([int64]$sample.remoteGate.outerFecQuotaExceededCount)."
+                Write-NewUtf8 -Path (Join-Path $runRoot 'receiver-gate-failure-snapshot.json') -Text ($sampleText + "`n")
+                Stop-Process -Id $receiver.Id -Force -ErrorAction SilentlyContinue
+                [void]$receiver.WaitForExit(5000)
+                $receiverForcedTermination = $true
+                break
+            }
+        }
         Update-ProcessMemoryPeak -Process $receiver -State $receiverMemory
         Update-ProcessMemoryPeak -Process $sender -State $senderMemory
         Start-Sleep -Seconds 1
@@ -333,6 +381,10 @@ try
     $encoderStderr = $sender.StandardError.ReadToEnd()
     Write-NewUtf8 -Path (Join-Path $runRoot 'encoder.stdout.txt') -Text $encoderStdout
     Write-NewUtf8 -Path (Join-Path $runRoot 'encoder.stderr.txt') -Text $encoderStderr
+    if (-not [string]::IsNullOrEmpty($receiverGateFailure))
+    {
+        throw $receiverGateFailure
+    }
     if ($receiver.ExitCode -ne 0 -or $sender.ExitCode -ne 0)
     {
         throw "Staircase process failure: receiver=$($receiver.ExitCode), encoder=$($sender.ExitCode)."
