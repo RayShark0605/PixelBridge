@@ -441,7 +441,9 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
     "[application][g21][scheduler][carousel][repair-only]")
 {
     constexpr std::uint32_t systematicBlockCount = 799;
-    constexpr std::uint64_t initialRepairEquationCount = 100;
+    constexpr std::uint64_t initialPercentRepairEquationCount = 100;
+    constexpr std::uint64_t initialRepairEquationCount =
+        initialPercentRepairEquationCount + pbapp::senderUnifiedInitialTransitionGuardBlocks;
     constexpr std::uint64_t initialRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
     constexpr std::uint64_t fullRepairOverheadEquationCount = 160;
     constexpr std::uint64_t fullRepairRoundEquationCount = systematicBlockCount + fullRepairOverheadEquationCount;
@@ -520,6 +522,29 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
         REQUIRE(fullRepairIds[equationIndex] == firstFullRepairId + equationIndex);
     }
     REQUIRE(initialIds.back() < fullRepairIds.front());
+}
+
+TEST_CASE("Unified initial repair transition guard retains a full Segment-window handoff margin",
+    "[application][g21][scheduler][carousel][transition-guard]")
+{
+    constexpr std::uint32_t fullSegmentBlockCount = 6385;
+    constexpr std::uint64_t percentRepairBlocks = 799;
+    constexpr std::uint64_t observedLostBlocks = 800;
+    constexpr std::uint64_t expectedRepairBlocks =
+        percentRepairBlocks + pbapp::senderUnifiedInitialTransitionGuardBlocks;
+    pbapp::SenderUnifiedCarouselScheduler scheduler;
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
+        {fullSegmentBlockCount, 4, 15, true, 0}, scheduler));
+
+    const pbapp::SenderUnifiedCarouselSnapshot snapshot = scheduler.GetSnapshot();
+    REQUIRE(snapshot.systematicEquationCount == fullSegmentBlockCount);
+    REQUIRE(snapshot.repairEquationCount == expectedRepairBlocks);
+    REQUIRE(snapshot.scheduledEquationCount == fullSegmentBlockCount + expectedRepairBlocks);
+    REQUIRE(fullSegmentBlockCount + percentRepairBlocks - observedLostBlocks ==
+        fullSegmentBlockCount - 1);
+    REQUIRE(snapshot.scheduledEquationCount - observedLostBlocks >= fullSegmentBlockCount);
+    REQUIRE(pbapp::senderUnifiedInitialTransitionGuardBlocks >
+        2 * (pbapp::senderUnifiedCodewordSlotCount - 1));
 }
 
 TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Control bursts without data starvation",

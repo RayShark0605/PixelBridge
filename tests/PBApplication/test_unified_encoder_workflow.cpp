@@ -286,7 +286,8 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
             (std::max)(static_cast<std::uint64_t>(pbapp::senderUnifiedMinimumInitialRepairBlocks),
                 (static_cast<std::uint64_t>(probe.blockCounts[segmentIndex]) - 1ULL) /
                     (pbapp::senderUnifiedInitialRepairPercentDenominator /
-                        pbapp::senderUnifiedInitialRepairPercentNumerator) + 1ULL);
+                        pbapp::senderUnifiedInitialRepairPercentNumerator) + 1ULL) +
+            pbapp::senderUnifiedInitialTransitionGuardBlocks;
         CHECK(probe.blockCounts[segmentIndex] > 2);
         CHECK(probe.passZeroScheduledEquationCounts[segmentIndex] ==
             probe.blockCounts[segmentIndex] + expectedInitialRepairEquations);

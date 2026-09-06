@@ -36,14 +36,16 @@ static_assert(senderUnifiedInitialRepairPercentDenominator % senderUnifiedInitia
 [[nodiscard]] SenderCarouselSchedulerStatus CalculateEquationCounts(
     const std::uint32_t systematicBlockCount, const bool wirehair,
     const std::uint32_t repairPercentNumerator, const std::uint32_t repairPercentDenominator,
-    const std::uint32_t minimumRepairBlocks,
+    const std::uint32_t minimumRepairBlocks, const std::uint32_t additionalRepairBlocks,
     std::uint64_t& scheduledEquationCount, std::uint64_t& repairEquationCount) noexcept
 {
     repairEquationCount = wirehair ?
         (std::max)(static_cast<std::uint64_t>(minimumRepairBlocks),
             (static_cast<std::uint64_t>(systematicBlockCount) - 1ULL) /
                 (repairPercentDenominator / repairPercentNumerator) + 1ULL) : 0;
-    if (!AssignChecked(pbprotocol::CheckedAddUint64(systematicBlockCount, repairEquationCount),
+    if ((wirehair && !AssignChecked(pbprotocol::CheckedAddUint64(
+            repairEquationCount, additionalRepairBlocks), repairEquationCount)) ||
+        !AssignChecked(pbprotocol::CheckedAddUint64(systematicBlockCount, repairEquationCount),
         scheduledEquationCount))
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
@@ -90,7 +92,7 @@ SenderCarouselSchedulerStatus SenderCarouselScheduler::Create(
     const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
         config.systematicBlockCount, config.wirehair, senderCarouselRepairPercentNumerator,
         senderCarouselRepairPercentDenominator, senderCarouselMinimumRepairBlocks,
-        scheduledEquationCount, repairEquationCount);
+        0, scheduledEquationCount, repairEquationCount);
     if (!equationStatus)
     {
         return equationStatus;
@@ -395,6 +397,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
             config.wirehair, initialPass ? senderUnifiedInitialRepairPercentNumerator : senderCarouselRepairPercentNumerator,
             initialPass ? senderUnifiedInitialRepairPercentDenominator : senderCarouselRepairPercentDenominator,
             initialPass ? senderUnifiedMinimumInitialRepairBlocks : senderCarouselMinimumRepairBlocks,
+            initialPass ? senderUnifiedInitialTransitionGuardBlocks : 0,
             scheduledEquationCount, repairEquationCount);
         if (!equationStatus)
         {

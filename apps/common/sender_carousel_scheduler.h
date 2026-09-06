@@ -12,11 +12,15 @@ namespace pbapp
 inline constexpr std::uint32_t senderCarouselRepairPercentNumerator = 20;
 inline constexpr std::uint32_t senderCarouselRepairPercentDenominator = 100;
 inline constexpr std::uint32_t senderCarouselMinimumRepairBlocks = 16;
-// Unified Pass 0 uses the benchmark-frozen 12.5% LocalRepairBurst. Later passes
-// retain the complete K + 20% FullRepairPass budget for late join and loss.
+// Unified Pass 0 uses a 12.5% LocalRepairBurst plus a small fixed transition
+// guard. The guard spans more than two ordinary 14-Transport-slot frames, so a
+// near-threshold Segment is not abandoned at the bounded-window transition.
+// Later passes retain the complete K + 20% FullRepairPass budget for late join
+// and loss.
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentNumerator = 1;
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentDenominator = 8;
 inline constexpr std::uint32_t senderUnifiedMinimumInitialRepairBlocks = 16;
+inline constexpr std::uint32_t senderUnifiedInitialTransitionGuardBlocks = 32;
 inline constexpr std::uint32_t senderCarouselControlCadenceSeconds = 10;
 inline constexpr std::uint32_t senderCarouselMaximumLogicalFramesPerSecond = 240;
 inline constexpr std::uint32_t senderCarouselMaximumSystematicBlockCount = 64000;
