@@ -1268,3 +1268,5 @@ wrapper live/远程环境边界在FIELD_RECHECK_README.md和交接0.13。该夹�
 回归使用显式 `g21-lifecycle-fixture` 的无屏幕进程，不是产品接收或远控证据。产品源码仍为6e90643相同内容，
 冻结实屏候选不被工具/文档提交替换。V1 evidence不改写；V2与最终收尾索引见交接0.14。
 最终G21仍PARTIAL，G22未开始；交付完成不等于这两个后续门已通过。
+本机PS5.1的未启动Process finally旧/新均保留原异常，新版新增nullable exit证据；不把旧getter掩盖异常的
+未复现推测当成已修复故障。收尾fixture按该实测断言，原始失败测试记录保留。

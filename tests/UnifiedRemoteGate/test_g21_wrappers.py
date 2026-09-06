@@ -214,7 +214,10 @@ catch
         result = run_script(case, script)
         observed = read_json(case / "cleanup-result.json")
         assert result["exitCode"] == 0 and not result["timedOut"]
-        assert observed["originalFailurePreserved"] == (label == "current")
+        # PS 5.1 already preserves this exception in the old wrapper; the new
+        # guarantee is an explicit nullable exit record, not a claimed old crash.
+        assert observed["originalFailurePreserved"] is True
+        assert (case / "process-exit.json").exists() == (label == "current")
         if label == "current":
             report = read_json(case / "process-exit.json")
             assert report["started"] is False and report["receiverExit"] is None

@@ -38,7 +38,8 @@ Sender 先保留 `process-exit.json` 再运行摘要 helper，helper 失败不�
 & '<python>' -X utf8 '<repo>\tests\UnifiedRemoteGate\test_g21_wrappers.py' --new-run-root '<NEW_ABSOLUTE_SHORT_ROOT>'
 ```
 
-可选 `--baseline-kit-root '<OLD_KIT_ROOT>'` 复现旧 Receiver 未 fail-fast、旧 Sender 摘要失败丢失 exit 和
-未启动 Process 的 finally 掩盖原错误。每例在新目录复制显式 `g21-lifecycle-fixture` 身份的 .NET fixture，
+可选 `--baseline-kit-root '<OLD_KIT_ROOT>'` 复现旧 Receiver 未 fail-fast、旧 Sender 摘要失败丢失 exit，并比较
+未启动 Process 的 finally：本机 PS5.1 旧/新版本都保留原异常，新版额外保存 started=false / receiverExit=null。
+不把未复现的旧 getter 异常写成已修复故障。每例在新目录复制显式 `g21-lifecycle-fixture` 身份的 .NET fixture，
 不是产品 EXE。每个外层 watchdog 有界；清理前核对自己启动的 PID 仍指向该 fixture 的绝对 EXE 路径。
 原始测试结果不覆盖，fixture 使用短目录组件以兼容 .NET Framework 的历史 MAX_PATH 限制。
