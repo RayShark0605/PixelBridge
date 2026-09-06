@@ -32,7 +32,7 @@ namespace
 using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t minimumRunSeconds = 30;
 constexpr std::uint32_t maximumHighResolutionRunSeconds = 600;
-constexpr std::uint32_t maximumRunSeconds = 3600;
+constexpr std::uint32_t maximumRunSeconds = 7200;
 constexpr std::uint32_t maximumDiagnosticDimension = 4096;
 constexpr std::uint32_t actualCaptureReplayFrames = 256;
 constexpr std::uint32_t actualCaptureReplayFramesPerSecond = 15;
@@ -42,7 +42,7 @@ constexpr std::size_t maximumSampleCount = maximumHighResolutionRunSeconds + 2;
 constexpr std::size_t maximumEvidenceBytes = pbdiagnostic::DiagnosticFile::maximumBytes;
 constexpr auto safetyInterval = std::chrono::milliseconds(200);
 constexpr auto sampleInterval = std::chrono::seconds(1);
-constexpr std::uint32_t extendedRunSampleIntervalSeconds = 6;
+constexpr std::uint32_t extendedRunSampleIntervalSeconds = 12;
 constexpr auto extendedRunSampleInterval = std::chrono::seconds(extendedRunSampleIntervalSeconds);
 static_assert(maximumSampleBytes * maximumSampleCount <= maximumEvidenceBytes);
 static_assert(static_cast<std::size_t>(maximumRunSeconds / extendedRunSampleIntervalSeconds) + 2 <= maximumSampleCount);
@@ -63,7 +63,7 @@ std::uint32_t ParseTimeout(const std::wstring_view text)
     {
         Require(character >= L'0' && character <= L'9', "invalid timeout");
         const auto digit = static_cast<std::uint32_t>(character - L'0');
-        Require(value <= (maximumRunSeconds - digit) / 10, "timeout exceeds 3600 seconds");
+        Require(value <= (maximumRunSeconds - digit) / 10, "timeout exceeds 7200 seconds");
         value = value * 10 + digit;
     }
     Require(value >= minimumRunSeconds, "timeout must be at least 30 seconds");
@@ -787,10 +787,10 @@ void RunPolicyChecks()
         NeutralBt709Luma(std::byte{255}, std::byte{255}, std::byte{255}) == 255 &&
         NeutralBt709Luma(std::byte{0}, std::byte{0}, std::byte{255}) == 54,
         "BT.709 integer chroma-neutralization contract mismatch");
-    Require(ParseTimeout(L"30") == minimumRunSeconds && ParseTimeout(L"3600") == maximumRunSeconds, "timeout boundary mismatch");
+    Require(ParseTimeout(L"30") == minimumRunSeconds && ParseTimeout(L"7200") == maximumRunSeconds, "timeout boundary mismatch");
     Require(SelectSampleInterval(600) == sampleInterval && SelectSampleInterval(601) == extendedRunSampleInterval &&
         SelectSampleInterval(maximumRunSeconds) == extendedRunSampleInterval, "timeout sample interval boundary mismatch");
-    for (const std::wstring_view invalid : {L"", L"0", L"29", L"3601", L"-1", L"+30", L"30x", L"4294967296"})
+    for (const std::wstring_view invalid : {L"", L"0", L"29", L"7201", L"-1", L"+30", L"30x", L"4294967296"})
     {
         bool rejected = false;
         try

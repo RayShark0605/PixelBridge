@@ -4,7 +4,7 @@ param(
     [string]$Tier,
     [Parameter(Mandatory = $true)]
     [string]$NewRunRoot,
-    [ValidateRange(30, 3600)]
+    [ValidateRange(30, 7200)]
     [int]$MaximumSeconds = 3600,
     [string]$BuildRoot = (Join-Path $PSScriptRoot '..\..\build-unified-release'),
     [string]$Python = '<python>'
@@ -54,6 +54,20 @@ function Add-ProcessArguments
     {
         [void]$StartInfo.ArgumentList.Add($argument)
     }
+}
+
+function Update-ProcessMemoryPeak
+{
+    param([Diagnostics.Process]$Process, [Collections.IDictionary]$State)
+    if (-not $Process -or $Process.HasExited)
+    {
+        return
+    }
+    $Process.Refresh()
+    $State.samples = [int64]$State.samples + 1
+    $State.peakWorkingSetBytes = [Math]::Max([int64]$State.peakWorkingSetBytes,
+        [Math]::Max([int64]$Process.WorkingSet64, [int64]$Process.PeakWorkingSet64))
+    $State.peakPrivateBytes = [Math]::Max([int64]$State.peakPrivateBytes, [int64]$Process.PrivateMemorySize64)
 }
 
 if (-not ('PixelBridgeConsoleStopInjector' -as [type]))
@@ -208,6 +222,8 @@ if ((Get-Item -LiteralPath $sourcePath).Length -ne $sourceBytes)
 $sourceLease = [IO.File]::Open($sourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
 $receiver = $null
 $sender = $null
+$receiverMemory = [ordered]@{ samples = 0L; peakWorkingSetBytes = 0L; peakPrivateBytes = 0L }
+$senderMemory = [ordered]@{ samples = 0L; peakWorkingSetBytes = 0L; peakPrivateBytes = 0L }
 try
 {
     $sourceSha256 = (Get-FileHash -InputStream $sourceLease -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -221,17 +237,24 @@ try
     $encoderArguments = @('--headless-broadcast', '--source', $sourcePath, '--profile', 'unified', '--channel', 'local',
         '--single-monitor-fullscreen', '\\.\DISPLAY2', '--logical-fps', '15', '--seconds', [string]$MaximumSeconds,
         '--manual-stop', '--report', $encoderReport, '--journal', $encoderJournal)
+    $receiverArguments = @('--receive', $receiverRoot, [string]$MaximumSeconds)
+    if (($receiverArguments -join "`0").Contains($sourcePath, [StringComparison]::OrdinalIgnoreCase))
+    {
+        throw 'Decoder arguments unexpectedly contain the source path.'
+    }
     Write-NewJson -Path (Join-Path $runRoot 'source-manifest.json') -Value ([ordered]@{
         schema = 'PixelBridge.G21.LocalStaircaseSource.1'; tier = $Tier; gitCommit = $head; bytes = $sourceBytes
         generator = 'Windows OS CSPRNG with one bounded 1 MiB buffer'; sourcePath = $sourcePath
         sha256 = $sourceSha256; blake3 = $sourceBlake3; sourceProvidedToDecoder = $false
         immutableLease = 'FileShare.Read only, held from before receiver start through both process exits'
         stopControl = 'One Q key-down record injected into the inherited interactive console after Receiver exit'
-        encoderIdentity = $encoderIdentity; gateIdentity = $gateIdentity; encoderArguments = $encoderArguments
+        encoderIdentity = $encoderIdentity; gateIdentity = $gateIdentity
+        encoderArguments = $encoderArguments; receiverArguments = $receiverArguments
     })
 
-    $receiver = Start-Process -FilePath $gate -ArgumentList @('--receive', $receiverRoot, [string]$MaximumSeconds) `
+    $receiver = Start-Process -FilePath $gate -ArgumentList $receiverArguments `
         -RedirectStandardOutput $receiverStdout -RedirectStandardError $receiverStderr -WindowStyle Hidden -PassThru
+    Update-ProcessMemoryPeak -Process $receiver -State $receiverMemory
     Start-Sleep -Seconds 2
     if ($receiver.HasExited)
     {
@@ -252,6 +275,8 @@ try
     {
         throw 'Encoder process did not start.'
     }
+    Update-ProcessMemoryPeak -Process $receiver -State $receiverMemory
+    Update-ProcessMemoryPeak -Process $sender -State $senderMemory
 
     $deadline = [DateTime]::UtcNow.AddSeconds($MaximumSeconds + 45)
     while (-not $receiver.HasExited -and [DateTime]::UtcNow -lt $deadline)
@@ -260,6 +285,8 @@ try
         {
             throw "Encoder exited before Receiver with code $($sender.ExitCode)."
         }
+        Update-ProcessMemoryPeak -Process $receiver -State $receiverMemory
+        Update-ProcessMemoryPeak -Process $sender -State $senderMemory
         Start-Sleep -Seconds 1
         $receiver.Refresh()
     }
@@ -270,6 +297,7 @@ try
     }
     if (-not $sender.HasExited)
     {
+        Update-ProcessMemoryPeak -Process $sender -State $senderMemory
         [PixelBridgeConsoleStopInjector]::SendManualStopKey()
     }
     if (-not $sender.WaitForExit(30000))
@@ -290,12 +318,28 @@ try
     $gatePath = Join-Path $receiverRoot 'receiver-checks.json'
     $final = Get-Content -LiteralPath $finalPath -Raw | ConvertFrom-Json
     $checks = Get-Content -LiteralPath $gatePath -Raw | ConvertFrom-Json
+    $encoderFinal = Get-Content -LiteralPath $encoderReport -Raw | ConvertFrom-Json
+    $laneFailures = @($final.unifiedTelemetry.lanes | Where-Object {
+        [int64]$_.fec.crcFailures -ne 0 -or [int64]$_.fec.identityFailures -ne 0
+    })
+    $residualStateFiles = @(Get-ChildItem -LiteralPath $receiverRoot -Recurse -File | Where-Object {
+        $_.Name -match '\.(part|resume)(\.|$)'
+    })
     if ($final.state -cne 'Completed' -or -not $final.publish.wholeDigestVerified -or
-        -not $final.publish.renameSucceeded -or -not $final.publish.finalReopenVerified -or
+        -not $final.publish.renameSucceeded -or -not $final.publish.finalReopenVerified -or -not $final.publish.published -or
         -not $checks.receiverLocalChecksPassed -or -not $checks.hard16KiBFrameMetricPassed -or
-        [int64]$final.fileBytes -ne $sourceBytes)
+        [int64]$final.fileBytes -ne $sourceBytes -or [int64]$final.recovery.verifiedRawBytes -ne $sourceBytes -or
+        [int64]$final.recovery.verifiedSegments -le 0 -or
+        [int64]$final.recovery.verifiedSegments -ne [int64]$encoderFinal.scheduler.segmentCount -or
+        -not $final.unifiedTelemetry.frameCoverageComplete -or $final.unifiedTelemetry.counterOverflow -or
+        $laneFailures.Count -ne 0 -or $residualStateFiles.Count -ne 0 -or
+        $final.remoteGate.sourceOrOracleProvided -or $final.capture.actualBackend -notin @('WGC', 'DXGI') -or
+        $encoderFinal.state -cne 'Stopped' -or -not $encoderFinal.preparation.sourceStabilityVerified -or
+        [int64]$encoderFinal.fileBytes -ne $sourceBytes -or [int64]$encoderFinal.configuredLogicalFps -ne 15 -or
+        [int64]$receiverMemory.samples -le 0 -or [int64]$senderMemory.samples -le 0 -or
+        [int64]$receiverMemory.peakWorkingSetBytes -le 0 -or [int64]$senderMemory.peakWorkingSetBytes -le 0)
     {
-        throw 'Receiver artifacts do not satisfy publication and 16 KiB gates.'
+        throw 'Run artifacts do not satisfy publication, integrity, cleanup, lane, memory and 16 KiB gates.'
     }
     $recoveredPath = [string]$final.publish.finalPath
     $recoveredSha256 = (Get-FileHash -LiteralPath $recoveredPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -304,6 +348,11 @@ try
     if (-not $digestPass)
     {
         throw 'Independent SHA-256/BLAKE3 source-to-published verification failed.'
+    }
+    if ($sourceBlake3 -cne [string]$encoderFinal.sourceWholeFileDigest -or
+        $sourceBlake3 -cne [string]$final.publish.wholeFileDigest)
+    {
+        throw 'Independent BLAKE3 does not match the sender and receiver whole-file digests.'
     }
 
     Write-NewJson -Path (Join-Path $runRoot 'external-digest-audit.json') -Value ([ordered]@{
@@ -315,6 +364,33 @@ try
     })
     Write-NewJson -Path (Join-Path $runRoot 'process-exits.json') -Value ([ordered]@{
         receiverExit = $receiver.ExitCode; encoderExit = $sender.ExitCode; supervisorForcedTermination = $false
+        memorySampleIntervalMilliseconds = 1000; receiverMemory = $receiverMemory; encoderMemory = $senderMemory
+    })
+    Write-NewJson -Path (Join-Path $runRoot 'staircase-verification.json') -Value ([ordered]@{
+        schema = 'PixelBridge.G21.LocalStaircaseVerification.1'; tier = $Tier; bytes = $sourceBytes; gitCommit = $head
+        allSegmentsCompleted = $true; verifiedSegments = [int64]$final.recovery.verifiedSegments
+        segmentCount = [int64]$encoderFinal.scheduler.segmentCount; wholeDigestVerified = $true
+        safePublish = $true; finalReopenVerified = $true; residualPartOrResumeFiles = @()
+        laneCrcAndIdentityFailuresZero = $true; receiverLocalChecksPassed = $true
+        hard16KiBFrameMetricPassed = $true; engineering32KiBTargetReached = [bool]$checks.engineering32KiBTargetReached
+        senderConfiguredLogicalFps = [int64]$encoderFinal.configuredLogicalFps
+        senderSubmittedLogicalFps = [double]$encoderFinal.observedSubmittedLogicalFps
+        receiverUniqueVisualFps = [double]$final.unifiedTelemetry.uniqueVisualFps
+        receiverUniqueLogicalFrames = [int64]$final.unifiedTelemetry.uniqueLogicalFrames
+        receiverElapsedMilliseconds = [int64]$final.runEndedUnixMilliseconds - [int64]$final.runStartedUnixMilliseconds
+        verifiedEncodedBytesPerUniqueFrame = [double]$final.verifiedEncodedBytesPerUniqueFrame
+        receiverOuterResourceRejections = [int64]$final.remoteGate.outerResourceRejections
+        receiverOuterConflictRejections = [int64]$final.remoteGate.outerConflictRejections
+        receiverOuterDeferredResourceBusyCount = [int64]$final.remoteGate.outerDeferredResourceBusyCount
+        receiverOuterFecQuotaExceededCount = [int64]$final.remoteGate.outerFecQuotaExceededCount
+        receiverOuterPeakActiveDecoderCount = [int64]$final.remoteGate.outerPeakActiveDecoderCount
+        receiverOuterActiveDecoderLimit = [int64]$final.remoteGate.outerActiveDecoderLimit
+        receiverOuterPeakReservedDecoderBytes = [int64]$final.remoteGate.outerPeakReservedDecoderBytes
+        receiverOuterTotalDecoderByteLimit = [int64]$final.remoteGate.outerTotalDecoderByteLimit
+        receiverOuterPeakOrphanCachedBytes = [int64]$final.remoteGate.outerPeakOrphanCachedBytes
+        receiverProcessMemory = $receiverMemory; encoderProcessMemory = $senderMemory
+        memoryBoundBasis = 'Sampled OS process peaks plus protocol-owned active-window peaks; cross-tier comparison is required for O(active Segment window) conclusion'
+        sourceOrOracleProvidedToDecoder = $false; independentSha256AndBlake3Equal = $true
     })
     Write-Output ("PASS: {0}; run={1}; uniqueFrames={2}; uniqueFps={3}; bytesPerUnique={4}" -f
         $Tier, $runRoot, $final.unifiedTelemetry.uniqueLogicalFrames,

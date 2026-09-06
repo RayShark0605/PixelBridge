@@ -253,7 +253,7 @@ if(TARGET PixelBridgeEncoder)
             "--visual|local-desktop-bootstrap|--visual|local-desktop-bootstrap"
             "--headless-broadcast"
             "--headless-broadcast|--source|missing.bin|--origin|0|0|--seconds|0"
-            "--headless-broadcast|--source|missing.bin|--origin|0|0|--seconds|3601"
+            "--headless-broadcast|--source|missing.bin|--origin|0|0|--seconds|7201"
             "--headless-broadcast|--source|missing.bin|--origin|0|0|--compression|invalid"
             "--headless-broadcast|--source|missing.bin|--origin|2147483648|0"
             "--headless-broadcast|--source|missing.bin|--origin|-2147483649|0"
