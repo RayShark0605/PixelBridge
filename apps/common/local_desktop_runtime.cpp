@@ -3044,7 +3044,8 @@ public:
         {
             if (visualProfile_ == VisualProfile::UnifiedLc4)
             {
-                unifiedTelemetry_.InvalidateFrameCoverage();
+                unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::InvalidIdentity, &bootstrap,
+                    result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
             }
             UpdateVisualSnapshot();
             UpdateTelemetrySnapshot();
@@ -3456,7 +3457,8 @@ private:
         });
         if (identityDisposition == VisualIdentityDisposition::Reordered)
         {
-            unifiedTelemetry_.InvalidateFrameCoverage();
+            unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::ReorderedIdentity, &bootstrap,
+                result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
             return {};
         }
         if (result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly)
@@ -3467,7 +3469,8 @@ private:
                 if (!status || !unifiedTelemetry_.RecordUnavailableFrame(bootstrap,
                     result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns))
                 {
-                    unifiedTelemetry_.InvalidateFrameCoverage();
+                    unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::SessionBinding, &bootstrap,
+                        result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
                 }
             }
             return {};
@@ -3629,7 +3632,8 @@ private:
         if (!status || !unifiedTelemetry_.Record(result.demodulation.unifiedObservation,
             result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns))
         {
-            unifiedTelemetry_.InvalidateFrameCoverage();
+            unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::SessionBinding, &result.demodulation.unifiedObservation.bootstrapRecord,
+                result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
         }
         // Evidence health can withdraw a metric; it must not change admission.
         UpdateTelemetrySnapshot();

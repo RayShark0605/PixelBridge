@@ -225,4 +225,44 @@ TEST_CASE("G17 telemetry distinguishes unavailable observations from measured ze
     REQUIRE(output.str().find("\"fec\":null") != std::string::npos);
     REQUIRE(output.str().find("\"uniqueVisualFps\":null") != std::string::npos);
     REQUIRE(output.str().find(":inf") == std::string::npos);
+    REQUIRE(output.str().find("\"firstCoverageFailure\":null") != std::string::npos);
+}
+
+TEST_CASE("G21 first coverage failure is bounded immutable evidence without counter repair", "[telemetry][g21][coverage-diagnostic]")
+{
+    pbtelemetry::UnifiedTelemetryAccumulator telemetry;
+    REQUIRE(telemetry.BindSession(7));
+    REQUIRE(telemetry.Record(Observation(100), 1, 1000));
+    REQUIRE_FALSE(telemetry.GetSnapshot().firstCoverageFailure);
+    REQUIRE_FALSE(telemetry.Record(Observation(101), 1, 999));
+    const auto first = telemetry.GetSnapshot();
+    REQUIRE_FALSE(first.frameCoverageComplete);
+    REQUIRE(first.observations == 1);
+    REQUIRE(first.uniqueFrames == 1);
+    REQUIRE(first.firstCoverageFailure.has_value());
+    REQUIRE(first.firstCoverageFailure->reason == pbtelemetry::UnifiedCoverageFailureReason::TimestampOrder);
+    REQUIRE(first.firstCoverageFailure->observationsBeforeFailure == 1);
+    REQUIRE(first.firstCoverageFailure->uniqueFramesBeforeFailure == 1);
+    REQUIRE(first.firstCoverageFailure->frameSequence == 101);
+    REQUIRE(first.firstCoverageFailure->captureEpoch == 1);
+    REQUIRE(first.firstCoverageFailure->timestamp100ns == 999);
+    REQUIRE(first.firstCoverageFailure->previousTimestamp100ns == 1000);
+    auto invalid = Observation(102);
+    invalid.inputValid = false;
+    REQUIRE_FALSE(telemetry.Record(invalid, 1, 1001));
+    telemetry.InvalidateFrameCoverage();
+    REQUIRE(telemetry.Record(Observation(103), 1, 1002));
+    const auto after = telemetry.GetSnapshot();
+    REQUIRE(after.firstCoverageFailure->reason == pbtelemetry::UnifiedCoverageFailureReason::TimestampOrder);
+    REQUIRE(after.firstCoverageFailure->frameSequence == 101);
+    REQUIRE(after.firstCoverageFailure->observationsBeforeFailure == 1);
+    REQUIRE(after.observations == 2);
+    REQUIRE(after.uniqueFrames == 2);
+    REQUIRE_FALSE(after.frameCoverageComplete);
+    REQUIRE_FALSE(after.uniqueVisualFps);
+    REQUIRE_FALSE(pbtelemetry::EvaluatePublishedFrameMetric(after, 32768, true, true, true, false).bytesPerUniqueFrame);
+    std::ostringstream output;
+    pbtelemetry::WriteUnifiedTelemetryJson(output, after);
+    REQUIRE(output.str().find("\"reason\":\"TimestampOrder\"") != std::string::npos);
+    REQUIRE(output.str().find("\"timestamp100ns\":999,\"previousTimestamp100ns\":1000") != std::string::npos);
 }

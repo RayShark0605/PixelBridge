@@ -1204,3 +1204,21 @@ Segment completed、torn-tail 仍立即 compact，不削弱 flush/CRC/maxResumeB
 逐位一致；相同32帧2560×1440 Golden全视图基准从21.078降到10.2191 ms/帧，work units同为185,997,856。
 localdesktop 17/3,900、scan+cost 2/2,503、无分配1,070 checks通过。此为CPU成本证据，需新候选同身份实屏验证，不据此
 升级大档或宣布G21完成。
+
+
+### 20.6 2861beb 64/500 MiB Pass0 成功及 1 GiB coverage fail-fast
+
+同一正式 `2861beb` 在右屏15 Hz下：64 MiB/67,108,864 bytes，8/8，254,198 ms，3,720 unique @14.807471 Hz，
+18,040.017 B/unique；500 MiB/524,288,000 bytes，63/63，2,121,518 ms，31,590 unique @14.924181 Hz，
+16,596.645 B/unique。二者均 Pass0 正常发布、whole/safe publish/final reopen/coverage、外部 exact bytes/SHA256/
+BLAKE3、零 lane/resource/conflict/deferred/quota/orphan、无临时残留、exit0/0；未达到32 KiB工程目标。
+完整 root、双摘要、TX FPS 与进程内存峰值见交接0.12及各 root 的 independent-postrun-audit.json。
+
+同一候选随后 1 GiB/1,073,741,824 bytes 在首窗口8/128完成附近 coverage=false，非 quota/resource 失败；
+Receiver 被 supervisor fail-fast 停止（-1 forced），Encoder Q 正常退出0。没有最终发布，B/unique/FPS null，
+不可把 8/128 或旧两档成功写成完整阶梯通过。失败 root：
+`<repo>\build-unified-release\g21-2861beb-staircase-1gib-90ca448d3b274fd5b0bde650c0c36bc0`。
+原始 samples/failure snapshot/process state 保留，新增只读分析把首次失效定位在12,135 ms采样间隔内，尚不能判定
+具体原因。本阶段只补固定大小首次 coverage 原因/帧身份/时间戳证据，不改计数或接受规则；telemetry9/8,345和
+Application G17+G21 13/2,744通过。后续先有界诊断，修复后重新同身份三档，不拼接，不放宽 coverage。
+G21 仍 PARTIAL，远程现场与独立 live false-accepted oracle 的 null/unavailable 边界不变。

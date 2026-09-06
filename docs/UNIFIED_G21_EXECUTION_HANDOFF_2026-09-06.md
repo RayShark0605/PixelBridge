@@ -5,12 +5,12 @@
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
 > [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
 
-## 0. 最新权威增量（20:25 交接基线；22:20 的 Bootstrap 热路径候选见 0.11）
+## 0. 最新权威增量（20:25 交接基线；23:35 的两档通过与 coverage 阻塞见 0.12）
 
 > **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
 > “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
 > 后续第 1～8 节继续保留，作为真实远控链历史、原始失败形状和操作背景，不得反向覆盖本节。
-> **继续执行后的最新状态优先读 0.11，再读 0.10、0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
+> **继续执行后的最新状态优先读 0.12，再读 0.11、0.10、0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
 
 ### 0.1 当前结论与 Git 边界
 
@@ -367,6 +367,53 @@ image-sized scratch 或 allocation。两种 luma 算法分别穷举全部 16,777
 
 新候选仍需独立提交、重构建、正式 identity/窄测复核，并重新从64 MiB开始同身份三档。保护文件 hash 未变；没有残留
 产品/Gate进程。G21 PARTIAL，所有本机结果明确为 LocalDesktop，仍不是 remote field pass。
+
+### 0.12 2861beb 两档 Pass-0 通过；1 GiB coverage 失效与首次失败诊断（23:35 CST）
+
+正式候选 `2861beb4affe1a37ea386dafdc52e27d7a1d6498` 已重构建并核对 Encoder/Decoder/Gate embedded identity。
+0.9 开发根下 `formal-2861beb/summary.json` 保存 scheduler、Application G21、原 sparse window、durable/resume、
+Bootstrap/no-allocation、Gate self-test 与 clean/phase3 16-Segment probe 全部 PASS。以下三档没有夹入其他提交，
+同一 HEAD、相同 hold32 sweeps/repair1/10+32/Control triplet、右屏全物理 ROI、Unified 15 Hz；每档 fresh CSPRNG。
+
+| 档位 | bytes / Segments | elapsed ms | unique / UniqueVisualFPS | B/unique | Sender frames / submitted FPS / pass |
+|---|---|---:|---|---:|---|
+| 64 MiB | 67,108,864 / 8/8 | 254,198 | 3,720 / 14.807471230450075 | 18,040.017204301075 | 3,777 / 15.003861944793432 / 0 |
+| 500 MiB | 524,288,000 / 63/63 | 2,121,518 | 31,590 / 14.924181227410648 | 16,596.64450775562 | 31,740 / 14.990317266475468 / 0 |
+| 1 GiB FAIL | 1,073,741,824 / 8/128 | 首个失败 sample 约 254 秒；无正常 final | 3,714 / null | null / NotPublished | 3,856 / 15.00383556 / 0 |
+
+权威根依次为：
+- `<repo>\build-unified-release\g21-2861beb-staircase-64mib-810d78174c9a4200a7a80298e7dba985`
+- `<repo>\build-unified-release\g21-2861beb-staircase-500mib-655711d69c3d4e588eab6c5c1455df04`
+- `<repo>\build-unified-release\g21-2861beb-staircase-1gib-90ca448d3b274fd5b0bde650c0c36bc0`
+
+前两档 whole/safe publish/final reopen/complete current-run frame coverage、外部 exact bytes/SHA256/BLAKE3、
+lane CRC/identity=0、resource/conflict/deferred/quota/orphan=0、无 .part/.resume、exit0/0 全通过；均在 Pass0 发布。
+`independent-postrun-audit.json` 与 `pass0-completion-check.json` 保存逐项检查，不把 32 KiB 工程目标写成已达到。
+64 MiB SHA256=`bc4dcb4f62340b28fe459d5d94828595a62832f7ee091b2f7fece80ab6b822be`，
+BLAKE3=`763236bb1c6aa717ba5f87a6b245e93a2126df1e6dac40216bca8362e45c7df1`；
+500 MiB SHA256=`dfc7a0fd30a0ff75ae6e93f8ded928328539b9017fda55cea6d3a87df7e0cffd`，
+BLAKE3=`ed5229aea731cdfb9ffc1f15987713b2f7cf67511898a7b048fb9018ff0ee9ee`。
+
+内存峰值（working set / private bytes）：
+- 64 MiB Receiver 399,753,216 / 614,559,744；Encoder 258,596,864 / 302,145,536。
+- 500 MiB Receiver 402,165,760 / 567,963,648；Encoder 277,041,152 / 319,688,704。
+- 1 GiB 失败前 Receiver 400,310,272 / 561,696,768；Encoder 260,386,816 / 319,963,136。
+三档 decoder peak active=8，reserved=457,201,696 bytes；500 MiB 未表现为 O(total file) 的 resident 增长，
+但 1 GiB 未完成，不据此宣称全部大文件内存认证。
+
+1 GiB 在第一窗口完成附近触发 fail-fast：`receiver-gate-failure-snapshot.json` 为 Verifying、8/128、
+verifiedRawBytes=67,108,864、active=0，所有 lane/resource/conflict/deferred/quota/orphan=0，但
+`frameCoverageComplete=false`。Receiver 因 supervisor 失败退出 -1/forced=true，Encoder Q 正常退出0；
+原 .resume/.part 保留为失败证据，不算残留清理成功。无 published final，无外部最终文件摘要审计。
+`coverage-failure-boundary-analysis.json` 冻结原始文件 hash：samples[20] coverage=true、3,546 unique、0/128；
+12,135 ms 后 samples[21] coverage=false、3,714 unique、8/128。counterOverflow=false，尚未达到4096身份窗口。
+旧二进制不导出首次失败原因，不能从这个采样间隔直接断言时序倒退的具体来源。
+
+本节同提交先加入固定大小 `firstCoverageFailure`（原因、失效前 observation/unique 数、FrameSequence、epoch、
+当前/此前 timestamp），只记录首次；**不改任何计数、覆盖规则、接收时序或硬门**。窄测 telemetry 9/8,345、
+Application G17+G21 13/2,744 通过，含 malformed sample 原因、旧帧拒绝原因、timestamp regression 与首次证据不可覆盖。
+下一步正式提交重构建后做有界实屏诊断，取得首因再修复；修正后必须重新从64 MiB跑同身份三档，不能拼接旧档。
+G21 PARTIAL；LocalDesktop 不是 remote field，独立 live false-accepted oracle 仍为 null/unavailable。
 
 ## 1. 交接时结论
 

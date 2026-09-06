@@ -361,6 +361,8 @@ TEST_CASE("G17 invalid telemetry withdraws performance without changing actual p
     REQUIRE(snapshot.wholeFileDigestCheck == true);
     REQUIRE(snapshot.finalReopenVerified == true);
     REQUIRE_FALSE(snapshot.unifiedTelemetry.frameCoverageComplete);
+    REQUIRE(snapshot.unifiedTelemetry.firstCoverageFailure.has_value());
+    REQUIRE(snapshot.unifiedTelemetry.firstCoverageFailure->reason == pbtelemetry::UnifiedCoverageFailureReason::InvalidSample);
     const auto report = Json(pbapp::BuildDecoderRunReportJson(context, snapshot));
     REQUIRE(report["verifiedEncodedBytesPerUniqueFrame"].isNull());
     REQUIRE(report["publishedFrameMetric"].toObject()["unavailableReason"] == "IncompleteObservedFrameCoverage");
@@ -405,6 +407,8 @@ TEST_CASE("G17 first usable newer frame promotion retains old-frame rejection an
         return runtime.GetSnapshot().reorderedFrameSequences == 1 || Terminal(runtime);
     }));
     REQUIRE(runtime.GetSnapshot().reorderedFrameSequences == 1);
+    REQUIRE(runtime.GetSnapshot().unifiedTelemetry.firstCoverageFailure.has_value());
+    REQUIRE(runtime.GetSnapshot().unifiedTelemetry.firstCoverageFailure->reason == pbtelemetry::UnifiedCoverageFailureReason::ReorderedIdentity);
     REQUIRE(runtime.GetSnapshot().outerUniqueSymbols == promotedSymbols);
     REQUIRE_FALSE(Terminal(runtime));
     auto conflicting = frames[1];

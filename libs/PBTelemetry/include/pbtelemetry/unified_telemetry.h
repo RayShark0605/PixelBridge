@@ -24,6 +24,29 @@ struct UnifiedLaneCounters
     std::uint64_t fecIterations = 0;
 };
 
+enum class UnifiedCoverageFailureReason : std::uint8_t
+{
+    ExternalInvalidation,
+    InvalidSample,
+    TimestampOrder,
+    InvalidIdentity,
+    ReorderedIdentity,
+    SessionBinding,
+    AmbiguousEvictedIdentity,
+    CounterOverflow
+};
+
+struct UnifiedCoverageFailure
+{
+    UnifiedCoverageFailureReason reason = UnifiedCoverageFailureReason::ExternalInvalidation;
+    std::uint64_t observationsBeforeFailure = 0;
+    std::uint64_t uniqueFramesBeforeFailure = 0;
+    std::optional<std::uint64_t> frameSequence;
+    std::optional<std::uint64_t> captureEpoch;
+    std::optional<std::int64_t> timestamp100ns;
+    std::optional<std::int64_t> previousTimestamp100ns;
+};
+
 struct UnifiedTelemetrySnapshot
 {
     bool sessionBound = false;
@@ -31,6 +54,7 @@ struct UnifiedTelemetrySnapshot
     bool observationAvailable = false;
     bool frameCoverageComplete = true;
     bool counterOverflow = false;
+    std::optional<UnifiedCoverageFailure> firstCoverageFailure;
     std::uint64_t observations = 0;
     std::uint64_t frameErasedObservations = 0;
     std::uint64_t uniqueFrames = 0;
@@ -55,10 +79,11 @@ public:
     [[nodiscard]] TelemetryStatus RecordUnavailableFrame(const pbprotocol::BootstrapRecord& bootstrap,
         std::uint64_t captureEpoch, std::int64_t timestamp100ns) noexcept;
     [[nodiscard]] UnifiedTelemetrySnapshot GetSnapshot() const noexcept;
-    void InvalidateFrameCoverage() noexcept
-    {
-        snapshot_.frameCoverageComplete = false;
-    }
+    // Fixed-size first-failure evidence only; this never repairs coverage or
+    // changes frame counts, temporal admission, or the published-metric gate.
+    void InvalidateFrameCoverage(UnifiedCoverageFailureReason reason = UnifiedCoverageFailureReason::ExternalInvalidation,
+        const pbprotocol::BootstrapRecord* bootstrap = nullptr, std::uint64_t captureEpoch = 0,
+        std::int64_t timestamp100ns = -1) noexcept;
 
 private:
     [[nodiscard]] TelemetryStatus RecordSample(const pbprotocol::BootstrapRecord& bootstrap,

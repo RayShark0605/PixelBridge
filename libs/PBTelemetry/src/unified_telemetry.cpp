@@ -23,6 +23,35 @@ std::size_t LaneIndex(const pbmodulation::UnifiedLane lane) noexcept
 {
     return lane == pbmodulation::UnifiedLane::BaseLuma ? 0 : lane == pbmodulation::UnifiedLane::FineLuma ? 1 : 2;
 }
+
+const char* CoverageFailureName(const UnifiedCoverageFailureReason reason) noexcept
+{
+    switch (reason)
+    {
+    case UnifiedCoverageFailureReason::InvalidSample: return "InvalidSample";
+    case UnifiedCoverageFailureReason::TimestampOrder: return "TimestampOrder";
+    case UnifiedCoverageFailureReason::InvalidIdentity: return "InvalidIdentity";
+    case UnifiedCoverageFailureReason::ReorderedIdentity: return "ReorderedIdentity";
+    case UnifiedCoverageFailureReason::SessionBinding: return "SessionBinding";
+    case UnifiedCoverageFailureReason::AmbiguousEvictedIdentity: return "AmbiguousEvictedIdentity";
+    case UnifiedCoverageFailureReason::CounterOverflow: return "CounterOverflow";
+    case UnifiedCoverageFailureReason::ExternalInvalidation: return "ExternalInvalidation";
+    }
+    return "Unknown";
+}
+
+template <typename Integer>
+void WriteOptionalInteger(std::ostream& output, const std::optional<Integer> value)
+{
+    if (value)
+    {
+        output << *value;
+    }
+    else
+    {
+        output << "null";
+    }
+}
 } // namespace
 
 TelemetryStatus UnifiedTelemetryAccumulator::BindSession(const std::uint64_t sessionTag) noexcept
@@ -43,7 +72,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::Record(const pbmodulation::UnifiedV
         (!observation.IsFrameAvailable() && (observation.acceptedBlocks != 0 ||
             observation.acceptedControlRecords != 0 || observation.acceptedTransportBlocks != 0)))
     {
-        snapshot_.frameCoverageComplete = false;
+        InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &observation.bootstrapRecord, captureEpoch, timestamp100ns);
         return TelemetryStatus::Failure(TelemetryError::InvalidSample);
     }
     return RecordSample(observation.bootstrapRecord, &observation, captureEpoch, timestamp100ns);
@@ -67,13 +96,13 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
     }
     if (timestamp100ns < 0 || (snapshot_.observationAvailable && timestamp100ns < lastObservationTimestamp100ns_))
     {
-        snapshot_.frameCoverageComplete = false;
+        InvalidateFrameCoverage(UnifiedCoverageFailureReason::TimestampOrder, &bootstrap, captureEpoch, timestamp100ns);
         return TelemetryStatus::Failure(TelemetryError::TimestampOrder);
     }
     if (bootstrap.visualProfileId != pbprotocol::kUnifiedVisualProfileId ||
         bootstrap.visualLayoutVersion != pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion)
     {
-        snapshot_.frameCoverageComplete = false;
+        InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &bootstrap, captureEpoch, timestamp100ns);
         return TelemetryStatus::Failure(TelemetryError::InvalidSample);
     }
     auto next = snapshot_;
@@ -94,7 +123,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
             if (metric.samples != expectedSamples || metric.zeroMetrics > metric.samples || metric.erasedMetrics > metric.zeroMetrics ||
                 metric.minimumAbsoluteMetric > 32768 || metric.absoluteMetricSum > static_cast<std::uint64_t>(metric.samples) * 32768)
             {
-                snapshot_.frameCoverageComplete = false;
+                InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &bootstrap, captureEpoch, timestamp100ns);
                 return TelemetryStatus::Failure(TelemetryError::InvalidSample);
             }
             auto& target = next.lanes[lane];
@@ -116,7 +145,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
                 (sample.accepted && (!sample.fecValid || !sample.paddingValid || !sample.crcValid || !sample.identityValid ||
                     sample.rejection != pbmodulation::UnifiedSlotRejection::None)))
             {
-                snapshot_.frameCoverageComplete = false;
+                InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &bootstrap, captureEpoch, timestamp100ns);
                 return TelemetryStatus::Failure(TelemetryError::InvalidSample);
             }
             auto& target = next.lanes[LaneIndex(sample.lane)];
@@ -139,7 +168,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
         if (accepted != observation->acceptedBlocks || controls != observation->acceptedControlRecords ||
             accepted - controls != observation->acceptedTransportBlocks)
         {
-            snapshot_.frameCoverageComplete = false;
+            InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &bootstrap, captureEpoch, timestamp100ns);
             return TelemetryStatus::Failure(TelemetryError::InvalidSample);
         }
     }
@@ -151,7 +180,9 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
     {
         // A very old observation may be new or evicted. Never invent a count;
         // bounded coverage loss withdraws derived performance, not reception.
+        InvalidateFrameCoverage(UnifiedCoverageFailureReason::AmbiguousEvictedIdentity, &bootstrap, captureEpoch, timestamp100ns);
         next.frameCoverageComplete = false;
+        next.firstCoverageFailure = snapshot_.firstCoverageFailure;
     }
     if (duplicate)
     {
@@ -164,7 +195,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
     if (!valid)
     {
         snapshot_.counterOverflow = true;
-        snapshot_.frameCoverageComplete = false;
+        InvalidateFrameCoverage(UnifiedCoverageFailureReason::CounterOverflow, &bootstrap, captureEpoch, timestamp100ns);
         return TelemetryStatus::Failure(TelemetryError::CounterOverflow);
     }
     if (!duplicate && !unknownOldSequence)
@@ -190,6 +221,37 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
     lastObservationTimestamp100ns_ = timestamp100ns;
     snapshot_ = next;
     return {};
+}
+
+void UnifiedTelemetryAccumulator::InvalidateFrameCoverage(const UnifiedCoverageFailureReason reason,
+    const pbprotocol::BootstrapRecord* const bootstrap, const std::uint64_t captureEpoch,
+    const std::int64_t timestamp100ns) noexcept
+{
+    if (!snapshot_.firstCoverageFailure)
+    {
+        UnifiedCoverageFailure failure;
+        failure.reason = reason;
+        failure.observationsBeforeFailure = snapshot_.observations;
+        failure.uniqueFramesBeforeFailure = snapshot_.uniqueFrames;
+        if (bootstrap != nullptr)
+        {
+            failure.frameSequence = bootstrap->frameSequence;
+        }
+        if (captureEpoch != 0)
+        {
+            failure.captureEpoch = captureEpoch;
+        }
+        if (timestamp100ns >= 0)
+        {
+            failure.timestamp100ns = timestamp100ns;
+        }
+        if (snapshot_.observationAvailable)
+        {
+            failure.previousTimestamp100ns = lastObservationTimestamp100ns_;
+        }
+        snapshot_.firstCoverageFailure = failure;
+    }
+    snapshot_.frameCoverageComplete = false;
 }
 
 UnifiedTelemetrySnapshot UnifiedTelemetryAccumulator::GetSnapshot() const noexcept
@@ -228,8 +290,26 @@ void WriteUnifiedTelemetryJson(std::ostream& output, const UnifiedTelemetrySnaps
 {
     output << "{\"schema\":\"PixelBridge.UnifiedTelemetry.1\",\"observationAvailable\":" << (snapshot.observationAvailable ? "true" : "false")
         << ",\"frameCoverageComplete\":" << (snapshot.frameCoverageComplete ? "true" : "false")
-        << ",\"counterOverflow\":" << (snapshot.counterOverflow ? "true" : "false")
-        << ",\"observations\":" << snapshot.observations << ",\"uniqueLogicalFrames\":" << snapshot.uniqueFrames
+        << ",\"counterOverflow\":" << (snapshot.counterOverflow ? "true" : "false") << ",\"firstCoverageFailure\":";
+    if (snapshot.firstCoverageFailure)
+    {
+        const auto& failure = *snapshot.firstCoverageFailure;
+        output << "{\"reason\":\"" << CoverageFailureName(failure.reason) << "\",\"observationsBeforeFailure\":" << failure.observationsBeforeFailure
+            << ",\"uniqueFramesBeforeFailure\":" << failure.uniqueFramesBeforeFailure << ",\"frameSequence\":";
+        WriteOptionalInteger(output, failure.frameSequence);
+        output << ",\"captureEpoch\":";
+        WriteOptionalInteger(output, failure.captureEpoch);
+        output << ",\"timestamp100ns\":";
+        WriteOptionalInteger(output, failure.timestamp100ns);
+        output << ",\"previousTimestamp100ns\":";
+        WriteOptionalInteger(output, failure.previousTimestamp100ns);
+        output << '}';
+    }
+    else
+    {
+        output << "null";
+    }
+    output << ",\"observations\":" << snapshot.observations << ",\"uniqueLogicalFrames\":" << snapshot.uniqueFrames
         << ",\"frameErasedObservations\":" << snapshot.frameErasedObservations
         << ",\"duplicateObservations\":" << snapshot.duplicateObservations << ",\"uniqueVisualFps\":";
     if (snapshot.uniqueVisualFps && std::isfinite(*snapshot.uniqueVisualFps))
