@@ -125,11 +125,13 @@ accepted block 先进入内存 pending 列表，以下任一条件触发 checkpo
 - Segment 即将写入 completed；
 - 显式 checkpoint。
 
-checkpoint 逐条 append，最后调用 `FlushFileBuffers`，成功后才清空 pending。journal 达到 16 MiB 时执行 compact。
+checkpoint 逐条 append，最后调用 `FlushFileBuffers`，成功后才清空 pending。自本次 validated open 或上次成功
+compact 之后新增的 journal bytes 达到 16 MiB 时执行 periodic compact；不是把完整 live snapshot 的绝对大小当作
+垃圾量。已 compact 的 W=8 快照可以大于 16 MiB，空 checkpoint 不得因此反复改写它。
 
 ### 3.2 compact snapshot
 
-Segment completed 或 journal 达到 16 MiB 时，构建仅含当前 authoritative state 的 snapshot：
+Segment completed 或上述新增 journal bytes 达到 16 MiB 时，构建仅含当前 authoritative state 的 snapshot：
 
 ```text
 PBJH
@@ -142,6 +144,12 @@ PBJH
 ```
 
 snapshot 写入同目录 `.resume.tmp`，完成 write、`FlushFileBuffers`、close 后，使用 `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH` 原子替换 journal；generation 不回退。旧 journal 在替换成功前仍是 authoritative state。
+
+成功 reopen 后才把 growth baseline 更新为新文件大小；重新打开已校验的 journal 建立新的进程本地 baseline，
+不新增 serialized field。torn tail 仍立即 compact；completed Segment 仍立即删 active records 并 compact。
+`maxResumeBytes` 仍在每次 append 和 snapshot 构建前强制检查，没有提高磁盘或内存上限。generation、CRC、flush
+和 atomic replace 的语义不变。G21 回归覆盖 >16 MiB live state 的空 checkpoint、少量新增、第二个 16 MiB growth、
+重启、完成后释放与重新加载；相关实屏证据见 G21 交接 0.10。
 
 ## 4. Segment 完成状态机
 

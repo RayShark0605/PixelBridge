@@ -575,6 +575,7 @@ struct DecoderResumeStore::Implementation
     std::optional<pbprotocol::WholeFileDigest> publishIntent;
     std::uint64_t generation = 0;
     std::uint64_t fileBytes = 0;
+    std::uint64_t compactionBaseBytes = 0;
     bool resumed = false;
     bool hadTruncatedTail = false;
     bool terminalFailure = false;
@@ -883,6 +884,9 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
 #endif
         }
 
+        // Opening a validated journal establishes a local growth baseline. Its
+        // live snapshot may already exceed 16 MiB; size alone is not garbage.
+        implementation->compactionBaseBytes = implementation->fileBytes;
         implementation->file = CreateFileW(implementation->path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
         if (implementation->file == INVALID_HANDLE_VALUE)
@@ -1121,7 +1125,13 @@ DecoderResumeStoreStatus DecoderResumeStore::Checkpoint() noexcept
         return DecoderResumeStoreStatus::Failure(NativeFailure("resume checkpoint flush", GetLastError()));
     }
     implementation_->pendingBlocks.clear();
-    return implementation_->fileBytes >= journalCompactionThresholdBytes ? Compact() : DecoderResumeStoreStatus{};
+    if (implementation_->fileBytes < implementation_->compactionBaseBytes)
+    {
+        implementation_->terminalFailure = true;
+        return DecoderResumeStoreStatus::Failure("resume compaction growth baseline exceeds journal size");
+    }
+    const std::uint64_t appendedBytes = implementation_->fileBytes - implementation_->compactionBaseBytes;
+    return appendedBytes >= journalCompactionThresholdBytes ? Compact() : DecoderResumeStoreStatus{};
 }
 
 DecoderResumeStoreStatus DecoderResumeStore::RecordCompletedSegment(
@@ -1397,6 +1407,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
     }
     implementation_->generation = generation;
     implementation_->fileBytes = document.size();
+    implementation_->compactionBaseBytes = implementation_->fileBytes;
 #ifdef PB_PROCESS_FAULT_TESTS
     test::ObserveJournalFileBytes(implementation_->fileBytes);
 #endif

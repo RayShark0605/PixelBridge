@@ -4,6 +4,7 @@
 #include "sender_carousel_scheduler.h"
 
 #include "pbreceiver/receiver_ingress.h"
+#include "pbouterfec/wirehair_v2.h"
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/byte_io.h"
@@ -778,6 +779,113 @@ TEST_CASE("Decoder resume journal rejects ambiguous tails and internally corrupt
         REQUIRE(status.message == "resume journal internal record CRC is invalid");
         REQUIRE_FALSE(store);
     }
+}
+
+TEST_CASE("Decoder checkpoints do not rewrite an already compacted live window above sixteen MiB",
+    "[application][g21][decoder][resume][journal][compaction-growth]")
+{
+    ScratchDirectory scratch(L"decoder-resume-compaction-growth");
+    ResumeFixture fixture;
+    constexpr std::uint64_t segmentBytes = 8ULL * 1024ULL * 1024ULL;
+    constexpr std::uint32_t blockBytes = 16384;
+    constexpr std::uint32_t blocksPerSegment = 512;
+    const std::vector<std::byte> encodedSegment = MakeBytes(segmentBytes);
+    const auto outerEncoder = pbouterfec::WirehairV2Encoder::Create(encodedSegment, blockBytes);
+    REQUIRE(outerEncoder);
+    const auto segmentDigest = pbprotocol::ComputeBlake3Digest(encodedSegment);
+    fixture.session.originalFileSize = 4 * segmentBytes;
+    fixture.session.segmentCount = 4;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    const auto sessionSize = pbprotocol::GetSerializedSize(fixture.session);
+    REQUIRE(sessionSize);
+    std::vector<std::byte> sessionPayload(sessionSize.Value());
+    REQUIRE(pbprotocol::SerializeSessionDescriptor(fixture.session, fixture.policy, sessionPayload));
+    fixture.sessionControl = WrapControl(pbprotocol::ControlRecordType::SessionDescriptor, 1, sessionTag, sessionPayload);
+    pbapp::DecoderResumeLoadedState loaded;
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+    std::array<pbprotocol::SegmentDescriptor, 4> descriptors;
+    for (std::uint64_t ordinal = 0; ordinal < descriptors.size(); ordinal++)
+    {
+        auto& descriptor = descriptors[static_cast<std::size_t>(ordinal)];
+        descriptor = fixture.segment;
+        descriptor.segmentOrdinal = ordinal;
+        descriptor.rawOffset = ordinal * segmentBytes;
+        descriptor.rawSize = segmentBytes;
+        descriptor.encodedSize = segmentBytes;
+        descriptor.outerBlockBytes = blockBytes;
+        descriptor.outerFecMode = pbprotocol::OuterFecMode::WirehairV2;
+        descriptor.wirehairV2SerializedProfile = outerEncoder.Value().GetSerializedProfile();
+        descriptor.rawDigest = pbprotocol::RawDigest{segmentDigest};
+        descriptor.encodedDigest = pbprotocol::EncodedDigest{segmentDigest};
+        const auto size = pbprotocol::GetSerializedSize(descriptor);
+        REQUIRE(size);
+        std::vector<std::byte> payload(size.Value());
+        REQUIRE(pbprotocol::SerializeSegmentDescriptor(descriptor, fixture.session, fixture.policy, payload));
+        REQUIRE(store->RecordSegmentControl(WrapControl(pbprotocol::ControlRecordType::SegmentDescriptor, ordinal + 2, sessionTag, payload)));
+    }
+    pbapp::DecoderResumeAcceptedBlock block;
+    block.declaredPayloadBytes = blockBytes;
+    block.paddedPayload = MakeBytes(blockBytes);
+    for (std::uint64_t ordinal = 0; ordinal < 2; ordinal++)
+    {
+        block.segmentOrdinal = ordinal;
+        for (std::uint32_t blockId = 0; blockId < blocksPerSegment; blockId++)
+        {
+            block.outerBlockId = blockId;
+            REQUIRE(store->RecordAcceptedBlock(block));
+        }
+    }
+    REQUIRE(store->Checkpoint());
+    REQUIRE(store->GetFileBytes() > 16ULL * 1024ULL * 1024ULL);
+    const std::uint64_t compactedGeneration = store->GetGeneration();
+    const std::uint64_t compactedBytes = store->GetFileBytes();
+    for (std::uint32_t idleCheckpoint = 0; idleCheckpoint < 3; idleCheckpoint++)
+    {
+        REQUIRE(store->Checkpoint());
+        REQUIRE(store->GetGeneration() == compactedGeneration);
+        REQUIRE(store->GetFileBytes() == compactedBytes);
+    }
+    block.segmentOrdinal = 2;
+    block.outerBlockId = 0;
+    REQUIRE(store->RecordAcceptedBlock(block));
+    REQUIRE(store->Checkpoint());
+    REQUIRE(store->GetGeneration() == compactedGeneration + 1);
+    const std::uint64_t appendedGeneration = store->GetGeneration();
+    store.reset();
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+    REQUIRE(loaded.resumed);
+    REQUIRE(loaded.activeBlocks.size() == 2 * blocksPerSegment + 1);
+    REQUIRE(loaded.activeBlocks.back() == block);
+    REQUIRE(store->Checkpoint());
+    REQUIRE(store->GetGeneration() == appendedGeneration);
+    for (std::uint64_t ordinal = 2; ordinal < 4; ordinal++)
+    {
+        block.segmentOrdinal = ordinal;
+        for (std::uint32_t blockId = ordinal == 2 ? 1U : 0U; blockId < blocksPerSegment; blockId++)
+        {
+            block.outerBlockId = blockId;
+            REQUIRE(store->RecordAcceptedBlock(block));
+        }
+    }
+    REQUIRE(store->Checkpoint());
+    // More than another 16 MiB was appended: periodic compaction remains live,
+    // rather than simply being disabled to make idle checkpoints cheap.
+    REQUIRE(store->GetGeneration() > appendedGeneration + 2 * blocksPerSegment - 1);
+    const std::uint64_t beforeCompletionBytes = store->GetFileBytes();
+    pbprotocol::ResumeCompletedSegmentRecord completed;
+    completed.sessionId = fixture.session.sessionId;
+    completed.segmentOrdinal = 0;
+    completed.rawOffset = 0;
+    completed.rawSize = segmentBytes;
+    completed.rawDigest = descriptors[0].rawDigest;
+    REQUIRE(store->RecordCompletedSegment(completed));
+    REQUIRE(store->GetFileBytes() < beforeCompletionBytes);
+    REQUIRE(store->GetActiveBlockCount() == 3 * blocksPerSegment);
+    store.reset();
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+    REQUIRE(loaded.completedSegments.size() == 1);
+    REQUIRE(loaded.activeBlocks.size() == 3 * blocksPerSegment);
 }
 
 TEST_CASE("Decoder resume journal rejects active cache state above the restart decoder budget",

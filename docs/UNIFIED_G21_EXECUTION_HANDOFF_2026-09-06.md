@@ -5,12 +5,12 @@
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
 > [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
 
-## 0. 最新权威增量（20:25 交接基线；21:35 的确定性候选见 0.9）
+## 0. 最新权威增量（20:25 交接基线；22:00 的实屏后修正见 0.10）
 
 > **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
 > “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
 > 后续第 1～8 节继续保留，作为真实远控链历史、原始失败形状和操作背景，不得反向覆盖本节。
-> **继续执行后的最新状态优先读 0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
+> **继续执行后的最新状态优先读 0.10，再读 0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
 
 ### 0.1 当前结论与 Git 边界
 
@@ -290,6 +290,50 @@ Base replay 的实际原始路径已重新核对为 `receiver-live-recorded/actu
 **下一步：** 提交本候选后重新 configure/build，并核对 Encoder/Decoder/Gate embedded identity 等于该提交；正式身份
 复核定向测试，再用 fresh GUID 按 64 MiB → 500 MiB → 1 GiB 跑右屏 15 Hz，失败即停后续档位。当前 G21 仍
 PARTIAL，以上不是 actual-pixel 或 remote pass；独立 live false-accepted oracle 仍为 null/unavailable。
+
+### 0.10 bf52b24 实屏 64 MiB 与 compaction 放大修正（2026-09-06 22:00 CST）
+
+0.9 的正式代码提交为 `bf52b24f2b3c95368b8de382fe50f59215e387db`。提交后重新 configure/build Encoder、Decoder、
+Gate、Application、scheduler、transition probe，三个 EXE embedded identity 均匹配；formal narrow tests 全通过，
+clean/phase3 transition 再次通过。formal evidence 在 0.9 根下 `formal-bf52b24/`（含 commands、binary hashes、
+source snapshot、summary）；本次未跑 full CTest/ASan/GPU matrix/20 GiB。
+
+该身份的右屏 LocalDesktop actual-pixel 64 MiB 权威根：
+
+```text
+<repo>\build-unified-release\g21-bf52b24-staircase-64mib-3ea04901a15e4fc696494872bbbdd1c2
+```
+
+重新枚举右屏 DISPLAY2，RECT `[2560,0,5120,1440]`，2560×1440、96 DPI；receiver-first、WGC、fresh CSPRNG、
+immutable source lease、15 Hz。8/8、67,108,864 bytes、elapsed=291,492 ms、3,822 unique、UniqueVisualFPS=
+13.244329484265329、17,558.572475143905 B/unique。WholeFileDigest、安全发布、final reopen、frame coverage、无
+part/resume 和 lane CRC/identity 门全通过；resource/conflict/deferred/quota/orphan=0，进程正常退出 0/0。
+Sender 4,334 submitted frames，configured=15、submitted=14.985983623005827 Hz。Receiver peak working set/private=
+402,628,608 / 608,464,896 bytes；Encoder=276,795,392 / 301,895,680 bytes；decoder-owned peak=8 / 457,201,696 bytes。
+独立再次读取 source/published exact bytes、SHA-256 `b712664112bbaec4ae87021f05288d097dfb21c7c57597bbcb53b364c67ff458`、
+BLAKE3 `dd310e611c4ee7f48728592f92dac904a2f7707df5d2ba87cfd9679680556b98` 全相等，详见
+`independent-postrun-audit.json`。独立 live codeword oracle 仍 null/unavailable。
+
+**不能据此升级大档：** `encoder-evidence.jsonl` 第一条 pass1 为 frameSequence=4,087/cyclePosition=15，
+而同轮接收快照在该边界前仍 **0/8 completed、active=8**；后续 pass1 才补完。时钟关联方法和原始快照保存在
+`pass0-safety-postrun-analysis.json`。因此 64 MiB 本身发布/硬门 PASS，但不满足跨窗口安全，**500 MiB 与 1 GiB
+没有启动**；不能把它们写成运行失败，也不消耗长跑重现已经暴露的问题。
+
+新定位的独立可复现 primitive 在 `DecoderResumeStore::Checkpoint`：旧逻辑只要 journal 总长超过 16 MiB，
+每秒 checkpoint 就对仍存活的大窗口快照重写，即使没有新增 block。实屏 3,198 unique / 44,371 accepted Transport
+已产生 generation=4,100,234，最终约 614 万。新增合法 Wirehair journal 回归在空 checkpoint 复现 generation
+2,054→3,081；首个无效 DirectRepeat fixture 的失败也保留，随后用 canonical Wirehair fixture 定位真实分支。
+
+本段同提交的最小修正只把 periodic compact 改为 **validated open / 成功 compact 后新增 16 MiB**，不变更
+scheduler/phase/repair/SC6 V3/Receiver quota。1 秒 append+flush、torn-tail compact、completed Segment 立即 compact、
+CRC/generation、atomic replace/final reopen 与 maxResumeBytes 不变。新增回归覆盖 idle、少量 append、第二个 16 MiB
+growth 仍触发 compact、restart、completed 后释放。G21+journal=10 cases / 2,630 assertions；所有 Decoder resume
+相关例=8 / 2,503，含现有 native rename reader、corruption、quota、final-reopen crash-window，相应日志在 0.9 根的
+`compaction-growth-valid-before.txt`、`compaction-growth-final-g21-resume.txt`、`compaction-decoder-resume-adjacent.txt`。
+
+这是消除重复持久化开销的证据，不声称它已解释或消除全部 capture loss。下一步提交此候选、重构建身份、复核窄测和
+16-Segment probe，再重新开始 64/500 MiB/1 GiB 同身份阶梯；若 64 MiB 仍靠 pass1，先继续修正，不盲跑下一档。
+保护文件 SHA-256 未变；测试结束没有自己启动的 Encoder/Decoder/Gate 遗留。G21 仍 PARTIAL、G22 未开始。
 
 ## 1. 交接时结论
 

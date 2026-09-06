@@ -1166,3 +1166,25 @@ streaming、durable lease、resume journal 相邻六例 6/407；Gate self-test P
 Base-only 已有 proof 不重做；原 replay 实际位于 Base authority 根下的 `receiver-live-recorded/actual-capture.pbrv2`，
 不是根目录同名路径。本次只核对 JSON/大小/首尾，未重新完整 hash replay。独立 live false-accepted oracle 仍为
 null/unavailable。G21 PARTIAL，三档 LocalDesktop 成功也不能冒充用户稍后安排的 remote field pass；G21 真正退出后继续 G22。
+
+
+### 20.4 bf52b24 的 64 MiB 发布通过但 Pass-0 不安全，以及 compact 放大
+
+正式 `bf52b24f2b3c95368b8de382fe50f59215e387db` 重构建后，Encoder/Decoder/Gate identity 匹配且 formal 窄测与
+clean/phase3 probe 均通过。64 MiB actual-pixel root：
+`<repo>\build-unified-release\g21-bf52b24-staircase-64mib-3ea04901a15e4fc696494872bbbdd1c2`。
+8/8、67,108,864 bytes、291,492 ms、3,822 unique @ 13.244329 Hz、17,558.572 B/unique；whole/safe publish/
+final reopen/frame coverage、外部 exact bytes/SHA256/BLAKE3、lane CRC/identity、resource/conflict/deferred/quota/
+orphan 全通过，exit 0/0。Sender 4,334 frames @ 14.985984 Hz（configured 15）；Receiver/Encoder peak working set
+402,628,608 / 276,795,392 bytes，private 608,464,896 / 301,895,680 bytes。完整摘要在 `independent-postrun-audit.json`。
+
+但 `pass0-safety-postrun-analysis.json` 对照原始 journal/snapshot：pass1 前 Receiver 仍 0/8 completed、active8，
+最终下一圈才恢复；所以**未启动 500 MiB 或 1 GiB**。本轮比原 synthetic 的其他相位 6.25% loss 更差，不能继续用
+旧 synthetic PASS 覆盖 live straggler。
+
+源码和新窄回归证明一项实际开销：旧 `Checkpoint` 用总 journal length >=16 MiB 判断 compact，已 compact 的大型
+live window 每秒仍会再写一遍。空 checkpoint 的 generation 2,054→3,081 是确定性复现，live 数万 accepted blocks
+对应数百万 generation 也一致。新候选仅按 validated open/成功 compact 后的新增 16 MiB 触发 periodic compact；
+Segment completed、torn-tail 仍立即 compact，不削弱 flush/CRC/maxResumeBytes/crash-safe commit。
+`compaction-growth-final-g21-resume.txt` 为 10/2,630，`compaction-decoder-resume-adjacent.txt` 为 8/2,503。
+需要新提交、重构建、同身份 64 MiB→500 MiB→1 GiB 重跑才能确认实际改善；G21 不关闭，不声称 remote pass。
