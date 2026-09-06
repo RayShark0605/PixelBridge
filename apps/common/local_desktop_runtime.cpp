@@ -6091,6 +6091,8 @@ void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot&
     });
 }
 
+#include "unified_window_transition_probe.inc"
+
 void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& result)
 {
     constexpr std::uint64_t lastLogicalTick = 335;
@@ -6246,6 +6248,27 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedLargeWindowRecovery(
     catch (...)
     {
         return RuntimeStatus::Failure("Unified large-window recovery probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedWindowTransition(const std::wstring& sourcePath,
+    const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
+    const std::span<const std::uint32_t> erasedBands, const std::uint32_t biasedPhase,
+    UnifiedWindowTransitionProbeSnapshot& output) noexcept
+{
+    output = {};
+    try
+    {
+        RunUnifiedWindowTransitionProbe(sourcePath, sessionStateRoot, outputDirectory, erasedBands, biasedPhase, output);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Pass-0 transition probe failed with an unknown error");
     }
 }
 

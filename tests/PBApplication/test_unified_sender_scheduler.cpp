@@ -205,7 +205,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
             RequireExactSlotAccounting(frame);
             REQUIRE(frame.firstEquationIndex == expectedEquationIndex);
             const std::uint64_t cadenceOffset = logicalTickOrdinal % controlCadenceTicks;
-            if (cadenceOffset == 0)
+            if (logicalTickOrdinal == 0)
             {
                 REQUIRE(frame.controlBurstSlotCount == maximumControlSlots);
                 REQUIRE(frame.controlSlotCount == maximumControlSlots);
@@ -224,13 +224,27 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
                     REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
             }
-            else if (cadenceOffset == 1)
+            else if (logicalTickOrdinal == 1)
             {
                 REQUIRE(frame.controlBurstSlotCount == 4);
                 REQUIRE(frame.controlSlotCount == 4);
                 REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 4);
                 constexpr std::array expectedPriorities{
                     pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor,
+                    pbmodulation::UnifiedControlPriority::SessionDescriptor,
+                    pbmodulation::UnifiedControlPriority::FinalManifest,
+                    pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor};
+                for (std::size_t slot = 0; slot < expectedPriorities.size(); slot++)
+                {
+                    REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
+                }
+            }
+            else if (cadenceOffset == 0)
+            {
+                REQUIRE(frame.controlBurstSlotCount == 3);
+                REQUIRE(frame.controlSlotCount == 3);
+                REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 3);
+                constexpr std::array expectedPriorities{
                     pbmodulation::UnifiedControlPriority::SessionDescriptor,
                     pbmodulation::UnifiedControlPriority::FinalManifest,
                     pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor};
@@ -271,7 +285,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
         REQUIRE(snapshot.committedFrameCount == logicalTickCount);
         REQUIRE(snapshot.controlBurstCount == 3);
         REQUIRE(snapshot.controlBearingFrameCount == controlBearingFrames);
-        REQUIRE(snapshot.controlSlotCount == logicalTickCount + 30);
+        REQUIRE(snapshot.controlSlotCount == logicalTickCount + 14);
         REQUIRE(snapshot.transportSlotCount + snapshot.controlSlotCount ==
             logicalTickCount * pbapp::senderUnifiedCodewordSlotCount);
         REQUIRE(snapshot.committedEquationCount == expectedEquationIndex);
@@ -441,7 +455,7 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
     "[application][g21][scheduler][carousel][repair-only]")
 {
     constexpr std::uint32_t systematicBlockCount = 799;
-    constexpr std::uint64_t initialPercentRepairEquationCount = 100;
+    constexpr std::uint64_t initialPercentRepairEquationCount = 80;
     constexpr std::uint64_t initialRepairEquationCount =
         initialPercentRepairEquationCount + pbapp::senderUnifiedInitialTransitionGuardBlocks;
     constexpr std::uint64_t initialRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
@@ -524,11 +538,12 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
     REQUIRE(initialIds.back() < fullRepairIds.front());
 }
 
-TEST_CASE("Unified initial repair transition guard retains a full Segment-window handoff margin",
+TEST_CASE("Unified initial repair preserves the guard while phase balancing must cover the old fixed-phase deficit",
     "[application][g21][scheduler][carousel][transition-guard]")
 {
     constexpr std::uint32_t fullSegmentBlockCount = 6385;
-    constexpr std::uint64_t percentRepairBlocks = 799;
+    constexpr std::uint64_t percentRepairBlocks = 639;
+    constexpr std::uint64_t historicalPercentRepairBlocks = 799;
     constexpr std::uint64_t observedLostBlocks = 800;
     constexpr std::uint64_t expectedRepairBlocks =
         percentRepairBlocks + pbapp::senderUnifiedInitialTransitionGuardBlocks;
@@ -540,11 +555,74 @@ TEST_CASE("Unified initial repair transition guard retains a full Segment-window
     REQUIRE(snapshot.systematicEquationCount == fullSegmentBlockCount);
     REQUIRE(snapshot.repairEquationCount == expectedRepairBlocks);
     REQUIRE(snapshot.scheduledEquationCount == fullSegmentBlockCount + expectedRepairBlocks);
-    REQUIRE(fullSegmentBlockCount + percentRepairBlocks - observedLostBlocks ==
+    REQUIRE(fullSegmentBlockCount + historicalPercentRepairBlocks - observedLostBlocks ==
         fullSegmentBlockCount - 1);
-    REQUIRE(snapshot.scheduledEquationCount - observedLostBlocks >= fullSegmentBlockCount);
+    REQUIRE(fullSegmentBlockCount + historicalPercentRepairBlocks +
+        pbapp::senderUnifiedInitialTransitionGuardBlocks - observedLostBlocks >= fullSegmentBlockCount);
+    // The smaller repair alone cannot absorb the old fixed-phase loss. The
+    // 16-Segment production probe must prove redistribution before any slide;
+    // do not silently reinterpret the historical 800 missing equations as 640.
+    REQUIRE(snapshot.scheduledEquationCount - observedLostBlocks < fullSegmentBlockCount);
     REQUIRE(pbapp::senderUnifiedInitialTransitionGuardBlocks >
         2 * (pbapp::senderUnifiedCodewordSlotCount - 1));
+}
+
+TEST_CASE("Unified periodic refresh is one atomic descriptor triplet after startup and a long monotonic stall",
+    "[application][g21][scheduler][control][periodic-triplet]")
+{
+    for (const std::uint64_t carouselPass : {0ULL, 1ULL})
+    {
+        pbapp::SenderUnifiedCarouselScheduler scheduler;
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, carouselPass}, scheduler));
+        for (std::uint64_t tick = 0; tick < 2; tick++)
+        {
+            pbapp::SenderUnifiedScheduledFrame frame;
+            REQUIRE(scheduler.PrepareFrameAt(tick, tick * 66666667ULL, frame));
+            REQUIRE(frame.controlBurstSlotCount == (tick == 0 ? 8U : 4U));
+            REQUIRE(scheduler.CommitPreparedFrame());
+        }
+        constexpr std::uint64_t afterLongStall = 50ULL * pbapp::senderLogicalFrameNanosecondsPerSecond;
+        pbapp::SenderUnifiedScheduledFrame refresh;
+        REQUIRE(scheduler.PrepareFrameAt(2, afterLongStall, refresh));
+        RequireExactSlotAccounting(refresh);
+        REQUIRE(refresh.controlBurstSlotCount == 3);
+        REQUIRE(refresh.transportSlotCount == 12);
+        REQUIRE(refresh.slots[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::SessionDescriptor);
+        REQUIRE(refresh.slots[1].assignment.controlPriority == pbmodulation::UnifiedControlPriority::FinalManifest);
+        REQUIRE(refresh.slots[2].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
+        pbapp::SenderUnifiedScheduledFrame retry;
+        REQUIRE(scheduler.PrepareFrameAt(2, afterLongStall + 1, retry));
+        REQUIRE(retry == refresh);
+        REQUIRE(scheduler.CommitPreparedFrame());
+        pbapp::SenderUnifiedScheduledFrame next;
+        REQUIRE(scheduler.PrepareFrameAt(3, afterLongStall + 66666667ULL, next));
+        REQUIRE(next.controlBurstSlotCount == 0);
+        REQUIRE(next.controlSlotCount == 1);
+        REQUIRE(next.slots[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
+        REQUIRE(next.firstEquationIndex == refresh.firstEquationIndex + refresh.scheduledEquationCount);
+        REQUIRE(scheduler.CommitPreparedFrame());
+        REQUIRE(scheduler.GetSnapshot().controlBurstCount == 2);
+    }
+}
+
+TEST_CASE("Unified Pass-0 reciprocal repair uses exact ceiling and preserves DirectRepeat and input bounds",
+    "[application][g21][scheduler][repair-boundary]")
+{
+    constexpr std::array<std::pair<std::uint32_t, std::uint64_t>, 7> cases{{
+        {2, 48}, {159, 48}, {160, 48}, {161, 49}, {799, 112}, {6385, 671}, {64000, 6432}}};
+    for (const auto& [blockCount, repairCount] : cases)
+    {
+        pbapp::SenderUnifiedCarouselScheduler scheduler;
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({blockCount, 4, 15, true}, scheduler));
+        REQUIRE(scheduler.GetSnapshot().repairEquationCount == repairCount);
+        REQUIRE(scheduler.GetSnapshot().scheduledEquationCount == blockCount + repairCount);
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({blockCount, 4, 15, false}, scheduler));
+        REQUIRE(scheduler.GetSnapshot().repairEquationCount == 0);
+        REQUIRE(scheduler.GetSnapshot().scheduledEquationCount == blockCount);
+    }
+    pbapp::SenderUnifiedCarouselScheduler scheduler;
+    REQUIRE_FALSE(pbapp::SenderUnifiedCarouselScheduler::Create({64001, 4, 15, true}, scheduler));
+    REQUIRE_FALSE(pbapp::SenderUnifiedCarouselScheduler::Create({UINT32_MAX, 4, 15, true}, scheduler));
 }
 
 TEST_CASE("Unified scheduler rejects invalid products and finishes oversized Control bursts without data starvation",

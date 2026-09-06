@@ -1119,3 +1119,50 @@ build-unified-release/g21-phase-hold-sweep-fine-594599bd34b74517a9708f829d83881d
 - 用户明确要求：G21 达到全部退出标准后，应立即按路线继续 G22，不得把“当前从 G21 开始”误解为永久停止在 G21。
 - 最新完整操作、Git 安全边界、所有 artifact absolute paths 和踩坑总结见
   `UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md` 第 0 节。
+
+
+## 20. 16-Segment Pass-0 transition 与全捕获预算（2026-09-06 21:35）
+
+这是第 19 节性能阻塞之后的开发候选证据，**不是新候选 actual-pixel/remote pass**。完整最新状态和 exact commands
+见 `UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md` 第 0.9 节。
+
+### 20.1 窄证明与失真来源
+
+`PBUnifiedWindowTransitionProbe` 为显式运行的 16×8 MiB RAW probe，保留 production source streaming、canonical
+Segment descriptor、repair lease、FrameSequence lease、ReceiverIngress、ReceiverPipeline、PBStorage 与 journal。
+max active=8 未增加。首个 next-window Transport 前必须首窗口 8/8 Segment digest/stored 完成且 active=0；禁止
+第二 Carousel pass，最终要求 16/16、whole digest、安全 publish、final reopen 和独立流式 BLAKE3、无 part/resume。
+
+`extract_g21_phase_loss.py` 只读取冻结旧 786f466 journal，核对 12,373,056 bytes、SHA-256
+`77d5e91dd51d50d9d6c11d7872b2153dbda86b22f197d52e3216fdab89d380d2` 及 9,095 条 CRC/边界后，提取
+Segment 27 的 6,375 accepted IDs / 7,216 scheduled。任何 missing ID 所在 14-equation band 投影为擦除，107/516
+bands；没有声称恢复原始捕获时间。其余相位的每 16 bands 丢失一个明确是 synthetic sensitivity，禁止称为实际 trace。
+
+### 20.2 单变量对照和正式候选定义
+
+证据根：`<repo>\build-unified-release\g21-pass0-transition-d3d6e5ba640d4305b161a2e467b70896`。
+
+| 实现阶段 | 首窗口发送帧 | 全捕获 B/frame | 决定性结果 |
+| --- | ---: | ---: | --- |
+| hold128 sweeps / repair 1/8+32 | 4,296 | 15,621.244 | 偏置 phase3 首窗口 7/8，short 20；clean 正确恢复也不越预算门 |
+| 仅 hold 改32 sweeps | 4,296 | 15,621.244 | 16/16 恢复，但完整分母预算失败 |
+| 再将 repair 改1/10+32 | 4,192 | 16,008.794 | 首窗口安全，最后窗口 15/16 short9，且预算失败 |
+| 再将 periodic Control 改单 triplet | 4,072 | 16,480.566 | clean 与八个 biased phases 全通过；16/16，无 pass1 |
+
+最后候选：hold32 sweeps=256 logical frames（W8）、step1、repair `max(16,ceil(K/10))+32`；启动四份
+Session/Manifest/Segment 交织不变，周期 10s refresh 同帧一个 triplet，其他帧始终带当前 SegmentDescriptor。
+后续 pass 的 K+20%、W8、quota、orphan policy、SC6 V3、wire/Golden、coverage/unique denominator 全部不变。
+`hold32-r10-triplet-phase-check/summary.json` 和 `hold32-r10-triplet-remaining-phases/summary.json` 记录 clean+8
+cases：资源/conflict/deferred/quota/orphan=0，首窗口 active=0，峰值 active=8、reserved decoder bytes=457,201,696。
+这只是 decoder-owned bytes；不把它当作 live process working set/private bytes。
+
+### 20.3 已验证与下一步边界
+
+开发构建：scheduler 10 cases / 247,055 assertions；Application G21 6/353；原 8-Segment sparse probe 1/25；
+streaming、durable lease、resume journal 相邻六例 6/407；Gate self-test PASS。监督器每例 240 秒，内部 210 秒和
+11,000 frames 硬界限。root 保留开发 diff、二进制 hash、所有失败/成功 JSON；正式提交之后需重新 configure/build
+及 identity 核对，再执行 formal probe/窄测与右屏 64/500 MiB/1 GiB 15 Hz 阶梯。
+
+Base-only 已有 proof 不重做；原 replay 实际位于 Base authority 根下的 `receiver-live-recorded/actual-capture.pbrv2`，
+不是根目录同名路径。本次只核对 JSON/大小/首尾，未重新完整 hash replay。独立 live false-accepted oracle 仍为
+null/unavailable。G21 PARTIAL，三档 LocalDesktop 成功也不能冒充用户稍后安排的 remote field pass；G21 真正退出后继续 G22。

@@ -5,11 +5,12 @@
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
 > [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
 
-## 0. 本对话关闭时的最新权威增量（2026-09-06 20:25 CST）
+## 0. 最新权威增量（20:25 交接基线；21:35 的确定性候选见 0.9）
 
 > **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
 > “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
 > 后续第 1～8 节继续保留，作为真实远控链历史、原始失败形状和操作背景，不得反向覆盖本节。
+> **继续执行后的最新状态优先读 0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
 
 ### 0.1 当前结论与 Git 边界
 
@@ -63,7 +64,7 @@ chroma-neutralized 派生闭环，不使用 sender source、理想 raster 或重
   `e8d6c2fd806def6af3f04b48c031e3384b1f04f761b5e278dfe7d1903183e36f`；source SHA-256 为
   `d493c0e73f09d5a868f2b0c1225a7fe5eebbce257bc5e774be50bed020d40ecf`。
 - 必读原始文件：`receiver-live-recorded/final.json`、`receiver-live-recorded/actual-capture-checks.json`、
-  `actual-capture.pbrv2`、`chroma-neutralization-report.json`、`actual-capture-chroma-neutralized.pbrv2`、
+  `receiver-live-recorded/actual-capture.pbrv2`、`chroma-neutralization-report.json`、`actual-capture-chroma-neutralized.pbrv2`、
   `receiver-base-luma-only/final.json`、`receiver-base-luma-only/base-luma-checks.json`、
   `base-luma-external-digest-audit.json`。
 
@@ -156,7 +157,7 @@ repair/window 相关提交按时间保留了真实失败，而不是覆盖证据
 - `bcc88c7` 使用 12.5% repair；无 guard 的 500 MiB 曾出现 Segment 31 short 1；
 - `786f466` 在 12.5% 之外加入固定 32-block window-transition guard，使固定-phase 64/500 MiB 通过，但 1 GiB
   仍因相关相位不平衡在后续窗口失败；
-- `4a2463f` 每隔 128 logical frames 将 striped capture phase 旋转一步，修复固定 phase 长期偏置，且当前 64 MiB
+- `4a2463f` 每隔 128 sweeps（W=8 时为 1,024 logical frames）将 striped capture phase 旋转一步，修复固定 phase 长期偏置，且当前 64 MiB
   通过、500 MiB 正确发布；但预排 repair/control 总开销在接近满速捕获时使 500 MiB 指标低于硬门。
 
 `573cef8 fix(telemetry): count bounded out-of-order frames exactly` 同时将 unique-frame 计数修成有界 exact FIFO 4096
@@ -236,6 +237,59 @@ repair/window 相关提交按时间保留了真实失败，而不是覆盖证据
 - 本轮没有重跑 full CTest、完整 ASan、全 GPU/GUI/native 矩阵、20 GiB 或新的真实远控复验。
 - 当前没有已知错误发布文件；当前 500 MiB 发布文件经独立摘要证明正确，但性能 hard gate 明确失败。
 - 本次收尾只更新文档，不改变产品代码，因此不应为文档提交重复大规模测试。
+
+### 0.9 16-Segment Pass-0 证明与新候选（2026-09-06 21:35 CST）
+
+本段与候选代码在同一个独立提交中。进入时 HEAD=`23764d2ae17182b7079e7c6fea17c152cbf8e23c`，
+`4a2463f` ancestor 检查通过；保护文件 hash 与 0.1 完全一致。当前尚未运行本候选的实屏阶梯，不拼接旧结果。
+
+**逐变量修正：** 实际 phase hold 的单位是 sweeps，不是 logical frames；W=8 的旧 128 意味着 1,024 frames，
+一个完整 Pass-0 window 只覆盖约四个 phases。新候选改为 hold=32 sweeps（256 frames）、step=1；Pass-0 repair
+为 `max(16, ceil(K/10)) + 32`，后续 FullRepairPass 的 K+20%、W=8、Receiver quota、wire/SC6 V3、telemetry
+不变。启动 Control 四份交织不变；周期 10 秒 refresh 缩为同帧一个 Session/Manifest/current-Segment triplet，
+每个其他 transport-bearing frame 仍带当前 Descriptor。总体设计 11.3 同步记录该调度变化。
+
+新增 `PBUnifiedWindowTransitionProbe` 使用 16×8 MiB RAW、实际 production SenderFrameBuilder/ReceiverIngress/
+ReceiverPipeline/EncoderSessionStore，不经过 raster。第一条 next-window Transport 之前必须首窗口 8/8 经 Segment
+digest 和持久存储完成、active decoder=0；禁止进入第二个 Carousel pass。检查 repair lease 先于使用、持久 window
+checkpoint、source immutable、16/16、WholeFileDigest、安全发布、final reopen、外部流式 BLAKE3 和无 part/resume。
+内部 deadline=210 秒，独立 supervisor=240 秒/例、最多 11,000 sender frames，不进入默认全量 CTest。
+
+权威开发证据根（开发 dirty source，不冒充正式二进制身份）：
+
+```text
+<repo>\build-unified-release\g21-pass0-transition-d3d6e5ba640d4305b161a2e467b70896
+```
+
+- `phase-loss-projection.json` 从旧 Segment-27 `.resume` 校验全部 9,095 条 CRC 后提取：K=6,385、scheduled=7,216、
+  accepted=6,375。任意未接受 ID 所在 14-equation band 被保守投影为擦除，共 107/516 bands；这不是捕获时间戳重建。
+  其他 phases 的每 16 bands 擦除一个是明确的 synthetic sensitivity，不冒充实际 trace。
+- `baseline-128-r8-phase3/result.json`：首窗口只有 7/8，Segment 6 short 20，阻止 slide；clean 对照虽正确恢复，
+  首窗口 4,296 帧预算仅 15,621.244 B/frame。`hold32-r8-phase3/result.json` 单独改 phase 后 16/16，但预算仍失败。
+- `hold32-r10-original-control/summary.json`：再单独减 repair 后首窗口安全，但 4,192 帧仅 16,008.794 B/frame；
+  最后窗口 15/16、short 9，禁止靠 pass 1 补洞。仅继续降 repair 不足以同时保证预算和安全 margin。
+- 最后单独改周期 Control：`hold32-r10-triplet-phase-check/summary.json` 的 clean/phase3，及
+  `hold32-r10-triplet-remaining-phases/summary.json` 的其余 7 phases **全部通过**。首窗口统一 4,072 sender
+  frames，8/8、active=0、**全捕获预算 16,480.566 B/frame**；16/16 全部 accepted=6,385，peak active=8，peak
+  reserved decoder=457,201,696 bytes，resource/conflict/deferred/quota/orphan=0。
+- clean 最终 7,760/7,760 sender/observed frames；偏置八相最终 8,101..8,106 / 7,450..7,455。这些是 no-raster
+  计数，不称为 `UniqueVisualFPS` 或 live `VerifiedEncodedBytesPerUniqueFrame`。
+
+定向开发验证：`PBUnifiedSenderSchedulerTests --rng-seed 21092026 --reporter console` 为 10 cases / 247,055
+assertions；`PBApplicationTests '[application][g21]' --rng-seed 21092026 --reporter console` 为 6 / 353；
+`'[.g21-large-window]'` 为 1 / 25；streaming、resume journal、durable-lease 相邻六例为 6 / 407；
+`PBUnifiedRemoteGate --self-test` 通过。日志为根目录下 `scheduler-final-development.txt`、
+`application-g21-periodic-triplet.txt`、`legacy-sparse-window-final-development.txt`、
+`durable-adjacent-final-development.txt`、`gate-self-test-periodic-triplet.txt`。
+旧 fixed-phase 800 lost equations 的算术反例明确保留：10% repair 单独无法承受它，新 16-Segment probe 才是相位
+重新分配后的 transition 判据；不是把历史丢失改小或删除恢复门。
+
+Base replay 的实际原始路径已重新核对为 `receiver-live-recorded/actual-capture.pbrv2`（3,775,009,897 bytes），
+根目录直接放置的同名文件不存在；本次只核对已有 JSON、长度和首尾，不声称重新完整 hash 3.8 GB。
+
+**下一步：** 提交本候选后重新 configure/build，并核对 Encoder/Decoder/Gate embedded identity 等于该提交；正式身份
+复核定向测试，再用 fresh GUID 按 64 MiB → 500 MiB → 1 GiB 跑右屏 15 Hz，失败即停后续档位。当前 G21 仍
+PARTIAL，以上不是 actual-pixel 或 remote pass；独立 live false-accepted oracle 仍为 null/unavailable。
 
 ## 1. 交接时结论
 

@@ -413,9 +413,12 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     }
     const std::uint64_t controlRecordKindCount = config.systematicBlockCount == 0 ? 2 : 3;
     std::uint64_t totalControlItemsPerBurst = 0;
+    std::uint64_t periodicControlItemsPerBurst = 0;
     if (!AssignChecked(pbprotocol::CheckedMultiplyUint64(
         controlRecordKindCount, config.controlRepetitions), totalControlItemsPerBurst) ||
-        totalControlItemsPerBurst == 0)
+        !AssignChecked(pbprotocol::CheckedMultiplyUint64(controlRecordKindCount,
+            senderUnifiedPeriodicControlRepetitions), periodicControlItemsPerBurst) ||
+        totalControlItemsPerBurst == 0 || periodicControlItemsPerBurst == 0)
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
     }
@@ -426,6 +429,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     scheduler.systematicEquationCount_ = systematicEquationCount;
     scheduler.repairEquationCount_ = repairEquationCount;
     scheduler.totalControlItemsPerBurst_ = totalControlItemsPerBurst;
+    scheduler.periodicControlItemsPerBurst_ = periodicControlItemsPerBurst;
     scheduler.complete_ = false;
     output = scheduler;
     return {};
@@ -446,8 +450,14 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
 
     const bool controlBurstActive = inControlBurst_ || cadencePosition >= nextControlBurstPosition_;
     const std::uint64_t controlItemOffset = inControlBurst_ ? currentControlItemOffset_ : 0;
+    const std::uint64_t currentBurstItems = initialControlBurstCompleted_ ?
+        periodicControlItemsPerBurst_ : totalControlItemsPerBurst_;
+    if (controlItemOffset > currentBurstItems)
+    {
+        return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
+    }
     const std::uint64_t remainingControlItems = controlBurstActive ?
-        totalControlItemsPerBurst_ - controlItemOffset : 0;
+        currentBurstItems - controlItemOffset : 0;
     const std::uint32_t maximumControlSlots = pbmodulation::GetUnifiedMaximumControlSlots();
     const std::uint32_t controlBurstSlotCount = static_cast<std::uint32_t>((std::min)(
         remainingControlItems, static_cast<std::uint64_t>(maximumControlSlots)));
@@ -586,6 +596,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
     std::uint64_t currentControlBurstStartPosition = currentControlBurstStartPosition_;
     std::uint64_t nextControlBurstPosition = nextControlBurstPosition_;
     std::uint64_t controlBurstCount = controlBurstCount_;
+    const std::uint64_t currentBurstItems = initialControlBurstCompleted_ ?
+        periodicControlItemsPerBurst_ : totalControlItemsPerBurst_;
     if (preparedFrame_.controlBurstSlotCount != 0)
     {
         if (!inControlBurst)
@@ -605,11 +617,11 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
         }
         if (!AssignChecked(pbprotocol::CheckedAddUint64(
             currentControlItemOffset, preparedFrame_.controlBurstSlotCount), currentControlItemOffset) ||
-            currentControlItemOffset > totalControlItemsPerBurst_)
+            currentControlItemOffset > currentBurstItems)
         {
             return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
         }
-        if (currentControlItemOffset == totalControlItemsPerBurst_)
+        if (currentControlItemOffset == currentBurstItems)
         {
             const std::uint64_t cadenceDistance = (monotonicCadence_ ? senderLogicalFrameNanosecondsPerSecond :
                 static_cast<std::uint64_t>(config_.logicalFramesPerSecond)) *

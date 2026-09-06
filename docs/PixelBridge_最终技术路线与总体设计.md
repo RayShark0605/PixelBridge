@@ -1811,17 +1811,21 @@ RepairPassSymbolBudget = K + Rpass
 这些属于低开销、强健控制平面。
 
 `PB-Unified-SC6-V3` 的同一 Control burst 必须先交织 record kind，再重复同一种 record，禁止按
-`SessionDescriptor × N → FinalManifest × N → SegmentDescriptor × N` 分组。产品固定 `N=4`、每帧最多 8 个
-Control slots，因此非空 Session 的 12 个 slots 按下列顺序装入两个 mixed frames：
+`SessionDescriptor × N → FinalManifest × N → SegmentDescriptor × N` 分组。产品启动 burst 固定 `N=4`、每帧最多 8 个
+Control slots，因此非空 Session 的启动 12 个 slots 按下列顺序装入两个 mixed frames：
 
 ```text
 Session, Manifest, Segment, Session, Manifest, Segment, Session, Manifest
 Segment, Session, Manifest, Segment
 ```
 
-这样远控链即使周期性抽帧、只保留 burst 的任意一帧，也能同时取得建立当前 Segment decoder 所需的三类描述符。
-总重复数、Control slot 总量、Control cadence 与 Transport 容量预算不因此增加。零字节 Session 仍仅交织
-`SessionDescriptor + FinalManifest`。该顺序属于无反馈调度合同，不进入 provider-specific 分支。
+这样远控链即使周期性抽帧、只保留启动 burst 的任意一帧，也能同时取得建立当前 Segment decoder 所需的三类描述符。
+G21 的 16-Segment Pass-0 预算证明进一步区分启动与周期 refresh：后续每 10 秒的 refresh 使用一个完整
+`Session, Manifest, Segment` triplet，同帧占 3 个 Base Control slots，不拆散；W=8 各 Segment 的 refresh
+仍提供每 interval 八份 Session/Manifest，而不是每个 Segment 再支付四份。所有其他非空 mixed frames 继续携带
+当前 SegmentDescriptor，接收端继续先 Control 后 Transport，未知 Segment 的资源保护不变。零字节 Session
+仍仅交织 `SessionDescriptor + FinalManifest`。启动冗余不削减，周期 cadence 不变；这是无反馈调度预算调整，
+不改变序列化字节、视觉 Profile、FEC descriptor、Golden 或 provider-independent admission。
 
 ---
 

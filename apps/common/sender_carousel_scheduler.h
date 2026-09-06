@@ -12,15 +12,21 @@ namespace pbapp
 inline constexpr std::uint32_t senderCarouselRepairPercentNumerator = 20;
 inline constexpr std::uint32_t senderCarouselRepairPercentDenominator = 100;
 inline constexpr std::uint32_t senderCarouselMinimumRepairBlocks = 16;
-// Unified Pass 0 uses a 12.5% LocalRepairBurst plus a small fixed transition
+// Unified Pass 0 uses a 10% LocalRepairBurst plus a small fixed transition
 // guard. The guard spans more than two ordinary 14-Transport-slot frames, so a
 // near-threshold Segment is not abandoned at the bounded-window transition.
 // Later passes retain the complete K + 20% FullRepairPass budget for late join
 // and loss.
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentNumerator = 1;
-inline constexpr std::uint32_t senderUnifiedInitialRepairPercentDenominator = 8;
+inline constexpr std::uint32_t senderUnifiedInitialRepairPercentDenominator = 10;
 inline constexpr std::uint32_t senderUnifiedMinimumInitialRepairBlocks = 16;
 inline constexpr std::uint32_t senderUnifiedInitialTransitionGuardBlocks = 32;
+// Startup keeps four interleaved copies. Periodic refresh carries one complete
+// Session/Manifest/current-Segment triplet in a single mixed frame; every other
+// non-empty frame still carries its current SegmentDescriptor. A striped W=8
+// window therefore repeats Session/Manifest eight times per refresh interval,
+// without paying four copies per Segment on top of the per-frame prelude.
+inline constexpr std::uint32_t senderUnifiedPeriodicControlRepetitions = 1;
 inline constexpr std::uint32_t senderCarouselControlCadenceSeconds = 10;
 inline constexpr std::uint32_t senderCarouselMaximumLogicalFramesPerSecond = 240;
 inline constexpr std::uint32_t senderCarouselMaximumSystematicBlockCount = 64000;
@@ -32,10 +38,10 @@ inline constexpr std::uint32_t senderUnifiedMaximumControlRepetitions = 64;
 // phase aliasing. The matching Decoder policy and resume cache must cover the
 // same count; this is scheduler tuning and does not alter wire data.
 inline constexpr std::uint32_t senderUnifiedActiveSegmentWindowSize = 8;
-// One sweep gives every active Segment one frame. Holding a phase for 128
-// sweeps preserves the bounded sparse-observation recovery margin while still
-// moving every Segment away from a persistently unfavorable capture phase.
-inline constexpr std::uint32_t senderUnifiedSweepPhaseHold = 128;
+// One sweep gives every active Segment one frame. Thirty-two sweeps per phase
+// visit all eight capture phases twice within an ordinary full-size Pass-0
+// window, rather than leaving half the phases unvisited until its repair tail.
+inline constexpr std::uint32_t senderUnifiedSweepPhaseHold = 32;
 inline constexpr std::uint32_t senderUnifiedSweepPhaseStep = 1;
 inline constexpr std::uint64_t senderLogicalFrameNanosecondsPerSecond = 1000000000ULL;
 inline constexpr std::size_t senderUnifiedCodewordSlotCount =
@@ -314,6 +320,7 @@ private:
     std::uint64_t paddingDuplicateSlotCount_ = 0;
     std::uint64_t inactiveTransportSlotCount_ = 0;
     std::uint64_t totalControlItemsPerBurst_ = 0;
+    std::uint64_t periodicControlItemsPerBurst_ = 0;
     std::uint64_t currentControlItemOffset_ = 0;
     std::uint64_t currentControlBurstStartPosition_ = 0;
     std::uint64_t nextControlBurstPosition_ = 0;

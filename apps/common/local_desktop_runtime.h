@@ -373,6 +373,36 @@ struct UnifiedDescriptorPreludeProbeSnapshot
     std::vector<std::uint64_t> activeDecoderTransitions;
 };
 
+struct UnifiedWindowTransitionProbeSnapshot
+{
+    std::uint64_t senderFrames = 0;
+    std::uint64_t observedFrames = 0;
+    std::uint64_t firstWindowFrames = 0;
+    std::uint64_t firstWindowCompletedSegments = 0;
+    std::uint64_t activeDecodersBeforeTransition = 0;
+    std::uint64_t completedSegments = 0;
+    std::uint64_t peakActiveDecoders = 0;
+    std::uint64_t peakReservedDecoderBytes = 0;
+    std::uint64_t resourceRejections = 0;
+    std::uint64_t conflictRejections = 0;
+    std::uint64_t deferredCount = 0;
+    std::uint64_t quotaCount = 0;
+    std::uint64_t orphanCount = 0;
+    std::uint64_t checkpointUpdates = 0;
+    std::uint64_t sourceBytes = 0;
+    double firstWindowFullCaptureBytesPerFrame = 0;
+    double noRasterEncodedBytesPerObservedFrame = 0;
+    bool transitionSafe = false;
+    bool sourceStable = false;
+    bool durableLeaseAheadOfUse = true;
+    bool wholeDigestVerified = false;
+    bool published = false;
+    bool finalReopenVerified = false;
+    std::wstring publishedPath;
+    std::vector<std::uint64_t> acceptedSymbols;
+    std::vector<std::uint64_t> completedAtFrame;
+};
+
 struct ApplicationLargeOutputConfirmationProbeSnapshot
 {
     DecoderSnapshot awaitingDecision;
@@ -417,6 +447,12 @@ public:
         UnifiedLargeWindowRecoveryProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeUnifiedDescriptorPrelude(
         UnifiedDescriptorPreludeProbeSnapshot& output) noexcept;
+    // Deterministic no-raster, Pass-0-only, 16-Segment checkpoint. Loss is a
+    // caller-supplied projection, not an independent live capture oracle.
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedWindowTransition(const std::wstring& sourcePath,
+        const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
+        std::span<const std::uint32_t> erasedBands, std::uint32_t biasedPhase,
+        UnifiedWindowTransitionProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeHeadlessMultiSegmentFile(const std::wstring& sourcePath,
         const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
         const ApplicationHeadlessProbeOptions& options, ApplicationHeadlessProbeSnapshot& output) noexcept;
