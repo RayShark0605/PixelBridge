@@ -65,10 +65,13 @@ private:
         const pbmodulation::UnifiedVisualObservation* observation, std::uint64_t captureEpoch,
         std::int64_t timestamp100ns) noexcept;
     UnifiedTelemetrySnapshot snapshot_;
+    // The fixed ring retains exact recent identities. Once eviction begins, the
+    // maximum evicted identity is a conservative boundary for ambiguous old input.
     std::array<std::uint64_t, 4096> recentSequences_{};
     std::size_t recentCount_ = 0;
     std::size_t nextSequence_ = 0;
-    std::uint64_t maximumSequence_ = 0;
+    bool hasEvictedSequence_ = false;
+    std::uint64_t maximumEvictedSequence_ = 0;
     std::int64_t firstUniqueTimestamp100ns_ = 0;
     std::int64_t lastUniqueTimestamp100ns_ = 0;
     std::int64_t lastObservationTimestamp100ns_ = 0;

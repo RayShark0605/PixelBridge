@@ -181,6 +181,40 @@ TEST_CASE("G17 bounded identity history withdraws rates rather than guessing evi
     REQUIRE_FALSE(snapshot.uniqueVisualFps);
 }
 
+TEST_CASE("G21 bounded identity history counts provably new out-of-order frames exactly", "[telemetry][g21]")
+{
+    pbtelemetry::UnifiedTelemetryAccumulator telemetry;
+    REQUIRE(telemetry.BindSession(7));
+    REQUIRE(telemetry.Record(Observation(10), 1, 100));
+    REQUIRE(telemetry.Record(Observation(12), 1, 200));
+    REQUIRE(telemetry.Record(Observation(11), 1, 300));
+    REQUIRE(telemetry.Record(Observation(11), 1, 400));
+    const auto snapshot = telemetry.GetSnapshot();
+    REQUIRE(snapshot.uniqueFrames == 3);
+    REQUIRE(snapshot.duplicateObservations == 1);
+    REQUIRE(snapshot.frameCoverageComplete);
+    REQUIRE(snapshot.uniqueVisualFps.has_value());
+}
+
+TEST_CASE("G21 full identity window distinguishes a nearby missing frame from an evicted ambiguity", "[telemetry][g21]")
+{
+    pbtelemetry::UnifiedTelemetryAccumulator telemetry;
+    REQUIRE(telemetry.BindSession(7));
+    for (std::uint64_t sequence = 1; sequence <= 4100; sequence++)
+    {
+        if (sequence != 4098)
+        {
+            REQUIRE(telemetry.Record(Observation(sequence), 1, static_cast<std::int64_t>(sequence) * 100));
+        }
+    }
+    REQUIRE(telemetry.Record(Observation(4098), 1, 500000));
+    REQUIRE(telemetry.GetSnapshot().uniqueFrames == 4100);
+    REQUIRE(telemetry.GetSnapshot().frameCoverageComplete);
+    REQUIRE(telemetry.Record(Observation(1), 1, 500100));
+    REQUIRE(telemetry.GetSnapshot().uniqueFrames == 4100);
+    REQUIRE_FALSE(telemetry.GetSnapshot().frameCoverageComplete);
+}
+
 TEST_CASE("G17 telemetry distinguishes unavailable observations from measured zero failures", "[telemetry][g17]")
 {
     pbtelemetry::UnifiedTelemetrySnapshot snapshot;

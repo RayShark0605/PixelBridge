@@ -146,7 +146,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
     const std::uint64_t sequence = bootstrap.frameSequence;
     const bool duplicate = std::find(recentSequences_.begin(), recentSequences_.begin() + recentCount_, sequence) !=
         recentSequences_.begin() + recentCount_;
-    const bool unknownOldSequence = !duplicate && recentCount_ != 0 && sequence <= maximumSequence_;
+    const bool unknownOldSequence = !duplicate && hasEvictedSequence_ && sequence <= maximumEvictedSequence_;
     if (unknownOldSequence)
     {
         // A very old observation may be new or evicted. Never invent a count;
@@ -174,10 +174,18 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
             firstUniqueTimestamp100ns_ = timestamp100ns;
         }
         lastUniqueTimestamp100ns_ = timestamp100ns;
+        if (recentCount_ == recentSequences_.size())
+        {
+            maximumEvictedSequence_ = hasEvictedSequence_ ?
+                (std::max)(maximumEvictedSequence_, recentSequences_[nextSequence_]) : recentSequences_[nextSequence_];
+            hasEvictedSequence_ = true;
+        }
+        else
+        {
+            recentCount_++;
+        }
         recentSequences_[nextSequence_] = sequence;
         nextSequence_ = (nextSequence_ + 1) % recentSequences_.size();
-        recentCount_ = std::min(recentCount_ + 1, recentSequences_.size());
-        maximumSequence_ = sequence;
     }
     lastObservationTimestamp100ns_ = timestamp100ns;
     snapshot_ = next;
