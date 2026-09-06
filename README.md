@@ -2,11 +2,12 @@
 
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
 
-> **开发中，不是最终 Release。** G00..G20 已建立正式 Descriptor、多 Segment/双端恢复、简化 Qt 产品入口和本地 Release/native 能力；当前唯一产品 Profile 是抗远控空间与跨帧失真的 `PB-Unified-SC6-V3`（layout 10）。G21 仍缺真实远程 1 MiB/64 MiB 最终发布门，G22 尚未开始。不要把离线合成、历史 Phase 1.5 或 RemoteVisual 实验入口当作最终产品认证。
+> **开发中，不是最终 Release。** G00..G20 已完成；当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10）。正式候选6e90643已通过同身份右屏15Hz的64 MiB、500 MiB、1 GiB实际像素阶梯及16 KiB/unique硬门，Base-only实际capture证明已成立。G21仍待该候选真实远控现场复验，G22尚未开始。本机成功不等于remote field pass；本次交付和证据边界见下方交付索引。
 
 快速入口：
 
 - [Goal/目标模式统一实施路线](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)
+- [2026-09-07 G21本次交付、目录与证据索引](docs/UNIFIED_G21_DELIVERY_2026-09-07.md)
 - [最终技术路线与总体设计](docs/PixelBridge_最终技术路线与总体设计.md)
 - [文档索引与历史证据边界](docs/README.md)
 - [当前过渡 runtime 选项清单](docs/CURRENT_RUNTIME_OPTION_INVENTORY.md)
@@ -26,7 +27,9 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 | `libs/PBScreenRegion`、`libs/PBScreenCaptureWgc`、`libs/PBScreenCaptureDxgi`、`libs/PBCaptureNormalize` | 物理像素选区、WGC/DXGI、CaptureEpoch 与 GPU 退休保护的 ROI texture ring；不依赖 Qt |
 | `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
 | `tests` | Catch2 v3 单元测试（CTest） |
+| `tests/UnifiedRemoteGate` | G21受保护实屏Gate、本机supervisor、远控复验脚本及无屏幕进程夹具；见该目录README |
 | `docs` | 当前路线、总体设计、模块说明、历史 Gate/证据；入口见 [`docs/README.md`](docs/README.md) |
+| `artifacts/g21-delivery-2026-09-07` | 本机忽略的统一交付目录：冻结复验ZIP、hash manifest、证据索引；不提交payload或二进制 |
 | `third_party` | vcpkg overlay、固定第三方基线与许可说明，不保存 installed binaries |
 
 ## 当前开发状态
@@ -47,7 +50,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 - `PB-Unified-SC6-V3` layout 10 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、region-local placement、codeword-local sequence permutation、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
 - 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
-- G21 真实远控 1 MiB/64 MiB、外部摘要、Base Luma 独立恢复和 `>=16 KiB/unique logical frame` 硬门尚未完成；
+- 6e90643的本机三档、外部双摘要、Base-only证明和16 KiB/unique硬门已有独立证据；该候选的最终真实远控Gate仍待复验，32 KiB/unique工程目标未达到；
 - G22 独立发布包、SBOM、用户文档和发布候选尚未开始；项目自身 LICENSE 与仓库可见性仍需维护者决定。
 
 完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明仍保留在 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)，但不得作为当前正式 Descriptor 规范引用。

@@ -553,15 +553,36 @@ G21 保持 PARTIAL，真实远控复验与 G22 留待后续单独安排，不能
 - Receiver finally 显式区分未启动 Process，并记录 started=false / receiverExit=null；输出 drain/cleanup 有界。
   本机 PS5.1 AST 实测旧/新 finally 都保留原始启动异常；旧 getter 掩盖异常的推测未复现，不称为已修复旧故障。
 - 新增 .NET 进程 fixture 与 Python 定向回归，身份固定 `g21-lifecycle-fixture`，不捕获、不呈现、不传输 payload。
-  开发验证已覆盖正常/等待/partial JSON/exit7、coverage、overflow、九项资源计数及旧失败复现；正式收尾记录随后追加。
+  正式收尾20项已覆盖正常/等待/partial JSON/exit7、coverage、overflow、九项资源计数及旧失败复现，全部PASS。
 
 V1 包与所有原始 evidence 保持原位。新的 V2 准备根为
 `<repo>\build-unified-release\g21-6e90643-remote-ready-v2-31405053c7db4979ac6a3dc85de05204`。
 冻结的三档 authority 仍只属于6e90643；后续仅工具提交后的新构建身份不冒充重跑实屏。
-最终交付路径、包 hash、正式定向结果与目录索引在本节收尾补记，不以夹具测试宣称 remote field PASS。
+最终交付路径、包hash、正式定向结果与目录索引见下方收尾补记，不以夹具测试宣称remote field PASS。
 
 首轮 lifecycle-formal 保留了一项测试预期错误：误以为旧 PowerShell property getter 会掩盖异常，实际并未发生。
 已按实测修正断言，继续同时检验新旧异常保留以及仅新版产生 nullable exit 记录，不删除任何失败路径覆盖。
+
+#### 最终交付补记
+
+- 工具/夹具提交为 `9fcbed27827d0c55bb3776bad81802b4ce202ed7` 和 `959678340d1946fed4fec01b4410a250b533daa3`。
+- 在9596783后重新configure/build Encoder、Decoder、Gate，三EXE embedded identity全部等于9596783，Gate self-test PASS。
+  **当前build树已不是6e90643；没有重跑新identity的实屏。** 三档通过的6e90643 Encoder/Gate冻结在V2包，
+  原Decoder完整runtime冻结在V2 `validated-local-decoder`。不能拿当前build树冒充旧候选现场证据。
+- 正式无屏幕fixture `checks\lifecycle-9596783\summary.json` 为20/20 PASS；先前路径过长和错误预期的开发失败保留。
+  ZIP逐entry、新目录解压CheckOnly、独立helper三种长度/双摘要、错DLLhash/既有输出/篡改Gate负例全部PASS。
+- 统一交付目录：`<repo>\artifacts\g21-delivery-2026-09-07`；跟踪索引为
+  `<repo>\docs\UNIFIED_G21_DELIVERY_2026-09-07.md`，包含精确命令、峰值、authority与原始root。
+- V2 Sender ZIP：26,166,428 bytes /39 entries，SHA256
+  `018abb6c7ccd8dd83c42dcfb31dcb2da7f5ca354d01ea9b5bce04ca1210d1451`。
+- V2 Receiver ZIP：1,024,293 bytes /8 entries，SHA256
+  `fc5fbd863b586036925d7326e9edfafb22fbb4181b7374523c435b58c6ab5760`。
+- 源码工具集中在 `tests/UnifiedRemoteGate`，新增README分清actual-pixel/synthetic/remote准备边界；更新项目/文档索引中
+  过时的500MiB、Base-only缺项描述。旧build/cache/原始evidence未移动或删除，历史对象文件不擅自认领。
+- 受保护文件仍保持原SHA256、只它未跟踪；收尾无本任务产品进程残留。不新增后台监控、远控场景或长时测试。
+
+本次按用户要求交付后结束；G21仍PARTIAL、G22未开始。最终仓库状态另封存在开发根 `task-closeout-final.json`，
+不修改已经封存的三档报告或交付manifest来追写新HEAD。
 
 ## 1. 交接时结论
 

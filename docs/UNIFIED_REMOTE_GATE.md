@@ -1270,3 +1270,11 @@ wrapper live/远程环境边界在FIELD_RECHECK_README.md和交接0.13。该夹�
 最终G21仍PARTIAL，G22未开始；交付完成不等于这两个后续门已通过。
 本机PS5.1的未启动Process finally旧/新均保留原异常，新版新增nullable exit证据；不把旧getter掩盖异常的
 未复现推测当成已修复故障。收尾fixture按该实测断言，原始失败测试记录保留。
+
+最终交付位于 `<repo>\artifacts\g21-delivery-2026-09-07`，索引
+`<repo>\docs\UNIFIED_G21_DELIVERY_2026-09-07.md`。V2（39/8 entries）替代V1作为后续复验入口，
+Sender SHA256=`018abb6c7ccd8dd83c42dcfb31dcb2da7f5ca354d01ea9b5bce04ca1210d1451`，
+Receiver SHA256=`fc5fbd863b586036925d7326e9edfafb22fbb4181b7374523c435b58c6ab5760`。
+20项进程fixture及逐entry/fresh extraction/双摘要/负例均PASS；构建和三EXE身份为9596783、Gate self-test PASS。
+当前build树已前移，实屏authority仍为单独冻结6e90643；新构建没有实屏验证。原始evidence和V1不动，最终仅文档
+提交后结束本次任务；G21远控与G22仍待后续单独安排，不能把任务收尾标作产品认证。

@@ -14,6 +14,10 @@
 > 可复现的无屏幕进程夹具，不增加新长时测试。三档 LocalDesktop authority 继续冻结在6e90643；G21仍PARTIAL，
 > G22未开始。最新交付增量见交接第0.14节，不把工具提交后的新构建身份与旧实屏证据拼接。
 > 包装fixture以PS5.1实测为准：旧/新finally均保留原异常，新版新增nullable exit证据，不声称修复未复现的旧故障。
+> 收尾已完成20项无屏幕fixture、V2逐entry/新解压/摘要/负例检查。工具提交9596783后已重建并核对三EXE identity，
+> 当前build树为9596783而非6e90643；三档authority保存在冻结6e90643包，不拼接新构建。交付目录为
+> `<repo>\artifacts\g21-delivery-2026-09-07`，完整索引见`UNIFIED_G21_DELIVERY_2026-09-07.md`。
+> 用户要求交付后结束本次任务；不启动新的长时/后台运行，G21仍PARTIAL、G22未开始。
 
 ## 0. 如何使用本文
 
