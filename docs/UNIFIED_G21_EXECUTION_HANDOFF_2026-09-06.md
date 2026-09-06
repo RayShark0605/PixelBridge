@@ -5,7 +5,7 @@
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
 > [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
 
-## 0. 最新权威增量（20:25 交接基线；2026-09-07 三档 LocalDesktop 收口见 0.13）
+## 0. 最新权威增量（20:25 交接基线；三档 LocalDesktop 见 0.13；本次交付收尾见 0.14）
 
 > **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
 > “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
@@ -538,6 +538,26 @@ $build = '<repo>\build-unified-release'
 `076EF4C9B9F89EABCCD323DBE4BFFC4DC125DDAF96E6EE437D2CF5B1B1CEA306`，只它未跟踪、从未修改/暂存。
 下一步是用户安排真实远控场景后，以冻结候选执行smoke/full与独立外部审计；若coverage失效，先读首次失败原因，
 不能以本次未复现抹掉旧失败。G21真正满足退出标准并独立提交后继续G22，而不是因为本机阶梯完成就提前关G21。
+
+### 0.14 用户要求交付收尾；包装脚本纳入版本管理（2026-09-07）
+
+用户在本机三档完成后明确要求完成交付、提交代码、整理目录并结束本次任务；不再开启新的长时或现场运行。
+G21 保持 PARTIAL，真实远控复验与 G22 留待后续单独安排，不能用任务收尾代替 Gate 完成。
+
+收尾代码只涉及 `tests/UnifiedRemoteGate` 包装层，不修改产品调度、协议、接收、telemetry 或性能门：
+
+- 将此前包内的 Receiver 入口与独立双摘要 helper 纳入源码；Sender 持有只读 source lease，full 期限1800秒。
+- Receiver 在 observed coverage=false、counter overflow 或九项 resource/conflict/deferred/quota/orphan 非零时，
+  保留失败 snapshot 并有界停止；初始 observationAvailable=false 不误杀。增加有界1秒内存 JSONL。
+- Sender 在运行 post-stop digest helper **之前**持久化 Encoder exit；helper 失败不丢退出证据。
+- Receiver finally 对未启动 Process 做保护，不再通过读取无效 Id 掩盖原始启动错误；输出 drain/cleanup 有界。
+- 新增 .NET 进程 fixture 与 Python 定向回归，身份固定 `g21-lifecycle-fixture`，不捕获、不呈现、不传输 payload。
+  开发验证已覆盖正常/等待/partial JSON/exit7、coverage、overflow、九项资源计数及旧失败复现；正式收尾记录随后追加。
+
+V1 包与所有原始 evidence 保持原位。新的 V2 准备根为
+`<repo>\build-unified-release\g21-6e90643-remote-ready-v2-31405053c7db4979ac6a3dc85de05204`。
+冻结的三档 authority 仍只属于6e90643；后续仅工具提交后的新构建身份不冒充重跑实屏。
+最终交付路径、包 hash、正式定向结果与目录索引在本节收尾补记，不以夹具测试宣称 remote field PASS。
 
 ## 1. 交接时结论
 

@@ -1260,3 +1260,11 @@ SHA256 `53bff51163e1c39b5ec972d2734570fe7922463e7390da1e9b4c7a1f1faa1655`。
 用户后续仅需解压/check、连接并完整放置远控窗口、在本机Receiver先启动后点remote smoke/full，最终正常Q停止。
 返回4份JSON做外部审计，绝不把source.bin或运行前oracle传给Decoder。完整绝对路径、命令、timeout与未验证的
 wrapper live/远程环境边界在FIELD_RECHECK_README.md和交接0.13。该夹具不是G22发行包；现场G21完成提交后继续G22。
+
+### 21.1 本次交付收尾：包装失败路径（2026-09-07）
+
+用户要求本次结束，不再新增实屏/远控长测。包装脚本源码纳入 `tests/UnifiedRemoteGate`：Receiver observed coverage/
+九项资源门 fail-fast、初始等待豁免、有界1秒内存时间线、未启动进程 finally 保护；Sender 在独立摘要之前保存 exit。
+回归使用显式 `g21-lifecycle-fixture` 的无屏幕进程，不是产品接收或远控证据。产品源码仍为6e90643相同内容，
+冻结实屏候选不被工具/文档提交替换。V1 evidence不改写；V2与最终收尾索引见交接0.14。
+最终G21仍PARTIAL，G22未开始；交付完成不等于这两个后续门已通过。

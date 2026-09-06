@@ -43,17 +43,19 @@ try
     $file.Flush($true)
 }
 finally { $file.Dispose(); $random.Dispose() }
+$sourceLease = [IO.File]::Open($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$maximumSeconds = if ($Stage -eq 'smoke') { 600 } else { 1800 }
 $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
 $reportPath = Join-Path $runRoot 'encoder-report.json'
 $journalPath = Join-Path $runRoot 'encoder-evidence.jsonl'
 $command = @('--headless-broadcast', '--source', $source, '--profile', 'unified', '--channel', 'remote', '--remote-provider', 'UnknownRemoteLink',
-    '--single-monitor-fullscreen', 'primary', '--logical-fps', '15', '--seconds', '600', '--manual-stop', '--run-id', $runId,
+    '--single-monitor-fullscreen', 'primary', '--logical-fps', '15', '--seconds', $maximumSeconds.ToString([Globalization.CultureInfo]::InvariantCulture), '--manual-stop', '--run-id', $runId,
     '--report', $reportPath, '--journal', $journalPath)
 $manifest = [ordered]@{
     schema = 'PixelBridge.G21.SenderFixture.1'; stage = $Stage; runId = $runId
     sourceName = [IO.Path]::GetFileName($source); bytes = $size; sha256 = $sourceHash
     generator = 'Remote-host OS CSPRNG; bounded 1 MiB buffer; fresh source per run'
-    sourceTransferredToDecoder = $false; configuredLogicalFps = 15; hardMaximumBroadcastSeconds = 600
+    sourceTransferredToDecoder = $false; configuredLogicalFps = 15; hardMaximumBroadcastSeconds = $maximumSeconds
     presentationMode = 'Primary monitor borderless fullscreen; exact 1920x1080 canvas centered at 1:1 in neutral matte'
     build = $identity; encoderSha256 = $actualHash; arguments = $command
 }
@@ -63,10 +65,15 @@ Write-Host ('SOURCE SHA256: ' + $sourceHash)
 Write-Host 'Keep the entire animated canvas visible in the remote view on the LOCAL RIGHT screen.'
 Write-Host 'Do not minimize/cover the canvas. Do not send the .bin source back to the receiver.'
 Write-Host 'When Codex asks you to stop: focus THIS console on the remote PC and press Enter or Q.'
-Write-Host 'The run has a 600-second safety limit. A limit exit is not receiver success.'
-& $executable @command
-$encoderExit = $LASTEXITCODE
+Write-Host ('The run has a ' + $maximumSeconds + '-second safety limit. A limit exit is not receiver success.')
+try
+{
+    & $executable @command
+    $encoderExit = $LASTEXITCODE
+}
+finally { $sourceLease.Dispose() }
 WriteNewText (Join-Path $runRoot 'process-exit.json') (@{ encoderExit = $encoderExit; finishedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json)
+& (Join-Path $root 'Get-G21FileDigests.ps1') -InputPath $source -OutputPath (Join-Path $runRoot 'source-poststop-digests.json') -Blake3Dll (Join-Path $root 'bin\blake3.dll') -ExpectedDllSha256 $expected.blake3Sha256
 Write-Host ('Encoder stopped with exit ' + $encoderExit + '. Keep ALL run evidence.')
-Write-Host 'Share source-manifest.json and encoder-report.json with Codex after the run; never the source .bin.'
+Write-Host 'After receiver termination, share source-manifest.json, source-poststop-digests.json, encoder-report.json and process-exit.json; never the source .bin.'
 exit $encoderExit
