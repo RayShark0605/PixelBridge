@@ -1222,3 +1222,41 @@ Receiver 被 supervisor fail-fast 停止（-1 forced），Encoder Q 正常退出
 具体原因。本阶段只补固定大小首次 coverage 原因/帧身份/时间戳证据，不改计数或接受规则；telemetry9/8,345和
 Application G17+G21 13/2,744通过。后续先有界诊断，修复后重新同身份三档，不拼接，不放宽 coverage。
 G21 仍 PARTIAL，远程现场与独立 live false-accepted oracle 的 null/unavailable 边界不变。
+
+
+## 21. 6e90643 同身份本机三档完成，最终远控仍待现场（2026-09-07）
+
+正式实验代码 `6e9064319a51bedcd403d74d47dd45c067928013` 在右屏15 Hz依序通过64 MiB、500 MiB、1 GiB，
+全部Pass0发布。**LocalDesktop authority，不是remote field；G21仍PARTIAL，G22前置未满足。**
+本次doc-only收口后HEAD可前移；冻结Encoder/Decoder/Gate仍嵌入6e90643，禁止混用新代码候选拼接证据。
+
+| 档位 / bytes | Segment | elapsed ms | unique frames | UniqueVisualFPS | B/unique |
+|---|---|---:|---:|---:|---:|
+| 64 MiB / 67,108,864 | 8/8 | 250,754 | 3,700 | 14.921582942802349 | 18,137.53081081081 |
+| 500 MiB / 524,288,000 | 63/63 | 2,121,922 | 31,630 | 14.936724736545933 | 16,575.6560227632 |
+| 1 GiB / 1,073,741,824 | 128/128 | 4,328,785 | 64,577 | 14.938359707725137 | 16,627.31040463323 |
+
+共同门：whole digest/safe publish/final reopen/完整current-run coverage、外部bytes/SHA256/BLAKE3相等、
+全部Segment、无.part/.resume/receiver error、lane CRC/identity/resource/conflict/deferred/quota/orphan=0、exit0/0。
+独立live codeword oracle仍null/unavailable；16 KiB硬门全过，32 KiB工程目标未达到。源码/调度/参数不因provider变化。
+
+原始root和全部摘要见交接0.13。集中封印：
+`<repo>\build-unified-release\g21-pass0-transition-d3d6e5ba640d4305b161a2e467b70896\same-candidate-6e90643-staircase-audit.json`。
+Receiver WS/private峰值为399,527,936/551,387,136、400,359,424/611,368,960、400,695,296/691,380,224 bytes；
+Encoder为258,568,192/319,152,128、277,176,320/320,421,888、277,323,776/320,622,592。decoder-owned峰值始终
+8 /457,201,696 bytes；源码已完成payload释放链与working-set跨档数据支持active-window边界，但private high-water
+有所增长，peak-only采样不是allocator时间线，不宣称private完全平坦或>=20 GiB认证。
+
+6e90643只给0.12旧coverage失败加首次原因/identity/timestamp诊断，并未改coverage逻辑；三档未复现异常不能写成
+根因已修复。下一次若出现false，读取firstCoverageFailure并保留原始窗口，不能改分母、放宽阈值或拼接旧通过。
+formal scheduler10/247,055、Application G21+G17 13/2,744、telemetry9/8,345、Gate self-test、16-Segment
+clean/phase3 PASS；没有新增full CTest/ASan/GPU矩阵/20GiB。Base-only现有同actual-capture派生proof保持独立authority。
+
+远控准备根：
+`<repo>\build-unified-release\g21-6e90643-remote-ready-9fcfe8767919473badec2859e9154af1`。
+Sender ZIP SHA256 `b1a0835a8ffe5b24c5b2621b605a7e66f73746d07acac4aebd986831b696b998`，Receiver ZIP
+SHA256 `53bff51163e1c39b5ec972d2734570fe7922463e7390da1e9b4c7a1f1faa1655`。
+已验证ZIP逐entry/hash/新解压CheckOnly，以及独立文件digest helper；没有发送source、没有新remote live。
+用户后续仅需解压/check、连接并完整放置远控窗口、在本机Receiver先启动后点remote smoke/full，最终正常Q停止。
+返回4份JSON做外部审计，绝不把source.bin或运行前oracle传给Decoder。完整绝对路径、命令、timeout与未验证的
+wrapper live/远程环境边界在FIELD_RECHECK_README.md和交接0.13。该夹具不是G22发行包；现场G21完成提交后继续G22。

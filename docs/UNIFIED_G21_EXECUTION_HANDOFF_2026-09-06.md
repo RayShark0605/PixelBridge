@@ -5,12 +5,12 @@
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
 > [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
 
-## 0. 最新权威增量（20:25 交接基线；23:35 的两档通过与 coverage 阻塞见 0.12）
+## 0. 最新权威增量（20:25 交接基线；2026-09-07 三档 LocalDesktop 收口见 0.13）
 
 > **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
 > “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
 > 后续第 1～8 节继续保留，作为真实远控链历史、原始失败形状和操作背景，不得反向覆盖本节。
-> **继续执行后的最新状态优先读 0.12，再读 0.11、0.10、0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
+> **继续执行后的最新状态优先读 0.13，再读 0.12、0.11、0.10、0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
 
 ### 0.1 当前结论与 Git 边界
 
@@ -414,6 +414,130 @@ verifiedRawBytes=67,108,864、active=0，所有 lane/resource/conflict/deferred/
 Application G17+G21 13/2,744 通过，含 malformed sample 原因、旧帧拒绝原因、timestamp regression 与首次证据不可覆盖。
 下一步正式提交重构建后做有界实屏诊断，取得首因再修复；修正后必须重新从64 MiB跑同身份三档，不能拼接旧档。
 G21 PARTIAL；LocalDesktop 不是 remote field，独立 live false-accepted oracle 仍为 null/unavailable。
+
+### 0.13 同一最终候选三档 LocalDesktop 通过与远控复验准备（2026-09-07 01:55 CST）
+
+**当前正式实验代码为 `6e9064319a51bedcd403d74d47dd45c067928013`。今晚优先的 64 MiB→500 MiB→1 GiB
+15 Hz 右屏 actual-pixel 阶梯已全部通过，同一代码/二进制/调度参数，且全部在 Pass0 发布。G21 仍为 PARTIAL：
+没有执行该候选的带远控因素现场复验，不能把 LocalDesktop 成功写成 remote field pass，G22 前置尚未满足。**
+
+本节是纯文档收口：它之后 HEAD 可以前移，但冻结的 Encoder/Decoder/Gate identity 仍应为 `6e90643`，不是代码落后。
+任何后续产品代码/测试候选仍需独立提交、configure/build、身份核对，不能与本节三档 evidence 拼接成同身份通过。
+旧 `2861beb` 的一次 coverage=false 保留在0.12；`6e90643` **只加诊断，没有修改 coverage/计数/接受规则**。
+本次三档 `firstCoverageFailure=null`、coverage=true，只能说原异常未复现，不能说根因已经修复。
+
+#### 三档最终权威值
+
+| 档位 | 精确 bytes | Segment | Receiver elapsed ms | unique frames | UniqueVisualFPS | VerifiedEncodedBytesPerUniqueFrame |
+|---|---:|---|---:|---:|---:|---:|
+| 64 MiB | 67,108,864 | 8/8 | 250,754 | 3,700 | 14.921582942802349 | 18,137.53081081081 |
+| 500 MiB | 524,288,000 | 63/63 | 2,121,922 | 31,630 | 14.936724736545933 | 16,575.6560227632 |
+| 1 GiB | 1,073,741,824 | 128/128 | 4,328,785 | 64,577 | 14.938359707725137 | 16,627.31040463323 |
+
+三档共同成立：WholeFileDigest=true、safe publish=true、final reopen=true、frameCoverageComplete=true、
+全部 Segment 完成、外部 exact bytes/SHA256/BLAKE3 相等、lane CRC/identity failures=0、
+resource/conflict/deferred/quota/orphan 全0、无 .part/.resume、无 receiver error、Receiver/Encoder exit=0/0，
+没有 deadline/强杀；峰值 active decoder=8、reserved decoder bytes=457,201,696。
+16,384 B/unique 硬门全过；32,768 B/unique 工程目标均未达到，不把工程目标改成通过。
+
+Sender configured=15 Hz；三档 submitted frames / submitted FPS 分别是：
+`3,739 / 15.003677845770426`、`31,766 / 14.99078004284591`、`64,816 / 14.990193138810495`。
+它们不是 Receiver UniqueVisualFPS。固定参数仍为 SC6 V3/layout10、W8、hold32 sweeps（256 logical frames）、
+step1、Pass0 `max(16,ceil(K/10))+32`、启动四份交织、10秒周期一个 Session/Manifest/current Segment triplet。
+未扩大任何资源策略，未按 provider 分支，未主动删有效 unique 或改性能分母。
+
+内存峰值单位 bytes，来自1秒采样；每档 Receiver / Encoder 的 working set 与 private bytes 分别是：
+
+| 档位 | Receiver WS | Receiver private | Encoder WS | Encoder private |
+|---|---:|---:|---:|---:|
+| 64 MiB | 399,527,936 | 551,387,136 | 258,568,192 | 319,152,128 |
+| 500 MiB | 400,359,424 | 611,368,960 | 277,176,320 | 320,421,888 |
+| 1 GiB | 400,695,296 | 691,380,224 | 277,323,776 | 320,622,592 |
+
+源码定向核对 `StoreCompleted`→durable journal→`CommitStoredSegment`→codec destruction，已完成 payload 被释放，
+只保留 descriptor/完成 bitmap 等 metadata；decoder-owned 峰值恒为8窗口。总文件增长16倍时 working set基本稳定，
+没有发现持有全部 completed payload 的路径。但 private high-water 跨 fresh runs有所增长；现有 peak-only采样
+不是完整 allocator 时间线，不能宣称 private曲线完全平坦，也不能替代>=20 GiB认证。审计边界见开发根
+`memory-ownership-review-6e90643.json`，不把 OS private peak 直接等同于 decoder-owned reservation。
+
+#### 原始 evidence 与双摘要
+
+根目录依次为：
+- `<repo>\build-unified-release\g21-6e90643-staircase-64mib-8feb223231a84e828dab5c4e73e0c954`
+- `<repo>\build-unified-release\g21-6e90643-staircase-500mib-c13ee15e64c84925b896402deef3c3cb`
+- `<repo>\build-unified-release\g21-6e90643-staircase-1gib-4b966e20a4d748d39c8816387065ebbf`
+
+每根保留 `source-manifest.json`、`encoder-report.json`、`encoder-evidence.jsonl`、`receiver/final.json`、
+`receiver/receiver-checks.json`、`receiver/samples.jsonl`、`external-digest-audit.json`、
+`independent-postrun-audit.json`、`staircase-verification.json`、`process-exits.json`、`pass0-completion-check.json`。
+三档 source/published 的 SHA256、BLAKE3：
+
+- 64 MiB SHA256 `1570ae31701f1484e6f22ac7792110ed07b3a2f0553f9d9b851b06001ab185e9`；
+  BLAKE3 `f7c84a668e894ceadc69c46b2d556d86802c76e877dd9eab3cf6fd466f013977`。
+- 500 MiB SHA256 `6516bfda2cf60b00db5dda13e7fd2198cee164be6dd8bb942b2743b52220d64d`；
+  BLAKE3 `a54fb4e5d83bb800a48e412c2ca9aa1b12606eacb2ad08bce69456816b2cedad`。
+- 1 GiB SHA256 `0c9d4154c0391a8d88c0fea4c24c9badf1acd1f8b7c51b3d8c06582b2dd45dc0`；
+  BLAKE3 `f07dfdd2ee42e5df77d123a88baee4ed25b8205058885adc21e9fbcddc610fe5`。
+
+所有 run 重新枚举并证明 DISPLAY2=`[2560,0,5120,1440]`/2560×1440，DISPLAY1受保护；下次仍须现场枚举。
+Receiver先启动，命令只含 `--receive <fresh receiver root> <deadline>`，无source路径/摘要/SessionId/sender oracle。
+source通过OS CSPRNG流式生成，FileShare.Read lease从Receiver启动前保持至两端退出；payload仅来自右屏可见像素。
+独立post-run audit在完成后重读两份文件，不使用sender摘要替代实际文件hash。
+
+完整汇总、每份 evidence hash与三 EXE hash不变核对：
+`<repo>\build-unified-release\g21-pass0-transition-d3d6e5ba640d4305b161a2e467b70896\same-candidate-6e90643-staircase-audit.json`。
+冻结 Encoder SHA256=`f63f7773b8de829da6536664e4467abbf69670b8dc4a56ea53452cc4d49caaf0`；
+Decoder=`8321da971527ebc9939bc31441636aaea9a56263e7f96df378c3bd37591c549c`；
+Gate=`96183eb7a50446572d3227c6e491ced3d5c89cd4f0bfdae3d06741cea78fe6d4`。
+
+#### 精确验证入口与预算
+
+`formal-6e90643/summary.json` 记录全部命令、deadline、退出码、stdout/stderr：
+
+```powershell
+$build = '<repo>\build-unified-release'
+& "$build\tests\PBApplication\Release\PBUnifiedSenderSchedulerTests.exe" --rng-seed 21092026
+& "$build\tests\PBApplication\Release\PBApplicationTests.exe" '[application][g21],[application][report][g17]' --rng-seed 21092026
+& "$build\tests\PBTelemetry\Release\PBTelemetryTests.exe" '[telemetry][g17],[telemetry][g21]' --rng-seed 21092026
+& "$build\tests\UnifiedRemoteGate\Release\PBUnifiedRemoteGate.exe" --self-test
+& '<python>' '<repo>\tests\UnifiedRemoteGate\run_g21_transition_probe.py' '<NEW_ABSOLUTE_PROBE_ROOT>' --modes clean 3
+# 必须从交互 console / Codex tty:true 启动，三个 root 各为新 GUID，依序且前档全过后才继续：
+& '<repo>\tests\UnifiedRemoteGate\Run-G21LocalStaircase.ps1' -Tier 64MiB -NewRunRoot '<NEW_64MIB_ROOT>' -MaximumSeconds 1800
+& '<repo>\tests\UnifiedRemoteGate\Run-G21LocalStaircase.ps1' -Tier 500MiB -NewRunRoot '<NEW_500MIB_ROOT>' -MaximumSeconds 4200
+& '<repo>\tests\UnifiedRemoteGate\Run-G21LocalStaircase.ps1' -Tier 1GiB -NewRunRoot '<NEW_1GIB_ROOT>' -MaximumSeconds 7200
+```
+
+结果：scheduler10 cases/247,055 assertions；Application13/2,744；telemetry9/8,345；Gate self-test PASS；
+16-Segment clean/phase3均PASS，未靠第二Carousel pass。旧阶段八phase、crash-safe/durable/compaction/Bootstrap
+位精确与无分配邻接证据分别保留在0.9～0.11；不把旧身份测试冒称为本次重跑。没有额外full CTest、ASan、GPU
+矩阵、20 GiB或新真实远程运行。现有Base-only实际capture闭环沿用其独立authority，没有在本轮重哈希/重放3.8GB。
+独立live false-accepted oracle继续`null`，reason=`No independent sender truth supplied to receiver`。
+
+#### 最小远控复验包（prepared，不是 remote PASS/G22 release）
+
+准备根：
+`<repo>\build-unified-release\g21-6e90643-remote-ready-9fcfe8767919473badec2859e9154af1`。
+
+- `PixelBridge-G21-RemoteEncoder-6e90643-15Hz.zip`：26,166,009 bytes，SHA256
+  `b1a0835a8ffe5b24c5b2621b605a7e66f73746d07acac4aebd986831b696b998`，39 entries。
+- `PixelBridge-G21-LocalReceiver-6e90643-15Hz.zip`：1,022,995 bytes，SHA256
+  `53bff51163e1c39b5ec972d2734570fe7922463e7390da1e9b4c7a1f1faa1655`，8 entries。
+- `FIELD_RECHECK_README.md` 给出最小顺序：远程完整解压`00_Check.bat`；右屏连接/完整摆放远控窗口；
+  本机先`Start-G21Receiver.ps1 -Stage smoke`；远程再`01_Start_Smoke_1MiB.bat`；全部Gate/外部审计通过后同序full。
+  full为64 MiB/15Hz/1800秒，smoke1 MiB/600秒；Q/Enter正常停sender，超时绝不是成功。
+- sender入口基于本提交tracked脚本派生，差异保存在`sender-entry.diff`；延长full期限、持有source只读lease、
+  停止后独立读取source双摘要。`Get-G21FileDigests.ps1`使用锁定文件流、1MiB buffer、.NET SHA256和hash/版本/ABI
+  固定的BLAKE3 C API，不复制sender-report摘要，不需要远程Python；不得给运行中的Receiver传source或审计JSON。
+- 两包逐entry bytes/hash/无重复与越界路径核对、新目录解压后PowerShell5.1 CheckOnly/identity通过，无run/source/window。
+  helper的empty/abc/2,056,443-byte跨buffer fixture与Python双摘要一致，也重读了已结束的1GiB published file一致；
+  错DLLhash、既有输出、篡改Encoder均拒绝且没有新source。结果见`preparation-verification.json`、`checks/`。
+- 新wrapper只验证了CheckOnly和独立digest helper，没有在真实远程端执行live orchestration；不得宣称目标机、网络、
+  远控窗口或G22 SBOM/LICENSE/发行门已验证。主产品源码/二进制没有为组包而修改。
+
+当前没有本任务启动的Encoder/Decoder/Gate残留；所有旧失败与新成功artifact都保留。受保护文件SHA256仍为
+`076EF4C9B9F89EABCCD323DBE4BFFC4DC125DDAF96E6EE437D2CF5B1B1CEA306`，只它未跟踪、从未修改/暂存。
+下一步是用户安排真实远控场景后，以冻结候选执行smoke/full与独立外部审计；若coverage失效，先读首次失败原因，
+不能以本次未复现抹掉旧失败。G21真正满足退出标准并独立提交后继续G22，而不是因为本机阶梯完成就提前关G21。
 
 ## 1. 交接时结论
 
