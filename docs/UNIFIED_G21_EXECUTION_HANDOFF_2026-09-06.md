@@ -3,7 +3,239 @@
 > 本文是关闭当前 Codex 对话前的事实交接，不替代
 > [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) 的范围和退出标准，
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
-> [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～18 节，再使用本文定位证据。
+> [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
+
+## 0. 本对话关闭时的最新权威增量（2026-09-06 20:25 CST）
+
+> **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
+> “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
+> 后续第 1～8 节继续保留，作为真实远控链历史、原始失败形状和操作背景，不得反向覆盖本节。
+
+### 0.1 当前结论与 Git 边界
+
+- 关闭本对话时的**代码基线**为 `4a2463f7e7ddc2179168b00d55bc4ca69f509d53`
+  （`fix(unified): rotate striped capture phases`）。本次纯文档交接提交会使最终 HEAD 位于该代码基线之后；下一任务应
+  用 `git log --oneline --decorate -20` 和 `git merge-base --is-ancestor 4a2463f HEAD` 核对，而不是要求 HEAD 仍精确等于
+  `4a2463f`。
+- 工作树只有用户所有、受保护的未跟踪文件 `docs/PHASE1_GATE_REPORT.md`；其 SHA-256 仍为
+  `076EF4C9B9F89EABCCD323DBE4BFFC4DC125DDAF96E6EE437D2CF5B1B1CEA306`。绝对不要修改、删除、暂存或提交它。
+- 关闭前没有 `PixelBridgeEncoder`、`PixelBridgeDecoder` 或 `PBUnifiedRemoteGate` 进程存活。
+- G00..G20 保持完成；G21 已完成启动期 resource 根因修正和实际 capture 的 Base-only 证明，但**仍为 PARTIAL**。
+  当前 `4a2463f` 的 64 MiB 本机实屏硬门通过；500 MiB 文件字节与发布门全部正确，却因
+  `16,042.594 < 16,384 B/unique` 以性能硬门 exit 1；该候选未运行 1 GiB。不得把“文件正确”误写为 G21
+  性能通过，也不得把旧 `786f466` 的 500 MiB 通过嫁接成 `4a2463f` 的通过。
+- 用户已明确纠正执行边界：**从 G21 开始，不是永久停在 G21**。G21 全部退出标准真正满足并提交后，应继续执行 G22；
+  若仍缺用户稍后安排的带远控因素现场复验，则保留该唯一边界并继续所有不依赖现场的工作，不能伪造远程结论。
+
+### 0.2 本轮已经关闭的两个原始阻塞
+
+#### 启动期 416 次 resource rejection
+
+旧 `433bccf` 真实远程 64 MiB 虽正确发布，仍在 W=8 建立阶段累计 416 次 `outerResourceRejections`。本轮通过
+生产调用顺序、ReceiverIngress orphan cache 和 Control/Transport 调度的窄链路证明：旧 sender 的
+SegmentDescriptor 只出现在早期 Control，Transport-bearing mixed frame 未保证携带当前 Segment 的 Descriptor；在
+descriptor 尚未到达时，其他 Segment 的 Transport 会先占满有界 orphan cache，形成启动期资源拒绝。
+
+修正及证据：
+
+- `634939c fix(unified): bind striped transport before admission`：每个带 Transport 的 mixed frame 都为当前 Segment
+  保留其 SegmentDescriptor，且接收端继续先处理 Control、再处理 Transport；没有增大 orphan quota，没有允许未知
+  Segment 触发大分配或 FEC codec 创建。
+- `951543f test(unified): stabilize striped fallback fixture`：稳定真实调度顺序夹具。
+- 定向 no-raster/真实顺序 fixture 在旧行为下可重复出现资源拒绝，修正后通过；后续 64 MiB、500 MiB 本机实际屏幕
+  运行的 resource/conflict/deferred/quota/orphan 计数均为 0。
+- 资源 telemetry 已细分为 protocol limit/exhaustion、Control reassembly quota、FEC OOM/decoder quota/extra
+  insufficient、Receiver policy、orphan admit/drop/exhaustion/conflict 等字段。以后不能再只凭聚合计数猜根因。
+
+#### Base Luma 独立恢复
+
+`7b29c4b test(unified): prove Base recovery from actual captures` 已建立同一实际 capture 的离线
+chroma-neutralized 派生闭环，不使用 sender source、理想 raster 或重渲染帧替代实际像素：
+
+- 权威根：
+  `<repo>\build-unified-release\g21-local-base-authoritative-0d4e5cda46e34e5082c0c5356778d852`
+- 原始实际 capture：256 帧，`3,775,009,897` bytes；派生器只对实际捕获 BGRA 像素执行
+  `B=G=R=luma`，共中和 943,718,400 pixels、改变 700,643,540 color components，并保留 alpha、row padding
+  和 capture metadata。
+- Base-only receiver 显式禁用 Fine Luma 与 Chroma admission，消费相同 256 帧后完整恢复 1 MiB 文件，
+  WholeFileDigest、安全发布、final reopen 和外部 SHA-256/BLAKE3 全部通过；resource/conflict 均为 0。
+- source/live/Base-only 的 BLAKE3 均为
+  `e8d6c2fd806def6af3f04b48c031e3384b1f04f761b5e278dfe7d1903183e36f`；source SHA-256 为
+  `d493c0e73f09d5a868f2b0c1225a7fe5eebbce257bc5e774be50bed020d40ecf`。
+- 必读原始文件：`receiver-live-recorded/final.json`、`receiver-live-recorded/actual-capture-checks.json`、
+  `actual-capture.pbrv2`、`chroma-neutralization-report.json`、`actual-capture-chroma-neutralized.pbrv2`、
+  `receiver-base-luma-only/final.json`、`receiver-base-luma-only/base-luma-checks.json`、
+  `base-luma-external-digest-audit.json`。
+
+因此“Base-only 仍缺”已经过时。仍不可用的是**独立 live false-accepted codeword oracle**：Decoder 在真实场景不能
+获得 sender truth；应继续报告 `null` 和 unavailable reason，不能拿最终 whole-file digest 或合成 fixture 冒充该 oracle。
+
+### 0.3 新增本机右屏 15 Hz 阶梯基础设施
+
+`tests/UnifiedRemoteGate/Run-G21LocalStaircase.ps1` 是本轮新增的有界、create-only supervisor：
+
+- 精确档位：64 MiB=`67,108,864` bytes；500 MiB=`524,288,000` bytes；1 GiB=`1,073,741,824` bytes。
+- 每轮先重新枚举并验证右屏 `\\.\DISPLAY2` 为 2560×1440；Decoder 先启动并捕获完整右屏，Encoder 再以
+  `--single-monitor-fullscreen \\.\DISPLAY2`、Unified、15 Hz 启动。
+- 使用流式 OS CSPRNG 生成 fresh、不可压缩 source；Session 期间持有只读 lease；每次要求 fresh GUID、fresh source、
+  fresh run root，拒绝覆盖已有 evidence。
+- Decoder 参数不含 source path、source digest、SessionId 或 sender report。只有 receiver 完成后，独立 audit 才读取
+  source manifest 与 published file，复核 exact byte count、SHA-256 和 BLAKE3。
+- 每秒采样两个进程的 working set/private bytes；检查 Segment、WholeFileDigest、安全发布、final reopen、残留文件、
+  lane CRC/identity、resource/conflict/deferred/quota/orphan、16 KiB 指标、进程退出和 O(active Segment window) 证据。
+- sender 通过附着同一 console 的 `Q` 正常停止，不把 deadline/强杀/部分恢复写成成功；失败会保存
+  `failure-process-state.json` 和原始 receiver snapshot。
+- 该脚本依赖交互式 Windows console；从 Codex `exec_command` 启动时必须使用 `tty:true`。无 PTY 的重定向 console
+  会让 sender 的 `Q` 控制失效。建议有界期限：64 MiB 1800 秒、500 MiB 4200 秒、1 GiB 7200 秒。
+
+关联提交：
+
+- `05f8b4d test(unified): add bounded local screen staircase`
+- `228a3ae fix(test): automate bounded local sender stop`
+- `e4652ea test(unified): bound extended local staircase runs`
+- `9903f58 test(unified): preserve staircase failure process state`
+- `65584be test(unified): abort doomed staircase tiers early`
+- `2f42277 test(unified): abort incomplete coverage runs early`
+
+### 0.4 阶梯运行的权威结果
+
+| 代码/候选 | 档位 | 最终状态 | elapsed | unique / UniqueVisualFPS | B/unique | 决定性结论 |
+| --- | ---: | --- | ---: | ---: | ---: | --- |
+| `786f466`，固定 capture phase，12.5%+32 repair | 64 MiB | PASS，8/8，正确发布 | 280,616 ms | 3,839 / 13.817856 | 17,480.819 | 所有硬门、外部摘要、错误计数通过 |
+| `786f466`，同上 | 500 MiB | PASS，63/63，正确发布 | 2,240,926 ms | 31,321 / 14.002865 | 16,739.185 | 同一旧候选的硬门通过，不代表当前 HEAD |
+| `786f466`，同上 | 1 GiB | FAIL，31/128，未发布 | 约 1,130 s 后提前中止 | 15,905 / 13.7571 | 不可用 | Segment 27 仅 6,375/6,385，short 10；deferred/FEC quota=235 |
+| `4a2463f`，phase hold=128、step=1 | 64 MiB | PASS，8/8，正确发布 | 262,960 ms | 3,831 / 14.727552 | 17,517.323 | 当前 HEAD 的 64 MiB 通过 |
+| `4a2463f`，同上 | 500 MiB | **性能 FAIL**；63/63 且文件正确发布 | 2,238,745 ms | 32,681 / 14.626057 | **16,042.594** | 比 16 KiB 硬门少 341.406 B/unique（约 2.08%）；receiver exit 1 |
+| `4a2463f`，同上 | 1 GiB | 未运行 | — | — | — | 按 fail-fast 原则在 500 MiB 后停止 |
+
+当前 HEAD 的 64 MiB 权威根：
+
+```text
+<repo>\build-unified-release\g21-phase128-staircase-64mib-7e80057f17c345399a7faf2755b36b51
+```
+
+该轮 source/published SHA-256 均为
+`bba12e04d6cfeacab4d0db9bd05980a237fa558255d9bd81bc31050d8aae340f`，BLAKE3 均为
+`8cf95fd7798d7ef962f65097deb73be0b079a3c4c67635d129f6bc5da090f50b`。Receiver/Encoder peak working set 分别为
+404,197,376 / 258,486,272 bytes，peak private 分别为 626,536,448 / 302,841,856 bytes；进程 exit 0/0。
+
+当前 HEAD 的 500 MiB 权威失败根：
+
+```text
+<repo>\build-unified-release\g21-phase128-staircase-500mib-a4ee996b04fe438eb10adb1907df0659
+```
+
+`receiver/final.json` 的权威业务状态确实是 `Completed`：63/63、524,288,000 bytes、WholeFileDigest、安全发布、
+final reopen、frame coverage 均为 true，resource/conflict/deferred/quota/orphan 均为 0；但
+`receiver/failure.txt` 精确记录 `published file does not meet the G21 16 KiB/unique hard gate`，所以进程 exit 1。
+`postfailure-external-digest-audit.json` 独立证明 source/published 的 exact bytes、SHA-256
+`db517f94f1f9400efdae7b3e23f9d3cca804bb905ef822c1645b4cb3eecfc4aa` 和 BLAKE3
+`7f8bb00f15083a71d9ebccd668b209669667b175f2acee81d0b10cc24296d81c` 全部相等。Receiver/Encoder peak working set
+分别为 406,577,152 / 277,237,760 bytes，peak private 分别为 678,330,368 / 332,394,496 bytes。
+
+旧 `786f466` 的三个权威根和 1 GiB 分析：
+
+```text
+<repo>\build-unified-release\g21-final-guard32-staircase-64mib-ccc7a3681f8e47e28c57256340c926d7
+<repo>\build-unified-release\g21-final-guard32-staircase-500mib-0c2c8e5b7b944f9bbab8d6c872e9a6e4
+<repo>\build-unified-release\g21-final-guard32-staircase-1gib-c63e2113a8f94e4588aef5056567297c
+<repo>\build-unified-release\g21-final-guard32-1gib-failure-analysis-77ebac6297204a7d9d777a37a8fb40d7\analysis.json
+```
+
+1 GiB 失败不是全局内存耗尽：同一窗口其他 Segment 完成，Segment 27 的 K=6,385、accepted=6,375、scheduled=7,216，
+仅短 10 个方程；固定 capture phase 把周期性捕获遗漏相关地集中到某些 Segment。不能通过扩大 W、忽略 quota 或伪造
+完成来绕过。
+
+### 0.5 已尝试的修正、参数证据与当前根因判断
+
+repair/window 相关提交按时间保留了真实失败，而不是覆盖证据：
+
+- `3fb3004` 将初始 repair 降为 5%，但 500 MiB 未可靠完成；
+- `d061573` 使用 10% margin；历史 1 GiB 固定 phase 运行首窗口只有 7/8，Segment 4 的 K=6,385、
+  accepted=6,325，short 60；
+- `bcc88c7` 使用 12.5% repair；无 guard 的 500 MiB 曾出现 Segment 31 short 1；
+- `786f466` 在 12.5% 之外加入固定 32-block window-transition guard，使固定-phase 64/500 MiB 通过，但 1 GiB
+  仍因相关相位不平衡在后续窗口失败；
+- `4a2463f` 每隔 128 logical frames 将 striped capture phase 旋转一步，修复固定 phase 长期偏置，且当前 64 MiB
+  通过、500 MiB 正确发布；但预排 repair/control 总开销在接近满速捕获时使 500 MiB 指标低于硬门。
+
+`573cef8 fix(telemetry): count bounded out-of-order frames exactly` 同时将 unique-frame 计数修成有界 exact FIFO 4096
+加 max-evicted frontier，避免 out-of-order 观测被近似算法错误重复计数。当前 500 MiB 的 32,681 unique 是有效硬门
+分母，不能修改 telemetry 或丢弃捕获较好的帧制造绿灯。
+
+两个 parameter-sweep 根只用于方向判断，不是 live 通过：
+
+```text
+<repo>\build-unified-release\g21-phase-hold-sweep-0843147e2e974fb4a1ce93d8aee84b83
+<repo>\build-unified-release\g21-phase-hold-sweep-fine-594599bd34b74517a9708f829d83881d
+```
+
+同一 synthetic sparse/burst probe 下，hold=272 得到最高的 16,789.808 B/unique，但它只跨两个 Pass-0 phases；
+128 为 16,508.946，208/224/240/256、352、384/400/416 也曾越门，192/288/304/320/336/368/432/448/480/512
+失败。这组数据不是单调函数，也没有覆盖 `>8 Segment` 的首次 window slide，因此**不得把 272 直接写进产品后就盲跑
+1 GiB**。临时 sweep 对常量的修改已经恢复；当前源码/二进制仍是提交的 hold=128。
+
+当前最重要的判断：
+
+1. 500 MiB phase128 与旧固定 phase 的 sender submitted frames 几乎相同（33,510 vs 33,551），所以失败不是简单的
+   “phase 旋转让 sender 多跑很久”。新轮捕获更完整（32,681 unique / 14.626 Hz；旧轮 31,321 / 14.003 Hz），反而让
+   相同预排开销暴露为较低 B/unique。硬门必须在更好的捕获下也通过，不能依赖 WGC 丢帧。
+2. Sender 是单向链路，没有 ACK，无法知道 Receiver 已提前恢复；Pass 0 repair 会对每个 W=8 window 支付。
+   `>8 Segment` 文件又要求旧窗口全部完成后才能 slide，否则 Receiver 的 bounded decoder quota 必然拒绝新窗口。
+3. 12.5%+32 在 phase-balanced schedule 下较可靠，但固定开销不足以过当前 500 MiB 硬门；更低 repair 有指标空间，
+   但历史固定 phase 曾留下 straggler。较合理的解空间是**相位均衡调度 + 更小的 Pass-0 repair**，而不是只调 hold，
+   更不是放宽 16 KiB 门、修改分母或增大 Receiver quota。
+4. 现有 `RunUnifiedLargeWindowRecoveryProbe` 只有恰好 8 个 Segment，而且允许在后续 Carousel pass 修复，无法证明
+   第一个窗口在发出下一窗口 Transport 前已经安全释放。
+
+### 0.6 下一任务的最短可靠推进顺序
+
+1. **先补确定性 `>8 Segment` Pass-0 window-transition probe。** 建议 9 或 16 Segment、Receiver max=8，并从现有
+   1 GiB 失败抽取 phase-biased loss。必须断言：第一个窗口所有 Segment 在第一条下一窗口 Transport 之前已 digest-complete
+   并释放 decoder；deferred/quota/resource/conflict=0；同时保留 16 KiB/unique 预算。夹具不得靠第二个 Carousel pass
+   回头补洞才变绿。
+2. 在该夹具下每次只改一个变量，比较保守的 `1/N` 初始 repair（例如 1/9、1/10、1/11）和 phase hold。当前
+   `CalculateEquationCounts` 的比例实现假定 denominator 可整除 numerator；若改成任意 numerator/denominator，必须用
+   checked multiplication/ceil 并补 overflow/boundary tests，不能静默泛化。
+3. 候选必须先跑 scheduler、`[application][g21]`、新 window-transition probe 和 RemoteGate self-test；不要无理由重跑
+   full CTest。任何 source/build-identity 变更后都要重新 configure/build，并核对 Encoder/Gate 嵌入 commit 等于 HEAD。
+4. 在**同一最终候选/同一 HEAD/同一参数**下，使用全新 root 依次跑 64 MiB → 500 MiB → 1 GiB。64/500 任一档
+   出现 digest、publish、resource、conflict、deferred/quota、硬门、内存或进程失败就先修，不要盲跑更大档。
+5. 每轮完成后验证 `WholeFileDigest + safe publish + final reopen + complete current-run frame coverage`，再接受
+   `VerifiedEncodedBytesPerUniqueFrame`；独立 external audit 必须在运行后读取 source 与 published file。
+6. 三档本机真实像素链通过后，更新本文、`UNIFIED_REMOTE_GATE.md` 和路线 G21，并保留精确 artifact root。它仍不能冒充
+   用户稍后安排的带远控因素真实复验。
+7. 用户安排的最终远控复验满足 G21 live publish、错误文件为 0、resource/conflict 为 0、16 KiB 硬门、Base-only、
+   外部摘要及 oracle 边界后，正式关闭 G21并创建独立提交；**随后继续 G22**，不要一直停留在 G21。
+
+### 0.7 操作、安全与证据注意事项
+
+- 新任务拥有项目绝对修改权限，可修改架构、协议、视觉合同、测试工具和 UI；不需要维持旧视觉/协议兼容性。但任何
+  改动仍须保持“payload 只从 Decoder 实际捕获的可见像素进入”，禁止 socket、pipe、共享内存、剪贴板、临时文件交换、
+  source/digest oracle 或伪造 telemetry。
+- 本机有两块屏幕；右屏可自由用于窗口放置、Encoder/Decoder 和鼠标键盘自动化。默认尽量不要扰动左屏；开始每轮前
+  仍须现场枚举 monitor，不能永久假设 `DISPLAY2` identity/geometry 不变。
+- 每轮使用 fresh GUID/root；原 evidence 永不覆盖、重命名或删除。失败与成功同等保留。跑完必须清理自己启动的进程，
+  但不得清理原始 evidence。
+- PowerShell 用显式 `Set-Location -LiteralPath`/`-LiteralPath` 和数组计数；需要 Python 时使用
+  `<python>`，不要使用系统 Python 3.6。
+- Git 只显式暂存目标文件；不 `git add -A`、不 amend/rebase/reset/push。提交敏感构建身份变化后，必须重构建再验证
+  packaged binary embedded identity 等于 HEAD。
+- 本机 64/500/1 GiB 是 LocalDesktop actual-pixel 证据；synthetic/WARP/no-raster/receiver-only 证据只能解释相应层级；
+  用户稍后安排的真实远控链才是 remote authority。任何报告都要分别标明 authority。
+- 32 KiB/unique 是工程目标，首版未达可如实记录；16 KiB/unique 是硬门，低于它不得关闭。更好的 capture 产生更多
+  unique frames 不是 telemetry bug，也不能人为丢弃来优化指标。
+- 只有 whole digest、安全发布、final reopen 且本次 frame coverage 完整时，`VerifiedEncodedBytesPerUniqueFrame` 才有值；
+  resume 跨生命周期覆盖不足时必须为 `null` 并给 unavailable reason。
+
+### 0.8 本轮定向验证与未执行边界
+
+- phase-rotation 最终定向结果：`PBUnifiedSenderSchedulerTests` 8 cases / 247,128 assertions；
+  `PBApplicationTests '[application][g21]'` 6 cases / 353 assertions；当前 Encoder/Gate embedded identity 为
+  `4a2463f`，RemoteGate self-test 通过。
+- 本轮没有重跑 full CTest、完整 ASan、全 GPU/GUI/native 矩阵、20 GiB 或新的真实远控复验。
+- 当前没有已知错误发布文件；当前 500 MiB 发布文件经独立摘要证明正确，但性能 hard gate 明确失败。
+- 本次收尾只更新文档，不改变产品代码，因此不应为文档提交重复大规模测试。
 
 ## 1. 交接时结论
 
@@ -221,4 +453,3 @@ extract 的 `00_Check` 均通过；真实 remote 64 MiB 的发布/外部摘要�
 
 本轮没有新增 full CTest、ASan、完整 GPU/corpus、Base-only、500 MiB/1 GiB 实屏、20 GiB 重跑或 G22。历史完整 Release
 CTest 218/218 只属于路线记录的 `e0729b2`，不能把当前定向结果重新表述为当前 HEAD full CTest 全绿。
-

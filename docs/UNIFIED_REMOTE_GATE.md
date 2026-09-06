@@ -961,3 +961,161 @@ Base Luma 独立恢复和独立 false-accepted codeword oracle 仍缺；当前 r
 用户在结束当前对话前授权下一任务在其睡眠期间使用本机双屏和输入自动化，优先在本机右屏以 15 Hz 依次完成
 64 MiB、500 MiB、1 GiB；本机结果不能冒充带远控因素的复验。完整运行方式、证据路径、踩坑与临时交互限制见
 `UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`。
+
+## 19. 启动期资源根因、actual-capture Base-only 与本机 15 Hz 阶梯（关闭对话时状态）
+
+> 本节是第 18 节之后的权威增量。第 18 节的真实远控运行及其 416 次拒绝形状仍是有效历史证据，但
+> “resource 根因尚未确认”和“Base-only 仍缺”已被本节关闭。本节的屏幕运行 authority 是本机
+> `LocalDesktop/WGC actual pixels`，不是带远控失真的现场复验。
+
+### 19.1 416 次启动期资源拒绝已经定位并修正
+
+生产顺序追踪和新 deterministic real-order fixture 证明：W=8 sender 原来只在早期 Control burst 中提供
+SegmentDescriptor，后续带 Transport 的 mixed frames 没有保证携带对应 Descriptor。Receiver 在 Descriptor 缺失时仍按
+安全合同将未知 Segment Transport 放入 bounded orphan cache；多个 Segment 并发使 cache 在 active decoder 6→7→8
+期间达到配额，形成第 18 节看到的 416 次拒绝。它不是持续总内存耗尽，也不需要扩大 quota。
+
+`634939c fix(unified): bind striped transport before admission` 让每个 transport-bearing mixed frame 都为当前 Segment
+预留 SegmentDescriptor，并保持 Control-before-Transport 处理顺序。未知 Segment 仍不触发大分配或 FEC codec，
+ActiveSegmentWindow=8、总 decoder byte limit、单 owner、250 ms、FEC/CRC/identity 和发布门都未放宽。
+`951543f` 稳定了 fallback fixture。细分 telemetry 现在能分别记录 protocol limit/exhaustion、Control quota、FEC
+OOM/decoder quota/extra insufficient、Receiver policy 和 orphan admit/drop/exhaustion/conflict；后续本机 64/500 MiB
+实际屏幕结果全部为 resource/conflict/deferred/quota/orphan=0。
+
+### 19.2 同一实际 capture 的 Base Luma 独立恢复
+
+权威根：
+
+```text
+build-unified-release/g21-local-base-authoritative-0d4e5cda46e34e5082c0c5356778d852/
+```
+
+有界 recorder 保存了 256 个 Decoder 实际捕获帧，原始 `actual-capture.pbrv2` 为 3,775,009,897 bytes。派生步骤只把
+每个实际 BGRA 像素的 B/G/R 置为同一 luma，保留 alpha、row padding 和 capture metadata；943,718,400 pixels 中
+700,643,540 个 color components 被实际改变。派生器没有访问 source、sender canonical raster、理想 raster、重渲染帧
+或已有 demod observations。
+
+Base-only receiver 显式禁止 Fine Luma/Chroma admission，消费派生后的相同 256 帧并完整恢复 1 MiB：WholeFileDigest、
+安全发布、final reopen、外部 SHA-256/BLAKE3、resource=0、conflict=0 全部通过。source/live/Base-only BLAKE3 均为
+`e8d6c2fd806def6af3f04b48c031e3384b1f04f761b5e278dfe7d1903183e36f`。决定性文件是：
+
+```text
+receiver-live-recorded/final.json
+receiver-live-recorded/actual-capture-checks.json
+actual-capture.pbrv2
+chroma-neutralization-report.json
+actual-capture-chroma-neutralized.pbrv2
+receiver-base-luma-only/final.json
+receiver-base-luma-only/base-luma-checks.json
+base-luma-external-digest-audit.json
+```
+
+这关闭了路线允许的 actual-capture neutralized Base-only 证据。独立 live false-accepted codeword oracle 仍不可用：
+真实 Decoder 没有 sender truth；final whole digest、错误发布为 0 和 synthetic truth fixture 都不能冒充独立 live oracle。
+
+### 19.3 右屏本机阶梯 supervisor
+
+`tests/UnifiedRemoteGate/Run-G21LocalStaircase.ps1` 负责有界自动化：重新验证 `\\.\DISPLAY2` 2560×1440、
+receiver-first、完整右屏 WGC、Encoder `--single-monitor-fullscreen \\.\DISPLAY2`、Unified/15 Hz、流式 OS CSPRNG、
+Session 期间 source read lease、fresh GUID/create-only root、外部 SHA-256+BLAKE3、每秒进程内存采样、Q 正常停止、
+残留/错误/进程退出检查。Decoder 启动参数不含 source path/digest、SessionId 或 sender report；独立 audit 只在
+发布后读取两端文件。
+
+该脚本需要交互式 console。Codex CLI 必须以 `tty:true` 调用，否则 sender 的 console `Q` 正常停止协议可能失效。
+每次运行使用全新目录，不复用已过期的 Session/signed state，不覆盖历史失败；结束后检查并清理自己启动的进程。
+
+### 19.4 `786f466` 固定 phase 阶梯
+
+在 12.5% 初始 repair 加 32-block window-transition guard 下：
+
+| 档位 | 结果 | elapsed | unique FPS | unique frames | B/unique | 关键计数 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 64 MiB | 8/8、发布/摘要全过 | 280,616 ms | 13.817856 | 3,839 | 17,480.819 | resource/conflict/deferred/quota=0 |
+| 500 MiB | 63/63、发布/摘要全过 | 2,240,926 ms | 14.002865 | 31,321 | 16,739.185 | resource/conflict/deferred/quota=0 |
+| 1 GiB | 31/128 后 fail-fast，未发布 | 约 1,130 s | 13.7571 | 15,905 | unavailable | deferred/FEC quota=235 |
+
+权威根：
+
+```text
+build-unified-release/g21-final-guard32-staircase-64mib-ccc7a3681f8e47e28c57256340c926d7/
+build-unified-release/g21-final-guard32-staircase-500mib-0c2c8e5b7b944f9bbab8d6c872e9a6e4/
+build-unified-release/g21-final-guard32-staircase-1gib-c63e2113a8f94e4588aef5056567297c/
+build-unified-release/g21-final-guard32-1gib-failure-analysis-77ebac6297204a7d9d777a37a8fb40d7/analysis.json
+```
+
+1 GiB 失败窗口中 Segment 27 的 K=6,385、accepted=6,375、scheduled=7,216，仅 short 10，而同窗口 peers 已完成。
+这证明固定 capture phase 会让周期捕获遗漏相关地集中到特定 Segment；不能以平均 repair 比例或前一窗口成功推断后续窗口。
+
+### 19.5 `4a2463f` phase rotation：64 MiB 通过，500 MiB 性能失败
+
+`4a2463f fix(unified): rotate striped capture phases` 每 128 logical frames 令 striped capture phase 前进一步，目标是
+让长运行的捕获别名在 Segment 间均衡。定向 scheduler 为 8 cases / 247,128 assertions；Application G21 为
+6 cases / 353 assertions；当前 Encoder/Gate embedded identity 对应 `4a2463f`，RemoteGate self-test 通过。
+
+64 MiB 权威根：
+
+```text
+build-unified-release/g21-phase128-staircase-64mib-7e80057f17c345399a7faf2755b36b51/
+```
+
+8/8、67,108,864 bytes、WholeFileDigest、安全发布、final reopen、无 `.part/.resume`、外部双摘要、所有 lane
+CRC/identity、resource/conflict/deferred/quota/orphan 和进程退出均通过。Receiver elapsed 262,960 ms，3,831 unique，
+14.727552 Hz，17,517.323 B/unique。source/published SHA-256 为
+`bba12e04d6cfeacab4d0db9bd05980a237fa558255d9bd81bc31050d8aae340f`，BLAKE3 为
+`8cf95fd7798d7ef962f65097deb73be0b079a3c4c67635d129f6bc5da090f50b`。
+
+500 MiB 权威失败根：
+
+```text
+build-unified-release/g21-phase128-staircase-500mib-a4ee996b04fe438eb10adb1907df0659/
+```
+
+该轮不是恢复失败：`receiver/final.json` 为 `Completed`，63/63、524,288,000 bytes、WholeFileDigest、安全发布、
+final reopen、frame coverage 全部成立，resource/conflict/deferred/quota/orphan 全 0。独立 post-failure audit 证明
+source/published exact bytes 相等，SHA-256 均为
+`db517f94f1f9400efdae7b3e23f9d3cca804bb905ef822c1645b4cb3eecfc4aa`，BLAKE3 均为
+`7f8bb00f15083a71d9ebccd668b209669667b175f2acee81d0b10cc24296d81c`。
+
+但 Receiver 观察 32,681 unique @ 14.626057 Hz，`524,288,000 / 32,681 = 16,042.594 B/unique`，比硬门
+16,384 少 341.406 B/unique（约 2.08%）。因此 `failure.txt` 为
+`published file does not meet the G21 16 KiB/unique hard gate`，receiver exit 1；不能称为 500 MiB 通过。
+该候选没有继续跑 1 GiB。
+
+### 19.6 当前性能根因与下一条证明路径
+
+旧固定-phase 500 MiB sender 提交 33,551 frames，新 phase128 提交 33,510，运行长度基本相同。新轮失败是因为 WGC
+捕获更完整：32,681 unique @ 14.626 Hz，而旧轮只有 31,321 @ 14.003 Hz。硬门按实际 unique frames 计数；依赖捕获丢帧、
+人为 drop、篡改 frame coverage 或修改 denominator 都是错误修复。
+
+单向 sender 没有 ACK，所以每个 Pass-0 W=8 window 必须预排足够 repair，保证全部八个 Segment 在 window slide 前
+完成；否则下一窗口 Transport 会被 bounded decoder quota 拒绝。与此同时，每个窗口的过量 repair/control 都进入
+B/unique 分母并累积。当前 12.5%+32 比较可靠但在接近满速捕获时没有指标余量；更低 repair 有指标空间，但固定 phase
+历史上出现过 short 60/10/1 的 straggler。下一步应是相位均衡调度与更小 Pass-0 repair 的联合设计，而不是扩大 W 或
+只调 phase hold。
+
+现有 `RunUnifiedLargeWindowRecoveryProbe` 恰好只有 8 Segment，并允许后续 Carousel pass 回补，不能证明第一次 window
+transition。长跑前必须增加 9 或 16 Segment、Receiver max=8 的 deterministic Pass-0 probe，注入从实际失败抽取的
+phase-biased loss，并断言：第一窗口每个 Segment 在第一条下一窗口 Transport 之前 digest-complete、active decoder 已释放、
+resource/conflict/deferred/quota=0、仍满足 16 KiB/unique。随后一次只改一个 repair/phase 变量，先跑定向测试，再在同一
+最终 HEAD 用 fresh roots 依次重跑 64 MiB、500 MiB、1 GiB。
+
+phase-hold sweep 的 synthetic 方向证据位于：
+
+```text
+build-unified-release/g21-phase-hold-sweep-0843147e2e974fb4a1ce93d8aee84b83/
+build-unified-release/g21-phase-hold-sweep-fine-594599bd34b74517a9708f829d83881d/
+```
+
+其中 hold=272 在既有 probe 中最高（16,789.808 B/unique），但只跨两个 Pass-0 phases 且没有 `>8 Segment` transition，
+不得直接采用。临时 sweep 修改已经恢复，提交状态仍为 hold=128。若把 repair 从 1/N 扩展为任意分数，需同时修正
+`CalculateEquationCounts` 的 checked ceil/overflow 语义并增加边界测试。
+
+### 19.7 退出边界
+
+- G21 仍为 PARTIAL：当前 HEAD 的 500 MiB 16 KiB/unique 硬门失败，1 GiB 未运行，且修正后仍需用户稍后安排的
+  带远控因素最终现场复验。
+- G21 的 resource 根因与 Base-only 不再是未完成项；独立 live false-accepted oracle 明确为 unavailable boundary。
+- 本机三档通过只能证明 LocalDesktop actual-pixel 链，不能写成 remote field pass。
+- 用户明确要求：G21 达到全部退出标准后，应立即按路线继续 G22，不得把“当前从 G21 开始”误解为永久停止在 G21。
+- 最新完整操作、Git 安全边界、所有 artifact absolute paths 和踩坑总结见
+  `UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md` 第 0 节。
