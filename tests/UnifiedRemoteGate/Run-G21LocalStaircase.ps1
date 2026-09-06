@@ -56,6 +56,91 @@ function Add-ProcessArguments
     }
 }
 
+if (-not ('PixelBridgeConsoleStopInjector' -as [type]))
+{
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class PixelBridgeConsoleStopInjector
+{
+    private const int StandardInputHandle = -10;
+    private const short KeyEvent = 0x0001;
+    private const ushort VirtualKeyQ = 0x51;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct KeyEventRecord
+    {
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool KeyDown;
+        public ushort RepeatCount;
+        public ushort VirtualKeyCode;
+        public ushort VirtualScanCode;
+        public char UnicodeChar;
+        public uint ControlKeyState;
+    }
+
+    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
+    private struct InputRecord
+    {
+        [FieldOffset(0)]
+        public short EventType;
+        [FieldOffset(4)]
+        public KeyEventRecord KeyEvent;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int standardHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetConsoleMode(IntPtr consoleHandle, out uint mode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WriteConsoleInputW(IntPtr consoleInput, InputRecord[] buffer,
+        uint inputRecords, out uint writtenRecords);
+
+    private static IntPtr GetInteractiveInputHandle()
+    {
+        IntPtr inputHandle = GetStdHandle(StandardInputHandle);
+        uint mode;
+        if (inputHandle == IntPtr.Zero || inputHandle == new IntPtr(-1) || !GetConsoleMode(inputHandle, out mode))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "G21 staircase requires an attached interactive Windows console");
+        }
+        return inputHandle;
+    }
+
+    public static void AssertInteractiveConsole()
+    {
+        GetInteractiveInputHandle();
+    }
+
+    public static void SendManualStopKey()
+    {
+        InputRecord record = new InputRecord();
+        record.EventType = KeyEvent;
+        record.KeyEvent.KeyDown = true;
+        record.KeyEvent.RepeatCount = 1;
+        record.KeyEvent.VirtualKeyCode = VirtualKeyQ;
+        record.KeyEvent.UnicodeChar = 'q';
+        uint writtenRecords;
+        if (!WriteConsoleInputW(GetInteractiveInputHandle(), new InputRecord[] { record }, 1, out writtenRecords) ||
+            writtenRecords != 1)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "Failed to inject the bounded Encoder manual-stop key");
+        }
+    }
+}
+'@
+}
+
+[PixelBridgeConsoleStopInjector]::AssertInteractiveConsole()
+
 $sizes = @{
     '64MiB' = 67108864L
     '500MiB' = 524288000L
@@ -131,6 +216,20 @@ try
     $receiverRoot = Join-Path $runRoot 'receiver'
     $receiverStdout = Join-Path $runRoot 'receiver.stdout.txt'
     $receiverStderr = Join-Path $runRoot 'receiver.stderr.txt'
+    $encoderReport = Join-Path $runRoot 'encoder-report.json'
+    $encoderJournal = Join-Path $runRoot 'encoder-evidence.jsonl'
+    $encoderArguments = @('--headless-broadcast', '--source', $sourcePath, '--profile', 'unified', '--channel', 'local',
+        '--single-monitor-fullscreen', '\\.\DISPLAY2', '--logical-fps', '15', '--seconds', [string]$MaximumSeconds,
+        '--manual-stop', '--report', $encoderReport, '--journal', $encoderJournal)
+    Write-NewJson -Path (Join-Path $runRoot 'source-manifest.json') -Value ([ordered]@{
+        schema = 'PixelBridge.G21.LocalStaircaseSource.1'; tier = $Tier; gitCommit = $head; bytes = $sourceBytes
+        generator = 'Windows OS CSPRNG with one bounded 1 MiB buffer'; sourcePath = $sourcePath
+        sha256 = $sourceSha256; blake3 = $sourceBlake3; sourceProvidedToDecoder = $false
+        immutableLease = 'FileShare.Read only, held from before receiver start through both process exits'
+        stopControl = 'One Q key-down record injected into the inherited interactive console after Receiver exit'
+        encoderIdentity = $encoderIdentity; gateIdentity = $gateIdentity; encoderArguments = $encoderArguments
+    })
+
     $receiver = Start-Process -FilePath $gate -ArgumentList @('--receive', $receiverRoot, [string]$MaximumSeconds) `
         -RedirectStandardOutput $receiverStdout -RedirectStandardError $receiverStderr -WindowStyle Hidden -PassThru
     Start-Sleep -Seconds 2
@@ -139,15 +238,10 @@ try
         throw "Receiver exited before Encoder startup with code $($receiver.ExitCode)."
     }
 
-    $encoderReport = Join-Path $runRoot 'encoder-report.json'
-    $encoderJournal = Join-Path $runRoot 'encoder-evidence.jsonl'
-    $encoderArguments = @('--headless-broadcast', '--source', $sourcePath, '--profile', 'unified', '--channel', 'local',
-        '--single-monitor-fullscreen', '\\.\DISPLAY2', '--logical-fps', '15', '--seconds', [string]$MaximumSeconds,
-        '--manual-stop', '--report', $encoderReport, '--journal', $encoderJournal)
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $encoder
     $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardInput = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.CreateNoWindow = $false
@@ -176,8 +270,7 @@ try
     }
     if (-not $sender.HasExited)
     {
-        $sender.StandardInput.WriteLine('q')
-        $sender.StandardInput.Flush()
+        [PixelBridgeConsoleStopInjector]::SendManualStopKey()
     }
     if (-not $sender.WaitForExit(30000))
     {
@@ -213,13 +306,6 @@ try
         throw 'Independent SHA-256/BLAKE3 source-to-published verification failed.'
     }
 
-    Write-NewJson -Path (Join-Path $runRoot 'source-manifest.json') -Value ([ordered]@{
-        schema = 'PixelBridge.G21.LocalStaircaseSource.1'; tier = $Tier; gitCommit = $head; bytes = $sourceBytes
-        generator = 'Windows OS CSPRNG with one bounded 1 MiB buffer'; sourcePath = $sourcePath
-        sha256 = $sourceSha256; blake3 = $sourceBlake3; sourceProvidedToDecoder = $false
-        immutableLease = 'FileShare.Read only, held from before receiver start through both process exits'
-        encoderIdentity = $encoderIdentity; gateIdentity = $gateIdentity; encoderArguments = $encoderArguments
-    })
     Write-NewJson -Path (Join-Path $runRoot 'external-digest-audit.json') -Value ([ordered]@{
         schema = 'PixelBridge.G21.LocalStaircaseExternalDigestAudit.1'; tier = $Tier; bytes = $sourceBytes
         source = @{ sha256 = $sourceSha256; blake3 = $sourceBlake3 }
