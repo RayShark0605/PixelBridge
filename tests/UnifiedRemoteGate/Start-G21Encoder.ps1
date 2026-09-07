@@ -8,7 +8,7 @@ $executable = Join-Path $root 'bin\PixelBridgeEncoder.exe'
 $expected = Get-Content -LiteralPath (Join-Path $root 'expected-build.json') -Raw | ConvertFrom-Json
 $actualHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -ne $expected.encoderSha256) { throw 'Encoder executable hash mismatch. Re-extract the original kit.' }
-$identityText = & $executable --build-identity
+$identityText = & $executable --build-identity | Out-String -Stream
 if ($LASTEXITCODE -ne 0) { throw 'Encoder cannot load. Keep the entire bin folder including all DLLs and subfolders.' }
 $identity = ($identityText -join "`n") | ConvertFrom-Json
 if ($identity.gitCommit -ne $expected.gitCommit -or $identity.applicationName -ne 'PixelBridgeEncoder') { throw 'Unexpected Encoder build identity.' }
@@ -73,7 +73,7 @@ if ($manualLoop) { Write-Host 'No automatic Encoder deadline: it loops until you
 else { Write-Host ('The run has a ' + $maximumSeconds + '-second safety limit. A limit exit is not receiver success.') }
 try
 {
-    & $executable @command
+    & $executable @command | Out-Host
     $encoderExit = $LASTEXITCODE
 }
 finally { $sourceLease.Dispose() }

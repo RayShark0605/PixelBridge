@@ -197,7 +197,7 @@ else
 }
 try
 {
-    & $decoderPath @arguments 1> $stdoutPath 2> $stderrPath
+    & $decoderPath @arguments 1> $stdoutPath 2> $stderrPath | Out-Null
     $exitCode = $LASTEXITCODE
 }
 catch

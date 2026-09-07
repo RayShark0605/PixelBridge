@@ -27,7 +27,7 @@ if ($expected.gitCommit -cnotmatch '^[0-9a-f]{40}$' -or $expected.encoderSha256 
 }
 $actualHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -cne $expected.encoderSha256) { throw 'Encoder executable hash mismatch. Re-extract this complete package.' }
-$identityText = & $executable --build-identity
+$identityText = & $executable --build-identity | Out-String -Stream
 if ($LASTEXITCODE -ne 0) { throw 'Encoder cannot load. Keep the complete bin folder and all subfolders.' }
 $identity = ($identityText -join "`n") | ConvertFrom-Json
 if ($identity.gitCommit -cne $expected.gitCommit -or $identity.applicationName -cne 'PixelBridgeEncoder')
@@ -91,7 +91,7 @@ try
     Write-Host 'Keep all four finder boxes and the entire canvas visible on the LOCAL RIGHT screen.'
     Write-Host 'Do not send the .bin source. When asked to stop, focus THIS console and press Enter or Q.'
     Write-Host 'The 600-second sender safety limit remains. Deadline exit is not receiver success.'
-    & $executable @command
+    & $executable @command | Out-Host
     $encoderExit = $LASTEXITCODE
     WriteNewText (Join-Path $runRoot 'process-exit.json') (@{ encoderExit = $encoderExit; finishedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json)
     Write-Host ('Encoder stopped with exit ' + $encoderExit + '. Preserve ALL evidence.')

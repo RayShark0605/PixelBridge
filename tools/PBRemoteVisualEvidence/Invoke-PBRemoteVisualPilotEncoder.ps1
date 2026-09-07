@@ -165,7 +165,7 @@ Write-Host "Hard maximum: $($plan.policy.encoderHardMaximumSeconds) s; logical F
 Write-Host ''
 try
 {
-    & $encoderPath @arguments 1> $stdoutPath 2> $stderrPath
+    & $encoderPath @arguments 1> $stdoutPath 2> $stderrPath | Out-Null
     $exitCode = $LASTEXITCODE
 }
 catch

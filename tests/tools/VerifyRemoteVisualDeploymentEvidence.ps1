@@ -368,7 +368,7 @@ try
         -Raw | ConvertFrom-Json
     $packagedDecoderPath = Join-Path ([string]$kitCreateResult.kitDirectory) `
         (Join-Path ([string]$kitManifest.package.directoryName) 'Decoder\PixelBridgeDecoder.exe')
-    $packagedCatalogText = @(& $packagedDecoderPath '--list-monitors' 2>&1) -join "`n"
+    $packagedCatalogText = @(& $packagedDecoderPath '--list-monitors' 2>&1 | Out-String -Stream) -join "`n"
     $packagedCatalogExitCode = $LASTEXITCODE
     if ($packagedCatalogExitCode -ne 0)
     {

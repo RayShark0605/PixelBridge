@@ -105,6 +105,30 @@ cmake --build build-unified-release --config Release --target PixelBridgeEncoder
 ctest --test-dir build-unified-release -C Release -R '^PixelBridge(Encoder|Decoder)GuiSmoke$' --output-on-failure
 ```
 
+## 9. 发布前 Profile 身份与旧 CLI 包装脚本兼容
+
+启动改造已独立提交为 `bd0dbad64faf615ab8a92dfe15f7863ddde6d402`。
+
+- 实测仅 `@(& GUI.exe ...)` 或单独 `2>&1` 仍不足以保证同步等待，必须进入实际管道或显式等待进程。
+  因此给现有工具的 metadata/monitor 查询补上 `Out-String -Stream`，需要终端输出的 Sender 包装调用补上
+  `Out-Host`，已有 stdout/stderr 文件重定向后补上 `Out-Null`。保留原编码/重定向、参数、异常和退出码。
+  该兼容修正避免包装脚本在 Encoder 仍运行时提前释放源只读 lease；不改 G21 流程或已封存 artifacts。
+- `test_g21_wrappers.py --gui-subsystem-fixture` 将现有纯生命周期 C# fixture 编译为 GUI subsystem，
+  验证 Windows PowerShell 5.1 的真正等待路径；不使用产品 EXE、真实屏幕、输入事件或非视觉 payload 通道。
+- 新增只读 `--unified-profile`。双端从实际编译的 `kUnifiedVisualProfile` 输出完整结构化 manifest，
+  包含身份、画布/tiles、regions、lanes、carriers、mixed slots、FEC 与 presentation 参数。
+  这是包身份诊断，不是新 wire descriptor，也不能作为 Decoder 的 payload 输入。
+- 两个实际 EXE 输出的规范 JSON 相同；当前 SHA-256 为
+  `312c7832854f8710719ee2d0e44e920e7270b48638044eaa4b6af9ee24b1cb8b`。
+  新 Unified 包必须封印这一实际输出，不能继续把旧 `remote-lf4`/layout 7 manifest 当作当前产品。
+
+证据：`artifacts/g22-package-20260907/` 内的 `build-profile.log`、双端 `*-unified-profile.json`、
+`profile-and-cli-tests.log` / `profile-and-cli-tests/summary.json`（**16/16 PASS**，增加显式文件重定向和 Profile 对等检查）、
+`powershell-syntax.json`；纯包装脚本回归在 `artifacts/g22-cli-wait-20260907/summary.json`，
+日志在 `artifacts/g22-startup-20260907/gui-wrapper-compatibility.log`。
+
+以上仍是源码/CLI/无产品窗口证据，独立包、从包启动、右屏真实恢复及人工 Esc 验证尚待完成。
+
 保护文件 `docs/PHASE1_GATE_REPORT.md` 起始 SHA-256：
 `076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`。
 该文件保持原有未跟踪状态，不修改、不暂存、不提交。

@@ -121,7 +121,7 @@ function Get-ApplicationBuildIdentity
         [Parameter(Mandatory = $true)][string]$ExpectedApplicationName,
         [Parameter(Mandatory = $true)][string]$ExpectedGitCommit
     )
-    $output = @(& $ExecutablePath --build-identity 2>&1)
+    $output = @(& $ExecutablePath --build-identity 2>&1 | Out-String -Stream)
     if ($LASTEXITCODE -ne 0)
     {
         throw "$ExpectedApplicationName --build-identity failed with exit code $LASTEXITCODE"

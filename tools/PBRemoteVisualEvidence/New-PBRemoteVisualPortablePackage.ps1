@@ -86,7 +86,7 @@ function Get-ApplicationBuildIdentity
         [Parameter(Mandatory = $true)][string]$ExpectedApplicationName,
         [Parameter(Mandatory = $true)][string]$ExpectedGitCommit
     )
-    $output = @(& $ExecutablePath --build-identity 2>&1)
+    $output = @(& $ExecutablePath --build-identity 2>&1 | Out-String -Stream)
     if ($LASTEXITCODE -ne 0)
     {
         throw "$ExpectedApplicationName --build-identity failed with exit code $LASTEXITCODE"
@@ -533,7 +533,7 @@ try
             "$applicationName.exe"
         }
         $copiedExecutable = Join-Path $stagingDirectory ($relativeExecutablePath.Replace('/', '\'))
-        $versionOutput = @(& $copiedExecutable --version)
+        $versionOutput = @(& $copiedExecutable --version | Out-String -Stream)
         if ($LASTEXITCODE -ne 0)
         {
             throw "$applicationName --version failed with exit code $LASTEXITCODE"

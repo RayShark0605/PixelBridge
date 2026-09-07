@@ -591,7 +591,7 @@ function New-PBRemoteVisualMonitorPreflight
     {
         throw "$EndpointRole monitor preflight Decoder is unavailable or a reparse point"
     }
-    $catalogOutput = @(& $resolvedDecoder --list-monitors 2>&1)
+    $catalogOutput = @(& $resolvedDecoder --list-monitors 2>&1 | Out-String -Stream)
     if ($LASTEXITCODE -ne 0)
     {
         throw "$EndpointRole monitor preflight failed to enumerate the packaged runtime catalog"

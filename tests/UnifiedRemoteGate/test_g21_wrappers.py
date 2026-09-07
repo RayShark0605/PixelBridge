@@ -116,11 +116,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--new-run-root", required=True, type=Path)
     parser.add_argument("--baseline-kit-root", type=Path)
+    parser.add_argument("--gui-subsystem-fixture", action="store_true", help="Exercise GUI EXE synchronous invocation without a real GUI or payload")
     args = parser.parse_args()
     root = args.new_run_root.resolve()
     root.mkdir(parents=True, exist_ok=False)
     fixture = root / "WrapperLifecycleFixture.exe"
-    compiler = subprocess.run([str(CSC), "/nologo", "/platform:x64", "/target:exe", "/out:" + str(fixture),
+    compiler = subprocess.run([str(CSC), "/nologo", "/platform:x64", "/target:winexe" if args.gui_subsystem_fixture else "/target:exe", "/out:" + str(fixture),
                                str(SCRIPTS / "wrapper_lifecycle_fixture.cs")], capture_output=True, timeout=30,
                               creationflags=subprocess.CREATE_NO_WINDOW)
     (root / "compiler.stdout.txt").write_bytes(compiler.stdout)
@@ -129,6 +130,7 @@ def main():
         raise RuntimeError("Process fixture compilation failed")
     results = []
     write_json(root / "scope.json", {"fixtureOnly": True, "livePixelTransferTest": False,
+        "guiSubsystemFixture": args.gui_subsystem_fixture,
         "productBinariesExecuted": False, "sourceBytesReadByReceiver": 0,
         "sourceHashes": {name: digest(SCRIPTS / name) for name in (
             "test_g21_wrappers.py", "wrapper_lifecycle_fixture.cs", "Start-G21Receiver.ps1", "Start-G21Encoder.ps1")}})

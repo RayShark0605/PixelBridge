@@ -114,11 +114,41 @@ def main():
         process = run([args.powershell, "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True)
         require(process.returncode == 2 and process.stdout, f"PowerShell merged redirection/exit lost: {process.returncode}")
 
+    def powershell_file_redirection(application):
+        quoted = str(application).replace("'", "''")
+        runtime_command = "--headless-broadcast" if application.stem.endswith("Encoder") else "--headless-receive"
+        stdout_path = root / f"{application.stem}.powershell.stdout.txt"
+        stderr_path = root / f"{application.stem}.powershell.stderr.txt"
+        output = str(stdout_path).replace("'", "''")
+        error = str(stderr_path).replace("'", "''")
+        command = f"& '{quoted}' {runtime_command} --g22-invalid-command 1> '{output}' 2> '{error}' | Out-Null; exit $LASTEXITCODE"
+        process = run([args.powershell, "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True)
+        require(process.returncode == 2 and stderr_path.stat().st_size > 20, "PowerShell explicit file redirection did not wait/preserve stderr")
+
+    profiles = []
+
+    def profile_metadata(application):
+        process = run([application, "--unified-profile"], capture_output=True)
+        require(process.returncode == 0 and not process.stderr, "Compiled profile diagnostic failed")
+        profile = json.loads(process.stdout)
+        require(profile["schema"] == "PixelBridge.UnifiedProfile.1" and profile["name"] == "PB-Unified-SC6-V3", "Wrong profile schema/name")
+        require(profile["visualProfileId"] == 0x5042554E49534333 and profile["layoutVersion"] == 10, "Wrong profile wire identity")
+        require((profile["canvasWidth"], profile["canvasHeight"], profile["tileWidth"], profile["tileHeight"]) == (1920, 1080, 6, 6), "Wrong raster geometry")
+        require(len(profile["regions"]) == 33 and len(profile["lanes"]) == 3 and len(profile["carriers"]) == 2, "Incomplete compiled manifest")
+        require((profile["presentation"]["minimumFps"], profile["presentation"]["defaultFps"], profile["presentation"]["maximumFps"]) == (1, 15, 60), "Wrong cadence contract")
+        canonical = process.stdout.strip()
+        if profiles:
+            require(canonical == profiles[0], "Encoder/Decoder compiled manifests disagree")
+        profiles.append(canonical)
+        (root / f"{application.stem}.unified-profile.json").write_bytes(canonical)
+
     try:
         for application in applications:
             case(f"{application.stem}: Windows GUI PE", lambda application=application: check_pe(application))
             case(f"{application.stem}: CLI pipes and errors", lambda application=application: application_cli(application))
             case(f"{application.stem}: PowerShell merged stderr and exit", lambda application=application: powershell_redirection(application))
+            case(f"{application.stem}: PowerShell file redirection waits", lambda application=application: powershell_file_redirection(application))
+            case(f"{application.stem}: compiled Unified profile", lambda application=application: profile_metadata(application))
         case("stdio: independently inherited pipes", piped_probe)
         case("stdio: independently inherited files", files_probe)
         case("stdio: NUL and stderr pipe", nul_probe)
@@ -128,7 +158,7 @@ def main():
     finally:
         summary = {
             "schema": "PixelBridge.G22.GuiStartupTests.1", "results": results,
-            "allPassed": len(results) == 12 and all(item["passed"] for item in results),
+            "allPassed": len(results) == 16 and all(item["passed"] for item in results),
             "applications": [{"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in applications],
             "boundary": {"productGuiOpened": False, "nativeDataWindowOpened": False, "inputAutomation": False,
                          "hiddenOwnedConsoleProbe": True, "manualShellDoubleClick": False},

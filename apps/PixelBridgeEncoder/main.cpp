@@ -4,6 +4,7 @@
 #ifdef _WIN32
 #include "application_build_identity.h"
 #include "application_console.h"
+#include "unified_profile_identity.h"
 #endif
 
 #include <iostream>
@@ -47,6 +48,10 @@ int main()
             const pbprotocol::ProtocolVersion protocolVersion = pbprotocol::GetProtocolVersion();
             pbapp::WriteApplicationBuildIdentity(std::cout, "PixelBridgeEncoder", buildInfo, protocolVersion, PB_GIT_COMMIT);
             return 0;
+        }
+        if (std::wstring_view(arguments[1]) == L"--unified-profile" && argumentCount == 2)
+        {
+            return pbapp::WriteUnifiedProfileIdentity(std::cout) ? 0 : 1;
         }
 #ifdef PB_ENABLE_QT_GUI
         if ((std::wstring_view(arguments[1]) == L"--gui-smoke" && argumentCount == 2) ||

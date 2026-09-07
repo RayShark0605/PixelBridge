@@ -7,11 +7,11 @@ $root = $PSScriptRoot
 $executable = Join-Path $root 'bin\PBUnifiedRemoteGate.exe'
 $expected = Get-Content -LiteralPath (Join-Path $root 'expected-build.json') -Raw | ConvertFrom-Json
 if ((Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash -ine $expected.gateSha256) { throw 'Frozen Gate executable hash mismatch.' }
-$identity = (& $executable --build-identity) | ConvertFrom-Json
+$identity = (& $executable --build-identity | Out-String) | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $identity.gitCommit -cne $expected.gitCommit) { throw 'Gate build identity mismatch.' }
 if ($CheckOnly)
 {
-    & $executable --self-test
+    & $executable --self-test | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Gate policy self-test failed.' }
     Write-Host ('PASS: Gate load/identity/self-test; ' + $identity.gitCommit + '; no capture, window, source or run created.')
     exit 0
@@ -21,7 +21,7 @@ $run = Join-Path $root ('runs\' + $Stage + '-' + [Guid]::NewGuid().ToString('N')
 if (Test-Path -LiteralPath $run) { throw 'Create-only receiver root already exists.' }
 [void](New-Item -ItemType Directory -Path $run)
 $seconds = if ($Stage -eq 'smoke') { 600 } elseif ($Stage -eq 'full') { 1800 } elseif ($Stage -eq '1gib') { 7200 } else { 21600 }
-& $executable --preflight (Join-Path $run 'preflight')
+& $executable --preflight (Join-Path $run 'preflight') | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Current right-monitor preflight rejected; capture not started.' }
 $receiver = Join-Path $run 'receiver'
 $arguments = '--receive-eventual "' + $receiver + '" ' + $seconds.ToString([Globalization.CultureInfo]::InvariantCulture)

@@ -53,7 +53,7 @@ if ([string]::IsNullOrWhiteSpace($ProtectedMonitorDeviceName) -or
     throw 'ProtectedMonitor and ExperimentMonitor must be explicit and different'
 }
 
-$monitorText = @(& $decoderPath --list-monitors 2>&1)
+$monitorText = @(& $decoderPath --list-monitors 2>&1 | Out-String -Stream)
 if ($LASTEXITCODE -ne 0)
 {
     throw "PixelBridge monitor catalog failed: $($monitorText -join [Environment]::NewLine)"

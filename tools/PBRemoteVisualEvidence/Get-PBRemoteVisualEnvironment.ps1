@@ -220,7 +220,7 @@ if ([UInt64]$decoderItem.Length -ne [UInt64]$decoderApplication.size -or
     throw 'Packaged Decoder executable identity does not match the package manifest'
 }
 
-$monitorJson = & $decoderPath --list-monitors
+$monitorJson = & $decoderPath --list-monitors | Out-String -Stream
 if ($LASTEXITCODE -ne 0)
 {
     throw "PixelBridge monitor catalog failed with exit code $LASTEXITCODE"
@@ -235,7 +235,7 @@ if ($monitorCatalog.schema -cne 'PixelBridge.MonitorCatalog.1')
 {
     throw 'PixelBridge monitor catalog schema mismatch'
 }
-$versionOutput = & $decoderPath --version
+$versionOutput = & $decoderPath --version | Out-String -Stream
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($versionOutput -join "`n")))
 {
     throw "Packaged PixelBridgeDecoder --version failed with exit code $LASTEXITCODE"

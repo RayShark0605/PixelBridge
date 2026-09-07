@@ -619,7 +619,7 @@ foreach ($baselineCase in $baselineCases)
     [void](Require-Finite -Value $baselineCase.fecFrameErrorRate -Name "baseline FER $($baselineCase.name)" -UnitInterval)
 }
 
-$monitorOutput = @(& $resolvedDecoderPath --list-monitors 2>&1)
+$monitorOutput = @(& $resolvedDecoderPath --list-monitors 2>&1 | Out-String -Stream)
 $monitorExitCode = $LASTEXITCODE
 if ($monitorExitCode -ne 0)
 {
