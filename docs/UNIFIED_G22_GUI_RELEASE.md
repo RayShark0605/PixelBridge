@@ -129,6 +129,23 @@ ctest --test-dir build-unified-release -C Release -R '^PixelBridge(Encoder|Decod
 
 以上仍是源码/CLI/无产品窗口证据，独立包、从包启动、右屏真实恢复及人工 Esc 验证尚待完成。
 
+本阶段提交为 `1c472d111564911b4b8995d8b6cf93317096d849`；GUI subsystem 包装 fixture **19/19 PASS**。
+
+## 10. 独立 Unified package 工具初版
+
+`tools/PBUnifiedRelease/` 提供单独的生产器和只读 verifier，复用保留的历史 inventory/SBOM/seal 思路，
+但采用明确的 Unified schema 和 SC6-V3 完整编译 Profile digest，不改变旧 LF4 schema。
+生产器要求 clean committed source、实际 EXE commit 一致、显式 VC runtime/notices 来源；
+包内包含用户指南、Qt/vcpkg/MSVC 依赖资料和单文件独立 verifier。项目 LICENSE 保留 NOASSERTION，范围只到本地候选。
+
+Verifier 不启动包内程序；静态检查 GUI/x64 PE、大小/路径/哈希、Profile/工具链/SBOM/notices/seal，
+递归拒绝重复/大小写歧义 JSON key、非整数 size、reparse 与 ZIP symlink，并对 ZIP 实际解压读出设置封印长度边界。
+生产失败保留 create-only artifacts，不递归删除未核实路径。
+
+第一阶段证据 `artifacts/g22-package-20260907/verifier-functions-01.log`：
+**28/28** 有界函数检查通过，覆盖路径、严格 JSON、整数类型、SHA-256 和解压长度 mismatch。
+完整包生成、独立验证负例、新解压 GUI smoke 尚待执行；这个工具初版提交不代表 G22 交付完成。
+
 保护文件 `docs/PHASE1_GATE_REPORT.md` 起始 SHA-256：
 `076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`。
 该文件保持原有未跟踪状态，不修改、不暂存、不提交。
