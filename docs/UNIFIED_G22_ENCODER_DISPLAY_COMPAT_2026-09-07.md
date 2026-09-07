@@ -7,7 +7,8 @@
 原 G22 双端交付 `3a840a202cf7d342a3ff2d95f2d69b3c788abcea` 与 `build-unified-release` 保留，
 新增构建树为 `<repo>\build-g22-encoder-compat`；最终只打 Encoder 包。
 
-**代码和定向单测已完成；冻结构建、独立包和同候选右屏结果随后追加。Citrix 新版真实呈现尚未验证。**
+**LOCAL_REGRESSION_PASS / CITRIX_FIELD_PENDING**：代码、定向单测、冻结构建、Encoder-only 包、
+全新解压启动和同候选右屏实际像素收发通过。Citrix 新版真实呈现尚未验证。
 本机正常 DXGI 映射路径通过不代表 Citrix 无 output 路径已实测；不升级为远控/大文件性能认证。
 
 ## 2. 实现与不变量
@@ -56,6 +57,62 @@ epoch测试验证相同 LUID 但 binding 变化时旧帧拒绝，随后新 epoch
 
 ## 4. 冻结后验证与现场交接
 
-冻结后二进制、ZIP/hash、同候选右屏结果与复现步骤待追加；交付入口将为证据根的 `START_HERE.md`。
+冻结实现提交：`df2bcfbd1dfbcc648a2d44f75bf1037c40c9dccd`；重新配置并重建双端，见
+`configure-frozen.log` / `build-frozen.log`。随后的文档归档提交不冒充产品构建身份。
+
+| 交付项 | 证据根下的相对路径 / 身份 |
+| --- | --- |
+| 用户入口 | `START_HERE.md` |
+| Encoder-only ZIP | `package/PB-Unified-E-df2bcfbd-47403e4f.zip`；28,688,671 bytes |
+| 完整解压目录 | `package/PB-Unified-E-df2bcfbd-47403e4f/`；EXE在根目录，需保留全部DLL/子目录 |
+| 独立 seal | `package/PB-Unified-E-df2bcfbd-47403e4f.seal.json` |
+| 打包器返回与完整性 | `package-result.json`；59 files / 69,079,359 payload bytes；仅Encoder |
+| 新解压启动 | `clean-startup/summary.json`；6 checks PASS，PATH仅Windows/System32，offscreen GUI，无开发Qt/plugin环境 |
+| 冻结实屏闭环 | `native-frozen/summary.json`；PASS，实际使用全新解压的Encoder及同commit本机测试Decoder |
+| 实屏后包复验 | `post-native-package-verification.json`；只读校验通过，封印/manifest/ZIP未改变 |
+
+SHA-256：
+
+- Encoder EXE（1,285,120 bytes）：`377cc672f9e9d2dfde2c5ee9b1ddb45c9cc97440d8fad03b731a90ffc4f5490b`。
+- ZIP：`cead75ef6d14d07c33da580fbd35db2af3fb2ff1262404ecb06ffec2d9e53d29`。
+- manifest：`dcc7ca9ccb6ca4b5c83cdc81f8d48e228fc98abe38d827274350e4f66d666966`。
+- Profile仍为`PB-Unified-SC6-V3` / `0x5042554E49534333` / layout10，JSON hash仍为
+  `312c7832854f8710719ee2d0e44e920e7270b48638044eaa4b6af9ee24b1cb8b`。
+
+实屏：DISPLAY2 `[2560,0,5120,1440]`，保护DISPLAY1；Decoder先ready，再显示Encoder；1 MB CSPRNG输入（1,048,576 bytes），
+无鼠标/键盘事件、无激活、both safetyHeld=true，watchdog未强杀；整文件digest、rename、final reopen、publish全true。
+源与最终重开输出独立 SHA-256=`0257ab7fb5cb4a8b32052cc6f835a8af77b13e168d40fa760fa9bea7c056cff7`，
+BLAKE3=`4efef186a52ee38600a9df5b6517597ccaf046f62693c2f1761923506c5c8585`，精确字节数一致。
+Encoder默认15 Hz、控件锁定、覆盖整块右屏；Decoder完成后继续40,986 ms，测试45 s截止再调用本地停止动作，双端exit0。
+这只验证测试调用的局部停止动作；未生成物理Esc事件或ROI拖动，不把测试截止时间当作普通GUI自动停止功能。
+
+新版 `presentation.adapter` 实际为 LUID=`[high=0,low=95246]`、`boundToMonitorOutput=true`、`softwareRasterizer=false`；
+`successfulPresentCalls=2688`，`sourceTextureReplacements=673`。这是正常映射本机回归，**不是无映射硬件路径/Citrix实际Present证明**。
+测试Decoder为同commit重建以保持既有harness身份约束；其捕获/恢复代码未改，不将它替换到用户原交付包。
+
+### 复现命令与现场动作
+
+```powershell
+$repository = '<repo>'
+$evidence = Join-Path $repository 'artifacts\g22-encoder-compat-20260907'
+$candidate = Join-Path $evidence 'clean-startup\PB-Unified-E-df2bcfbd-47403e4f\PixelBridgeEncoder.exe'
+& <python> -X utf8 (Join-Path $repository 'tests\PBApplication\run_gui_native_smoke.py') `
+  --encoder $candidate `
+  --decoder (Join-Path $repository 'build-g22-encoder-compat\apps\PixelBridgeDecoder\Release\PixelBridgeDecoder.exe') `
+  --experiment-monitor '\\.\DISPLAY2' --protected-monitor '\\.\DISPLAY1' `
+  --evidence-directory (Join-Path $evidence 'native-replay-NEW')
+```
+
+复跑必须使用新的证据目录；harness先检查两端完整build identity，并按原有保护规则拒绝非右侧/拓扑变化/抢焦点。
+不同机器不能照抄monitor编号。一般现场试用不执行上述测试命令：完整解压Encoder ZIP到发生原报错的Citrix会话，
+双击EXE，选择小文件点击“开始传输”，观察是否出现持续刷新数据流，再手动Esc停止。
+若失败，返回完整错误和高级页导出的报告；adapter/device/swap-chain/Present错误不能再次归为“移动窗口”。
+不因该小文件成功自动宣布大文件、效率或所有Citrix版本认证；软件fallback仍需另行确认。
+
+## 5. 目录整理与保留边界
+
+本次所有日志、初始失败、包/封印、独立摘要和实际像素证据集中于上述证据根；未在源码根散放EXE、ZIP或测试数据。
+构建缓存集中在新增 `build-g22-encoder-compat`，保留供现场问题重现；包和证据均在Git忽略目录内。
 原双端包、原始截图/人工转录、只读诊断工具、失败日志与本次可重现构建保留，不混为一个版本。
+这些仍有复现、回滚和现场对照用途，本轮没有删除它们；原catalog源码及原双端EXE逐项hash核对一致，见`preserved-artifacts.json`。
 `docs/PHASE1_GATE_REPORT.md` 保持未跟踪、未暂存；SHA-256=`076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`。
