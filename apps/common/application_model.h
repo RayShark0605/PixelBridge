@@ -200,6 +200,14 @@ struct RemoteVisualRunMetadata
 
 using RemoteRunMetadata = RemoteVisualRunMetadata;
 
+struct EncoderPresentationAdapter
+{
+    std::uint32_t luidLow = 0;
+    std::int32_t luidHigh = 0;
+    bool boundToMonitorOutput = false;
+    bool softwareRasterizer = false;
+};
+
 struct EncoderSnapshot
 {
     EncoderState state = EncoderState::Idle;
@@ -247,6 +255,10 @@ struct EncoderSnapshot
     std::uint64_t durableFrameSequenceLeaseEnd = 0;
     std::uint32_t durableRepairIdLeaseEnd = 0;
     std::uint64_t presentationEpoch = 0;
+    // Last renderer environment observation, not Win32 monitor identity or
+    // proof of receiver recovery. Absent before successful initialization.
+    std::optional<EncoderPresentationAdapter> presentationAdapter;
+    std::uint64_t successfulPresentCalls = 0;
     std::optional<double> presentedVisualFps;
     std::optional<double> presentCallFps;
     // Interval-authoritative logical cadence: (N - 1) / (last - first).

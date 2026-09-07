@@ -128,6 +128,30 @@ TEST_CASE("G17 report has a versioned Unified boundary and never upgrades legacy
     REQUIRE(Json(pbapp::BuildEncoderRunReportJson(context, encoder))["scheduler"].toObject()["submittedControlSlots"].isNull());
 }
 
+TEST_CASE("Unified Encoder reports observed rendering identity without inventing an output mapping", "[application][report][adapter-compat]")
+{
+    pbapp::EncoderSnapshot snapshot;
+    snapshot.visualProfile = pbapp::VisualProfile::UnifiedLc4;
+    const auto absent = Json(pbapp::BuildEncoderRunReportJson(context, snapshot))["presentation"].toObject();
+    CHECK(absent["adapter"].isNull());
+    CHECK(absent["adapterUnavailableReason"].toString() == "RendererEnvironmentUnavailable");
+    CHECK(absent["successfulPresentCalls"].toInt() == 0);
+    for (const bool mapped : {false, true})
+    {
+        snapshot.presentationAdapter = pbapp::EncoderPresentationAdapter{30591, -1, mapped, false};
+        snapshot.successfulPresentCalls = 21;
+        const auto observed = Json(pbapp::BuildEncoderRunReportJson(context, snapshot))["presentation"].toObject();
+        const auto adapter = observed["adapter"].toObject();
+        CHECK(adapter["luidLow"].toInt() == 30591);
+        CHECK(adapter["luidHigh"].toInt() == -1);
+        CHECK(adapter["boundToMonitorOutput"].isBool());
+        CHECK(adapter["boundToMonitorOutput"].toBool() == mapped);
+        CHECK_FALSE(adapter["softwareRasterizer"].toBool());
+        CHECK(observed["adapterUnavailableReason"].toString().isEmpty());
+        CHECK(observed["successfulPresentCalls"].toInt() == 21);
+    }
+}
+
 TEST_CASE("G17 actual Unified pixels feed truthful final reports independently of provider metadata", "[application][report][g17]")
 {
     G17Scratch scratch;

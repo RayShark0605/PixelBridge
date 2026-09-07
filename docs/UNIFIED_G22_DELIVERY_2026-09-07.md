@@ -1,5 +1,8 @@
 # G22 最终 GUI 本地候选交付 — 2026-09-07
 
+后续 Citrix Encoder 显示兼容修复有独立的[候选与验证记录](UNIFIED_G22_ENCODER_DISPLAY_COMPAT_2026-09-07.md)；
+不覆盖本文原双端冻结身份与原实屏证据。
+
 ## 1. 结果与冻结身份
 
 **G22 = PASS_LOCAL_CANDIDATE**：用户要求的双端GUI已重新实现，独立Windows x64便携包、新解压双端GUI检查、

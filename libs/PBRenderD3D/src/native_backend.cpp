@@ -1,4 +1,5 @@
 #include "presentation_backend.h"
+#include "hardware_adapter_selection.h"
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/checked_integer.h"
 
@@ -497,12 +498,19 @@ public:
         }
         ComPtr<IDXGIAdapter1> adapter;
         DXGI_ADAPTER_DESC1 description{};
-        if (FindAdapter(monitor, adapter, description))
+        bool boundToOutput = true;
+        const PresentationStatus adapterStatus = ResolvePresentationAdapter(monitor, adapter, description, boundToOutput);
+        if (!adapterStatus && config_.allowUnmappedHardwareAdapter)
+        {
+            return Result::Failure(adapterStatus);
+        }
+        if (adapterStatus)
         {
             environment.adapterAvailable = true;
             environment.adapterLuidLow = description.AdapterLuid.LowPart;
             environment.adapterLuidHigh = description.AdapterLuid.HighPart;
             std::copy_n(description.Description, environment.adapterDescription.size(), environment.adapterDescription.data());
+            environment.adapterBoundToMonitorOutput = boundToOutput;
         }
         if (occluded_ && swapChain_ && !environment.minimized && environment.singleMonitor && !cancelled_.load())
         {
@@ -539,7 +547,7 @@ public:
             // authorization to allocate arbitrary textures on another GPU.
             return PresentationStatus::Success();
         }
-        const bool adapterChanged = deviceMonitorLuid_.LowPart != environment.adapterLuidLow || deviceMonitorLuid_.HighPart != environment.adapterLuidHigh;
+        const bool adapterChanged = deviceAdapterLuid_.LowPart != environment.adapterLuidLow || deviceAdapterLuid_.HighPart != environment.adapterLuidHigh;
         if (adapterChanged)
         {
             ReleaseGraphics();
@@ -932,6 +940,91 @@ private:
         return false;
     }
 
+    [[nodiscard]] PresentationStatus ResolvePresentationAdapter(const HMONITOR monitor, ComPtr<IDXGIAdapter1>& result,
+        DXGI_ADAPTER_DESC1& description, bool& boundToOutput) noexcept
+    {
+        if (!config_.allowUnmappedHardwareAdapter)
+        {
+            boundToOutput = true;
+            return FindAdapter(monitor, result, description) ? PresentationStatus::Success() : NativeError(DXGI_ERROR_NOT_FOUND, PresentationStage::Adapter);
+        }
+        constexpr UINT limit = 64;
+        std::array<HardwareAdapterCandidate, limit> candidates{};
+        std::array<ComPtr<IDXGIAdapter1>, limit> adapters{};
+        std::array<DXGI_ADAPTER_DESC1, limit> descriptions{};
+        UINT count = 0;
+        bool complete = false;
+        for (; count <= limit; count++)
+        {
+            ComPtr<IDXGIAdapter1> adapter;
+            const HRESULT adapterResult = factory_->EnumAdapters1(count, &adapter);
+            if (adapterResult == DXGI_ERROR_NOT_FOUND)
+            {
+                complete = true;
+                break;
+            }
+            if (FAILED(adapterResult))
+            {
+                return NativeError(adapterResult, PresentationStage::Adapter);
+            }
+            if (count == limit)
+            {
+                return PresentationStatus::Failure(PresentationErrorCode::ResourceLimit, PresentationStage::Adapter);
+            }
+            const HRESULT descriptionResult = adapter->GetDesc1(&descriptions[count]);
+            if (FAILED(descriptionResult))
+            {
+                return NativeError(descriptionResult, PresentationStage::Adapter);
+            }
+            candidates[count].software = (descriptions[count].Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+            for (UINT outputIndex = 0; outputIndex <= limit; outputIndex++)
+            {
+                ComPtr<IDXGIOutput> output;
+                const HRESULT outputResult = adapter->EnumOutputs(outputIndex, &output);
+                if (outputResult == DXGI_ERROR_NOT_FOUND)
+                {
+                    break;
+                }
+                if (FAILED(outputResult))
+                {
+                    return NativeError(outputResult, PresentationStage::Adapter);
+                }
+                if (outputIndex == limit)
+                {
+                    return PresentationStatus::Failure(PresentationErrorCode::ResourceLimit, PresentationStage::Adapter);
+                }
+                DXGI_OUTPUT_DESC outputDescription{};
+                const HRESULT outputDescriptionResult = output->GetDesc(&outputDescription);
+                if (FAILED(outputDescriptionResult))
+                {
+                    return NativeError(outputDescriptionResult, PresentationStage::Adapter);
+                }
+                if (outputDescription.Monitor == monitor)
+                {
+                    candidates[count].matchesMonitorOutput = true;
+                    break;
+                }
+            }
+            adapters[count] = std::move(adapter);
+            if (candidates[count].matchesMonitorOutput)
+            {
+                // Keep the established local-monitor preference. Unrelated
+                // adapters need not be enumerated after a concrete match.
+                count++;
+                break;
+            }
+        }
+        const auto selected = SelectHardwarePresentationAdapter(std::span{candidates}.first(count), true, complete);
+        if (!selected)
+        {
+            return NativeError(DXGI_ERROR_NOT_FOUND, PresentationStage::Adapter);
+        }
+        result = std::move(adapters[selected->index]);
+        description = descriptions[selected->index];
+        boundToOutput = selected->boundToMonitorOutput;
+        return PresentationStatus::Success();
+    }
+
     [[nodiscard]] PresentationStatus CreateGraphics(const WindowEnvironment& environment) noexcept
     {
         const std::uint64_t pixels = static_cast<std::uint64_t>(environment.clientWidth) * environment.clientHeight;
@@ -942,9 +1035,17 @@ private:
         }
         ComPtr<IDXGIAdapter1> adapter;
         DXGI_ADAPTER_DESC1 description{};
-        if (!FindAdapter(reinterpret_cast<HMONITOR>(static_cast<std::uintptr_t>(environment.monitorIdentity)), adapter, description))
+        bool boundToOutput = true;
+        const PresentationStatus adapterStatus = ResolvePresentationAdapter(
+            reinterpret_cast<HMONITOR>(static_cast<std::uintptr_t>(environment.monitorIdentity)), adapter, description, boundToOutput);
+        if (!adapterStatus)
         {
-            return PresentationStatus::Failure(PresentationErrorCode::NativeFailure, PresentationStage::Adapter);
+            return adapterStatus;
+        }
+        if (description.AdapterLuid.LowPart != environment.adapterLuidLow || description.AdapterLuid.HighPart != environment.adapterLuidHigh ||
+            boundToOutput != environment.adapterBoundToMonitorOutput)
+        {
+            return PresentationStatus::Failure(PresentationErrorCode::EpochMismatch, PresentationStage::Adapter);
         }
         if (!options_.warp && (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
         {
@@ -960,7 +1061,7 @@ private:
         {
             return NativeError(result, PresentationStage::Device);
         }
-        deviceMonitorLuid_ = description.AdapterLuid;
+        deviceAdapterLuid_ = description.AdapterLuid;
         if (options_.debugLayer)
         {
             result = device_.As(&infoQueue_);
@@ -1232,7 +1333,7 @@ private:
     std::optional<RECT> suggestedDpiRect_;
     std::uint64_t modeChangeSerial_ = 0;
     std::uint64_t dpiChangeSerial_ = 0;
-    LUID deviceMonitorLuid_{};
+    LUID deviceAdapterLuid_{};
     ComPtr<IDXGIFactory2> factory_;
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;

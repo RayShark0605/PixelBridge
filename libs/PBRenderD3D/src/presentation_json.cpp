@@ -73,7 +73,16 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
     output << ",\"adapterLuid\":[" << snapshot.environment.adapterLuidHigh << ',' << snapshot.environment.adapterLuidLow << "],\"displayMode\":["
            << snapshot.environment.modeWidth << ',' << snapshot.environment.modeHeight << ',' << snapshot.environment.modeFrequency
            << "],\"singleMonitor\":" << snapshot.environment.singleMonitor << ",\"monitorIdentity\":" << snapshot.environment.monitorIdentity
-           << ",\"modeChangeSerial\":" << snapshot.environment.modeChangeSerial << ",\"dpiChangeSerial\":" << snapshot.environment.dpiChangeSerial
+           << ",\"adapterBoundToMonitorOutput\":";
+    if (snapshot.environment.adapterAvailable)
+    {
+        output << snapshot.environment.adapterBoundToMonitorOutput;
+    }
+    else
+    {
+        output << "null";
+    }
+    output << ",\"modeChangeSerial\":" << snapshot.environment.modeChangeSerial << ",\"dpiChangeSerial\":" << snapshot.environment.dpiChangeSerial
            << ",\"viewportDisposition\":" << static_cast<unsigned int>(snapshot.viewport.disposition)
            << ",\"viewport\":[" << snapshot.viewport.originX << ',' << snapshot.viewport.originY << ',' << snapshot.viewport.width << ','
            << snapshot.viewport.height << "],\"viewportScale\":" << snapshot.viewport.scale

@@ -26,6 +26,14 @@ Esc 不是系统全局快捷键：若切换到了别的软件，应先切回 Enc
 “高级选项”可设置 Session 缓存目录、导出诊断报告，或显式删除当前 Session。
 正常停止会保留 Session；只有用户主动选择删除时才确认删除，**这与已取消的文件大小确认无关**。
 
+### Citrix / 虚拟屏 Encoder 兼容候选
+
+后续 Encoder 兼容候选将 Windows 屏幕定位与显卡的 DXGI output 对应分开：没有 output 对应时，
+仍可尝试已枚举的硬件显卡，不需要额外勾选开关。不会自动切换到软件渲染，也不更改帧率、全屏或 Esc 行为。
+这不是所有 Citrix 会话均可用的保证；如果仍不能开始，请保留完整错误信息，并在高级页导出诊断报告。
+新版报告的 `presentation.adapter.boundToMonitorOutput=false` 表示独立硬件选择，
+`adapter=null` 表示尚无可用渲染环境观察；不能将二者混淆。Decoder 捕获路径不在此修复范围。
+
 ## 3. Decoder：指定目录和屏幕区域，然后接收
 
 1. 选择已有且可写的文件保存目录。

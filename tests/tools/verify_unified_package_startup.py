@@ -73,8 +73,11 @@ def main():
     passed = False
     try:
         verify("before-startup", verifier)
-        for role in ("Encoder", "Decoder"):
-            executable = package / role / ("PixelBridge" + role + ".exe")
+        # Single-endpoint packages put the EXE at the root; Both packages use
+        # role subdirectories. The trusted verifier has checked this manifest.
+        for application in expected["applications"]:
+            role = application["role"]
+            executable = package / application["relativeExecutablePath"]
             run(role + "-version", [executable, "--version"], environment)
             identity = json.loads(run(role + "-identity", [executable, "--build-identity"], environment))
             require(identity["gitCommit"] == commit and identity["applicationName"] == "PixelBridge" + role, "Packaged identity mismatch")

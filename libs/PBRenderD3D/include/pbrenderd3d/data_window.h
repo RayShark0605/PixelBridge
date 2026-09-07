@@ -158,6 +158,10 @@ struct DataWindowConfig
     // A sender-only fullscreen presenter may cover the selected monitor while
     // retaining WS_EX_NOACTIVATE so the control console keeps keyboard focus.
     bool topmost = false;
+    // Explicit Encoder-only compatibility policy. Prefer the monitor's DXGI
+    // output adapter; without an output mapping, select a hardware adapter
+    // for the same windowed swap chain. Never choose WARP/software implicitly.
+    bool allowUnmappedHardwareAdapter = false;
     // Physical desktop coordinates, including negative monitor origins.
     // Unspecified: center the client on the primary monitor.
     std::optional<PhysicalPoint> clientOrigin;
@@ -217,6 +221,7 @@ struct WindowEnvironment
     std::array<wchar_t, 128> adapterDescription{};
     bool singleMonitor = false;
     bool adapterAvailable = false;
+    bool adapterBoundToMonitorOutput = false;
     bool minimized = false;
     bool occluded = false;
     bool closed = false;

@@ -90,6 +90,7 @@ public:
         control_->environment.dpi = 96;
         control_->environment.singleMonitor = true;
         control_->environment.adapterAvailable = true;
+        control_->environment.adapterBoundToMonitorOutput = true;
         control_->environment.monitorIdentity = 1;
         control_->contract = {};
         control_->contract.bufferWidth = config.width;
@@ -765,6 +766,46 @@ TEST_CASE("Environment changes during upload discard the old raster and invalida
     }));
     fixture.window->Stop();
     REQUIRE(fixture.control->consumedPermits == 2);
+}
+
+TEST_CASE("Changing output binding invalidates old frames even when the hardware LUID is unchanged", "[presentation][adapter-compat]")
+{
+    Fixture fixture;
+    fixture.config.allowUnmappedHardwareAdapter = true;
+    fixture.config.topmost = true;
+    fixture.config.clientOrigin = PhysicalPoint{1920, -1};
+    fixture.Start();
+    REQUIRE(fixture.Submit(1));
+    fixture.Permit();
+    REQUIRE(WaitUntil([&]
+    {
+        return fixture.window->GetSnapshot().totalSuccessfulPresents == 1;
+    }));
+    const auto oldEpoch = fixture.window->GetSnapshot().timing.presentationEpoch;
+    fixture.Change([](FakeControl& state)
+    {
+        state.environment.adapterBoundToMonitorOutput = false;
+    });
+    REQUIRE(WaitUntil([&]
+    {
+        return fixture.window->GetSnapshot().timing.presentationEpoch > oldEpoch;
+    }));
+    const auto snapshot = fixture.window->GetSnapshot();
+    CHECK(snapshot.timing.epochReason == pbpresenttiming::EpochReason::MonitorChanged);
+    CHECK_FALSE(snapshot.environment.adapterBoundToMonitorOutput);
+    CHECK_FALSE(snapshot.softwareRasterizer);
+    CHECK(fixture.window->SubmitFrame({fixture.pixels, fixture.config.width, fixture.config.height,
+        static_cast<std::size_t>(fixture.config.width) * 4, 2, oldEpoch}).code == PresentationErrorCode::EpochMismatch);
+    std::ostringstream json;
+    WriteDataWindowSnapshotJson(json, snapshot);
+    CHECK(json.str().find("\"adapterBoundToMonitorOutput\":false") != std::string::npos);
+    REQUIRE(fixture.Submit(2));
+    fixture.Permit();
+    REQUIRE(WaitUntil([&]
+    {
+        return fixture.window->GetSnapshot().totalSuccessfulPresents == 2;
+    }));
+    fixture.window->Stop();
 }
 
 TEST_CASE("Statistics disjoint resets timing but never recreates the graphics backend")

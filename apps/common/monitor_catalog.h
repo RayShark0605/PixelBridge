@@ -29,6 +29,9 @@ struct MonitorInfo
     bool primary = false;
     bool supportsPhase1Canvas = false;
     bool phase1ReferenceGeometry = false;
+    // Legacy/capture catalog entries have DXGI output metadata. Encoder-only
+    // Win32 entries explicitly clear this flag; their zero LUID is unavailable.
+    bool dxgiOutputIdentityAvailable = true;
 };
 
 enum class MonitorCatalogError : std::uint8_t

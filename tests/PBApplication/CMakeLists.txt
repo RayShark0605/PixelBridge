@@ -6,6 +6,7 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core)
 
 PbAddUnitTest(PBApplicationTests
     test_application_model.cpp
+    test_encoder_monitor_catalog.cpp
     test_unified_encoder_workflow.cpp
     test_unified_decoder_workflow.cpp
     test_capture_fallback.cpp

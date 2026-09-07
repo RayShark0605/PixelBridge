@@ -1,5 +1,6 @@
 #include "encoder_gui.h"
 #include "encoder_application_controller.h"
+#include "encoder_monitor_catalog.h"
 #include "product_gui_helpers.h"
 #include "gui_native_smoke.h"
 #include "run_report.h"
@@ -44,9 +45,15 @@ using TargetConfigurator = std::function<QString(pbapp::EncoderConfig&, QWidget&
 {
     const HMONITOR selected = MonitorFromWindow(reinterpret_cast<HWND>(window.winId()), MONITOR_DEFAULTTONULL);
     std::vector<pbapp::MonitorInfo> monitors;
-    if (selected == nullptr || !pbapp::EnumerateMonitors(monitors))
+    if (selected == nullptr)
     {
         return QStringLiteral("无法确认当前屏幕；请将 Encoder 窗口移到目标屏幕后重试。");
+    }
+    const pbapp::MonitorCatalogStatus catalog = pbapp::EnumerateEncoderMonitors(monitors);
+    if (!catalog)
+    {
+        return QStringLiteral("无法读取屏幕位置、DPI或显示模式（code=%1，native=%2）。请保留此错误信息用于诊断。")
+            .arg(static_cast<unsigned int>(catalog.code)).arg(catalog.nativeError);
     }
     const auto monitor = std::find_if(monitors.begin(), monitors.end(), [selected](const pbapp::MonitorInfo& candidate)
     {

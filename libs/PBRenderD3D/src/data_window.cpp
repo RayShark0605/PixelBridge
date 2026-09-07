@@ -96,7 +96,8 @@ namespace
 {
     using pbpresenttiming::EpochReason;
     if (previous.monitorIdentity != current.monitorIdentity || previous.adapterLuidLow != current.adapterLuidLow ||
-        previous.adapterLuidHigh != current.adapterLuidHigh || previous.adapterAvailable != current.adapterAvailable)
+        previous.adapterLuidHigh != current.adapterLuidHigh || previous.adapterAvailable != current.adapterAvailable ||
+        previous.adapterBoundToMonitorOutput != current.adapterBoundToMonitorOutput)
     {
         return EpochReason::MonitorChanged;
     }
@@ -128,6 +129,10 @@ namespace
 
 PresentationStatus ValidateDataWindowConfig(const DataWindowConfig& config) noexcept
 {
+    if (config.allowUnmappedHardwareAdapter && (!config.topmost || !config.clientOrigin))
+    {
+        return PresentationStatus::Failure(PresentationErrorCode::InvalidConfiguration, PresentationStage::Configuration);
+    }
     if (config.width == 0 || config.height == 0 || config.width > 16384 || config.height > 16384 || config.bufferCount < 2 || config.bufferCount > 16 ||
         config.maximumFrameLatency < 1 || config.maximumFrameLatency > 2 ||
         (config.flipEffect != FlipEffect::Discard && config.flipEffect != FlipEffect::Sequential) || config.maximumFrameBytes == 0 ||

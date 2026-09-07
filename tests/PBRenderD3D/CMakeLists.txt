@@ -1,4 +1,4 @@
-PbAddUnitTest(PBRenderD3DTests test_data_window.cpp)
+PbAddUnitTest(PBRenderD3DTests test_data_window.cpp test_hardware_adapter_selection.cpp)
 target_link_libraries(PBRenderD3DTests PRIVATE PB::PBRenderD3D)
 PbInstrumentPresentationTest(PBRenderD3DTests)
 target_include_directories(PBRenderD3DTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBRenderD3D/src")

@@ -3,6 +3,7 @@
 #include "decoder_resume_store.h"
 #include "decoder_capture_controller.h"
 #include "encoder_session_store.h"
+#include "encoder_monitor_catalog.h"
 #include "optional_diagnostic_fanout.h"
 #include "remote_visual_replay_recorder.h"
 #include "run_report.h"
@@ -347,7 +348,7 @@ void RequireResult(const ResultType& result, const std::string& message)
 [[nodiscard]] MonitorSafetyStatus RevalidateSingleMonitorFullscreen(const MonitorInfo& expected) noexcept
 {
     std::vector<MonitorInfo> monitors;
-    const MonitorCatalogStatus catalog = EnumerateMonitors(monitors);
+    const MonitorCatalogStatus catalog = expected.dxgiOutputIdentityAvailable ? EnumerateMonitors(monitors) : EnumerateEncoderMonitors(monitors);
     if (!catalog)
     {
         return {MonitorSafetyError::CatalogFailure, catalog};
@@ -2016,6 +2017,10 @@ private:
 void ApplyEncoderPresentationSnapshot(const pbrenderd3d::DataWindowSnapshot& source, EncoderSnapshot& destination) noexcept
 {
     destination.presentationEpoch = source.timing.presentationEpoch;
+    destination.presentationAdapter = source.environment.adapterAvailable ?
+        std::optional{EncoderPresentationAdapter{source.environment.adapterLuidLow, source.environment.adapterLuidHigh,
+            source.environment.adapterBoundToMonitorOutput, source.softwareRasterizer}} : std::nullopt;
+    destination.successfulPresentCalls = source.totalSuccessfulPresents;
     destination.presentedVisualFps = source.timing.presentedVisualFps;
     destination.presentCallFps = source.timing.presentCallFps;
     destination.submittedFrames = source.submittedFrames;
@@ -8321,6 +8326,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         windowConfig.repeatActiveFrame = config.visualProfile == VisualProfile::RemoteVisualLowFps ||
             config.visualProfile == VisualProfile::UnifiedLc4;
         windowConfig.topmost = config.singleMonitorFullscreen.has_value();
+        windowConfig.allowUnmappedHardwareAdapter = config.visualProfile == VisualProfile::UnifiedLc4 && config.singleMonitorFullscreen.has_value();
         std::unique_ptr<EncoderPresentation> window = presentationFactory_(windowConfig);
         Require(window != nullptr, "Encoder presentation factory returned no window owner");
         std::uint64_t frameSequence = sessionStore->GetFrameSequenceStart();
@@ -8405,6 +8411,13 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             const pbrenderd3d::DataWindowSnapshot windowSnapshot = window->GetSnapshot();
             if (windowSnapshot.state == pbrenderd3d::WindowState::Failed)
             {
+                snapshot_.Update([&](EncoderSnapshot& value)
+                {
+                    if (value.runGeneration == runGeneration)
+                    {
+                        ApplyEncoderPresentationSnapshot(windowSnapshot, value);
+                    }
+                });
                 throw RuntimeFailure("DataWindow failed: " + DescribePresentationStatus(windowSnapshot.error));
             }
             if (stopRequested_)

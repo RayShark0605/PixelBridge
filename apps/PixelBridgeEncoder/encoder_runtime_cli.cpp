@@ -1,4 +1,5 @@
 #include "local_desktop_runtime.h"
+#include "encoder_monitor_catalog.h"
 #include "run_report.h"
 #include "diagnostic_file.h"
 #include "evidence_journal.h"
@@ -523,13 +524,13 @@ private:
 }
 
 [[nodiscard]] bool ResolveFullscreenMonitor(const std::wstring_view requested,
-    pbapp::MonitorInfo& output, std::string& errorMessage)
+    pbapp::MonitorInfo& output, std::string& errorMessage, const bool encoderPresentationOnly)
 {
     std::vector<pbapp::MonitorInfo> monitors;
-    const pbapp::MonitorCatalogStatus catalog = pbapp::EnumerateMonitors(monitors);
+    const pbapp::MonitorCatalogStatus catalog = encoderPresentationOnly ? pbapp::EnumerateEncoderMonitors(monitors) : pbapp::EnumerateMonitors(monitors);
     if (!catalog)
     {
-        errorMessage = "single-monitor fullscreen monitor catalog failed";
+        errorMessage = "single-monitor fullscreen monitor catalog failed: code=" + std::to_string(static_cast<unsigned int>(catalog.code)) + " native=" + std::to_string(catalog.nativeError);
         return false;
     }
     const auto matches = [&requested](const pbapp::MonitorInfo& monitor)
@@ -670,7 +671,7 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         pbapp::MonitorInfo fullscreenMonitor;
         std::string monitorError;
         if (!ResolveFullscreenMonitor(options.singleMonitorFullscreenDeviceName,
-            fullscreenMonitor, monitorError))
+            fullscreenMonitor, monitorError, options.profile == pbapp::VisualProfile::UnifiedLc4))
         {
             std::cerr << monitorError << '\n';
             return 2;

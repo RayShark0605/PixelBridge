@@ -268,6 +268,23 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
     WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);
     stream << ",\"sourceWholeFileDigest\":";
     WriteEscaped(stream, snapshot.wholeFileDigestHex);
+    stream << ",\"presentation\":{\"epoch\":" << snapshot.presentationEpoch << ",\"adapter\":";
+    if (snapshot.presentationAdapter)
+    {
+        const auto& adapter = *snapshot.presentationAdapter;
+        stream << "{\"luidLow\":" << adapter.luidLow << ",\"luidHigh\":" << adapter.luidHigh
+            << ",\"boundToMonitorOutput\":" << adapter.boundToMonitorOutput
+            << ",\"softwareRasterizer\":" << adapter.softwareRasterizer << '}';
+    }
+    else
+    {
+        stream << "null";
+    }
+    stream << ",\"adapterUnavailableReason\":";
+    WriteEscaped(stream, snapshot.presentationAdapter ? "" : "RendererEnvironmentUnavailable");
+    stream << ",\"successfulPresentCalls\":" << snapshot.successfulPresentCalls
+        << ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements
+        << ",\"basis\":\"last observed renderer environment and producer Present calls; not receiver recovery or Citrix certification\"}";
     stream << ",\"receiverProgress\":null,\"receiverEta\":null,\"verifiedGoodput\":null";
     WriteUnifiedTail(stream, snapshot.remoteMetadata, snapshot.statusMessage, snapshot.errorDetail);
     return stream.str();

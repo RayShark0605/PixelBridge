@@ -11,7 +11,7 @@ presentation。**Headless/WARP 通过不等于完整 LocalDesktop 物理链路�
 | --- | --- |
 | 窗口 | 默认无 Qt 合成的 `WS_OVERLAPPEDWINDOW` top-level HWND，可拖动、最小化和 resize；初始 1920×1080 physical client；显式 fullscreen sender 配置仍使用无激活 popup |
 | DPI | Encoder 和真实显示 Gate 的 manifest 声明 PMv2；库验证，不修改进程 awareness |
-| Device | 目标 monitor 所在硬件 adapter；D3D11 feature level 11.0 或以上；不自动 WARP fallback |
+| Device | 优先目标 monitor 所在硬件 adapter；D3D11 feature level 11.0 或以上；不自动 WARP fallback；Unified fullscreen 的显式硬件兼容策略见下节 |
 | Swap effect | `DXGI_SWAP_EFFECT_FLIP_DISCARD` |
 | Buffers | 2；公共配置允许显式选择 2..16 |
 | 帧延迟 | waitable object；`SetMaximumFrameLatency(1)`，回读验证 |
@@ -26,6 +26,24 @@ viewport scale 为 `min(clientWidth/1920, clientHeight/1080, 2.0)`，居中并�
 不满足契约就报错或暂停，不通过 blt、非 waitable swap chain、非等比拉伸/裁剪或 tearing 掩盖问题。
 首次上传/Present 也必须获得 frame-latency permit。
 [waitable-object 契约](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject)
+
+## G22 Encoder 的无 DXGI output 硬件兼容策略
+
+用户确认的 Encoder 专用策略：`allowUnmappedHardwareAdapter` 默认关闭，仅 Unified 显式单屏全屏发送开启。
+配置仍必须给出物理 client origin 和 fullscreen popup，窗口/矩形/DPI/模式与拓扑重验没有跳过。
+Encoder 使用独立 Win32 catalog；其 `dxgiOutputIdentityAvailable=false`，零 LUID 是未提供而非真实显卡身份。
+Decoder 和受保护双屏测试选择器继续使用原有严格 DXGI catalog，禁止拿 Encoder catalog 代替捕获身份。
+
+呈现枚举仍优先按 HMONITOR 找 output 所属硬件 adapter。只有枚举正常结束、确认没有对应 output 时，
+才选择 DXGI 枚举顺序中的首个非 software adapter，以显式 adapter / `D3D_DRIVER_TYPE_UNKNOWN` 创建同一种硬件设备和 HWND swap chain。
+adapter/output 各有64项上限；native 查询错误或超过上限直接失败，不将失败当作“没有映射”。
+有明确 software output 对应时也拒绝，不静默绕到另一个硬件；无硬件则失败，不自动 WARP、Qt、GDI 或其他 swap-chain 回退。
+
+`WindowEnvironment.adapterBoundToMonitorOutput` 记录实际选择依据；binding 或 LUID 变化触发 epoch 失效与旧帧清理，
+设备创建前再次核对身份。Unified Encoder 报告的 `presentation.adapter` 来自最后可用的渲染环境观察，
+未初始化时为 `null` 并注明原因；`successfulPresentCalls` 是生产端调用计数，不是捕获帧率或恢复证明。
+此策略不改变 canonical raster、视觉合同、FEC、文件恢复、swap-chain 参数或资源上限。
+具体候选与验证边界见 [G22 Encoder 显示兼容修复](UNIFIED_G22_ENCODER_DISPLAY_COMPAT_2026-09-07.md)。
 
 ## 模块与调用方责任
 

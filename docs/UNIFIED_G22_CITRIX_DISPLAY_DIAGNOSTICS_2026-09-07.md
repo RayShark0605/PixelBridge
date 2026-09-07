@@ -5,12 +5,12 @@
 2026-09-07 用户报告：另一台电脑中，通过 Citrix Receiver 打开的远程桌面内运行 Encoder，
 点击“开始传输”出现“无法确认当前屏幕；请将 Encoder 窗口移到目标屏幕后重试”。
 
-**当前状态：用户已返回诊断 JSON 截图；生产 catalog 的 DXGI output 对应缺失已确认，尚未修复。**
+**当前状态：截图已确认 DXGI output 对应缺失；用户已同意 Encoder 专用硬件解耦修复，实施与候选见[后续记录](UNIFIED_G22_ENCODER_DISPLAY_COMPAT_2026-09-07.md)。Citrix 新版实测仍待返回。**
 截图及后续最小修复建议见第6节；第2..5节保留发出诊断工具时的分析与交接背景。
 本机普通双屏正常枚举不反证远端故障；G21 Windows 远程桌面证据和 G22 本地候选证据不等于 Citrix 兼容性认证。
 现有 `3a840a2` 交付 Encoder/Decoder、封印 ZIP、Unified build 目录均未替换或重构建。
 
-## 2. 已证明的代码路径
+## 2. 原交付版本已证明的代码路径（修复前）
 
 1. `apps/PixelBridgeEncoder/encoder_gui.cpp` 的 `ConfigureCurrentMonitor` 将 `MonitorFromWindow` 返回空
    与 `EnumerateMonitors` 失败合并为同一句提示，因此“移动窗口”不是可靠的通用补救。
@@ -88,7 +88,7 @@ PMv2/会话信息只属于诊断进程，不能代替 Encoder HWND/Qt 线程诊�
 **这个catalog阻塞已定位；不是Windows不能枚举屏幕，也不是缺少显卡的证据。**
 截图不包含Encoder HWND检测、D3D11设备创建、swap chain或Present，因此不能宣称修复后的像素呈现已获证明。
 
-### 最小修复建议，待用户确认后实施
+### 最小修复建议（用户随后已同意，实施见后续记录）
 
 1. 仅对Encoder呈现解耦“Win32窗口/屏幕身份”和“实际渲染设备身份”；屏幕定位、物理矩形、DPI和拓扑重验仍严格执行，
    未提供的DXGI output/LUID不能伪造；不全局放宽Decoder捕获所需的元数据合同。
@@ -103,4 +103,5 @@ PMv2/会话信息只属于诊断进程，不能代替 Encoder HWND/Qt 线程诊�
    记录具体失败阶段，再就软件路径及性能影响向用户确认。
 5. 改进错误提示，区分窗口所属屏幕、catalog、渲染设备和swap chain/Present失败；不得继续用“移动窗口”概括所有情况。
 
-本轮只保存现场证据和更新诊断文档；没有改动/重构建产品，没有运行新的显示或输入自动化。
+`75eccbc` 诊断记录提交仅保存现场证据和更新文档，没有改动/重构建产品或运行新的显示/输入自动化。
+其后用户同意上述范围，Encoder 修复、测试及候选身份单独记录，不回填为原交付版本已通过。
