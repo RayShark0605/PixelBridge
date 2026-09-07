@@ -124,6 +124,7 @@ pwsh -NoProfile -File <package>\Test-PBUnifiedPortablePackage.ps1 `
 
 ## 7. 明确保留的未执行事项
 
+- 后续用户报告 Citrix Receiver 远程会话内 Encoder“无法确认当前屏幕”；尚未定位远端首个失败API，现有包不宣称Citrix兼容。只读诊断交接见[Citrix显示诊断](UNIFIED_G22_CITRIX_DISPLAY_DIAGNOSTICS_2026-09-07.md)，不是修复版或新远控PASS。
 - 未人工双击EXE、按真实键盘Esc或拖动真实ROI；no-console由PE/CRT/进程探针证明，GUI和本地shortcut路径由真实控件测试证明。
 - 未在无开发环境的纯净Windows VM认证；已在新解压目录限制子进程PATH为Windows/System32，清除Qt/plugin覆盖后通过。
 - 未新跑4/500 GB实际文件、G21大容量阶梯、新版远控性能、全量CTest或ASan；500 GB相关是策略边界测试。

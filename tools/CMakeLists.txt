@@ -2,6 +2,10 @@
 # subtree optional prevents command-line tooling dependencies from entering
 # the core library or application configuration paths.
 
+if(WIN32 AND MSVC)
+    add_subdirectory(PBDisplayDiagnostics)
+endif()
+
 add_executable(PBVectorGen PBVectorGen/main.cpp)
 target_link_libraries(PBVectorGen
     PRIVATE

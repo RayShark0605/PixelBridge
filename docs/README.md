@@ -23,6 +23,7 @@
 | 文档 | 作用 | 当前状态 |
 | --- | --- | --- |
 | [`UNIFIED_G22_DELIVERY_2026-09-07.md`](UNIFIED_G22_DELIVERY_2026-09-07.md) | 最终双端EXE/ZIP、冻结身份、hash、实屏证据和旧目录清理 | **G22 PASS_LOCAL_CANDIDATE；3a840a2** |
+| [`UNIFIED_G22_CITRIX_DISPLAY_DIAGNOSTICS_2026-09-07.md`](UNIFIED_G22_CITRIX_DISPLAY_DIAGNOSTICS_2026-09-07.md) | Citrix会话Encoder启动故障、独立元数据诊断工具与现场下一步 | **待远端报告；未修复/未认证Citrix** |
 | [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md) | 用户新授权的双端 GUI 重建、确认事项、最小验证和 Windows 发布候选 | **本地候选已交付；保留全部阶段/失败记录** |
 | [`UNIFIED_USER_GUIDE.md`](UNIFIED_USER_GUIDE.md) | 新 GUI 的文件/帧率/全屏/Esc、目录/限定屏幕 ROI/接收进度及 CLI 日志说明 | G22 用户指南；包和实屏门禁见工作记录 |
 | [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | 冻结最终产品行为；将实现拆为 G00..G22；规定每步最小测试和退出条件 | **当前执行入口** |
