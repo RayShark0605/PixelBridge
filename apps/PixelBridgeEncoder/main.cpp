@@ -3,6 +3,7 @@
 
 #ifdef _WIN32
 #include "application_build_identity.h"
+#include "application_console.h"
 #endif
 
 #include <iostream>
@@ -27,6 +28,11 @@ int main()
 #ifdef _WIN32
     if (argumentCount > 1)
     {
+        if (!pbapp::PrepareCommandLineStreams())
+        {
+            std::cerr << "Unable to initialize command-line standard streams\n";
+            return 2;
+        }
         if (std::wstring_view(arguments[1]) == L"--version" && argumentCount == 2)
         {
             const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();

@@ -54,6 +54,20 @@ target_link_libraries(PBQSettingsTests PRIVATE PB::PBApplication Qt${QT_VERSION_
 target_compile_definitions(PBQSettingsTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 PbInstrumentPresentationTest(PBQSettingsTests)
 set_tests_properties(PBQSettingsTests PROPERTIES LABELS "application;qsettings;gui-model" TIMEOUT 30)
+
+# No Qt, graphics or payload: bounded subprocess probes for GUI-subsystem CRT
+# startup and inherited CLI handles. The external test hides its own console.
+if(MSVC)
+    foreach(probeTarget IN ITEMS PBGuiConsoleProbe PBConsoleParentProbe)
+        add_executable(${probeTarget} application_console_probe.cpp)
+        target_link_libraries(${probeTarget} PRIVATE PB::CompilerSettings)
+        target_include_directories(${probeTarget} PRIVATE "${PROJECT_SOURCE_DIR}/apps/common")
+        target_compile_definitions(${probeTarget} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    endforeach()
+    set_target_properties(PBGuiConsoleProbe PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(PBGuiConsoleProbe PRIVATE /ENTRY:wmainCRTStartup)
+endif()
+
 get_target_property(pbQSettingsQmake Qt${QT_VERSION_MAJOR}::qmake IMPORTED_LOCATION)
 if(pbQSettingsQmake)
     get_filename_component(pbQSettingsQtBin "${pbQSettingsQmake}" DIRECTORY)

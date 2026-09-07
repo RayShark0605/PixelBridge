@@ -23,6 +23,10 @@ if(WIN32)
     target_compile_definitions(PixelBridgeEncoder PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
         PB_ENABLE_QT_GUI=1 PB_ENABLE_APPLICATION_RUNTIME=1 "PB_GIT_COMMIT=\"${pbEncoderGitCommit}\"")
     if(MSVC)
+        # Keep the normal Unicode CRT initialization/argument parsing while
+        # suppressing Windows' automatic console for ordinary GUI launch.
+        set_target_properties(PixelBridgeEncoder PROPERTIES WIN32_EXECUTABLE TRUE qt_no_entrypoint TRUE)
+        target_link_options(PixelBridgeEncoder PRIVATE /ENTRY:wmainCRTStartup)
         target_compile_options(PixelBridgeEncoder PRIVATE /external:anglebrackets /external:W0)
     endif()
     get_target_property(pbEncoderQtQmake Qt${QT_VERSION_MAJOR}::qmake IMPORTED_LOCATION)

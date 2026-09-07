@@ -3,7 +3,7 @@
 ## 1. 当前状态与本轮授权
 
 - 状态：**IN PROGRESS**；2026-09-07 已完成双端新 GUI 接线、限定显示器选区和无大小确认的生产策略，
-  定向无显示检查已通过；最终启动方式、独立包与新版实际像素验证尚未完成。
+  定向无显示检查已通过；GUI-only 启动方式已获用户确认并完成定向验证，独立包与新版实际像素验证尚未完成。
 - 起始提交：`b86702fafcde60b1666674bd5478649affa1c559`。
 - G21 已以 `PASS_WITH_SINGLE_RUN_USER_WAIVER` 关闭，详见
   [最终远控结果](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。本轮不重跑 G21 性能调优，
@@ -54,8 +54,7 @@
 - 用户已确认 Decoder：先选择显示器，再选整屏或框选；框选只覆盖所选显示器，精确坐标在高级页；
   开始/停止使用同一个按钮，停止保留断点；完整验证并落盘后自动停止，页面保留 100%/已完成，不自动弹窗或打开目录。
 - 项目自身 LICENSE、公开分发或签名选择不得擅定；本轮本地候选不等于已公开发布或已选择开源许可证。
-- 现有 EXE 使用 Console subsystem。已向用户询问是否改为双击只打开 GUI、仍保留 CLI/重定向能力；
-  尚未改启动方式，不能将当前构建宣称为已经消除控制台窗口的最终产品。
+- 用户已确认：改为双击只打开 GUI，保留 CLI 诊断与日志重定向能力。实现及 Windows shell 等待语义见第 8 节。
 
 ## 3. 源码核对与复用边界
 
@@ -180,3 +179,44 @@ ctest --test-dir build-unified-release -C Release -R '^(PixelBridge(Encoder|Deco
 `reviewed-evidence-summary.json` 记录父提交、源文件与 EXE hashes、证据边界；
 `reviewed-working-tree.patch` 和新增源码副本保存该工作树。后续提交必须重新 configure/build 才能将 EXE 的
 `--build-identity` 绑定到新提交；本轮工作树构建的 embedded parent 不等于 clean committed candidate。
+
+本阶段已提交为 `879520a401d317c15a5d9d4d2a3385b83822bff4`。随后重新 configure/build 双端，
+`postcommit-build-identity.json` 确认两个 EXE 的嵌入 commit 均一致；该重建本身不是实屏证据。
+
+## 8. GUI-only 启动与 CLI 保留
+
+- 用户确认后，两个 MSVC EXE 改为 `WIN32_EXECUTABLE` / Windows GUI subsystem。
+  使用标准 `wmainCRTStartup` 保留 CRT 初始化与原有 Unicode 参数解析，不改成自定义 raw 入口；
+  禁用 Qt 的额外 entrypoint adapter，保持原 `wmain` 命令路由。
+- 无参数 GUI 启动不 attach/create console。仅 CLI 分支尝试 `AttachConsole(ATTACH_PARENT_PROCESS)`，
+  从不 `AllocConsole`、激活窗口或生成键盘事件。
+- `application_console.h` 独立保存 stdin/stdout/stderr 的重定向，再修复 GUI CRT 的未绑定标准流；
+  对已有管道、文件和 NUL 不进行统一 `freopen(CONOUT$)` 覆盖。真正需要绑定时使用 owned duplicate，
+  不关闭父进程给出的原始重定向句柄。
+- API 依据：[Microsoft AttachConsole](https://learn.microsoft.com/en-us/windows/console/attachconsole)、
+  [GetStdHandle 的 GUI/附着/继承规则](https://learn.microsoft.com/en-us/windows/console/getstdhandle)、
+  [标准 CRT 入口选项](https://learn.microsoft.com/en-us/cpp/build/reference/entry-entry-point-symbol?view=msvc-170)。
+- **Shell 行为边界：** 进程自身退出码不变，但交互式 PowerShell 对裸调用的 GUI EXE 不保证同步等待。
+  使用 `& .\PixelBridgeEncoder.exe --version | Out-Host; $LASTEXITCODE`、捕获/重定向管道，
+  或 `Start-Process -Wait -PassThru` 获取退出码。不是修改协议或静默丢失 stderr；已作为实测行为写入用户指南。
+
+证据根：`artifacts/g22-startup-20260907/`。
+
+- `build-gui-subsystem.log`、`build-probes.log`、`build-mixed-probes.log`：双端及独立 stdio probes 构建 exit 0。
+- `test-03-reviewed.log` / `test-03-reviewed/summary.json`：**12/12 PASS**，覆盖双端 PE GUI/x64、
+  `--version`/`--build-identity`/错误 stderr 与 exit 2、PowerShell 合流及退出码、独立 pipe/file/NUL、
+  无参数无 console、附着自有隐藏父 console 后的三标准句柄修复，以及 stdout=file、stderr/stdin=console 的混合情况。
+- `gui-smoke-reviewed.log`：新子系统下双端 offscreen GUI **2/2 PASS，0.65 s**。
+- `test-01.log` 保留首次测试错误：旧 presentation 未知命令的帮助输出在 stdout，不能用该路由证明 stderr 丢失。
+  测试改用真实 runtime 的非法参数 stderr/exit 2 路径；未改产品错误输出约定。`test-02.log` 为随后 11/11 通过，
+  第三轮增加混合重定向场景。
+- 隐藏 console 只属于测试启动的 parent/probe，不显示产品窗口、不访问鼠标键盘或发送 input event；
+  这不是人工双击/Esc 或 native 数据窗口验证。
+
+重放命令：
+
+```powershell
+cmake --build build-unified-release --config Release --target PixelBridgeEncoder PixelBridgeDecoder PBGuiConsoleProbe PBConsoleParentProbe --parallel 4
+& <python> -X utf8 tests/PBApplication/test_gui_startup.py --build-directory build-unified-release --evidence-directory artifacts/g22-startup-fresh --powershell (Get-Command pwsh).Source
+ctest --test-dir build-unified-release -C Release -R '^PixelBridge(Encoder|Decoder)GuiSmoke$' --output-on-failure
+```
