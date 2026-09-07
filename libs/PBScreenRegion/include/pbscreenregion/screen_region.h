@@ -84,6 +84,9 @@ struct ScreenCaptureRegion
 // concurrent selector on that thread. They do not initialize COM or create a
 // capture device. All failure/cancellation paths leave region unchanged.
 [[nodiscard]] ScreenRegionStatus SelectScreenCaptureRegion(ScreenCaptureRegion& region) noexcept;
+// Opens an overlay only on the exact currently enumerated monitor rectangle.
+// No clipping, nearest-monitor fallback or cross-monitor selection is allowed.
+[[nodiscard]] ScreenRegionStatus SelectScreenCaptureRegionOnMonitor(const RECT& monitorPhysicalRect, ScreenCaptureRegion& region) noexcept;
 [[nodiscard]] ScreenRegionStatus ResolveScreenCaptureRegion(const RECT& physicalRect, ScreenCaptureRegion& region) noexcept;
 
 [[nodiscard]] const char* GetScreenRegionErrorName(ScreenRegionErrorCode code) noexcept;

@@ -48,7 +48,7 @@ add_executable(PBUnifiedWindowTransitionProbe unified_window_transition_probe.cp
 target_link_libraries(PBUnifiedWindowTransitionProbe PRIVATE PB::CompilerSettings PB::PBApplication PB::PBProtocol)
 target_compile_definitions(PBUnifiedWindowTransitionProbe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 
-PbAddUnitTest(PBQSettingsTests test_qsettings_contract.cpp test_remote_visual_metadata_preset.cpp
+PbAddUnitTest(PBQSettingsTests test_qsettings_contract.cpp test_remote_visual_metadata_preset.cpp test_decoder_progress_text.cpp
     "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.cpp")
 target_link_libraries(PBQSettingsTests PRIVATE PB::PBApplication Qt${QT_VERSION_MAJOR}::Core)
 target_compile_definitions(PBQSettingsTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

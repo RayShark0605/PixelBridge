@@ -863,14 +863,7 @@ struct ProfileBinding
 [[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeReceiverResourcePolicyForVisualProfile(
     const VisualProfile profile) noexcept
 {
-    pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
-    if (profile == VisualProfile::UnifiedLc4)
-    {
-        // The legacy policy remains four. Unified temporal striping requires
-        // the Decoder to retain its complete bounded eight-Segment window.
-        policy.maxActiveOuterFecDecoders = senderUnifiedActiveSegmentWindowSize;
-    }
-    return policy;
+    return profile == VisualProfile::UnifiedLc4 ? MakeUnifiedReceiverResourcePolicy() : pbprotocol::GetDefaultReceiverResourcePolicy();
 }
 
 struct TransferDescription
@@ -7759,6 +7752,16 @@ pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSe
     }
     const pbcompression::CompressionSettings settings = MakeEncoderCompressionSettings(compressionLevel);
     return pbcompression::CompressSegment(rawBytes, settings);
+}
+
+pbprotocol::ReceiverResourcePolicy MakeUnifiedReceiverResourcePolicy() noexcept
+{
+    pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    // Unified retains its bounded eight-Segment window. G22 removes size-only
+    // confirmation, not the accepted-file cap or the storage admission checks.
+    policy.maxActiveOuterFecDecoders = senderUnifiedActiveSegmentWindowSize;
+    policy.maxOutputPreallocationBytesWithoutPrompt = policy.maxAcceptedFileBytes;
+    return policy;
 }
 
 DecoderConfig MakeUnifiedDecoderConfig(std::wstring outputDirectory, const pbscreenregion::ScreenCaptureRegion& region)

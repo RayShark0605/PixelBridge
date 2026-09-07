@@ -65,6 +65,21 @@ bool DecoderApplicationController::IsActive() const
     return pbapp::IsDecoderStateActive(runtime_.GetSnapshot().state);
 }
 
+bool DecoderApplicationController::SetStatusRefreshMilliseconds(const int milliseconds)
+{
+    if (milliseconds < 100 || milliseconds > 2000)
+    {
+        return false;
+    }
+    pollTimer_.setInterval(milliseconds);
+    return true;
+}
+
+int DecoderApplicationController::GetStatusRefreshMilliseconds() const
+{
+    return pollTimer_.interval();
+}
+
 void DecoderApplicationController::PollSnapshot()
 {
     const pbapp::DecoderSnapshot current = runtime_.GetSnapshot();

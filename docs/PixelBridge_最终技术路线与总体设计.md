@@ -4497,7 +4497,10 @@ MaxZstdWindowBytes
 MaxOutputPreallocationBytesWithoutPrompt
 ```
 
-对于超过本地自动接受阈值的 `OriginalFileSize`，Decoder 先显示文件名、大小、Session 信息，由用户确认后再创建/扩展 `.part`。
+**2026-09-07 G22 用户更新：** Unified 产品在既有 500 GiB 资源上限内，对任何大小的文件都不再要求确认。
+生产策略令 `MaxOutputPreallocationBytesWithoutPrompt = MaxAcceptedFileBytes`，仍先执行资源配额、磁盘空间及路径安全检查，
+不改变不覆盖已有文件、WholeFileDigest、安全发布和最终重新打开复验。通用协议策略仍可表达显式阈值，
+但下述历史确认行为不再适用于 G22 产品：超过本地自动接受阈值时先确认，再创建/扩展 `.part`。
 
 所有配额失败必须作为可观测状态返回，例如：
 

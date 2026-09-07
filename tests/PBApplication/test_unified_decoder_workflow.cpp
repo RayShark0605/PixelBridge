@@ -1,5 +1,6 @@
 #include "unified_decoder_test_support.h"
 #include "pbprotocol/transport_block_codec.h"
+#include "pbprotocol/output_reservation.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <fstream>
@@ -55,6 +56,37 @@ void RequireLiveFlowControl(const ReceiveState& state)
     REQUIRE(state.requestedDemod.maximumFrameAgeMilliseconds == 250);
 }
 } // namespace
+
+TEST_CASE("G22 Unified accepts all supported sizes without confirmation and preserves resource limits", "[application][g22][policy]")
+{
+    const auto legacy = pbprotocol::GetDefaultReceiverResourcePolicy();
+    const auto policy = pbapp::MakeUnifiedReceiverResourcePolicy();
+    constexpr std::uint64_t fourGib = 4ULL * 1024 * 1024 * 1024;
+    REQUIRE(policy.maxAcceptedFileBytes == 500ULL * 1024 * 1024 * 1024);
+    REQUIRE(policy.maxOutputPreallocationBytesWithoutPrompt == policy.maxAcceptedFileBytes);
+    REQUIRE(policy.maxActiveOuterFecDecoders == 8);
+    REQUIRE(policy.maxSegmentCount == legacy.maxSegmentCount);
+    REQUIRE(policy.maxRawSegmentBytes == legacy.maxRawSegmentBytes);
+    REQUIRE(policy.maxEncodedSegmentBytes == legacy.maxEncodedSegmentBytes);
+    REQUIRE(policy.maxConcurrentSessions == legacy.maxConcurrentSessions);
+    REQUIRE(policy.maxResumeBytes == legacy.maxResumeBytes);
+    REQUIRE(policy.maxOrphanTransportBytes == legacy.maxOrphanTransportBytes);
+    for (const std::uint64_t size : {0ULL, 1ULL, fourGib, fourGib + 1, policy.maxAcceptedFileBytes})
+    {
+        const auto decision = pbprotocol::EvaluateOutputReservation(size, policy);
+        REQUIRE(decision);
+        REQUIRE(decision.Value() == pbprotocol::OutputReservationDecision::AutoAccept);
+    }
+    for (const auto size : {policy.maxAcceptedFileBytes + 1, (std::numeric_limits<std::uint64_t>::max)()})
+    {
+        const auto decision = pbprotocol::EvaluateOutputReservation(size, policy);
+        REQUIRE_FALSE(decision);
+        REQUIRE(decision.Error().code == pbprotocol::ProtocolErrorCode::OutputReservationDenied);
+    }
+    const auto historicalDecision = pbprotocol::EvaluateOutputReservation(fourGib + 1, legacy);
+    REQUIRE(historicalDecision);
+    REQUIRE(historicalDecision.Value() == pbprotocol::OutputReservationDecision::RequiresUserConfirmation);
+}
 
 TEST_CASE("G16 Unified Decoder policy selects real automatic runtime and bounded physical ROI", "[application][g16][model]")
 {
@@ -142,6 +174,8 @@ TEST_CASE("G16 actual mixed pixels reach Decoder runtime final publish and reope
     const auto snapshot = runtime.GetSnapshot();
     INFO(snapshot.errorDetail);
     REQUIRE(VerifyOutput(snapshot, bytes));
+    REQUIRE(snapshot.largeOutputConfirmationState == pbapp::LargeOutputConfirmationState::NotRequired);
+    REQUIRE(snapshot.largeOutputConfirmationRequestId == 0);
     REQUIRE(snapshot.originalFileNameUtf8 == "g16-source.bin");
     REQUIRE(snapshot.verifiedSegmentCount == (bytes.empty() ? 0 : 1));
     REQUIRE(snapshot.requestedBackend == pbapp::CaptureBackend::Auto);
@@ -219,6 +253,28 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
     bytes.back() = std::byte{0xF3};
     const auto frames = MakeFrames(scratch.Directory(L"tx"), bytes, 4);
     const auto foreign = MakeFrames(scratch.Directory(L"foreign"), RawBytes(100));
+    // SC6-V3 stripes successive logical frames across the active Segment
+    // window. Prove the fixture's observed transport identity, rather than
+    // assume the historical pair-of-frames-per-Segment schedule.
+    for (std::size_t frameIndex = 0; frameIndex < 2; frameIndex++)
+    {
+        const auto& frame = frames[frameIndex].demodulation;
+        std::uint32_t transportCount = 0;
+        for (std::size_t blockIndex = 0; blockIndex < frame.acceptedUnifiedBlockCount; blockIndex++)
+        {
+            const auto& block = frame.acceptedUnifiedBlocks[blockIndex];
+            if (block.kind == pbmodulation::UnifiedSlotKind::Transport)
+            {
+                const auto parsed = pbprotocol::ParseTransportBlock(std::span(block.bytes).first(block.size));
+                REQUIRE(parsed);
+                REQUIRE(parsed.Value().header.segmentOrdinal == frameIndex);
+                transportCount++;
+            }
+        }
+        REQUIRE(transportCount > 0);
+        std::cout << "G22 captured SC6 fixture frame " << frameIndex << ": SegmentOrdinal=" << frameIndex
+            << "; transport blocks=" << transportCount << '\n';
+    }
     const auto directory = scratch.Directory(L"out");
     const auto config = pbapp::MakeUnifiedDecoderConfig(directory.wstring(), Region());
     std::string sessionId;
@@ -234,7 +290,6 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
         const auto state = std::make_shared<ReceiveState>();
         state->failWgc = failInitialization;
         state->Push(frames[0]);
-        state->Push(frames[1]);
         pbapp::DecoderRuntime runtime(Services(state));
         REQUIRE(runtime.Start(config));
         REQUIRE(WaitFor([&]()
@@ -267,8 +322,8 @@ TEST_CASE("G16 Stop and capture fallback preserve verified Segments and restart 
         REQUIRE(pbapp::IsDecoderStateActive(runtime.GetSnapshot().state));
         REQUIRE(runtime.GetSnapshot().verifiedRawBytes == before.verifiedRawBytes);
         const auto deliveredBeforeDuplicates = state->Delivered();
-        state->Push(frames[1]);
-        state->Push(frames[1]);
+        state->Push(frames[0]);
+        state->Push(frames[0]);
         state->Push(foreign[0]);
         REQUIRE(WaitFor([&]()
         {

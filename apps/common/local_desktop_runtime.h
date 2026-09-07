@@ -86,6 +86,10 @@ struct DecoderConfig
     std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
 };
 
+// Production Unified accepts every supported file size without a size prompt.
+// The generic protocol policy remains available for historical diagnostics.
+[[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeUnifiedReceiverResourcePolicy() noexcept;
+
 [[nodiscard]] DecoderConfig MakeUnifiedDecoderConfig(std::wstring outputDirectory,
     const pbscreenregion::ScreenCaptureRegion& region);
 
@@ -105,8 +109,9 @@ struct DecoderRuntimeServices
     DecoderCaptureController::SessionFactory captureFactory = MakeNativeDecoderCaptureSession;
     std::function<pbcapturenormalize::CaptureStatus(const pbdemodd3d11::CaptureDemodulatorConfig&,
         std::shared_ptr<DecoderDemodulator>&)> demodulatorFactory;
-    // May only lower the normal confirmation threshold. Used by small-fixture
-    // tests; no Qt/CLI control can change this or bypass a required decision.
+    // Small-fixture legacy confirmation tests may force a threshold no higher
+    // than the generic protocol default. Production Unified leaves this unset
+    // and uses MakeUnifiedReceiverResourcePolicy; no Qt/CLI control exposes it.
     std::optional<std::uint64_t> outputConfirmationThresholdBytes;
 };
 

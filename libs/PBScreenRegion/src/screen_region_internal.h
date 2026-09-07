@@ -75,7 +75,7 @@ public:
 [[nodiscard]] ScreenRegionStatus ValidateTopology(const MonitorSnapshot& snapshot) noexcept;
 [[nodiscard]] ScreenRegionStatus BuildDragRect(POINT first, POINT last, RECT& rect) noexcept;
 [[nodiscard]] ScreenRegionStatus ResolveFromTopology(const MonitorSnapshot& snapshot, const RECT& rect, ScreenCaptureRegion& region) noexcept;
-[[nodiscard]] ScreenRegionStatus RunSelection(ScreenRegionBackend& backend, ScreenCaptureRegion& region) noexcept;
+[[nodiscard]] ScreenRegionStatus RunSelection(ScreenRegionBackend& backend, ScreenCaptureRegion& region, const RECT* monitorPhysicalRect = nullptr) noexcept;
 [[nodiscard]] ScreenRegionStatus RunResolve(ScreenRegionBackend& backend, const RECT& rect, ScreenCaptureRegion& region) noexcept;
 
 struct NativeDiagnostics

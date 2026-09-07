@@ -19,6 +19,8 @@ public:
     void RequestStop() noexcept;
     [[nodiscard]] pbapp::DecoderSnapshot GetSnapshot() const;
     [[nodiscard]] bool IsActive() const;
+    [[nodiscard]] bool SetStatusRefreshMilliseconds(int milliseconds);
+    [[nodiscard]] int GetStatusRefreshMilliseconds() const;
 
 signals:
     void SnapshotChanged();

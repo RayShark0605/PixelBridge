@@ -54,7 +54,8 @@ namespace pbgui
 
 [[nodiscard]] inline QString HumanBytes(const std::uint64_t bytes)
 {
-    const QStringList units{QStringLiteral("B"), QStringLiteral("KiB"), QStringLiteral("MiB"), QStringLiteral("GiB")};
+    // UI labels follow Windows: KB/MB/GB use powers of 1024, not 1000.
+    const QStringList units{QStringLiteral("B"), QStringLiteral("KB"), QStringLiteral("MB"), QStringLiteral("GB")};
     double value = static_cast<double>(bytes);
     int unit = 0;
     while (value >= 1024.0 && unit + 1 < units.size())

@@ -108,6 +108,13 @@ public:
     [[nodiscard]] bool RunSmoke(const QString& sourcePath, const QString& sessionRoot,
         const std::function<bool()>& presentationCreated, bool& confirmDeletion)
     {
+        if (pbgui::HumanBytes(1023) != QStringLiteral("1023 B") || pbgui::HumanBytes(1024) != QStringLiteral("1.00 KB") ||
+            pbgui::HumanBytes(1024ULL * 1024) != QStringLiteral("1.00 MB") ||
+            pbgui::HumanBytes(1024ULL * 1024 * 1024) != QStringLiteral("1.00 GB") ||
+            pbgui::HumanBytes(pbapp::maximumInstantFileBytes) != QStringLiteral("500.00 GB"))
+        {
+            return false;
+        }
         if (isVisible() || tabs_->count() != 2 || fpsSpin_->minimum() != 1 || fpsSpin_->maximum() != 60 ||
             fpsSpin_->value() != 15 || startButton_->isEnabled() || escapeShortcut_->context() != Qt::WindowShortcut ||
             escapeShortcut_->autoRepeat() || !details_->isReadOnly() || deleteButton_->isEnabled())
@@ -223,7 +230,7 @@ private:
         QHBoxLayout* const fileRow = new QHBoxLayout();
         sourceEdit_ = new QLineEdit();
         sourceEdit_->setObjectName(QStringLiteral("sourcePath"));
-        sourceEdit_->setPlaceholderText(QStringLiteral("选择文件（0 B 至 500 GiB）"));
+        sourceEdit_->setPlaceholderText(QStringLiteral("选择文件（0 B 至 500 GB，按 Windows 单位）"));
         browseButton_ = new QPushButton(QStringLiteral("选择文件…"));
         fileRow->addWidget(sourceEdit_, 1);
         fileRow->addWidget(browseButton_);
@@ -424,8 +431,8 @@ private:
         messageLabel_->setText(message);
         details_->setPlainText(QStringLiteral("PB-Unified-SC6-V3 · layout 10 · 1920 × 1080 BGRA8 SDR\n"
             "全屏：规范画布 1:1 居中；外围为中性背景，不拉伸数据\n"
-            "固定：8 MiB 分段 / 自动 RAW-zstd(level 3) / Robust LDPC / DirectRepeat-Wirehair V2\n"
-            "文件上限：500 GiB；传输期间源文件保持只读锁定\n\n") + (snapshot.runGeneration == 0 ?
+            "固定：8 MB 分段 / 自动 RAW-zstd(level 3) / Robust LDPC / DirectRepeat-Wirehair V2\n"
+            "文件上限：500 GB（1024 进位）；传输期间源文件保持只读锁定\n\n") + (snapshot.runGeneration == 0 ?
                 QStringLiteral("尚未开始传输。运行详情将在建立会话后显示。") : pbgui::FromUtf8(pbapp::BuildEncoderDiagnostics(snapshot))));
         UpdateActions();
     }

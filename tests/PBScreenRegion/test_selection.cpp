@@ -66,6 +66,7 @@ public:
     ScreenRegionStatus OpenOverlay(const MonitorSnapshot& snapshot) noexcept override
     {
         openCalls++;
+        openedTopology = snapshot;
         liveWindows = snapshot.count;
         return Fault(ScreenRegionStage::Window);
     }
@@ -125,6 +126,7 @@ public:
     }
 
     MonitorSnapshot initialTopology = Topology();
+    MonitorSnapshot openedTopology;
     MonitorSnapshot finalTopology = initialTopology;
     std::vector<SelectionEvent> events{
         {SelectionEventType::PointerDown, {-100, -100}}, {SelectionEventType::PointerMove, {-81, -71}}, {SelectionEventType::PointerUp, {-81, -71}}};
@@ -379,4 +381,90 @@ TEST_CASE("Fixed-seed event noise cannot fabricate a drag or leak capture across
         CHECK(backend.acquireCalls == 1);
         CheckClean(backend);
     }
+}
+
+TEST_CASE("A scoped selector opens only the selected monitor and still revalidates the full topology", "[screen-region][selection][g22]")
+{
+    FakeBackend backend;
+    const RECT scope = backend.initialTopology.monitors[0].physicalRect;
+    auto output = Sentinel();
+    backend.watchedOutput = &output;
+    REQUIRE(RunSelection(backend, output, &scope));
+    REQUIRE(backend.openedTopology.count == 1);
+    CHECK(backend.openedTopology.monitors[0].monitor == MonitorHandle(1));
+    CHECK(output.monitor == MonitorHandle(1));
+    CHECK(EqualRect(output.monitorPhysicalRect, scope));
+    CHECK(backend.readCalls == 2);
+    CheckClean(backend);
+}
+
+TEST_CASE("A scoped selector ignores pointer starts on the other display and never captures its input", "[screen-region][selection][g22]")
+{
+    FakeBackend backend;
+    const RECT scope = backend.initialTopology.monitors[0].physicalRect;
+    backend.events.insert(backend.events.begin(), {{SelectionEventType::PointerDown, {50, 50}}, {SelectionEventType::PointerUp, {150, 150}}});
+    auto output = Sentinel();
+    backend.watchedOutput = &output;
+    REQUIRE(RunSelection(backend, output, &scope));
+    CHECK(backend.acquireCalls == 1);
+    CHECK(backend.releaseCalls == 1);
+    CHECK(output.monitor == MonitorHandle(1));
+    CheckClean(backend);
+}
+
+TEST_CASE("A scoped selector rejects a drag leaving its display rather than clipping or accepting another monitor", "[screen-region][selection][g22]")
+{
+    FakeBackend backend;
+    const RECT scope = backend.initialTopology.monitors[0].physicalRect;
+    backend.events.insert(backend.events.begin(), {{SelectionEventType::PointerDown, {-10, -100}}, {SelectionEventType::PointerUp, {10, -90}}});
+    auto output = Sentinel();
+    backend.watchedOutput = &output;
+    REQUIRE(RunSelection(backend, output, &scope));
+    CHECK(backend.acquireCalls == 2);
+    CHECK(backend.previews[2].validation.code == ScreenRegionErrorCode::NotSingleMonitor);
+    CHECK(EqualRect(output.physicalRect, RECT{-100, -100, -80, -70}));
+    CheckClean(backend);
+}
+
+TEST_CASE("A stale partial or malformed monitor scope creates no overlay and leaves output unchanged", "[screen-region][selection][g22]")
+{
+    const std::array<RECT, 3> scopes{RECT{0, 0, 100, 100}, RECT{5000, 0, 6920, 1080}, RECT{10, 20, 10, 30}};
+    for (const RECT& scope : scopes)
+    {
+        FakeBackend backend;
+        auto output = Sentinel();
+        backend.watchedOutput = &output;
+        CHECK_FALSE(RunSelection(backend, output, &scope));
+        CHECK(backend.openCalls == 0);
+        CHECK(backend.acquireCalls == 0);
+        CHECK(IsSentinel(output));
+        CheckClean(backend);
+    }
+}
+
+TEST_CASE("A scoped selector fails closed when another monitor changes during selection", "[screen-region][selection][g22]")
+{
+    FakeBackend backend;
+    const RECT scope = backend.initialTopology.monitors[0].physicalRect;
+    backend.finalTopology.monitors[1].dpiX++;
+    auto output = Sentinel();
+    backend.watchedOutput = &output;
+    const auto status = RunSelection(backend, output, &scope);
+    CHECK(status.code == ScreenRegionErrorCode::DisplayChanged);
+    REQUIRE(backend.openedTopology.count == 1);
+    CHECK(IsSentinel(output));
+    CheckClean(backend);
+}
+
+TEST_CASE("Scoped cancellation releases the overlay without changing the previous ROI", "[screen-region][selection][g22]")
+{
+    FakeBackend backend;
+    const RECT scope = backend.initialTopology.monitors[0].physicalRect;
+    backend.events = {{SelectionEventType::PointerDown, {-100, -100}}, {SelectionEventType::Cancel, {}}};
+    auto output = Sentinel();
+    backend.watchedOutput = &output;
+    CHECK(RunSelection(backend, output, &scope).code == ScreenRegionErrorCode::Cancelled);
+    REQUIRE(backend.openedTopology.count == 1);
+    CHECK(IsSentinel(output));
+    CheckClean(backend);
 }

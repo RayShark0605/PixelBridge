@@ -277,7 +277,7 @@ ScreenRegionStatus RunResolve(ScreenRegionBackend& backend, const RECT& rect, Sc
     return status;
 }
 
-ScreenRegionStatus RunSelection(ScreenRegionBackend& backend, ScreenCaptureRegion& region) noexcept
+ScreenRegionStatus RunSelection(ScreenRegionBackend& backend, ScreenCaptureRegion& region, const RECT* monitorPhysicalRect) noexcept
 {
     BackendCleanup cleanup(backend);
     auto status = backend.CheckAwareness();
@@ -290,9 +290,27 @@ ScreenRegionStatus RunSelection(ScreenRegionBackend& backend, ScreenCaptureRegio
     {
         status = ValidateTopology(snapshot);
     }
+    MonitorSnapshot overlaySnapshot = snapshot;
+    if (status && monitorPhysicalRect != nullptr)
+    {
+        status = ValidatePhysicalRect(*monitorPhysicalRect);
+        overlaySnapshot.count = 0;
+        for (std::size_t index = 0; status && index < snapshot.count; index++)
+        {
+            if (EqualRect(snapshot.monitors[index].physicalRect, *monitorPhysicalRect))
+            {
+                overlaySnapshot.monitors[0] = snapshot.monitors[index];
+                overlaySnapshot.count++;
+            }
+        }
+        if (status && overlaySnapshot.count != 1)
+        {
+            status = ScreenRegionStatus::Failure(ScreenRegionErrorCode::DisplayChanged, ScreenRegionStage::MonitorEnumeration);
+        }
+    }
     if (status)
     {
-        status = backend.OpenOverlay(snapshot);
+        status = backend.OpenOverlay(overlaySnapshot);
     }
     SelectionPreview preview;
     if (status)
@@ -335,6 +353,12 @@ ScreenRegionStatus RunSelection(ScreenRegionBackend& backend, ScreenCaptureRegio
             {
                 continue;
             }
+            if (monitorPhysicalRect != nullptr && (event.physicalPoint.x < monitorPhysicalRect->left ||
+                event.physicalPoint.x >= monitorPhysicalRect->right || event.physicalPoint.y < monitorPhysicalRect->top ||
+                event.physicalPoint.y >= monitorPhysicalRect->bottom))
+            {
+                continue;
+            }
             status = backend.AcquirePointer(event.physicalPoint);
             if (!status)
             {
@@ -359,7 +383,7 @@ ScreenRegionStatus RunSelection(ScreenRegionBackend& backend, ScreenCaptureRegio
         ScreenCaptureRegion candidate;
         if (preview.validation)
         {
-            preview.validation = ResolveFromTopology(snapshot, preview.physicalRect, candidate);
+            preview.validation = ResolveFromTopology(overlaySnapshot, preview.physicalRect, candidate);
         }
         if (event.type == SelectionEventType::PointerUp)
         {
@@ -397,6 +421,23 @@ ScreenRegionStatus SelectScreenCaptureRegion(ScreenCaptureRegion& region) noexce
     {
         const auto backend = detail::MakeNativeBackend();
         return detail::RunSelection(*backend, region);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ScreenRegionStatus::Failure(ScreenRegionErrorCode::OutOfMemory, ScreenRegionStage::Window);
+    }
+    catch (...)
+    {
+        return ScreenRegionStatus::Failure(ScreenRegionErrorCode::InternalError, ScreenRegionStage::None);
+    }
+}
+
+ScreenRegionStatus SelectScreenCaptureRegionOnMonitor(const RECT& monitorPhysicalRect, ScreenCaptureRegion& region) noexcept
+{
+    try
+    {
+        const auto backend = detail::MakeNativeBackend();
+        return detail::RunSelection(*backend, region, &monitorPhysicalRect);
     }
     catch (const std::bad_alloc&)
     {

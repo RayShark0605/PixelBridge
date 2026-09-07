@@ -2,7 +2,8 @@
 
 ## 1. 当前状态与本轮授权
 
-- 状态：**IN PROGRESS**；2026-09-07 已完成 Encoder 新 GUI 的初版接线与无显示验证，Decoder/包/实屏尚未完成。
+- 状态：**IN PROGRESS**；2026-09-07 已完成双端新 GUI 接线、限定显示器选区和无大小确认的生产策略，
+  定向无显示检查已通过；最终启动方式、独立包与新版实际像素验证尚未完成。
 - 起始提交：`b86702fafcde60b1666674bd5478649affa1c559`。
 - G21 已以 `PASS_WITH_SINGLE_RUN_USER_WAIVER` 关闭，详见
   [最终远控结果](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。本轮不重跑 G21 性能调优，
@@ -12,6 +13,13 @@
 - 只可在明确限制到右侧实验屏幕时进行必要实屏检查；不得干扰左屏、抢占用户焦点或自动操作鼠标键盘。
 
 ## 2. 已确认的新产品要求
+
+### 界面大小单位
+
+用户补充确认：界面 `KB`、`MB`、`GB` 与 Windows 文件大小的含义一致，即 **1024 进位**。
+`1 KB = 1024 B`、`1 MB = 1024 KB`、`1 GB = 1024 MB`，`KB/s` 同样以 1024 换算。
+界面资源上限显示 `500 GB`，底层仍为原来的 `500 * 1024^3` bytes（技术文档的 `500 GiB`）；
+不改变 wire、字节计数、资源限制或恢复算法。早期 Decoder 预览中的十进制速度已作废，不能作为最终界面。
 
 ### Encoder
 
@@ -31,6 +39,10 @@
 - 仍只从捕获到的 ROI 像素恢复，不读取 Encoder source、报告、Session 状态或任何隐藏 payload 旁路。
 - WholeFileDigest、安全发布、最终重新打开复验全部成功后才能显示完成；不覆盖已有文件。
 - 高级选项单独成 Tab，默认不要求用户手动调参。
+- 用户进一步明确取消大文件确认：**现有 500 GiB 上限内，所有文件大小均无需确认**。Unified 生产策略将
+  `maxOutputPreallocationBytesWithoutPrompt` 设为 `maxAcceptedFileBytes`，不是由 UI 代点确认或绕过 Receiver admission。
+  磁盘空间检查、路径安全、不覆盖、摘要、安全发布与最终重新打开复验继续强制执行。通用协议的历史 4 GiB
+  确认策略只保留用于旧诊断/显式小阈值回归，不再是 G22 产品要求。
 
 ### 全屏与 Esc 补充确认
 
@@ -42,6 +54,8 @@
 - 用户已确认 Decoder：先选择显示器，再选整屏或框选；框选只覆盖所选显示器，精确坐标在高级页；
   开始/停止使用同一个按钮，停止保留断点；完整验证并落盘后自动停止，页面保留 100%/已完成，不自动弹窗或打开目录。
 - 项目自身 LICENSE、公开分发或签名选择不得擅定；本轮本地候选不等于已公开发布或已选择开源许可证。
+- 现有 EXE 使用 Console subsystem。已向用户询问是否改为双击只打开 GUI、仍保留 CLI/重定向能力；
+  尚未改启动方式，不能将当前构建宣称为已经消除控制台窗口的最终产品。
 
 ## 3. 源码核对与复用边界
 
@@ -114,4 +128,55 @@ ctest --test-dir build-unified-release -C Release -R '^PixelBridge(Encoder|Decod
 `preview-01/` 保留 offscreen 未发现系统字体时的方框问题；`preview-02/` 通过显式加载本机 CJK 字体恢复可读预览。
 字体文件不复制进包，不增加生产字体依赖。截图只渲染自己的 offscreen widget，不读取桌面像素。
 
-尚未验证：真实全屏/Esc 用户操作、左/右屏 native containment、真实端到端、Decoder 新版、独立 package。
+本阶段结束时尚未验证：真实全屏/Esc 用户操作、左/右屏 native containment、真实端到端、Decoder 新版、独立 package。
+
+## 7. Decoder 新界面与用户补充要求
+
+- 重建主页面与高级 Tab：输出目录、明确选择显示器、整屏/框选、同一个开始/停止按钮；
+  只以文本显示百分比、1024 进位的 KB/s、剩余时间。没有有效画面时持续等待，停止后保留断点。
+- 完成判断要求 `Completed + WholeFileDigest + finalPublishSucceeded + finalReopenVerified + outputPath`；
+  在最终复验前最多显示 99.9%，0-byte 同样不能绕过完成检查。完成不弹窗、不自动打开目录。
+- 高级页的真实设置为 UI 状态刷新间隔 100..2000 ms（默认 250 ms）与精确物理 ROI；
+  刷新间隔不改变 capture cadence。手动打开完成目录与 create-only 诊断报告导出仅由用户显式操作触发。
+- 新增 `SelectScreenCaptureRegionOnMonitor`，只为所选显示器创建 overlay；依然复验完整拓扑。
+  拒绝跨屏拖动、失效 monitor scope、拓扑/DPI 变化；取消保持原选区。选区期间禁用配置重入，关闭请求延期处理。
+- 删除 GUI 的大文件确认窗口、请求回调及自动弹窗调度。实际 Unified 生产 policy 自动接受 0..500 GiB，
+  超上限仍拒绝。没有通过调高测试阈值、代点确认、改 wire 或放宽存储安全实现需求。
+- 所有 GUI 大小单位统一按 Windows 的 1024 进位：源大小、资源上限和恢复速度都使用 B/KB/MB/GB 标签。
+
+### 7.1 定向构建与 evidence
+
+证据根：`artifacts/g22-decoder-20260907/`；限定屏幕 selector 早期证据另在 `artifacts/g22-roi-20260907/`。
+
+- `build-no-size-confirmation.log`：Release 双端、PBApplicationTests、PBQSettingsTests、PBScreenRegionTests 构建 exit 0。
+- `tests-no-size-confirmation.log`：双端 offscreen GUI smoke、PBQSettingsTests、PBScreenRegionTests **4/4 PASS，0.90 s**。
+- `preview-05-no-size-confirmation/`：双端主/高级页面的 idle/stopped/completed 共 8 张自身 widget 渲染图；
+  字体、Unicode、Windows 单位和取消确认文案已检查。未截取桌面或操作真实输入。
+- `runtime-sc6-fixture.log`：PBApplicationTests `[g22],[g16]` **6 cases / 305 assertions PASS**。
+  包含 0、1、4 GiB、4 GiB+1、500 GiB 自动接收策略，500 GiB+1/UINT64_MAX 拒绝；
+  RAW/空文件实际 runtime + Receiver/Storage、确认旧诊断隔离、故障切换、停止/恢复与负例。
+- 大尺寸只是资源策略边界测试，没有创建或传输 4/500 GiB 文件。上述像素来自生产 Encoder + CPU oracle、
+  OS/capture/GPU 边界采用测试替身；不是新版真实屏幕、远程性能或全文件大容量认证。
+
+### 7.2 发现并修复旧 G16 fixture 的 SC6 时序假设
+
+`runtime-no-size-confirmation.log` 保留第一次 5/6 PASS、1 case / 2 assertions FAIL 的原始结果。
+旧用例先排入帧 0 和帧 1，却假定它们只恢复第一个 Segment；实测 SC6-V3 的这两帧分别携带
+SegmentOrdinal 0/1（各 7 个有效 Transport），第二帧可能在故障注入前完成整个文件。
+因此不是无确认策略导致捕获退化，而是历史测试将正常提前完成当作 fallback/stall 失败。
+
+修复只调整 fixture 的输入时序：先给帧 0、保留故障注入/停滞/重复帧/断点所有断言，重启后再给后续帧；
+新增逐 Transport parse 与 SegmentOrdinal 断言证明输入关系。`build-sc6-fixture.log` 和
+`runtime-sc6-fixture.log` 保存修复构建及通过证据，没有放宽生产条件或跳过失败用例。
+
+### 7.3 重放命令
+
+```powershell
+cmake --build build-unified-release --config Release --target PixelBridgeEncoder PixelBridgeDecoder PBApplicationTests PBQSettingsTests PBScreenRegionTests --parallel 4
+ctest --test-dir build-unified-release -C Release -R '^(PixelBridge(Encoder|Decoder)GuiSmoke|PBQSettingsTests|PBScreenRegionTests)$' --output-on-failure
+& .\build-unified-release\tests\PBApplication\Release\PBApplicationTests.exe '[g22],[g16]'
+```
+
+`reviewed-evidence-summary.json` 记录父提交、源文件与 EXE hashes、证据边界；
+`reviewed-working-tree.patch` 和新增源码副本保存该工作树。后续提交必须重新 configure/build 才能将 EXE 的
+`--build-identity` 绑定到新提交；本轮工作树构建的 embedded parent 不等于 clean committed candidate。
