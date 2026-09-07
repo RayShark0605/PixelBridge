@@ -22,6 +22,7 @@
 
 | 文档 | 作用 | 当前状态 |
 | --- | --- | --- |
+| [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md) | 用户新授权的双端 GUI 重建、确认事项、最小验证和 Windows 发布候选 | **G22 IN PROGRESS；新版尚未交付** |
 | [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | 冻结最终产品行为；将实现拆为 G00..G22；规定每步最小测试和退出条件 | **当前执行入口** |
 | [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md) | 最新0.15最终远控结果/单次豁免；0.13同候选三档、0.14交付及更早失败保持历史 | **G21 最终交接入口** |
 | [`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md) | 最终远控1 GiB身份、像素权威、双摘要、原始Gate失败与用户单次豁免 | **G21=`PASS_WITH_SINGLE_RUN_USER_WAIVER`** |
