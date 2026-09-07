@@ -65,15 +65,27 @@ struct NativeSmokeOptions
     return true;
 }
 
-[[nodiscard]] inline bool NativeWindowIsContained(QWidget& window, const NativeSmokeOptions& options)
+[[nodiscard]] inline bool NativeWindowIsContained(QWidget& window, const NativeSmokeOptions& options, QJsonObject* failure = nullptr)
 {
     DWORD foregroundProcess = 0;
     static_cast<void>(GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess));
     const HWND handle = reinterpret_cast<HWND>(window.winId());
     RECT bounds{};
-    return foregroundProcess != GetCurrentProcessId() && pbapp::RevalidateMonitorSafetySelection(options.safety) &&
-        GetWindowRect(handle, &bounds) && pbapp::ValidateMonitorSafetyTarget(options.safety, bounds,
-            MonitorFromWindow(handle, MONITOR_DEFAULTTONULL));
+    const bool ownForeground = foregroundProcess == GetCurrentProcessId();
+    const auto topology = pbapp::RevalidateMonitorSafetySelection(options.safety);
+    const bool hasBounds = GetWindowRect(handle, &bounds) != FALSE;
+    const auto containment = pbapp::ValidateMonitorSafetyTarget(options.safety, bounds, MonitorFromWindow(handle, MONITOR_DEFAULTTONULL));
+    const bool safe = !ownForeground && topology && hasBounds && containment;
+    if (!safe && failure != nullptr)
+    {
+        *failure = QJsonObject{{"ownProcessBecameForeground", ownForeground},
+            {"topologyStatus", pbapp::GetMonitorSafetyErrorName(topology.code)},
+            {"catalogStatus", static_cast<int>(topology.catalogStatus.code)}, {"catalogNativeError", topology.catalogStatus.nativeError},
+            {"hasWindowBounds", hasBounds}, {"containmentStatus", pbapp::GetMonitorSafetyErrorName(containment.code)},
+            {"left", static_cast<int>(bounds.left)}, {"top", static_cast<int>(bounds.top)},
+            {"right", static_cast<int>(bounds.right)}, {"bottom", static_cast<int>(bounds.bottom)}};
+    }
+    return safe;
 }
 
 [[nodiscard]] inline bool ShowNativeSmoke(QWidget& window, const NativeSmokeOptions& options)

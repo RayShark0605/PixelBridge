@@ -311,3 +311,20 @@ manifest SHA-256 `dd72d98722ad526dddf1e94d9d1682507c2ac1562a457e6cd50a0564fa6836
 - Encoder未接受接收完成信号，仍广播40,975 ms，直至自身45秒诊断期限；本地Qt shortcut连接和停止后解锁通过。
 - 原生evidence是新GUI+真实像素，不是人工按下Esc、人工ROI拖动、全文件容量/远控效率/干净无开发环境机器认证。
   最终交付仍要从新解压的独立包运行metadata、offscreen和同类最小原生路径，不能只用此build目录证据代替。
+
+## 14. 首次新解压包检查与安全中断诊断
+
+`c85dfe78466d040a8ca1fc8316789b128c98d78e` 的首个新解压候选在
+`artifacts/g22-delivery-2026-09-07/clean-check/` 完成10项检查：独立/随包verifier、双端version/identity/profile/GUI smoke。
+子进程PATH只保留Windows/System32，移除开发Qt/plugin环境变量；源ZIP保持不变。这不是纯净Windows VM认证。
+
+随后 `native-check/` 中 Decoder 完整恢复1 MB，whole digest/publish/reopen及外部双摘要均通过，
+但 Encoder 在31,805 ms时 `safetyHeld=false` 安全停止，所以整轮**FAIL，不交付为最终通过包**。
+当时聚合布尔未区分前台进程变化、目录/显示器身份及窗口包含关系，不能凭猜测把原因归给用户或Qt。
+`independent-recovery-audit.json` 单独确认接收文件正确，不覆盖这一原生整轮失败。
+
+只为诊断入口补充失败时的 `ownProcessBecameForeground`、topology/catalog/native error、窗口bounds/containment字段，
+不弱化任何保护条件，不恢复或设置焦点，不修改生产协议/GUI行为。
+`artifacts/g22-native-20260907/safety-diagnostic-01/` 随后同类运行双端exit0、完整双摘要、保护始终有效，
+Encoder在Receiver完成后继续40,925 ms。该工作树诊断运行没有复现此前中断，**不宣称已解释或修复未知中断原因**。
+最终候选会包含可区分原因的诊断，并重新从新解压包验证。

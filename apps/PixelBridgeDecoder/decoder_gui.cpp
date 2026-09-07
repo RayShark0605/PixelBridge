@@ -223,13 +223,14 @@ public:
         startButton_->click();
         const bool lockedAtStart = controller_.IsActive() && !outputEdit_->isEnabled() && !monitorCombo_->isEnabled();
         bool safetyHeld = true;
+        QJsonObject safetyFailure;
         bool captureReadyWritten = false;
         QElapsedTimer elapsed;
         elapsed.start();
         while (controller_.IsActive() && elapsed.elapsed() < options.durationSeconds * 1000)
         {
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            if (!pbgui::NativeWindowIsContained(*this, options))
+            if (!pbgui::NativeWindowIsContained(*this, options, &safetyFailure))
             {
                 safetyHeld = false;
                 break;
@@ -259,6 +260,7 @@ public:
         const pbapp::RunReportContext context{"PixelBridgeDecoder", std::string(pbcore::GetBuildInfo().version), PB_GIT_COMMIT,
             QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString()};
         const QJsonObject checks{{"controlsLockedAtStart", lockedAtStart}, {"captureReady", captureReadyWritten},
+            {"safetyFailure", safetyFailure},
             {"automaticVerifiedCompletion", automaticCompletion}, {"completedText", completedText},
             {"captureArrivedFrames", static_cast<qint64>(snapshot.captureArrivedFrames)},
             {"wholeMonitorSelected", EqualRect(&region_.physicalRect, &options.safety.experimentMonitor.physicalRect) != FALSE},

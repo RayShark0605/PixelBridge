@@ -197,12 +197,13 @@ public:
         startButton_->click();
         const bool lockedAtStart = controller_.IsActive() && !fpsSpin_->isEnabled() && !sourceEdit_->isEnabled();
         bool safetyHeld = true;
+        QJsonObject safetyFailure;
         QElapsedTimer elapsed;
         elapsed.start();
         while (controller_.IsActive() && elapsed.elapsed() < options.durationSeconds * 1000)
         {
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            if (!pbgui::NativeWindowIsContained(*this, options))
+            if (!pbgui::NativeWindowIsContained(*this, options, &safetyFailure))
             {
                 safetyHeld = false;
                 break;
@@ -228,6 +229,7 @@ public:
         const pbapp::RunReportContext context{"PixelBridgeEncoder", std::string(pbcore::GetBuildInfo().version), PB_GIT_COMMIT,
             QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString()};
         const QJsonObject checks{{"controlsLockedAtStart", lockedAtStart}, {"broadcastUntilDeadline", broadcastUntilDeadline},
+            {"safetyFailure", safetyFailure},
             {"localShortcutInvoked", localShortcutInvoked}, {"physicalEscKeyTested", false}, {"stopped", stopped},
             {"configuredFps", static_cast<int>(snapshot.configuredLogicalVisualFps)},
             {"singleMonitorFullscreen", snapshot.singleMonitorFullscreen},
