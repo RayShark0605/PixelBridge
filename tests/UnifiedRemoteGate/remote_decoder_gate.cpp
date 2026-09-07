@@ -32,7 +32,8 @@ namespace
 using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t minimumRunSeconds = 30;
 constexpr std::uint32_t maximumHighResolutionRunSeconds = 600;
-constexpr std::uint32_t maximumRunSeconds = 7200;
+constexpr std::uint32_t maximumStandardRunSeconds = 7200;
+constexpr std::uint32_t maximumRunSeconds = 21600;
 constexpr std::uint32_t maximumDiagnosticDimension = 4096;
 constexpr std::uint32_t actualCaptureReplayFrames = 256;
 constexpr std::uint32_t actualCaptureReplayFramesPerSecond = 15;
@@ -44,8 +45,11 @@ constexpr auto safetyInterval = std::chrono::milliseconds(200);
 constexpr auto sampleInterval = std::chrono::seconds(1);
 constexpr std::uint32_t extendedRunSampleIntervalSeconds = 12;
 constexpr auto extendedRunSampleInterval = std::chrono::seconds(extendedRunSampleIntervalSeconds);
+constexpr std::uint32_t longRunSampleIntervalSeconds = 36;
+constexpr auto longRunSampleInterval = std::chrono::seconds(longRunSampleIntervalSeconds);
 static_assert(maximumSampleBytes * maximumSampleCount <= maximumEvidenceBytes);
-static_assert(static_cast<std::size_t>(maximumRunSeconds / extendedRunSampleIntervalSeconds) + 2 <= maximumSampleCount);
+static_assert(static_cast<std::size_t>(maximumStandardRunSeconds / extendedRunSampleIntervalSeconds) + 2 <= maximumSampleCount);
+static_assert(static_cast<std::size_t>(maximumRunSeconds / longRunSampleIntervalSeconds) + 2 <= maximumSampleCount);
 
 void Require(const bool condition, const std::string& message)
 {
@@ -63,7 +67,7 @@ std::uint32_t ParseTimeout(const std::wstring_view text)
     {
         Require(character >= L'0' && character <= L'9', "invalid timeout");
         const auto digit = static_cast<std::uint32_t>(character - L'0');
-        Require(value <= (maximumRunSeconds - digit) / 10, "timeout exceeds 7200 seconds");
+        Require(value <= (maximumRunSeconds - digit) / 10, "timeout exceeds 21600 seconds");
         value = value * 10 + digit;
     }
     Require(value >= minimumRunSeconds, "timeout must be at least 30 seconds");
@@ -72,7 +76,8 @@ std::uint32_t ParseTimeout(const std::wstring_view text)
 
 std::chrono::seconds SelectSampleInterval(const std::uint32_t seconds) noexcept
 {
-    return seconds <= maximumHighResolutionRunSeconds ? sampleInterval : extendedRunSampleInterval;
+    return seconds <= maximumHighResolutionRunSeconds ? sampleInterval :
+        seconds <= maximumStandardRunSeconds ? extendedRunSampleInterval : longRunSampleInterval;
 }
 
 std::uint32_t ParseDiagnosticDimension(const std::wstring_view text)
@@ -292,7 +297,7 @@ std::string DecoderReport(const pbapp::DecoderSnapshot& snapshot, const std::uin
     return stream.str();
 }
 
-bool ReceiverChecksPassed(const pbapp::DecoderSnapshot& snapshot) noexcept
+bool ReceiverCoreCorrectnessChecksPassed(const pbapp::DecoderSnapshot& snapshot) noexcept
 {
     std::uint64_t detailedResourceRejections = 0;
     for (const std::uint64_t count : {snapshot.outerProtocolResourceLimitExceededRejections,
@@ -309,8 +314,33 @@ bool ReceiverChecksPassed(const pbapp::DecoderSnapshot& snapshot) noexcept
         snapshot.receiverResourcePolicyRejectedCount == 0 && snapshot.outerOrphanDroppedByQuotaCount == 0 &&
         snapshot.outerOrphanResourceExhaustedCount == 0 && snapshot.outerOrphanConflictRejectionCount == 0 &&
         snapshot.outerOrphanCachedBlockCount == 0 && snapshot.outerOrphanCachedBytes == 0 &&
-        snapshot.outerConflictRejections == 0 && snapshot.outerDeferredResourceBusyCount == 0 &&
-        snapshot.outerFecQuotaExceededCount == 0 && snapshot.errorDetail.empty();
+        snapshot.outerConflictRejections == 0 && snapshot.errorDetail.empty();
+}
+
+bool RecoverableDecoderBusyTelemetryConsistent(const pbapp::DecoderSnapshot& snapshot) noexcept
+{
+    if (snapshot.outerDeferredResourceBusyCount == 0 && snapshot.outerFecQuotaExceededCount == 0)
+    {
+        return true;
+    }
+    return snapshot.outerDeferredResourceBusyCount == snapshot.outerFecQuotaExceededCount &&
+        snapshot.outerActiveDecoderLimit != 0 &&
+        snapshot.outerTotalDecoderByteLimit != 0 &&
+        snapshot.outerActiveDecoderCount <= snapshot.outerActiveDecoderLimit &&
+        snapshot.outerPeakActiveDecoderCount == snapshot.outerActiveDecoderLimit &&
+        snapshot.outerReservedDecoderBytes <= snapshot.outerTotalDecoderByteLimit &&
+        snapshot.outerPeakReservedDecoderBytes <= snapshot.outerTotalDecoderByteLimit;
+}
+
+bool ReceiverEventualRecoveryChecksPassed(const pbapp::DecoderSnapshot& snapshot) noexcept
+{
+    return ReceiverCoreCorrectnessChecksPassed(snapshot) && RecoverableDecoderBusyTelemetryConsistent(snapshot);
+}
+
+bool ReceiverChecksPassed(const pbapp::DecoderSnapshot& snapshot) noexcept
+{
+    return ReceiverEventualRecoveryChecksPassed(snapshot) &&
+        snapshot.outerDeferredResourceBusyCount == 0 && snapshot.outerFecQuotaExceededCount == 0;
 }
 
 pbtelemetry::PublishedFrameMetric PublishedMetric(const pbapp::DecoderSnapshot& snapshot) noexcept
@@ -335,6 +365,30 @@ std::string GateReport(const pbapp::DecoderSnapshot& snapshot)
     std::ostringstream stream;
     stream << std::boolalpha << "{\"schema\":\"PixelBridge.G21.ReceiverChecks.1\",\"receiverLocalChecksPassed\":"
         << ReceiverChecksPassed(snapshot) << ",\"hard16KiBFrameMetricPassed\":" << ReachesThreshold(metric, 16384.0)
+        << ",\"engineering32KiBTargetReached\":" << ReachesThreshold(metric, 32768.0)
+        << ",\"externalSourceSha256AndBlake3Verification\":\"Pending independent post-receive verification\""
+        << ",\"chromaAndBaseOnlyEvidence\":\"Pending separate audit\",\"sourceOrOracleProvided\":false,\"G21Completed\":false}";
+    return stream.str();
+}
+
+std::string EventualRecoveryGateReport(const pbapp::DecoderSnapshot& snapshot)
+{
+    const auto metric = PublishedMetric(snapshot);
+    const bool eventualRecoveryPassed = ReceiverEventualRecoveryChecksPassed(snapshot);
+    const bool strictPass0ZeroPressurePassed = ReceiverChecksPassed(snapshot);
+    std::ostringstream stream;
+    stream << std::boolalpha << "{\"schema\":\"PixelBridge.G21.EventualRecoveryChecks.1\",\"acceptanceMode\":\"EventualRecovery\""
+        << ",\"eventualRecoveryPassed\":" << eventualRecoveryPassed
+        << ",\"strictPass0ZeroPressurePassed\":" << strictPass0ZeroPressurePassed
+        << ",\"recoverableDecoderBusyObserved\":" << (snapshot.outerDeferredResourceBusyCount != 0)
+        << ",\"recoverableDecoderBusyTelemetryConsistent\":" << RecoverableDecoderBusyTelemetryConsistent(snapshot)
+        << ",\"outerDeferredResourceBusyCount\":" << snapshot.outerDeferredResourceBusyCount
+        << ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount
+        << ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit
+        << ",\"outerPeakActiveDecoderCount\":" << snapshot.outerPeakActiveDecoderCount
+        << ",\"outerTotalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit
+        << ",\"outerPeakReservedDecoderBytes\":" << snapshot.outerPeakReservedDecoderBytes
+        << ",\"hard16KiBFrameMetricPassed\":" << ReachesThreshold(metric, 16384.0)
         << ",\"engineering32KiBTargetReached\":" << ReachesThreshold(metric, 32768.0)
         << ",\"externalSourceSha256AndBlake3Verification\":\"Pending independent post-receive verification\""
         << ",\"chromaAndBaseOnlyEvidence\":\"Pending separate audit\",\"sourceOrOracleProvided\":false,\"G21Completed\":false}";
@@ -564,7 +618,8 @@ void NeutralizeActualCaptureChroma(const std::filesystem::path& inputPath,
     std::cout << stream.str() << '\n';
 }
 
-void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
+void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds,
+    const bool acceptRecoverableDecoderBusy)
 {
     const auto safety = ResolveSafety();
     const auto region = ResolveRegion(safety);
@@ -610,10 +665,14 @@ void RunReceive(const std::filesystem::path& root, const std::uint32_t seconds)
         evidence.Finish();
         const auto snapshot = runtime.GetSnapshot();
         evidence.Record("final.json", DecoderReport(snapshot, safetyChecks));
-        evidence.Record("receiver-checks.json", GateReport(snapshot));
-        Require(ReceiverChecksPassed(snapshot), "receiver did not complete clean whole-digest, publish, reopen, cleanup and conflict checks");
+        evidence.Record("receiver-checks.json", acceptRecoverableDecoderBusy ?
+            EventualRecoveryGateReport(snapshot) : GateReport(snapshot));
+        Require(acceptRecoverableDecoderBusy ? ReceiverEventualRecoveryChecksPassed(snapshot) : ReceiverChecksPassed(snapshot),
+            "receiver did not complete the selected whole-digest, publish, reopen, cleanup and conflict checks");
         Require(ReachesThreshold(PublishedMetric(snapshot), 16384.0), "published file does not meet the G21 16 KiB/unique hard gate");
-        std::cout << "PASS: receiver-local publication and frame-metric checks only; external source and G21 lane checks remain pending\n";
+        std::cout << (acceptRecoverableDecoderBusy ?
+            "PASS: eventual receiver-local publication and frame-metric checks; strict Pass-0 pressure and external audits remain separately reported\n" :
+            "PASS: receiver-local publication and frame-metric checks only; external source and G21 lane checks remain pending\n");
     }
     catch (const std::exception& exception)
     {
@@ -787,10 +846,12 @@ void RunPolicyChecks()
         NeutralBt709Luma(std::byte{255}, std::byte{255}, std::byte{255}) == 255 &&
         NeutralBt709Luma(std::byte{0}, std::byte{0}, std::byte{255}) == 54,
         "BT.709 integer chroma-neutralization contract mismatch");
-    Require(ParseTimeout(L"30") == minimumRunSeconds && ParseTimeout(L"7200") == maximumRunSeconds, "timeout boundary mismatch");
+    Require(ParseTimeout(L"30") == minimumRunSeconds && ParseTimeout(L"21600") == maximumRunSeconds, "timeout boundary mismatch");
     Require(SelectSampleInterval(600) == sampleInterval && SelectSampleInterval(601) == extendedRunSampleInterval &&
-        SelectSampleInterval(maximumRunSeconds) == extendedRunSampleInterval, "timeout sample interval boundary mismatch");
-    for (const std::wstring_view invalid : {L"", L"0", L"29", L"7201", L"-1", L"+30", L"30x", L"4294967296"})
+        SelectSampleInterval(maximumStandardRunSeconds) == extendedRunSampleInterval &&
+        SelectSampleInterval(maximumStandardRunSeconds + 1) == longRunSampleInterval &&
+        SelectSampleInterval(maximumRunSeconds) == longRunSampleInterval, "timeout sample interval boundary mismatch");
+    for (const std::wstring_view invalid : {L"", L"0", L"29", L"21601", L"-1", L"+30", L"30x", L"4294967296"})
     {
         bool rejected = false;
         try
@@ -881,20 +942,40 @@ void RunPolicyChecks()
     snapshot.outerOrphanDroppedByQuotaCount = 1;
     Require(!ReceiverChecksPassed(snapshot), "orphan-cache quota drop accepted by remote gate");
     snapshot.outerOrphanDroppedByQuotaCount = 0;
+    snapshot.outerActiveDecoderLimit = pbapp::senderUnifiedActiveSegmentWindowSize;
+    snapshot.outerTotalDecoderByteLimit = 1073741824ULL;
+    snapshot.outerPeakActiveDecoderCount = pbapp::senderUnifiedActiveSegmentWindowSize;
+    snapshot.outerPeakReservedDecoderBytes = 457201696ULL;
     snapshot.outerDeferredResourceBusyCount = 1;
-    Require(!ReceiverChecksPassed(snapshot), "deferred Outer FEC resource pressure accepted by remote gate");
+    Require(!ReceiverChecksPassed(snapshot) && !ReceiverEventualRecoveryChecksPassed(snapshot),
+        "unpaired deferred Outer FEC pressure accepted by either gate mode");
     snapshot.outerDeferredResourceBusyCount = 0;
     snapshot.outerFecQuotaExceededCount = 1;
-    Require(!ReceiverChecksPassed(snapshot), "Outer FEC decoder quota event accepted by remote gate");
+    Require(!ReceiverChecksPassed(snapshot) && !ReceiverEventualRecoveryChecksPassed(snapshot),
+        "unpaired Outer FEC decoder quota event accepted by either gate mode");
+    snapshot.outerDeferredResourceBusyCount = 1;
+    Require(!ReceiverChecksPassed(snapshot) && ReceiverEventualRecoveryChecksPassed(snapshot),
+        "consistent active-window busy telemetry was not isolated to eventual-recovery mode");
+    Require(EventualRecoveryGateReport(snapshot).find("\"eventualRecoveryPassed\":true") != std::string::npos &&
+        EventualRecoveryGateReport(snapshot).find("\"strictPass0ZeroPressurePassed\":false") != std::string::npos &&
+        EventualRecoveryGateReport(snapshot).find("\"recoverableDecoderBusyObserved\":true") != std::string::npos,
+        "eventual-recovery report did not preserve the strict pressure result");
+    snapshot.outerPeakActiveDecoderCount--;
+    Require(!ReceiverEventualRecoveryChecksPassed(snapshot), "busy telemetry without an observed full active window was accepted");
+    snapshot.outerPeakActiveDecoderCount++;
+    snapshot.outerTotalDecoderByteLimit = 0;
+    Require(!ReceiverEventualRecoveryChecksPassed(snapshot), "busy telemetry without a bounded decoder-byte policy was accepted");
+    snapshot.outerTotalDecoderByteLimit = 1073741824ULL;
+    snapshot.outerActiveDecoderCount = snapshot.outerActiveDecoderLimit + 1;
+    Require(!ReceiverEventualRecoveryChecksPassed(snapshot), "active decoder count above its declared limit was accepted");
+    snapshot.outerActiveDecoderCount = 0;
+    snapshot.outerDeferredResourceBusyCount = 0;
     snapshot.outerFecQuotaExceededCount = 0;
     snapshot.errorDetail = "Post-publish cleanup warning";
     Require(!ReceiverChecksPassed(snapshot), "published file with cleanup warning accepted as a clean gate");
     snapshot.errorDetail.clear();
     snapshot.unifiedTelemetry.frameCoverageComplete = false;
     Require(!PublishedMetric(snapshot).bytesPerUniqueFrame, "incomplete frame coverage accepted");
-    snapshot.outerActiveDecoderLimit = pbapp::senderUnifiedActiveSegmentWindowSize;
-    snapshot.outerTotalDecoderByteLimit = 1073741824ULL;
-    snapshot.outerPeakActiveDecoderCount = pbapp::senderUnifiedActiveSegmentWindowSize;
     const std::string decoderReport = DecoderReport(snapshot, 7);
     Require(decoderReport.find("\"safetyRevalidations\":7") != std::string::npos &&
         decoderReport.find("\"outerDeferredResourceBusyCount\":0") != std::string::npos &&
@@ -914,7 +995,7 @@ int wmain(const int count, wchar_t* arguments[])
 {
     try
     {
-        Require(count >= 2, "expected --build-identity, --self-test, --inspect-bgra, --neutralize-chroma, --preflight, --receive, --receive-record or --replay-base-only");
+        Require(count >= 2, "expected --build-identity, --self-test, --inspect-bgra, --neutralize-chroma, --preflight, --receive, --receive-eventual, --receive-record or --replay-base-only");
         const std::wstring_view role(arguments[1]);
         if (role == L"--build-identity" && count == 2)
         {
@@ -941,7 +1022,12 @@ int wmain(const int count, wchar_t* arguments[])
         else if (role == L"--receive" && count == 4)
         {
             const auto seconds = ParseTimeout(arguments[3]);
-            RunReceive(arguments[2], seconds);
+            RunReceive(arguments[2], seconds, false);
+        }
+        else if (role == L"--receive-eventual" && count == 4)
+        {
+            const auto seconds = ParseTimeout(arguments[3]);
+            RunReceive(arguments[2], seconds, true);
         }
         else if (role == L"--receive-record" && count == 4)
         {

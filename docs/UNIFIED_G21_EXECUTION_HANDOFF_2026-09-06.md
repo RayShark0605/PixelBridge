@@ -3,14 +3,14 @@
 > 本文是关闭当前 Codex 对话前的事实交接，不替代
 > [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) 的范围和退出标准，
 > 也不把尚未通过的门禁写成已通过。后续任务必须先读仓库根 `AGENTS.md`、路线 G21、
-> [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 15～19 节，再使用本文定位证据。
+> [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) 第 22 节，再使用本文 0.15 定位最终证据；第 15～21 节继续作为历史诊断与准备链。
 
-## 0. 最新权威增量（20:25 交接基线；三档 LocalDesktop 见 0.13；本次交付收尾见 0.14）
+## 0. 最新权威增量（最终远控结果与单次豁免见 0.15；三档 LocalDesktop 见 0.13；交付收尾见 0.14）
 
 > **阅读规则：** 本节记录 `aec48c1` 交接之后实际完成的代码、测试和本机实屏证据，并取代本文后续章节中
 > “416 次 resource rejection 尚未定位”“Base-only 仍缺”“代码基线为 `433bccf`”等已经过时的当前状态判断。
 > 后续第 1～8 节继续保留，作为真实远控链历史、原始失败形状和操作背景，不得反向覆盖本节。
-> **继续执行后的最新状态优先读 0.13，再读 0.12、0.11、0.10、0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
+> **继续执行后的最新状态优先读 0.15，再读 0.14、0.13、0.12、0.11、0.10、0.9。** 0.1～0.8 的 `4a2463f` 是进入本次执行时的基线，不是新候选的实屏结果。
 
 ### 0.1 当前结论与 Git 边界
 
@@ -583,6 +583,55 @@ V1 包与所有原始 evidence 保持原位。新的 V2 准备根为
 
 本次按用户要求交付后结束；G21仍PARTIAL、G22未开始。最终仓库状态另封存在开发根 `task-closeout-final.json`，
 不修改已经封存的三档报告或交付manifest来追写新HEAD。
+
+### 0.15 最终 Windows 远程桌面 1 GiB 恢复与单次用户豁免（2026-09-07）
+
+本节取代 0.14 中“远控仍待现场、G21仍PARTIAL”的**当前状态**，但不改写其历史事实。用户使用 v5 包完成
+`00_Check`，本机 Receiver 先启动并只捕获完整 `\\.\DISPLAY2`，远程 Encoder 随后以
+`--logical-fps 15 --manual-stop --loop`、无自动 deadline 呈现精确 1 GiB。Windows 远程桌面自身 FPS 未知，
+不使用远程显示器 refresh rate 冒充 RDP FPS。
+
+权威身份和结果：
+
+```text
+Product source commit: 6e9064319a51bedcd403d74d47dd45c067928013
+Gate/tool embedded commit: 959678340d1946fed4fec01b4410a250b533daa3
+Sender RunId: 132e1a54d2134d2e828593dbeff210da
+Receiver RunId: 2c4f578663c0b3762bb0396acb2021ab
+SessionId: daba04b1c7c8c22a31604ea68dd61f8f
+SessionTag: 15447616161310190557
+bytes / Segment: 1,073,741,824 / 128 of 128
+SHA256: e6ec3a7f5643f7b04ca5b90ce9510fb8388410b562b329fb70fe4cb837a0d323
+BLAKE3: db460e2c8a260f885f3a8a1b0d4d47a5d04f9d74e648c8ce4a44626b03185063
+```
+
+Receiver `final.json` 为 Completed，WholeFileDigest、安全 rename、final reopen、published、完整 current-run coverage
+全部成功，`.part/.resume` 清零；所有 lane FEC/CRC/identity、真实 resource rejection、conflict、orphan drop/exhaustion
+均为 0。配对且有界的 `DeferredResourceBusy/OuterFecQuotaExceeded` 为 `970,220/970,220`，8-slot 峰值和
+457,201,696 bytes 预留从未越界；后续 Carousel 完成全部 Segment，因此
+`eventualRecoveryPassed=true`、`strictPass0ZeroPressurePassed=false`。Sender 在 Receiver 结束后由用户按 Q/Enter
+正常停止，Encoder exit 0；post-stop source 双摘要与本机重新完整读取的 published file 精确相等。source 未复制给
+Decoder，独立 live codeword oracle 仍为 null/unavailable。
+
+原始 Gate 不能改写：Receiver 观察 124,470 unique frames @ 13.753410 Hz，得到
+`8,626.510998634209 B/unique`，低于 16,384 硬门；`failure.txt` 只记录该性能失败，Receiver Gate exit 1。
+跨机审计如实为 `functionalRemoteOneGiBPassed=true`、`hard16KiBFrameMetricPassed=false`、
+`documentedG21GatePassed=false`。
+
+在这些数值、退出码和既有标准全部向用户披露后，用户明确选择“**仅本次明确豁免**”。因此 G21 最终状态为
+`PASS_WITH_SINGLE_RUN_USER_WAIVER`，G22 前置已解除但尚未开始。该豁免只绑定上述 Run/Session：不改原始 evidence、
+不把 exit 1 写成 exit 0、不改分母/协议/产品代码/provider 分支，且未来运行的 16 KiB/unique 硬门继续有效。
+
+完整结果、复核步骤和边界见
+[`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。机器可读证据：
+
+```text
+<repo>\artifacts\g21-remote-1gib-2026-09-07\remote-run-cross-host-audit-132e1a54d2134d2e828593dbeff210da.json
+SHA256: 23d45347a42e923148ab3975ebef5277057d4895bd731a083209d8df24a423eb
+
+<repo>\artifacts\g21-remote-1gib-2026-09-07\g21-single-run-waiver-132e1a54d2134d2e828593dbeff210da.json
+SHA256: d45e9b4ecebc50fdee65e782835a7edb6aabe609c2581e463ea4e1fde01c78da
+```
 
 ## 1. 交接时结论
 

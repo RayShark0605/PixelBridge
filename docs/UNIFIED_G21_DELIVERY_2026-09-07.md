@@ -1,5 +1,10 @@
 # Unified G21 本次交付与目录索引（2026-09-07）
 
+> **现场 supersession：** 本文记录远控运行前的交付快照；其中“远控未执行、G21仍PARTIAL”已由后续现场结果取代。
+> 最终 Windows 远程桌面 1 GiB 功能恢复 PASS、原始 16 KiB 性能 FAIL，并由用户只对该唯一 Run/Session 明确豁免；
+> G21=`PASS_WITH_SINGLE_RUN_USER_WAIVER`。当前结论见
+> [`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。下文旧状态作为交付时历史保留。
+
 ## 1. 交付结论与身份
 
 按用户最新要求，完成交付、代码提交和目录整理后结束本次任务，不继续长时测试或后台执行。

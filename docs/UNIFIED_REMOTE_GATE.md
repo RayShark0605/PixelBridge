@@ -2,14 +2,22 @@
 
 ## 1. 当前状态与前置
 
-**2026-09-05：PARTIAL / SC6 V3 的真实远程 1 MiB 已正确发布并越过 16 KiB 硬门；首轮 64 MiB live 在 5/8 Segment 后触发双方有界时限，未发布。** `ceeef61` 的 receiver-first 运行以 55 个唯一帧发布 1 MiB，得到 19,065.018 B/unique frame。随后 `f93fd25` 的 64 MiB 运行在 1,800 秒 sender / 2,100 秒 receiver 硬时限内只完成 40 MiB；冻结 resume journal 证明 0..4 已完成，5..7 各保留数千个唯一方程。源码与运行状态共同定位到发送端逐 Segment 长突发、接收端最多 4 个在途 Outer decoder 的组合失配。当前修正把 Unified 冻结为 8-Segment 逐帧交织窗口，并把匹配的接收/恢复资源上限扩为 8；确定性 64 MiB 稀疏抽帧闭环已通过，但同提交 live 64 MiB 尚未执行，所以不能关闭 G21。完整历史见第 6–13 节，当前诊断与修正见第 14–15 节。
+**2026-09-07：`PASS_WITH_SINGLE_RUN_USER_WAIVER`。** 冻结产品候选 `6e90643` 已通过 Windows 远程桌面呈现在本机
+右屏的真实像素，完成精确 1 GiB、128/128 Segment、whole digest、安全发布、final reopen 和外部双摘要；
+`eventualRecoveryPassed=true`，Sender 正常 exit 0。原始性能结果仍为 FAIL：124,470 unique frames、
+13.753410 Hz、8,626.511 B/unique，Receiver Gate 因且仅因低于 16 KiB 硬门 exit 1。用户在完整披露后明确选择
+“仅本次明确豁免”，因此关闭 G21，但不改写原始证据、指标分母或未来 16 KiB 门。G22 尚未开始。当前权威见第 22 节和
+[`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。
+
+**历史状态（2026-09-05）：PARTIAL / SC6 V3 的真实远程 1 MiB 已正确发布并越过 16 KiB 硬门；首轮 64 MiB live 在 5/8 Segment 后触发双方有界时限，未发布。** `ceeef61` 的 receiver-first 运行以 55 个唯一帧发布 1 MiB，得到 19,065.018 B/unique frame。随后 `f93fd25` 的 64 MiB 运行在 1,800 秒 sender / 2,100 秒 receiver 硬时限内只完成 40 MiB；冻结 resume journal 证明 0..4 已完成，5..7 各保留数千个唯一方程。源码与运行状态共同定位到发送端逐 Segment 长突发、接收端最多 4 个在途 Outer decoder 的组合失配。当前修正把 Unified 冻结为 8-Segment 逐帧交织窗口，并把匹配的接收/恢复资源上限扩为 8；确定性 64 MiB 稀疏抽帧闭环已通过，但同提交 live 64 MiB 尚未执行，所以不能关闭 G21。完整历史见第 6–13 节，当前诊断与修正见第 14–15 节。
 
 - 前置 G20：`e94da7f1d68fd3b410c180ac71201716c11bb9d7`，在途背压修复与本地功能收口已提交。原证据见 `UNIFIED_LOCAL_RELEASE_GATE.md` 第 16 节。
 - G20 的 2.0x 是用户豁免、未验证；letterbox 的 15,420.2353 B/unique 不是性能通过。G21 的 16 KiB 硬门仍然有效。
 - 用户确认两端由本项目提供：Encoder 由用户放到远程机、启动和摆放；Decoder 由本机控制，只捕获本机右屏。远程连接已经可用、具体类型未知。不自动连接远程、不操作用户输入。
 - 用户回报远程 `00_Check.bat`：`PASS: Encoder loads; commit e94da7f1d68fd3b410c180ac71201716c11bb9d7`，`Script exit: 0`；未生成 source、未启动窗口或广播。这是**用户回报的远程加载证据**，不是已观察到的像素链。
 - 用户随后明确同意：接收入口仅在专用测试构建启用，内部使用完整生产 `DecoderRuntime` 和 Auto 捕获；外层保护右屏，不扩展产品公共 CLI/Replay/monitor 配置。
-- G21 的 SC6 真实 1 MiB、外部 SHA-256/BLAKE3、whole digest、安全发布和 16 KiB 性能门已有一次完整 PASS；真实 64 MiB、Base Luma 独立恢复及当前修正的同身份 live 仍未关闭。G22 未开始。
+- G21 先前的真实 1 MiB、64 MiB、Base-only 和同候选 LocalDesktop 三档证据继续保留；最终 1 GiB 远控功能恢复
+  PASS，性能硬门原始 FAIL，并由用户对该唯一 Run 单次明确豁免。后续不得把豁免扩展为未来运行取消 16 KiB 门。
 
 ## 2. 已交付的远程 Encoder 不变
 
@@ -1278,3 +1286,91 @@ Receiver SHA256=`fc5fbd863b586036925d7326e9edfafb22fbb4181b7374523c435b58c6ab576
 20项进程fixture及逐entry/fresh extraction/双摘要/负例均PASS；构建和三EXE身份为9596783、Gate self-test PASS。
 当前build树已前移，实屏authority仍为单独冻结6e90643；新构建没有实屏验证。原始evidence和V1不动，最终仅文档
 提交后结束本次任务；G21远控与G22仍待后续单独安排，不能把任务收尾标作产品认证。
+
+## 22. 最终远控 1 GiB、原始性能失败与单次用户豁免（2026-09-07）
+
+### 22.1 运行与像素权威
+
+用户在远程机完成 v5 `00_Check`；本机 Receiver 先启动 46,343 ms，只捕获受保护策略下的完整
+`\\.\DISPLAY2`，WGC 实际 backend，无输入自动化。远程机随后运行无限手动循环 Sender；用户确认远控软件为
+Windows 远程桌面，但其真实 FPS 未知。Receiver 从实际捕获像素建立下述唯一 Session：
+
+```text
+Sender RunId: 132e1a54d2134d2e828593dbeff210da
+Receiver RunId: 2c4f578663c0b3762bb0396acb2021ab
+SessionId: daba04b1c7c8c22a31604ea68dd61f8f
+SessionTag: 15447616161310190557
+Profile/layout: PB-Unified-SC6-V3 / 10
+source: g21-1gibmanual-132e1a54d2134d2e828593dbeff210da.bin
+bytes: 1,073,741,824
+```
+
+画布 170,244 次接受观测始终为 `origin=(320,180)`、`scale=1.0x1.0`、residual 0。Sender 提交
+143,283 logical frames @ 14.985853 Hz；Receiver 观察 124,470 unique @ 13.753410 Hz。source、摘要、Session 和
+sender report 均未传入 Decoder；用户只在 Receiver 结束后回传停机后的四份 JSON。
+
+### 22.2 功能恢复与 eventual-recovery
+
+Receiver 在 9,102,167 ms 后完成 128/128 Segment 和精确 1 GiB。WholeFileDigest、安全 rename、final reopen、
+published、current-run frame coverage 全部成功，无 `.part/.resume` 残留。外部完整重读结果：
+
+```text
+SHA256: e6ec3a7f5643f7b04ca5b90ce9510fb8388410b562b329fb70fe4cb837a0d323
+BLAKE3: db460e2c8a260f885f3a8a1b0d4d47a5d04f9d74e648c8ce4a44626b03185063
+```
+
+两者与 remote source post-stop digest、Encoder source digest 和 Receiver whole digest 全部相等。所有真实
+resource/protocol rejection、Outer conflict、orphan drop/exhaustion/conflict、lane FEC/CRC/identity failure 为 0。
+`DeferredResourceBusy/OuterFecQuotaExceeded` 为 `970,220/970,220`，只在有界 8-slot 峰值出现，峰值预留
+457,201,696 bytes 小于 1 GiB 上限；后续 Carousel 正常释放并完成，因此
+`eventualRecoveryPassed=true`、`strictPass0ZeroPressurePassed=false`。
+
+Receiver 完成后用户按 Q/Enter 正常停止 Encoder；Encoder state Stopped、source stability true、exit 0。Sender 实际
+命令含 `--manual-stop --loop`、不含 `--seconds`，没有自动 deadline。
+
+### 22.3 不改写的原始失败
+
+```text
+VerifiedEncodedBytesPerUniqueFrame: 8,626.510998634209
+hard threshold:                       16,384
+hard16KiBFrameMetricPassed:           false
+receiver Gate exit:                   1
+failure.txt: published file does not meet the G21 16 KiB/unique hard gate
+```
+
+因此，未施加用户决定前的机器审计准确为：远控 1 GiB 功能恢复 PASS、eventual recovery PASS、现行性能 Gate FAIL、
+`documentedG21GatePassed=false`。不能通过删除 unique frames、改变分母、修改 exit 或把 publication 当性能结果来制造通过。
+
+### 22.4 用户决定与最终 G21 状态
+
+在上述测量、raw exit 1、路线硬门和“文件正确不等于性能通过”边界全部披露后，用户明确选择
+“**仅本次明确豁免**”。该决定只绑定 22.1 的 Run/Session，最终状态为：
+
+```text
+G21: PASS_WITH_SINGLE_RUN_USER_WAIVER
+G22: NOT STARTED
+```
+
+豁免不改写原始 audit/receiver files，不证明 strict Pass-0、16 KiB 或 32 KiB，不改变 PB-Unified-SC6-V3、FEC、
+resource policy、telemetry 分母或 provider-independent 产品路径；未来运行仍执行 16 KiB/unique 硬门。
+
+### 22.5 证据
+
+完整可复核报告：
+[`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。
+
+```text
+Receiver run:
+<repo>\build-unified-release\g21-remote-1gib-manual-08984cde1caf4130967bba5d6612b3b8\verified-local-receiver\runs\1gib6h-a79f9021c9814d8ca89f38fa41631878
+
+Sender evidence:
+<repo>\artifacts\g21-remote-1gib-2026-09-07\successful-run-sender-evidence-132e1a54d2134d2e828593dbeff210da
+
+Cross-host audit:
+<repo>\artifacts\g21-remote-1gib-2026-09-07\remote-run-cross-host-audit-132e1a54d2134d2e828593dbeff210da.json
+SHA256: 23d45347a42e923148ab3975ebef5277057d4895bd731a083209d8df24a423eb
+
+Single-run waiver:
+<repo>\artifacts\g21-remote-1gib-2026-09-07\g21-single-run-waiver-132e1a54d2134d2e828593dbeff210da.json
+SHA256: d45e9b4ecebc50fdee65e782835a7edb6aabe609c2581e463ea4e1fde01c78da
+```

@@ -2,11 +2,12 @@
 
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
 
-> **开发中，不是最终 Release。** G00..G20 已完成；当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10）。正式候选6e90643已通过同身份右屏15Hz的64 MiB、500 MiB、1 GiB实际像素阶梯及16 KiB/unique硬门，Base-only实际capture证明已成立。G21仍待该候选真实远控现场复验，G22尚未开始。本机成功不等于remote field pass；本次交付和证据边界见下方交付索引。
+> **开发中，不是最终 Release。** G00..G21 已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`，G22尚未开始。当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10），正式产品候选仍为6e90643。同候选右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯和Base-only证据已通过；最终Windows远程桌面现场完成精确1 GiB的128/128、whole digest、安全发布、final reopen及外部双摘要。该远控运行原始性能为8,626.511 B/unique、低于16 KiB且Receiver Gate exit1；用户在完整披露后只对此Run/Session明确豁免。不得把限定通过改写成未豁免性能PASS，未来16 KiB门继续有效。
 
 快速入口：
 
 - [Goal/目标模式统一实施路线](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)
+- [2026-09-07 G21最终远控1 GiB结果与单次豁免](docs/UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)
 - [2026-09-07 G21本次交付、目录与证据索引](docs/UNIFIED_G21_DELIVERY_2026-09-07.md)
 - [最终技术路线与总体设计](docs/PixelBridge_最终技术路线与总体设计.md)
 - [文档索引与历史证据边界](docs/README.md)
@@ -50,7 +51,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 - `PB-Unified-SC6-V3` layout 10 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、region-local placement、codeword-local sequence permutation、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
 - 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
-- 6e90643的本机三档、外部双摘要、Base-only证明和16 KiB/unique硬门已有独立证据；该候选的最终真实远控Gate仍待复验，32 KiB/unique工程目标未达到；
+- 6e90643的本机三档、外部双摘要、Base-only证明和16 KiB/unique硬门已有独立证据；最终真实远控1 GiB功能恢复与双摘要已通过，原始8,626.511 B/unique性能门失败由用户只对该Run/Session单次豁免，32 KiB/unique工程目标未达到；
 - G22 独立发布包、SBOM、用户文档和发布候选尚未开始；项目自身 LICENSE 与仓库可见性仍需维护者决定。
 
 完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明仍保留在 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)，但不得作为当前正式 Descriptor 规范引用。

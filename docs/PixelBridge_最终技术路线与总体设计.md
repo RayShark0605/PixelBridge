@@ -8,6 +8,7 @@
 > 支持模式：**即时视觉流模式**、**离线 MP4 模式**  
 > 设计日期：2026-08-21  
 > 文档状态：**通用架构与安全不变量继续有效；当前产品合同和实施顺序以第 0 节及 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 为准。2026-09-05 的 G21 失真诊断已用 SC6 V3/layout 10 取代 2026-09-03 冻结的 LC4/layout 8，并以 region-local placement + codeword-local sequence permutation 取代 SC6 V2 的全局交织；旧 ChannelClass、Phase 1.5、LC4、SC6 V2 与 RemoteVisual 路线只保留为历史设计/证据。**
+> 2026-09-07 G21 状态补记：**最终 Windows 远程桌面现场已完成精确 1 GiB 功能恢复与外部双摘要；原始 8,626.511 B/unique 低于 16 KiB、Receiver Gate exit 1。用户在完整披露后只对该唯一 Run/Session 明确豁免，故 G21=`PASS_WITH_SINGLE_RUN_USER_WAIVER`，G22 尚未开始；原始 Gate 与未来 16 KiB 门均不改写。**
 
 ---
 
@@ -54,7 +55,7 @@
 
 代码提交 `1445f9b` 是正式 Descriptor、流式多 Segment sender、durable lease、random-access `.part`、decoder resume journal 和 `DeferredResourceBusy` 的历史起点；其后 G00..G20 已按统一路线逐目标实现并提交。
 
-这仍不代表最终产品已完成：当前 SC6 V3/layout 10 的 CPU/GPU/空间加跨帧合成失真闭环已经建立，但真实远程 1 MiB/64 MiB 最终发布、外部摘要、Base-only 证据和 16 KiB 硬门仍属于 G21；G22 包/SBOM/发布候选尚未开始。精确状态见统一路线 G21。
+这仍不代表最终产品已完成：当前 SC6 V3/layout 10 的 CPU/GPU/空间加跨帧合成失真闭环、真实远程文件恢复、外部摘要和 Base-only 证据已经建立；G21 以最终远控 1 GiB 功能 PASS 加用户单次明确性能豁免关闭，原始 16 KiB 失败及未来硬门继续保留。G22 包/SBOM/发布候选尚未开始。精确状态见统一路线 G21 和 `UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`。
 
 ---
 

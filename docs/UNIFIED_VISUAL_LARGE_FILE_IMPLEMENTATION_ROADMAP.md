@@ -6,7 +6,9 @@
 > 代码起点：`1445f9b`（正式 Descriptor 与可恢复 Segment 基础）
 > 目标程序：`PixelBridgeEncoder.exe`、`PixelBridgeDecoder.exe`
 > 适用平台：Windows x64 / C++20 / Qt Widgets / D3D11
-> 当前结论（2026-09-07）：**G00..G20已完成；当前产品为PB-Unified-SC6-V3/layout10。正式候选`6e9064319a51bedcd403d74d47dd45c067928013`已在同一HEAD、相同参数、右屏15Hz actual-pixel链上依序通过64 MiB（8/8，18,137.531 B/unique）、500 MiB（63/63，16,575.656 B/unique）、1 GiB（128/128，16,627.310 B/unique），全部Pass0、whole/safe publish/final reopen/外部双摘要/完整coverage/零资源冲突/正常退出。16 KiB硬门全过，32 KiB工程目标未达到。候选包含相位均衡+1/10 repair+周期Control triplet、live journal增量compact和位精确BGRA扫描；首次coverage失败诊断只加证据、不改计数或门禁。旧2861beb一次coverage失效在本次三档未复现，不冒称已定位修复。Base-only实际capture派生proof仍成立；独立live false-accepted oracle继续null/unavailable。本机成功不是remote field pass：冻结远控复验包已准备并验证CheckOnly/文件hash/独立digest helper，仍等待用户安排真实远控场景。G21保持PARTIAL，G22前置未满足；现场G21真正达标并提交后继续G22。最新权威表格、原始artifact、精确测试命令、内存与未执行边界见`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`第0.13节和`UNIFIED_REMOTE_GATE.md`第21节。此后纯文档HEAD前移不改变冻结二进制6e90643身份。**
+> 当前结论（2026-09-07）：**G00..G21已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`，G22尚未开始。当前产品仍为PB-Unified-SC6-V3/layout10，正式产品候选仍为`6e9064319a51bedcd403d74d47dd45c067928013`。该候选的同身份右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯全部Pass0且越过16 KiB硬门；Base-only实际capture派生proof保持成立。最终Windows远程桌面现场以真实右屏像素完成精确1 GiB、128/128、whole digest、安全发布、final reopen和外部双摘要，eventual recovery通过、Sender exit0。原始远控性能结果仍为8,626.511 B/unique、低于16 KiB，Receiver Gate exit1；用户在完整披露后明确选择只对该唯一Run/Session豁免，因此关闭G21，但不改写原始证据、指标分母或未来16 KiB门。独立live false-accepted oracle继续null/unavailable，32 KiB工程目标未达到。最新权威见`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`第0.15节、`UNIFIED_REMOTE_GATE.md`第22节及`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`。**
+
+> 现场结果 supersession（2026-09-07）：下方“本次收尾”段落保留此前结束任务时的历史快照；其中“远控未运行、G21仍PARTIAL”已由上述现场运行和单次用户豁免取代，不能再作为当前结论。
 
 ---
 
@@ -896,6 +898,8 @@ freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap t
 
 **同身份本机阶梯收口（2026-09-07）：** `6e90643`正式重构建后以同一HEAD依序完成64 MiB/67,108,864 bytes、500 MiB/524,288,000 bytes、1 GiB/1,073,741,824 bytes；8/8、63/63、128/128全部在Pass0发布，最终指标18,137.531/16,575.656/16,627.310 B/unique，完整coverage、whole/safe publish/final reopen/独立双摘要、零lane/resource/conflict/deferred/quota/orphan、exit0/0。峰值active8/reserved457,201,696；Receiver working set约400MB跨档稳定，private high-water上升到691,380,224 bytes，不能用峰值数据宣称allocator时间线完全平坦或20GiB认证。此次6e90643只是给旧coverage失败补首因诊断，三档未复现不等于根因已修复。远控sender/receiver实验包已封印并做新解压CheckOnly和独立digest helper核对；没有执行新remote现场，不替代G22 SBOM/LICENSE/发行认证。所有原始root、双摘要、命令和边界见交接0.13及RemoteGate21。**G21仍PARTIAL；用户安排最终远控smoke/full并通过后，正式关闭并继续G22。**
 
+**最终 Windows 远程桌面 1 GiB 与单次用户豁免（2026-09-07）：** 用户以 v5 手动无限循环 Sender 完成最终现场；本机 Receiver 先启动并只读右屏真实 WGC 像素。唯一 Session `daba04b1c7c8c22a31604ea68dd61f8f` 完成 128/128、精确 1,073,741,824 bytes、whole digest、安全发布、final reopen、清理和外部 SHA-256/BLAKE3；真实 resource/conflict/orphan/lane failure 为 0，配对有界 busy/quota 970,220 后由新 repair Carousel 完成，eventual recovery PASS，Sender Q/Enter exit0。原始 124,470 unique @13.753410 Hz 只得8,626.511 B/unique，16 KiB硬门 FAIL、Receiver Gate exit1；这些原始事实保持不变。用户在披露后选择只对此Run/Session明确豁免，故 **G21=`PASS_WITH_SINGLE_RUN_USER_WAIVER`，G22前置解除但尚未开始**。未来16 KiB门继续有效；详见交接0.15、RemoteGate22和`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`。
+
 **前置：** G20。
 **目的：** 在 Decoder 不透明的真实远程像素链上完成快速 smoke 和完整文件恢复，不按品牌修改参数。
 
@@ -909,6 +913,7 @@ freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap t
 **用户配合：** 用户只负责远程端连接、窗口放置和必要点击；自动化不控制鼠标键盘。
 **记录：** scale/origin、capture backend/fallback、unique FPS、lane erasure、FER、control occupancy、goodput、whole digest、final publish、外部 SHA-256/BLAKE3。
 **退出：** live 最终发布成功、错误文件为 0、false accepted/conflict 为 0；同一参数不含 provider-specific 分支。未达到 32 KiB 工程目标可以发布首版，但必须明确记录；低于 16 KiB 硬门槛不能关闭。
+**本次处置：** 上述通用门保持不变；2026-09-07 的唯一最终 Run 由用户在原始性能失败完整披露后授予单次、不具先例效力的明确豁免，并以限定状态 `PASS_WITH_SINGLE_RUN_USER_WAIVER` 关闭 G21。
 **提交建议：** `test(remote): verify unified end to end recovery`
 
 ## G22 — 包、SBOM、用户文档与发布候选

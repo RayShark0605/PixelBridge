@@ -15,12 +15,12 @@ import time
 SCRIPTS = Path(__file__).resolve().parent
 POWERSHELL = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
 CSC = Path(os.environ["SystemRoot"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
-COUNTERS = (
-    "outerResourceRejections", "outerConflictRejections", "outerDeferredResourceBusyCount",
-    "outerFecQuotaExceededCount", "receiverResourcePolicyRejectedCount",
+FATAL_COUNTERS = (
+    "outerResourceRejections", "outerConflictRejections", "receiverResourcePolicyRejectedCount",
     "receiverControlRejectedByResourcePolicyCount", "outerOrphanDroppedByQuotaCount",
     "outerOrphanResourceExhaustedCount", "outerOrphanConflictRejectionCount",
 )
+UNPAIRED_BUSY_COUNTERS = ("outerDeferredResourceBusyCount", "outerFecQuotaExceededCount")
 ENVIRONMENT = dict(os.environ, PSModulePath=(
     str(POWERSHELL.parent / "Modules") + ";" + os.environ["ProgramFiles"] + "/WindowsPowerShell/Modules"))
 
@@ -132,15 +132,18 @@ def main():
         "productBinariesExecuted": False, "sourceBytesReadByReceiver": 0,
         "sourceHashes": {name: digest(SCRIPTS / name) for name in (
             "test_g21_wrappers.py", "wrapper_lifecycle_fixture.cs", "Start-G21Receiver.ps1", "Start-G21Encoder.ps1")}})
-    for index, mode in enumerate(("normal", "waiting", "partial", "exit-seven", "coverage", "overflow", *("counter:" + name for name in COUNTERS))):
+    receiver_modes = ("normal", "waiting", "partial", "exit-seven", "coverage", "overflow", "recoverable-busy",
+                      "recoverable-busy-not-full", *("counter:" + name for name in FATAL_COUNTERS),
+                      *("counter:" + name for name in UNPAIRED_BUSY_COUNTERS))
+    for index, mode in enumerate(receiver_modes):
         # Short artifact components also work with the .NET Framework fixture's MAX_PATH limit.
         case = make_fixture(root, fixture, "r%02d" % index, SCRIPTS / "Start-G21Receiver.ps1", mode)
         result = run_script(case, case / "Start-G21Receiver.ps1")
         runs = list((case / "runs").iterdir())
         assert len(runs) == 1
         report = read_json(runs[0] / "process-exit.json")
-        failure = mode in ("coverage", "overflow") or mode.startswith("counter:")
-        success = mode in ("normal", "waiting", "partial")
+        failure = mode in ("coverage", "overflow", "recoverable-busy-not-full") or mode.startswith("counter:")
+        success = mode in ("normal", "waiting", "partial", "recoverable-busy")
         assert not result["timedOut"] and not result["outerHarnessKilledChild"], result
         assert (result["exitCode"] == 0) == success, (mode, result)
         assert report["forcedTermination"] == failure, (mode, report)
@@ -151,8 +154,15 @@ def main():
         samples = (runs[0] / "memory-samples.jsonl").read_text().splitlines()
         assert 1 <= len(samples) <= 631 and len(samples) == report["memorySamples"]
         launch = read_json(runs[0] / "launch.json")
-        assert len(launch["arguments"]) == 3 and launch["arguments"][0] == "--receive"
+        assert len(launch["arguments"]) == 3 and launch["arguments"][0] == "--receive-eventual"
         assert launch["sourceOrOracleProvided"] is False
+        assert launch["acceptanceMode"] == "EventualRecovery"
+        if mode == "recoverable-busy":
+            assert report["recoverableBusyObserved"] is True
+            assert report["recoverableBusyClassificationValid"] is True
+            assert report["strictPass0ZeroPressureAtLastSample"] is False
+            busy_lines = (runs[0] / "recoverable-decoder-busy.jsonl").read_text().splitlines()
+            assert len(busy_lines) == 1 and json.loads(busy_lines[0])["classification"] == "RecoverableActiveDecoderWindowFull"
         result.update(mode=mode, passed=True, report=report, fixtureOnly=True)
         write_json(case / "result.json", result)
         results.append(result)
@@ -197,8 +207,10 @@ $text = $blocks[-1].Finally.Extent.Text
 $body = [ScriptBlock]::Create($text.Substring(1, $text.Length - 2))
 $run = $PSScriptRoot; $utf8 = [Text.UTF8Encoding]::new($false)
 $process = New-Object Diagnostics.Process
-$started = $false; $forced = $false; $memoryWriter = $null
+$started = $false; $forced = $false; $memoryWriter = $null; $recoverableBusyWriter = $null
 $failureReason = $null; $wrapperFailure = 'start sentinel'; $samples = 0; $peakWorkingSet = 0; $peakPrivate = 0
+$recoverableBusyObserved = $false; $recoverableBusyClassificationValid = $true; $recoverableBusySamples = 0
+$lastDeferredBusyCount = 0; $lastFecQuotaCount = 0
 try
 {
     try { throw 'start sentinel' } finally { . $body }

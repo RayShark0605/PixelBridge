@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('smoke', 'full')][string]$Stage = 'smoke',
+    [ValidateSet('smoke', 'full', '1gib', '1gib6h')][string]$Stage = 'smoke',
     [switch]$CheckOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -20,16 +20,17 @@ if (@(Get-Process PixelBridgeEncoder,PixelBridgeDecoder,PBUnifiedRemoteGate -Err
 $run = Join-Path $root ('runs\' + $Stage + '-' + [Guid]::NewGuid().ToString('N'))
 if (Test-Path -LiteralPath $run) { throw 'Create-only receiver root already exists.' }
 [void](New-Item -ItemType Directory -Path $run)
-$seconds = if ($Stage -eq 'smoke') { 600 } else { 1800 }
+$seconds = if ($Stage -eq 'smoke') { 600 } elseif ($Stage -eq 'full') { 1800 } elseif ($Stage -eq '1gib') { 7200 } else { 21600 }
 & $executable --preflight (Join-Path $run 'preflight')
 if ($LASTEXITCODE -ne 0) { throw 'Current right-monitor preflight rejected; capture not started.' }
 $receiver = Join-Path $run 'receiver'
-$arguments = '--receive "' + $receiver + '" ' + $seconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+$arguments = '--receive-eventual "' + $receiver + '" ' + $seconds.ToString([Globalization.CultureInfo]::InvariantCulture)
 $utf8 = [Text.UTF8Encoding]::new($false)
 [IO.File]::WriteAllText((Join-Path $run 'launch.json'), (@{
-    gitCommit = $identity.gitCommit; executable = $executable; arguments = @('--receive', $receiver, $seconds)
+    gitCommit = $identity.gitCommit; executable = $executable; arguments = @('--receive-eventual', $receiver, $seconds)
     sourceOrOracleProvided = $false; authority = 'Pending remote field scene; this entry alone is not a field pass'
     monitorPolicy = 'Re-enumerate entire physical right monitor; protect left monitor; no input automation'
+    acceptanceMode = 'EventualRecovery'; strictPass0ZeroPressureReportedSeparately = $true
 } | ConvertTo-Json -Depth 5), $utf8)
 $start = New-Object Diagnostics.ProcessStartInfo
 $start.FileName = $executable
@@ -45,9 +46,15 @@ $started = $false
 $failureReason = $null
 $wrapperFailure = $null
 $memoryWriter = $null
+$recoverableBusyWriter = $null
 $peakWorkingSet = 0L
 $peakPrivate = 0L
 $samples = 0L
+$recoverableBusySamples = 0L
+$recoverableBusyObserved = $false
+$recoverableBusyClassificationValid = $true
+$lastDeferredBusyCount = 0L
+$lastFecQuotaCount = 0L
 try
 {
     if (-not $process.Start()) { throw 'Gate process did not start.' }
@@ -55,6 +62,9 @@ try
     $memoryStream = [IO.File]::Open((Join-Path $run 'memory-samples.jsonl'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
     $memoryWriter = New-Object IO.StreamWriter($memoryStream, $utf8)
     $memoryWriter.AutoFlush = $true
+    $recoverableBusyStream = [IO.File]::Open((Join-Path $run 'recoverable-decoder-busy.jsonl'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $recoverableBusyWriter = New-Object IO.StreamWriter($recoverableBusyStream, $utf8)
+    $recoverableBusyWriter.AutoFlush = $true
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
     $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -87,9 +97,69 @@ try
                     {
                         $failureReason = 'Incomplete observed-frame coverage or telemetry counter overflow.'
                     }
-                    foreach ($name in @('outerResourceRejections', 'outerConflictRejections', 'outerDeferredResourceBusyCount', 'outerFecQuotaExceededCount', 'receiverResourcePolicyRejectedCount', 'receiverControlRejectedByResourcePolicyCount', 'outerOrphanDroppedByQuotaCount', 'outerOrphanResourceExhaustedCount', 'outerOrphanConflictRejectionCount'))
+                    foreach ($name in @('outerResourceRejections', 'outerConflictRejections', 'receiverResourcePolicyRejectedCount', 'receiverControlRejectedByResourcePolicyCount', 'outerOrphanDroppedByQuotaCount', 'outerOrphanResourceExhaustedCount', 'outerOrphanConflictRejectionCount'))
                     {
-                        if ($sample.remoteGate.$name -gt 0) { $failureReason = 'Irreversible receiver resource/conflict gate: ' + $name; break }
+                        if ($sample.remoteGate.$name -gt 0) { $failureReason = 'Fatal receiver resource/conflict gate: ' + $name; break }
+                    }
+                    $busyFields = @('outerDeferredResourceBusyCount', 'outerFecQuotaExceededCount', 'outerActiveDecoderLimit', 'outerTotalDecoderByteLimit', 'outerActiveDecoderCount', 'outerPeakActiveDecoderCount', 'outerReservedDecoderBytes', 'outerPeakReservedDecoderBytes')
+                    if (-not $failureReason)
+                    {
+                        foreach ($name in $busyFields)
+                        {
+                            if ($sample.remoteGate.PSObject.Properties.Name -notcontains $name)
+                            {
+                                $recoverableBusyClassificationValid = $false
+                                $failureReason = 'Required recoverable-busy telemetry is missing: ' + $name
+                                break
+                            }
+                        }
+                    }
+                    if (-not $failureReason)
+                    {
+                        $deferredBusyCount = [uint64]$sample.remoteGate.outerDeferredResourceBusyCount
+                        $fecQuotaCount = [uint64]$sample.remoteGate.outerFecQuotaExceededCount
+                        if ($deferredBusyCount -lt $lastDeferredBusyCount -or $fecQuotaCount -lt $lastFecQuotaCount)
+                        {
+                            $recoverableBusyClassificationValid = $false
+                            $failureReason = 'Recoverable-busy telemetry counter regression.'
+                        }
+                        elseif ($deferredBusyCount -ne $fecQuotaCount)
+                        {
+                            $recoverableBusyClassificationValid = $false
+                            $failureReason = 'Recoverable-busy telemetry counters are not paired.'
+                        }
+                        elseif ($deferredBusyCount -gt $lastDeferredBusyCount)
+                        {
+                            $activeDecoderLimit = [uint64]$sample.remoteGate.outerActiveDecoderLimit
+                            $activeDecoderCount = [uint64]$sample.remoteGate.outerActiveDecoderCount
+                            $peakActiveDecoderCount = [uint64]$sample.remoteGate.outerPeakActiveDecoderCount
+                            $totalDecoderByteLimit = [uint64]$sample.remoteGate.outerTotalDecoderByteLimit
+                            $reservedDecoderBytes = [uint64]$sample.remoteGate.outerReservedDecoderBytes
+                            $peakReservedDecoderBytes = [uint64]$sample.remoteGate.outerPeakReservedDecoderBytes
+                            if ($activeDecoderLimit -eq 0 -or $totalDecoderByteLimit -eq 0 -or $activeDecoderCount -gt $activeDecoderLimit -or $peakActiveDecoderCount -ne $activeDecoderLimit -or $reservedDecoderBytes -gt $totalDecoderByteLimit -or $peakReservedDecoderBytes -gt $totalDecoderByteLimit)
+                            {
+                                $recoverableBusyClassificationValid = $false
+                                $failureReason = 'Decoder busy/quota growth is not attributable to a full bounded active-decoder window.'
+                            }
+                            else
+                            {
+                                $recoverableBusyObserved = $true
+                                $recoverableBusySamples++
+                                $recoverableBusyWriter.WriteLine((@{
+                                    elapsedMilliseconds = $clock.ElapsedMilliseconds
+                                    deferredResourceBusyCount = $deferredBusyCount
+                                    outerFecQuotaExceededCount = $fecQuotaCount
+                                    activeDecoderCount = $activeDecoderCount
+                                    activeDecoderLimit = $activeDecoderLimit
+                                    reservedDecoderBytes = $reservedDecoderBytes
+                                    peakReservedDecoderBytes = $peakReservedDecoderBytes
+                                    totalDecoderByteLimit = $totalDecoderByteLimit
+                                    classification = 'RecoverableActiveDecoderWindowFull'
+                                } | ConvertTo-Json -Compress))
+                            }
+                        }
+                        $lastDeferredBusyCount = $deferredBusyCount
+                        $lastFecQuotaCount = $fecQuotaCount
                     }
                     if ($failureReason)
                     {
@@ -121,13 +191,18 @@ finally
         [void]$process.WaitForExit(10000)
     }
     if ($memoryWriter) { $memoryWriter.Dispose() }
+    if ($recoverableBusyWriter) { $recoverableBusyWriter.Dispose() }
     $receiverExit = if ($started -and $process.HasExited) { $process.ExitCode } else { $null }
     [IO.File]::WriteAllText((Join-Path $run 'process-exit.json'), (@{
         receiverExit = $receiverExit; started = $started; forcedTermination = $forced; failureReason = $failureReason
         wrapperFailure = $wrapperFailure; memorySampleIntervalMilliseconds = 1000
         memorySamples = $samples; peakWorkingSetBytes = $peakWorkingSet; peakPrivateBytes = $peakPrivate
+        acceptanceMode = 'EventualRecovery'; recoverableBusyObserved = $recoverableBusyObserved
+        recoverableBusyClassificationValid = $recoverableBusyClassificationValid; recoverableBusySamples = $recoverableBusySamples
+        finalObservedDeferredResourceBusyCount = $lastDeferredBusyCount; finalObservedOuterFecQuotaExceededCount = $lastFecQuotaCount
+        strictPass0ZeroPressureAtLastSample = ($lastDeferredBusyCount -eq 0 -and $lastFecQuotaCount -eq 0)
         externalDigestAuditStillRequired = $true; remoteSceneAuthorityStillRequired = $true
     } | ConvertTo-Json), $utf8)
     $process.Dispose()
 }
-Write-Host 'Receiver Gate checks passed. Stop the remote Encoder normally; only then perform independent cross-machine digest audit.'
+Write-Host 'Receiver eventual-recovery checks passed. Stop the remote Encoder normally; then audit strict Pass-0 pressure and independent cross-machine digests.'
