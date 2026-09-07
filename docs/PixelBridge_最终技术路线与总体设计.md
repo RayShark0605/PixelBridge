@@ -8,13 +8,13 @@
 > 支持模式：**即时视觉流模式**、**离线 MP4 模式**  
 > 设计日期：2026-08-21  
 > 文档状态：**通用架构与安全不变量继续有效；当前产品合同和实施顺序以第 0 节及 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 为准。2026-09-05 的 G21 失真诊断已用 SC6 V3/layout 10 取代 2026-09-03 冻结的 LC4/layout 8，并以 region-local placement + codeword-local sequence permutation 取代 SC6 V2 的全局交织；旧 ChannelClass、Phase 1.5、LC4、SC6 V2 与 RemoteVisual 路线只保留为历史设计/证据。**
-> 2026-09-07 G21 状态补记：**最终 Windows 远程桌面现场已完成精确 1 GiB 功能恢复与外部双摘要；原始 8,626.511 B/unique 低于 16 KiB、Receiver Gate exit 1。用户在完整披露后只对该唯一 Run/Session 明确豁免，故 G21=`PASS_WITH_SINGLE_RUN_USER_WAIVER`，G22 尚未开始；原始 Gate 与未来 16 KiB 门均不改写。**
+> 2026-09-07 G21 状态补记：**最终 Windows 远程桌面现场已完成精确 1 GiB 功能恢复与外部双摘要；原始 8,626.511 B/unique 低于 16 KiB、Receiver Gate exit 1。用户在完整披露后只对该唯一 Run/Session 明确豁免，故 G21=`PASS_WITH_SINGLE_RUN_USER_WAIVER`；此为G21冻结结论，G22最新收口见第0节；原始 Gate 与未来 16 KiB 门均不改写。**
 
 ---
 
 # 0. 2026-09-03 产品路线冻结与旧章节解释规则
 
-> **2026-09-07 G22 产品交互更新：** 用户要求重做 Encoder/Decoder GUI。Encoder 在开始时主窗口所在屏幕以规范画布 1:1 居中全屏循环呈现，运行期间禁止改 FPS，Esc 只在 Encoder 持有焦点时停止；两端使用主页面与可配置高级选项 Tab，Decoder 只显示百分比/KB/s/剩余时间的简洁进度。维持 500 GiB 安全上限，暂不扩展更大文件。此要求取代下方普通可缩放产品窗口与 G15/G16 旧界面行为，不改变底层 wire/FEC/恢复/捕获不变量。G22 已开始但尚未完成，详见 [G22 GUI 与发布候选](UNIFIED_G22_GUI_RELEASE.md)。
+> **2026-09-07 G22 产品交互更新：** 用户要求重做 Encoder/Decoder GUI。Encoder 在开始时主窗口所在屏幕以规范画布 1:1 居中全屏循环呈现，运行期间禁止改 FPS，Esc 只在 Encoder 持有焦点时停止；两端使用主页面与可配置高级选项 Tab，Decoder 只显示百分比/KB/s/剩余时间的简洁进度。维持 500 GiB 安全上限，暂不扩展更大文件。此要求取代下方普通可缩放产品窗口与 G15/G16 旧界面行为，不改变底层 wire/FEC/恢复/捕获不变量。G22已以PASS_LOCAL_CANDIDATE完成，双击GUI/CLI重定向、1024单位、全尺寸无需确认、新解压包和右屏实际恢复均通过；最终构建3a840a2，详见 [最终交付](UNIFIED_G22_DELIVERY_2026-09-07.md)和[实施记录](UNIFIED_G22_GUI_RELEASE.md)。
 
 ## 0.1 当前产品合同
 

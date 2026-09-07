@@ -13,7 +13,7 @@
 5. [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md)：先读第0节最新增量；0.15为最终远控结果与单次用户豁免，0.13/0.14保留本机三档和交付历史；
 6. [`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)：最终Windows远程桌面1 GiB的功能PASS、原始性能FAIL、跨机摘要与单次豁免边界；
 7. [`PixelBridge_最终技术路线与总体设计.md`](PixelBridge_最终技术路线与总体设计.md)：完整总体架构与长期不变量；
-8. [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md)：当前工作树仍可到达的旧/过渡 UI、CLI 和 runtime 绑定；
+8. [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md)：G22产品入口与保留的旧诊断区别；旧表为历史记录；
 9. 与当前目标直接相关的模块文档和测试。
 
 发生冲突时，优先遵循当次用户要求、`AGENTS.md`、统一路线，再使用总体设计中未被新路线取代的内容。Phase 0、Phase 1.5、RemoteVisual Step 文档不得反向覆盖新产品合同。
@@ -22,7 +22,8 @@
 
 | 文档 | 作用 | 当前状态 |
 | --- | --- | --- |
-| [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md) | 用户新授权的双端 GUI 重建、确认事项、最小验证和 Windows 发布候选 | **G22 IN PROGRESS；新版尚未交付** |
+| [`UNIFIED_G22_DELIVERY_2026-09-07.md`](UNIFIED_G22_DELIVERY_2026-09-07.md) | 最终双端EXE/ZIP、冻结身份、hash、实屏证据和旧目录清理 | **G22 PASS_LOCAL_CANDIDATE；3a840a2** |
+| [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md) | 用户新授权的双端 GUI 重建、确认事项、最小验证和 Windows 发布候选 | **本地候选已交付；保留全部阶段/失败记录** |
 | [`UNIFIED_USER_GUIDE.md`](UNIFIED_USER_GUIDE.md) | 新 GUI 的文件/帧率/全屏/Esc、目录/限定屏幕 ROI/接收进度及 CLI 日志说明 | G22 用户指南；包和实屏门禁见工作记录 |
 | [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | 冻结最终产品行为；将实现拆为 G00..G22；规定每步最小测试和退出条件 | **当前执行入口** |
 | [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md) | 最新0.15最终远控结果/单次豁免；0.13同候选三档、0.14交付及更早失败保持历史 | **G21 最终交接入口** |
@@ -95,7 +96,7 @@
 | [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md) | 当前实际可达入口、隐藏能力和限制 | 当前事实清单 |
 | [`P1_5_REMOTEVISUAL_HARDENING_CHECKPOINT.md`](P1_5_REMOTEVISUAL_HARDENING_CHECKPOINT.md) | 旧 RemoteVisual 加固检查点 | 历史证据 |
 
-最终 GUI 收敛见统一路线 G15/G16。Qt 只能负责 presentation/controller；协议、FEC、modulation、capture、storage 和 telemetry 核心不得依赖 Qt。
+当前最终 GUI 以 G22 用户确认后的重建和交付文档为准，G15/G16 是历史收敛阶段。Qt 只能负责 presentation/controller；协议、FEC、modulation、capture、storage 和 telemetry 核心不得依赖 Qt。
 
 ## 6. RemoteVisual 历史路线与证据
 

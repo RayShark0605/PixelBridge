@@ -2,10 +2,11 @@
 
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
 
-> **G22 本地 GUI 候选收尾中，尚未公开发布。** G00..G21 已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`。G22已重新实现双端 GUI、GUI-only 启动/CLI 重定向、无文件大小确认，并通过新 GUI 的右屏1 MB实际恢复；最终独立包验收见 G22 工作记录。当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10）。以下大文件/远控性能证据仍严格属于旧冻结候选6e90643，不能冒充新版GUI构建的性能结果。同候选右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯和Base-only证据已通过；最终Windows远程桌面现场完成精确1 GiB的128/128、whole digest、安全发布、final reopen及外部双摘要。该远控运行原始性能为8,626.511 B/unique、低于16 KiB且Receiver Gate exit1；用户在完整披露后只对此Run/Session明确豁免。不得把限定通过改写成未豁免性能PASS，未来16 KiB门继续有效。
+> **G22 本地 GUI 候选已交付，尚未公开发布。** G00..G21 已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`。G22已重新实现双端 GUI、GUI-only 启动/CLI 重定向、无文件大小确认，并通过新 GUI 的右屏1 MB实际恢复；最终独立包和新解压实际像素验收已通过，冻结身份为`3a840a2`，见[G22交付索引](docs/UNIFIED_G22_DELIVERY_2026-09-07.md)。当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10）。以下大文件/远控性能证据仍严格属于旧冻结候选6e90643，不能冒充新版GUI构建的性能结果。同候选右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯和Base-only证据已通过；最终Windows远程桌面现场完成精确1 GiB的128/128、whole digest、安全发布、final reopen及外部双摘要。该远控运行原始性能为8,626.511 B/unique、低于16 KiB且Receiver Gate exit1；用户在完整披露后只对此Run/Session明确豁免。不得把限定通过改写成未豁免性能PASS，未来16 KiB门继续有效。
 
 快速入口：
 
+- [G22 最终交付包与目录整理](docs/UNIFIED_G22_DELIVERY_2026-09-07.md)
 - [G22 GUI 与本地交付验收](docs/UNIFIED_G22_GUI_RELEASE.md)
 - [新版 Encoder / Decoder 使用指南](docs/UNIFIED_USER_GUIDE.md)
 - [Goal/目标模式统一实施路线](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)
@@ -54,7 +55,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 - `PB-Unified-SC6-V3` layout 10 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、region-local placement、codeword-local sequence permutation、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
 - 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
 - 6e90643的本机三档、外部双摘要、Base-only证明和16 KiB/unique硬门已有独立证据；最终真实远控1 GiB功能恢复与双摘要已通过，原始8,626.511 B/unique性能门失败由用户只对该Run/Session单次豁免，32 KiB/unique工程目标未达到；
-- G22 双端 GUI、独立包工具、SBOM/notices、用户文档和原生小文件路径已落地；新解压包验收状态见 G22 工作记录。项目自身 LICENSE、签名与公开分发仍需维护者单独决定，本地候选不冒充公开发行。
+- G22 双端GUI、独立包、SBOM/notices、用户文档和新解压包右屏1 MB路径已通过，状态为`PASS_LOCAL_CANDIDATE`。项目自身 LICENSE、签名与公开分发仍需维护者单独决定，本地候选不冒充公开发行。
 
 完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明仍保留在 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)，但不得作为当前正式 Descriptor 规范引用。
 

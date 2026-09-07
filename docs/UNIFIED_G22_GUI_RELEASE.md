@@ -2,8 +2,9 @@
 
 ## 1. 当前状态与本轮授权
 
-- 状态：**IN PROGRESS**；2026-09-07 已完成双端新 GUI 接线、限定显示器选区和无大小确认的生产策略，
-  定向无显示检查已通过；GUI-only 启动、CLI 重定向、封装负例和新 GUI 原生右屏恢复已验证；最终新解压包门尚待收尾。
+- 状态：**PASS_LOCAL_CANDIDATE**（2026-09-07）；最终构建 `3a840a202cf7d342a3ff2d95f2d69b3c788abcea`。
+  双端GUI、GUI-only/CLI、新解压包、右屏1 MB实际恢复、外部双摘要及运行后包复验全部通过。
+  最终入口与目录整理见 [G22交付索引](UNIFIED_G22_DELIVERY_2026-09-07.md)；下文保留实施顺序及所有失败，旧“待完成”仅是阶段快照。
 - 起始提交：`b86702fafcde60b1666674bd5478649affa1c559`。
 - G21 已以 `PASS_WITH_SINGLE_RUN_USER_WAIVER` 关闭，详见
   [最终远控结果](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。本轮不重跑 G21 性能调优，
@@ -328,3 +329,15 @@ manifest SHA-256 `dd72d98722ad526dddf1e94d9d1682507c2ac1562a457e6cd50a0564fa6836
 `artifacts/g22-native-20260907/safety-diagnostic-01/` 随后同类运行双端exit0、完整双摘要、保护始终有效，
 Encoder在Receiver完成后继续40,925 ms。该工作树诊断运行没有复现此前中断，**不宣称已解释或修复未知中断原因**。
 最终候选会包含可区分原因的诊断，并重新从新解压包验证。
+
+## 15. 最终收口与目录整理
+
+最终候选`3a840a202cf7d342a3ff2d95f2d69b3c788abcea`已从新解压目录完成10项metadata/GUI/verifier检查、
+精确1,048,576 bytes的右屏实际像素恢复及运行后sealed包完整性复验。双端exit0、保护始终有效、无强杀；
+Receiver完成后Encoder仍持续40,976 ms，未把接收完成当成停止信号。源/最终文件独立SHA-256与BLAKE3一致。
+最终权威位于`artifacts/g22-delivery-2026-09-07/final-*`；此前失败和中间候选保持原样，不能选作交付入口。
+
+用户要求最后整理目录并提交；在检查引用、CMake来源、内容与进程/reparse后，删除35个旧生成构建缓存，
+共20,085 files、4,315,567,815 bytes，先封存954份配置/日志并逐项校验。当前构建、历史源码/Golden/实屏证据
+和原始未跟踪report全部保留。详细hash、重放、清理审计和未执行范围见 [最终交付文档](UNIFIED_G22_DELIVERY_2026-09-07.md)。
+此收口只完成本地候选，不替维护者选择LICENSE、签名或公开发布；不重跑G21效率问题。

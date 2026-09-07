@@ -1,6 +1,6 @@
 # PixelBridge Phase 1.5 Current Runtime Option Inventory
 
-> **2026-09-07 G22 更新：** 双端 GUI 已重新实现为主页面/高级 Tab。Encoder 在当前主窗口所在屏幕全屏循环，运行期锁定 FPS，Esc 仅本窗口焦点有效；Decoder 明确选择显示器后整屏/限定该屏框选，进度为百分比/KB/s/ETA 文本，停止保留断点、完成不弹窗。GUI 的 KB/MB/GB 均按 1024 进位。Unified 生产接收在现有 500 GiB 上限内取消所有按文件大小触发的确认，仍保留资源/磁盘/路径/不覆盖/摘要/安全发布检查。以下 G15/G16 及更旧界面描述是历史记录；当前实现、用户待决事项与未执行实屏/包门禁见 [G22 工作记录](UNIFIED_G22_GUI_RELEASE.md)。
+> **2026-09-07 G22 更新：** 双端 GUI 已重新实现为主页面/高级 Tab。Encoder 在当前主窗口所在屏幕全屏循环，运行期锁定 FPS，Esc 仅本窗口焦点有效；Decoder 明确选择显示器后整屏/限定该屏框选，进度为百分比/KB/s/ETA 文本，停止保留断点、完成不弹窗。GUI 的 KB/MB/GB 均按 1024 进位。Unified 生产接收在现有 500 GiB 上限内取消所有按文件大小触发的确认，仍保留资源/磁盘/路径/不覆盖/摘要/安全发布检查。以下 G15/G16 及更旧界面描述是历史记录；双击只打开GUI、CLI/重定向保留；最终独立包与新解压右屏1 MB恢复已通过，状态为PASS_LOCAL_CANDIDATE，见 [G22交付](UNIFIED_G22_DELIVERY_2026-09-07.md)。阶段与失败见 [工作记录](UNIFIED_G22_GUI_RELEASE.md)。
 
 > **2026-09-04 G16 更新：** Decoder 产品 GUI 已固定 Unified/Auto，移除 FPS/Profile/backend/Replay 实验控件，真实 mixed-result 接线复用既有 Receiver、确认门、journal 与 Storage。旧 Decoder CLI 默认及显式诊断入口没有在本次迁移。下文旧表不再描述当前产品 GUI；当前入口、边界和证据见 [Unified Decoder 工作流](UNIFIED_DECODER_WORKFLOW.md)。逐 lane telemetry/report 留待 G17，真实 selector/capture/实屏认证尚未运行。
 

@@ -6,7 +6,7 @@
 > 代码起点：`1445f9b`（正式 Descriptor 与可恢复 Segment 基础）
 > 目标程序：`PixelBridgeEncoder.exe`、`PixelBridgeDecoder.exe`
 > 适用平台：Windows x64 / C++20 / Qt Widgets / D3D11
-> **G22 新授权（2026-09-07）：IN PROGRESS。用户要求将 G22 扩展为双端 GUI 重建及最终候选交付，旧 GUI 由新实现替换，Unified 收发核心继续复用。Encoder 主体为文件/1..60 Hz（默认 15）/开始；运行期间锁定 FPS，在开始时主窗口所在屏幕以 1920×1080 画布 1:1 居中全屏循环呈现，Esc 仅在 Encoder 持有焦点时停止。Decoder 主体为目录/指定屏幕 ROI/开始及百分比、KB/s、剩余时间文本；两端分别提供真正的高级选项 Tab。用户确认维持 500 GiB 上限，暂不考虑更大文件。此授权取代下方旧合同的可缩放产品窗口、运行中调 FPS、只读高级折叠区；G21 原始证据与单次豁免不变。当前进展、确认和验证见 [G22 GUI 与发布候选](UNIFIED_G22_GUI_RELEASE.md)。**
+> **G22 新授权及收口（2026-09-07）：PASS_LOCAL_CANDIDATE；最终构建3a840a2，新解压包和右屏1 MB实际恢复已通过。用户要求将 G22 扩展为双端 GUI 重建及最终候选交付，旧 GUI 由新实现替换，Unified 收发核心继续复用。Encoder 主体为文件/1..60 Hz（默认 15）/开始；运行期间锁定 FPS，在开始时主窗口所在屏幕以 1920×1080 画布 1:1 居中全屏循环呈现，Esc 仅在 Encoder 持有焦点时停止。Decoder 主体为目录/指定屏幕 ROI/开始及百分比、KB/s、剩余时间文本；两端分别提供真正的高级选项 Tab。用户确认维持 500 GiB 上限，暂不考虑更大文件。此授权取代下方旧合同的可缩放产品窗口、运行中调 FPS、只读高级折叠区；G21 原始证据与单次豁免不变。当前进展、确认和验证见 [G22 GUI 与发布候选](UNIFIED_G22_GUI_RELEASE.md)。**
 > G21冻结结论（2026-09-07；G22已由上方新授权推进）：**G00..G21已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`。当前产品仍为PB-Unified-SC6-V3/layout10，正式产品候选仍为`6e9064319a51bedcd403d74d47dd45c067928013`。该候选的同身份右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯全部Pass0且越过16 KiB硬门；Base-only实际capture派生proof保持成立。最终Windows远程桌面现场以真实右屏像素完成精确1 GiB、128/128、whole digest、安全发布、final reopen和外部双摘要，eventual recovery通过、Sender exit0。原始远控性能结果仍为8,626.511 B/unique、低于16 KiB，Receiver Gate exit1；用户在完整披露后明确选择只对该唯一Run/Session豁免，因此关闭G21，但不改写原始证据、指标分母或未来16 KiB门。独立live false-accepted oracle继续null/unavailable，32 KiB工程目标未达到。最新权威见`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`第0.15节、`UNIFIED_REMOTE_GATE.md`第22节及`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`。**
 
 > 现场结果 supersession（2026-09-07）：下方“本次收尾”段落保留此前结束任务时的历史快照；其中“远控未运行、G21仍PARTIAL”已由上述现场运行和单次用户豁免取代，不能再作为当前结论。
@@ -919,21 +919,21 @@ freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap t
 
 ## G22 — 包、SBOM、用户文档与发布候选
 
-**状态：** IN PROGRESS（2026-09-07）；用户明确增加双端 GUI 重建范围，详见 [G22 工作记录](UNIFIED_G22_GUI_RELEASE.md)。新GUI双端定向构建、18项启动/CLI检查、2项offscreen smoke和右屏1 MB实际恢复已通过；独立verifier 20项基线/负例通过。最终新解压包门仍须关闭。
+**状态：PASS_LOCAL_CANDIDATE**（2026-09-07）。双端GUI重建、独立包和新解压实际像素恢复已通过；冻结二进制/实屏身份为`3a840a202cf7d342a3ff2d95f2d69b3c788abcea`。目录清理完成，详细验收与限制见 [最终交付](UNIFIED_G22_DELIVERY_2026-09-07.md)，实施及失败记录见 [工作记录](UNIFIED_G22_GUI_RELEASE.md)。
 
 **前置：** G21。
 **目的：** 生成可独立验证的 Windows 发布候选，同时保留源码仓库整洁。
 
-**主要范围：** packaging scripts、install rules、third-party notices、SBOM、操作文档、version metadata。
+**主要范围：** 双端GUI重建、packaging scripts、third-party notices、SBOM、操作文档、version metadata与目录整理。
 **实现清单：**
 
-- [ ] 两个 EXE、Qt runtime/plugins、必要 DLL/resource 在一个版本化 package 中。
-- [ ] package manifest 封印 Git commit/tree、编译器/SDK/CMake/Qt/vcpkg ABI、Unified profile digest、文件 hashes。
-- [ ] SPDX SBOM 与 `THIRD_PARTY_NOTICES` 覆盖 Qt 和全部 installed vcpkg package。
-- [ ] 独立 verifier 拒绝缺失、额外、重复、越界、reparse 或 tampered entry。
-- [ ] 用户指南只展示最终简化流程；历史实验 CLI 单独归档为开发者诊断。
-- [ ] 项目自身 LICENSE 必须由维护者明确选择；未选择时不得在发布说明中声称开源许可。
-- [ ] Release artifact 不提交到源码 Git，使用 GitHub Release 或外部 artifact 存储。
+- [x] 两个 EXE、Qt runtime/plugins、必要 DLL/resource 在一个版本化 package 中。
+- [x] package manifest 封印 Git commit/tree、编译器/SDK/CMake/Qt/vcpkg ABI、Unified profile digest、文件 hashes。
+- [x] SPDX SBOM 与 `THIRD_PARTY_NOTICES` 覆盖 Qt、VC runtime和全部 installed vcpkg package（不将build工具冒充全是运行时依赖）。
+- [x] 独立 verifier 拒绝缺失、额外、重复、越界、reparse 或 tampered entry。
+- [x] 用户指南只展示最终简化流程；历史实验 CLI 单独归档为开发者诊断。
+- [x] 本地候选保留项目LICENSE=`NOASSERTION`，未声称开源许可；若未来公开发布，LICENSE仍须维护者另行明确选择。
+- [x] Release artifact保存在被Git忽略的本地交付目录，不提交二进制/payload；未授权推送或公开发布。
 
 **最小验证：** 从 clean package 运行 `--version`、两个 GUI smoke、1 MiB 本地右屏恢复；验证 SBOM/notices/manifest；不重复 full CTest 和 64 MiB remote。
 **退出：** package 可在目标机独立启动和验证；源码 tree clean；release notes 精确列出已执行与未执行门禁。
