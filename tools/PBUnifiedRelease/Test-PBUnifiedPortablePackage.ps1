@@ -641,7 +641,9 @@ if ($ArchivePath)
         foreach ($entry in $archive.Entries)
         {
             $attributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([Int32]$entry.ExternalAttributes), 0)
-            if (($attributes -band 0x400) -ne 0 -or ($attributes -band 0xF0000000) -eq 0xA0000000) {
+            # Decode the 16-bit Unix mode before comparing: PowerShell's high-bit
+            # hex Int32 literal is negative, unlike the normalized UInt32 bits.
+            if (($attributes -band 0x400) -ne 0 -or (($attributes -shr 16) -band 0xF000) -eq 0xA000) {
                 throw 'Archive entry declares a reparse point or symbolic link'
             }
             $entryPath = $entry.FullName.Replace('\', '/')

@@ -105,51 +105,6 @@ cmake --build build-unified-release --config Release --target PixelBridgeEncoder
 ctest --test-dir build-unified-release -C Release -R '^PixelBridge(Encoder|Decoder)GuiSmoke$' --output-on-failure
 ```
 
-## 9. 发布前 Profile 身份与旧 CLI 包装脚本兼容
-
-启动改造已独立提交为 `bd0dbad64faf615ab8a92dfe15f7863ddde6d402`。
-
-- 实测仅 `@(& GUI.exe ...)` 或单独 `2>&1` 仍不足以保证同步等待，必须进入实际管道或显式等待进程。
-  因此给现有工具的 metadata/monitor 查询补上 `Out-String -Stream`，需要终端输出的 Sender 包装调用补上
-  `Out-Host`，已有 stdout/stderr 文件重定向后补上 `Out-Null`。保留原编码/重定向、参数、异常和退出码。
-  该兼容修正避免包装脚本在 Encoder 仍运行时提前释放源只读 lease；不改 G21 流程或已封存 artifacts。
-- `test_g21_wrappers.py --gui-subsystem-fixture` 将现有纯生命周期 C# fixture 编译为 GUI subsystem，
-  验证 Windows PowerShell 5.1 的真正等待路径；不使用产品 EXE、真实屏幕、输入事件或非视觉 payload 通道。
-- 新增只读 `--unified-profile`。双端从实际编译的 `kUnifiedVisualProfile` 输出完整结构化 manifest，
-  包含身份、画布/tiles、regions、lanes、carriers、mixed slots、FEC 与 presentation 参数。
-  这是包身份诊断，不是新 wire descriptor，也不能作为 Decoder 的 payload 输入。
-- 两个实际 EXE 输出的规范 JSON 相同；当前 SHA-256 为
-  `312c7832854f8710719ee2d0e44e920e7270b48638044eaa4b6af9ee24b1cb8b`。
-  新 Unified 包必须封印这一实际输出，不能继续把旧 `remote-lf4`/layout 7 manifest 当作当前产品。
-
-证据：`artifacts/g22-package-20260907/` 内的 `build-profile.log`、双端 `*-unified-profile.json`、
-`profile-and-cli-tests.log` / `profile-and-cli-tests/summary.json`（**16/16 PASS**，增加显式文件重定向和 Profile 对等检查）、
-`powershell-syntax.json`；纯包装脚本回归在 `artifacts/g22-cli-wait-20260907/summary.json`，
-日志在 `artifacts/g22-startup-20260907/gui-wrapper-compatibility.log`。
-
-以上仍是源码/CLI/无产品窗口证据，独立包、从包启动、右屏真实恢复及人工 Esc 验证尚待完成。
-
-本阶段提交为 `1c472d111564911b4b8995d8b6cf93317096d849`；GUI subsystem 包装 fixture **19/19 PASS**。
-
-## 10. 独立 Unified package 工具初版
-
-`tools/PBUnifiedRelease/` 提供单独的生产器和只读 verifier，复用保留的历史 inventory/SBOM/seal 思路，
-但采用明确的 Unified schema 和 SC6-V3 完整编译 Profile digest，不改变旧 LF4 schema。
-生产器要求 clean committed source、实际 EXE commit 一致、显式 VC runtime/notices 来源；
-包内包含用户指南、Qt/vcpkg/MSVC 依赖资料和单文件独立 verifier。项目 LICENSE 保留 NOASSERTION，范围只到本地候选。
-
-Verifier 不启动包内程序；静态检查 GUI/x64 PE、大小/路径/哈希、Profile/工具链/SBOM/notices/seal，
-递归拒绝重复/大小写歧义 JSON key、非整数 size、reparse 与 ZIP symlink，并对 ZIP 实际解压读出设置封印长度边界。
-生产失败保留 create-only artifacts，不递归删除未核实路径。
-
-第一阶段证据 `artifacts/g22-package-20260907/verifier-functions-01.log`：
-**28/28** 有界函数检查通过，覆盖路径、严格 JSON、整数类型、SHA-256 和解压长度 mismatch。
-完整包生成、独立验证负例、新解压 GUI smoke 尚待执行；这个工具初版提交不代表 G22 交付完成。
-
-保护文件 `docs/PHASE1_GATE_REPORT.md` 起始 SHA-256：
-`076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`。
-该文件保持原有未跟踪状态，不修改、不暂存、不提交。
-
 ## 6. Encoder 新界面第一阶段
 
 - 整体替换 `encoder_gui.cpp`：主体只显示文件、1..60 Hz（默认 15）、开始与必要状态；真正的两个 Tab。
@@ -261,3 +216,64 @@ cmake --build build-unified-release --config Release --target PixelBridgeEncoder
 & <python> -X utf8 tests/PBApplication/test_gui_startup.py --build-directory build-unified-release --evidence-directory artifacts/g22-startup-fresh --powershell (Get-Command pwsh).Source
 ctest --test-dir build-unified-release -C Release -R '^PixelBridge(Encoder|Decoder)GuiSmoke$' --output-on-failure
 ```
+
+## 9. 发布前 Profile 身份与旧 CLI 包装脚本兼容
+
+启动改造已独立提交为 `bd0dbad64faf615ab8a92dfe15f7863ddde6d402`。
+
+- 实测仅 `@(& GUI.exe ...)` 或单独 `2>&1` 仍不足以保证同步等待，必须进入实际管道或显式等待进程。
+  因此给现有工具的 metadata/monitor 查询补上 `Out-String -Stream`，需要终端输出的 Sender 包装调用补上
+  `Out-Host`，已有 stdout/stderr 文件重定向后补上 `Out-Null`。保留原编码/重定向、参数、异常和退出码。
+  该兼容修正避免包装脚本在 Encoder 仍运行时提前释放源只读 lease；不改 G21 流程或已封存 artifacts。
+- `test_g21_wrappers.py --gui-subsystem-fixture` 将现有纯生命周期 C# fixture 编译为 GUI subsystem，
+  验证 Windows PowerShell 5.1 的真正等待路径；不使用产品 EXE、真实屏幕、输入事件或非视觉 payload 通道。
+- 新增只读 `--unified-profile`。双端从实际编译的 `kUnifiedVisualProfile` 输出完整结构化 manifest，
+  包含身份、画布/tiles、regions、lanes、carriers、mixed slots、FEC 与 presentation 参数。
+  这是包身份诊断，不是新 wire descriptor，也不能作为 Decoder 的 payload 输入。
+- 两个实际 EXE 输出的规范 JSON 相同；当前 SHA-256 为
+  `312c7832854f8710719ee2d0e44e920e7270b48638044eaa4b6af9ee24b1cb8b`。
+  新 Unified 包必须封印这一实际输出，不能继续把旧 `remote-lf4`/layout 7 manifest 当作当前产品。
+
+证据：`artifacts/g22-package-20260907/` 内的 `build-profile.log`、双端 `*-unified-profile.json`、
+`profile-and-cli-tests.log` / `profile-and-cli-tests/summary.json`（**16/16 PASS**，增加显式文件重定向和 Profile 对等检查）、
+`powershell-syntax.json`；纯包装脚本回归在 `artifacts/g22-cli-wait-20260907/summary.json`，
+日志在 `artifacts/g22-startup-20260907/gui-wrapper-compatibility.log`。
+
+以上仍是源码/CLI/无产品窗口证据，独立包、从包启动、右屏真实恢复及人工 Esc 验证尚待完成。
+
+本阶段提交为 `1c472d111564911b4b8995d8b6cf93317096d849`；GUI subsystem 包装 fixture **19/19 PASS**。
+
+## 10. 独立 Unified package 工具初版
+
+`tools/PBUnifiedRelease/` 提供单独的生产器和只读 verifier，复用保留的历史 inventory/SBOM/seal 思路，
+但采用明确的 Unified schema 和 SC6-V3 完整编译 Profile digest，不改变旧 LF4 schema。
+生产器要求 clean committed source、实际 EXE commit 一致、显式 VC runtime/notices 来源；
+包内包含用户指南、Qt/vcpkg/MSVC 依赖资料和单文件独立 verifier。项目 LICENSE 保留 NOASSERTION，范围只到本地候选。
+
+Verifier 不启动包内程序；静态检查 GUI/x64 PE、大小/路径/哈希、Profile/工具链/SBOM/notices/seal，
+递归拒绝重复/大小写歧义 JSON key、非整数 size、reparse 与 ZIP symlink，并对 ZIP 实际解压读出设置封印长度边界。
+生产失败保留 create-only artifacts，不递归删除未核实路径。
+
+第一阶段证据 `artifacts/g22-package-20260907/verifier-functions-01.log`：
+**28/28** 有界函数检查通过，覆盖路径、严格 JSON、整数类型、SHA-256 和解压长度 mismatch。
+完整包生成、独立验证负例、新解压 GUI smoke 尚待执行；这个工具初版提交不代表 G22 交付完成。
+
+保护文件 `docs/PHASE1_GATE_REPORT.md` 起始 SHA-256：
+`076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`。
+该文件保持原有未跟踪状态，不修改、不暂存、不提交。
+
+## 11. 首包实证与 ZIP 符号链接修复
+
+首包 `c41c8c174ea8fb0f88af668d1392c88f2217e054` 已成功生成，100 个 payload 文件共 132277484 bytes，
+manifest SHA-256 `dd72d98722ad526dddf1e94d9d1682507c2ac1562a457e6cd50a0564fa6836f6`。
+证据为 `artifacts/g22-package-20260907/package-01.log` 和 `package-01/`；这是工具初版候选，不是最终交付包。
+
+- `negative-01/` 真实派生 ZIP 的 Unix symlink 条目未被拒绝：PowerShell 将 `0xA0000000` 解释成
+  有符号 Int32，而规范化属性为 UInt32，比较不相等。只调整 verifier 为先右移取得 16-bit Unix mode 再比较。
+- `negative-02/` 已证明 symlink 拒绝生效；随后 Python fixture 因 `writestr` 修改共享 ZipInfo 的 offset 导致
+  自身 CRC 读取失败，改为复制 ZipInfo，不改变 verifier 的判断。
+- `negative-03/summary.json`：**20/20 PASS**。完整 seal+ZIP 基线、缺失/篡改/额外文件与空目录、重复/不安全
+  路径、字符串/小数/bool/负 size、错误 Profile、重复 JSON key、owned junction、ZIP symlink/duplicate/traversal、
+  恢复后完整复验均有独立日志。验证过程不运行包内 EXE，原包/ZIP/seal hashes 保持不变。
+- 新增 `tests/tools/test_unified_package.py` 可在 create-only 派生目录重放；每个修改恢复后再进行下一项，
+  原始候选始终只读。原首包内 verifier 仍为旧版本，故必须重新生成包才可最终交付。
