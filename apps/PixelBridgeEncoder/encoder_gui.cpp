@@ -1,6 +1,7 @@
 #include "encoder_gui.h"
 #include "encoder_application_controller.h"
 #include "product_gui_helpers.h"
+#include "gui_native_smoke.h"
 #include "run_report.h"
 #include "pbcore/build_info.h"
 
@@ -8,6 +9,7 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -181,6 +183,60 @@ public:
         return !deleteButton_->isEnabled() && settings_->value(QStringLiteral("g22/logicalFps")).toInt() == 1 &&
             settings_->value(QStringLiteral("g22/sessionRoot")).toString() == sessionRoot &&
             pbgui::SaveTabPreviews(*this, *tabs_, QStringLiteral("encoder-stopped"));
+    }
+
+    [[nodiscard]] int RunNativeSmoke(const pbgui::NativeSmokeOptions& options)
+    {
+        if (QFileInfo(options.inputPath).size() != 1024 * 1024 || !pbgui::ShowNativeSmoke(*this, options))
+        {
+            return 2;
+        }
+        sourceEdit_->setText(options.inputPath);
+        cacheEdit_->setText(QDir(options.evidenceDirectory).filePath(QStringLiteral("sessions")));
+        fpsSpin_->setValue(15);
+        startButton_->click();
+        const bool lockedAtStart = controller_.IsActive() && !fpsSpin_->isEnabled() && !sourceEdit_->isEnabled();
+        bool safetyHeld = true;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (controller_.IsActive() && elapsed.elapsed() < options.durationSeconds * 1000)
+        {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            if (!pbgui::NativeWindowIsContained(*this, options))
+            {
+                safetyHeld = false;
+                break;
+            }
+            QThread::msleep(20);
+        }
+        const auto beforeStop = controller_.GetSnapshot();
+        // Exercise the same local Qt shortcut connection without synthesizing
+        // any keyboard input. Only this explicit test has a bounded deadline.
+        const bool localShortcutInvoked = QMetaObject::invokeMethod(escapeShortcut_, "activated", Qt::DirectConnection);
+        controller_.RequestStop();
+        const bool stopped = WaitFor([this]()
+        {
+            return !controller_.IsActive();
+        });
+        UpdateSnapshot();
+        const auto snapshot = controller_.GetSnapshot();
+        const bool broadcastUntilDeadline = elapsed.elapsed() >= options.durationSeconds * 1000 &&
+            beforeStop.state == pbapp::EncoderState::Broadcasting && beforeStop.submittedFrames > 0;
+        const bool passed = safetyHeld && lockedAtStart && broadcastUntilDeadline && localShortcutInvoked && stopped &&
+            snapshot.state == pbapp::EncoderState::Stopped && snapshot.configuredLogicalVisualFps == 15 &&
+            snapshot.singleMonitorFullscreen && snapshot.sourceBytes == 1024 * 1024 && fpsSpin_->isEnabled();
+        const pbapp::RunReportContext context{"PixelBridgeEncoder", std::string(pbcore::GetBuildInfo().version), PB_GIT_COMMIT,
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString()};
+        const QJsonObject checks{{"controlsLockedAtStart", lockedAtStart}, {"broadcastUntilDeadline", broadcastUntilDeadline},
+            {"localShortcutInvoked", localShortcutInvoked}, {"physicalEscKeyTested", false}, {"stopped", stopped},
+            {"configuredFps", static_cast<int>(snapshot.configuredLogicalVisualFps)},
+            {"singleMonitorFullscreen", snapshot.singleMonitorFullscreen},
+            {"dataWindow", QJsonObject{{"left", beforeStop.dataWindowLeft}, {"top", beforeStop.dataWindowTop},
+                {"width", static_cast<int>(beforeStop.dataWindowWidth)}, {"height", static_cast<int>(beforeStop.dataWindowHeight)}}}};
+        const bool saved = pbgui::WriteNativeSmokeResult(options, QStringLiteral("Encoder"), passed, safetyHeld, checks,
+            pbapp::BuildEncoderRunReportJson(context, snapshot));
+        hide();
+        return passed && saved ? 0 : 1;
     }
 
 protected:
@@ -487,6 +543,12 @@ private:
 int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
 {
     const bool smoke = argumentCount == 2 && std::wstring_view(arguments[1]) == L"--gui-smoke";
+    const bool nativeSmoke = pbgui::IsNativeSmoke(argumentCount, arguments);
+    pbgui::NativeSmokeOptions nativeOptions;
+    if (nativeSmoke && !pbgui::ParseNativeSmoke(argumentCount, arguments, nativeOptions))
+    {
+        return 2;
+    }
     const bool integrationSmoke = argumentCount == 3 && std::wstring_view(arguments[1]) == L"--gui-integration-smoke";
     if (smoke && !pbgui::PrepareOffscreenPlatform())
     {
@@ -556,6 +618,11 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         std::cout << "G22 Encoder GUI smoke: " << (passed ? "PASS" : "FAIL")
             << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete; no desktop pixels\n";
         return passed ? 0 : 1;
+    }
+    if (nativeSmoke)
+    {
+        EncoderWindow window({}, QDir(nativeOptions.evidenceDirectory).filePath(QStringLiteral("settings.ini")));
+        return window.RunNativeSmoke(nativeOptions);
     }
     EncoderWindow window;
     if (integrationSmoke && !pbgui::PlaceWithoutActivating(window, arguments[2]))

@@ -2,6 +2,7 @@
 #include "decoder_application_controller.h"
 #include "decoder_progress_text.h"
 #include "product_gui_helpers.h"
+#include "gui_native_smoke.h"
 #include "run_report.h"
 #include "pbcore/build_info.h"
 
@@ -11,6 +12,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -199,6 +201,74 @@ public:
     }
 #endif
 
+    [[nodiscard]] int RunNativeSmoke(const pbgui::NativeSmokeOptions& options)
+    {
+        if (!QFileInfo(options.inputPath).isDir() ||
+            !QDir(options.inputPath).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System).isEmpty() ||
+            !pbgui::ShowNativeSmoke(*this, options))
+        {
+            return 2;
+        }
+        outputEdit_->setText(options.inputPath);
+        const auto selected = std::find_if(monitors_.begin(), monitors_.end(), [&](const pbapp::MonitorInfo& monitor)
+        {
+            return pbapp::SameMonitorIdentity(monitor, options.safety.experimentMonitor);
+        });
+        if (selected == monitors_.end())
+        {
+            return 2;
+        }
+        monitorCombo_->setCurrentIndex(static_cast<int>(std::distance(monitors_.begin(), selected)) + 1);
+        wholeButton_->click();
+        startButton_->click();
+        const bool lockedAtStart = controller_.IsActive() && !outputEdit_->isEnabled() && !monitorCombo_->isEnabled();
+        bool safetyHeld = true;
+        bool captureReadyWritten = false;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (controller_.IsActive() && elapsed.elapsed() < options.durationSeconds * 1000)
+        {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            if (!pbgui::NativeWindowIsContained(*this, options))
+            {
+                safetyHeld = false;
+                break;
+            }
+            if (!captureReadyWritten && controller_.GetSnapshot().captureArrivedFrames > 0)
+            {
+                captureReadyWritten = pbgui::WriteNativeSmokeFile(options, QStringLiteral("capture-ready.json"), "{\"captureStarted\":true}\n");
+                if (!captureReadyWritten)
+                {
+                    break;
+                }
+            }
+            QThread::msleep(20);
+        }
+        const bool automaticCompletion = pbgui::IsVerifiedCompletion(controller_.GetSnapshot()) && !controller_.IsActive();
+        controller_.RequestStop();
+        const bool stopped = WaitFor([this]()
+        {
+            return !controller_.IsActive();
+        });
+        UpdateSnapshot();
+        const auto snapshot = controller_.GetSnapshot();
+        const bool completedText = progressLabel_->text() == QStringLiteral("100%") && etaLabel_->text() == QStringLiteral("00:00:00");
+        const bool passed = safetyHeld && lockedAtStart && captureReadyWritten && automaticCompletion && stopped && completedText &&
+            !QApplication::activeModalWidget() && snapshot.captureArrivedFrames > 0 && snapshot.verifiedRawBytes == 1024 * 1024 &&
+            snapshot.largeOutputConfirmationState == pbapp::LargeOutputConfirmationState::NotRequired;
+        const pbapp::RunReportContext context{"PixelBridgeDecoder", std::string(pbcore::GetBuildInfo().version), PB_GIT_COMMIT,
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString()};
+        const QJsonObject checks{{"controlsLockedAtStart", lockedAtStart}, {"captureReady", captureReadyWritten},
+            {"automaticVerifiedCompletion", automaticCompletion}, {"completedText", completedText},
+            {"captureArrivedFrames", static_cast<qint64>(snapshot.captureArrivedFrames)},
+            {"wholeMonitorSelected", EqualRect(&region_.physicalRect, &options.safety.experimentMonitor.physicalRect) != FALSE},
+            {"physicalRoiDragTested", false}, {"progress", progressLabel_->text()}, {"speed", speedLabel_->text()}, {"eta", etaLabel_->text()}};
+        const bool saved = pbgui::WriteNativeSmokeResult(options, QStringLiteral("Decoder"), passed, safetyHeld, checks,
+            pbapp::BuildDecoderRunReportJson(context, snapshot));
+        hide();
+        return passed && saved ? 0 : 1;
+    }
+
 protected:
     void closeEvent(QCloseEvent* event) override
     {
@@ -220,7 +290,6 @@ protected:
     }
 
 private:
-#ifdef PB_ENABLE_UNIFIED_GUI_SMOKE
     [[nodiscard]] static bool WaitFor(const std::function<bool()>& predicate)
     {
         QElapsedTimer timer;
@@ -232,7 +301,6 @@ private:
         }
         return predicate();
     }
-#endif
 
     void BuildUi()
     {
@@ -664,6 +732,12 @@ private:
 int RunDecoderGui(const int argumentCount, wchar_t* arguments[])
 {
     const bool smoke = argumentCount == 2 && std::wstring_view(arguments[1]) == L"--gui-smoke";
+    const bool nativeSmoke = pbgui::IsNativeSmoke(argumentCount, arguments);
+    pbgui::NativeSmokeOptions nativeOptions;
+    if (nativeSmoke && !pbgui::ParseNativeSmoke(argumentCount, arguments, nativeOptions))
+    {
+        return 2;
+    }
     if (smoke && !pbgui::PrepareOffscreenPlatform())
     {
         std::cerr << "G22 Decoder GUI smoke: missing offscreen platform; no window started\n";
@@ -751,6 +825,11 @@ int RunDecoderGui(const int argumentCount, wchar_t* arguments[])
             return 1;
         }
 #endif
+    }
+    if (nativeSmoke)
+    {
+        DecoderWindow window({}, QDir(nativeOptions.evidenceDirectory).filePath(QStringLiteral("settings.ini")));
+        return window.RunNativeSmoke(nativeOptions);
     }
     DecoderWindow window;
     window.show();

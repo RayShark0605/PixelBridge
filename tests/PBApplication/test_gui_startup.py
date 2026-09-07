@@ -127,6 +127,16 @@ def main():
 
     profiles = []
 
+    def native_smoke_rejects_before_ui(application):
+        invalid = [[], [r"\\.\DISPLAY_INVALID", r"\\.\DISPLAY_INVALID", "missing", str(root / "must-not-exist"), "0"],
+                   [r"\\.\DISPLAY_INVALID", r"\\.\DISPLAY_INVALID", "missing", str(root / "must-not-exist"), "181"],
+                   [r"\\.\DISPLAY_INVALID", r"\\.\DISPLAY_INVALID", "missing", str(root / "must-not-exist"), "15x"],
+                   [r"\\.\DISPLAY_INVALID", r"\\.\DISPLAY_INVALID", "missing", str(root / "must-not-exist"), "5"]]
+        for arguments in invalid:
+            process = run([application, "--gui-native-smoke", *arguments], capture_output=True)
+            require(process.returncode == 2, "Native smoke accepted malformed or nonexistent monitor authority")
+            require(not (root / "must-not-exist").exists(), "Rejected native smoke wrote artifacts")
+
     def profile_metadata(application):
         process = run([application, "--unified-profile"], capture_output=True)
         require(process.returncode == 0 and not process.stderr, "Compiled profile diagnostic failed")
@@ -149,6 +159,7 @@ def main():
             case(f"{application.stem}: PowerShell merged stderr and exit", lambda application=application: powershell_redirection(application))
             case(f"{application.stem}: PowerShell file redirection waits", lambda application=application: powershell_file_redirection(application))
             case(f"{application.stem}: compiled Unified profile", lambda application=application: profile_metadata(application))
+            case(f"{application.stem}: native smoke fails closed before UI", lambda application=application: native_smoke_rejects_before_ui(application))
         case("stdio: independently inherited pipes", piped_probe)
         case("stdio: independently inherited files", files_probe)
         case("stdio: NUL and stderr pipe", nul_probe)

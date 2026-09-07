@@ -277,3 +277,22 @@ manifest SHA-256 `dd72d98722ad526dddf1e94d9d1682507c2ac1562a457e6cd50a0564fa6836
   恢复后完整复验均有独立日志。验证过程不运行包内 EXE，原包/ZIP/seal hashes 保持不变。
 - 新增 `tests/tools/test_unified_package.py` 可在 create-only 派生目录重放；每个修改恢复后再进行下一项，
   原始候选始终只读。原首包内 verifier 仍为旧版本，故必须重新生成包才可最终交付。
+
+## 12. 新 GUI 原生路径的受保护诊断入口
+
+两端新增显式 `--gui-native-smoke EXPERIMENT_MONITOR PROTECTED_MONITOR SOURCE_OR_OUTPUT NEW_EVIDENCE_DIR SECONDS`。
+这是有界原生检查入口，正常无参数 GUI 不进入此分支，不增加主页面选项，也不改变持续传输合同。
+
+- 强制不同显示器且实验屏完整位于保护屏右侧；先将隐藏的本应用窗口放到实验屏再 no-activate 显示，
+  反复验证完整显示器身份、窗口物理范围、进程未取得前台焦点。身份/范围失败时停止自身流程，不恢复或抢夺用户焦点。
+- 通过真实控件信号启动默认 Controller/Runtime/D3D/WGC 路径，不替换解调器/像素来源。
+  Decoder 只获得输出目录及明确的监视器 ROI，不接收源路径、摘要、Session cache 或任何 payload 旁路。
+- 只接受 create-only evidence 和 5..180 s 明确期限；Encoder fixture 限定 1 MB，Decoder fixture 只用全新空输出目录。
+  QSettings 隔离在 evidence 中，不污染用户配置；ready 文件仅供外部测试排序，不由另一产品程序读取。
+- `run_gui_native_smoke.py` 使用 CSPRNG 产生恰好 1,048,576 bytes；Receiver capture-ready 后启动 Encoder，
+  两个期限独立，最终文件必须经过原 Runtime 的 whole digest/publish/reopen，再由 Python 独立 SHA-256/BLAKE3 重读验证。
+- Encoder 期限后只在本进程调用已有 Qt shortcut signal，不合成 OS input；证据明确记为 `physicalEscKeyTested=false`。
+  同样没有用鼠标实际拖动 ROI；该行为的算法/取消/跨屏边界仍由定向 selector 单元测试证明，不能冒充人工交互。
+
+新增入口已定向构建；`artifacts/g22-native-20260907/startup-01.log` **18/18 PASS**（包含两端参数、期限、无效显示器
+在任何窗口/evidence 创建前拒绝），`offscreen-01.log` **2/2 PASS**。本节此时只记录入口检查，原生运行结果待下一阶段。

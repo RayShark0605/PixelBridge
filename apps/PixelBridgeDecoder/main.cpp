@@ -55,7 +55,8 @@ int main()
             return pbapp::WriteUnifiedProfileIdentity(std::cout) ? 0 : 1;
         }
 #ifdef PB_ENABLE_QT_GUI
-        if (std::wstring_view(arguments[1]) == L"--gui-smoke" && argumentCount == 2)
+        if (std::wstring_view(arguments[1]) == L"--gui-native-smoke" ||
+            (std::wstring_view(arguments[1]) == L"--gui-smoke" && argumentCount == 2))
         {
             return RunDecoderGui(argumentCount, arguments);
         }
