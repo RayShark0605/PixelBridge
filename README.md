@@ -2,10 +2,12 @@
 
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
 
-> **开发中，不是最终 Release。** G00..G21 已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`，G22尚未开始。当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10），正式产品候选仍为6e90643。同候选右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯和Base-only证据已通过；最终Windows远程桌面现场完成精确1 GiB的128/128、whole digest、安全发布、final reopen及外部双摘要。该远控运行原始性能为8,626.511 B/unique、低于16 KiB且Receiver Gate exit1；用户在完整披露后只对此Run/Session明确豁免。不得把限定通过改写成未豁免性能PASS，未来16 KiB门继续有效。
+> **G22 本地 GUI 候选收尾中，尚未公开发布。** G00..G21 已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`。G22已重新实现双端 GUI、GUI-only 启动/CLI 重定向、无文件大小确认，并通过新 GUI 的右屏1 MB实际恢复；最终独立包验收见 G22 工作记录。当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10）。以下大文件/远控性能证据仍严格属于旧冻结候选6e90643，不能冒充新版GUI构建的性能结果。同候选右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯和Base-only证据已通过；最终Windows远程桌面现场完成精确1 GiB的128/128、whole digest、安全发布、final reopen及外部双摘要。该远控运行原始性能为8,626.511 B/unique、低于16 KiB且Receiver Gate exit1；用户在完整披露后只对此Run/Session明确豁免。不得把限定通过改写成未豁免性能PASS，未来16 KiB门继续有效。
 
 快速入口：
 
+- [G22 GUI 与本地交付验收](docs/UNIFIED_G22_GUI_RELEASE.md)
+- [新版 Encoder / Decoder 使用指南](docs/UNIFIED_USER_GUIDE.md)
 - [Goal/目标模式统一实施路线](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)
 - [2026-09-07 G21最终远控1 GiB结果与单次豁免](docs/UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)
 - [2026-09-07 G21本次交付、目录与证据索引](docs/UNIFIED_G21_DELIVERY_2026-09-07.md)
@@ -52,7 +54,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 - `PB-Unified-SC6-V3` layout 10 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、region-local placement、codeword-local sequence permutation、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
 - 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
 - 6e90643的本机三档、外部双摘要、Base-only证明和16 KiB/unique硬门已有独立证据；最终真实远控1 GiB功能恢复与双摘要已通过，原始8,626.511 B/unique性能门失败由用户只对该Run/Session单次豁免，32 KiB/unique工程目标未达到；
-- G22 独立发布包、SBOM、用户文档和发布候选尚未开始；项目自身 LICENSE 与仓库可见性仍需维护者决定。
+- G22 双端 GUI、独立包工具、SBOM/notices、用户文档和原生小文件路径已落地；新解压包验收状态见 G22 工作记录。项目自身 LICENSE、签名与公开分发仍需维护者单独决定，本地候选不冒充公开发行。
 
 完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明仍保留在 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)，但不得作为当前正式 Descriptor 规范引用。
 
@@ -78,47 +80,33 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 
 CMake 在配置期审计核心 target 的 Qt 依赖、公共 `src/` 路径和公共编译选项泄漏。未来模块必须继续满足这些门禁。
 
-## Windows Qt GUI（Phase 1.5）
+## Windows Qt GUI（G22 Unified）
 
-Release 构建后的以下程序无参数启动当前 **Phase 1.5 过渡 GUI**：
+双击两个 EXE 即只打开 GUI，不附带控制台窗口；无参数入口不再是 Phase 1.5 的实验控件。
 
-```powershell
-.\build\apps\PixelBridgeEncoder\Release\PixelBridgeEncoder.exe
-.\build\apps\PixelBridgeDecoder\Release\PixelBridgeDecoder.exe
-```
+- **Encoder**：单文件、1..60 Hz（默认15）、开始；当前屏幕全屏、1920×1080规范画布1:1居中，
+  从准备到停止锁定刷新率，持续广播直至 Encoder 持有焦点时按 Esc。
+- **Decoder**：保存目录、明确选择显示器及整屏/框选 ROI、开始/停止；仅显示百分比、KB/s、剩余时间文本。
+  断点保留；whole digest、安全发布、最终重开复验通过后自动停止并保留100%，不弹窗、不自动开目录。
+- 两端均有真实高级选项 Tab；保留500 GB上限（1024进位）、空文件支持、任何支持大小无需确认。
+  文件/磁盘/摘要安全检查不会因此关闭。
 
-GUI 保持 thin presentation/controller：Session/Segment、Compression、Outer/Inner FEC、
-D3D11 Data Window、WGC/DXGI、CaptureNormalize、D3D11 demod、ReceiverIngress、PBTelemetry
-和 PBStorage 都由 Qt-free runtime/core 实现。Qt 不进入 `libs/`，不合成数据像素，也不直接发布文件。
+详见 [用户指南](docs/UNIFIED_USER_GUIDE.md)、[GUI/证据工作记录](docs/UNIFIED_G22_GUI_RELEASE.md)、
+[独立包生成和只读验证](tools/PBUnifiedRelease/README.md)。Qt 仅负责 presentation/controller；协议、FEC、
+像素生成、D3D/WGC/DXGI、恢复与存储仍在 Qt-free runtime/core，Decoder 没有非像素 payload 通道。
 
-该界面仍暴露 Direct/Shape/RemoteVisual、compression/backend 等历史实验选择，窗口和 ROI
-也尚未完成统一路线要求的 resizable/automatic 行为。`1445f9b` 虽已把正式 descriptor、
-多 Segment streaming 和 resume/storage 基础接入 application 层，但尚未完成最终 Qt 产品闭环，
-因此这里不承诺 0-byte、20 GiB、崩溃恢复或 Unified 视觉链已经能通过 GUI 完整使用。
-旧控件和 CLI 的精确清单见 [`docs/GUI_PHASE1_5.md`](docs/GUI_PHASE1_5.md) 与
-[`docs/CURRENT_RUNTIME_OPTION_INVENTORY.md`](docs/CURRENT_RUNTIME_OPTION_INVENTORY.md)；最终替换步骤见路线 G13..G17。
-
-关键语义始终是 **Encoder broadcasts; Decoder converges**：Encoder 完成一轮 Carousel
-后继续广播，直到用户点击“停止广播”；它没有接收端恢复百分比或完成 ETA。Decoder 的
-进度只能来自已验证 Segment/bytes；只有 WholeFileDigest PASS、PBStorage safe publish 和
-最终文件重新打开复验成功后才允许显示 Completed。
-
-最终吞吐必须是 digest/publish-gated `VerifiedEncodedBytesPerUniqueFrame`/goodput；用于 ETA 的
-verified raw EMA 单独命名。没有权威唯一帧观测时必须显示 unavailable，不能用 Present、配置 FPS、
-capture callback 或 FrameSequence cadence 冒充 `UniqueVisualFPS`。
-
-为可复现物理桌面 smoke 保留了调用同一 application runtime 的有界自动化入口；它们不建立
-任何 payload IPC：
+原 CLI 诊断保留。PowerShell 对 GUI EXE 的裸调用不保证等待，使用真实管道或 `Start-Process -Wait`：
 
 ```powershell
-PixelBridgeEncoder.exe --headless-broadcast --source input.bin --profile direct `
-  --compression off --origin 0 0 --seconds 30 --report encoder.json
-PixelBridgeDecoder.exe --headless-receive --output-dir output --backend wgc `
-  --profile direct --roi 0 0 1920 1080 --timeout 60 --report decoder.json
+& .\build-unified-release\apps\PixelBridgeEncoder\Release\PixelBridgeEncoder.exe --version | Out-Host
+$LASTEXITCODE
+& .\build-unified-release\apps\PixelBridgeDecoder\Release\PixelBridgeDecoder.exe --build-identity | ConvertFrom-Json
 ```
 
-`--version` 输出确定性版本横幅；旧 `--data-window`、`--select-region` 和 capture diagnostics
-仍保持显式参数入口。`--gui-smoke` 仅用于 CTest 的窗口构造/事件循环/部署检查。
+`--gui-smoke` 是带真实 runtime/storage 的 offscreen 定向夹具，不证明 native capture。
+`--gui-native-smoke` 是明确指定实验/保护屏、create-only目录和5..180秒期限的原生诊断；期限不影响正常GUI。
+历史 `--headless-broadcast` / `--headless-receive` / `--data-window` 等仅是开发者入口，不应替代新版日常流程。
+下面独立组件说明保留历史诊断背景，不代表当前 GUI 主页面仍暴露旧实验选项。
 
 ## 独立 D3D11 Data Window
 
@@ -142,7 +130,7 @@ API、指标公式、异常恢复、真实显示/模式恢复 Gate 和限制见
 `PixelBridgeDecoder --select-region` 启动覆盖虚拟桌面的原生拖选 overlay，只有整个 ROI
 位于一个显示器内才接受。返回有符号 physical-pixel RECT、HMONITOR、effective DPI 和
 DXGI rotation；跨屏／空隙选区不裁剪、不吸附，允许重选。Escape 或右键取消。
-无参数 banner 保持不变；不依赖 Qt，也不把 logical coordinates 当作 WGC/DXGI 坐标。
+该显式历史 CLI 不依赖 Qt，也不把 logical coordinates 当作 WGC/DXGI 坐标；无参数现在打开 G22 GUI。
 这不是屏幕捕获或 LocalDesktop 认证。
 
 接口及生命周期契约见 [`docs/SCREEN_REGION.md`](docs/SCREEN_REGION.md)。

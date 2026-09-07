@@ -3,7 +3,7 @@
 ## 1. 当前状态与本轮授权
 
 - 状态：**IN PROGRESS**；2026-09-07 已完成双端新 GUI 接线、限定显示器选区和无大小确认的生产策略，
-  定向无显示检查已通过；GUI-only 启动方式已获用户确认并完成定向验证，独立包与新版实际像素验证尚未完成。
+  定向无显示检查已通过；GUI-only 启动、CLI 重定向、封装负例和新 GUI 原生右屏恢复已验证；最终新解压包门尚待收尾。
 - 起始提交：`b86702fafcde60b1666674bd5478649affa1c559`。
 - G21 已以 `PASS_WITH_SINGLE_RUN_USER_WAIVER` 关闭，详见
   [最终远控结果](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。本轮不重跑 G21 性能调优，
@@ -296,3 +296,18 @@ manifest SHA-256 `dd72d98722ad526dddf1e94d9d1682507c2ac1562a457e6cd50a0564fa6836
 
 新增入口已定向构建；`artifacts/g22-native-20260907/startup-01.log` **18/18 PASS**（包含两端参数、期限、无效显示器
 在任何窗口/evidence 创建前拒绝），`offscreen-01.log` **2/2 PASS**。本节此时只记录入口检查，原生运行结果待下一阶段。
+
+## 13. 冻结新 GUI 原生1 MB路径通过
+
+`ef626185a53db05ec807cb497c5e14b802644937` 重新 configure/build 后，双端 EXE 嵌入身份一致。
+`artifacts/g22-native-20260907/run-01/summary.json` 记录两进程 exit0、无 watchdog 强杀、无输入事件和完整外部验证。
+
+- 保护屏 `\\.\DISPLAY1`，实验屏 `\\.\DISPLAY2`；发送数据窗口精确覆盖右屏 `[2560,0,5120,1440]`。
+  双端重复检查窗口包含关系、显示器身份和前台进程，`safetyHeld=true`；不移动鼠标、注入按键或激活窗口。
+- GUI Start 默认15 Hz，参数锁定；Decoder从327个实际WGC到达帧中恢复完整1,048,576 bytes，
+  whole digest/rename/publish/final reopen均为true，页面100%、269.3 KB/s、00:00:00，自动接收结束。
+- 最终独立重读 SHA-256 `af479c6abf8ea4b537641714b7eb637c267b40ecdce4d686cce87c515ceee29e`；
+  BLAKE3 `9eac3ff6fd05c8e427e27b912fe3ce19ca40d66cf298109ca67656c674f9458c`，与源及in-band whole digest一致。
+- Encoder未接受接收完成信号，仍广播40,975 ms，直至自身45秒诊断期限；本地Qt shortcut连接和停止后解锁通过。
+- 原生evidence是新GUI+真实像素，不是人工按下Esc、人工ROI拖动、全文件容量/远控效率/干净无开发环境机器认证。
+  最终交付仍要从新解压的独立包运行metadata、offscreen和同类最小原生路径，不能只用此build目录证据代替。

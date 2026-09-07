@@ -1,7 +1,7 @@
 # PixelBridge Unified — 双端 GUI 使用指南
 
-当前界面属于 G22 Windows x64 本地发布候选；打包和新版实屏验收状态以
-[G22 工作记录](UNIFIED_G22_GUI_RELEASE.md) 为准。本文不把旧实验 CLI 当作日常操作流程。
+当前界面属于 G22 Windows x64 本地发布候选。具体构建身份见双端 `--build-identity`；
+便携包的文件、依赖和 Profile 身份记录在随包 `package-manifest.json` 中。本文不把旧实验 CLI 当作日常操作流程。
 
 ## 1. 启动与大小单位
 
