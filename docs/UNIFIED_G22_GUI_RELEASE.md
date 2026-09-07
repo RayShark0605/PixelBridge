@@ -2,7 +2,7 @@
 
 ## 1. 当前状态与本轮授权
 
-- 状态：**IN PROGRESS**；2026-09-07 完成现场核对与旧版无显示基线，尚未完成新版 GUI。
+- 状态：**IN PROGRESS**；2026-09-07 已完成 Encoder 新 GUI 的初版接线与无显示验证，Decoder/包/实屏尚未完成。
 - 起始提交：`b86702fafcde60b1666674bd5478649affa1c559`。
 - G21 已以 `PASS_WITH_SINGLE_RUN_USER_WAIVER` 关闭，详见
   [最终远控结果](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)。本轮不重跑 G21 性能调优，
@@ -39,7 +39,8 @@
 
 ### 待确认，不得自行落地
 
-- ROI 的具体选择交互、完成后的交互若需改变既有产品语义，先询问。
+- 用户已确认 Decoder：先选择显示器，再选整屏或框选；框选只覆盖所选显示器，精确坐标在高级页；
+  开始/停止使用同一个按钮，停止保留断点；完整验证并落盘后自动停止，页面保留 100%/已完成，不自动弹窗或打开目录。
 - 项目自身 LICENSE、公开分发或签名选择不得擅定；本轮本地候选不等于已公开发布或已选择开源许可证。
 
 ## 3. 源码核对与复用边界
@@ -79,6 +80,9 @@
 - `baseline-build.log` / `baseline-build-result.json`：Release 构建双端成功，exit 0。
 - `baseline-gui-smoke.log` / `baseline-gui-smoke-result.json`：两个旧 GUI 的 offscreen smoke **2/2 PASS**，1.49 s。
 - `baseline-binary-hashes.json`：此次基线双端 EXE 的 SHA-256。
+- 后续 `--build-identity` 查明：基线 EXE 仍嵌入 `959678340d1946fed4fec01b4410a250b533daa3`，
+  不是 checkout `b86702f`；此次基线仅执行了增量 build。两份 `PixelBridge*-build-identity.json` 保留实际身份，
+  不把这轮旧二进制 smoke 算作 G22 新代码验证。Encoder 新代码已先显式重新配置再构建。
 - Qt 部署提示 `VCINSTALLDIR` 未设置；当前构建通过，但这不能作为 VC runtime 已独立部署的证据，打包阶段须核对。
 
 复验命令（无真实窗口/捕获）：
@@ -91,3 +95,23 @@ ctest --test-dir build-unified-release -C Release -R '^PixelBridge(Encoder|Decod
 保护文件 `docs/PHASE1_GATE_REPORT.md` 起始 SHA-256：
 `076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`。
 该文件保持原有未跟踪状态，不修改、不暂存、不提交。
+
+## 6. Encoder 新界面第一阶段
+
+- 整体替换 `encoder_gui.cpp`：主体只显示文件、1..60 Hz（默认 15）、开始与必要状态；真正的两个 Tab。
+- 高级页：实际 `sessionStateRoot` 设置、明确确认后删除当前 Session、create-only 导出诊断报告和只读运行详情。
+  RAW/zstd、FEC、Profile 与资源合同保持固定，不提供无效调参选项。
+- 当前主窗口的 Win32 monitor identity 绑定既有 `singleMonitorFullscreen` runtime；实际 1:1 中性背景组合仍在 Qt-free runtime 中。
+- 源文件预扫描/传输/停止期间禁用文件、FPS 和缓存设置，controller 也拒绝活跃运行的 FPS 修改；保留核心 runtime 的历史诊断能力。
+- Esc 使用 `Qt::WindowShortcut` 且关闭 auto-repeat，不注册全局快捷键或键盘钩子，数据窗口维持 no-activate。
+- 新偏好使用独立 `g22/` keys，不继承旧 Profile、240 Hz 或窗口位置；文件名和状态 QLabel 强制 PlainText。
+- 无显示 smoke 使用生产 controller/预扫描/persistence，替换的只有 OS monitor 选择与 presentation owner，
+  不创建实际数据窗口。覆盖默认/越界偏好、Tabs、缓存生效、准备期锁定、程序化修改 disabled 控件不影响当次 FPS、
+  局部 Esc 连接、停止保留、取消删除/确认删除和设置落盘。
+
+证据根：`artifacts/g22-encoder-20260907/`；`configure.log`、`build-encoder.log`、`build-encoder-font.log`、
+`encoder-smoke-01.log`、`encoder-smoke-02.log`。最后一轮 1/1 PASS，0.28 s（尚非实屏证据）。
+`preview-01/` 保留 offscreen 未发现系统字体时的方框问题；`preview-02/` 通过显式加载本机 CJK 字体恢复可读预览。
+字体文件不复制进包，不增加生产字体依赖。截图只渲染自己的 offscreen widget，不读取桌面像素。
+
+尚未验证：真实全屏/Esc 用户操作、左/右屏 native containment、真实端到端、Decoder 新版、独立 package。

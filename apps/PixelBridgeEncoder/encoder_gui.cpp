@@ -1,34 +1,31 @@
 #include "encoder_gui.h"
 #include "encoder_application_controller.h"
-#include "monitor_catalog.h"
+#include "product_gui_helpers.h"
+#include "run_report.h"
+#include "pbcore/build_info.h"
 
-#include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
-#include <QFileInfo>
 #include <QFormLayout>
-#include <QGroupBox>
 #include <QHBoxLayout>
-#include <QLabel>
+#include <QKeySequence>
 #include <QLineEdit>
 #include <QMainWindow>
-#include <QMenuBar>
-#include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
+#include <QShortcut>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QVBoxLayout>
 
-#include <algorithm>
-#include <array>
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -39,97 +36,64 @@
 namespace
 {
 
-[[nodiscard]] QString FromUtf8(const std::string& value)
-{
-    return QString::fromUtf8(value.data(), static_cast<int>(value.size()));
-}
+using TargetConfigurator = std::function<QString(pbapp::EncoderConfig&, QWidget&)>;
 
-[[nodiscard]] QString HumanBytes(const std::uint64_t bytes)
+[[nodiscard]] QString ConfigureCurrentMonitor(pbapp::EncoderConfig& config, QWidget& window)
 {
-    static const QStringList units{QStringLiteral("B"), QStringLiteral("KiB"), QStringLiteral("MiB"), QStringLiteral("GiB")};
-    double value = static_cast<double>(bytes);
-    int unit = 0;
-    while (value >= 1024.0 && unit + 1 < units.size())
-    {
-        value /= 1024.0;
-        unit++;
-    }
-    return QStringLiteral("%1 %2").arg(value, 0, 'f', unit == 0 ? 0 : 2).arg(units[unit]);
-}
-
-[[nodiscard]] bool PlaceOnExperimentMonitor(QWidget& window, const std::wstring_view deviceName) noexcept
-{
+    const HMONITOR selected = MonitorFromWindow(reinterpret_cast<HWND>(window.winId()), MONITOR_DEFAULTTONULL);
     std::vector<pbapp::MonitorInfo> monitors;
-    if (!pbapp::EnumerateMonitors(monitors))
+    if (selected == nullptr || !pbapp::EnumerateMonitors(monitors))
     {
-        return false;
+        return QStringLiteral("无法确认当前屏幕；请将 Encoder 窗口移到目标屏幕后重试。");
     }
-    const auto match = std::find_if(monitors.begin(), monitors.end(), [deviceName](const pbapp::MonitorInfo& monitor)
+    const auto monitor = std::find_if(monitors.begin(), monitors.end(), [selected](const pbapp::MonitorInfo& candidate)
     {
-        return monitor.deviceName == deviceName;
+        return candidate.monitor == selected;
     });
-    if (match == monitors.end())
+    if (monitor == monitors.end())
     {
-        return false;
+        return QStringLiteral("显示器布局发生变化，请重新开始。");
     }
-    window.setAttribute(Qt::WA_ShowWithoutActivating);
-    const HWND windowHandle = reinterpret_cast<HWND>(window.winId());
-    RECT current{};
-    const std::int64_t availableWidth = static_cast<std::int64_t>(match->workRect.right) - match->workRect.left;
-    const std::int64_t availableHeight = static_cast<std::int64_t>(match->workRect.bottom) - match->workRect.top;
-    if (windowHandle == nullptr || GetWindowRect(windowHandle, &current) == FALSE ||
-        availableWidth <= 48 || availableHeight <= 48)
-    {
-        return false;
-    }
-    const std::int64_t currentWidth = static_cast<std::int64_t>(current.right) - current.left;
-    const std::int64_t currentHeight = static_cast<std::int64_t>(current.bottom) - current.top;
-    if (currentWidth <= 0 || currentHeight <= 0)
-    {
-        return false;
-    }
-    const int width = static_cast<int>((std::min)(currentWidth, availableWidth - 48));
-    const int height = static_cast<int>((std::min)(currentHeight, availableHeight - 48));
-    return SetWindowPos(windowHandle, nullptr, match->workRect.left + 24, match->workRect.top + 24,
-        width, height, SWP_NOACTIVATE | SWP_NOZORDER) != FALSE;
+    config.singleMonitorFullscreen = *monitor;
+    config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{monitor->physicalRect.left, monitor->physicalRect.top};
+    const QByteArray identity = QString::fromStdWString(monitor->deviceName).toUtf8();
+    config.remoteMetadata.experimentMonitorIdentity.assign(identity.constData(), static_cast<std::size_t>(identity.size()));
+    return {};
 }
 
 [[nodiscard]] QString StateText(const pbapp::EncoderState state)
 {
     switch (state)
     {
-    case pbapp::EncoderState::Idle: return QStringLiteral("等待选择文件");
-    case pbapp::EncoderState::Preparing: return QStringLiteral("准备广播");
-    case pbapp::EncoderState::Broadcasting: return QStringLiteral("正在广播");
-    case pbapp::EncoderState::Stopping: return QStringLiteral("正在停止广播");
-    case pbapp::EncoderState::Stopped: return QStringLiteral("广播已停止");
-    case pbapp::EncoderState::Failed: return QStringLiteral("广播失败");
+    case pbapp::EncoderState::Idle: return QStringLiteral("准备就绪");
+    case pbapp::EncoderState::Preparing: return QStringLiteral("正在准备文件…");
+    case pbapp::EncoderState::Broadcasting: return QStringLiteral("正在传输 · 按 Esc 停止");
+    case pbapp::EncoderState::Stopping: return QStringLiteral("正在安全停止…");
+    case pbapp::EncoderState::Stopped: return QStringLiteral("传输已停止");
+    case pbapp::EncoderState::Failed: return QStringLiteral("传输未能继续");
     }
-    return QStringLiteral("未知状态");
+    return QStringLiteral("等待状态");
 }
 
 class EncoderWindow final : public QMainWindow
 {
 public:
-    explicit EncoderWindow(pbapp::EncoderPresentationFactory presentationFactory = {},
-        const QString& settingsFile = {}, std::filesystem::path sessionRoot = {},
-        std::function<bool()> confirmDeletion = {}) : controller_(nullptr, std::move(presentationFactory)),
-        sessionRoot_(std::move(sessionRoot)), confirmDeletion_(std::move(confirmDeletion))
+    explicit EncoderWindow(pbapp::EncoderPresentationFactory presentationFactory = {}, const QString& settingsFile = {},
+        TargetConfigurator configureTarget = ConfigureCurrentMonitor, std::function<bool()> confirmDeletion = {}) :
+        controller_(nullptr, std::move(presentationFactory)), configureTarget_(std::move(configureTarget)),
+        confirmDeletion_(std::move(confirmDeletion))
     {
         settings_ = settingsFile.isEmpty() ? std::make_unique<QSettings>() :
             std::make_unique<QSettings>(settingsFile, QSettings::IniFormat);
-        setWindowTitle(QStringLiteral("PixelBridge Encoder — 广播"));
-        setMinimumSize(700, 560);
-        resize(850, 660);
+        setWindowTitle(QStringLiteral("PixelBridge Encoder"));
+        setMinimumSize(640, 460);
+        resize(740, 520);
         BuildUi();
-        if (settingsFile.isEmpty())
-        {
-            restoreGeometry(settings_->value(QStringLiteral("windowGeometry")).toByteArray());
-        }
-        sourceEdit_->setText(settings_->value(QStringLiteral("lastInputPath")).toString());
-        const int savedFps = settings_->value(QStringLiteral("unifiedLogicalFps"), 15).toInt();
+        // Do not import the legacy geometry, profiles, active state or 240 Hz preference.
+        sourceEdit_->setText(settings_->value(QStringLiteral("g22/sourcePath")).toString());
+        cacheEdit_->setText(settings_->value(QStringLiteral("g22/sessionRoot")).toString());
+        const int savedFps = settings_->value(QStringLiteral("g22/logicalFps"), 15).toInt();
         fpsSpin_->setValue(savedFps >= 1 && savedFps <= 60 ? savedFps : 15);
-        advancedToggle_->setChecked(settings_->value(QStringLiteral("unifiedAdvancedExpanded"), false).toBool());
         connect(&controller_, &EncoderApplicationController::SnapshotChanged, this, &EncoderWindow::UpdateSnapshot);
         connect(&controller_, &EncoderApplicationController::TerminalStateReached, this, [this]()
         {
@@ -141,77 +105,75 @@ public:
         UpdateSnapshot();
     }
 
-    // Runs against the actual controller/runtime with a non-displaying
-    // presentation owner. No native window or external input is generated.
-    [[nodiscard]] bool RunSmoke(const QString& sourcePath, const std::function<bool()>& presentationCreated,
-        bool& confirmDeletion)
+    [[nodiscard]] bool RunSmoke(const QString& sourcePath, const QString& sessionRoot,
+        const std::function<bool()>& presentationCreated, bool& confirmDeletion)
     {
-        std::cerr << "G15 GUI smoke phase: initial controls\n";
-        if (isVisible() || fpsSpin_->minimum() != 1 || fpsSpin_->maximum() != 60 || fpsSpin_->value() != 15 ||
-            !advancedText_->isReadOnly() || stopButton_->isEnabled() || deleteAction_->isEnabled())
+        if (isVisible() || tabs_->count() != 2 || fpsSpin_->minimum() != 1 || fpsSpin_->maximum() != 60 ||
+            fpsSpin_->value() != 15 || startButton_->isEnabled() || escapeShortcut_->context() != Qt::WindowShortcut ||
+            escapeShortcut_->autoRepeat() || !details_->isReadOnly() || deleteButton_->isEnabled())
         {
             return false;
         }
         sourceEdit_->setText(sourcePath);
-        if (!startButton_->isEnabled())
+        cacheEdit_->setText(sessionRoot);
+        if (!startButton_->isEnabled() || !pbgui::SaveTabPreviews(*this, *tabs_, QStringLiteral("encoder-idle")))
         {
             return false;
         }
         startButton_->click();
-        std::cerr << "G15 GUI smoke phase: waiting for preparation\n";
-        if (!WaitFor([&]()
+        // Lock controls immediately, including the entire prescan phase.
+        if (sourceEdit_->isEnabled() || fpsSpin_->isEnabled() || cacheEdit_->isEnabled() ||
+            !escapeShortcut_->isEnabled() || controller_.SetLogicalVisualFps(60).isEmpty())
         {
-            return presentationCreated();
-        }))
+            return false;
+        }
+        // Even a programmatic change of the disabled widget cannot reconfigure this run.
+        fpsSpin_->setValue(60);
+        if (!WaitFor(presentationCreated))
         {
             return false;
         }
         UpdateSnapshot();
         const pbapp::EncoderSnapshot prepared = controller_.GetSnapshot();
-        if (!prepared.preparationComplete || prepared.visualProfile != pbapp::VisualProfile::UnifiedLc4 ||
-            prepared.sessionIdHex.empty() || progress_->value() != 1000 || sourceEdit_->isEnabled() ||
-            !fpsSpin_->isEnabled() || !stopButton_->isEnabled())
+        const std::filesystem::path directory(std::u8string(prepared.sessionStateDirectory.begin(), prepared.sessionStateDirectory.end()));
+        if (!prepared.preparationComplete || prepared.configuredLogicalVisualFps != 15 ||
+            prepared.visualProfile != pbapp::VisualProfile::UnifiedLc4 || prepared.sessionIdHex.empty() ||
+            directory.parent_path() != std::filesystem::path(sessionRoot.toStdWString()) || !std::filesystem::exists(directory))
         {
             return false;
         }
-        fpsSpin_->setValue(60);
-        std::cerr << "G15 GUI smoke phase: waiting for FPS\n";
-        if (!WaitFor([&]()
-        {
-            return controller_.GetSnapshot().configuredLogicalVisualFps == 60;
-        }))
-        {
-            return false;
-        }
-        stopButton_->click();
-        std::cerr << "G15 GUI smoke phase: waiting for stop\n";
-        if (!WaitFor([&]()
-        {
-            return controller_.GetSnapshot().state == pbapp::EncoderState::Stopped;
-        }))
+        // Invoke the local shortcut signal inside this offscreen process; no OS input is sent.
+        if (!QMetaObject::invokeMethod(escapeShortcut_, "activated", Qt::DirectConnection) ||
+            !WaitFor([this]()
+            {
+                return controller_.GetSnapshot().state == pbapp::EncoderState::Stopped;
+            }))
         {
             return false;
         }
         UpdateSnapshot();
-        const std::filesystem::path directory(std::u8string(prepared.sessionStateDirectory.begin(), prepared.sessionStateDirectory.end()));
-        if (!deleteAction_->isEnabled() || !std::filesystem::exists(directory))
+        if (!fpsSpin_->isEnabled() || !cacheEdit_->isEnabled() || !startButton_->isEnabled() ||
+            !deleteButton_->isEnabled() || !std::filesystem::exists(directory))
         {
             return false;
         }
         confirmDeletion = false;
-        deleteAction_->trigger();
+        deleteButton_->click();
         if (!std::filesystem::exists(directory) || controller_.GetSnapshot().sessionDeleted)
         {
             return false;
         }
         confirmDeletion = true;
-        std::cerr << "G15 GUI smoke phase: explicit deletion\n";
-        deleteAction_->trigger();
+        deleteButton_->click();
         if (!controller_.GetSnapshot().sessionDeleted || std::filesystem::exists(directory) || !QFileInfo::exists(sourcePath))
         {
             return false;
         }
-        return !deleteAction_->isEnabled() && startButton_->isEnabled() && !stopButton_->isEnabled();
+        fpsSpin_->setValue(1);
+        SavePreferences();
+        return !deleteButton_->isEnabled() && settings_->value(QStringLiteral("g22/logicalFps")).toInt() == 1 &&
+            settings_->value(QStringLiteral("g22/sessionRoot")).toString() == sessionRoot &&
+            pbgui::SaveTabPreviews(*this, *tabs_, QStringLiteral("encoder-stopped"));
     }
 
 protected:
@@ -224,10 +186,7 @@ protected:
             event->ignore();
             return;
         }
-        settings_->setValue(QStringLiteral("windowGeometry"), saveGeometry());
-        settings_->setValue(QStringLiteral("lastInputPath"), sourceEdit_->text());
-        settings_->setValue(QStringLiteral("unifiedLogicalFps"), fpsSpin_->value());
-        settings_->setValue(QStringLiteral("unifiedAdvancedExpanded"), advancedToggle_->isChecked());
+        SavePreferences();
         event->accept();
     }
 
@@ -247,122 +206,149 @@ private:
     void BuildUi()
     {
         QWidget* const central = new QWidget(this);
-        QVBoxLayout* const layout = new QVBoxLayout(central);
-        layout->setContentsMargins(24, 20, 24, 20);
-        layout->setSpacing(14);
-        QLabel* const title = new QLabel(QStringLiteral("广播文件"));
-        title->setStyleSheet(QStringLiteral("font-size: 24px; font-weight: 600;"));
-        layout->addWidget(title);
-        QLabel* const explanation = new QLabel(QStringLiteral("先完整预扫描，再打开可拖动、可缩放的编码窗口。广播持续循环，停止后保留可恢复会话。"));
-        explanation->setWordWrap(true);
-        layout->addWidget(explanation);
+        QVBoxLayout* const outer = new QVBoxLayout(central);
+        outer->setContentsMargins(24, 20, 24, 20);
+        outer->setSpacing(16);
+        QLabel* const heading = pbgui::TextLabel(QStringLiteral("文件传输"));
+        heading->setStyleSheet(QStringLiteral("font-size:24px;font-weight:600;"));
+        outer->addWidget(heading);
+        tabs_ = new QTabWidget();
+        tabs_->setObjectName(QStringLiteral("encoderTabs"));
+        QWidget* const mainPage = new QWidget();
+        QVBoxLayout* const mainLayout = new QVBoxLayout(mainPage);
+        mainLayout->setContentsMargins(20, 22, 20, 20);
+        mainLayout->setSpacing(16);
+        mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("选择一个文件，在当前屏幕持续传输。")));
+        mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("源文件")));
         QHBoxLayout* const fileRow = new QHBoxLayout();
         sourceEdit_ = new QLineEdit();
         sourceEdit_->setObjectName(QStringLiteral("sourcePath"));
-        sourceEdit_->setPlaceholderText(QStringLiteral("选择要广播的源文件"));
+        sourceEdit_->setPlaceholderText(QStringLiteral("选择文件（0 B 至 500 GiB）"));
         browseButton_ = new QPushButton(QStringLiteral("选择文件…"));
         fileRow->addWidget(sourceEdit_, 1);
         fileRow->addWidget(browseButton_);
-        layout->addLayout(fileRow);
-        QHBoxLayout* const actionRow = new QHBoxLayout();
-        actionRow->addWidget(new QLabel(QStringLiteral("逻辑刷新率")));
+        mainLayout->addLayout(fileRow);
+        QHBoxLayout* const rateRow = new QHBoxLayout();
+        rateRow->addWidget(pbgui::TextLabel(QStringLiteral("刷新帧率")));
         fpsSpin_ = new QSpinBox();
         fpsSpin_->setObjectName(QStringLiteral("logicalFps"));
         fpsSpin_->setRange(1, 60);
         fpsSpin_->setValue(15);
         fpsSpin_->setSuffix(QStringLiteral(" Hz"));
-        fpsSpin_->setToolTip(QStringLiteral("运行中可调整；新频率从下一张完整逻辑帧生效。重复 Present 不产生新数据。"));
-        actionRow->addWidget(fpsSpin_);
-        actionRow->addStretch();
-        startButton_ = new QPushButton(QStringLiteral("开始广播"));
-        startButton_->setObjectName(QStringLiteral("startBroadcast"));
-        stopButton_ = new QPushButton(QStringLiteral("停止广播"));
-        stopButton_->setObjectName(QStringLiteral("stopBroadcast"));
-        actionRow->addWidget(startButton_);
-        actionRow->addWidget(stopButton_);
-        layout->addLayout(actionRow);
-        stateLabel_ = new QLabel();
-        stateLabel_->setStyleSheet(QStringLiteral("font-size: 18px; font-weight: 600; color: #175CD3;"));
-        layout->addWidget(stateLabel_);
-        progress_ = new QProgressBar();
-        progress_->setObjectName(QStringLiteral("preparationProgress"));
-        progress_->setRange(0, 1000);
-        progress_->setValue(0);
-        progress_->setFormat(QStringLiteral("本地预扫描 %p%"));
-        layout->addWidget(progress_);
-        QFormLayout* const status = new QFormLayout();
-        fileLabel_ = new QLabel();
-        scanLabel_ = new QLabel();
-        carouselLabel_ = new QLabel();
-        fpsLabel_ = new QLabel();
-        stabilityLabel_ = new QLabel();
-        status->addRow(QStringLiteral("文件 / Segment"), fileLabel_);
-        status->addRow(QStringLiteral("预扫描"), scanLabel_);
-        status->addRow(QStringLiteral("广播位置"), carouselLabel_);
-        status->addRow(QStringLiteral("实际逻辑 FPS"), fpsLabel_);
-        status->addRow(QStringLiteral("源文件稳定性"), stabilityLabel_);
-        layout->addLayout(status);
-        messageLabel_ = new QLabel();
-        messageLabel_->setWordWrap(true);
-        messageLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        layout->addWidget(messageLabel_);
-        advancedToggle_ = new QPushButton(QStringLiteral("高级信息（只读）"));
-        advancedToggle_->setCheckable(true);
-        layout->addWidget(advancedToggle_);
-        advancedText_ = new QPlainTextEdit();
-        advancedText_->setObjectName(QStringLiteral("readOnlyRuntimeDetails"));
-        advancedText_->setReadOnly(true);
-        advancedText_->setVisible(false);
-        layout->addWidget(advancedText_, 1);
-        layout->addStretch();
+        fpsSpin_->setToolTip(QStringLiteral("默认 15 Hz。开始准备后锁定；停止后才能修改。"));
+        rateRow->addWidget(fpsSpin_);
+        rateRow->addStretch();
+        startButton_ = new QPushButton(QStringLiteral("开始传输"));
+        startButton_->setObjectName(QStringLiteral("startTransmission"));
+        startButton_->setMinimumSize(136, 38);
+        rateRow->addWidget(startButton_);
+        mainLayout->addLayout(rateRow);
+        stateLabel_ = pbgui::TextLabel();
+        stateLabel_->setStyleSheet(QStringLiteral("font-size:16px;font-weight:600;"));
+        mainLayout->addWidget(stateLabel_);
+        messageLabel_ = pbgui::TextLabel();
+        mainLayout->addWidget(messageLabel_);
+        mainLayout->addStretch();
+        mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("准备完成后全屏显示 · 按 Esc 停止传输\nEsc 仅在 Encoder 持有键盘焦点时生效，停止后保留恢复状态。")));
+        tabs_->addTab(mainPage, QStringLiteral("传输"));
+
+        QWidget* const advancedPage = new QWidget();
+        QVBoxLayout* const advancedLayout = new QVBoxLayout(advancedPage);
+        advancedLayout->setContentsMargins(20, 22, 20, 20);
+        advancedLayout->setSpacing(12);
+        advancedLayout->addWidget(pbgui::TextLabel(QStringLiteral("会话缓存目录")));
+        QHBoxLayout* const cacheRow = new QHBoxLayout();
+        cacheEdit_ = new QLineEdit();
+        cacheEdit_->setObjectName(QStringLiteral("sessionCacheDirectory"));
+        cacheEdit_->setPlaceholderText(QStringLiteral("留空使用本机默认 EncoderSessions 目录"));
+        cacheBrowse_ = new QPushButton(QStringLiteral("选择目录…"));
+        cacheRow->addWidget(cacheEdit_, 1);
+        cacheRow->addWidget(cacheBrowse_);
+        advancedLayout->addLayout(cacheRow);
+        advancedLayout->addWidget(pbgui::TextLabel(QStringLiteral("缓存保存本端会话和断点索引，不向 Decoder 传递文件。更改目录只影响下一次开始。")));
+        QHBoxLayout* const toolsRow = new QHBoxLayout();
+        deleteButton_ = new QPushButton(QStringLiteral("结束并删除当前会话…"));
+        deleteButton_->setObjectName(QStringLiteral("endAndDeleteSession"));
+        exportButton_ = new QPushButton(QStringLiteral("导出诊断报告…"));
+        toolsRow->addWidget(deleteButton_);
+        toolsRow->addWidget(exportButton_);
+        toolsRow->addStretch();
+        advancedLayout->addLayout(toolsRow);
+        details_ = new QPlainTextEdit();
+        details_->setObjectName(QStringLiteral("encoderDiagnostics"));
+        details_->setReadOnly(true);
+        advancedLayout->addWidget(details_, 1);
+        tabs_->addTab(advancedPage, QStringLiteral("高级选项"));
+        outer->addWidget(tabs_, 1);
         setCentralWidget(central);
-        deleteAction_ = menuBar()->addMenu(QStringLiteral("会话"))->addAction(QStringLiteral("结束并删除会话…"));
-        deleteAction_->setObjectName(QStringLiteral("endAndDeleteSession"));
+
+        escapeShortcut_ = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+        escapeShortcut_->setContext(Qt::WindowShortcut);
+        escapeShortcut_->setAutoRepeat(false);
+        connect(escapeShortcut_, &QShortcut::activated, &controller_, &EncoderApplicationController::RequestStop);
+        connect(sourceEdit_, &QLineEdit::textChanged, this, &EncoderWindow::UpdateActions);
+        connect(startButton_, &QPushButton::clicked, this, &EncoderWindow::StartTransmission);
         connect(browseButton_, &QPushButton::clicked, this, [this]()
         {
-            const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("选择广播源文件"), sourceEdit_->text());
+            const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("选择要传输的文件"), sourceEdit_->text());
             if (!path.isEmpty())
             {
-                sourceEdit_->setText(path);
+                sourceEdit_->setText(QDir::toNativeSeparators(path));
             }
         });
-        connect(sourceEdit_, &QLineEdit::textChanged, this, &EncoderWindow::UpdateActions);
-        connect(startButton_, &QPushButton::clicked, this, &EncoderWindow::StartBroadcast);
-        connect(stopButton_, &QPushButton::clicked, &controller_, &EncoderApplicationController::RequestStop);
-        connect(fpsSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](const int fps)
+        connect(cacheBrowse_, &QPushButton::clicked, this, [this]()
         {
-            if (controller_.IsActive())
+            const QString directory = QFileDialog::getExistingDirectory(this, QStringLiteral("选择会话缓存目录"), cacheEdit_->text());
+            if (!directory.isEmpty())
             {
-                const QString error = controller_.SetLogicalVisualFps(static_cast<std::uint32_t>(fps));
-                if (!error.isEmpty())
-                {
-                    messageLabel_->setText(error);
-                }
+                cacheEdit_->setText(QDir::toNativeSeparators(directory));
             }
         });
-        connect(advancedToggle_, &QPushButton::toggled, advancedText_, &QWidget::setVisible);
-        connect(deleteAction_, &QAction::triggered, this, &EncoderWindow::EndAndDeleteSession);
+        connect(deleteButton_, &QPushButton::clicked, this, &EncoderWindow::EndAndDeleteSession);
+        connect(exportButton_, &QPushButton::clicked, this, &EncoderWindow::ExportReport);
+    }
+
+    void SavePreferences()
+    {
+        settings_->setValue(QStringLiteral("g22/sourcePath"), sourceEdit_->text());
+        settings_->setValue(QStringLiteral("g22/sessionRoot"), cacheEdit_->text());
+        settings_->setValue(QStringLiteral("g22/logicalFps"), fpsSpin_->value());
+        settings_->sync();
     }
 
     void UpdateActions()
     {
-        const pbapp::EncoderSnapshot snapshot = controller_.GetSnapshot();
+        const auto snapshot = controller_.GetSnapshot();
         const bool active = pbapp::IsEncoderStateActive(snapshot.state);
-        sourceEdit_->setEnabled(!active && !closePending_);
-        browseButton_->setEnabled(!active && !closePending_);
+        const bool editable = !active && !closePending_;
+        sourceEdit_->setEnabled(editable);
+        browseButton_->setEnabled(editable);
+        fpsSpin_->setEnabled(editable);
+        cacheEdit_->setEnabled(editable);
+        cacheBrowse_->setEnabled(editable);
         const QFileInfo source(sourceEdit_->text());
-        startButton_->setEnabled(!active && !closePending_ && source.isFile() && source.isReadable() &&
-            source.size() >= 0 && static_cast<std::uint64_t>(source.size()) <= pbapp::maximumInstantFileBytes);
-        stopButton_->setEnabled(active && snapshot.state != pbapp::EncoderState::Stopping && !closePending_);
-        fpsSpin_->setEnabled(snapshot.state != pbapp::EncoderState::Stopping && !closePending_);
-        deleteAction_->setEnabled(!active && !closePending_ && !snapshot.sessionIdHex.empty() && !snapshot.sessionDeleted);
+        startButton_->setEnabled(editable && source.isFile() && source.isReadable() && source.size() >= 0 &&
+            static_cast<std::uint64_t>(source.size()) <= pbapp::maximumInstantFileBytes);
+        escapeShortcut_->setEnabled(active && !closePending_ && snapshot.state != pbapp::EncoderState::Stopping);
+        deleteButton_->setEnabled(editable && !snapshot.sessionIdHex.empty() && !snapshot.sessionDeleted);
+        exportButton_->setEnabled(!active && !closePending_ && snapshot.runGeneration != 0);
     }
 
-    void StartBroadcast()
+    void StartTransmission()
     {
-        pbapp::EncoderConfig config = pbapp::MakeUnifiedEncoderConfig(sourceEdit_->text().toStdWString(),
-            static_cast<std::uint32_t>(fpsSpin_->value()));
-        config.sessionStateRoot = sessionRoot_;
+        if (controller_.IsActive() || closePending_)
+        {
+            return;
+        }
+        auto config = pbapp::MakeUnifiedEncoderConfig(sourceEdit_->text().toStdWString(), static_cast<std::uint32_t>(fpsSpin_->value()));
+        config.sessionStateRoot = cacheEdit_->text().toStdWString();
+        const QString targetError = configureTarget_(config, *this);
+        if (!targetError.isEmpty())
+        {
+            messageLabel_->setText(targetError);
+            return;
+        }
+        SavePreferences();
         const QString error = controller_.Start(config);
         UpdateSnapshot();
         if (!error.isEmpty())
@@ -373,16 +359,14 @@ private:
 
     void EndAndDeleteSession()
     {
-        const pbapp::EncoderSnapshot snapshot = controller_.GetSnapshot();
+        const auto snapshot = controller_.GetSnapshot();
         if (controller_.IsActive() || snapshot.sessionIdHex.empty() || snapshot.sessionDeleted)
         {
             return;
         }
-        const bool confirmed = confirmDeletion_ ? confirmDeletion_() :
-            QMessageBox::question(this, QStringLiteral("结束并删除会话"),
-                QStringLiteral("删除当前 Encoder 会话的恢复状态和对应源文件索引？\n源文件不会删除；再次开始广播会建立新 Session。\n\nSession: %1\n会话源文件: %2")
-                    .arg(FromUtf8(snapshot.sessionIdHex)).arg(FromUtf8(snapshot.sourcePath)),
-                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+        const bool confirmed = confirmDeletion_ ? confirmDeletion_() : QMessageBox::question(this,
+            QStringLiteral("结束并删除会话"), QStringLiteral("仅删除本端当前会话的恢复索引，不删除源文件。再次传输将建立新会话。\n\n确定删除？"),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
         if (!confirmed)
         {
             return;
@@ -391,75 +375,79 @@ private:
         UpdateSnapshot();
         if (!error.isEmpty())
         {
-            messageLabel_->setText(QStringLiteral("删除未完成：%1").arg(error));
+            messageLabel_->setText(error);
+        }
+    }
+
+    void ExportReport()
+    {
+        const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 Encoder 诊断报告"), QStringLiteral("encoder-report.json"), QStringLiteral("JSON (*.json)"));
+        if (path.isEmpty())
+        {
+            return;
+        }
+        const pbapp::RunReportContext context{"PixelBridgeEncoder", std::string(pbcore::GetBuildInfo().version), PB_GIT_COMMIT,
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString()};
+        const std::string report = pbapp::BuildEncoderRunReportJson(context, controller_.GetSnapshot());
+        QFile output(path);
+        if (!output.open(QIODevice::WriteOnly | QIODevice::NewOnly) ||
+            output.write(report.data(), static_cast<qint64>(report.size())) != static_cast<qint64>(report.size()) || !output.flush())
+        {
+            messageLabel_->setText(QStringLiteral("报告未保存：请选择一个尚不存在、可写的文件路径。"));
         }
     }
 
     void UpdateSnapshot()
     {
-        const pbapp::EncoderSnapshot snapshot = controller_.GetSnapshot();
+        const auto snapshot = controller_.GetSnapshot();
         stateLabel_->setText(StateText(snapshot.state));
-        fileLabel_->setText(snapshot.runGeneration == 0 ? QStringLiteral("—") :
-            QStringLiteral("%1 / %2 个").arg(HumanBytes(snapshot.sourceBytes)).arg(snapshot.segmentCount));
-        const int progress = snapshot.preparationComplete ? 1000 : snapshot.sourceBytes != 0 ?
-            static_cast<int>((snapshot.preparedSourceBytes * 1000ULL) / snapshot.sourceBytes) : 0;
-        progress_->setValue(progress);
-        const QString speed = snapshot.preparationBytesPerSecond ?
-            QStringLiteral("%1 MiB/s").arg(*snapshot.preparationBytesPerSecond / (1024.0 * 1024.0), 0, 'f', 2) : QStringLiteral("—");
-        scanLabel_->setText(QStringLiteral("%1 / %2，%3，%4 s").arg(HumanBytes(snapshot.preparedSourceBytes))
-            .arg(HumanBytes(snapshot.sourceBytes)).arg(speed).arg(snapshot.preparationMilliseconds / 1000.0, 0, 'f', 2));
-        carouselLabel_->setText(snapshot.sessionIdHex.empty() ? QStringLiteral("尚未开始") :
-            QStringLiteral("Carousel pass %1 / Segment ordinal %2（从 0 计数）")
-                .arg(snapshot.cycleCount).arg(snapshot.segmentCount == 0 ? QStringLiteral("—") : QString::number(snapshot.currentSegmentOrdinal)));
-        fpsLabel_->setText(snapshot.generatedVisualFramesPerSecond ?
-            QStringLiteral("本次广播平均 %1 Hz（当前生效设置 %2 Hz）").arg(*snapshot.generatedVisualFramesPerSecond, 0, 'f', 2)
-                .arg(snapshot.configuredLogicalVisualFps) : QStringLiteral("等待足够逻辑帧；不使用 Present 速率代替"));
-        stabilityLabel_->setText(!snapshot.sourceStabilityVerified ? QStringLiteral("尚未完成校验") :
-            !snapshot.sourceStable ? QStringLiteral("已检测到变化，广播中止") : pbapp::IsEncoderStateActive(snapshot.state) ?
-                QStringLiteral("身份与摘要已校验；广播期间保持只读锁定并持续检查") : QStringLiteral("末次校验稳定；重新开始时会再次完整校验"));
-        messageLabel_->setText(FromUtf8(snapshot.statusMessage) + (snapshot.errorDetail.empty() ? QString() :
-            QStringLiteral("\n") + FromUtf8(snapshot.errorDetail)));
-        const QString outer = snapshot.segmentCount == 0 ? QStringLiteral("无 Segment") :
-            snapshot.outerFecMode == pbprotocol::OuterFecMode::WirehairV2 ? QStringLiteral("Wirehair V2") : QStringLiteral("DirectRepeat");
-        advancedText_->setPlainText(QStringLiteral(
-            "Profile: PB-Unified-SC6-V3 / layout 10 / 1920×1080 BGRA8 SDR\n"
-            "Inner FEC: Robust DVB-S2 Short QC-LDPC；Base 9 / Fine 1 / Chroma 5\n"
-            "Outer FEC（当前 Segment）: %1\n"
-            "自动压缩: RAW %2 Segment / zstd %3 Segment（固定 level 3；预扫描决定）\n"
-            "Session: %4\n恢复已有会话: %5\n持久状态: %6\n"
-            "Durable lease（exclusive）: FrameSequence %7 / 当前 repair ID %8\n"
-            "Whole-file BLAKE3: %9\n"
-            "缩放: point sampling + letterbox；小于 1.0×暂停，不推进逻辑帧。\n"
-            "停止保留 Session；需删除时使用“会话 → 结束并删除会话”。")
-            .arg(outer).arg(snapshot.rawSegmentCount).arg(snapshot.zstdSegmentCount)
-            .arg(snapshot.sessionIdHex.empty() ? QStringLiteral("尚未建立") : FromUtf8(snapshot.sessionIdHex))
-            .arg(snapshot.resumedSession ? QStringLiteral("是") : QStringLiteral("否"))
-            .arg(snapshot.sessionDeleted ? QStringLiteral("已删除") : FromUtf8(snapshot.sessionStateDirectory))
-            .arg(snapshot.durableFrameSequenceLeaseEnd).arg(snapshot.durableRepairIdLeaseEnd).arg(FromUtf8(snapshot.wholeFileDigestHex)));
+        QString message;
+        if (snapshot.state == pbapp::EncoderState::Preparing)
+        {
+            const double progress = snapshot.sourceBytes == 0 ? 0.0 :
+                100.0 * static_cast<double>(snapshot.preparedSourceBytes) / static_cast<double>(snapshot.sourceBytes);
+            message = QStringLiteral("预扫描 %1% · %2 / %3").arg(progress, 0, 'f', 1)
+                .arg(pbgui::HumanBytes(snapshot.preparedSourceBytes)).arg(pbgui::HumanBytes(snapshot.sourceBytes));
+        }
+        else if (snapshot.state == pbapp::EncoderState::Broadcasting)
+        {
+            message = QStringLiteral("持续循环发送，不等待对端确认。当前设置 %1 Hz。").arg(snapshot.configuredLogicalVisualFps);
+        }
+        else if (snapshot.state == pbapp::EncoderState::Failed)
+        {
+            message = pbgui::FromUtf8(snapshot.errorDetail.empty() ? snapshot.statusMessage : snapshot.errorDetail);
+        }
+        else if (snapshot.state == pbapp::EncoderState::Stopped)
+        {
+            message = snapshot.sessionDeleted ? QStringLiteral("会话索引已删除，源文件未改动。") : QStringLiteral("恢复状态已保留，可以重新开始。");
+        }
+        messageLabel_->setText(message);
+        details_->setPlainText(QStringLiteral("PB-Unified-SC6-V3 · layout 10 · 1920 × 1080 BGRA8 SDR\n"
+            "全屏：规范画布 1:1 居中；外围为中性背景，不拉伸数据\n"
+            "固定：8 MiB 分段 / 自动 RAW-zstd(level 3) / Robust LDPC / DirectRepeat-Wirehair V2\n"
+            "文件上限：500 GiB；传输期间源文件保持只读锁定\n\n") + (snapshot.runGeneration == 0 ?
+                QStringLiteral("尚未开始传输。运行详情将在建立会话后显示。") : pbgui::FromUtf8(pbapp::BuildEncoderDiagnostics(snapshot))));
         UpdateActions();
     }
 
     EncoderApplicationController controller_;
     std::unique_ptr<QSettings> settings_;
-    std::filesystem::path sessionRoot_;
+    TargetConfigurator configureTarget_;
     std::function<bool()> confirmDeletion_;
     bool closePending_ = false;
+    QTabWidget* tabs_ = nullptr;
     QLineEdit* sourceEdit_ = nullptr;
+    QLineEdit* cacheEdit_ = nullptr;
     QSpinBox* fpsSpin_ = nullptr;
     QPushButton* browseButton_ = nullptr;
+    QPushButton* cacheBrowse_ = nullptr;
     QPushButton* startButton_ = nullptr;
-    QPushButton* stopButton_ = nullptr;
-    QPushButton* advancedToggle_ = nullptr;
-    QProgressBar* progress_ = nullptr;
+    QPushButton* deleteButton_ = nullptr;
+    QPushButton* exportButton_ = nullptr;
     QLabel* stateLabel_ = nullptr;
-    QLabel* fileLabel_ = nullptr;
-    QLabel* scanLabel_ = nullptr;
-    QLabel* carouselLabel_ = nullptr;
-    QLabel* fpsLabel_ = nullptr;
-    QLabel* stabilityLabel_ = nullptr;
     QLabel* messageLabel_ = nullptr;
-    QPlainTextEdit* advancedText_ = nullptr;
-    QAction* deleteAction_ = nullptr;
+    QPlainTextEdit* details_ = nullptr;
+    QShortcut* escapeShortcut_ = nullptr;
 };
 
 class SmokeWaitingPresentation final : public pbapp::EncoderPresentation
@@ -473,8 +461,7 @@ public:
     }
     [[nodiscard]] pbrenderd3d::PresentationStatus SubmitFrame(const pbrenderd3d::CanonicalBgraFrameView&) override
     {
-        return pbrenderd3d::PresentationStatus::Failure(pbrenderd3d::PresentationErrorCode::NotRunning,
-            pbrenderd3d::PresentationStage::None);
+        return pbrenderd3d::PresentationStatus::Failure(pbrenderd3d::PresentationErrorCode::NotRunning, pbrenderd3d::PresentationStage::None);
     }
     void RequestStop() noexcept override
     {
@@ -494,37 +481,25 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
 {
     const bool smoke = argumentCount == 2 && std::wstring_view(arguments[1]) == L"--gui-smoke";
     const bool integrationSmoke = argumentCount == 3 && std::wstring_view(arguments[1]) == L"--gui-integration-smoke";
-    if (smoke)
+    if (smoke && !pbgui::PrepareOffscreenPlatform())
     {
-        // Fail before QApplication rather than let Qt's missing-platform
-        // fatal path show a native error dialog on an operator's desktop.
-        std::array<wchar_t, 32768> modulePath{};
-        const DWORD length = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
-#ifdef QT_DEBUG
-        constexpr const wchar_t* offscreenPlugin = L"qoffscreend.dll";
-#else
-        constexpr const wchar_t* offscreenPlugin = L"qoffscreen.dll";
-#endif
-        std::error_code error;
-        if (length == 0 || length >= modulePath.size() || !std::filesystem::is_regular_file(
-            std::filesystem::path(modulePath.data()).parent_path() / L"platforms" / offscreenPlugin, error) || error)
-        {
-            std::cerr << "G15 GUI smoke: offscreen platform is not deployed; no QApplication started\n";
-            return 2;
-        }
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+        std::cerr << "G22 Encoder GUI smoke: missing offscreen platform; no window started\n";
+        return 2;
     }
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     int guiArgumentCount = 1;
     char applicationName[] = "PixelBridgeEncoder";
     char* guiArguments[] = {applicationName, nullptr};
     QApplication application(guiArgumentCount, guiArguments);
+    if (!pbgui::ConfigureFont(smoke))
+    {
+        std::cerr << "G22 Encoder GUI smoke: CJK font unavailable\n";
+        return 2;
+    }
     QCoreApplication::setOrganizationName(QStringLiteral("PixelBridge"));
-    QCoreApplication::setOrganizationDomain(QStringLiteral("pixelbridge.local"));
     QCoreApplication::setApplicationName(QStringLiteral("PixelBridgeEncoder"));
     if (smoke)
     {
-        std::cerr << "G15 GUI smoke phase: Qt initialized\n";
         QTemporaryDir scratch;
         if (!scratch.isValid())
         {
@@ -532,19 +507,20 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         }
         const QString sourcePath = scratch.filePath(QStringLiteral("empty.bin"));
         QFile source(sourcePath);
-        if (!source.open(QIODevice::WriteOnly))
+        if (!source.open(QIODevice::WriteOnly | QIODevice::NewOnly))
         {
             return 2;
         }
         source.close();
         const QString settingsFile = scratch.filePath(QStringLiteral("settings.ini"));
         {
-            QSettings legacySettings(settingsFile, QSettings::IniFormat);
-            legacySettings.setValue(QStringLiteral("compressionEnabled"), false);
-            legacySettings.setValue(QStringLiteral("logicalVisualFps"), 240);
-            legacySettings.setValue(QStringLiteral("visualProfile"), QStringLiteral("remote-lf4"));
+            QSettings legacy(settingsFile, QSettings::IniFormat);
+            legacy.setValue(QStringLiteral("logicalVisualFps"), 240);
+            legacy.setValue(QStringLiteral("visualProfile"), QStringLiteral("remote-lf4"));
+            legacy.setValue(QStringLiteral("g22/logicalFps"), 240);
         }
         std::atomic<bool> created = false;
+        bool targetConfigured = false;
         bool confirmDeletion = false;
         EncoderWindow window([&](const pbrenderd3d::DataWindowConfig& config) -> std::unique_ptr<pbapp::EncoderPresentation>
         {
@@ -554,22 +530,28 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
             }
             created = true;
             return std::make_unique<SmokeWaitingPresentation>();
-        }, settingsFile, std::filesystem::path(scratch.path().toStdWString()) / L"sessions",
+        }, settingsFile, [&](pbapp::EncoderConfig& config, QWidget&)
+        {
+            // Only the OS monitor selection is replaced. Runtime, preparation,
+            // persistence and local shortcut wiring remain production code.
+            targetConfigured = true;
+            config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
+            return QString();
+        }, [&]()
+        {
+            return confirmDeletion;
+        });
+        const bool passed = window.RunSmoke(sourcePath, scratch.filePath(QStringLiteral("sessions")),
             [&]()
             {
-                return confirmDeletion;
-            });
-        std::cerr << "G15 GUI smoke phase: widget constructed\n";
-        const bool passed = window.RunSmoke(sourcePath, [&]()
-        {
-            return created.load();
-        }, confirmDeletion);
-        std::cout << "G15 GUI smoke: " << (passed ? "PASS" : "FAIL")
-            << "; offscreen; actual controller; prepare/FPS/stop/retain/cancel-delete/confirmed-delete; no DataWindow\n";
+                return created.load();
+            }, confirmDeletion) && targetConfigured;
+        std::cout << "G22 Encoder GUI smoke: " << (passed ? "PASS" : "FAIL")
+            << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete; no desktop pixels\n";
         return passed ? 0 : 1;
     }
     EncoderWindow window;
-    if (integrationSmoke && !PlaceOnExperimentMonitor(window, arguments[2]))
+    if (integrationSmoke && !pbgui::PlaceWithoutActivating(window, arguments[2]))
     {
         return 2;
     }

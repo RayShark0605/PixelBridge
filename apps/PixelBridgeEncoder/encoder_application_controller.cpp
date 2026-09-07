@@ -36,15 +36,19 @@ QString EncoderApplicationController::Start(const pbapp::EncoderConfig& config)
 
 QString EncoderApplicationController::SetLogicalVisualFps(const std::uint32_t logicalVisualFps) noexcept
 {
-    const pbapp::RuntimeStatus status = runtime_.SetLogicalVisualFps(logicalVisualFps);
     try
     {
+        if (IsActive())
+        {
+            return QStringLiteral("传输期间不能调整刷新率；请先按 Esc 停止传输");
+        }
+        const pbapp::RuntimeStatus status = runtime_.SetLogicalVisualFps(logicalVisualFps);
         PollSnapshot();
         return status ? QString() : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
     }
     catch (...)
     {
-        return status ? QStringLiteral("无法刷新 Encoder FPS 状态") : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
+        return QStringLiteral("无法刷新 Encoder FPS 状态");
     }
 }
 
