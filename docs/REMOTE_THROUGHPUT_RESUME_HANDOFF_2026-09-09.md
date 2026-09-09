@@ -9,7 +9,7 @@
 - 总目标没有变化：**提高非本机条件下的整文件有效传输速度**。不是追求本机FPS、理论每帧容量或更多绿色检查。
 - 通路始终为 Encoder画面→远控显示→Decoder实际捕获像素→文件恢复；无隐式ACK和其他payload旁路。
 - 最近人工现场使用向日葵，远端Encoder、本机Decoder捕获右侧屏幕。远控品牌只是元数据，不选择解码分支。历史现场比例约4/3、ROI2560×1440；未来实屏前必须重新核对，不能把这条历史信息当当前拓扑。
-- **尚无已确认的新非本机提速收益。** 接收端CPU成本优化已写入工作树并有本机/离线验证，但没有新现场收益认证。空白带是独立实验，没有进正式现场包。
+- **尚无已确认的新非本机提速收益。** 接收端CPU成本优化已提交入库（Bootstrap顺序扫描游标 `bf1697e`、QC-LDPC每行归一化复用 `a3eae50`）并有本机/离线验证，但没有新现场收益认证。空白带是独立实验，没有进正式现场包。
 - 当前主线是利用用户指出的右上/左下空白区域，且右上可能被部分覆盖。优先独立补充控制，不放唯一必需信息，不先撤主控制。
 - 停止时无本轮仍待等待的native会话；PBBlankCodec/PBBlankFullFrame/PBFecRowReplay进程查询无输出。没有为新4/3实验创建源码/构建/结果目录。
 
@@ -17,7 +17,9 @@
 
 仓库：`<repo>`。
 
-HEAD：`4a36d0f1b84c94c7388a58b8249a3f1b6ec0634a`。工作树存在大量此前累计的已修改和未跟踪文件，**不能用HEAD独自代表现有实现或历史包身份**。没有自动暂存、提交、推送或重写历史；暂停时index为空。
+HEAD：`8f74cd7af7895c8a1473d0fa05f9201224503954`。2026-09-09 用户另行要求的仓库整理已把暂停时工作树中累计的改动按主题入库，共 9 个提交（`6eb4563`…`8f74cd7`，基线 `4a36d0f1b84c94c7388a58b8249a3f1b6ec0634a`）。`git status --porcelain -uall` 现只剩受保护的 `docs/PHASE1_GATE_REPORT.md` 未跟踪，index 为空，工作树与 HEAD 逐字节一致；仓库无 remote，未推送、未重写历史。
+
+**提交只改变记账位置，未改动任何源码字节**，因此不能据此升级任何证据身份：旧交付包、录像、raw 像素与实验封存目录仍按封存时记录的 build 身份解释，不得用新 HEAD 重新解释；`--measurement-build-identity` 输出的 `baseCommit` 来自 CMake 配置期 `git rev-parse HEAD`，`sourceFingerprintSha256` 来自 `PB_STEP1_SOURCE_FINGERPRINT` 缓存变量，两者都是编译期注入，只有重新构建后才会反映新 HEAD。若要以当前源码身份作为新的对照基线，必须重新 freeze、build、test、package、seal。
 
 正式产品：`PB-Unified-SC6-V3`，ProfileId `0x5042554E49534333`，layout10。空白带独立实验：`PB-Experimental-BlankControl-1`，ProfileId `0x504242414E443031`，layout11；正式catalog拒绝新实验身份。
 
@@ -35,8 +37,8 @@ HEAD：`4a36d0f1b84c94c7388a58b8249a3f1b6ec0634a`。工作树存在大量此前�
 | 工作 | 当前状态 | 关键边界 |
 | --- | --- | --- |
 | 控制相位A/B现场对照 | A1 238.3155474s；B1 211.5549573s；B2 212.477132s；A2 205.0048921s | 反序观察不支持稳定B优于A，且A2Encoder残留后被人工结束，退出/预算不合规；不晋级默认 |
-| Bootstrap扫描游标 | 工作树`libs/PBModulation/src/local_desktop_decode.cpp`已有改动；两个固定CPU对照中位成本约下降12.2%/9.6% | 仅扫描阶段，不是远控吞吐百分比；49个受影响用例及原WGC整文件接线已验证 |
-| QC-LDPC每行归一化复用 | 工作树`libs/PBInnerFec/src/qc_ldpc_codec.cpp`已有改动；固定75组软判决的阶段均值1.8984→1.4471ms，约下降23.8% | 675对输出/状态/迭代一致；40个相关用例通过，不是远控速度提升23.8% |
+| Bootstrap扫描游标 | `libs/PBModulation/src/local_desktop_decode.cpp` 的改动已提交于 `bf1697e`；两个固定CPU对照中位成本约下降12.2%/9.6% | 仅扫描阶段，不是远控吞吐百分比；49个受影响用例及原WGC整文件接线已验证 |
+| QC-LDPC每行归一化复用 | `libs/PBInnerFec/src/qc_ldpc_codec.cpp` 的改动已提交于 `a3eae50`；固定75组软判决的阶段均值1.8984→1.4471ms，约下降23.8% | 675对输出/状态/迭代一致；40个相关用例通过，不是远控速度提升23.8% |
 | 新扫描＋新FEC组合 | 第19节实际WGC两段8454144B，39.4210093s，摘要/发布/reopen及外部双摘要通过 | 本机无codec，FEC迭代0；没有替换现场包 |
 | 空白带短控制原型 | 第20节完整121/194/114B控制记录；61组检查及独立像素/RS/CRC审计通过 | 只证明短原始patch；不是文件修复方程，不支持所有合法长度控制 |
 | 空白带原始整帧 | 第21节30帧×5组（基线、无遮挡、右上/左下/双遮挡），256KiB整文件均通过 | 主区记录一致、都在ordinal14完成，无提速证据；CPU reference＋原Ingress/Storage，不是原应用/GPU |
@@ -119,6 +121,8 @@ Set-Location -LiteralPath '<repo>'
 ## 7. 暂停收尾证据与恢复提示词
 
 收尾目录：`<repo>\artifacts\remote-throughput-pause-20260909-closeout01`，保存暂停请求状态、Git快照、保护文件hash、上一里程碑只读复验、新文档快照和收尾清单。没有移动/删除历史文件，没有自动提交。
+
+2026-09-09 整理补充：同一日按用户单独要求执行了目录整理与文档记账，`6eb4563`…`8f74cd7` 共 9 个提交只暂存显式路径，未移动、改名或删除任何历史 artifact、build、录像或封存包；`docs/PHASE1_GATE_REPORT.md` 仍未跟踪且 SHA-256 保持 `076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`。整理未执行任何构建或测试，因此不构成新的验证结论。
 
 建议下次用户消息：
 
