@@ -580,6 +580,17 @@ InnerFecResult<InnerFecDecodeOutcome> QcLdpcDecoder::Decode(
                     secondMinimumMagnitude = absoluteMessage;
                 }
             }
+            // All targets choose one of the same two row minima. Normalize each
+            // usable minimum once, with the original positive integer division,
+            // offset and saturation. A tied minimum never uses the sentinel second
+            // minimum; every pinned matrix row has at least two incident variables.
+            const auto NormalizeMagnitude = [scaleNum, scaleDen, offset](const std::int64_t magnitude) noexcept
+            {
+                const std::int64_t scaled = magnitude * scaleNum / scaleDen;
+                return scaled > offset ? ClampToInt32(scaled - offset) : std::int32_t{0};
+            };
+            const std::int32_t minimumMessage = NormalizeMagnitude(minimumMagnitude);
+            const std::int32_t secondMinimumMessage = minimumMagnitudeCount == 1 ? NormalizeMagnitude(secondMinimumMagnitude) : minimumMessage;
             for (std::uint32_t targetSlot = slotBegin;
                 targetSlot < slotEnd; targetSlot++)
             {
@@ -591,21 +602,9 @@ InnerFecResult<InnerFecDecodeOutcome> QcLdpcDecoder::Decode(
                     static_cast<std::int64_t>(impl.variableTotals[targetVariable]) - impl.checkMessages[targetSlot];
                 const std::int64_t targetMagnitude =
                     targetVariableToCheck < 0 ? -targetVariableToCheck : targetVariableToCheck;
-                std::int64_t magnitude = targetMagnitude == minimumMagnitude && minimumMagnitudeCount == 1 ?
-                    secondMinimumMagnitude : minimumMagnitude;
+                const std::int32_t magnitudeAfterOffset = targetMagnitude == minimumMagnitude && minimumMagnitudeCount == 1 ? secondMinimumMessage : minimumMessage;
                 const bool positiveSign = !(negativeParity != (targetVariableToCheck < 0));
-                // Fixed-point scale (never amplifying: scaleNum <= scaleDen)
-                // and the offset min-sum magnitude reduction.
-                magnitude = magnitude * scaleNum / scaleDen;
-                std::int32_t newMessage = 0;
-                if (magnitude > offset)
-                {
-                    const std::int32_t magnitudeAfterOffset =
-                        ClampToInt32(magnitude - offset);
-                    newMessage = positiveSign
-                        ? magnitudeAfterOffset
-                        : -magnitudeAfterOffset;
-                }
+                const std::int32_t newMessage = positiveSign ? magnitudeAfterOffset : -magnitudeAfterOffset;
                 const std::int32_t oldMessage =
                     impl.checkMessages[targetSlot];
                 impl.checkMessages[targetSlot] = newMessage;

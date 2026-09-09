@@ -3,6 +3,7 @@ PbAddUnitTest(PBInnerFecTests
     test_inner_fec_errors_and_crc.cpp
     test_inner_fec_encoder_golden.cpp
     test_inner_fec_matrix_reference.cpp
+    test_inner_fec_row_normalization.cpp
     test_inner_fec_profile.cpp)
 
 target_include_directories(PBInnerFecTests
