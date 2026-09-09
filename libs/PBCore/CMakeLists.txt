@@ -4,10 +4,11 @@ add_library(PB::PBCore ALIAS PBCore)
 target_sources(PBCore
     PRIVATE
         src/build_info.cpp
+        src/stage_diagnostics.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
-        FILES include/pbcore/build_info.h)
+        FILES include/pbcore/build_info.h include/pbcore/stage_diagnostics.h)
 
 target_include_directories(PBCore
     PUBLIC

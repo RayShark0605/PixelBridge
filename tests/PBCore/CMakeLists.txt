@@ -1,7 +1,7 @@
 # The expected version is the top-level project() version, so the test
 # compares the library against CMake's single source of truth.
 PbAddUnitTest(PBCoreTests
-    test_build_info.cpp)
+    test_build_info.cpp test_stage_diagnostics.cpp)
 
 target_compile_definitions(PBCoreTests
     PRIVATE
