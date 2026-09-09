@@ -1,11 +1,11 @@
 # PixelBridge Phase 1.5 Current Runtime Option Inventory
 > **2026-09-09 文档记账更新：** 本清单在用户停止 G22 之后的非本机吞吐目标后做过一次状态整理。下面新增的 2026-09 条目是从当前源码与 CMake 声明直接核对得到的（`apps/*/main.cpp`、`apps/*/encoder_gui.cpp`、`apps/*/decoder_gui.cpp`、`apps/common/CMakeLists.txt`、`tools/CMakeLists.txt`）；本轮**未构建、未运行任何二进制或测试**，因此只说明「代码里存在该入口及其声明边界」，不说明其现场行为已验证。更早的表项仍是历史记录，不因本次整理而获得新的证据身份。
 
-> **2026-09-07 G22 更新：** 双端 GUI 已重新实现为主页面/高级 Tab。Encoder 在当前主窗口所在屏幕全屏循环，运行期锁定 FPS，Esc 仅本窗口焦点有效；Decoder 明确选择显示器后整屏/限定该屏框选，进度为百分比/KB/s/ETA 文本，停止保留断点、完成不弹窗。GUI 的 KB/MB/GB 均按 1024 进位。Unified 生产接收在现有 500 GiB 上限内取消所有按文件大小触发的确认，仍保留资源/磁盘/路径/不覆盖/摘要/安全发布检查。以下 G15/G16 及更旧界面描述是历史记录；双击只打开GUI、CLI/重定向保留；最终独立包与新解压右屏1 MB恢复已通过，状态为PASS_LOCAL_CANDIDATE，见 [G22交付](UNIFIED_G22_DELIVERY_2026-09-07.md)。阶段与失败见 [工作记录](UNIFIED_G22_GUI_RELEASE.md)。
+> **2026-09-07 G22 更新：** 双端 GUI 已重新实现为主页面/高级 Tab。Encoder 在当前主窗口所在屏幕全屏循环，运行期锁定 FPS，Esc 仅本窗口焦点有效；Decoder 明确选择显示器后整屏/限定该屏框选，进度为百分比/KB/s/ETA 文本，停止保留断点、完成不弹窗。GUI 的 KB/MB/GB 均按 1024 进位。Unified 生产接收在现有 500 GiB 上限内取消所有按文件大小触发的确认，仍保留资源/磁盘/路径/不覆盖/摘要/安全发布检查。以下 G15/G16 及更旧界面描述是历史记录；双击只打开GUI、CLI/重定向保留；最终独立包与新解压右屏1 MB恢复已通过，状态为PASS_LOCAL_CANDIDATE，见 [G22 交付与证据索引](EVIDENCE_INDEX.md)。阶段与失败见 [工作记录](UNIFIED_G22_GUI_RELEASE.md)。
 
-> **2026-09-04 G16 更新：** Decoder 产品 GUI 已固定 Unified/Auto，移除 FPS/Profile/backend/Replay 实验控件，真实 mixed-result 接线复用既有 Receiver、确认门、journal 与 Storage。旧 Decoder CLI 默认及显式诊断入口没有在本次迁移。下文旧表不再描述当前产品 GUI；当前入口、边界和证据见 [Unified Decoder 工作流](UNIFIED_DECODER_WORKFLOW.md)。逐 lane telemetry/report 留待 G17，真实 selector/capture/实屏认证尚未运行。
+> **2026-09-04 G16 更新：** Decoder 产品 GUI 已固定 Unified/Auto，移除 FPS/Profile/backend/Replay 实验控件，真实 mixed-result 接线复用既有 Receiver、确认门、journal 与 Storage。旧 Decoder CLI 默认及显式诊断入口没有在本次迁移。下文旧表不再描述当前产品 GUI；当前入口、边界和证据见 [G22 GUI 发布与交互合同](UNIFIED_G22_GUI_RELEASE.md)。逐 lane telemetry/report 留待 G17，真实 selector/capture/实屏认证尚未运行。
 
-> **2026-09-04 G15 更新：** Encoder 产品 GUI/默认 CLI 已改为 Unified、1..60 Hz（默认 15）、自动 RAW/zstd 与简化广播工作流，普通 Stop 保留 Session，显式确认后才删除。下文旧 Encoder 选项表仅为历史记录，不再描述当前产品界面；真实绑定与非显示证据见 [Unified Encoder 工作流](UNIFIED_ENCODER_WORKFLOW.md)。Decoder GUI 收敛仍是 G16，最终实屏认证尚未完成。
+> **2026-09-04 G15 更新：** Encoder 产品 GUI/默认 CLI 已改为 Unified、1..60 Hz（默认 15）、自动 RAW/zstd 与简化广播工作流，普通 Stop 保留 Session，显式确认后才删除。下文旧 Encoder 选项表仅为历史记录，不再描述当前产品界面；真实绑定与非显示证据见 [G22 GUI 发布与交互合同](UNIFIED_G22_GUI_RELEASE.md)。Decoder GUI 收敛仍是 G16，最终实屏认证尚未完成。
 
 > **2026-09-03 状态说明：本文件现为过渡/历史实现清单。** 下面的表格主要记录统一产品路线冻结前、截至 `bb5f0b1` 附近可到达的 Phase 1.5 GUI/CLI 与 RemoteVisual 实验入口。提交 `1445f9b` 已加入 Protocol 1.0 Descriptor Schema 1、流式多 Segment sender、durable ID lease、random-access `.part` 和 decoder resume journal 基础，因此本文关于 provisional descriptor、单 Segment 和“无协议状态恢复”的部分不再描述最新核心能力；但产品 GUI 仍未完成统一 Profile、自动 backend、1..60 Hz 与简化页面收敛。
 >

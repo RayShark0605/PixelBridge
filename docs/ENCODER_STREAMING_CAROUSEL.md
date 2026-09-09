@@ -1,7 +1,7 @@
 # Encoder 流式预扫描、Carousel 与持久状态
 
 > 状态：G02/G09 合同已接入 G15 Unified Encoder 产品 runtime，并通过定向非显示验证（2026-09-04）
-> 性质：Encoder 本地实现/持久状态及 Unified scheduler 规范；G15 产品接线与安全删除见 [Unified Encoder 工作流](UNIFIED_ENCODER_WORKFLOW.md)，不是实屏或吞吐认证。
+> 性质：Encoder 本地实现/持久状态及 Unified scheduler 规范；G15 产品接线与安全删除见 [G22 GUI 发布与交互合同](UNIFIED_G22_GUI_RELEASE.md)，不是实屏或吞吐认证。
 > 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`、`libs/PBModulation/src/unified_visual.cpp`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`
 > G21 更新（2026-09-05）：下节当前调度合同已随唯一产品 manifest 改为 SC6 V3/layout 10；后文 G02/G09 的旧 LC4 测试计数保留为历史证据。
 

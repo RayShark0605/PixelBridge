@@ -1,6 +1,6 @@
 # PixelBridge 统一视觉协议与超大文件双端恢复实施路线
 
-> **G22 后续吞吐优化入口（2026-09-07）：** 用户已确认 [非本机场景吞吐优化路线](REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md)，在 Citrix／网络设置不变、纯视觉单向传输的前提下，以迟加入后的整文件完成时间和 verified goodput 为主指标；允许全项目修改且无需旧版互通。新路线已落盘，Step1–Step10 均未开始，每次只选择一个 Step 计划和实施。本文的 G00–G22 合同、历史实测、原始性能失败及单次用户豁免完整保留；新路线不自动修改旧 Gate 或将历史失败改为 PASS。旧每帧 16 KiB 门不强套到尚未实现的新分区协议，当前产品仍是 SC6-V3/layout 10；新协议／指标须在对应 Step 明确设计、版本化并验证后才冻结。
+> **G22 后续吞吐优化入口（2026-09-07）：** 用户已确认 [项目现状与续做入口](PROJECT_STATUS.md)，在 Citrix／网络设置不变、纯视觉单向传输的前提下，以迟加入后的整文件完成时间和 verified goodput 为主指标；允许全项目修改且无需旧版互通。新路线已落盘，Step1–Step10 均未开始，每次只选择一个 Step 计划和实施。本文的 G00–G22 合同、历史实测、原始性能失败及单次用户豁免完整保留；新路线不自动修改旧 Gate 或将历史失败改为 PASS。旧每帧 16 KiB 门不强套到尚未实现的新分区协议，当前产品仍是 SC6-V3/layout 10；新协议／指标须在对应 Step 明确设计、版本化并验证后才冻结。
 
 > 文档性质：当前产品路线、Goal/目标模式执行手册、集成检查点与最终验收清单
 > 路线版本：1.0
@@ -28,7 +28,7 @@
 
 本文不是愿景清单，也不是要求一次性执行的超大任务。后续每次进入“目标模式”时，只选择一个编号目标 `G00..G22`，核对前置条件、限定修改范围、完成该目标的最小验证并单独提交。除本文明确标为“集成检查点”或“最终检查点”的目标外，不运行全量 CTest、不启动真实屏幕窗口、不执行长时大文件回归。
 
-仓库文档导航见 [`README.md`](README.md)，首次推送 GitHub 的源码/许可/remote/artifact 检查见 [`GITHUB_PUBLISH_CHECKLIST.md`](GITHUB_PUBLISH_CHECKLIST.md)。
+仓库文档导航见 [`README.md`](README.md)，首次推送 GitHub 的源码/许可/remote/artifact 检查清单原文已删除，按 [`DOC_HISTORY.md`](DOC_HISTORY.md) 登记的 blob 取回。
 
 本文解决四个实际问题：
 
@@ -430,7 +430,7 @@ ctest --test-dir build-unified-release -C Release `
 再运行一次专用 headless multi-segment executable/test；不得额外运行 full CTest。
 **验证结果（2026-09-03）：** Release 精确构建五个规定目标成功；规定 CTest 正则命中 5 个测试，5/5 通过，0 失败（31.94 秒）。专用 `PBHeadlessMultiSegmentCheckpoint` 目标构建成功，专用 CTest 1/1 通过（16.98 秒），内部 9/9 fixture 全部 authoritative publish 且 byte-exact。Python 3.12.9 `hashlib` + `blake3 1.0.9` 对全部 source/output 与 JSON 记录再次独立复验，9/9 通过。未运行 full CTest、raster、Inner FEC、modulation、GPU、capture、GUI 或屏幕链。
 **退出：** 上述用例发布 byte-exact；峰值 sender/receiver working set 符合 active-segment 预算；CP-A 报告注明未覆盖视觉链。
-**产物：** [`UNIFIED_VISUAL_CP_A_HEADLESS.md`](UNIFIED_VISUAL_CP_A_HEADLESS.md) 记录实际 application-runtime 闭环、用例、working-set 高水位、证据哈希和边界；本地报告为 `build-unified-release/tests/PBApplication/g04-cp-a-headless-report.json`，其中 `visualChainCovered=false`。
+**产物：** `UNIFIED_VISUAL_CP_A_HEADLESS.md`（已删除，按 [`DOC_HISTORY.md`](DOC_HISTORY.md) 登记的 blob 取回）记录实际 application-runtime 闭环、用例、working-set 高水位、证据哈希和边界；本地报告为 `build-unified-release/tests/PBApplication/g04-cp-a-headless-report.json`，其中 `visualChainCovered=false`。
 **提交建议：** `test(application): prove headless multi segment recovery`
 
 ## G05 — 大输出确认与 rename 后恢复
@@ -853,7 +853,7 @@ ctest --test-dir build-unified-release -C Release `
 
 ## G21 — 真实远程像素链
 
-**准备阶段历史状态（2026-09-05）：** PARTIAL / 接收准备完成、真实远程恢复当时尚未开始。前置 G20 `e94da7f` 已提交；用户回报远程 Encoder 的 `00_Check.bat` 加载与提交身份检查通过，未生成 source 或广播。用户批准专用测试构建接收入口：`PBUnifiedRemoteGate` 复用完整生产 `DecoderRuntime`/Auto，无产品 CLI/Replay/monitor 接口变更，外层严格限定 DISPLAY2。最小 build/无捕获策略及参数负例/只读 monitor preflight 通过，当时未执行 full CTest 或实屏恢复；后续真实 smoke、发送节奏核对、5 Hz 诊断及 SC6 抗失真重构进展见下列连续记录。操作顺序、冻结交付与证据边界见 [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md)。G22 未开始。
+**准备阶段历史状态（2026-09-05）：** PARTIAL / 接收准备完成、真实远程恢复当时尚未开始。前置 G20 `e94da7f` 已提交；用户回报远程 Encoder 的 `00_Check.bat` 加载与提交身份检查通过，未生成 source 或广播。用户批准专用测试构建接收入口：`PBUnifiedRemoteGate` 复用完整生产 `DecoderRuntime`/Auto，无产品 CLI/Replay/monitor 接口变更，外层严格限定 DISPLAY2。最小 build/无捕获策略及参数负例/只读 monitor preflight 通过，当时未执行 full CTest 或实屏恢复；后续真实 smoke、发送节奏核对、5 Hz 诊断及 SC6 抗失真重构进展见下列连续记录。操作顺序、冻结交付与证据边界原见 `UNIFIED_REMOTE_GATE.md`（已删除，按 [`DOC_HISTORY.md`](DOC_HISTORY.md) 登记的 blob 取回）。G22 未开始。
 
 **真实 smoke 后续（2026-09-05）：** 上段“未开始”仅为准备阶段状态。现以冻结 `83bffb3` worker 执行两次 180 秒真实 WGC 接收，均 exit 1、没有发布或生成输出文件，未强杀。首次 Bootstrap 0/3,369，右屏单帧位置图显示底部 finder 被任务栏裁挡；用户手动调整后第二次 Bootstrap 360/185，但最终 admissionDrops=359，尚未绑定 Session。累计后 GPU/FEC 时间按 accepted Bootstrap 粗算约 387.557 ms/帧，提示结果超龄风险，但缺少逐结果时间戳，不把全部拒绝归因为 age 的推断写成已证实根因。两个位置截图仅为右屏 GDI 布局证据，不是 same-capture WGC replay。用户要求固定约 15 Hz；交付脚本本来已传入 `--logical-fps 15`，正在等待同次远程 `encoder-report.json` 和 source manifest 核对实际 cadence，不擅自改阈值或降 FPS。原失败封存于 `build-unified-release/g21-remote-smoke-1/`、`g21-remote-smoke-2/`；完整边界见 `UNIFIED_REMOTE_GATE.md` 第 6 节。G21 继续 PARTIAL，64 MiB/Base-only/外部摘要/性能门及 G22 均未关闭。
 
@@ -921,7 +921,7 @@ freshness analog residual 使用独立的 `0.075` 局部门，不改 Bootstrap t
 
 ## G22 — 包、SBOM、用户文档与发布候选
 
-**状态：PASS_LOCAL_CANDIDATE**（2026-09-07）。双端GUI重建、独立包和新解压实际像素恢复已通过；冻结二进制/实屏身份为`3a840a202cf7d342a3ff2d95f2d69b3c788abcea`。目录清理完成，详细验收与限制见 [最终交付](UNIFIED_G22_DELIVERY_2026-09-07.md)，实施及失败记录见 [工作记录](UNIFIED_G22_GUI_RELEASE.md)。
+**状态：PASS_LOCAL_CANDIDATE**（2026-09-07）。双端GUI重建、独立包和新解压实际像素恢复已通过；冻结二进制/实屏身份为`3a840a202cf7d342a3ff2d95f2d69b3c788abcea`。目录清理完成，详细验收与限制见 [G22 交付与证据索引](EVIDENCE_INDEX.md)，实施及失败记录见 [工作记录](UNIFIED_G22_GUI_RELEASE.md)。
 
 **前置：** G21。
 **目的：** 生成可独立验证的 Windows 发布候选，同时保留源码仓库整洁。

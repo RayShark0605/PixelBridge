@@ -14,7 +14,7 @@ The authorized G1B criterion audit is complete. Result: `CRITERION_INSUFFICIENT_
 
 There is intentionally no alternative Bootstrap/FEC decoder, no publication, no Receiver, no output-file recovery, no screen/capture/GPU or field-goodput claim. Full replay and full CTest are not run. The existing `OfflinePixels` tool boundary and unknown original capture properties remain unchanged.
 
-Detailed report: [G1B execution and next decision](../../docs/REMOTE_GEOMETRY_G1B_EXECUTION_2026-09-08.md).
+Detailed report removed from `docs/` on 2026-09-09; retrieve it by blob SHA-1 via the [document-trimming and retrieval index](../../docs/DOC_HISTORY.md).
 
 ## Files
 

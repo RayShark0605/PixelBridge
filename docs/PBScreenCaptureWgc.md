@@ -183,7 +183,7 @@ MSIX Borderless 授权流程和完整 demod/文件恢复链路；也不提供性
 ## API 依据
 
 本次构建、测试、真实硬件证据和复审台账见
-[PBScreenCaptureWgc_validation.md](PBScreenCaptureWgc_validation.md)。
+`PBScreenCaptureWgc_validation.md`（已删除，按 [`DOC_HISTORY.md`](DOC_HISTORY.md) 登记的 blob 取回）。
 
 - [CreateForMonitor](https://learn.microsoft.com/en-us/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createformonitor)
 - [CreateFreeThreaded](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture.direct3d11captureframepool.createfreethreaded)

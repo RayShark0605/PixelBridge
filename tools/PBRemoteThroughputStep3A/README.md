@@ -44,7 +44,7 @@ WARP 是软件 D3D11，不是本次硬件 GPU 测试。fixture 的 presentation 
 
 ## 当前交付与复验
 
-- 源码：本目录；执行说明：[Step3-A 执行记录](../../docs/REMOTE_STEP3A_EXECUTION_2026-09-08.md)。
+- 源码：本目录；执行说明：[文档整理与历史取回记录](../../docs/DOC_HISTORY.md)。
 - 新工具构建：`<repo>\build-remote-step3a-20260908-run01\Release\PBRemoteThroughputStep3A.exe`。
 - 现存 Step2 构建依赖：`<repo>\build-remote-step2-20260908-run01`，只读复用；本次没有重建或替换产品双端、B0/M1 或现场包。
 - 当前证据根：`<repo>\artifacts\remote-step3a-20260908-run01`。

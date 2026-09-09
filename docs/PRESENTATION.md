@@ -43,7 +43,7 @@ adapter/output 各有64项上限；native 查询错误或超过上限直接失�
 设备创建前再次核对身份。Unified Encoder 报告的 `presentation.adapter` 来自最后可用的渲染环境观察，
 未初始化时为 `null` 并注明原因；`successfulPresentCalls` 是生产端调用计数，不是捕获帧率或恢复证明。
 此策略不改变 canonical raster、视觉合同、FEC、文件恢复、swap-chain 参数或资源上限。
-具体候选与验证边界见 [G22 Encoder 显示兼容修复](UNIFIED_G22_ENCODER_DISPLAY_COMPAT_2026-09-07.md)。
+具体候选与验证边界见 [G22 Encoder 显示兼容修复](EVIDENCE_INDEX.md)。
 
 ## 模块与调用方责任
 
@@ -216,7 +216,7 @@ Evidence 每次创建独立目录，位于 `build-presentation-*/tests/Presentat
 ## 明确限制
 
 本轮实际命令、最终 Gate 结果、显示模式恢复和原始遥测位置见
-[PRESENTATION_VALIDATION.md](PRESENTATION_VALIDATION.md)。
+`PRESENTATION_VALIDATION.md`（已删除，按 [`DOC_HISTORY.md`](DOC_HISTORY.md) 登记的 blob 取回）。
 
 - GPU byte readback 证明上传字节与独立/现有 CPU raster 一致，不证明屏幕捕获、DWM
   色彩变换、HDR、视频编码或光学链路正确。没有 Capture round-trip。
