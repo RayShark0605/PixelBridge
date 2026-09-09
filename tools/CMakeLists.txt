@@ -4,6 +4,11 @@
 
 if(WIN32 AND MSVC)
     add_subdirectory(PBDisplayDiagnostics)
+    if(TARGET PBApplication)
+        add_executable(PBStep1SourceAudit PBRemoteThroughputStep1/source_audit.cpp)
+        target_link_libraries(PBStep1SourceAudit PRIVATE PB::CompilerSettings PB::PBApplication)
+        target_compile_definitions(PBStep1SourceAudit PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    endif()
 endif()
 
 add_executable(PBVectorGen PBVectorGen/main.cpp)
@@ -232,4 +237,9 @@ if(TARGET PBApplication)
         PRIVATE
             PB::CompilerSettings
             PBRemoteVisualTemporalCorpusCore)
+endif()
+
+option(PB_BUILD_UNIFIED_RECORDING_REPLAY "Build independent Step2 recording experiment" OFF)
+if(PB_BUILD_UNIFIED_RECORDING_REPLAY)
+    add_subdirectory(PBUnifiedRecordingReplay)
 endif()
