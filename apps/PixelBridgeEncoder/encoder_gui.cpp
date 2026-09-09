@@ -4,6 +4,7 @@
 #include "product_gui_helpers.h"
 #include "gui_native_smoke.h"
 #include "run_report.h"
+#include "step1_gui_evidence_qt.h"
 #include "pbcore/build_info.h"
 
 #include <QApplication>
@@ -88,9 +89,10 @@ class EncoderWindow final : public QMainWindow
 {
 public:
     explicit EncoderWindow(pbapp::EncoderPresentationFactory presentationFactory = {}, const QString& settingsFile = {},
-        TargetConfigurator configureTarget = ConfigureCurrentMonitor, std::function<bool()> confirmDeletion = {}) :
+        TargetConfigurator configureTarget = ConfigureCurrentMonitor, std::function<bool()> confirmDeletion = {},
+        pbgui::Step1GuiEvidence* evidence = nullptr) :
         controller_(nullptr, std::move(presentationFactory)), configureTarget_(std::move(configureTarget)),
-        confirmDeletion_(std::move(confirmDeletion))
+        confirmDeletion_(std::move(confirmDeletion)), evidence_(evidence)
     {
         settings_ = settingsFile.isEmpty() ? std::make_unique<QSettings>() :
             std::make_unique<QSettings>(settingsFile, QSettings::IniFormat);
@@ -112,6 +114,25 @@ public:
             }
         });
         UpdateSnapshot();
+        if (evidence_)
+        {
+            const auto timer = new QTimer(this);
+            timer->setInterval(100);
+            connect(timer, &QTimer::timeout, this, [this]()
+            {
+                evidence_->Observe(controller_.GetSnapshot());
+                setWindowTitle(evidence_->StatusText());
+            });
+            timer->start();
+        }
+    }
+
+    ~EncoderWindow() override
+    {
+        if (evidence_)
+        {
+            evidence_->Observe(controller_.StopAndGetSnapshot());
+        }
     }
 
     [[nodiscard]] bool RunSmoke(const QString& sourcePath, const QString& sessionRoot,
@@ -190,6 +211,27 @@ public:
         return !deleteButton_->isEnabled() && settings_->value(QStringLiteral("g22/logicalFps")).toInt() == 1 &&
             settings_->value(QStringLiteral("g22/sessionRoot")).toString() == sessionRoot &&
             pbgui::SaveTabPreviews(*this, *tabs_, QStringLiteral("encoder-stopped"));
+    }
+
+    [[nodiscard]] bool RunMeasurementStartSmoke(const QString& sourcePath, const std::function<bool()>& presentationCreated)
+    {
+        if (!evidence_ || isVisible())
+        {
+            return false;
+        }
+        sourceEdit_->setText(sourcePath);
+        startButton_->click();
+        if (!WaitFor(presentationCreated))
+        {
+            return false;
+        }
+        const auto started = controller_.GetSnapshot();
+        const bool accepted = started.runId == evidence_->RunId().toStdString() && started.runId.size() == 32 &&
+            started.preparationComplete && started.measurement && started.measurement->runGeneration != 0 &&
+            !QFileInfo::exists(QDir(evidence_->RunDirectory()).filePath(QStringLiteral("start-rejected.json")));
+        const auto stopped = controller_.StopAndGetSnapshot();
+        evidence_->Observe(stopped);
+        return accepted && stopped.state == pbapp::EncoderState::Stopped;
     }
 
     [[nodiscard]] int RunNativeSmoke(const pbgui::NativeSmokeOptions& options)
@@ -420,11 +462,29 @@ private:
             messageLabel_->setText(targetError);
             return;
         }
+        if (evidence_)
+        {
+            QString evidenceError;
+            config.measurement = evidence_->BeginRun(evidenceError);
+            if (!config.measurement)
+            {
+                messageLabel_->setText(evidenceError);
+                return;
+            }
+            config.runId = evidence_->RunId().toStdString();
+            const auto sessionRoot = QDir(evidence_->RunDirectory()).filePath(QStringLiteral("sessions"));
+            config.sessionStateRoot = sessionRoot.toStdWString();
+            cacheEdit_->setText(sessionRoot);
+        }
         SavePreferences();
         const QString error = controller_.Start(config);
         UpdateSnapshot();
         if (!error.isEmpty())
         {
+            if (evidence_)
+            {
+                evidence_->StartRejected(error);
+            }
             messageLabel_->setText(error);
         }
     }
@@ -506,6 +566,7 @@ private:
     std::unique_ptr<QSettings> settings_;
     TargetConfigurator configureTarget_;
     std::function<bool()> confirmDeletion_;
+    pbgui::Step1GuiEvidence* evidence_ = nullptr;
     bool closePending_ = false;
     QTabWidget* tabs_ = nullptr;
     QLineEdit* sourceEdit_ = nullptr;
@@ -551,6 +612,22 @@ private:
 
 int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
 {
+    const bool measurement = argumentCount > 1 && std::wstring_view(arguments[1]) == L"--gui-measurement";
+    std::unique_ptr<pbgui::Step1GuiEvidence> evidence;
+    if (measurement)
+    {
+        if (argumentCount != 4 || std::wstring_view(arguments[2]) != L"--evidence-root")
+        {
+            return 2;
+        }
+        QString error;
+        evidence = pbgui::Step1GuiEvidence::Create(QString::fromWCharArray(arguments[3]), QStringLiteral("Encoder"), error);
+        if (!evidence)
+        {
+            std::cerr << error.toStdString() << '\n';
+            return 2;
+        }
+    }
     const bool smoke = argumentCount == 2 && std::wstring_view(arguments[1]) == L"--gui-smoke";
     const bool nativeSmoke = pbgui::IsNativeSmoke(argumentCount, arguments);
     pbgui::NativeSmokeOptions nativeOptions;
@@ -600,7 +677,7 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         std::atomic<bool> created = false;
         bool targetConfigured = false;
         bool confirmDeletion = false;
-        EncoderWindow window([&](const pbrenderd3d::DataWindowConfig& config) -> std::unique_ptr<pbapp::EncoderPresentation>
+        const pbapp::EncoderPresentationFactory presentationFactory = [&](const pbrenderd3d::DataWindowConfig& config) -> std::unique_ptr<pbapp::EncoderPresentation>
         {
             if (!config.repeatActiveFrame || config.width != 1920 || config.height != 1080 || config.topmost)
             {
@@ -608,24 +685,39 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
             }
             created = true;
             return std::make_unique<SmokeWaitingPresentation>();
-        }, settingsFile, [&](pbapp::EncoderConfig& config, QWidget&)
+        };
+        const TargetConfigurator configureTarget = [&](pbapp::EncoderConfig& config, QWidget&)
         {
             // Only the OS monitor selection is replaced. Runtime, preparation,
             // persistence and local shortcut wiring remain production code.
             targetConfigured = true;
             config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
             return QString();
-        }, [&]()
+        };
+        EncoderWindow window(presentationFactory, settingsFile, configureTarget, [&]()
         {
             return confirmDeletion;
         });
-        const bool passed = window.RunSmoke(sourcePath, scratch.filePath(QStringLiteral("sessions")),
+        const bool legacyPassed = window.RunSmoke(sourcePath, scratch.filePath(QStringLiteral("sessions")),
             [&]()
             {
                 return created.load();
             }, confirmDeletion) && targetConfigured;
+        created = false;
+        QString evidenceError;
+        const auto smokeEvidence = pbgui::Step1GuiEvidence::Create(scratch.filePath(QStringLiteral("measurement")), QStringLiteral("Encoder"), evidenceError);
+        if (!smokeEvidence)
+        {
+            std::cerr << evidenceError.toStdString() << '\n';
+            return 1;
+        }
+        EncoderWindow measuredWindow(presentationFactory, smokeEvidence->SettingsPath(), configureTarget, {}, smokeEvidence.get());
+        const bool passed = measuredWindow.RunMeasurementStartSmoke(sourcePath, [&]()
+        {
+            return created.load();
+        }) && legacyPassed;
         std::cout << "G22 Encoder GUI smoke: " << (passed ? "PASS" : "FAIL")
-            << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete; no desktop pixels\n";
+            << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete/measurement-Start-RunId; no desktop pixels\n";
         return passed ? 0 : 1;
     }
     if (nativeSmoke)
@@ -633,7 +725,11 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         EncoderWindow window({}, QDir(nativeOptions.evidenceDirectory).filePath(QStringLiteral("settings.ini")));
         return window.RunNativeSmoke(nativeOptions);
     }
-    EncoderWindow window;
+    EncoderWindow window({}, evidence ? evidence->SettingsPath() : QString(), ConfigureCurrentMonitor, {}, evidence.get());
+    if (evidence)
+    {
+        window.setAttribute(Qt::WA_ShowWithoutActivating);
+    }
     if (integrationSmoke && !pbgui::PlaceWithoutActivating(window, arguments[2]))
     {
         return 2;

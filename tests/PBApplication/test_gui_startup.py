@@ -43,6 +43,7 @@ def main():
     probe = build / "tests/PBApplication/Release/PBGuiConsoleProbe.exe"
     parent = build / "tests/PBApplication/Release/PBConsoleParentProbe.exe"
     applications = [build / f"apps/PixelBridge{role}/Release/PixelBridge{role}.exe" for role in ("Encoder", "Decoder")]
+    expected_check_count = 6 * len(applications) + 6
     results = []
 
     def case(name, action):
@@ -169,14 +170,15 @@ def main():
     finally:
         summary = {
             "schema": "PixelBridge.G22.GuiStartupTests.1", "results": results,
-            "allPassed": len(results) == 16 and all(item["passed"] for item in results),
+            "expectedCheckCount": expected_check_count,
+            "allPassed": len(results) == expected_check_count and all(item["passed"] for item in results),
             "applications": [{"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in applications],
             "boundary": {"productGuiOpened": False, "nativeDataWindowOpened": False, "inputAutomation": False,
                          "hiddenOwnedConsoleProbe": True, "manualShellDoubleClick": False},
         }
         with (root / "summary.json").open("x", encoding="utf-8") as output:
             json.dump(summary, output, ensure_ascii=False, indent=2)
-    return 0
+    return 0 if summary["allPassed"] else 1
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ public:
     [[nodiscard]] QString ResolveLargeOutputConfirmation(std::uint64_t runGeneration, std::uint64_t requestId, bool accepted);
     void RequestStop() noexcept;
     [[nodiscard]] pbapp::DecoderSnapshot GetSnapshot() const;
+    [[nodiscard]] pbapp::DecoderSnapshot StopAndGetSnapshot();
     [[nodiscard]] bool IsActive() const;
     [[nodiscard]] bool SetStatusRefreshMilliseconds(int milliseconds);
     [[nodiscard]] int GetStatusRefreshMilliseconds() const;

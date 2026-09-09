@@ -76,6 +76,12 @@ pbapp::EncoderSnapshot EncoderApplicationController::GetSnapshot() const
     return runtime_.GetSnapshot();
 }
 
+pbapp::EncoderSnapshot EncoderApplicationController::StopAndGetSnapshot()
+{
+    runtime_.Stop();
+    return runtime_.GetSnapshot();
+}
+
 bool EncoderApplicationController::IsActive() const
 {
     return pbapp::IsEncoderStateActive(runtime_.GetSnapshot().state);

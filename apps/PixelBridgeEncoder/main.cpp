@@ -5,6 +5,7 @@
 #include "application_build_identity.h"
 #include "application_console.h"
 #include "unified_profile_identity.h"
+#include "run_measurement.h"
 #endif
 
 #include <iostream>
@@ -54,7 +55,12 @@ int main()
             return pbapp::WriteUnifiedProfileIdentity(std::cout) ? 0 : 1;
         }
 #ifdef PB_ENABLE_QT_GUI
-        if (std::wstring_view(arguments[1]) == L"--gui-native-smoke" ||
+        if (std::wstring_view(arguments[1]) == L"--measurement-build-identity" && argumentCount == 2)
+        {
+            std::cout << pbapp::GetMeasurementBuildIdentityJson() << std::endl;
+            return 0;
+        }
+        if (std::wstring_view(arguments[1]) == L"--gui-measurement" || std::wstring_view(arguments[1]) == L"--gui-native-smoke" ||
             (std::wstring_view(arguments[1]) == L"--gui-smoke" && argumentCount == 2) ||
             (std::wstring_view(arguments[1]) == L"--gui-integration-smoke" && argumentCount == 3))
         {

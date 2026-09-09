@@ -10,6 +10,7 @@ target_link_libraries(PixelBridgeDecoder
 
 if(WIN32)
     target_sources(PixelBridgeDecoder PRIVATE screen_region_cli.cpp
+        "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp"
         capture_bootstrap_cli.cpp bootstrap_diagnostic.cpp capture_bootstrap_telemetry.cpp
         decoder_runtime_cli.cpp
         decoder_application_controller.cpp decoder_application_controller.h decoder_gui.cpp decoder_gui.h

@@ -19,6 +19,7 @@ public:
     [[nodiscard]] QString EndAndDeleteSession(std::uint64_t expectedRunGeneration);
     void RequestStop() noexcept;
     [[nodiscard]] pbapp::EncoderSnapshot GetSnapshot() const;
+    [[nodiscard]] pbapp::EncoderSnapshot StopAndGetSnapshot();
     [[nodiscard]] bool IsActive() const;
 
 signals:

@@ -60,6 +60,12 @@ pbapp::DecoderSnapshot DecoderApplicationController::GetSnapshot() const
     return runtime_.GetSnapshot();
 }
 
+pbapp::DecoderSnapshot DecoderApplicationController::StopAndGetSnapshot()
+{
+    runtime_.Stop();
+    return runtime_.GetSnapshot();
+}
+
 bool DecoderApplicationController::IsActive() const
 {
     return pbapp::IsDecoderStateActive(runtime_.GetSnapshot().state);

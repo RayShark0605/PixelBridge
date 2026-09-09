@@ -4,6 +4,7 @@
 #include "product_gui_helpers.h"
 #include "gui_native_smoke.h"
 #include "run_report.h"
+#include "step1_gui_evidence_qt.h"
 #include "pbcore/build_info.h"
 
 #include <QApplication>
@@ -81,8 +82,8 @@ struct WindowServices
 class DecoderWindow final : public QMainWindow
 {
 public:
-    explicit DecoderWindow(WindowServices services = {}, const QString& settingsPath = {}) :
-        services_(std::move(services)), controller_(nullptr, services_.runtime)
+    explicit DecoderWindow(WindowServices services = {}, const QString& settingsPath = {}, pbgui::Step1GuiEvidence* evidence = nullptr) :
+        services_(std::move(services)), controller_(nullptr, services_.runtime), evidence_(evidence)
     {
         settings_ = settingsPath.isEmpty() ? std::make_unique<QSettings>() : std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
         setWindowTitle(QStringLiteral("PixelBridge Decoder"));
@@ -104,6 +105,25 @@ public:
         });
         ReloadMonitors();
         UpdateSnapshot();
+        if (evidence_)
+        {
+            const auto timer = new QTimer(this);
+            timer->setInterval(100);
+            connect(timer, &QTimer::timeout, this, [this]()
+            {
+                evidence_->Observe(controller_.GetSnapshot());
+                setWindowTitle(evidence_->StatusText());
+            });
+            timer->start();
+        }
+    }
+
+    ~DecoderWindow() override
+    {
+        if (evidence_)
+        {
+            evidence_->Observe(controller_.StopAndGetSnapshot());
+        }
     }
 
 #ifdef PB_ENABLE_UNIFIED_GUI_SMOKE
@@ -198,6 +218,32 @@ public:
         coordinateApply_->click();
         return selectorCalls == 1 && !QApplication::activeModalWidget() &&
             !startButton_->isEnabled() && !hasRegion_;
+    }
+    [[nodiscard]] bool RunMeasurementStartSmoke(const std::shared_ptr<g16test::ReceiveState>& state)
+    {
+        if (!evidence_ || isVisible())
+        {
+            return false;
+        }
+        outputEdit_->setText(QFileInfo(evidence_->SettingsPath()).absolutePath());
+        monitorCombo_->setCurrentIndex(1);
+        wholeButton_->click();
+        startButton_->click();
+        if (!WaitFor([&]()
+        {
+            const std::scoped_lock lock(state->mutex);
+            return state->sessionStarts != 0;
+        }))
+        {
+            return false;
+        }
+        const auto started = controller_.GetSnapshot();
+        const bool accepted = started.runId == evidence_->RunId().toStdString() && started.runId.size() == 32 &&
+            started.measurement && started.measurement->runGeneration != 0 &&
+            !QFileInfo::exists(QDir(evidence_->RunDirectory()).filePath(QStringLiteral("start-rejected.json")));
+        const auto stopped = controller_.StopAndGetSnapshot();
+        evidence_->Observe(stopped);
+        return accepted && stopped.state == pbapp::DecoderState::Stopped && stopped.captureDeliveredFrames == 0;
     }
 #endif
 
@@ -611,12 +657,30 @@ private:
             return;
         }
         region_ = region;
-        const auto config = pbapp::MakeUnifiedDecoderConfig(outputEdit_->text().toStdWString(), region_);
+        auto config = pbapp::MakeUnifiedDecoderConfig(outputEdit_->text().toStdWString(), region_);
+        if (evidence_)
+        {
+            QString evidenceError;
+            config.measurement = evidence_->BeginRun(evidenceError);
+            if (!config.measurement)
+            {
+                SetMessage(evidenceError);
+                return;
+            }
+            config.runId = evidence_->RunId().toStdString();
+            const auto outputDirectory = QDir(evidence_->RunDirectory()).filePath(QStringLiteral("output"));
+            config.outputDirectory = outputDirectory.toStdWString();
+            outputEdit_->setText(outputDirectory);
+        }
         SavePreferences();
         const QString error = controller_.Start(config);
         UpdateSnapshot();
         if (!error.isEmpty())
         {
+            if (evidence_)
+            {
+                evidence_->StartRejected(error);
+            }
             SetMessage(error);
         }
     }
@@ -701,6 +765,7 @@ private:
     WindowServices services_;
     DecoderApplicationController controller_;
     std::unique_ptr<QSettings> settings_;
+    pbgui::Step1GuiEvidence* evidence_ = nullptr;
     std::vector<pbapp::MonitorInfo> monitors_;
     pbscreenregion::ScreenCaptureRegion region_;
     bool hasRegion_ = false;
@@ -733,6 +798,22 @@ private:
 
 int RunDecoderGui(const int argumentCount, wchar_t* arguments[])
 {
+    const bool measurement = argumentCount > 1 && std::wstring_view(arguments[1]) == L"--gui-measurement";
+    std::unique_ptr<pbgui::Step1GuiEvidence> evidence;
+    if (measurement)
+    {
+        if (argumentCount != 4 || std::wstring_view(arguments[2]) != L"--evidence-root")
+        {
+            return 2;
+        }
+        QString error;
+        evidence = pbgui::Step1GuiEvidence::Create(QString::fromWCharArray(arguments[3]), QStringLiteral("Decoder"), error);
+        if (!evidence)
+        {
+            std::cerr << error.toStdString() << '\n';
+            return 2;
+        }
+    }
     const bool smoke = argumentCount == 2 && std::wstring_view(arguments[1]) == L"--gui-smoke";
     const bool nativeSmoke = pbgui::IsNativeSmoke(argumentCount, arguments);
     pbgui::NativeSmokeOptions nativeOptions;
@@ -815,10 +896,17 @@ int RunDecoderGui(const int argumentCount, wchar_t* arguments[])
                 oldSettings.setValue(QStringLiteral("captureBackend"), QStringLiteral("dxgi"));
                 oldSettings.setValue(QStringLiteral("g22/statusRefreshMilliseconds"), 0);
             }
-            DecoderWindow window(std::move(services), settingsPath);
-            const bool passed = window.RunSmoke(outputDirectory, state, frames, bytes, selectorCalls, openCalls);
+            DecoderWindow window(services, settingsPath);
+            const bool legacyPassed = window.RunSmoke(outputDirectory, state, frames, bytes, selectorCalls, openCalls);
+            QString evidenceError;
+            const auto smokeEvidence = pbgui::Step1GuiEvidence::Create(scratch.filePath(QStringLiteral("measurement")), QStringLiteral("Decoder"), evidenceError);
+            g16test::Check(static_cast<bool>(smokeEvidence), evidenceError.toStdString().c_str());
+            const auto measuredState = std::make_shared<g16test::ReceiveState>();
+            services.runtime = g16test::Services(measuredState);
+            DecoderWindow measuredWindow(std::move(services), smokeEvidence->SettingsPath(), smokeEvidence.get());
+            const bool passed = measuredWindow.RunMeasurementStartSmoke(measuredState) && legacyPassed;
             std::cout << "G22 Decoder GUI smoke: " << (passed ? "PASS" : "FAIL")
-                << "; offscreen; real runtime/storage; tabs/monitor/scoped-ROI/status-interval/stop/resume/verified-completion/no-auto-open/no-size-confirmation\n";
+                << "; offscreen; real runtime/storage; tabs/monitor/scoped-ROI/status-interval/stop/resume/verified-completion/no-auto-open/no-size-confirmation/measurement-Start-RunId\n";
             return passed ? 0 : 1;
         }
         catch (const std::exception& exception)
@@ -833,7 +921,11 @@ int RunDecoderGui(const int argumentCount, wchar_t* arguments[])
         DecoderWindow window({}, QDir(nativeOptions.evidenceDirectory).filePath(QStringLiteral("settings.ini")));
         return window.RunNativeSmoke(nativeOptions);
     }
-    DecoderWindow window;
+    DecoderWindow window({}, evidence ? evidence->SettingsPath() : QString(), evidence.get());
+    if (evidence)
+    {
+        window.setAttribute(Qt::WA_ShowWithoutActivating);
+    }
     window.show();
     return application.exec();
 }
