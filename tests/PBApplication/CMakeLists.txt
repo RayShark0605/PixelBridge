@@ -18,6 +18,14 @@ PbAddUnitTest(PBApplicationTests
     test_session_persistence.cpp
     test_run_report.cpp)
 target_sources(PBApplicationTests PRIVATE test_unified_run_report.cpp)
+target_sources(PBApplicationTests PRIVATE test_throughput_observation_report.cpp)
+target_sources(PBApplicationTests PRIVATE test_step1_measurement.cpp)
+PbAddUnitTest(PBStep1GuiEvidenceTests test_step1_gui_evidence.cpp
+    "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp")
+target_link_libraries(PBStep1GuiEvidenceTests PRIVATE PB::PBApplication Qt${QT_VERSION_MAJOR}::Core)
+target_compile_definitions(PBStep1GuiEvidenceTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+    "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
+set_tests_properties(PBStep1GuiEvidenceTests PROPERTIES LABELS "step1;gui-model" TIMEOUT 30)
 target_link_libraries(PBApplicationTests PRIVATE Qt${QT_VERSION_MAJOR}::Core)
 target_link_libraries(PBApplicationTests PRIVATE PB::PBApplication PB::PBProtocol PB::PBCompression d3d11 dxgi)
 target_compile_definitions(PBApplicationTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
@@ -76,6 +84,8 @@ if(pbQSettingsQmake)
     if(pbQSettingsWindeployqt)
         add_custom_command(TARGET PBApplicationTests POST_BUILD COMMAND "${pbQSettingsWindeployqt}"
             --no-translations "$<TARGET_FILE:PBApplicationTests>" VERBATIM)
+        add_custom_command(TARGET PBStep1GuiEvidenceTests POST_BUILD COMMAND "${pbQSettingsWindeployqt}"
+            --no-translations "$<TARGET_FILE:PBStep1GuiEvidenceTests>" VERBATIM)
         add_custom_command(TARGET PBQSettingsTests POST_BUILD COMMAND "${pbQSettingsWindeployqt}"
             --no-translations "$<TARGET_FILE:PBQSettingsTests>" VERBATIM)
     endif()
@@ -126,3 +136,4 @@ if(PB_BUILD_PROCESS_RECOVERY_HARNESS)
     # Deliberately not registered in the default CTest suite. The serial Python
     # supervisor owns explicit fixture creation, process lifetime and evidence.
 endif()
+target_sources(PBApplicationTests PRIVATE test_step2_recording_contract.cpp)

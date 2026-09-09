@@ -100,7 +100,7 @@ struct CaptureCapabilities
 
 enum class CaptureBackendKind : std::uint8_t
 {
-    Wgc, Dxgi
+    Wgc, Dxgi, OfflinePixels
 };
 enum class CursorState : std::uint8_t
 {

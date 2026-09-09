@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <span>
 #include <utility>
@@ -161,6 +162,157 @@ struct EmptySessionControls
 }
 
 } // namespace
+
+TEST_CASE("Unified periodic phase preserves startup and shifts only the first refresh deadline",
+    "[application][scheduler][control][control-phase]")
+{
+    constexpr std::uint64_t second = pbapp::senderLogicalFrameNanosecondsPerSecond;
+    for (std::uint32_t phaseIndex = 0; phaseIndex < pbapp::senderUnifiedActiveSegmentWindowSize; phaseIndex++)
+    {
+        CAPTURE(phaseIndex);
+        pbapp::SenderUnifiedCarouselScheduler original;
+        pbapp::SenderUnifiedCarouselScheduler candidate;
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 1}, original));
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 1, phaseIndex, 8}, candidate));
+        for (std::uint64_t tick = 0; tick < 2; tick++)
+        {
+            pbapp::SenderUnifiedScheduledFrame originalFrame;
+            pbapp::SenderUnifiedScheduledFrame candidateFrame;
+            REQUIRE(original.PrepareFrameAt(tick, tick * second / 15, originalFrame));
+            REQUIRE(candidate.PrepareFrameAt(tick, tick * second / 15, candidateFrame));
+            REQUIRE(candidateFrame == originalFrame);
+            REQUIRE(original.CommitPreparedFrame());
+            REQUIRE(candidate.CommitPreparedFrame());
+        }
+        const std::uint64_t firstDeadline = 10 * second + 10 * second * phaseIndex / 8;
+        pbapp::SenderUnifiedScheduledFrame before;
+        REQUIRE(candidate.PrepareFrameAt(2, firstDeadline - 1, before));
+        REQUIRE(before.controlBurstSlotCount == 0);
+        REQUIRE(before.controlSlotCount == 1);
+        REQUIRE(candidate.CommitPreparedFrame());
+        pbapp::SenderUnifiedScheduledFrame periodic;
+        REQUIRE(candidate.PrepareFrameAt(3, firstDeadline, periodic));
+        REQUIRE(periodic.controlBurstSlotCount == 3);
+        RequireExactSlotAccounting(periodic);
+        pbapp::SenderUnifiedScheduledFrame retry;
+        REQUIRE(candidate.PrepareFrameAt(3, firstDeadline + 90 * second, retry));
+        REQUIRE(retry == periodic);
+        REQUIRE(candidate.CommitPreparedFrame());
+        REQUIRE(candidate.PrepareFrameAt(4, firstDeadline + 10 * second - 1, before));
+        REQUIRE(before.controlBurstSlotCount == 0);
+        REQUIRE(candidate.CommitPreparedFrame());
+        REQUIRE(candidate.PrepareFrameAt(5, firstDeadline + 10 * second, periodic));
+        REQUIRE(periodic.controlBurstSlotCount == 3);
+        REQUIRE(candidate.CommitPreparedFrame());
+        REQUIRE(candidate.GetSnapshot().controlBurstCount == 3);
+    }
+}
+
+TEST_CASE("Five striped Segment control phases disperse at unchanged complete-window slot budget",
+    "[application][scheduler][control][control-phase]")
+{
+    struct ScheduleResult
+    {
+        std::uint64_t controlSlots = 0;
+        std::uint64_t equations = 0;
+        std::vector<std::uint64_t> periodicTicks;
+        std::uint64_t maximumSteadyGapTicks = 0;
+    };
+    const auto RunSchedule = [](const bool dispersed)
+    {
+        ScheduleResult result;
+        std::array<pbapp::SenderUnifiedCarouselScheduler, 5> schedulers;
+        for (std::uint32_t segmentIndex = 0; segmentIndex < schedulers.size(); segmentIndex++)
+        {
+            REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
+                {64000, 4, 15, true, 1, dispersed ? segmentIndex : 0U, 5}, schedulers[segmentIndex]));
+        }
+        for (std::uint64_t tick = 0; tick < 600; tick++)
+        {
+            const std::uint64_t phaseEpoch = tick / schedulers.size() / pbapp::senderUnifiedSweepPhaseHold;
+            const std::size_t segmentIndex = static_cast<std::size_t>(
+                (phaseEpoch * pbapp::senderUnifiedSweepPhaseStep + tick % schedulers.size()) % schedulers.size());
+            auto& scheduler = schedulers[segmentIndex];
+            const auto snapshot = scheduler.GetSnapshot();
+            pbapp::SenderUnifiedScheduledFrame frame;
+            REQUIRE(scheduler.PrepareFrameAt(tick, GetTickDeadlineNanoseconds(15, tick), frame));
+            RequireExactSlotAccounting(frame);
+            REQUIRE(frame.firstEquationIndex == snapshot.committedEquationCount);
+            result.controlSlots += frame.controlSlotCount;
+            result.equations += frame.scheduledEquationCount;
+            if (frame.controlBurstSlotCount == 3)
+            {
+                if (!result.periodicTicks.empty() && result.periodicTicks.back() >= 300)
+                {
+                    result.maximumSteadyGapTicks = (std::max)(result.maximumSteadyGapTicks, tick - result.periodicTicks.back());
+                }
+                result.periodicTicks.push_back(tick);
+            }
+            REQUIRE(scheduler.CommitPreparedFrame());
+        }
+        return result;
+    };
+    const auto original = RunSchedule(false);
+    const auto candidate = RunSchedule(true);
+    REQUIRE(original.periodicTicks.size() == 15);
+    REQUIRE(candidate.periodicTicks.size() == original.periodicTicks.size());
+    REQUIRE(candidate.controlSlots == original.controlSlots);
+    REQUIRE(candidate.equations == original.equations);
+    REQUIRE(candidate.maximumSteadyGapTicks <= 45);
+    REQUIRE(original.maximumSteadyGapTicks >= 135);
+    std::cout << "{\"schema\":\"PixelBridge.ControlPhase.ScheduleProof.1\",\"syntheticScheduleOnly\":true,\"fps\":15,\"framesPerVariant\":600,\"segments\":5,\"periodicTripletsPerVariant\":"
+        << original.periodicTicks.size() << ",\"controlSlotsPerVariant\":" << original.controlSlots
+        << ",\"equationsPerVariant\":" << original.equations << ",\"originalMaxGapTicks\":" << original.maximumSteadyGapTicks
+        << ",\"candidateMaxGapTicks\":" << candidate.maximumSteadyGapTicks << "}\n";
+}
+
+TEST_CASE("Unified periodic phase validates bounds and retains a pending frame after deadline overflow",
+    "[application][scheduler][control][control-phase]")
+{
+    pbapp::SenderUnifiedCarouselScheduler scheduler;
+    for (const auto [phaseIndex, phaseCount] : std::array<std::pair<std::uint32_t, std::uint32_t>, 4>{{{0, 0}, {0, 9}, {8, 8}, {UINT32_MAX, 8}}})
+    {
+        REQUIRE_FALSE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 0, phaseIndex, phaseCount}, scheduler));
+        REQUIRE(scheduler.IsComplete());
+    }
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 0, 7, 8}, scheduler));
+    const std::uint64_t start = UINT64_MAX - 7 * pbapp::senderLogicalFrameNanosecondsPerSecond;
+    pbapp::SenderUnifiedScheduledFrame frame;
+    REQUIRE(scheduler.PrepareFrameAt(0, start, frame));
+    REQUIRE(scheduler.CommitPreparedFrame());
+    REQUIRE(scheduler.PrepareFrameAt(1, start + 1, frame));
+    const auto before = scheduler.GetSnapshot();
+    const auto failed = scheduler.CommitPreparedFrame();
+    REQUIRE_FALSE(failed);
+    REQUIRE(failed.code == pbapp::SenderCarouselSchedulerError::ArithmeticOverflow);
+    REQUIRE(scheduler.GetSnapshot() == before);
+    pbapp::SenderUnifiedScheduledFrame retry;
+    REQUIRE(scheduler.PrepareFrameAt(1, start + 2, retry));
+    REQUIRE(retry == frame);
+}
+
+TEST_CASE("Dispersed periodic control still drops elapsed intervals instead of emitting catch-up bursts",
+    "[application][scheduler][control][control-phase]")
+{
+    pbapp::SenderUnifiedCarouselScheduler scheduler;
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 1, true, 1, 7, 8}, scheduler));
+    pbapp::SenderUnifiedScheduledFrame frame;
+    for (std::uint64_t tick = 0; tick < 2; tick++)
+    {
+        REQUIRE(scheduler.PrepareFrame(tick, frame));
+        REQUIRE(scheduler.CommitPreparedFrame());
+    }
+    REQUIRE(scheduler.PrepareFrame(17, frame));
+    REQUIRE(frame.controlBurstSlotCount == 0);
+    REQUIRE(scheduler.CommitPreparedFrame());
+    REQUIRE(scheduler.PrepareFrame(100, frame));
+    REQUIRE(frame.controlBurstSlotCount == 3);
+    REQUIRE(scheduler.CommitPreparedFrame());
+    REQUIRE(scheduler.PrepareFrame(101, frame));
+    REQUIRE(frame.controlBurstSlotCount == 0);
+    REQUIRE(scheduler.CommitPreparedFrame());
+    REQUIRE(scheduler.GetSnapshot().controlBurstCount == 2);
+}
 
 TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a catch-up queue",
     "[application][g09][scheduler][clock]")

@@ -252,6 +252,11 @@ struct SenderUnifiedCarouselSchedulerConfig
     // Pass 0 includes systematic equations. A later Wirehair FullRepairPass
     // keeps the same K+R budget but maps every equation to a fresh repair ID.
     std::uint64_t carouselPass = 0;
+    // Shift only the first periodic deadline, after the unchanged startup
+    // burst. Runtime assigns one phase per active Segment; no extra repeat,
+    // catch-up queue, wire field or Receiver feedback is introduced.
+    std::uint32_t periodicControlPhaseIndex = 0;
+    std::uint32_t periodicControlPhaseCount = 1;
 };
 
 struct SenderUnifiedCarouselSnapshot

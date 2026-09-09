@@ -384,6 +384,9 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
         config.controlRepetitions > senderUnifiedMaximumControlRepetitions ||
         config.logicalFramesPerSecond < senderUnifiedMinimumLogicalFramesPerSecond ||
         config.logicalFramesPerSecond > senderUnifiedMaximumLogicalFramesPerSecond ||
+        config.periodicControlPhaseCount == 0 ||
+        config.periodicControlPhaseCount > senderUnifiedActiveSegmentWindowSize ||
+        config.periodicControlPhaseIndex >= config.periodicControlPhaseCount ||
         (config.wirehair && config.systematicBlockCount < 2))
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
@@ -626,8 +629,20 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::CommitPreparedFram
             const std::uint64_t cadenceDistance = (monotonicCadence_ ? senderLogicalFrameNanosecondsPerSecond :
                 static_cast<std::uint64_t>(config_.logicalFramesPerSecond)) *
                 senderCarouselControlCadenceSeconds;
+            std::uint64_t nextCadenceDistance = cadenceDistance;
+            if (!initialControlBurstCompleted_)
+            {
+                std::uint64_t phaseProduct = 0;
+                if (!AssignChecked(pbprotocol::CheckedMultiplyUint64(cadenceDistance,
+                    config_.periodicControlPhaseIndex), phaseProduct) ||
+                    !AssignChecked(pbprotocol::CheckedAddUint64(cadenceDistance,
+                        phaseProduct / config_.periodicControlPhaseCount), nextCadenceDistance))
+                {
+                    return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
+                }
+            }
             if (!AssignChecked(pbprotocol::CheckedAddUint64(
-                currentControlBurstStartPosition, cadenceDistance), nextControlBurstPosition))
+                currentControlBurstStartPosition, nextCadenceDistance), nextControlBurstPosition))
             {
                 return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
             }

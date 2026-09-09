@@ -437,6 +437,10 @@ struct OutputFile::Implementation
     std::optional<bool> wholeFileDigestVerified;
     std::optional<bool> finalRenameSucceeded;
     std::optional<bool> finalReopenVerified;
+    bool observePublishTiming = false;
+    std::optional<std::chrono::steady_clock::time_point> wholeDigestVerifiedAt;
+    std::optional<std::chrono::steady_clock::time_point> finalRenameSucceededAt;
+    std::optional<std::chrono::steady_clock::time_point> finalReopenVerifiedAt;
 };
 
 StorageStatus StorageStatus::Failure(const StorageErrorCode code, const StorageStage stage,
@@ -556,6 +560,7 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config, const b
     try
     {
         auto implementation = std::make_unique<OutputFile::Implementation>();
+        implementation->observePublishTiming = config.observePublishTiming;
         const std::filesystem::path directory(config.outputDirectory);
         StorageStatus status = reservation == nullptr ? SelectFinalPath(config, directory, implementation->finalPath) :
             ResolveReservedFinalPath(config, directory, *reservation, implementation->finalPath);
@@ -1002,6 +1007,10 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
         return StorageStatus::Failure(StorageErrorCode::DigestMismatch, StorageStage::Digest);
     }
     implementation_->wholeFileDigestVerified = true;
+    if (implementation_->observePublishTiming)
+    {
+        implementation_->wholeDigestVerifiedAt = std::chrono::steady_clock::now();
+    }
     implementation_->finalRenameSucceeded = false;
     status = RequireAbsent(implementation_->finalPath);
     if (!status)
@@ -1022,6 +1031,10 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
     std::array<std::byte, pbprotocol::kDigestBytes> finalDigest{};
     std::uint64_t finalBytes = 0;
     implementation_->finalRenameSucceeded = true;
+    if (implementation_->observePublishTiming)
+    {
+        implementation_->finalRenameSucceededAt = std::chrono::steady_clock::now();
+    }
     implementation_->finalReopenVerified = false;
     status = HashFile(implementation_->finalPath, finalDigest, finalBytes);
     if (!status || finalBytes != implementation_->fileBytes || finalDigest != expectedDigest.bytes)
@@ -1036,6 +1049,10 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
         return verificationStatus;
     }
     implementation_->finalReopenVerified = true;
+    if (implementation_->observePublishTiming)
+    {
+        implementation_->finalReopenVerifiedAt = std::chrono::steady_clock::now();
+    }
     implementation_->published = true;
     implementation_->publishedDigest = expectedDigest;
     implementation_->ownsPart = false;
@@ -1092,6 +1109,9 @@ OutputFileSnapshot OutputFile::GetSnapshot() const
     snapshot.wholeFileDigestVerified = implementation_->wholeFileDigestVerified;
     snapshot.finalRenameSucceeded = implementation_->finalRenameSucceeded;
     snapshot.finalReopenVerified = implementation_->finalReopenVerified;
+    snapshot.wholeDigestVerifiedAt = implementation_->wholeDigestVerifiedAt;
+    snapshot.finalRenameSucceededAt = implementation_->finalRenameSucceededAt;
+    snapshot.finalReopenVerifiedAt = implementation_->finalReopenVerifiedAt;
     snapshot.preallocationAttempted = implementation_->allocation.preallocationAttempted;
     snapshot.preallocationFullyAllocated = implementation_->allocation.preallocationFullyAllocated;
     snapshot.fileSparse = implementation_->allocation.fileSparse;

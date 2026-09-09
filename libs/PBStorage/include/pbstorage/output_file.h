@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <span>
@@ -77,6 +78,8 @@ struct OutputFileConfig
     // Empty retains the diagnostic PixelBridge-<SessionTag>.bin name. Formal
     // product sessions pass the already validated descriptor basename here.
     std::string originalFileNameUtf8;
+    // Optional process-local observation only; no persistent/wire field.
+    bool observePublishTiming = false;
 };
 
 struct OutputFileReservation
@@ -108,6 +111,9 @@ struct OutputFileSnapshot
     std::optional<bool> wholeFileDigestVerified;
     std::optional<bool> finalRenameSucceeded;
     std::optional<bool> finalReopenVerified;
+    std::optional<std::chrono::steady_clock::time_point> wholeDigestVerifiedAt;
+    std::optional<std::chrono::steady_clock::time_point> finalRenameSucceededAt;
+    std::optional<std::chrono::steady_clock::time_point> finalReopenVerifiedAt;
     bool preallocationAttempted = false;
     bool preallocationFullyAllocated = false;
     bool fileSparse = false;

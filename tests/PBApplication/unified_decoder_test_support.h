@@ -104,7 +104,8 @@ private:
 
 inline std::vector<pbdemodd3d11::CaptureDemodulatorResult> MakeFrames(const std::filesystem::path& root,
     const std::span<const std::byte> sourceBytes, const std::uint32_t frameCount = 1,
-    pbapp::EncoderSnapshot* const encoderSnapshot = nullptr)
+    pbapp::EncoderSnapshot* const encoderSnapshot = nullptr,
+    std::shared_ptr<pbapp::RunMeasurementRecorder> measurement = {})
 {
     Check(frameCount > 0 && frameCount <= 8, "fixture frame budget is outside 1..8");
     std::filesystem::create_directories(root);
@@ -121,6 +122,7 @@ inline std::vector<pbdemodd3d11::CaptureDemodulatorResult> MakeFrames(const std:
         return std::make_unique<PixelCollector>(pixels);
     });
     auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
+    config.measurement = std::move(measurement);
     config.sessionStateRoot = root / L"encoder-state";
     const auto start = encoder.Start(config);
     Check(static_cast<bool>(start), start.message.c_str());

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pbcore/stage_diagnostics.h"
+
 #include "pbpresenttiming/present_timing.h"
 
 #include <array>
@@ -165,6 +167,7 @@ struct DataWindowConfig
     // Physical desktop coordinates, including negative monitor origins.
     // Unspecified: center the client on the primary monitor.
     std::optional<PhysicalPoint> clientOrigin;
+    std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
 };
 
 inline constexpr std::uint32_t dataWindowMinimumScaleNumerator = 1;

@@ -821,7 +821,7 @@ std::uint64_t CaptureDemodulator::ReservedBytes() const noexcept
 
 CaptureStatus CaptureDemodulator::ValidateConfiguration(const pbcapturenormalize::CaptureConfig& config) const noexcept
 {
-    if (!implementation_)
+    if (!implementation_ || implementation_->config.offlinePixelsOnly)
     {
         return CaptureStatus::Failure(CaptureError::InvalidConfiguration, CaptureStage::Configuration);
     }
@@ -906,6 +906,8 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     demodConfig.readbackSlotCount = state.config.slotCount;
     demodConfig.maximumResidentBytes = state.snapshot.reservation.demodulatorBytes;
     demodConfig.evaluationMode = state.config.evaluationMode;
+    demodConfig.diagnostics = state.config.diagnostics;
+    demodConfig.offlinePixelsOnly = state.config.offlinePixelsOnly;
     std::unique_ptr<Demodulator> demodulator;
     const auto demodStatus = Demodulator::Create(device, demodConfig, demodulator);
     if (!demodStatus)
@@ -1006,9 +1008,6 @@ CaptureStatus CaptureDemodulator::Submit(const ScreenCaptureFrame& frame, ID3D11
     const auto& metadata = frame.metadata;
     const auto physicalWidth = static_cast<std::int64_t>(metadata.physicalRoi.right) - metadata.physicalRoi.left;
     const auto physicalHeight = static_cast<std::int64_t>(metadata.physicalRoi.bottom) - metadata.physicalRoi.top;
-    const bool cursorProvenAbsent = metadata.sourceCursorState == pbcapturenormalize::CursorState::Excluded ||
-        metadata.sourceCursorState == pbcapturenormalize::CursorState::SeparatePointer ||
-        metadata.sourceCursorState == pbcapturenormalize::CursorState::KnownAbsent;
     if (!state.active || metadata.domain != state.domain || metadata.slotIndex >= state.config.slotCount ||
         state.pending[frame.metadata.slotIndex].active || !SameComIdentity(context, state.context.Get()) ||
         !state.bootstrapStaging[frame.metadata.slotIndex] || frame.texture == nullptr || metadata.captureObservation == 0 ||
@@ -1016,7 +1015,7 @@ CaptureStatus CaptureDemodulator::Submit(const ScreenCaptureFrame& frame, ID3D11
         metadata.roiSize.height <= 0 || static_cast<std::uint32_t>(metadata.roiSize.width) != state.roiWidth ||
         static_cast<std::uint32_t>(metadata.roiSize.height) != state.roiHeight || metadata.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM ||
         metadata.signalEncoding != pbcapturenormalize::CaptureSignalEncoding::SdrRgb || metadata.hdr ||
-        !metadata.isCursorExcluded || !cursorProvenAbsent || physicalWidth != metadata.roiSize.width ||
+        !MatchesPixelInputContract(metadata, state.config.offlinePixelsOnly) || physicalWidth != metadata.roiSize.width ||
         physicalHeight != metadata.roiSize.height || metadata.sourceContentSize.width <= 0 ||
         metadata.sourceContentSize.height <= 0 || metadata.sourceExtent.width <= 0 || metadata.sourceExtent.height <= 0 ||
         metadata.displayRotation < DXGI_MODE_ROTATION_IDENTITY || metadata.displayRotation > DXGI_MODE_ROTATION_ROTATE270 ||

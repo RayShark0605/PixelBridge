@@ -1,5 +1,6 @@
 #include "run_report.h"
 
+#include <array>
 #include <iomanip>
 #include <cmath>
 #include <locale>
@@ -7,6 +8,7 @@
 #include <sstream>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace pbapp
 {
@@ -68,6 +70,44 @@ void WriteOptionalNumber(std::ostream& stream, const std::optional<ValueType>& v
     {
         stream << "null";
     }
+}
+
+void WriteMeasurementCaptureFlow(std::ostream& stream, const DecoderSnapshot& snapshot)
+{
+    // These counters already exist in the production snapshot. Reporting them
+    // must not enable diagnostics, retain pixels or change capture admission.
+    const bool available = snapshot.actualBackend.has_value();
+    const std::array<std::pair<std::string_view, std::uint64_t>, 15> counters
+    {{
+        {"captureEpoch", snapshot.captureEpoch},
+        {"arrivedFrames", snapshot.captureArrivedFrames},
+        {"copiedFrames", snapshot.captureCopiedFrames},
+        {"deliveredFrames", snapshot.captureDeliveredFrames},
+        {"droppedFrames", snapshot.captureDroppedFrames},
+        {"acquireTimeouts", snapshot.captureAcquireTimeouts},
+        {"pointerOnlyFrames", snapshot.capturePointerOnlyFrames},
+        {"accumulatedFrames", snapshot.captureAccumulatedFrames},
+        {"expiredFrames", snapshot.captureExpiredFrames},
+        {"staleFrames", snapshot.captureStaleFrames},
+        {"cursorErasures", snapshot.captureCursorErasures},
+        {"frameAgeHighWater100ns", snapshot.captureFrameAgeHighWater100ns},
+        {"readbackDropEvents", snapshot.captureReadbackDropEvents},
+        {"admissionDrops", snapshot.captureAdmissionDrops},
+        {"captureEpochResets", snapshot.captureEpochResets}
+    }};
+    stream << ",\"captureFlow\":{\"schema\":\"PixelBridge.CaptureFlowObservation.1\",\"available\":" << available
+        << ",\"authority\":\"ProductionDecoderSnapshot\",\"unavailableReason\":";
+    WriteEscaped(stream, available ? "" : "CaptureBackendNotObserved");
+    stream << ",\"basis\":\"Latest capture-session counters; epochs or sessions may reset counts; deliveries include duplicates, not unique payload frames\""
+        << ",\"lossRate\":null,\"crossHostClockAligned\":false";
+    for (const auto& [name, value] : counters)
+    {
+        stream << ',';
+        WriteEscaped(stream, name);
+        stream << ':';
+        WriteOptionalNumber(stream, available ? std::optional<std::uint64_t>(value) : std::nullopt);
+    }
+    stream << '}';
 }
 
 void WriteOptionalRect(std::ostream& stream, const std::optional<MetadataPhysicalRect>& rectangle)
@@ -286,6 +326,15 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
         << ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements
         << ",\"basis\":\"last observed renderer environment and producer Present calls; not receiver recovery or Citrix certification\"}";
     stream << ",\"receiverProgress\":null,\"receiverEta\":null,\"verifiedGoodput\":null";
+    if (snapshot.diagnostics)
+    {
+        stream << ",\"diagnostics\":" << pbcore::BuildStageDiagnosticsJson(snapshot.diagnostics->GetSnapshot());
+    }
+    if (snapshot.measurement)
+    {
+        stream << ",\"measurement\":" << BuildRunMeasurementJson(*snapshot.measurement, snapshot.sourceBytes,
+            std::nullopt, false, snapshot.resumedSession);
+    }
     WriteUnifiedTail(stream, snapshot.remoteMetadata, snapshot.statusMessage, snapshot.errorDetail);
     return stream.str();
 }
@@ -369,6 +418,48 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     WriteEscaped(stream, metric.unavailableReason);
     stream << ",\"gate\":\"WholeFileDigest+safe publish+final reopen+complete current-run frame coverage\"}"
         << ",\"preFecBerEstimate\":null,\"preFecBerUnavailableReason\":\"No independent sender truth\"";
+    if (snapshot.diagnostics)
+    {
+        stream << ",\"diagnostics\":" << pbcore::BuildStageDiagnosticsJson(snapshot.diagnostics->GetSnapshot());
+    }
+    if (snapshot.diagnostics || snapshot.measurement)
+    {
+        stream << ",\"stageCounters\":{\"authority\":\"ProductionDecoderSnapshot\""
+            << ",\"outerUniqueSymbols\":" << snapshot.outerUniqueSymbols
+            << ",\"outerIdenticalDuplicateSymbols\":" << snapshot.outerIdenticalDuplicateSymbols
+            << ",\"outerRecoveryAlreadyReadySymbols\":" << snapshot.outerRecoveryAlreadyReadySymbols
+            << ",\"outerAlreadyCompletedSymbols\":" << snapshot.outerAlreadyCompletedSymbols
+            << ",\"outerRecoveryReadyEvents\":" << snapshot.outerRecoveryReadyEvents
+            << ",\"outerConflictRejections\":" << snapshot.outerConflictRejections
+            << ",\"outerResourceRejections\":" << snapshot.outerResourceRejections
+            << ",\"outerDeferredResourceBusyCount\":" << snapshot.outerDeferredResourceBusyCount
+            << ",\"outerOrphanAdmittedBlockCount\":" << snapshot.outerOrphanAdmittedBlockCount
+            << ",\"outerOrphanDroppedByQuotaCount\":" << snapshot.outerOrphanDroppedByQuotaCount
+            << ",\"outerOrphanConflictRejectionCount\":" << snapshot.outerOrphanConflictRejectionCount
+            << ",\"outerPeakOrphanCachedBytes\":" << snapshot.outerPeakOrphanCachedBytes
+            << ",\"outerPeakActiveDecoderCount\":" << snapshot.outerPeakActiveDecoderCount
+            << ",\"outerPeakReservedDecoderBytes\":" << snapshot.outerPeakReservedDecoderBytes
+            << ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit
+            << ",\"outerTotalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit
+            << ",\"bootstrapAcceptedFrames\":" << snapshot.bootstrapAcceptedFrames
+            << ",\"bootstrapRejectedFrames\":" << snapshot.bootstrapRejectedFrames
+            << ",\"bootstrapCpuTimeTotal100ns\":" << snapshot.bootstrapCpuTimeTotal100ns
+            << ",\"demodGpuTimeTotal100ns\":" << snapshot.demodGpuTimeTotal100ns
+            << ",\"postGpuFecCpuTimeTotal100ns\":" << snapshot.postGpuFecCpuTimeTotal100ns
+            << ",\"demodPendingHighWater\":" << snapshot.demodPendingHighWater
+            << ",\"resultQueueHighWater\":" << snapshot.resultQueueHighWater
+            << ",\"staleResultDrops\":" << snapshot.staleResultDrops
+            << '}';
+    }
+    if (snapshot.measurement)
+    {
+        WriteMeasurementCaptureFlow(stream, snapshot);
+        stream << ",\"measurement\":" << BuildRunMeasurementJson(*snapshot.measurement,
+            snapshot.descriptorKnown ? std::optional<std::uint64_t>(snapshot.originalFileBytes) : std::nullopt,
+            snapshot.verifiedEncodedSegmentBytes, snapshot.state == DecoderState::Completed && snapshot.errorDetail.empty() &&
+            snapshot.wholeFileDigestCheck == true && snapshot.finalRenameSucceeded == true &&
+            snapshot.finalReopenVerified == true && snapshot.finalPublishSucceeded, resumed);
+    }
     WriteUnifiedTail(stream, snapshot.remoteMetadata, snapshot.statusMessage, snapshot.errorDetail);
     return stream.str();
 }

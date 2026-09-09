@@ -778,6 +778,8 @@ struct Demodulator::Implementation
     std::uint32_t remoteVisualLowFpsActiveTileCount = 0;
     pbdesktoplevels::ReferenceChannel evaluator;
     pbmodulation::UnifiedVisualCpuOracle unifiedOracle;
+    std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
+    bool offlinePixelsOnly = false;
     pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::DiagnosticTruth;
     mutable std::mutex snapshotMutex;
     DemodSnapshot snapshot;
@@ -826,14 +828,10 @@ DemodStatus ValidateFrame(Demodulator::Implementation& state, const ScreenCaptur
     const auto& metadata = frame.metadata;
     const auto physicalWidth = static_cast<std::int64_t>(metadata.physicalRoi.right) - metadata.physicalRoi.left;
     const auto physicalHeight = static_cast<std::int64_t>(metadata.physicalRoi.bottom) - metadata.physicalRoi.top;
-    const bool cursorProvenAbsent = metadata.sourceCursorState == pbcapturenormalize::CursorState::Excluded ||
-        metadata.sourceCursorState == pbcapturenormalize::CursorState::SeparatePointer ||
-        metadata.sourceCursorState == pbcapturenormalize::CursorState::KnownAbsent;
     if (frame.texture == nullptr || metadata.domain.captureEpoch == 0 || !NonzeroSourceId(metadata.domain) || metadata.captureObservation == 0 ||
         frame.metadata.sourceGeneration == 0 || frame.metadata.slotGeneration == 0 || frame.metadata.roiSize.width <= 0 ||
         frame.metadata.roiSize.height <= 0 || frame.metadata.pixelFormat != DXGI_FORMAT_B8G8R8A8_UNORM ||
-        frame.metadata.signalEncoding != CaptureSignalEncoding::SdrRgb || frame.metadata.hdr || !frame.metadata.isCursorExcluded ||
-        !cursorProvenAbsent || physicalWidth != metadata.roiSize.width || physicalHeight != metadata.roiSize.height ||
+        frame.metadata.signalEncoding != CaptureSignalEncoding::SdrRgb || frame.metadata.hdr || !MatchesPixelInputContract(metadata, state.offlinePixelsOnly) || physicalWidth != metadata.roiSize.width || physicalHeight != metadata.roiSize.height ||
         metadata.sourceContentSize.width <= 0 || metadata.sourceContentSize.height <= 0 ||
         metadata.sourceExtent.width <= 0 || metadata.sourceExtent.height <= 0 ||
         metadata.displayRotation < DXGI_MODE_ROTATION_IDENTITY || metadata.displayRotation > DXGI_MODE_ROTATION_ROTATE270 ||
@@ -1124,6 +1122,7 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
         }
         state->ownerThread = GetCurrentThreadId();
         state->slotCount = config.readbackSlotCount;
+        state->offlinePixelsOnly = config.offlinePixelsOnly;
         auto evaluator = pbdesktoplevels::ReferenceChannel::Create(pbdesktoplevels::kProcessingReservationBytes);
         if (!evaluator)
         {
@@ -1137,6 +1136,8 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
             return DemodStatus::Failure(DemodError::ResourceLimit, DemodStage::Resource);
         }
         state->unifiedOracle = std::move(unifiedOracle).Value();
+        state->diagnostics = config.diagnostics;
+        state->unifiedOracle.SetStageDiagnostics(state->diagnostics.get());
         state->evaluationMode = config.evaluationMode;
         DemodStatus status = GetAdapterLuid(device, state->snapshot.adapterLuid);
         if (!status)

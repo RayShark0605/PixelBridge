@@ -43,11 +43,29 @@ struct DemodStatus
     bool operator==(const DemodStatus&) const = default;
 };
 
+// Original capture cursor state is unknown for a decoded recording. The explicit
+// source contract must match the consumer opt-in; it cannot weaken live admission.
+[[nodiscard]] inline bool MatchesPixelInputContract(const pbcapturenormalize::ScreenCaptureFrameMetadata& metadata, const bool offlinePixelsOnly) noexcept
+{
+    using pbcapturenormalize::CaptureBackendKind;
+    using pbcapturenormalize::CursorState;
+    if (offlinePixelsOnly)
+    {
+        return metadata.backend == CaptureBackendKind::OfflinePixels && !metadata.isCursorExcluded && metadata.sourceCursorState == CursorState::Unknown;
+    }
+    const bool liveBackend = metadata.backend == CaptureBackendKind::Wgc || metadata.backend == CaptureBackendKind::Dxgi;
+    const bool cursorProvenAbsent = metadata.sourceCursorState == CursorState::Excluded || metadata.sourceCursorState == CursorState::SeparatePointer || metadata.sourceCursorState == CursorState::KnownAbsent;
+    return liveBackend && metadata.isCursorExcluded && cursorProvenAbsent;
+}
+
 struct DemodConfig
 {
     std::uint32_t readbackSlotCount = 3;
     std::uint64_t maximumResidentBytes = 64ULL * 1024 * 1024;
     pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::DiagnosticTruth;
+    std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
+    // Independent recording tools only; never enabled by a live capture config.
+    bool offlinePixelsOnly = false;
 };
 
 // Exact fixed reservation used by Create, including all per-slot GPU buffers,

@@ -31,6 +31,8 @@ class DecoderRuntime;
 
 struct EncoderConfig
 {
+    std::shared_ptr<RunMeasurementRecorder> measurement;
+    std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
     std::wstring sourcePath;
     bool compressionEnabled = false;
     int compressionLevel = 3;
@@ -56,6 +58,8 @@ struct EncoderConfig
 
 struct DecoderConfig
 {
+    std::shared_ptr<RunMeasurementRecorder> measurement;
+    std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
     std::wstring outputDirectory;
     CaptureBackend captureBackend = CaptureBackend::Auto;
     VisualProfile visualProfile = VisualProfile::DirectLevels2x2;
@@ -155,6 +159,9 @@ struct RuntimeStatus
 
 [[nodiscard]] RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config);
 [[nodiscard]] RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config);
+// No presentation, capture, durable Session or payload output. Reuses the exact
+// production immutable-source prescan and Unified level-3 RAW/zstd policy.
+[[nodiscard]] RuntimeStatus AuditUnifiedSource(const std::wstring& sourcePath, std::string& ledgerJson) noexcept;
 [[nodiscard]] pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSegment(
     std::span<const std::byte> rawBytes, bool compressionEnabled, int compressionLevel);
 
@@ -496,6 +503,7 @@ private:
     void Run(EncoderConfig config, std::uint64_t runGeneration) noexcept;
     mutable std::mutex lifecycleMutex_;
     SnapshotStore<EncoderSnapshot> snapshot_;
+    std::atomic<std::shared_ptr<RunMeasurementRecorder>> measurement_;
     std::thread worker_;
     std::atomic<bool> stopRequested_ = false;
     std::atomic<bool> workerRunning_ = false;
@@ -527,6 +535,7 @@ private:
         bool testOnlyUnifiedReplay, bool baseLumaOnly) noexcept;
     mutable std::mutex lifecycleMutex_;
     SnapshotStore<DecoderSnapshot> snapshot_;
+    std::atomic<std::shared_ptr<RunMeasurementRecorder>> measurement_;
     std::thread worker_;
     std::atomic<bool> stopRequested_ = false;
     std::atomic<bool> workerRunning_ = false;

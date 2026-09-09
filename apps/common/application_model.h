@@ -3,6 +3,8 @@
 #include "pbprotocol/protocol_types.h"
 #include "pbmodulation/visual_temporal.h"
 #include "pbtelemetry/unified_telemetry.h"
+#include "run_measurement.h"
+#include "pbcore/stage_diagnostics.h"
 
 #include <cstdint>
 #include <limits>
@@ -210,6 +212,8 @@ struct EncoderPresentationAdapter
 
 struct EncoderSnapshot
 {
+    std::optional<RunMeasurementSnapshot> measurement;
+    std::shared_ptr<const pbcore::StageDiagnostics> diagnostics;
     EncoderState state = EncoderState::Idle;
     std::uint64_t runGeneration = 0;
     std::string runId;
@@ -335,6 +339,8 @@ struct ObservedLocatorGeometrySnapshot
 
 struct DecoderSnapshot
 {
+    std::optional<RunMeasurementSnapshot> measurement;
+    std::shared_ptr<const pbcore::StageDiagnostics> diagnostics;
     DecoderState state = DecoderState::Idle;
     std::uint64_t runGeneration = 0;
     std::string runId;

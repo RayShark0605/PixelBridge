@@ -382,6 +382,7 @@ struct DataWindow::Implementation
         }
         if (replacesSource)
         {
+            const pbcore::DiagnosticScope uploadTiming(config.diagnostics.get(), pbcore::DiagnosticStage::PresentationUpload);
             const auto upload = backend->Upload(activePixels);
             if (!upload)
             {
@@ -418,7 +419,11 @@ struct DataWindow::Implementation
             pbprotocol::SaturatingIncrementUnsigned(snapshot.sourceTextureReplacements);
         }
         const std::int64_t beginQpc = backend->NowQpc();
-        const auto result = backend->Present();
+        const auto result = [&]()
+        {
+            const pbcore::DiagnosticScope presentTiming(config.diagnostics.get(), pbcore::DiagnosticStage::PresentCall);
+            return backend->Present();
+        }();
         const std::int64_t endQpc = backend->NowQpc();
         framePermit = false;
         {

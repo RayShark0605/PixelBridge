@@ -74,6 +74,9 @@ struct CaptureDemodulatorConfig
     // times after the first observation. Zero suppresses every duplicate.
     std::uint32_t maximumDuplicateRefinementAttempts = 1;
     pbmodulation::UnifiedVisualDecodePolicy unifiedVisualPolicy;
+    std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
+    // Independent recording tools only; never enabled by a live capture config.
+    bool offlinePixelsOnly = false;
 };
 
 struct CaptureDemodulatorBudget

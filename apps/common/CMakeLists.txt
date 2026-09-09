@@ -15,6 +15,8 @@ target_sources(PBApplication
         monitor_catalog.cpp
         remote_visual_replay_recorder.cpp
         run_report.cpp
+        run_measurement.cpp
+        recorded_pixel_replay.cpp
         sender_carousel_scheduler.cpp
     PUBLIC
         application_model.h
@@ -27,6 +29,7 @@ target_sources(PBApplication
         monitor_catalog.h
         remote_visual_replay_recorder.h
         run_report.h
+        run_measurement.h
         sender_carousel_scheduler.h)
 
 target_include_directories(PBApplication PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -57,6 +60,13 @@ target_link_libraries(PBApplication PUBLIC PB::PBRealCaptureReplay)
 target_link_libraries(PBApplication PRIVATE Shcore d3d11 dxgi)
 
 target_compile_features(PBApplication PUBLIC cxx_std_20)
+set(PB_STEP1_SOURCE_FINGERPRINT "unsealed" CACHE STRING "Sealed Step1 experimental source fingerprint")
+execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    OUTPUT_VARIABLE pbStep1BaseCommit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+target_compile_definitions(PBApplication PRIVATE
+    "PB_STEP1_SOURCE_FINGERPRINT=\"${PB_STEP1_SOURCE_FINGERPRINT}\""
+    "PB_STEP1_BASE_COMMIT=\"${pbStep1BaseCommit}\"")
+unset(pbStep1BaseCommit)
 target_compile_definitions(PBApplication PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 if(MSVC)
     target_compile_options(PBApplication PRIVATE /external:anglebrackets /external:W0)

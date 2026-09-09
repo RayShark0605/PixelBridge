@@ -1,3 +1,5 @@
+#include "recorded_pixel_replay.h"
+#include "receiver_decision_trace.h"
 #include "local_desktop_runtime.h"
 
 #include "decoder_resume_store.h"
@@ -5,6 +7,7 @@
 #include "encoder_session_store.h"
 #include "encoder_monitor_catalog.h"
 #include "optional_diagnostic_fanout.h"
+#include "measurement_capture_consumer.h"
 #include "remote_visual_replay_recorder.h"
 #include "run_report.h"
 #include "sender_carousel_scheduler.h"
@@ -166,6 +169,24 @@ public:
 
 private:
     std::atomic<bool>& running_;
+};
+
+class MeasurementRunGuard
+{
+public:
+    explicit MeasurementRunGuard(std::shared_ptr<RunMeasurementRecorder> recorder) : recorder_(std::move(recorder))
+    {
+    }
+    ~MeasurementRunGuard()
+    {
+        if (recorder_)
+        {
+            recorder_->Finish(succeeded);
+        }
+    }
+    bool succeeded = false;
+private:
+    std::shared_ptr<RunMeasurementRecorder> recorder_;
 };
 
 void Require(const bool condition, const std::string& message)
@@ -1171,6 +1192,7 @@ class SenderFrameBuilder
     };
 
 public:
+    pbcore::StageDiagnostics* diagnostics = nullptr;
     using SegmentLoader = std::function<std::vector<std::byte>(std::uint64_t)>;
     using RepairIdStartProvider = std::function<std::uint32_t(std::uint64_t, std::uint32_t)>;
     using RepairLeaseCallback = std::function<void(std::uint64_t, std::uint64_t)>;
@@ -1277,8 +1299,21 @@ public:
                     generatedPayloadBytesInFrame_ += payloadBytes;
                 }
             }
-            RequireResult(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, slots}, pixels_),
-                "Unified mixed-slot canonical raster generation failed");
+            if (diagnostics == nullptr)
+            {
+                RequireResult(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, slots}, pixels_),
+                    "Unified mixed-slot canonical raster generation failed");
+            }
+            else
+            {
+                std::array<std::byte, pbmodulation::kUnifiedCodedFrameBytes> codedFrame{};
+                {
+                    const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::InnerPackEncode);
+                    RequireResult(pbmodulation::PackUnifiedVisualFrame({bootstrap, slots}, codedFrame), "Unified packing failed");
+                }
+                const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::Raster);
+                RequireResult(pbmodulation::EncodeUnifiedVisualFrame(bootstrap, codedFrame, pixels_), "Unified raster failed");
+            }
             return pixels_;
         }
         if (kind != FrameKind::Data)
@@ -1505,6 +1540,7 @@ public:
     [[nodiscard]] std::size_t BuildTransportBlockForSlot(const std::uint32_t slot,
         const std::span<std::byte> output, std::uint32_t& payloadBytes)
     {
+        const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::OuterGenerate);
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
         std::fill(outerPayload_.begin(), outerPayload_.end(), std::byte{0});
         const UnifiedSegmentState* const unifiedState = profile_.profile == VisualProfile::UnifiedLc4 &&
@@ -1648,7 +1684,8 @@ private:
         return description_.segments.empty() ? unifiedScheduler_ : GetCurrentUnifiedSegmentState().scheduler;
     }
 
-    [[nodiscard]] UnifiedSegmentState BuildUnifiedSegmentState(const std::uint64_t segmentOrdinal)
+    [[nodiscard]] UnifiedSegmentState BuildUnifiedSegmentState(const std::uint64_t segmentOrdinal,
+        const std::uint32_t periodicControlPhaseIndex, const std::uint32_t periodicControlPhaseCount)
     {
         Require(segmentOrdinal < description_.segments.size(), "Unified Segment-window ordinal is out of bounds");
         UnifiedSegmentState state;
@@ -1680,7 +1717,8 @@ private:
             state.blockCount = static_cast<std::uint32_t>(state.directRepeat->GetBlockCount());
         }
         Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
-            {state.blockCount, controlRepetitions_, logicalVisualFps_, static_cast<bool>(state.wirehair), carouselPass_},
+            {state.blockCount, controlRepetitions_, logicalVisualFps_, static_cast<bool>(state.wirehair), carouselPass_,
+                periodicControlPhaseIndex, periodicControlPhaseCount},
             state.scheduler)), "Unified Segment-window scheduler creation failed");
         if (state.wirehair && repairLeaseCallback_)
         {
@@ -1715,7 +1753,8 @@ private:
         unifiedSegmentStates_.reserve(static_cast<std::size_t>(activeSegments));
         for (std::uint64_t segmentOffset = 0; segmentOffset < activeSegments; segmentOffset++)
         {
-            unifiedSegmentStates_.push_back(BuildUnifiedSegmentState(currentSegmentOrdinal_ + segmentOffset));
+            unifiedSegmentStates_.push_back(BuildUnifiedSegmentState(currentSegmentOrdinal_ + segmentOffset,
+                static_cast<std::uint32_t>(segmentOffset), static_cast<std::uint32_t>(activeSegments)));
         }
         Require(!unifiedSegmentStates_.empty(), "Unified Segment window is empty");
         cyclePosition_ = 0;
@@ -2621,6 +2660,7 @@ private:
     pbdemodd3d11::CaptureDemodulatorConfig demodConfig;
     demodConfig.visualProfileId = profile.visualProfileId;
     demodConfig.slotCount = GetCaptureDemodulatorSlotCount(config.visualProfile, offlineReplay);
+    demodConfig.diagnostics = config.diagnostics;
     // A sealed Replay has no live capture backlog. Keep the same bounded
     // production decoder while allowing slow WARP/offline execution to finish
     // without misclassifying compute time as capture staleness.
@@ -2974,11 +3014,12 @@ public:
         const std::chrono::steady_clock::time_point started, const VisualProfile visualProfile,
         const bool deferCompletedState = false, const bool captureTelemetryAvailable = true,
         const bool collectResourceHighWater = false,
-        LargeOutputConfirmationController* const largeOutputConfirmation = nullptr)
+        LargeOutputConfirmationController* const largeOutputConfirmation = nullptr,
+        std::shared_ptr<RunMeasurementRecorder> measurement = {})
         : receiver_(receiver), outputDirectory_(std::move(outputDirectory)), policy_(policy), snapshot_(snapshot),
           completion_(completion), runGeneration_(runGeneration), started_(started), visualProfile_(visualProfile),
           deferCompletedState_(deferCompletedState), captureTelemetryAvailable_(captureTelemetryAvailable),
-          collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation)
+          collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation), measurement_(std::move(measurement))
     {
         snapshot_.Update([this](DecoderSnapshot& value)
         {
@@ -2990,6 +3031,8 @@ public:
         });
     }
 
+    pbcore::StageDiagnostics* diagnostics = nullptr;
+
     ~ReceiverPipeline()
     {
         if (resumeStore_ && !published_)
@@ -2998,11 +3041,39 @@ public:
         }
     }
 
-    [[nodiscard]] ReceiverProcessResult Process(const pbdemodd3d11::CaptureDemodulatorResult& result)
+    [[nodiscard]] ReceiverProcessResult Process(const pbdemodd3d11::CaptureDemodulatorResult& result, ReceiverDecisionTrace* const decisions = nullptr)
     {
+        if (!decisions)
+        {
+            return ProcessInternal(result, nullptr);
+        }
+        *decisions = {};
+        const auto ReadState = [this]() -> ReceiverDecisionState
+        {
+            return {session_.has_value(), pendingSession_.has_value(), receiverSessionBound_, published_};
+        };
+        decisions->before = ReadState();
+        try
+        {
+            const auto processing = ProcessInternal(result, decisions);
+            decisions->after = ReadState();
+            return processing;
+        }
+        catch (...)
+        {
+            decisions->reason = ReceiverFrameReason::ProcessingFailed;
+            decisions->after = ReadState();
+            throw;
+        }
+    }
+
+    [[nodiscard]] ReceiverProcessResult ProcessInternal(const pbdemodd3d11::CaptureDemodulatorResult& result, ReceiverDecisionTrace* const decisions)
+    {
+        const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::ReceiverProcess);
         ApplyLargeOutputConfirmation(result.metadata.timestamp.monotonic100ns);
         if (largeOutputRejected_ || published_)
         {
+            SetReceiverFrameReason(decisions, published_ ? ReceiverFrameReason::AlreadyPublished : ReceiverFrameReason::LargeOutputRejected);
             return {};
         }
         RecordCaptureTelemetry(result);
@@ -3012,6 +3083,7 @@ public:
         }
         if (!result.bootstrap.IsAccepted())
         {
+            SetReceiverFrameReason(decisions, ReceiverFrameReason::BootstrapRejected);
             UpdateTelemetrySnapshot();
             return {};
         }
@@ -3031,6 +3103,7 @@ public:
         if ((session_ && bootstrap.sessionTag != pbprotocol::DeriveSessionTag(session_->sessionId)) ||
             (pendingSession_ && bootstrap.sessionTag != pendingSessionTag_))
         {
+            SetReceiverFrameReason(decisions, ReceiverFrameReason::SessionMismatch);
             UpdateTelemetrySnapshot();
             return {};
         }
@@ -3040,6 +3113,7 @@ public:
             bootstrap.sessionTag.value);
         if (identityDisposition == VisualIdentityDisposition::Invalid)
         {
+            SetReceiverFrameReason(decisions, ReceiverFrameReason::InvalidIdentity);
             if (visualProfile_ == VisualProfile::UnifiedLc4)
             {
                 unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::InvalidIdentity, &bootstrap,
@@ -3051,12 +3125,17 @@ public:
         }
         if (visualProfile_ == VisualProfile::UnifiedLc4)
         {
-            const ReceiverProcessResult processed = ProcessUnifiedFrame(result, bootstrap, identityDisposition);
+            if (measurement_)
+            {
+                measurement_->RecordBootstrap(bootstrap, result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
+            }
+            const ReceiverProcessResult processed = ProcessUnifiedFrame(result, bootstrap, identityDisposition, decisions);
             UpdateVisualSnapshot();
             UpdateTelemetrySnapshot();
             return processed;
         }
         const bool lowFps = visualProfile_ == VisualProfile::RemoteVisualLowFps;
+        SetReceiverFrameReason(decisions, ReceiverFrameReason::OtherProfile);
         if (lowFps)
         {
             Require(result.temporalDisposition != pbdemodd3d11::CaptureDemodulatorTemporalDisposition::NotApplicable,
@@ -3434,8 +3513,9 @@ public:
 
 private:
     [[nodiscard]] ReceiverProcessResult ProcessUnifiedFrame(const pbdemodd3d11::CaptureDemodulatorResult& result,
-        const pbprotocol::BootstrapRecord& bootstrap, const VisualIdentityDisposition identityDisposition)
+        const pbprotocol::BootstrapRecord& bootstrap, const VisualIdentityDisposition identityDisposition, ReceiverDecisionTrace* const decisions)
     {
+        SetReceiverFrameReason(decisions, ReceiverFrameReason::Processed);
         const auto& demodulation = result.demodulation;
         Require(bootstrap.visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId &&
             bootstrap.visualLayoutVersion == pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion,
@@ -3455,12 +3535,14 @@ private:
         });
         if (identityDisposition == VisualIdentityDisposition::Reordered)
         {
+            SetReceiverFrameReason(decisions, ReceiverFrameReason::Reordered);
             unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::ReorderedIdentity, &bootstrap,
                 result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
             return {};
         }
         if (result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly)
         {
+            SetReceiverFrameReason(decisions, ReceiverFrameReason::TelemetryOnly);
             if (session_ || pendingSession_)
             {
                 const auto status = unifiedTelemetry_.BindSession(bootstrap.sessionTag.value);
@@ -3491,6 +3573,7 @@ private:
         }
         if (!demodulation.unifiedObservation.IsFrameAvailable())
         {
+            SetReceiverFrameReason(decisions, ReceiverFrameReason::FrameErased);
             Require(demodulation.acceptedUnifiedBlockCount == 0, "erased Unified frame emitted accepted bytes");
             return {};
         }
@@ -3510,6 +3593,7 @@ private:
         if (unifiedFrameIdentity_->sessionTag != bootstrap.sessionTag ||
             unifiedFrameIdentity_->frameSequence != bootstrap.frameSequence)
         {
+            SetReceiverFrameReason(decisions, ReceiverFrameReason::OlderDuplicate);
             return {}; // An older duplicate does not displace the single retained frame.
         }
         Require(*unifiedFrameIdentity_ == bootstrap, "conflicting same-sequence Unified Bootstrap");
@@ -3533,6 +3617,10 @@ private:
                 const auto control = pbprotocol::ParseControlRecord(bytes);
                 RequireResult(control, "Unified Control independent parse failed");
                 Require(control.Value().sessionTag == bootstrap.sessionTag, "Unified Control identity mismatch");
+                if (decisions)
+                {
+                    decisions->slots[block.codewordSlot].controlType = control.Value().recordType;
+                }
                 if (control.Value().recordType == pbprotocol::ControlRecordType::SessionDescriptor)
                 {
                     const auto session = pbprotocol::ParseSessionDescriptor(control.Value().payload, policy_);
@@ -3548,6 +3636,11 @@ private:
                 const auto transport = pbprotocol::ParseTransportBlock(bytes);
                 RequireResult(transport, "Unified Transport independent parse failed");
                 Require(transport.Value().header.sessionTag == bootstrap.sessionTag, "Unified Transport identity mismatch");
+                if (decisions)
+                {
+                    decisions->slots[block.codewordSlot].segmentOrdinal = transport.Value().header.segmentOrdinal;
+                    decisions->slots[block.codewordSlot].outerBlockId = transport.Value().header.outerBlockId;
+                }
             }
             auto& previous = unifiedFrameBlocks_[block.codewordSlot];
             if (previous)
@@ -3570,6 +3663,19 @@ private:
             }
         }
         Require(controlSlots <= pbmodulation::GetUnifiedMaximumControlSlots(), "Unified control-slot budget exceeded");
+        if (decisions)
+        {
+            for (std::size_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
+            {
+                if (unifiedFrameBlocks_[slot])
+                {
+                    auto& decision = decisions->slots[slot];
+                    decision.present = true;
+                    decision.observedThisCall = seenSlots[slot];
+                    decision.kind = unifiedFrameBlocks_[slot]->kind;
+                }
+            }
+        }
         ReceiverProcessResult processing;
         // A same-frame Session must bind before its other Control and Transport,
         // even if a backend returned the compact accepted array in another order.
@@ -3581,8 +3687,14 @@ private:
             }
             for (std::uint32_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
             {
+                auto* const decision = decisions ? &decisions->slots[slot] : nullptr;
                 if (!unifiedFrameBlocks_[slot] || unifiedFrameAdmitted_[slot] || published_)
                 {
+                    // Preserve an actual call's result across the three passes.
+                    if (decision && decision->present && decision->reason == ReceiverSlotReason::NotAttempted)
+                    {
+                        decision->reason = unifiedFrameAdmitted_[slot] ? ReceiverSlotReason::AlreadyAdmitted : ReceiverSlotReason::AlreadyPublished;
+                    }
                     continue;
                 }
                 const auto& block = *unifiedFrameBlocks_[slot];
@@ -3592,9 +3704,14 @@ private:
                     const auto control = pbprotocol::ParseControlRecord(bytes);
                     RequireResult(control, "cached Unified Control parse failed");
                     const bool sessionControl = control.Value().recordType == pbprotocol::ControlRecordType::SessionDescriptor;
+                    if (decision)
+                    {
+                        decision->controlType = control.Value().recordType;
+                    }
                     if ((pass == 0 && sessionControl) || (pass == 1 && !sessionControl))
                     {
-                        const bool accepted = ProcessControlRecord(bytes, bootstrap.sessionTag, result.metadata.timestamp.monotonic100ns);
+                        SetReceiverSlotReason(decision, ReceiverSlotReason::ProcessingFailed);
+                        const bool accepted = ProcessControlRecord(bytes, bootstrap.sessionTag, result.metadata.timestamp.monotonic100ns, decision);
                         unifiedFrameAdmitted_[slot] = accepted;
                         processing.carrierAccepted |= accepted;
                     }
@@ -3608,11 +3725,16 @@ private:
                     std::copy(bytes.begin(), bytes.end(), transport.demodulation.acceptedTransportBlocks[0].bytes.begin());
                     transport.admittedTransportBlockCount = 1;
                     transport.admittedTransportBlockIndices[0] = 0;
-                    const ReceiverProcessResult admitted = ProcessTransport(transport, false);
+                    SetReceiverSlotReason(decision, ReceiverSlotReason::ProcessingFailed);
+                    const ReceiverProcessResult admitted = ProcessTransport(transport, false, decision);
                     unifiedFrameAdmitted_[slot] = admitted.carrierAccepted;
                     processing.carrierAccepted |= admitted.carrierAccepted;
                     processing.uniqueAdmission |= admitted.uniqueAdmission;
                     processing.completedSegment |= admitted.completedSegment;
+                }
+                else if (pass == 2)
+                {
+                    SetReceiverSlotReason(decision, pendingSession_ ? ReceiverSlotReason::WaitingForConfirmation : ReceiverSlotReason::WaitingForSession);
                 }
             }
         }
@@ -3743,7 +3865,7 @@ private:
     }
 
     [[nodiscard]] bool ProcessControlRecord(const std::span<const std::byte> bytes,
-        const pbprotocol::SessionTag bootstrapSessionTag, const std::int64_t timestamp100ns)
+        const pbprotocol::SessionTag bootstrapSessionTag, const std::int64_t timestamp100ns, ReceiverSlotDecision* const decision = nullptr)
     {
         ApplyLargeOutputConfirmation(timestamp100ns);
         const auto parsedRecord = pbprotocol::ParseControlRecord(bytes);
@@ -3753,26 +3875,53 @@ private:
             "captured ControlRecord SessionTag disagrees with the same-frame Bootstrap");
         if (published_)
         {
+            SetReceiverSlotReason(decision, ReceiverSlotReason::AlreadyPublished);
             return true;
         }
         if (largeOutputRejected_ || (pendingSession_ &&
             record.recordType != pbprotocol::ControlRecordType::SessionDescriptor))
         {
+            SetReceiverSlotReason(decision, largeOutputRejected_ ? ReceiverSlotReason::LargeOutputRejected : ReceiverSlotReason::WaitingForConfirmation);
             return false;
         }
+        if (decision)
+        {
+            decision->receiverCalled = true;
+        }
         auto admission = receiver_.ReceiveControlRecord(bytes);
+        if (decision)
+        {
+            decision->receiverReturned = true;
+        }
         if (!admission)
         {
+            if (decision)
+            {
+                decision->reason = ReceiverSlotReason::ControlRejected;
+                decision->resourceRejected = GetOuterResourceRejectionReason(admission.Error()) != OuterResourceRejectionReason::None;
+                if (const auto* protocol = std::get_if<pbprotocol::ProtocolError>(&admission.Error()))
+                {
+                    decision->protocolError = static_cast<std::uint32_t>(protocol->code);
+                    decision->conflictRejected = protocol->code == pbprotocol::ProtocolErrorCode::DescriptorConflict ||
+                        protocol->code == pbprotocol::ProtocolErrorCode::SessionTagCollision;
+                }
+            }
             if (record.recordType != pbprotocol::ControlRecordType::SessionDescriptor &&
                 IsRetryableUnknownSession(admission.Error()))
             {
+                SetReceiverSlotReason(decision, ReceiverSlotReason::ControlUnknownSession);
                 return false;
             }
             throw RuntimeFailure("ReceiverIngress rejected ControlRecord: " +
                 DescribeReceiverError(admission.Error()));
         }
         UpdateReceiverResourceHighWater();
+        if (measurement_ && !restoringResume_)
+        {
+            measurement_->Record(RunMilestone::FirstControlAccepted);
+        }
         HandleControlAdmission(admission.Value(), record, timestamp100ns, bytes);
+        SetReceiverSlotReason(decision, ReceiverSlotReason::ControlAccepted);
         return true;
     }
 
@@ -3895,6 +4044,7 @@ private:
         Require(static_cast<bool>(resumeStatus), "Decoder resume journal open failed: " + resumeStatus.message);
 
         pbstorage::OutputFileConfig storageConfig;
+        storageConfig.observePublishTiming = measurement_ != nullptr;
         storageConfig.outputDirectory = outputDirectory_;
         storageConfig.sessionTag = sessionTag;
         storageConfig.fileBytes = session_->originalFileSize;
@@ -4100,6 +4250,10 @@ private:
                     "resume control replay unexpectedly drained live orphan blocks");
                 for (const pbprotocol::OrphanTransportBlockEntry& replayedBlock : admission.replayedOrphanBlocks)
                 {
+                    if (measurement_ && !restoringResume_)
+                    {
+                        measurement_->Record(RunMilestone::FirstUsefulEquation);
+                    }
                     PersistAcceptedBlock(parsed.Value().segmentOrdinal, replayedBlock.outerBlockId,
                         replayedBlock.declaredPayloadBytes, replayedBlock.paddedPayload);
                 }
@@ -4160,11 +4314,13 @@ private:
     }
 
     [[nodiscard]] ReceiverProcessResult ProcessTransport(
-        const pbdemodd3d11::CaptureDemodulatorResult& result, const bool countEvaluation)
+        const pbdemodd3d11::CaptureDemodulatorResult& result, const bool countEvaluation, ReceiverSlotDecision* const decision = nullptr)
     {
         ApplyLargeOutputConfirmation(result.metadata.timestamp.monotonic100ns);
         if (pendingSession_ || largeOutputRejected_ || published_)
         {
+            SetReceiverSlotReason(decision, published_ ? ReceiverSlotReason::AlreadyPublished : largeOutputRejected_ ?
+                ReceiverSlotReason::LargeOutputRejected : ReceiverSlotReason::WaitingForConfirmation);
             return {};
         }
         Require(result.demodulation.acceptedTransportBlockCount <=
@@ -4198,8 +4354,14 @@ private:
                 std::span(accepted.bytes).first(accepted.byteCount));
             RequireResult(parsed, "accepted Transport failed an independent parse");
             const auto& transport = parsed.Value();
+            if (decision)
+            {
+                decision->segmentOrdinal = transport.header.segmentOrdinal;
+                decision->outerBlockId = transport.header.outerBlockId;
+            }
             if (session_ && transport.header.sessionTag != pbprotocol::DeriveSessionTag(session_->sessionId))
             {
+                SetReceiverSlotReason(decision, ReceiverSlotReason::SessionMismatch);
                 continue;
             }
             Require(transport.header.payloadBytes == transport.payload.size() &&
@@ -4209,7 +4371,19 @@ private:
             const pbreceiver::ReceivedTransportBlock block{transport.header.sessionTag,
                 transport.header.segmentOrdinal, transport.header.outerBlockId,
                 transport.header.payloadBytes, paddedPayload_};
-            auto admission = receiver_.ReceiveDataBlock(block, result.metadata.captureObservation);
+            if (decision)
+            {
+                decision->receiverCalled = true;
+            }
+            auto admission = [&]()
+            {
+                const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::OuterReceive);
+                return receiver_.ReceiveDataBlock(block, result.metadata.captureObservation);
+            }();
+            if (decision)
+            {
+                decision->receiverReturned = true;
+            }
             if (!admission)
             {
                 if (IsOuterConflictError(admission.Error()))
@@ -4248,6 +4422,20 @@ private:
                 UpdateReceiverResourceHighWater();
                 UpdateOuterAdmissionSnapshot();
                 const auto* protocol = std::get_if<pbprotocol::ProtocolError>(&admission.Error());
+                if (decision)
+                {
+                    decision->resourceRejected = resourceReason != OuterResourceRejectionReason::None;
+                    decision->conflictRejected = IsOuterConflictError(admission.Error());
+                    decision->reason = decision->resourceRejected ? ReceiverSlotReason::TransportResourceRejected : ReceiverSlotReason::TransportRejected;
+                    if (protocol)
+                    {
+                        decision->protocolError = static_cast<std::uint32_t>(protocol->code);
+                        if (protocol->code == pbprotocol::ProtocolErrorCode::UnknownSession)
+                        {
+                            decision->reason = ReceiverSlotReason::TransportUnknownSession;
+                        }
+                    }
+                }
                 if (protocol != nullptr &&
                     (protocol->code == pbprotocol::ProtocolErrorCode::ResourceLimitExceeded ||
                      protocol->code == pbprotocol::ProtocolErrorCode::UnknownSession))
@@ -4258,6 +4446,12 @@ private:
                     DescribeReceiverError(admission.Error()));
             }
             const pbreceiver::ReceiverDataAdmission& acceptedAdmission = admission.Value();
+            if (decision)
+            {
+                decision->dataDisposition = acceptedAdmission.disposition;
+                decision->outerSymbolAdmission = acceptedAdmission.outerSymbolAdmission;
+                decision->reason = ReceiverSlotReason::TransportReturned;
+            }
             processing.hasDataAdmission = true;
             processing.dataDisposition = acceptedAdmission.disposition;
             processing.outerSymbolAdmission = acceptedAdmission.outerSymbolAdmission;
@@ -4272,6 +4466,10 @@ private:
             switch (acceptedAdmission.outerSymbolAdmission)
             {
             case pbreceiver::ReceiverOuterSymbolAdmission::Unique:
+                if (measurement_ && acceptedAdmission.disposition != pbreceiver::ReceiverDataDisposition::CachedOrphan)
+                {
+                    measurement_->Record(RunMilestone::FirstUsefulEquation);
+                }
                 pbprotocol::SaturatingIncrementUnsigned(outerUniqueSymbols_);
                 processing.uniqueAdmission = true;
                 // Orphan Transport can be accepted into the Receiver's bounded
@@ -4534,7 +4732,11 @@ private:
                 value.statusMessage = "Verifying EncodedDigest, bounded decompression, and RawDigest";
             }
         });
-        auto verified = receiver_.VerifyRecoveredSegment(std::move(completed));
+        auto verified = [&]()
+        {
+            const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::SegmentRecover);
+            return receiver_.VerifyRecoveredSegment(std::move(completed));
+        }();
         RequireResult(verified, "encoded digest, decompression, or raw digest verification failed");
         pbreceiver::ReceiverVerifiedSegment verifiedSegment = std::move(verified).Value();
         const pbprotocol::SegmentDescriptor& descriptor =
@@ -4547,15 +4749,22 @@ private:
         const DecoderResumeStoreStatus activeCheckpointStatus = resumeStore_->Checkpoint();
         Require(static_cast<bool>(activeCheckpointStatus),
             "completed Segment accepted-block checkpoint failed: " + activeCheckpointStatus.message);
-        const auto writeStatus = storage_->WriteVerifiedSegment(descriptor.rawOffset, verifiedSegment.GetRawBytes());
+        const auto writeStatus = [&]()
+        {
+            const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::SegmentWrite);
+            return storage_->WriteVerifiedSegment(descriptor.rawOffset, verifiedSegment.GetRawBytes());
+        }();
         Require(static_cast<bool>(writeStatus), "PBStorage Segment write failed: " +
             DescribeStorageStatus(writeStatus));
-        const auto flushStatus = storage_->FlushVerifiedSegment();
-        Require(static_cast<bool>(flushStatus), "PBStorage Segment flush failed: " +
-            DescribeStorageStatus(flushStatus));
-        const auto checkpointStatus = storage_->Checkpoint();
-        Require(static_cast<bool>(checkpointStatus), "PBStorage checkpoint failed: " +
-            DescribeStorageStatus(checkpointStatus));
+        {
+            const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::StorageFlushCheckpoint);
+            const auto flushStatus = storage_->FlushVerifiedSegment();
+            Require(static_cast<bool>(flushStatus), "PBStorage Segment flush failed: " +
+                DescribeStorageStatus(flushStatus));
+            const auto checkpointStatus = storage_->Checkpoint();
+            Require(static_cast<bool>(checkpointStatus), "PBStorage checkpoint failed: " +
+                DescribeStorageStatus(checkpointStatus));
+        }
 #ifdef PB_PROCESS_FAULT_TESTS
         if (descriptor.segmentOrdinal == 2)
         {
@@ -4582,6 +4791,10 @@ private:
         RequireResult(verifiedEncodedBytes, "verified encoded byte accounting overflow");
         totalVerifiedRawBytes_ = verifiedRawBytes.Value();
         storedEncodedBytes_ = verifiedEncodedBytes.Value();
+        if (measurement_ && completedSegmentCount_ == session_->segmentCount)
+        {
+            measurement_->Record(RunMilestone::LastSegmentStored);
+        }
         Require(progress_.ObserveVerifiedRawBytes(totalVerifiedRawBytes_, ElapsedMilliseconds(started_)),
             "verified raw-byte progress update failed");
         ApplyProgress();
@@ -4614,8 +4827,27 @@ private:
         Require(static_cast<bool>(resumeStore_), "final publish has no active resume journal");
         const DecoderResumeStoreStatus intentStatus = resumeStore_->RecordPublishIntent(manifest_->wholeFileDigest);
         Require(static_cast<bool>(intentStatus), "durable publish intent failed: " + intentStatus.message);
-        const auto publishStatus = storage_->Publish(manifest_->wholeFileDigest);
+        const auto publishStatus = [&]()
+        {
+            const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::FinalPublish);
+            return storage_->Publish(manifest_->wholeFileDigest);
+        }();
         const auto publishSnapshot = storage_->GetSnapshot();
+        if (measurement_)
+        {
+            if (publishSnapshot.wholeDigestVerifiedAt)
+            {
+                measurement_->RecordAt(RunMilestone::WholeDigestVerified, MeasurementNanoseconds(*publishSnapshot.wholeDigestVerifiedAt));
+            }
+            if (publishSnapshot.finalRenameSucceededAt)
+            {
+                measurement_->RecordAt(RunMilestone::FinalRenameSucceeded, MeasurementNanoseconds(*publishSnapshot.finalRenameSucceededAt));
+            }
+            if (publishSnapshot.finalReopenVerifiedAt)
+            {
+                measurement_->RecordAt(RunMilestone::FinalReopenVerified, MeasurementNanoseconds(*publishSnapshot.finalReopenVerifiedAt));
+            }
+        }
         snapshot_.Update([&](DecoderSnapshot& value)
         {
             ApplyOutputAllocationSnapshot(publishSnapshot, value);
@@ -4820,6 +5052,7 @@ private:
     bool captureTelemetryAvailable_ = true;
     bool collectResourceHighWater_ = false;
     LargeOutputConfirmationController* largeOutputConfirmation_ = nullptr;
+    std::shared_ptr<RunMeasurementRecorder> measurement_;
     std::unique_ptr<pbstorage::OutputFile> storage_;
     std::unique_ptr<DecoderResumeStore> resumeStore_;
     std::optional<pbprotocol::SessionDescriptor> session_;
@@ -6206,6 +6439,8 @@ void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& res
 }
 
 } // namespace
+
+#include "recorded_pixel_replay.inc"
 
 #ifdef PB_PROCESS_FAULT_TESTS
 #include "process_recovery_runtime.inc"
@@ -7744,6 +7979,39 @@ RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
     return ValidateDecoderConfigInternal(config, false);
 }
 
+RuntimeStatus AuditUnifiedSource(const std::wstring& sourcePath, std::string& ledgerJson) noexcept
+{
+    try
+    {
+        SourceFile source = ReadSourceFile(sourcePath);
+        Require(source.fileBytes <= step1MaximumSourceBytes, "Step1 source audit is bounded to 64 MiB");
+        const auto sessionId = pbprotocol::GenerateRandomSessionId();
+        RequireResult(sessionId, "source audit SessionId generation failed");
+        const std::atomic<bool> stopRequested = false;
+        const auto description = DescribeSource(source, true, 3, pbprotocol::kUnifiedVisualProfileId, sessionId.Value(), stopRequested);
+        const auto recorder = std::make_unique<RunMeasurementRecorder>();
+        for (const auto &segment : description.segments)
+        {
+            recorder->RecordSegment(segment.descriptor);
+        }
+        recorder->CompleteSource(source.fileBytes, description.manifest.wholeFileDigest.bytes,
+            pbcompression::GetSegmentCompressionIdentity(true, MakeEncoderCompressionSettings(3)));
+        Require(IsSourceStable(source), "source changed during Step1 audit");
+        const auto measured = recorder->GetSnapshot();
+        Require(measured.sourceLedgerComplete && measured.failure == MeasurementFailure::None, "Step1 source ledger incomplete");
+        ledgerJson = BuildSourceLedgerJson(measured);
+        return {};
+    }
+    catch (const std::exception &exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Step1 source audit failed");
+    }
+}
+
 pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSegment(
     const std::span<const std::byte> rawBytes, const bool compressionEnabled,
     const int compressionLevel)
@@ -7908,6 +8176,7 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     stopRequested_ = false;
     requestedLogicalVisualFps_.store(config.logicalVisualFps, std::memory_order_release);
     EncoderSnapshot initial;
+    initial.diagnostics = config.diagnostics;
     initial.state = EncoderState::Preparing;
     initial.runGeneration = runGeneration;
     initial.runId = config.runId.empty() ? "pending" : config.runId;
@@ -7945,6 +8214,11 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("无法初始化 Encoder snapshot");
     }
+    measurement_.store(config.measurement);
+    if (config.measurement)
+    {
+        config.measurement->Begin(runGeneration, MeasurementNowNanoseconds());
+    }
     workerRunning_ = true;
     try
     {
@@ -7967,6 +8241,10 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
         }
         catch (...)
         {
+        }
+        if (config.measurement)
+        {
+            config.measurement->Finish(false);
         }
         return RuntimeStatus::Failure("无法创建 Encoder worker thread");
     }
@@ -8050,7 +8328,17 @@ void EncoderRuntime::Stop() noexcept
 
 EncoderSnapshot EncoderRuntime::GetSnapshot() const
 {
-    return snapshot_.Get();
+    auto result = snapshot_.Get();
+    const auto measurement = measurement_.load();
+    if (measurement)
+    {
+        const auto measured = measurement->GetSnapshot();
+        if (measured.runGeneration == result.runGeneration)
+        {
+            result.measurement = measured;
+        }
+    }
+    return result;
 }
 
 RuntimeStatus EncoderRuntime::EndAndDeleteSession(const std::uint64_t expectedRunGeneration) noexcept
@@ -8104,6 +8392,7 @@ RuntimeStatus EncoderRuntime::EndAndDeleteSession(const std::uint64_t expectedRu
 void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration) noexcept
 {
     WorkerRunningGuard runningGuard(workerRunning_);
+    MeasurementRunGuard measurementGuard(config.measurement);
     bool sourceStable = true;
     try
     {
@@ -8184,6 +8473,15 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 });
             });
         TransferDescription description = std::move(preparation.description);
+        if (config.measurement)
+        {
+            for (const auto &segment : description.segments)
+            {
+                config.measurement->RecordSegment(segment.descriptor);
+            }
+            config.measurement->CompleteSource(source.fileBytes, description.manifest.wholeFileDigest.bytes, preparation.compressionIdentity);
+            config.measurement->Record(RunMilestone::PreparationComplete);
+        }
         std::unique_ptr<EncoderSessionStore> sessionStore = std::move(preparation.sessionStore);
         snapshot_.Update([&](EncoderSnapshot& value)
         {
@@ -8228,6 +8526,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     segmentOrdinal, requiredExclusive);
                 Require(static_cast<bool>(leaseStatus), "Encoder repair ID durable lease failed: " + leaseStatus.message);
             }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), config.logicalVisualFps);
+        builder.diagnostics = config.diagnostics.get();
         const std::string runId = config.runId.empty() ? GenerateRunId() : config.runId;
         const CarouselSnapshot initialCarousel = builder.GetCarouselSnapshot();
         const auto rawVisualBits = pbprotocol::CheckedMultiplyUint64(profile.dataBytes, 8);
@@ -8320,6 +8619,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             fullscreenPixels.resize(presentationBytes.Value());
         }
         pbrenderd3d::DataWindowConfig windowConfig;
+        windowConfig.diagnostics = config.diagnostics;
         windowConfig.width = presentationWidth;
         windowConfig.height = presentationHeight;
         windowConfig.clientOrigin = config.monitorClientOrigin;
@@ -8530,6 +8830,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 static_cast<void>(builder.Build(frameSequence, logicalTick.logicalTickOrdinal, GetSteadyNanoseconds(now)));
                 if (config.singleMonitorFullscreen)
                 {
+                    const pbcore::DiagnosticScope composeTiming(config.diagnostics.get(), pbcore::DiagnosticStage::FullscreenCompose);
                     ComposeRemoteVisualFullscreenBgra(builder.GetBuiltPixels(), presentationWidth,
                         presentationHeight, fullscreenPixels);
                 }
@@ -8545,9 +8846,12 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 const std::uint32_t outerBlockId = builder.GetCurrentOuterBlockId();
                 const std::span<const std::byte> pixels = config.singleMonitorFullscreen ?
                     std::span<const std::byte>(fullscreenPixels) : std::span<const std::byte>(builder.GetBuiltPixels());
-                const auto submit = window->SubmitFrame({pixels, presentationWidth, presentationHeight,
-                    static_cast<std::size_t>(presentationWidth) * 4U, frameSequence,
-                    windowSnapshot.timing.presentationEpoch});
+                const auto submit = [&]()
+                {
+                    const pbcore::DiagnosticScope timing(config.diagnostics.get(), pbcore::DiagnosticStage::SubmitCall);
+                    return window->SubmitFrame({pixels, presentationWidth, presentationHeight,
+                        static_cast<std::size_t>(presentationWidth) * 4U, frameSequence, windowSnapshot.timing.presentationEpoch});
+                }();
                 if (submit)
                 {
                     const auto logicalFrameCompletedAt = std::chrono::steady_clock::now();
@@ -8574,6 +8878,12 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     const std::uint64_t previousCheckpointSegmentOrdinal = builder.GetCheckpointSegmentOrdinal();
                     const std::uint32_t submittedControlSlots = builder.GetControlSlotsInFrame();
                     const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
+                    if (config.measurement)
+                    {
+                        config.measurement->RecordSubmitted({pbprotocol::DeriveSessionTag(description.session.sessionId).value,
+                            frameSequence, previousCarouselPass, builder.GetCurrentSegmentOrdinal(), builder.GetCarouselSnapshot().cyclePosition},
+                            MeasurementNanoseconds(logicalFrameCompletedAt));
+                    }
                     if (useUnifiedLogicalClock)
                     {
                         const SenderCarouselSchedulerStatus commitStatus = logicalFrameClock.Commit(
@@ -8681,6 +8991,9 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     value.minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds;
                     value.logicalDwellViolationCount = logicalDwellViolationCount;
                 });
+                const pbcore::DiagnosticScope backpressureTiming(
+                    frameBuilt && windowSnapshot.pendingFrame ? config.diagnostics.get() : nullptr,
+                    pbcore::DiagnosticStage::SenderBackpressure);
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         }
@@ -8709,6 +9022,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.logicalDwellViolationCount = logicalDwellViolationCount;
             value.statusMessage = "Broadcast stopped by user; no sender-side receiver completion was inferred";
         });
+        measurementGuard.succeeded = true;
     }
     catch (const std::exception& exception)
     {
@@ -8853,6 +9167,7 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
     }
     stopRequested_ = false;
     DecoderSnapshot initial;
+    initial.diagnostics = config.diagnostics;
     initial.state = DecoderState::WaitingForBootstrap;
     initial.runGeneration = runGeneration;
     initial.runId = config.runId.empty() ? "pending" : config.runId;
@@ -8926,6 +9241,11 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
     {
         return RuntimeStatus::Failure("无法初始化 Decoder snapshot");
     }
+    measurement_.store(config.measurement);
+    if (config.measurement)
+    {
+        config.measurement->Begin(runGeneration, MeasurementNowNanoseconds());
+    }
     workerRunning_ = true;
     try
     {
@@ -8949,6 +9269,10 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
         }
         catch (...)
         {
+        }
+        if (config.measurement)
+        {
+            config.measurement->Finish(false);
         }
         return RuntimeStatus::Failure("无法创建 Decoder worker thread");
     }
@@ -9046,13 +9370,24 @@ void DecoderRuntime::Stop() noexcept
 
 DecoderSnapshot DecoderRuntime::GetSnapshot() const
 {
-    return snapshot_.Get();
+    auto result = snapshot_.Get();
+    const auto measurement = measurement_.load();
+    if (measurement)
+    {
+        const auto measured = measurement->GetSnapshot();
+        if (measured.runGeneration == result.runGeneration)
+        {
+            result.measurement = measured;
+        }
+    }
+    return result;
 }
 
 void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGeneration,
     const bool testOnlyUnifiedReplay, const bool baseLumaOnly) noexcept
 {
     WorkerRunningGuard runningGuard(workerRunning_);
+    MeasurementRunGuard measurementGuard(config.measurement);
     AuthoritativeCompletion completion;
     try
     {
@@ -9142,8 +9477,9 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
         const auto pipelineOwner = std::make_unique<ReceiverPipeline>(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
-            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_);
+            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_, config.measurement);
         auto& pipeline = *pipelineOwner;
+        pipeline.diagnostics = config.diagnostics.get();
 
         const pbdemodd3d11::CaptureDemodulatorConfig demodConfig = MakeCaptureDemodulatorConfig(
             config, profile, replayReader != nullptr);
@@ -9234,6 +9570,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 {
                     output = demodulator->GetConsumer();
                 }
+                if (config.measurement)
+                {
+                    output = std::make_shared<detail::MeasurementCaptureConsumer>(output, config.measurement);
+                }
                 return pbcapturenormalize::CaptureStatus{};
             }, services_.captureFactory);
         const auto captureStartStatus = capture.Start();
@@ -9245,6 +9585,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
             }
         });
         Require(static_cast<bool>(captureStartStatus), "Capture policy startup failed: " + DescribeCaptureStatus(captureStartStatus));
+        if (config.measurement)
+        {
+            config.measurement->Record(RunMilestone::CaptureReady);
+        }
         std::uint64_t receiverCaptureEpoch = 1;
         auto nextMonitorSafetyCheck = started;
         std::optional<std::chrono::steady_clock::time_point> replayTailDeadline;
@@ -9507,6 +9851,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
             stoppedDemod.demodulator.shutdown && stoppedDemod.pendingFrames == 0 &&
             stoppedDemod.queuedResults == 0,
             "capture/demod shutdown did not retire all bounded resources");
+        measurementGuard.succeeded = pipeline.IsCompleted();
         if (!pipeline.IsCompleted())
         {
             snapshot_.Update([&](DecoderSnapshot& value)
