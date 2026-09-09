@@ -47,3 +47,8 @@ __pycache__/
 # OS file-manager metadata
 Thumbs.db
 .DS_Store
+
+# Field recordings captured on the remote display; kept on disk as
+# evidence and never committed (multi-hundred-MeB containers).
+/*.mkv
+/*.mp4
