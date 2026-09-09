@@ -1,5 +1,6 @@
 #include "unified_point_downscale_fixture.h"
 #include "pbmodulation/unified_visual.h"
+#include "pbcore/stage_diagnostics.h"
 
 #include "pbinnerfec/qc_ldpc_codec.h"
 #include "pbprotocol/blake3_digest.h"
@@ -21,6 +22,7 @@
 #include <optional>
 #include <span>
 #include <vector>
+
 
 namespace
 {
@@ -1108,4 +1110,32 @@ TEST_CASE("Unified CPU oracle matches independently regenerated mixed-slot and r
         offset += size;
     }
     REQUIRE(offset == expectedAccepted.size());
+}
+
+TEST_CASE("Step2 timing cannot change pixel FEC admission even when evidence is invalid", "[step2][diagnostics][unified]")
+{
+    const auto pixels = Render(GetFixture41());
+    auto reference = MakeOracle();
+    const auto baseline = reference.DecodeMixedFrame(View(pixels));
+    const auto accepted = reference.GetAcceptedBlocks();
+    REQUIRE(baseline.IsFrameAvailable());
+    for (const std::uint32_t stride : {1U, 4U, 0U})
+    {
+        pbcore::StageDiagnostics diagnostics(stride);
+        auto instrumented = MakeOracle();
+        instrumented.SetStageDiagnostics(&diagnostics);
+        const auto observation = instrumented.DecodeMixedFrame(View(pixels));
+        const auto actual = instrumented.GetAcceptedBlocks();
+        REQUIRE(observation.acceptedBlocks == baseline.acceptedBlocks);
+        REQUIRE(actual.size() == accepted.size());
+        for (std::size_t index = 0; index < actual.size(); index++)
+        {
+            REQUIRE(actual[index].codewordSlot == accepted[index].codewordSlot);
+            REQUIRE(actual[index].kind == accepted[index].kind);
+            REQUIRE(actual[index].size == accepted[index].size);
+            REQUIRE(actual[index].bytes == accepted[index].bytes);
+        }
+        REQUIRE_FALSE(instrumented.DecodeMixedFrame({}).inputValid);
+        REQUIRE(instrumented.GetAcceptedBlocks().empty());
+    }
 }

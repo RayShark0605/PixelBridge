@@ -53,6 +53,7 @@ target_compile_features(PBModulation
 
 target_link_libraries(PBModulation
     PUBLIC
+        PB::PBCore
         PB::PBProtocol
     PRIVATE
         PB::CompilerSettings

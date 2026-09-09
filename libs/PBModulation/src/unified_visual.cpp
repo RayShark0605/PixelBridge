@@ -27,6 +27,7 @@ struct UnifiedVisualCpuOracle::Implementation
     std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedCodewordCount> decodedInformation{};
     std::array<bool, kUnifiedCodewordCount> decodedInformationValid{};
     pbinnerfec::QcLdpcDecoder decoder;
+    pbcore::StageDiagnostics* diagnostics = nullptr;
     std::uint32_t acceptedCount = 0;
     bool metricsValid = false;
 };
@@ -1734,6 +1735,9 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
             slotObservation.rejection = UnifiedSlotRejection::LaneErasure;
             continue;
         }
+        const auto diagnosticStage = slotObservation.lane == UnifiedLane::BaseLuma ? pbcore::DiagnosticStage::BaseFec :
+            slotObservation.lane == UnifiedLane::FineLuma ? pbcore::DiagnosticStage::FineFec : pbcore::DiagnosticStage::ChromaFec;
+        const pbcore::DiagnosticScope fecTiming(state.diagnostics, diagnosticStage);
         state.decodedCodeword.fill(std::byte{0});
         const std::size_t firstMetric = static_cast<std::size_t>(slot) * kUnifiedVisualProfile.innerCodewordBits;
         for (std::size_t bit = 0; bit < state.slotMetrics.size(); bit++)
@@ -1801,6 +1805,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
             slotObservation.rejection = UnifiedSlotRejection::InvalidInformation;
             continue;
         }
+        const pbcore::DiagnosticScope protocolTiming(state.diagnostics, pbcore::DiagnosticStage::SlotProtocol);
         EvaluateAcceptedInformation(slot, assignmentsBySlot[slot], observation.bootstrapRecord.sessionTag,
             state.decodedInformation[slot], slotObservation, state.accepted, state.acceptedCount);
         if (slotObservation.accepted)
@@ -1823,6 +1828,14 @@ std::span<const UnifiedSoftMetric> UnifiedVisualCpuOracle::GetSoftMetrics() cons
 {
     return implementation_ && implementation_->metricsValid ?
         std::span<const UnifiedSoftMetric>(implementation_->metrics) : std::span<const UnifiedSoftMetric>{};
+}
+
+void UnifiedVisualCpuOracle::SetStageDiagnostics(pbcore::StageDiagnostics* const diagnostics) noexcept
+{
+    if (implementation_)
+    {
+        implementation_->diagnostics = diagnostics;
+    }
 }
 
 std::span<const UnifiedAcceptedBlock> UnifiedVisualCpuOracle::GetAcceptedBlocks() const noexcept

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pbcore/stage_diagnostics.h"
+
 #include "pbmodulation/local_desktop_decode.h"
 #include "pbmodulation/modulation_result.h"
 #include "pbmodulation/unified_visual_mapping.h"
@@ -261,6 +263,8 @@ public:
 
     [[nodiscard]] static std::uint64_t RequiredBytes() noexcept;
     [[nodiscard]] static ModulationResult<UnifiedVisualCpuOracle> Create(std::uint64_t maximumBytes) noexcept;
+    // Single-owner diagnostic sink; it must outlive decoding and never selects a policy.
+    void SetStageDiagnostics(pbcore::StageDiagnostics* diagnostics) noexcept;
     // Product receive path. Slot kind is inferred after Inner FEC from the
     // mutually exclusive canonical prefixes: PB-Control-1 starts with PBCR,
     // while a Transport Block starts with BlockType 1. No sender-side plan or
