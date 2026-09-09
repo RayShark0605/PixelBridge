@@ -268,15 +268,60 @@ bool VerifyMarker(LumaReader& reader, const LocalDesktopDecodePolicy& policy, Ma
     return true;
 }
 
-Erasure ScanMarkers(LumaReader& reader, const LocalDesktopDecodePolicy& policy, MarkerSet& output, const double midpoint) noexcept
+// This cursor is used only after ValidateLumaView and only by the scaffold's
+// default (non-integer) LumaReader. No read-ahead, row cache or work precharge.
+template<bool bgra>
+class MarkerScanCursor
+{
+public:
+    MarkerScanCursor(LumaReader& reader, const LumaView& view, const std::uint32_t row) noexcept : reader_(reader), view_(view), row_(row)
+    {
+        if constexpr (bgra)
+        {
+            next_ = view.pixels.data() + static_cast<std::size_t>(row) * view.rowPitch;
+        }
+    }
+    [[nodiscard]] bool Next(double& output) noexcept
+    {
+        if constexpr (!bgra)
+        {
+            return reader_.ScanPixel(column_++, row_, output);
+        }
+        else
+        {
+            if (column_ >= view_.width)
+            {
+                return reader_.ScanPixel(column_, row_, output);
+            }
+            if (!reader_.Charge())
+            {
+                return false;
+            }
+            output = 0.0722 * std::to_integer<std::uint8_t>(next_[0]) + 0.7152 * std::to_integer<std::uint8_t>(next_[1]) + 0.2126 * std::to_integer<std::uint8_t>(next_[2]);
+            next_ += 4;
+            column_++;
+            return true;
+        }
+    }
+private:
+    LumaReader& reader_;
+    const LumaView& view_;
+    const std::uint32_t row_;
+    const std::byte* next_ = nullptr;
+    std::uint32_t column_ = 0;
+};
+
+template<bool bgra>
+Erasure ScanMarkers(LumaReader& reader, const LumaView& view, const LocalDesktopDecodePolicy& policy, MarkerSet& output, const double midpoint) noexcept
 {
     for (std::uint64_t row = 0; row < reader.Height(); row += LocatorLimits::scanLineStep)
     {
+        MarkerScanCursor<bgra> cursor(reader, view, static_cast<std::uint32_t>(row));
         std::array<Run, 5> runs{};
         std::size_t runCount = 0;
         std::uint32_t runBegin = 0;
         double first = 0;
-        if (!reader.ScanPixel(0, static_cast<std::uint32_t>(row), first))
+        if (!cursor.Next(first))
         {
             return reader.Error();
         }
@@ -284,7 +329,7 @@ Erasure ScanMarkers(LumaReader& reader, const LocalDesktopDecodePolicy& policy, 
         for (std::uint64_t column = 1; column <= reader.Width(); column++)
         {
             double value = 0;
-            if (column < reader.Width() && !reader.ScanPixel(static_cast<std::uint32_t>(column), static_cast<std::uint32_t>(row), value))
+            if (column < reader.Width() && !cursor.Next(value))
             {
                 return reader.Error();
             }
@@ -356,7 +401,7 @@ Erasure ScanMarkers(LumaReader& reader, const LocalDesktopDecodePolicy& policy, 
     return Erasure::None;
 }
 
-Erasure LocateMarkers(LumaReader& reader, const LocalDesktopDecodePolicy& policy, MarkerSet& output) noexcept
+Erasure LocateMarkers(LumaReader& reader, const LumaView& view, const LocalDesktopDecodePolicy& policy, MarkerSet& output) noexcept
 {
     // A current-frame contrast of 96 need not straddle canonical midpoint 128.
     // These finite proposals cover the permitted 0..255 luma range; horizontal
@@ -366,7 +411,7 @@ Erasure LocateMarkers(LumaReader& reader, const LocalDesktopDecodePolicy& policy
     constexpr std::array<double, 3> thresholds{128, 64, 192};
     for (const auto threshold : thresholds)
     {
-        const auto status = ScanMarkers(reader, policy, output, threshold);
+        const auto status = view.pixelFormat == LumaPixelFormat::Bgra8 ? ScanMarkers<true>(reader, view, policy, output, threshold) : ScanMarkers<false>(reader, view, policy, output, threshold);
         if (status != Erasure::None)
         {
             return status;
@@ -1064,7 +1109,7 @@ LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view,
     }
     LumaReader reader(view, policy.maximumWorkUnits);
     MarkerSet markerSet;
-    result.erasure = LocateMarkers(reader, policy, markerSet);
+    result.erasure = LocateMarkers(reader, view, policy, markerSet);
     result.markerCandidates = static_cast<std::uint32_t>(markerSet.size);
     result.workUnits = reader.WorkUnits();
     if (result.erasure != Erasure::None)

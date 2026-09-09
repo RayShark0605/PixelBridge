@@ -24,7 +24,7 @@ target_link_libraries(PBModulationTests
 
 # Independent experimental binding; the frozen ReferenceRaster suite and pins
 # above remain unchanged and continue to run as their own compatibility gate.
-PbAddUnitTest(PBLocalDesktopBootstrapTests test_bootstrap_rs.cpp test_local_desktop_bootstrap.cpp test_local_desktop_decode.cpp test_local_desktop_luma_calibration.cpp test_local_desktop_core_samples.cpp test_local_desktop_partial_tear.cpp)
+PbAddUnitTest(PBLocalDesktopBootstrapTests test_bootstrap_rs.cpp test_local_desktop_bootstrap.cpp test_local_desktop_decode.cpp test_local_desktop_luma_calibration.cpp test_local_desktop_core_samples.cpp test_local_desktop_partial_tear.cpp test_local_desktop_scan_cursor.cpp)
 target_link_libraries(PBLocalDesktopBootstrapTests PRIVATE PB::PBModulation PB::PBProtocol)
 target_compile_definitions(PBLocalDesktopBootstrapTests PRIVATE
     PB_LOCAL_DESKTOP_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/local-desktop-bootstrap")
