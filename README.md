@@ -3,6 +3,11 @@
 Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
 
 > **G22 本地 GUI 候选已交付，尚未公开发布。** G00..G21 已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`。G22已重新实现双端 GUI、GUI-only 启动/CLI 重定向、无文件大小确认，并通过新 GUI 的右屏1 MB实际恢复；最终独立包和新解压实际像素验收已通过，冻结身份为`3a840a2`，见[G22交付索引](docs/UNIFIED_G22_DELIVERY_2026-09-07.md)。当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10）。以下大文件/远控性能证据仍严格属于旧冻结候选6e90643，不能冒充新版GUI构建的性能结果。同候选右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯和Base-only证据已通过；最终Windows远程桌面现场完成精确1 GiB的128/128、whole digest、安全发布、final reopen及外部双摘要。该远控运行原始性能为8,626.511 B/unique、低于16 KiB且Receiver Gate exit1；用户在完整披露后只对此Run/Session明确豁免。不得把限定通过改写成未豁免性能PASS，未来16 KiB门继续有效。
+>
+> **G22 之后的非本机吞吐研究线已于 2026-09-09 由用户停止（非技术阻塞）。** 该线的目标是远程桌面像素链路下的迟加入吞吐。
+> **未确立任何确认的非本机提速。** 已入库的改进只在 CPU 侧：Bootstrap 全图扫描游标（两组固定像素对照中位 −12.2% 与 −9.6%）、
+> QC-LDPC 每行最小值归一化（阶段均值 1.8984→1.4471 ms，约 −23.8%）；这些是 CPU 数据，不是远控吞吐百分比。
+> 恢复入口见[暂停交接与恢复入口](docs/REMOTE_THROUGHPUT_RESUME_HANDOFF_2026-09-09.md)，Step 状态与全部失败记录见[非本机吞吐优化路线图](docs/REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md)。
 
 快速入口：
 
@@ -10,6 +15,8 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 - [G22 GUI 与本地交付验收](docs/UNIFIED_G22_GUI_RELEASE.md)
 - [新版 Encoder / Decoder 使用指南](docs/UNIFIED_USER_GUIDE.md)
 - [Goal/目标模式统一实施路线](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)
+- [G22 之后的非本机吞吐优化路线图](docs/REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md)
+- [2026-09-09 文档状态矩阵](docs/DOCUMENT_STATUS_2026-09-09.md)
 - [2026-09-07 G21最终远控1 GiB结果与单次豁免](docs/UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)
 - [2026-09-07 G21本次交付、目录与证据索引](docs/UNIFIED_G21_DELIVERY_2026-09-07.md)
 - [最终技术路线与总体设计](docs/PixelBridge_最终技术路线与总体设计.md)
@@ -56,6 +63,7 @@ Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文
 - 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
 - 6e90643的本机三档、外部双摘要、Base-only证明和16 KiB/unique硬门已有独立证据；最终真实远控1 GiB功能恢复与双摘要已通过，原始8,626.511 B/unique性能门失败由用户只对该Run/Session单次豁免，32 KiB/unique工程目标未达到；
 - G22 双端GUI、独立包、SBOM/notices、用户文档和新解压包右屏1 MB路径已通过，状态为`PASS_LOCAL_CANDIDATE`。项目自身 LICENSE、签名与公开分发仍需维护者单独决定，本地候选不冒充公开发行。
+- G22 之后的非本机吞吐优化线已由用户于 2026-09-09 停止：Step1/Step2 仍为 PREPARED/PARTIAL，Step3 为 PARTIAL 且 codec NOT_RECOVERED，Step4 整体 IN_PROGRESS，Step5 只有未晋级结论（layout 11 CPU 参考验证通过、空白带固定 codec 两组 NOT_RECOVERED），Step6–10 未启动；没有确认的非本机吞吐收益，也未晋级任何默认值。
 
 完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明仍保留在 [`docs/PHASE0_PROTOCOL_STATUS.md`](docs/PHASE0_PROTOCOL_STATUS.md)，但不得作为当前正式 Descriptor 规范引用。
 

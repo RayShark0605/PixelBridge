@@ -78,5 +78,18 @@ $process = Start-Process -FilePath .\PixelBridgeDecoder.exe -ArgumentList $diagn
 $process.ExitCode
 ```
 
+Step1 现场测量另外提供两个入口，仅在启用 Qt GUI 的构建中存在，属于开发者诊断而非日常操作：
+
+```powershell
+& .\PixelBridgeEncoder.exe --measurement-build-identity | Out-Host
+& .\PixelBridgeEncoder.exe --gui-measurement --evidence-root .\step1-evidence
+```
+
+`--measurement-build-identity` 打印本次构建的测量身份 JSON（`baseCommit` 取自 CMake 配置期的 `git rev-parse HEAD`，
+`sourceFingerprintSha256` 取自 `PB_STEP1_SOURCE_FINGERPRINT`，未封存时为 `unsealed`），因此只有重新构建才会反映新的 HEAD。
+`--gui-measurement --evidence-root PATH` 仍然打开正常使用的 GUI，只是额外记录 Step1 测量证据；参数个数必须正好为 4、
+第二个参数必须是 `--evidence-root`，否则进程直接以退出码 2 结束。两者都严格只观测：上限 1800 秒、证据与源文件各 64 MiB、
+最多 8 个 Segment、131072 条提交记录，绝不改变 Profile、FEC、CRC、文件摘要或安全发布判定。
+
 不要通过历史实验参数改变 Unified 的 Profile、FEC 或文件验证规则来“提高成功率”。需要排查时，优先导出高级页中的诊断报告。
 项目自身许可证、签名及公开发布决定不由本指南代替；本地候选不代表已公开发布。
