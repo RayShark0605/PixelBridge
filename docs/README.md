@@ -1,6 +1,32 @@
 # PixelBridge 文档索引
 
+**2026-09-09 暂停交接（最新入口）：用户已要求停止本次任务。** 下次继续非本机吞吐优化先读[暂停交接与恢复入口](REMOTE_THROUGHPUT_RESUME_HANDOFF_2026-09-09.md)。第22节固定codec A/B已封存复验；第23节4/3显示适配仅只读准备，未实现/构建/运行。实际非本机提速仍未确立，不能按下方历史“下一步”自动继续。
+
+**2026-09-09第22节：** 空白带唯一固定codec A/B已完成，实际码流属性与输入/检查器负例通过，但两组均NOT_RECOVERED。A有15帧定位失败/15帧CanvasClipped，B虽30帧Bootstrap通过，仍30帧CanvasClipped，未进入主FEC；不能据此判定主区无损或提速。局部60条补充带有21条硬判决码字精确相同，但任一低置信度cell即丢整条的规则仅3条通过；这不是RS实际解码或接纳证据。原始回归与控制晚到整文件guard通过，正式layout10/主控制未改。下一步先复用已验证4/3显示几何和本轮码流，不重跑同一失败入口、不降门限。见[夜间记录第22节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。
+
+**2026-09-09第21节：** 空白带已进入独立新身份layout11的完整原始画面参考验证：30帧×5条件（无补充、无遮挡、右上/左下/双遮挡）均恢复262144B，原ReceiverIngress/Storage摘要/安全发布/reopen及外部双摘要通过，150条主区记录一致。只证明CPU reference＋原恢复库，未跑原应用/GPU、codec或实屏；原layout10和主区控制未改，无远控提速结论。3次构建失败及资源原因保留，最终/O2在2GiB内通过。见[夜间记录第21节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。
+
+**2026-09-09第20节：** 空白带短控制原型已在独立608×64原始patch证明完整121/194/114B控制记录可单条恢复；61项分组检查、原ControlPlaneReceiver的重复/冲突/资源规则及Python独立像素/RS/CRC审计通过。超195B合法控制不截断而不使用补充区；两条独立失效。此为artifact-only原型，不是正式布局、整画面/codec/整文件或远控提速证据。原layout10及主区控制未改；失败fixture/source/build完整保留。见[夜间记录第20节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。
+
+**2026-09-09第19节：** 新定位＋新纠错组合已完成一次实际WGC两段整文件接收：8454144B、39.4210093s、UniqueVisualFPS14.9921，原摘要/安全发布/reopen和外部双摘要通过、双方正常退出。此为本机无codec、FEC迭代0的组合集成检查，不是非本机收益认证；旧现场包未替换。用户空白区/遮挡建议已进入只读容量核对，正式layout10未改。见[夜间记录第19节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。以下为各时点历史增量。
+
+**2026-09-09第18节增量：复用两份既有压缩视频，新locator的240次完整观察/工作量与原版一致。原CPU oracle固定75组软判决上，QC-LDPC仅复用每行最小值归一化，675对码字/状态/错误/迭代相同，阶段均值1.8984→1.4471ms（约23.8%下降，非远控吞吐百分比）。40个相关用例通过；新locator+FEC接回原GPU/Receiver后180条非处理时钟帧记录完全一致，全彩仍拒绝、中和同媒体PTS6000ms整文件摘要/发布/reopen通过。周期resumeGeneration快照差异186→159如实保留，不冒充断点恢复认证。没有新编码/实屏/远控，本节新增FEC还未经过实际WGC，未替换现场包。见[夜间记录第18节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。**
+
+**2026-09-09最新实现（第17节）：** 已定位并优化原Bootstrap全图扫描的重复地址/格式分支，不减少扫描、阈值或校验。两固定像素交替CPU对照中位耗时16.988→14.909ms、21.638→19.570ms，全部观察/资源计数一致；49个受影响用例及1070项零分配检查通过。新扫描对象已接回原WGC/DecoderRuntime/Receiver，4/3右屏两段8,454,144B在39.574339s完成原摘要/发布/reopen及外部双摘要，双方正常退出。仅是已验证本机CPU成本优化与集成通过，**没有新实际远控提速认证**；不改FPS/Profile/远控设置，不替换现场包。见[夜间记录第17节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。
+
+**2026-09-09当前诊断（第16节）：** 原硬件WGC/Decoder在固定全彩15Hz、8MiB+64KiB两段源下，1:1与4/3实际像素均完成整文件摘要/发布/reopen，分别39.296s/40.123s、UniqueVisualFPS 14.992/14.644。4/3本身在此次无远控压缩条件下未复现现场约10–11Hz，但不能据此归因网络：现场非零FEC迭代、突发到达仍未被模拟。初始scaled实验适配器错误固化可重试EpochMismatch，失败保留；仅修正工具适配器、另建目录后通过。下一步拆分Bootstrap Map/定位/Unmap成本，不改协议、不继续低容量held-neutral提速晋级。见[夜间记录](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。
+
 本目录同时保存当前产品路线、核心规范、模块说明、历史实现记录和人工 Gate 证据。阅读时必须区分“当前合同”“当前实现清单”和“历史证据”，不能因为某个历史 Step 已通过，就推断新的统一视觉产品已经完成。
+
+**2026-09-09最新决策：** [夜间记录第15节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)完成原生未包装/中和保持两段整文件实屏，39.288218s/176.8616631s，两者原摘要/发布/reopen和外部双摘要全通过、正常退出。新增独立有界入口并未改变原runtime/Receiver。但对照正常B2现场190,186B/s及Chroma 11949/11955通过，held-neutral理想稳态容量仅98,550B/s，缺少提速余量；因此停止该候选的现场提速晋级，保留弱信道恢复参考，不继续40MB/codec扩跑或做提速包。后续回到保留有效色度与足够容量的时序/到达率分析；本地或模型成功不等于非本机优化完成。以下为历史增量。
+
+**2026-09-09最新增量：** [夜间记录第14节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)把冻结压缩候选扩大到256KiB/K=200，固定8秒视频、前2秒仅媒体预运行、原Receiver接收其余6秒。两组raw均完整恢复；相同8M/4M-VBV条件下，中和版在媒体PTS6000ms完成摘要/发布/reopen和独立双摘要，彩色未建立Session、Outer接纳0。90次Bootstrap成功不等于建立Session，彩色125次正确数据观察被原规则WaitingForSession拒绝。新编码仅2次，不调参数、不重跑失败源；仍为固定模型证据，非实际远控速度认证。
+
+**2026-09-09当前增量：** [夜间记录第13节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)已接通新实验Sender到原Decoder的右屏实际像素整文件链。固定64 KiB、同保持包装的彩色/色度中和两轮均通过原摘要/发布/reopen和停机后外部双摘要，分别1.2138502s/1.5310232s；本机无codec压力，中和并不更快。新无GUI Receiver工具只启动原库、不注入payload/Replay/服务。不是非本机速度认证，不改产品默认；第11–12节中的“实屏整文件未验证”已由第13节窄增量更新，其他限制保留。
+
+**2026-09-09后续夜间进度：** [第11–12节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)更新：固定色度中和候选通过一个独立源/新Session的原GPU/Receiver整文件验证，彩色对照仍未恢复。工具专用实验发送入口完成C++像素一致性、4组定向检查和右屏双模式各5秒启动/退出；它尚未由实屏Decoder完成整文件，也没有新的非本机收益认证，不新增认证Profile、不改产品默认。以下条目是各时间点的历史增量。
+
+**2026-09-09最新进度：** [夜间自主推进记录第5–7节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)记载了不改原GPU/Receiver准入的4/3回放，以及H2整画面保持两帧候选的首次固定codec整文件成功和干净复现。它尚受启动阶段偏差限制，不是持续吞吐或真实远控收益；不改产品默认。下面Step3/Step4各历史条目保留其原证据边界。
 
 ## 1. 新参与者的最短阅读路径
 
@@ -9,25 +35,67 @@
 1. [`../AGENTS.md`](../AGENTS.md)：工程、安全、代码风格、测试和 Git 纪律；
 2. [`../README.md`](../README.md)：项目入口、目录、构建方式和当前事实边界；
 3. [`../CONTRIBUTING.md`](../CONTRIBUTING.md)：面向 GitHub 贡献者的范围、构建、测试和提交约定；
-4. [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)：**当前唯一 Goal/目标模式实施路线**；
-5. [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md)：先读第0节最新增量；0.15为最终远控结果与单次用户豁免，0.13/0.14保留本机三档和交付历史；
-6. [`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)：最终Windows远程桌面1 GiB的功能PASS、原始性能FAIL、跨机摘要与单次豁免边界；
-7. [`PixelBridge_最终技术路线与总体设计.md`](PixelBridge_最终技术路线与总体设计.md)：完整总体架构与长期不变量；
-8. [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md)：G22产品入口与保留的旧诊断区别；旧表为历史记录；
-9. 与当前目标直接相关的模块文档和测试。
+4. [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)：G00–G22 现有产品合同、实现历史与验收证据；
+5. [`REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md`](REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md)：**G22之后的非本机吞吐优化入口**；Step1/Step2仍PREPARED/PARTIAL，Step3 PARTIAL/codec NOT_RECOVERED；Step4单候选的A1/B1/B2/A2四轮核心整文件/身份核验已完成，原组B更快、反序接收观察A更快，且A2进程残留后人工结束、退出/预算失败；无完全合规反序配对，不证明稳定增益、不晋级默认值。保留全部缺项和失败，Step4整体IN_PROGRESS，Step5–10未启动；
+6. [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md)：先读第0节最新增量；0.15为最终远控结果与单次用户豁免，0.13/0.14保留本机三档和交付历史；
+7. [`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)：最终Windows远程桌面1 GiB的功能PASS、原始性能FAIL、跨机摘要与单次豁免边界；
+8. [`PixelBridge_最终技术路线与总体设计.md`](PixelBridge_最终技术路线与总体设计.md)：完整总体架构与长期不变量；
+9. [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md)：G22产品入口与保留的旧诊断区别；旧表为历史记录；
+10. 与当前目标直接相关的模块文档和测试。
 
-发生冲突时，优先遵循当次用户要求、`AGENTS.md`、统一路线，再使用总体设计中未被新路线取代的内容。Phase 0、Phase 1.5、RemoteVisual Step 文档不得反向覆盖新产品合同。
+发生冲突时，优先遵循当次用户要求、`AGENTS.md`、当前任务对应路线，再使用总体设计中未被该路线明确取代的内容。现有产品合同仍由 G00–G22 统一路线解释；新吞吐路线中的实验假设不是已冻结协议。Phase 0、Phase 1.5、RemoteVisual Step 文档不得反向覆盖新产品合同。
+
+## Step2 本地诊断增量（2026-09-08）
+
+- [Step2 诊断与 OfflinePixels 合同](REMOTE_STEP2_DIAGNOSTICS_AND_REPLAY_CONTRACT.md)
+- [Step2 实施、录像损失分解和待确认事项](REMOTE_STEP2_EXECUTION_2026-09-08.md)
+- 本地目标完成不等于非本机 PASS。新发现的几何准入数值边界尚未修改；不自动进入 Step3。
+
+## Step3-A 本地确定性工具增量（2026-09-08，后续单独获准执行）
+
+- [Step3-A 实施、两轮精确重复、小文件闭环与已知失败边界](REMOTE_STEP3A_EXECUTION_2026-09-08.md)
+- [独立工具、固定样例、资源预算与复验命令](../tools/PBRemoteThroughputStep3A/README.md)
+- 9 场景×2 轮仅证明软件 WARP/OfflinePixels 的本地诊断与小文件恢复；G1/G1B 几何门未修改，Step3-B／G2／Step4 未启动，非本机现场仍 NOT_RUN。
 
 ## 2. 当前权威文档
 
+### 夜间自主非本机吞吐推进（2026-09-09）
+
+- [新观察版包、实际4/3显示比例与固定codec差分](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)：用户授权不提问、自主代码及本机双屏测试。双端观察包已通过本地构建、15项定向用例及10项解压启动检查；同一codec在4/3显示缩放后3张CPU样本接受15/5/0块，而1:1均为0。未改几何门，尚无新GPU整文件/现场提速证明；总目标active，继续闭合可用于吞吐筛选的完整恢复链。
+
+### 非本机控制相位 A/B（2026-09-08，后续独立授权）
+
+- 后续用户明确要求继续以非本机吞吐优化为目标：见[四轮归因与已有观察量补齐](REMOTE_THROUGHPUT_ATTRIBUTION_2026-09-08.md)。现场报告未写出生产快照已有的capture/demod/Outer计数；仅输出增量已通过5 cases/80 assertions，无新collector、无接纳/资源/wire更改。总目标保持active，尚无新包或提速证据，不转入退出修复主线。
+
+- [周期控制相位候选、A/B包和单组现场结果（第9节）](REMOTE_CONTROL_PHASE_AB_2026-09-08.md)
+- 原节奏与相位分散的定向 scheduler、测量模型、原始像素整文件和新解压启动检查通过；本轮 60/60 正常像素预算已用完。
+- 用户确认当前为向日葵，不是Citrix；provider仅作环境元数据。当前PathFix1操作包的一组A/B整文件和精确迟加入关联均通过：A238.3155474s、B211.5549573s。只支持本组B更快，不支持稳定或因果收益；A延后审计及B本机辅助wrapper缺失如实记录。旧RunId/长路径失败保留，Step3 codec阻断未变，Step4单组子目标完成并停止，不自动扩展后续测试。
+- 23:24后续独立授权的反序B2→A2已收束：B2为212.477132s且正常收尾；A2为205.0048921s，但Encoder窗口关闭后进程残留，用户人工结束后原Launcher记录exit1/999.1670919s/预算告警true。四轮核心文件核验通过不等于全部运行检查通过；无合规反序配对、不证明稳定收益。最终报告、失败边界和待确认退出修复计划见执行记录10.3及`artifacts/remote-field-reverse-20260908-run01/four-run-comparison01/REPORT.md`。本目标停止，不自动实施下一步或补跑。
+
+### Receiver 接纳原因诊断补充（2026-09-08）
+
+- [接纳原因、历史控制就绪归因与原始开/关对照](REMOTE_RECEIVER_DECISION_DIAGNOSTICS_2026-09-08.md)
+- [独立工具、字段含义、预算及只读复验](../tools/PBReceiverDecisionProbe/README.md)
+- 本地最小诊断完成：60/60 原始观察，两组整文件/摘要/发布/reopen 通过，旧非时钟 trace 与历史原始对照一致。没有 codec 重跑或发送节奏改动；Step3 仍 PARTIAL、现场 NOT_RUN、Step4 未启动。
+
+### Step3-B 后续独立获准增量（2026-09-08）
+
+- [Step3-B 多帧原始对照、固定有状态码流、颜色失败修正及几何拒绝](REMOTE_STEP3B_EXECUTION_2026-09-08.md)
+- [独立工具、冻结参数、资源边界与复验命令](../tools/PBRemoteThroughputStep3B/README.md)
+- 64 KiB / 30帧 / 15fps / libx264 8Mbit/s / VBV4Mbit / GOP15，正常观察93/93；原始多帧闭环通过，两次codec精确一致但未恢复。保持原几何门、生产Decoder/Receiver、安全发布与资源限制；现场NOT_RUN，整个Step3仍PARTIAL。上面的Step3-A段落保留当时状态，不代表后续Step3-B未执行。
+
 | 文档 | 作用 | 当前状态 |
 | --- | --- | --- |
+| [`REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md`](REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md) | 非本机固定环境下的迟加入吞吐优化；远控软件仅作元数据（本轮向日葵）；录像诊断、Step1–Step10、离线筛选及退出条件 | **Step1/Step2 PREPARED/PARTIAL；Step3 PARTIAL/codec NOT_RECOVERED；Step4单候选一组A/B现场核验完成，本组B更快但未认证稳定收益，子目标停止；Step5–10未启动** |
+| [`REMOTE_STEP3B_EXECUTION_2026-09-08.md`](REMOTE_STEP3B_EXECUTION_2026-09-08.md) | 固定有状态codec、多帧闭环、属性/失败检查、运行身份与封存证据 | **本地最小诊断完成；codec恢复未通过；不修改几何门或晋级后续Step** |
+| [`REMOTE_STEP1_MEASUREMENT_CONTRACT.md`](REMOTE_STEP1_MEASUREMENT_CONTRACT.md) | B0/M1 身份隔离、固定 encoded ledger、Start 到 final reopen 计时、迟加入精确关联及人工现场操作 | **Step1 本地测量合同；不授权实屏或远程** |
+| [`REMOTE_STEP1_EXECUTION_2026-09-08.md`](REMOTE_STEP1_EXECUTION_2026-09-08.md) | Step1 实际修改、构建、负例、独立包、输入和执行证据 | **本地完成；最终身份和现场待验收项入口** |
 | [`UNIFIED_G22_DELIVERY_2026-09-07.md`](UNIFIED_G22_DELIVERY_2026-09-07.md) | 最终双端EXE/ZIP、冻结身份、hash、实屏证据和旧目录清理 | **G22 PASS_LOCAL_CANDIDATE；3a840a2** |
 | [`UNIFIED_G22_CITRIX_DISPLAY_DIAGNOSTICS_2026-09-07.md`](UNIFIED_G22_CITRIX_DISPLAY_DIAGNOSTICS_2026-09-07.md) | Citrix会话Encoder启动故障、独立元数据诊断工具与现场证据 | **截图确认DXGI output对应缺失；修复范围已获同意** |
 | [`UNIFIED_G22_ENCODER_DISPLAY_COMPAT_2026-09-07.md`](UNIFIED_G22_ENCODER_DISPLAY_COMPAT_2026-09-07.md) | Encoder 屏幕/硬件身份解耦、独立候选与回归 | **df2bcfbd 本地实屏PASS；Encoder-only已交付，Citrix现场待验证** |
 | [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md) | 用户新授权的双端 GUI 重建、确认事项、最小验证和 Windows 发布候选 | **本地候选已交付；保留全部阶段/失败记录** |
 | [`UNIFIED_USER_GUIDE.md`](UNIFIED_USER_GUIDE.md) | 新 GUI 的文件/帧率/全屏/Esc、目录/限定屏幕 ROI/接收进度及 CLI 日志说明 | G22 用户指南；包和实屏门禁见工作记录 |
-| [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | 冻结最终产品行为；将实现拆为 G00..G22；规定每步最小测试和退出条件 | **当前执行入口** |
+| [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | 冻结既有产品行为；记录 G00..G22 的实现、最小测试和退出条件 | **现有合同与历史证据；后续吞吐优化见新路线** |
 | [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md) | 最新0.15最终远控结果/单次豁免；0.13同候选三档、0.14交付及更早失败保持历史 | **G21 最终交接入口** |
 | [`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md) | 最终远控1 GiB身份、像素权威、双摘要、原始Gate失败与用户单次豁免 | **G21=`PASS_WITH_SINGLE_RUN_USER_WAIVER`** |
 | [`UNIFIED_G21_DELIVERY_2026-09-07.md`](UNIFIED_G21_DELIVERY_2026-09-07.md) | 统一交付目录、冻结产品与工具构建身份、包hash、测试命令和原始证据位置 | 历史交付索引；现场结果见最终结果文档 |
@@ -161,8 +229,8 @@
 
 - 默认 CTest 测试不应弹窗、移动鼠标或改变显示设置。
 - Presentation/ScreenRegion/WGC/DXGI/LocalDesktop 的 native Gate 都是 opt-in，并需要显式目标显示器坐标。
-- 统一路线只在 G20 运行一次完整 Release CTest 和真实右屏 Gate。
-- 性能结论必须使用最终发布后的 verified bytes 与唯一逻辑帧；理论容量、Present FPS 和 callback FPS 不是 goodput。
+- G00–G22 统一路线的完整 Release CTest 和真实右屏检查点为 G20；新吞吐路线仅在其最终集成检查点安排完整回归，普通 Step 保持定向验证。
+- 性能结论必须使用最终验证／发布／重开后的 verified bytes 与明确的时间分母；每帧指标另用实际唯一逻辑帧。新分区协议不能改写旧 `UniqueVisualFPS`，理论容量、Present FPS 和 callback FPS 不是 goodput。
 - Golden 只证明给定输入下的确定性语义；不能证明真实远程链路。
 - WARP 只证明 D3D11 参考/兼容路径；不能替代目标硬件 adapter。
 - Build/GUI smoke 只证明装载和基本生命周期；不能证明视觉恢复。
