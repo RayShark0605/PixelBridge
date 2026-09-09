@@ -21,6 +21,8 @@ HEAD：`8f74cd7af7895c8a1473d0fa05f9201224503954`。2026-09-09 用户另行要�
 
 **提交只改变记账位置，未改动任何源码字节**，因此不能据此升级任何证据身份：旧交付包、录像、raw 像素与实验封存目录仍按封存时记录的 build 身份解释，不得用新 HEAD 重新解释；`--measurement-build-identity` 输出的 `baseCommit` 来自 CMake 配置期 `git rev-parse HEAD`，`sourceFingerprintSha256` 来自 `PB_STEP1_SOURCE_FINGERPRINT` 缓存变量，两者都是编译期注入，只有重新构建后才会反映新 HEAD。若要以当前源码身份作为新的对照基线，必须重新 freeze、build、test、package、seal。
 
+> **2026-09-09 追加勘误（不改写上句原文）：** 上面的 `HEAD：8f74cd7…` 与「共 9 个提交（`6eb4563`…`8f74cd7`）」只是该次整理的时点值。此后又追加了 `80c9e0e`、`6c059c6`、`a39fe61`、文档状态矩阵 `e206fa5` 与本次状态横幅提交，均为纯文档变更。**纯文档提交不再逐个追记 HEAD 哈希**：判断源码身份是否改变请改用 `git log --oneline -- libs apps tests tools CMakeLists.txt`，该线上最后一次改动源码的提交是 `46a072b`，其后所有提交在源码路径上零差异（已用 `git log --oneline 46a072b..HEAD -- libs apps tests tools CMakeLists.txt` 确认为空）。证据身份仍以各封存包内记录的 build 身份（`baseCommit`、`sourceFingerprintSha256`）为准，不得用 live HEAD 重新解释。全局文档状态见 [文档状态矩阵](DOCUMENT_STATUS_2026-09-09.md)。
+
 正式产品：`PB-Unified-SC6-V3`，ProfileId `0x5042554E49534333`，layout10。空白带独立实验：`PB-Experimental-BlankControl-1`，ProfileId `0x504242414E443031`，layout11；正式catalog拒绝新实验身份。
 
 以下边界继续保留：

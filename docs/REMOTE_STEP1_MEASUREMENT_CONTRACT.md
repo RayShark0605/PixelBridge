@@ -1,5 +1,7 @@
 # Remote throughput Step1 — 本地测量合同与现场操作
 
+> **状态（2026-09-09 记账）：** 本文属 G22 之后非本机吞吐优化线在 2026-09-08/09 的记录或合同文本，正文未改写。该目标已于 2026-09-09 由用户主动停止（未完成、非技术阻塞）；文中「目标进行中 / 下一步 / 待执行」等表述仅属当时时点，不构成继续执行或现场操作的授权。当前状态见 [暂停交接](REMOTE_THROUGHPUT_RESUME_HANDOFF_2026-09-09.md) 与 [文档状态矩阵](DOCUMENT_STATUS_2026-09-09.md)。
+
 ## 1. 范围与权威
 
 本合同只覆盖 [非本机吞吐路线](REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md) Step1 的本地准备。
