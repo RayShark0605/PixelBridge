@@ -1,5 +1,7 @@
 # PixelBridge 文档索引
 
+**2026-09-09 目录整理与文档状态记账：** 在用户停止非本机吞吐目标后，同一日按用户要求整理项目目录并校正文档状态。`4a36d0f` 之后由整理产生的提交只暂存显式路径，未移动、改名或删除 `artifacts/`、`build-*`、现场录像或封存证据包；工作树唯一未跟踪文件是按用户要求长期保留、始终不入库的受保护报告 `PHASE1_GATE_REPORT.md`。本轮属于纯文档与 Git 记账：未构建、未运行测试、未执行任何实屏或远程现场流程，因此不构成任何新的验证结论。全量文档状态矩阵见 [`DOCUMENT_STATUS_2026-09-09.md`](DOCUMENT_STATUS_2026-09-09.md)。
+
 **2026-09-09 暂停交接（最新入口）：用户已要求停止本次任务。** 下次继续非本机吞吐优化先读[暂停交接与恢复入口](REMOTE_THROUGHPUT_RESUME_HANDOFF_2026-09-09.md)。第22节固定codec A/B已封存复验；第23节4/3显示适配仅只读准备，未实现/构建/运行。实际非本机提速仍未确立，不能按下方历史“下一步”自动继续。
 
 **2026-09-09第22节：** 空白带唯一固定codec A/B已完成，实际码流属性与输入/检查器负例通过，但两组均NOT_RECOVERED。A有15帧定位失败/15帧CanvasClipped，B虽30帧Bootstrap通过，仍30帧CanvasClipped，未进入主FEC；不能据此判定主区无损或提速。局部60条补充带有21条硬判决码字精确相同，但任一低置信度cell即丢整条的规则仅3条通过；这不是RS实际解码或接纳证据。原始回归与控制晚到整文件guard通过，正式layout10/主控制未改。下一步先复用已验证4/3显示几何和本轮码流，不重跑同一失败入口、不降门限。见[夜间记录第22节](REMOTE_OVERNIGHT_THROUGHPUT_2026-09-09.md)。
@@ -36,7 +38,7 @@
 2. [`../README.md`](../README.md)：项目入口、目录、构建方式和当前事实边界；
 3. [`../CONTRIBUTING.md`](../CONTRIBUTING.md)：面向 GitHub 贡献者的范围、构建、测试和提交约定；
 4. [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)：G00–G22 现有产品合同、实现历史与验收证据；
-5. [`REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md`](REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md)：**G22之后的非本机吞吐优化入口**；Step1/Step2仍PREPARED/PARTIAL，Step3 PARTIAL/codec NOT_RECOVERED；Step4单候选的A1/B1/B2/A2四轮核心整文件/身份核验已完成，原组B更快、反序接收观察A更快，且A2进程残留后人工结束、退出/预算失败；无完全合规反序配对，不证明稳定增益、不晋级默认值。保留全部缺项和失败，Step4整体IN_PROGRESS，Step5–10未启动；
+5. [`REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md`](REMOTE_CHANNEL_THROUGHPUT_OPTIMIZATION_ROADMAP.md)：**G22之后的非本机吞吐优化入口**；Step1/Step2仍PREPARED/PARTIAL，Step3 PARTIAL/codec NOT_RECOVERED；Step4单候选的A1/B1/B2/A2四轮核心整文件/身份核验已完成，原组B更快、反序接收观察A更快，且A2进程残留后人工结束、退出/预算失败；无完全合规反序配对，不证明稳定增益、不晋级默认值。保留全部缺项和失败，Step4 整体 IN_PROGRESS；Step5 已进入未晋级结论（roadmap 第 20–22 节：layout 11 CPU 参考验证通过、空白带固定 codec 两组 NOT_RECOVERED），Step6–10 未启动；用户已于 2026-09-09 主动停止本目标，非技术阻塞；
 6. [`UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md`](UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md)：先读第0节最新增量；0.15为最终远控结果与单次用户豁免，0.13/0.14保留本机三档和交付历史；
 7. [`UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md`](UNIFIED_G21_REMOTE_1GIB_RESULT_2026-09-07.md)：最终Windows远程桌面1 GiB的功能PASS、原始性能FAIL、跨机摘要与单次豁免边界；
 8. [`PixelBridge_最终技术路线与总体设计.md`](PixelBridge_最终技术路线与总体设计.md)：完整总体架构与长期不变量；
@@ -103,6 +105,29 @@
 | [`CURRENT_RUNTIME_OPTION_INVENTORY.md`](CURRENT_RUNTIME_OPTION_INVENTORY.md) | 说明工作树中实际存在的 GUI/CLI/实验路径和未接通能力 | 过渡实现清单，不是最终产品说明 |
 | [`GITHUB_PUBLISH_CHECKLIST.md`](GITHUB_PUBLISH_CHECKLIST.md) | 首次推送前、GitHub 仓库配置和源码发布检查 | 当前发布准备入口 |
 | [`../README.md`](../README.md) | 仓库首页、快速构建与真实完成状态 | 对外入口 |
+
+### 几何准入与固定 codec 归因（2026-09-08）
+
+| 文档 | 作用 | 当前状态 |
+| --- | --- | --- |
+| [`REMOTE_GEOMETRY_G1_EXECUTION_2026-09-08.md`](REMOTE_GEOMETRY_G1_EXECUTION_2026-09-08.md) | 几何准入 G1 的实际执行、身份与封存证据 | **NOT_PROMOTED_NO_NEW_ADMISSION**；未开放新准入 |
+| [`REMOTE_GEOMETRY_G1B_EXECUTION_2026-09-08.md`](REMOTE_GEOMETRY_G1B_EXECUTION_2026-09-08.md) | 围绕 G1 判据的有界补充论证与实验边界 | 有界研究结论；不构成晋级证据 |
+| [`REMOTE_GEOMETRY_CODEC_ATTRIBUTION_2026-09-08.md`](REMOTE_GEOMETRY_CODEC_ATTRIBUTION_2026-09-08.md) | 固定 codec 场景下几何/码流损失的归因尝试 | **ATTRIBUTION_COMPLETE_CRITERION_NOT_ESTABLISHED** |
+| [`REMOTE_FIXED_CODEC_OBSERVATION_CONTRACT_2026-09-08.md`](REMOTE_FIXED_CODEC_OBSERVATION_CONTRACT_2026-09-08.md) | 固定 codec 边缘观测合同、字段与观测边界 | 当前观测合同；第 22 节 A/B 依据此合同 |
+
+### 统一产品合同与 Gate 证据（G15–G21）
+
+| 文档 | 作用 | 当前状态 |
+| --- | --- | --- |
+| [`UNIFIED_ENCODER_WORKFLOW.md`](UNIFIED_ENCODER_WORKFLOW.md) | Unified Encoder 产品工作流（G15） | 历史验收证据（2026-09-04 headless/controller/GUI smoke）；产品绑定现为 `PB-Unified-SC6-V3`/layout 10，G15 数字属历史 |
+| [`UNIFIED_DECODER_WORKFLOW.md`](UNIFIED_DECODER_WORKFLOW.md) | Unified Decoder 产品工作流（G16） | 历史验收证据；当时未跑实屏/远程/大文件门 |
+| [`UNIFIED_TELEMETRY_REPORT.md`](UNIFIED_TELEMETRY_REPORT.md) | G17 统一遥测与 `PixelBridge.RunReport.3` 报告合同 | 当前遥测/报告口径来源；Bootstrap-only 缓存身份问题经批准做最小修复 |
+| [`UNIFIED_PROCESS_RESTART_RECOVERY.md`](UNIFIED_PROCESS_RESTART_RECOVERY.md) | G18 256 MiB 真实进程终止与恢复 | 已通过批准的无像素 headless 验收；非现场认证 |
+| [`UNIFIED_LARGE_FILE_CAPABILITY.md`](UNIFIED_LARGE_FILE_CAPABILITY.md) | G19 20 GiB+ headless 大文件能力 | 已通过（20 GiB+64 KiB、2561 Segment、终止后恢复、外部双摘要）；能力证据而非吞吐证据 |
+| [`UNIFIED_LOCAL_RELEASE_GATE.md`](UNIFIED_LOCAL_RELEASE_GATE.md) | G20 本地 Release Gate | **冻结历史证据：LC4/layout 8、0.75x、31-slot 不改写；218/218 Release CTest 属冻结提交 `e0729b2`；不可用于 SC6-V3 声明** |
+| [`UNIFIED_REMOTE_GATE.md`](UNIFIED_REMOTE_GATE.md) | G21 真实远程像素链验收 | 2026-09-07 `PASS_WITH_SINGLE_RUN_USER_WAIVER`；真像素 1 GiB 恢复，原始性能门 FAIL（8,626.511 B/unique < 16 KiB 硬门），豁免仅限该次会话 |
+
+> `PHASE1_GATE_REPORT.md` 在 `docs/` 目录中存在，但按用户要求长期**不加入 Git**：它保持未跟踪、受保护，不得暂存、修改、移动或删除（SHA-256 见[暂停交接](REMOTE_THROUGHPUT_RESUME_HANDOFF_2026-09-09.md)）。它不是待清理的垃圾文件。
 
 ## 3. 协议、FEC、恢复与存储
 
@@ -244,6 +269,8 @@
 5. 文档中的命令应从仓库根目录可执行，并明确是否会打开窗口、占用显示器或产生大文件。
 6. 所有链接使用仓库相对路径；证据 artifact 不应依赖开发机的临时 build 路径。
 7. 未经明确批准，本地临时 Gate 报告、运行日志和用户文件不加入 Git。
+8. 顶部带日期的状态日志与下方状态表冲突时，以最新日期条目为准；但整理文档时必须把最新结论回写状态表，任何一次性结论、失败记录或用户豁免都不得被静默抹掉。
+9. `docs/PHASE1_GATE_REPORT.md` 由用户长期保留但不入库：整理、暂存或提交时不得暂存、修改、移动或删除它。全量文档状态视图见 [`DOCUMENT_STATUS_2026-09-09.md`](DOCUMENT_STATUS_2026-09-09.md)，该矩阵只做索引与状态标注，不构成第二套真相；事实来源仍是 `git log` 与各文档顶部带日期的原始记录。
 
 ## 10. GitHub 发布入口
 
