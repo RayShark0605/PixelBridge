@@ -1,0 +1,22 @@
+{
+  "shareRoot": null,
+  "workspace": "%LOCALAPPDATA%/PixelBridgeOps",
+  "pollSeconds": 2.0,
+  "heartbeatSeconds": 2.0,
+  "commandTimeoutDefaultSeconds": 600,
+  "commandTimeoutMaxSeconds": 21600,
+  "commandFileMaxBytes": 65536,
+  "stdoutCapBytes": 65536,
+  "artifactDefaultCapBytes": 536870912,
+  "artifactMaxCapBytes": 4294967296,
+  "maxDeployFileBytes": 17179869184,
+  "maxZipEntries": 20000,
+  "maxZipEntryBytes": 2147483648,
+  "maxZipTotalBytes": 17179869184,
+  "maxCollectFiles": 2048,
+  "maxStartArgs": 128,
+  "logCapBytes": 2097152,
+  "runScriptTimeoutMaxSeconds": 3600,
+  "stopGraceDefaultSeconds": 15,
+  "childMemoryCapBytes": 2147483648
+}

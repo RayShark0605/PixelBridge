@@ -78,3 +78,11 @@ space=<record|context|raw-pbrw|decoded-png-bgra> byte_offset=<n> expected=<...> 
 Recovery 的嵌套错误还包含 `windowByteOffset`、`innerByteOffset`、
 `dataRegionByteOffset`。PNG 仅压缩 stream digest 漂移而 decoded BGRA 相同时使用
 `byte_offset=not-applicable`。
+
+## PBRemoteOpsBridge
+
+SMB 共享目录上的远程实验命令桥：`local/pbops.py`（控制端）向共享根投递命令文件，
+远程机上的 `listener/pbops_listener.py` 轮询执行（部署/启停 Encoder/显示模式/截屏/
+采集/run-script）并回写结果与心跳。纯 Python 工具，不进入产品构建；所有路径可配置、
+不写死。该通道仅做实验编排，不得用作第二条 payload 通道。协议、部署与实验配方见
+[`PBRemoteOpsBridge/README.md`](PBRemoteOpsBridge/README.md)。
