@@ -53,9 +53,9 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 | 项 | 现状 | 核对方式 |
 | --- | --- | --- |
 | 远端 | 仓库**无 remote**，全程未 push、未 reset、未 rebase、未重写历史 | `git remote -v` |
-| 工作树 | 干净；唯一未跟踪文件为受保护的 `docs/PHASE1_GATE_REPORT.md` | `git status --porcelain -uall` |
+| 工作树 | 干净；唯一未跟踪的项目文件为受保护的 `docs/PHASE1_GATE_REPORT.md`（另可有本地会话目录 `.zcode/`，非项目内容） | `git status --porcelain -uall` |
 | 受保护文件 | SHA-256 `076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`，永不 add/修改/移动/删除 | `Get-FileHash` |
-| 源码最后改动 | `46a072b feat(tools)`；其后仅为文档提交与本次整理 | `git log -- libs apps tests tools CMakeLists.txt` |
+| 源码最后改动 | `fca42e1 fix(tools)`（2026-09-10 新增 PBRemoteOpsBridge 远程操作桥及部署修复）；其后为文档提交 | `git log -- libs apps tests tools CMakeLists.txt` |
 | 工作区遗留 | 仓库根 `display_probe.obj`（366,491 B，被 `*.obj` 规则忽略）**未删除**，需用户确认后才可清理 | `Test-Path display_probe.obj` |
 | 证据区 | `artifacts/`（约 12.9 GiB）、119 个 `build-*` 目录、现场录像与 raw 像素全部保留，本次整理未触碰 | 目录存在性 |
 
@@ -133,7 +133,7 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 
 ## 8. 文档地图
 
-### 8.1 `docs/`（本次整理后共 18 篇）
+### 8.1 `docs/`（2026-09-09 整理后 18 篇，另有后续新增）
 
 | 类别 | 文档 |
 | --- | --- |
@@ -148,6 +148,7 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 | 视觉/呈现/捕获 | `REFERENCE_RASTER.md`、`PRESENTATION.md`、`SCREEN_REGION.md`、`PBScreenCaptureWgc.md` |
 | 流式与恢复 | `ENCODER_STREAMING_CAROUSEL.md`、`DECODER_RESUMABLE_RECOVERY.md` |
 | 工具合同 | `GOLDEN_VECTOR_HARNESS.md` |
+| 远程实验通道 | `REMOTE_OPS_BRIDGE.md`（2026-09-10 新增；SMB 文件协议操作桥的机制与用法入口） |
 
 ### 8.2 `docs/` 之外
 

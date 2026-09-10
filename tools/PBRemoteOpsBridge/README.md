@@ -1,5 +1,9 @@
 # PBRemoteOpsBridge — 基于 SMB 共享目录的远程实验命令桥
 
+> **操作入口文档：** 面向接手者的机制/用法/排查指南在
+> [`docs/REMOTE_OPS_BRIDGE.md`](../../docs/REMOTE_OPS_BRIDGE.md)；本文件是 wire 协议与
+> 部署细节的权威定义。两处冲突时以本文件与实现为准。
+
 本工具让控制端（本机，运行 `pbops.py`）通过一个共享目录树驱动远程机（运行
 `pbops_listener.py`）上的实验操作：投递/部署实验包、启动与停止
 `PixelBridgeEncoder.exe`、切换远程显示器模式（刷新率实验）、截屏、采集证据、执行

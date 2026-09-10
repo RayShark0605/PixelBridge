@@ -11,6 +11,7 @@
 3. [`UNIFIED_USER_GUIDE.md`](UNIFIED_USER_GUIDE.md) — 操作员日常怎么跑。
 4. [`../AGENTS.md`](../AGENTS.md) — 工程约束、协议不变量、风格与验收标准（改动前必读）。
 5. 需要协议/模块细节时再按下面第 3 节挑对应的规范文档。
+6. 需要做远程机实验时先读 [`REMOTE_OPS_BRIDGE.md`](REMOTE_OPS_BRIDGE.md) — 远程实验操作桥的机制与用法入口。
 
 任何"当前是什么状态"的表述，若与 `PROJECT_STATUS.md` 冲突，以 `PROJECT_STATUS.md` 为准；若 `PROJECT_STATUS.md` 本身与 live 运行行为、Git 或 artifact 冲突，以那些一手证据为准并回写修正。
 
@@ -22,7 +23,7 @@
 | `EVIDENCE_INDEX.md` | 某个结论的证据在哪、字段是什么、引用时的限制 | 不做能力判断 |
 | `DOC_HISTORY.md` | 哪些文档没了、为什么、怎么逐字节取回 | 不改写被删文档的结论 |
 
-## 3. 保留的规范文档（14 篇）
+## 3. 规范与操作文档（2026-09-09 整理保留 14 篇，另有后续新增）
 
 | 文档 | 管什么 |
 | --- | --- |
@@ -40,6 +41,7 @@
 | [`UNIFIED_USER_GUIDE.md`](UNIFIED_USER_GUIDE.md) | 统一用户手册 |
 | [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md) | G22 GUI 发布内容与交互合同（右屏、Esc、不干扰左屏） |
 | [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | G00-G22 统一路线的目标定义、决策与验收口径（历史权威） |
+| [`REMOTE_OPS_BRIDGE.md`](REMOTE_OPS_BRIDGE.md)（2026-09-10 新增） | 远程实验操作桥（PBRemoteOpsBridge）：SMB 文件协议机制、远程 Encoder 实验编排用法、部署与故障排查入口 |
 
 ## 4. `docs/` 之外的文档
 
