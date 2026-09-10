@@ -155,6 +155,13 @@ pbops.py selftest                                    # 临时根上的端到端�
 重新登录/重启后监听器由 Startup 快捷方式自启；手动补启用 `Start-PBOpsListener.cmd`。
 换共享路径：重新跑安装器传新路径，或手改 `pbops_listener.deploy.json` 的 `shareRoot`。
 
+**多机部署规则：一台远程机 = 一个独立共享根。** 桥可部署在任意多台远程机上（机制与
+具体机器无关），但**不要让两台监听器轮询同一个命令树**——取走命令虽是原子 rename、不会
+重复执行，但哪台机器抢到命令不确定，结果来源不可预测。新增机器：建新根
+（如 `<ShareRoot>-<机器>`，即远程 UNC `\\<HOST>\<SHARE>\pbops-<机器>`）、`pbops.py init`、把
+`bootstrap\`+`listener\` 复制进新根、在新机器上以其根为参数运行安装器、控制端用
+`--root` 选择。当前部署实例登记在 `docs/REMOTE_OPS_BRIDGE.md` §2.1。
+
 ## 远程 Encoder headless 实验配方
 
 产品 CLI 契约见 `docs/CURRENT_RUNTIME_OPTION_INVENTORY.md`。典型一次实验：

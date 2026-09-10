@@ -18,10 +18,14 @@ PixelBridge 的远程链路实验（G21、Step1 等历史流程）过去是**人
 本桥把这条人工链路替换为**基于 SMB 共享目录的文件协议**：
 
 - **本机（RECEIVER-DESKTOP，控制端）** 把命令 JSON 原子写入共享目录；
-- **远程机（SENDER-LAPTOP，实验机）** 上常驻一个 Python 监听器轮询共享目录，执行命令
+- **远程实验机**（**任意**一台装有 Python 3.8+、能读写某个共享根的 Windows 机器——机制
+  与具体机器无关，见第 2 节部署实例表）上常驻一个 Python 监听器轮询共享目录，执行命令
   （部署包、启动/停止 Encoder、切换显示器刷新率、截屏、采集证据、跑诊断脚本），并把
   结果与心跳原子写回共享目录；
 - 本机直接读共享目录上的结果文件（共享就是本机磁盘 `J:`），完成闭环。
+
+桥可以部署在**任意多台**远程机上：**每台机器一个独立的命令树（共享根）**，操作时用
+`--root` 选择目标机器（多机部署规则见 §2，新增机器步骤见 §5.3）。
 
 由此，"远程机跑 Encoder + 本机跑 Decoder"的整轮实验可以由 AI 全自动编排。
 
@@ -32,19 +36,27 @@ PixelBridge 的远程链路实验（G21、Step1 等历史流程）过去是**人
 2. **禁止跨主机时钟运算**：结果里的时间戳带产生它的机器后缀（`*AtRemote`/`*AtLocal`），
    跨主机关联只允许用命令 id，与项目测量纪律一致。
 
-## 2. 当前部署与现场验证状态（截至 2026-09-10）
+## 2. 部署实例与现场验证记录
 
-| 项 | 值 |
-| --- | --- |
-| 远程机 | `SENDER-LAPTOP`（用户 `<user>`，Windows，Python 3.12.10） |
-| 远程监听器工作区 | `C:\Users\<user>\AppData\Local\PixelBridgeOps` |
-| 共享根 | 本机 `<ShareRoot>` ＝ 远程机 `\\<HOST>\<SHARE>\pbops` |
-| 监听器自启 | 已装 Startup 快捷方式（pythonw 无窗口）；单实例锁防重复 |
-| 部署方式 | 远程机运行一次 `\\<HOST>\<SHARE>\pbops\bootstrap\Install-PBOpsListener.cmd \\<HOST>\<SHARE>\pbops` |
-| 现场验证 | 2026-09-10 完成 11 项全功能验证（下表），全部通过 |
-| 远程显示器 | `\\.\DISPLAY1`（Intel UHD），当前 2560×1440@240Hz，原生 2560×1600 模式可用 |
+桥的机制与具体机器无关；当前部署了哪些机器**只由下面的实例表登记**，不构成对桥的假设。
 
-现场验证记录（细节以 2026-09-10 会话为准）：
+**多机规则（必须遵守）：一台远程机 = 一个独立共享根（命令树）。** 不要让两台监听器轮询
+同一个 `inbox/`——取走虽然原子、不会重复执行，但**哪台机器抢到命令是不确定的**，会得到
+不可预测来源的结果。新增机器按 §5.3 部署到自己的根（如 `<ShareRoot>-<机器或用途>`）。
+
+### 2.1 当前部署实例
+
+| 机器 | 共享根（本机路径 = 远程 UNC） | 监听器工作区 | 状态 |
+| --- | --- | --- | --- |
+| `SENDER-LAPTOP`（用户 <user>，Python 3.12.10） | `<ShareRoot>` = `\\<HOST>\<SHARE>\pbops` | `C:\Users\<user>\AppData\Local\PixelBridgeOps` | 已安装，Startup 自启；2026-09-10 全功能现场验证通过（见 2.2） |
+
+增删机器时同步更新本表；随时可用 `beat` / `run ping` 核对某个根上的监听器身份
+（`hostname` 应与表内一致）。
+
+### 2.2 现场验证记录（机器：SENDER-LAPTOP，2026-09-10）
+
+验证机显示器：`\\.\DISPLAY1`（Intel UHD），当时 2560×1440@240Hz，原生 2560×1600
+模式可用（`display-set` 已实测可切换）。
 
 | 验证项 | 结果 |
 | --- | --- |
@@ -191,7 +203,9 @@ $PY -X utf8 $BR run ping  # 完整往返检查
 
 - 默认根 `<ShareRoot>`（`--root` 或 `PBOPS_ROOT` 覆盖）。
 - 首次接触先跑 `beat` + `run ping` 确认远程监听器活着；`beat` 输出里的 `hostname`
-  应是远程机名（当前 `SENDER-LAPTOP`），`bootId` 变化表示监听器重启过。
+  应与 §2.1 实例表中的目标机器一致，`bootId` 变化表示监听器重启过。
+- **部署了多台远程机时，必须显式 `--root` 选择目标**（助手默认 `<ShareRoot>` 只是实例表中
+  第一台机器的根）。
 - 结果文件是本机本地文件，可直接 `Read <ShareRoot>\results\res-<id>.json`。
 
 ### 4.2 本地助手子命令
@@ -269,6 +283,8 @@ $PY -X utf8 $BR run cleanup --params-json "{\"runs\":[\"RUN\"],\"filesOlderThanD
 
 ## 5. 远程机侧管理
 
+表中路径以 §2.1 首个部署实例的根 `<ShareRoot>` 为例；其它机器换成自己的根（见 §5.3）。
+
 | 操作 | 命令（在远程机上执行） |
 | --- | --- |
 | 安装（一次性） | `\\<HOST>\<SHARE>\pbops\bootstrap\Install-PBOpsListener.cmd \\<HOST>\<SHARE>\pbops` |
@@ -281,6 +297,21 @@ $PY -X utf8 $BR run cleanup --params-json "{\"runs\":[\"RUN\"],\"filesOlderThanD
   Install（或直接覆盖其工作区副本后 `listener-shutdown` + `Start-PBOpsListener.cmd`）。
 - 换共享根/工作区：重跑 Install 传新路径即可（配置写在
   `%LOCALAPPDATA%\PixelBridgeOps\listener\pbops_listener.deploy.json`）。
+
+### 5.3 新增一台远程机
+
+每台远程机一个独立命令树，步骤：
+
+1. 本机建新根并初始化协议目录：`pbops.py --root '<ShareRoot>-<机器或用途>' init`；
+2. 从现有母本（如 `<ShareRoot>\`）把 `bootstrap\` 与 `listener\` 两个文件夹整体复制进新根
+   （安装器按脚本自身位置解析监听器源码，每个根应自包含一份）；
+3. 在新远程机上运行一次：
+   `\\<HOST>\<SHARE>\pbops-<机器或用途>\bootstrap\Install-PBOpsListener.cmd \\<HOST>\<SHARE>\pbops-<机器或用途>`
+4. 本机验证：`pbops.py --root '<ShareRoot>-<机器或用途>' beat` 与 `run ping`，确认 `hostname`
+   是新机器；
+5. 把新机器登记进 §2.1 实例表。
+
+之后对该机的所有操作都带 `--root <ShareRoot>-<机器或用途>`（或临时 `PBOPS_ROOT`）。
 
 ## 6. 故障排查
 
@@ -295,6 +326,7 @@ $PY -X utf8 $BR run cleanup --params-json "{\"runs\":[\"RUN\"],\"filesOlderThanD
 | `start` 报 `process-died` | 启动参数/依赖问题：`collect` 拉 run 的 `logs/`（console:false 时）或 `screenshot` 看控制台输出（console:true 时） |
 | `run-script` 超时 | Job-object 已强制终止（`status=timeout`）；检查脚本或加大 `timeoutSeconds`（≤3600） |
 | 本机访问 `\\<HOST>\<SHARE>` 报路径不存在 | 正常现象（本机 SMB 回环被防火墙拦截）；控制端一律用 `<ShareRoot>` |
+| `beat`/`ping` 回显的 hostname 与预期不符 | `--root` 指到了另一台机器的命令树：对照 §2.1 实例表换正确的根 |
 | 远程桌面出现来路不明的弹窗 | 先截屏取证再判断；2026-09-10 曾出现远程机自身程序（`ClientWebApiApplication` 的 DNS 报错）弹窗，与桥无关 |
 
 ## 7. 纪律红线（任何使用者必须遵守）
