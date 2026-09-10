@@ -298,6 +298,8 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
         << ",\"controlSlotCounterOverflow\":" << snapshot.controlSlotCounterOverflow << ",\"submittedControlSlots\":";
     WriteOptionalNumber(stream, !snapshot.controlSlotCounterOverflow && snapshot.submittedLogicalFrames != 0 ?
         std::optional<std::uint64_t>(snapshot.submittedControlSlots) : std::nullopt);
+    stream << ",\"submittedSupplementalBands\":" << snapshot.submittedSupplementalBands
+        << ",\"skippedSupplementalBandFrames\":" << snapshot.skippedSupplementalBandFrames;
     stream << ",\"controlSlotOccupancy\":";
     WriteOptionalNumber(stream, !snapshot.controlSlotCounterOverflow && snapshot.submittedLogicalFrames != 0 ?
         std::optional<double>(static_cast<double>(snapshot.submittedControlSlots) /

@@ -429,11 +429,11 @@ private:
         }
     }
     if (options.sourcePath.empty() || (options.hasOrigin && options.singleMonitorFullscreenSpecified) ||
-        (options.profile != pbapp::VisualProfile::UnifiedLc4 && !options.hasOrigin && !options.singleMonitorFullscreenSpecified))
+        (!pbapp::IsUnifiedVisualFamily(options.profile) && !options.hasOrigin && !options.singleMonitorFullscreenSpecified))
     {
         return false;
     }
-    if (options.profile == pbapp::VisualProfile::UnifiedLc4)
+    if (pbapp::IsUnifiedVisualFamily(options.profile))
     {
         if (!options.logicalVisualFpsSpecified)
         {
@@ -592,6 +592,9 @@ void Usage()
                  "[--channel local|remote] [--remote-provider NAME | --remote-metadata PATH] "
                  "[--seconds 1..7200; default=30] "
                  "[--report NEW_PATH]; automatic RAW/zstd level 3, Control repetitions=4\n"
+                 "experimental opt-in: --profile unified-bands adds two supplemental control bands under the "
+                 "PB-Experimental-BlankControl-1 identity (layout 11); same constraints as --profile unified, "
+                 "never the default, product SC6-V3 sessions are unchanged\n"
                  "historical diagnostics: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
                  "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on "
                  "(--origin X Y --seconds 1..7200 | --single-monitor-fullscreen primary|DEVICE --manual-stop --loop) "

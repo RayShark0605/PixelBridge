@@ -68,4 +68,17 @@ static_assert(kProductVisualProfiles.front() == kUnifiedProductVisualProfile);
 static_assert(ValidateProductVisualProfile(kUnifiedVisualProfileId, kUnifiedVisualLayoutVersion) ==
     ProductVisualProfileAdmission::Accepted);
 
+// Experimental blank-control identity (layout 11): the unified main-region
+// contract plus two supplemental control bands in the blank canvas areas.
+// Opt-in only — it is deliberately NOT part of kProductVisualProfiles, so
+// product admission keeps rejecting it and it can never become the default
+// wire identity of a released session. The PBProtocol layer continues to
+// parse any non-zero profile id opaquely; applications bind this constant
+// explicitly when the operator opts in.
+inline constexpr ProductVisualProfile kBlankControlExperimentalProfile{
+    "PB-Experimental-BlankControl-1",
+    0x504242414E443031ULL,
+    11};
+static_assert(!IsProductSessionVisualProfileId(kBlankControlExperimentalProfile.visualProfileId));
+
 } // namespace pbprotocol

@@ -21,6 +21,7 @@
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbmodulation/unified_visual.h"
+#include "pbmodulation/supplemental_band.h"
 #include "pbouterfec/direct_repeat.h"
 #include "pbouterfec/wirehair_v2.h"
 #include "pbreceiver/receiver_ingress.h"
@@ -854,9 +855,19 @@ struct ProfileBinding
 
 [[nodiscard]] ProfileBinding GetProfileBinding(const VisualProfile profile)
 {
-    if (profile == VisualProfile::UnifiedLc4)
+    if (IsUnifiedVisualFamily(profile))
     {
         return {profile, pbprotocol::kUnifiedVisualProfileId, pbprotocol::kUnifiedVisualLayoutVersion,
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codedBytes),
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount)};
+    }
+    if (profile == VisualProfile::UnifiedBands)
+    {
+        // Same main-region geometry and capacity as the unified product
+        // contract; only the wire identity changes (layout 11 carries the two
+        // supplemental control bands rendered outside the 33-region map).
+        return {profile, pbprotocol::kBlankControlExperimentalProfile.visualProfileId,
+            pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion,
             static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codedBytes),
             static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount)};
     }
@@ -885,7 +896,7 @@ struct ProfileBinding
 [[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeReceiverResourcePolicyForVisualProfile(
     const VisualProfile profile) noexcept
 {
-    return profile == VisualProfile::UnifiedLc4 ? MakeUnifiedReceiverResourcePolicy() : pbprotocol::GetDefaultReceiverResourcePolicy();
+    return IsUnifiedVisualFamily(profile) ? MakeUnifiedReceiverResourcePolicy() : pbprotocol::GetDefaultReceiverResourcePolicy();
 }
 
 struct TransferDescription
@@ -1212,7 +1223,7 @@ public:
             "Profile or Control repetition count is empty");
         Require(description_.segments.empty() ? currentSegmentOrdinal_ == 0 :
             currentSegmentOrdinal_ < description_.segments.size(), "initial Carousel Segment ordinal is out of bounds");
-        if (profile_.profile == VisualProfile::UnifiedLc4 && !description_.segments.empty())
+        if (IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty())
         {
             InitializeUnifiedSegmentWindow();
         }
@@ -1231,7 +1242,7 @@ public:
 
     [[nodiscard]] FrameKind GetCurrentKind() const
     {
-        if (profile_.profile == VisualProfile::UnifiedLc4)
+        if (IsUnifiedVisualFamily(profile_.profile))
         {
             return FrameKind::Data;
         }
@@ -1268,13 +1279,14 @@ public:
     {
         const FrameKind kind = GetCurrentKind();
         const auto bootstrap = MakeBootstrap(frameSequence);
-        if (profile_.profile == VisualProfile::UnifiedLc4)
+        if (IsUnifiedVisualFamily(profile_.profile))
         {
             SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
             Require(static_cast<bool>(unifiedScheduler.PrepareFrameAt(logicalTickOrdinal, nowNanoseconds,
                 unifiedFrame_)), "Unified mixed-slot frame preparation failed");
             std::array<pbmodulation::UnifiedFrameSlotInput, senderUnifiedCodewordSlotCount> slots{};
             generatedPayloadBytesInFrame_ = 0;
+            std::span<const std::byte> supplementalControlRecord{};
             for (std::size_t slotIndex = 0; slotIndex < slots.size(); slotIndex++)
             {
                 const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slotIndex];
@@ -1288,6 +1300,10 @@ public:
                         scheduled.assignment.controlPriority == pbmodulation::UnifiedControlPriority::FinalManifest ?
                         std::span<const std::byte>(description_.manifestControl) :
                         std::span<const std::byte>(description_.segments.at(currentSegmentOrdinal_).control);
+                    if (supplementalControlRecord.empty())
+                    {
+                        supplementalControlRecord = slot.block;
+                    }
                 }
                 else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession)
                 {
@@ -1313,6 +1329,27 @@ public:
                 }
                 const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::Raster);
                 RequireResult(pbmodulation::EncodeUnifiedVisualFrame(bootstrap, codedFrame, pixels_), "Unified raster failed");
+            }
+            if (profile_.profile == VisualProfile::UnifiedBands)
+            {
+                // Mirror the frame's control record into both supplemental
+                // bands after the main raster. A frame without a control slot,
+                // or a record the band message cannot carry, leaves the blank
+                // areas at their matte base and counts as skipped.
+                if (!supplementalControlRecord.empty() &&
+                    pbmodulation::RenderSupplementalBand(supplementalControlRecord,
+                        pbprotocol::DeriveSessionTag(description_.session.sessionId), frameSequence, supplementalBandPatch_))
+                {
+                    RequireResult(pbmodulation::BlitSupplementalBand(supplementalBandPatch_, pixels_, 0),
+                        "Supplemental band blit failed");
+                    RequireResult(pbmodulation::BlitSupplementalBand(supplementalBandPatch_, pixels_, 1),
+                        "Supplemental band blit failed");
+                    supplementalBandsSubmitted_ += 2;
+                }
+                else
+                {
+                    supplementalBandsSkipped_++;
+                }
             }
             return pixels_;
         }
@@ -1375,7 +1412,7 @@ public:
 
     void Advance()
     {
-        if (profile_.profile == VisualProfile::UnifiedLc4)
+        if (IsUnifiedVisualFamily(profile_.profile))
         {
             SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
             Require(static_cast<bool>(unifiedScheduler.CommitPreparedFrame()), "Unified frame commit failed");
@@ -1454,7 +1491,7 @@ public:
 
     [[nodiscard]] CarouselSnapshot GetCarouselSnapshot() const noexcept
     {
-        const std::uint32_t position = profile_.profile == VisualProfile::UnifiedLc4 || description_.segments.empty() ? cyclePosition_ :
+        const std::uint32_t position = IsUnifiedVisualFamily(profile_.profile) || description_.segments.empty() ? cyclePosition_ :
             static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
         return {carouselPass_, position, cycleFrameCount_};
     }
@@ -1464,7 +1501,7 @@ public:
     }
     [[nodiscard]] std::uint32_t GetCurrentOuterBlockId() const
     {
-        if (profile_.profile == VisualProfile::UnifiedLc4)
+        if (IsUnifiedVisualFamily(profile_.profile))
         {
             for (const SenderUnifiedScheduledSlot& slot : unifiedFrame_.slots)
             {
@@ -1488,11 +1525,19 @@ public:
     }
     [[nodiscard]] std::uint32_t GetControlSlotsInFrame() const noexcept
     {
-        return profile_.profile == VisualProfile::UnifiedLc4 ? static_cast<std::uint32_t>(std::ranges::count_if(
+        return IsUnifiedVisualFamily(profile_.profile) ? static_cast<std::uint32_t>(std::ranges::count_if(
             unifiedFrame_.slots, [](const SenderUnifiedScheduledSlot& slot)
             {
                 return slot.assignment.kind == pbmodulation::UnifiedSlotKind::Control;
             })) : 0;
+    }
+    [[nodiscard]] std::uint64_t GetSubmittedSupplementalBands() const noexcept
+    {
+        return supplementalBandsSubmitted_;
+    }
+    [[nodiscard]] std::uint64_t GetSkippedSupplementalBandFrames() const noexcept
+    {
+        return supplementalBandsSkipped_;
     }
     [[nodiscard]] std::uint64_t GetCurrentSegmentOrdinal() const noexcept
     {
@@ -1500,12 +1545,12 @@ public:
     }
     [[nodiscard]] std::uint64_t GetCheckpointSegmentOrdinal() const noexcept
     {
-        return profile_.profile == VisualProfile::UnifiedLc4 && !description_.segments.empty() ?
+        return IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty() ?
             unifiedWindowStartSegmentOrdinal_ : currentSegmentOrdinal_;
     }
     [[nodiscard]] std::uint32_t GetActiveSegmentWindowSize() const noexcept
     {
-        return profile_.profile == VisualProfile::UnifiedLc4 ?
+        return IsUnifiedVisualFamily(profile_.profile) ?
             static_cast<std::uint32_t>(unifiedSegmentStates_.size()) :
             static_cast<std::uint32_t>(!description_.segments.empty());
     }
@@ -1529,7 +1574,7 @@ public:
         const std::span<std::byte> output)
     {
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
-        const UnifiedSegmentState* const unifiedState = profile_.profile == VisualProfile::UnifiedLc4 &&
+        const UnifiedSegmentState* const unifiedState = IsUnifiedVisualFamily(profile_.profile) &&
             !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
         const auto encoded = unifiedState ? (unifiedState->wirehair ?
             unifiedState->wirehair->EncodeBlock(blockId, output) : unifiedState->directRepeat->EncodeBlock(blockId, output)) :
@@ -1543,7 +1588,7 @@ public:
         const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::OuterGenerate);
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
         std::fill(outerPayload_.begin(), outerPayload_.end(), std::byte{0});
-        const UnifiedSegmentState* const unifiedState = profile_.profile == VisualProfile::UnifiedLc4 &&
+        const UnifiedSegmentState* const unifiedState = IsUnifiedVisualFamily(profile_.profile) &&
             !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
         const auto encoded = unifiedState ? (unifiedState->wirehair ?
             unifiedState->wirehair->EncodeBlock(blockId, outerPayload_) :
@@ -1570,7 +1615,7 @@ public:
     }
     [[nodiscard]] const SenderUnifiedScheduledFrame& PrepareHeadlessFrame(const std::uint64_t tick)
     {
-        Require(profile_.profile == VisualProfile::UnifiedLc4 && tick < 1000000,
+        Require(IsUnifiedVisualFamily(profile_.profile) && tick < 1000000,
             "Unified headless tick or profile is outside the test contract");
         Require(static_cast<bool>(GetCurrentUnifiedScheduler().PrepareFrameAt(tick, tick * 1000000000ULL / 15ULL,
             unifiedFrame_)), "Unified headless frame preparation failed");
@@ -1651,7 +1696,7 @@ private:
             static_cast<std::uint32_t>(!nextEncodedBytes_.empty());
         std::uint64_t residentBytes = static_cast<std::uint64_t>(currentEncodedBytes_.size()) +
             static_cast<std::uint64_t>(nextEncodedBytes_.size());
-        if (profile_.profile == VisualProfile::UnifiedLc4)
+        if (IsUnifiedVisualFamily(profile_.profile))
         {
             residentCount = static_cast<std::uint32_t>(unifiedSegmentStates_.size());
             residentBytes = 0;
@@ -1742,7 +1787,7 @@ private:
 
     void InitializeUnifiedSegmentWindow()
     {
-        Require(profile_.profile == VisualProfile::UnifiedLc4 && !description_.segments.empty() &&
+        Require(IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty() &&
             currentSegmentOrdinal_ < description_.segments.size(), "Unified Segment window cannot be initialized");
         unifiedSegmentStates_.clear();
         unifiedCurrentStateIndex_ = 0;
@@ -1846,13 +1891,13 @@ private:
         if (description_.segments.empty())
         {
             cycleFrameCount_ = controlFrames;
-            if (profile_.profile == VisualProfile::UnifiedLc4)
+            if (IsUnifiedVisualFamily(profile_.profile))
             {
                 InitializeUnifiedScheduler();
             }
             return;
         }
-        Require(profile_.profile != VisualProfile::UnifiedLc4,
+        Require(!IsUnifiedVisualFamily(profile_.profile),
             "nonempty Unified Sessions must use the bounded Segment window");
         const pbprotocol::SegmentDescriptor& descriptor =
             description_.segments[currentSegmentOrdinal_].descriptor;
@@ -1939,7 +1984,7 @@ private:
             return 0;
         }
         Require(slot < profile_.codewords, "physical Data slot is out of bounds");
-        if (profile_.profile == VisualProfile::UnifiedLc4)
+        if (IsUnifiedVisualFamily(profile_.profile))
         {
             const UnifiedSegmentState& state = GetCurrentUnifiedSegmentState();
             const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slot];
@@ -2028,6 +2073,11 @@ private:
     SenderUnifiedCarouselScheduler unifiedScheduler_;
     SenderUnifiedScheduledFrame unifiedFrame_;
     std::array<std::array<std::byte, informationBytes>, senderUnifiedCodewordSlotCount> unifiedTransport_{};
+    // Reused 608x64 raster scratch for the supplemental band overlay; the
+    // builder is single-threaded by contract, so one buffer serves both bands.
+    std::array<std::byte, pbmodulation::kSupplementalBandPatchBytes> supplementalBandPatch_{};
+    std::uint64_t supplementalBandsSubmitted_ = 0;
+    std::uint64_t supplementalBandsSkipped_ = 0;
     std::uint32_t cycleFrameCount_ = 0;
     std::uint32_t cyclePosition_ = 0;
     std::uint64_t generatedPayloadBytesInFrame_ = 0;
@@ -2627,7 +2677,7 @@ private:
     // A live Unified slot remains occupied through Bootstrap and CPU FEC on the
     // same owner. Bound that non-replaceable backlog before copying another ROI;
     // the inbox still selects the newest frame and admission still requires 250 ms.
-    return visualProfile == VisualProfile::UnifiedLc4 && !offlineReplay ? 2 : captureDemodulatorSlotCount;
+    return IsUnifiedVisualFamily(visualProfile) && !offlineReplay ? 2 : captureDemodulatorSlotCount;
 }
 
 [[nodiscard]] pbcapturenormalize::CaptureNormalizeConfig MakeCaptureConfig(const DecoderConfig& config)
@@ -2637,14 +2687,14 @@ private:
     captureConfig.capture.initialCaptureEpoch = 1;
     captureConfig.capture.queuedFrameLimit = captureQueuedFrameLimit;
     captureConfig.capture.roiTextureCount = GetCaptureDemodulatorSlotCount(config.visualProfile, false);
-    captureConfig.capture.maximumInFlightFrames = config.visualProfile == VisualProfile::UnifiedLc4 ? 1 : 0;
-    captureConfig.capture.maximumCaptureBytes = config.visualProfile == VisualProfile::UnifiedLc4 ?
+    captureConfig.capture.maximumInFlightFrames = IsUnifiedVisualFamily(config.visualProfile) ? 1 : 0;
+    captureConfig.capture.maximumCaptureBytes = IsUnifiedVisualFamily(config.visualProfile) ?
         maximumUnifiedCaptureResidentBytes : config.visualProfile == VisualProfile::RemoteVisualLowFps ?
         config.replayOutputPath.empty() ? maximumRemoteVisualLowFpsCaptureResidentBytes :
             maximumRemoteVisualLowFpsReplayCaptureResidentBytes : maximumCaptureResidentBytes;
     // Keep the existing cap for DXGI's advertised worst-case source format too:
     // BGRA output slots plus matching R16G16B16A16 scratch slots at the ROI bound.
-    captureConfig.capture.maximumRoiBytes = config.visualProfile == VisualProfile::UnifiedLc4 ?
+    captureConfig.capture.maximumRoiBytes = IsUnifiedVisualFamily(config.visualProfile) ?
         384ULL * mebibyte : maximumRoiResidentBytes;
     captureConfig.capture.gpuTimeoutMilliseconds = 3000;
     captureConfig.capture.maximumDeviceRecoveries = 1;
@@ -2666,7 +2716,7 @@ private:
     // without misclassifying compute time as capture staleness.
     demodConfig.maximumFrameAgeMilliseconds = offlineReplay ? 60000 : 250;
     demodConfig.resultQueueCapacity = captureResultQueueCapacity;
-    if (config.visualProfile == VisualProfile::UnifiedLc4)
+    if (IsUnifiedVisualFamily(config.visualProfile))
     {
         demodConfig.maximumResidentBytes = maximumUnifiedDemodulatorResidentBytes;
     }
@@ -2682,7 +2732,7 @@ private:
     {
         demodConfig.maximumResidentBytes = maximumDemodulatorResidentBytes;
     }
-    if (!offlineReplay && (config.visualProfile == VisualProfile::RemoteVisualLowFps || config.visualProfile == VisualProfile::UnifiedLc4))
+    if (!offlineReplay && (config.visualProfile == VisualProfile::RemoteVisualLowFps || IsUnifiedVisualFamily(config.visualProfile)))
     {
         demodConfig.maximumRoiWidth = static_cast<std::uint32_t>(
             static_cast<std::int64_t>(config.region.physicalRect.right) - config.region.physicalRect.left);
@@ -3077,7 +3127,7 @@ public:
             return {};
         }
         RecordCaptureTelemetry(result);
-        if (visualProfile_ != VisualProfile::UnifiedLc4)
+        if (!IsUnifiedVisualFamily(visualProfile_))
         {
             RecordRemoteMetricTelemetry(result);
         }
@@ -3114,7 +3164,7 @@ public:
         if (identityDisposition == VisualIdentityDisposition::Invalid)
         {
             SetReceiverFrameReason(decisions, ReceiverFrameReason::InvalidIdentity);
-            if (visualProfile_ == VisualProfile::UnifiedLc4)
+            if (IsUnifiedVisualFamily(visualProfile_))
             {
                 unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::InvalidIdentity, &bootstrap,
                     result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
@@ -3123,7 +3173,7 @@ public:
             UpdateTelemetrySnapshot();
             return {};
         }
-        if (visualProfile_ == VisualProfile::UnifiedLc4)
+        if (IsUnifiedVisualFamily(visualProfile_))
         {
             if (measurement_)
             {
@@ -3517,8 +3567,9 @@ private:
     {
         SetReceiverFrameReason(decisions, ReceiverFrameReason::Processed);
         const auto& demodulation = result.demodulation;
-        Require(bootstrap.visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId &&
-            bootstrap.visualLayoutVersion == pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion,
+        const ProfileBinding activeProfile = GetProfileBinding(visualProfile_);
+        Require(bootstrap.visualProfileId == activeProfile.visualProfileId &&
+            bootstrap.visualLayoutVersion == activeProfile.layoutVersion,
             "Unified receive result has a foreign Bootstrap profile");
         snapshot_.Update([this, &result](DecoderSnapshot& value)
         {
@@ -4924,7 +4975,7 @@ private:
             {
                 return;
             }
-            value.uniqueVisualFps = visualProfile_ == VisualProfile::UnifiedLc4 ?
+            value.uniqueVisualFps = IsUnifiedVisualFamily(visualProfile_) ?
                 unifiedTelemetry_.GetSnapshot().uniqueVisualFps : visual.framesPerSecond;
             value.admittedFrameSequenceFps = visual.framesPerSecond;
             value.duplicateFrameSequences = visual.duplicateFrames;
@@ -5471,7 +5522,7 @@ void RunOfflineReplayDataset(const DecoderConfig& config, pbrealcapturereplay::R
             value.remoteMetadata.estimatedScaleY = record.capture.scaleY;
             value.remoteMetadata.geometryStatus = profile.profile == VisualProfile::RemoteVisualLowFps ?
                 "ProductionLF4ContinuousGeometry (sealed Replay v2 ROI)" :
-                profile.profile == VisualProfile::UnifiedLc4 ?
+                IsUnifiedVisualFamily(profile.profile) ?
                     "UnifiedContinuousGeometry (sealed actual-capture Replay v2 ROI)" :
                     "CompatibleStrict1:1 (sealed Replay v2 ROI)";
             value.remoteMetadata.geometryProvenance = MetadataProvenance::PixelBridgeObserved;
@@ -7595,7 +7646,7 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
         return RuntimeStatus::Failure("Compression level 必须位于当前支持范围 1..22");
     }
     if (FindVisualProfileOption(config.visualProfile) == nullptr ||
-        (config.visualProfile != VisualProfile::UnifiedLc4 && !config.monitorClientOrigin))
+        (!IsUnifiedVisualFamily(config.visualProfile) && !config.monitorClientOrigin))
     {
         return RuntimeStatus::Failure("请选择当前真实存在的 Visual Profile 和目标 monitor");
     }
@@ -7604,7 +7655,7 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("Logical Visual FPS 必须为 0 或 1..240，Control repetitions 必须为 1..64");
     }
-    if (config.visualProfile == VisualProfile::UnifiedLc4 &&
+    if (IsUnifiedVisualFamily(config.visualProfile) &&
         (config.logicalVisualFps < 1 || config.logicalVisualFps > 60 || !config.compressionEnabled ||
             config.compressionLevel != 3 || config.controlRepetitions != 4 || config.monitorSafety))
     {
@@ -7615,7 +7666,7 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("历史 RemoteVisual Profile 的 Logical Visual FPS 必须为 1..5；统一 Profile 将独立使用 1..60");
     }
-    if (config.visualProfile != VisualProfile::UnifiedLc4 &&
+    if (!IsUnifiedVisualFamily(config.visualProfile) &&
         config.visualProfile != VisualProfile::RemoteVisualLowFps && config.singleMonitorFullscreen)
     {
         return RuntimeStatus::Failure("single-monitor fullscreen 仅允许 Unified 或 remote-lf4 profile");
@@ -7750,7 +7801,7 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
         return RuntimeStatus::Failure("输出目录路径无效");
     }
     const bool offlineReplay = !config.replayInputPath.empty();
-    const bool unifiedReplayShape = config.visualProfile == VisualProfile::UnifiedLc4 &&
+    const bool unifiedReplayShape = IsUnifiedVisualFamily(config.visualProfile) &&
         config.captureBackend == CaptureBackend::Auto && !config.diagnosticCaptureOnly &&
         !config.replayEvidenceVisualProfileId && config.remoteMetadata.channelType == ChannelType::LocalDesktop &&
         (offlineReplay != !config.replayOutputPath.empty()) &&
@@ -7760,7 +7811,7 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
         return RuntimeStatus::Failure(
             "Unified test Replay authority only permits one bounded local actual-capture output or one sealed offline input");
     }
-    if (config.visualProfile == VisualProfile::UnifiedLc4 && !testOnlyUnifiedReplay &&
+    if (IsUnifiedVisualFamily(config.visualProfile) && !testOnlyUnifiedReplay &&
         (config.captureBackend != CaptureBackend::Auto || config.monitorSafety || config.diagnosticCaptureOnly ||
          offlineReplay || !config.replayOutputPath.empty() || config.replayEvidenceVisualProfileId))
     {
@@ -7792,7 +7843,7 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
             config.visualProfile == VisualProfile::ShapeChroma ||
             config.visualProfile == VisualProfile::RemoteVisualResilient ||
             config.visualProfile == VisualProfile::RemoteVisualLowFps ||
-            (testOnlyUnifiedReplay && config.visualProfile == VisualProfile::UnifiedLc4);
+            (testOnlyUnifiedReplay && IsUnifiedVisualFamily(config.visualProfile));
         if (!supportedReplayProfile ||
             config.replayMaximumCaptureFrames == 0 ||
             config.replayMaximumCaptureFrames > pbrealcapturereplay::kReplayV2HardMaximumCaptureFrames ||
@@ -7825,7 +7876,7 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
     if ((config.captureBackend != CaptureBackend::Auto && config.captureBackend != CaptureBackend::Wgc && config.captureBackend != CaptureBackend::Dxgi) ||
         (config.visualProfile != VisualProfile::DirectLevels2x2 && config.visualProfile != VisualProfile::ShapeChroma &&
          config.visualProfile != VisualProfile::RemoteVisualResilient &&
-         config.visualProfile != VisualProfile::RemoteVisualLowFps && config.visualProfile != VisualProfile::UnifiedLc4))
+         config.visualProfile != VisualProfile::RemoteVisualLowFps && !IsUnifiedVisualFamily(config.visualProfile)))
     {
         return RuntimeStatus::Failure("Capture backend 或 Visual Profile 不在当前 Runtime Option Inventory 中");
     }
@@ -7850,10 +7901,10 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
     const bool diagnosticCaptureOnlyAllowed = config.diagnosticCaptureOnly &&
         !config.replayOutputPath.empty() && config.remoteMetadata.channelType == ChannelType::RemoteVisual &&
         config.visualProfile == VisualProfile::RemoteVisualResilient;
-    const bool unifiedGeometry = config.visualProfile == VisualProfile::UnifiedLc4 &&
+    const bool unifiedGeometry = IsUnifiedVisualFamily(config.visualProfile) &&
         width >= phase1CanvasWidth * 3 / 4 && width <= phase1CanvasWidth * 2 &&
         height >= phase1CanvasHeight * 3 / 4 && height <= phase1CanvasHeight * 2;
-    if ((config.visualProfile == VisualProfile::UnifiedLc4 && !unifiedGeometry) ||
+    if ((IsUnifiedVisualFamily(config.visualProfile) && !unifiedGeometry) ||
         (!strictGeometry && !lowFpsGeometry && !unifiedGeometry && !diagnosticCaptureOnlyAllowed))
     {
         return RuntimeStatus::Failure(
@@ -8624,9 +8675,9 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         windowConfig.height = presentationHeight;
         windowConfig.clientOrigin = config.monitorClientOrigin;
         windowConfig.repeatActiveFrame = config.visualProfile == VisualProfile::RemoteVisualLowFps ||
-            config.visualProfile == VisualProfile::UnifiedLc4;
+            IsUnifiedVisualFamily(config.visualProfile);
         windowConfig.topmost = config.singleMonitorFullscreen.has_value();
-        windowConfig.allowUnmappedHardwareAdapter = config.visualProfile == VisualProfile::UnifiedLc4 && config.singleMonitorFullscreen.has_value();
+        windowConfig.allowUnmappedHardwareAdapter = IsUnifiedVisualFamily(config.visualProfile) && config.singleMonitorFullscreen.has_value();
         std::unique_ptr<EncoderPresentation> window = presentationFactory_(windowConfig);
         Require(window != nullptr, "Encoder presentation factory returned no window owner");
         std::uint64_t frameSequence = sessionStore->GetFrameSequenceStart();
@@ -8877,6 +8928,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     generatedPayloadBytes = nextGeneratedPayloadBytes.Value();
                     const std::uint64_t previousCheckpointSegmentOrdinal = builder.GetCheckpointSegmentOrdinal();
                     const std::uint32_t submittedControlSlots = builder.GetControlSlotsInFrame();
+                    const std::uint64_t submittedSupplementalBands = builder.GetSubmittedSupplementalBands();
+                    const std::uint64_t skippedSupplementalBandFrames = builder.GetSkippedSupplementalBandFrames();
                     const std::uint64_t previousCarouselPass = builder.GetCarouselSnapshot().cycleCount;
                     if (config.measurement)
                     {
@@ -8928,15 +8981,22 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                             return;
                         }
                         value.broadcastRuntimeMilliseconds = broadcastMilliseconds;
-                        if (profile.profile == VisualProfile::UnifiedLc4)
+                        if (IsUnifiedVisualFamily(profile.profile))
                         {
                             const auto controlSlots = pbprotocol::CheckedAddUint64(value.submittedControlSlots, submittedControlSlots);
                             const auto logicalFrames = pbprotocol::CheckedAddUint64(value.submittedLogicalFrames, 1);
+                            const auto supplementalBands = pbprotocol::CheckedAddUint64(value.submittedSupplementalBands, submittedSupplementalBands);
+                            const auto skippedBandFrames = pbprotocol::CheckedAddUint64(value.skippedSupplementalBandFrames, skippedSupplementalBandFrames);
                             value.controlSlotCounterOverflow |= !controlSlots || !logicalFrames;
                             if (controlSlots && logicalFrames)
                             {
                                 value.submittedControlSlots = controlSlots.Value();
                                 value.submittedLogicalFrames = logicalFrames.Value();
+                            }
+                            if (supplementalBands && skippedBandFrames)
+                            {
+                                value.submittedSupplementalBands = supplementalBands.Value();
+                                value.skippedSupplementalBandFrames = skippedBandFrames.Value();
                             }
                         }
                         value.cycleCount = carouselAfter.cycleCount;

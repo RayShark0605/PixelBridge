@@ -30,8 +30,20 @@ enum class VisualProfile : std::uint8_t
     ShapeChroma,
     RemoteVisualResilient,
     RemoteVisualLowFps,
-    UnifiedLc4
+    UnifiedLc4,
+    // Unified main contract under the experimental blank-control identity
+    // (supplemental control bands in the blank canvas areas). CLI opt-in
+    // only; never the default and never exposed by the product GUI.
+    UnifiedBands
 };
+
+// Profiles that share the unified mixed-slot main-region machinery. Behavior
+// branches in the runtime key off this family instead of a single value so
+// the experimental bands variant rides the same encode/decode path.
+[[nodiscard]] constexpr bool IsUnifiedVisualFamily(const VisualProfile profile) noexcept
+{
+    return profile == VisualProfile::UnifiedLc4 || profile == VisualProfile::UnifiedBands;
+}
 
 struct VisualProfileOption
 {
@@ -230,6 +242,11 @@ struct EncoderSnapshot
     std::uint64_t submittedControlSlots = 0;
     std::uint64_t submittedLogicalFrames = 0;
     bool controlSlotCounterOverflow = false;
+    // Experimental supplemental control bands (unified-bands profile only):
+    // rendered band count and frames whose control record the band message
+    // could not carry (or that had no control slot).
+    std::uint64_t submittedSupplementalBands = 0;
+    std::uint64_t skippedSupplementalBandFrames = 0;
     bool sourceStabilityVerified = false;
     std::uint64_t rawSegmentCount = 0;
     std::uint64_t zstdSegmentCount = 0;

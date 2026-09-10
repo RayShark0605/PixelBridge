@@ -12,6 +12,12 @@ namespace
 constexpr VisualProfileOption unifiedProfileOption{
     VisualProfile::UnifiedLc4, "unified", "PB-Unified-SC6-V3", false, 15, 4};
 
+// Experimental opt-in: same unified main contract under the blank-control
+// identity (layout 11, supplemental control bands). CLI-only; the product
+// GUI keeps binding the SC6-V3 product profile.
+constexpr VisualProfileOption unifiedBandsProfileOption{
+    VisualProfile::UnifiedBands, "unified-bands", "PB-Experimental-BlankControl-1", false, 15, 4};
+
 // Historical diagnostic selectors remain unchanged until their respective
 // product GUI migrations. The Encoder product binds Unified explicitly.
 constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
@@ -734,6 +740,10 @@ const VisualProfileOption* FindVisualProfileOption(const VisualProfile profile) 
     {
         return &unifiedProfileOption;
     }
+    if (profile == VisualProfile::UnifiedBands)
+    {
+        return &unifiedBandsProfileOption;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [profile](const VisualProfileOption& value) { return value.profile == profile; });
     return option == visualProfileOptions.end() ? nullptr : &*option;
@@ -745,6 +755,10 @@ std::optional<VisualProfile> ParseVisualProfileToken(const std::string_view toke
     {
         return unifiedProfileOption.profile;
     }
+    if (token == unifiedBandsProfileOption.cliToken)
+    {
+        return unifiedBandsProfileOption.profile;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return value.cliToken == token; });
     return option == visualProfileOptions.end() ? std::nullopt : std::optional(option->profile);
@@ -755,6 +769,10 @@ std::optional<VisualProfile> ParseVisualProfileToken(const std::wstring_view tok
     if (EqualsAsciiToken(token, unifiedProfileOption.cliToken))
     {
         return unifiedProfileOption.profile;
+    }
+    if (EqualsAsciiToken(token, unifiedBandsProfileOption.cliToken))
+    {
+        return unifiedBandsProfileOption.profile;
     }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return EqualsAsciiToken(token, value.cliToken); });
