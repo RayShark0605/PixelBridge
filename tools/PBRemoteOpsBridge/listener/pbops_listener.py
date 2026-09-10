@@ -874,12 +874,15 @@ class ListenerState:
         self.staging = share_root / "staging"
         self.runsRoot = workspace / "runs"
         self.stateDir = workspace / "state"
+        # Workspace writes must stage on the workspace volume: os.replace across
+        # volumes (share on another disk/UNC than the workspace) fails outright.
+        self.workspaceStaging = workspace / "staging"
         self.processRegistryPath = self.stateDir / "processes.json"
         self.displayModesPath = self.stateDir / "display-modes.json"
 
     def ensure_tree(self):
         for directory in (self.inbox, self.processed, self.results, self.statusDir, self.files,
-                          self.staging, self.runsRoot, self.stateDir):
+                          self.staging, self.runsRoot, self.stateDir, self.workspaceStaging):
             directory.mkdir(parents=True, exist_ok=True)
 
     def heartbeat_document(self, queue_depth):
@@ -908,7 +911,8 @@ class ListenerState:
         return default
 
     def save_json_state(self, path, value):
-        atomic_write_json(path, value, self.staging)
+        staging = self.workspaceStaging if self.workspace in Path(path).parents else self.staging
+        atomic_write_json(path, value, staging)
 
 
 class CommandContext:
@@ -1645,20 +1649,21 @@ def recover_interrupted_commands(state: ListenerState):
 
 def prune_stale_staging(state: ListenerState, older_days=1, limit=1000):
     now = time.time()
-    try:
-        entries = list(state.staging.iterdir())
-    except OSError:
-        return
-    removed = 0
-    for path in entries:
-        if removed >= limit:
-            return
+    for directory in (state.staging, state.workspaceStaging):
+        removed = 0
         try:
-            if now - path.stat().st_mtime > older_days * 86400:
-                path.unlink()
-                removed += 1
+            entries = list(directory.iterdir())
         except OSError:
             continue
+        for path in entries:
+            if removed >= limit:
+                break
+            try:
+                if now - path.stat().st_mtime > older_days * 86400:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
 
 
 def acquire_instance_lock(state: ListenerState):
@@ -1678,7 +1683,7 @@ def acquire_instance_lock(state: ListenerState):
         except OSError:
             pass
     atomic_write_json(lock_path, {"pid": os.getpid(), "bootId": state.bootId,
-                                  "startedAtRemote": state.startedAtRemote}, state.staging)
+                                  "startedAtRemote": state.startedAtRemote}, state.workspaceStaging)
     return True
 
 

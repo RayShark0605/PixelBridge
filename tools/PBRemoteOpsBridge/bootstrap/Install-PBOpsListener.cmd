@@ -14,7 +14,20 @@ if "%~1"=="" (
 set "SHARE_ROOT=%~1"
 set "WORKSPACE=%~2"
 if "%WORKSPACE%"=="" set "WORKSPACE=%LOCALAPPDATA%\PixelBridgeOps"
-set "SRC=%~dp0listener"
+rem ---- locate listener sources: <ShareRoot>\bootstrap\ + <ShareRoot>\listener\ (deployed
+rem layout, same as the repo layout), or a listener\ folder beside this script ----
+set "SRC="
+if exist "%~dp0..\listener\pbops_listener.py" (
+  for %%i in ("%~dp0..") do set "SRC=%%~fi\listener"
+) else if exist "%~dp0listener\pbops_listener.py" (
+  set "SRC=%~dp0listener"
+)
+if "%SRC%"=="" (
+  echo ERROR: listener\pbops_listener.py not found.
+  echo Expected layout: this script in ^<ShareRoot^>\bootstrap\ with ^<ShareRoot^>\listener\ beside it,
+  echo or this script directly next to a listener\ folder.
+  exit /b 2
+)
 set "DST=%WORKSPACE%\listener"
 
 rem ---- resolve Python (3.8+) ------------------------------------------------

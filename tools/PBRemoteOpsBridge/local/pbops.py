@@ -72,6 +72,13 @@ def parse_scalar(raw):
     return raw
 
 
+def parse_key_value(raw):
+    key, separator, value = raw.partition("=")
+    if not separator or not key:
+        raise argparse.ArgumentTypeError("expected KEY=VALUE (e.g. --param runId=r20260910a)")
+    return key, value
+
+
 def merge_params(param_pairs, params_json):
     params = {}
     if params_json is not None:
@@ -432,7 +439,7 @@ def build_parser():
 
     send_parser = subparsers.add_parser("send", help="Write one command file; prints its id")
     send_parser.add_argument("type", choices=COMMAND_TYPES)
-    send_parser.add_argument("--param", action="append", nargs=2, metavar=("KEY", "VALUE"))
+    send_parser.add_argument("--param", action="append", type=parse_key_value, metavar="KEY=VALUE")
     send_parser.add_argument("--params-json", help="Full params object (JSON)")
     send_parser.add_argument("--timeout", type=int, help="timeoutSeconds for the listener")
     send_parser.set_defaults(func=cmd_send)
@@ -444,7 +451,7 @@ def build_parser():
 
     run_parser = subparsers.add_parser("run", help="send + await in one step")
     run_parser.add_argument("type", choices=COMMAND_TYPES)
-    run_parser.add_argument("--param", action="append", nargs=2, metavar=("KEY", "VALUE"))
+    run_parser.add_argument("--param", action="append", type=parse_key_value, metavar="KEY=VALUE")
     run_parser.add_argument("--params-json", help="Full params object (JSON)")
     run_parser.add_argument("--timeout", type=int, help="timeoutSeconds for the listener")
     run_parser.add_argument("--await-timeout", type=float, default=90.0)
