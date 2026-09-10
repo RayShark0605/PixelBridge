@@ -95,6 +95,12 @@ target_compile_definitions(PBUnifiedTransformCorpusTests PRIVATE
     PB_UNIFIED_TRANSFORM_REPORT="${CMAKE_CURRENT_BINARY_DIR}/g10-unified-transform-corpus.actual.json")
 set_tests_properties(PBUnifiedTransformCorpusTests PROPERTIES LABELS "corpus;modulation;remote-visual;transform;unified" TIMEOUT 600)
 
+PbAddUnitTest(PBSupplementalBandTests test_supplemental_band.cpp)
+target_link_libraries(PBSupplementalBandTests PRIVATE PB::PBModulation PB::PBProtocol)
+target_compile_definitions(PBSupplementalBandTests PRIVATE
+    PB_SUPPLEMENTAL_BAND_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/supplemental-band")
+set_tests_properties(PBSupplementalBandTests PROPERTIES LABELS "supplemental-band;modulation;golden" TIMEOUT 120)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

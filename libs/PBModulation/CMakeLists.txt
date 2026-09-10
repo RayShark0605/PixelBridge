@@ -10,6 +10,9 @@ target_sources(PBModulation
         src/reference_raster.cpp
         src/reference_visual_profile.cpp
         src/bootstrap_rs.cpp
+        src/band_rs.cpp
+        src/band_rs.h
+        src/supplemental_band.cpp
         src/local_desktop_bootstrap.cpp
         src/local_desktop_decode.cpp
         src/local_desktop_internal.h
@@ -40,6 +43,7 @@ target_sources(PBModulation
             include/pbmodulation/unified_visual_profile.h
             include/pbmodulation/unified_visual_mapping.h
             include/pbmodulation/unified_visual.h
+            include/pbmodulation/supplemental_band.h
             include/pbmodulation/visual_temporal.h)
 
 target_include_directories(PBModulation
