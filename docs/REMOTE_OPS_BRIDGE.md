@@ -285,18 +285,43 @@ $PY -X utf8 $BR run cleanup --params-json "{\"runs\":[\"RUN\"],\"filesOlderThanD
 
 表中路径以 §2.1 首个部署实例的根 `<ShareRoot>` 为例；其它机器换成自己的根（见 §5.3）。
 
+### 5.1 日常操作
+
 | 操作 | 命令（在远程机上执行） |
 | --- | --- |
 | 安装（一次性） | `\\<HOST>\<SHARE>\pbops\bootstrap\Install-PBOpsListener.cmd \\<HOST>\<SHARE>\pbops` |
-| 手动补启 | `\\<HOST>\<SHARE>\pbops\bootstrap\Start-PBOpsListener.cmd` |
-| 卸载 | `\\<HOST>\<SHARE>\pbops\bootstrap\Uninstall-PBOpsListener.cmd`（加 `--purge` 连工作区一起删） |
-| 正常停止监听器 | 经桥发 `listener-shutdown --params-json '{"confirm":true}'` |
+| 手动启动/补启监听器 | `\\<HOST>\<SHARE>\pbops\bootstrap\Start-PBOpsListener.cmd`（自动读部署配置；单实例锁防重复） |
+| 卸载（停止 + 取消自启） | `\\<HOST>\<SHARE>\pbops\bootstrap\Uninstall-PBOpsListener.cmd`（`--purge` 连工作区与 run 证据一起删） |
+| 更新监听器版本 | 把新 `pbops_listener.py` 覆盖到 `<ShareRoot>\listener\`，让远程机重跑 Install；或直接覆盖其工作区副本后按 §5.2 重启 |
+| 换共享根/工作区 | 重跑 Install 传新路径（配置写在远程 `%LOCALAPPDATA%\PixelBridgeOps\listener\pbops_listener.deploy.json`） |
 
-- 监听器随远程机登录自启（Startup 快捷方式）；重启后 `bootId` 会变。
-- 更新监听器版本：把新 `pbops_listener.py` 覆盖到 `<ShareRoot>\listener\`，再让远程机重跑
-  Install（或直接覆盖其工作区副本后 `listener-shutdown` + `Start-PBOpsListener.cmd`）。
-- 换共享根/工作区：重跑 Install 传新路径即可（配置写在
-  `%LOCALAPPDATA%\PixelBridgeOps\listener\pbops_listener.deploy.json`）。
+### 5.2 停止与启动监听器
+
+**停止：**
+
+| 场景 | 做法 |
+| --- | --- |
+| 临时停止（保留安装与自启）——**推荐经桥** | 本机执行：`pbops.py run listener-shutdown --params-json '{"confirm":true}'`（优雅退出：写完 ok 结果与终态心跳再退出） |
+| 临时停止——在远程机上 | 任务管理器结束 `pythonw.exe`；或 `taskkill /PID <pid> /F`，pid 读远程机 `%LOCALAPPDATA%\PixelBridgeOps\state\listener-instance.json` |
+| 只取消开机自启（不卸载） | 删除远程机 `shell:startup`（Win+R 输入）下的 `PBOpsListener.lnk` |
+| 彻底停用 | 运行 Uninstall（停止 + 删自启快捷方式；`--purge` 再删工作区） |
+
+**启动：**
+
+| 场景 | 做法 |
+| --- | --- |
+| 手动启动 | 远程机运行 `\\<HOST>\<SHARE>\pbops\bootstrap\Start-PBOpsListener.cmd` |
+| 自动启动 | Startup 快捷方式随登录自启；远程机重启/注销后再登录**无需手动** |
+
+注意事项：
+
+1. **监听器停着时无法经桥启动**——桥自身不可用就没有通信通道，必须在远程机本地执行
+   Start（或重新登录触发自启）。这是文件协议的固有循环依赖，不是缺陷；所以"停止"随时
+   可远程，"启动"必须本地。
+2. 临时停止**不取消自启**：下次登录/重启监听器会自己回来；要真正停用必须 Uninstall 或
+   删自启快捷方式。
+3. 停/启后在本机验证：`beat`（心跳新鲜即已启动；`bootId` 变化 = 监听器重启过）或
+   `run ping` 看回显 `hostname` 是否为目标机器。
 
 ### 5.3 新增一台远程机
 
