@@ -16,6 +16,14 @@ namespace pbprotocol::test {
     return static_cast<std::byte>(value);
 }
 
+// SessionDescriptor conformance corpora (fuzz/corpus/descriptor-resource,
+// fuzz/corpus/bootstrap-control) were sealed under the LC4 product identity
+// 0x5042554E494C4331 ("PB-Unified-LC4-V1"). PBProtocol parses any non-zero
+// profile id opaquely (product_visual_profile.h), so corpus expectations must
+// pin this sealed id instead of tracking the moving kUnifiedVisualProfileId
+// struct default, which follows the current product profile generation.
+inline constexpr std::uint64_t kCorpusSealedSessionVisualProfileId = 0x5042554E494C4331ULL;
+
 [[nodiscard]] inline SessionId MakeSessionId() noexcept
 {
     SessionId sessionId{};

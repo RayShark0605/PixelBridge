@@ -93,9 +93,14 @@ TEST_CASE("Independent PB-Control-1 corpus seed wraps the formal Session payload
         parsedResult.Value().payload,
         resourcePolicy);
     REQUIRE(descriptorResult);
-    REQUIRE(
-        descriptorResult.Value() ==
-        pbprotocol::test::MakeSessionDescriptor(117, 1));
+    pbprotocol::SessionDescriptor expectedSessionDescriptor =
+        pbprotocol::test::MakeSessionDescriptor(117, 1);
+    // The corpus bytes carry the sealed LC4 profile identity; see
+    // kCorpusSealedSessionVisualProfileId for why this must not follow the
+    // struct default.
+    expectedSessionDescriptor.sessionVisualProfileId =
+        pbprotocol::test::kCorpusSealedSessionVisualProfileId;
+    REQUIRE(descriptorResult.Value() == expectedSessionDescriptor);
 
     std::array<std::byte, controlGoldenBytes> serialized{};
     REQUIRE(pbprotocol::SerializeControlRecord(

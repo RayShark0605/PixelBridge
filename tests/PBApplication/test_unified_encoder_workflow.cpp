@@ -660,13 +660,21 @@ TEST_CASE("Unified Control cadence follows monotonic time across rate changes an
     REQUIRE(clock.Commit(9 * second));
     REQUIRE(clock.Acquire(10 * second, tick));
     REQUIRE(scheduler.PrepareFrameAt(tick.logicalTickOrdinal, 10 * second, frame));
-    REQUIRE(frame.controlSlotCount == pbmodulation::GetUnifiedMaximumControlSlots());
+    // Since bf52b24 ("balance pass-zero window budget") a periodic control
+    // refresh carries one complete Session/Manifest/current-Segment triplet in
+    // a single mixed frame (3 record kinds x senderUnifiedPeriodicControlRepetitions)
+    // instead of re-filling the maximum slot count; every other non-empty frame
+    // still carries its per-frame SegmentDescriptor prelude.
+    REQUIRE(frame.controlSlotCount ==
+        3 * pbapp::senderUnifiedPeriodicControlRepetitions);
     REQUIRE(frame.firstEquationIndex == 18);
     REQUIRE(scheduler.CommitPreparedFrame());
     REQUIRE(clock.Commit(10 * second));
     REQUIRE_FALSE(scheduler.PrepareFrameAt(tick.logicalTickOrdinal + 1, 9 * second, frame));
     REQUIRE(scheduler.GetSnapshot().committedFrameCount == 3);
-    REQUIRE(scheduler.GetSnapshot().committedEquationCount == 25);
+    // 15 codewords minus 8 (startup burst head), 4 (startup burst tail) and
+    // 3 (single-triplet periodic refresh) control slots: 7 + 11 + 12.
+    REQUIRE(scheduler.GetSnapshot().committedEquationCount == 30);
     REQUIRE(scheduler.GetSnapshot().controlBurstCount == 2);
     REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true}, scheduler));
     REQUIRE(scheduler.PrepareFrameAt(0, (std::numeric_limits<std::uint64_t>::max)() - 1, frame));

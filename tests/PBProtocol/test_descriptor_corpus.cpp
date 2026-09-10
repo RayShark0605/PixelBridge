@@ -50,12 +50,18 @@ namespace {
 
 [[nodiscard]] pbprotocol::SessionDescriptor MakeFixedSessionDescriptor() noexcept
 {
-    return pbprotocol::SessionDescriptor{
+    pbprotocol::SessionDescriptor expected{
         pbprotocol::GetProtocolVersion(),
         pbprotocol::test::MakeSessionId(),
         64,
         8,
         pbprotocol::DigestAlgorithm::Blake3_256};
+    // The corpus bytes carry the sealed LC4 profile identity; see
+    // kCorpusSealedSessionVisualProfileId for why this must not follow the
+    // struct default.
+    expected.sessionVisualProfileId =
+        pbprotocol::test::kCorpusSealedSessionVisualProfileId;
+    return expected;
 }
 
 template <std::size_t ByteCount>
