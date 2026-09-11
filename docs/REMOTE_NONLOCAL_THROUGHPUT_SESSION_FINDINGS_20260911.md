@@ -376,8 +376,8 @@ git rev-parse HEAD          # cec4d358771332d0509017d89b11963fc4104405
 |---|---|---|---|---|---|
 | vb bands 15/50 | **117,973** | 92.8 | 96.8% | 0.814 | 118,070 vs 117,973（0.08%）|
 | vb bands 30/50 | **94,803** | 91.1 | 79.2% | 0.812 | 94,795 vs 94,803（0.01%）|
-| vb bands 15/100 | 待填 | | | | |
-| vb bands 30/100 | 待填 | | | | |
+| vb bands 15/100 | **60,089** | 72.1 | 63.4% | 0.816 | 60,098 vs 60,089（0.015%）|
+| vb bands 30/100 | **51,996** | 59.0 | 67.0% | 0.794 | 52,005 vs 51,996（0.017%）|
 
 - **结论①确认**：0.81–0.83 核、e2e 唯一帧率 ≤13；今天链路更健康（接受率 91–93 vs 昨日 77–79），证明接受速率 = 链路质量 × 单核预算，CPU 天花板机制不变。
 - **结论②强确认**：两因子模型在链路条件显著不同的另一天以 <0.1% 误差复现。
@@ -395,8 +395,43 @@ git rev-parse HEAD          # cec4d358771332d0509017d89b11963fc4104405
 1. **O1 增量喷泉调度**（`sender_carousel_scheduler.*`）：wirehair pass≥1 预算 `K+max(16,20%K)` → `max(16,20%K)` 全新 repair；尾帧 padding 改为本 pass 已调度范围复用（pass 0 复用 systematic、repair pass 复用本 pass repair）；`sender_carousel_scheduler` 注释、`docs/ENCODER_STREAMING_CAROUSEL.md` §1.1 第 7 条（含与 §1 第 6–7 条 G02 历史合同的分界）同步更新；新增探针 `ProbeUnifiedFountainMidJoin`（错过全部 pass 0、纯 repair 流跨 pass 恢复 8×64KiB 段，断言零资源拒绝、纯 repair ID、多 pass 完成）与调度器/工作流测试更新。
 2. **O3a 锁定几何窗口化 bootstrap**（`local_desktop_decode.*`、`capture_demodulator.cpp`）：hint 预测 4 marker 中心，各在 ~130px 窗口内做与全扫描同源的 run-length 定位+VerticalCross+VerifyMarker；任一窗口 miss/异角色 marker/漂移>48px 或 scale 漂移>5% → 同调用内回退完整全扫描；MakeGeometry/EvaluateGeometry（双副本 RS/CRC+9 timing patch）完全不削弱；与 fixed-canvas 先例一样不做全 ROI 歧义扫描（下游逐帧身份检查仍是绑定权威）。`CaptureDemodulator` 维护 hint（域启动/失效即重置），`windowedFastPath/fallback` 计数贯通 CaptureDemodulatorSnapshot→DecoderSnapshot→RunReport.2/3。新增 4 组几何（1:1/1.26/各向异性）×（hint 命中/微漂移/大漂移回退/撕裂帧同擦除）测试。
 3. **归因补齐**：headless Decoder CLI 挂 `RunMeasurementRecorder`（RunReport.3 自动获得 stageCounters/captureFlow/measurement）；RunReport.3 无条件输出 `processCpu*`；新增 `--stage-diagnostics` CLI 开关接通既有 `pbcore::StageDiagnostics`。
-4. 预期收益模型（待现场验证）：O1 把 100MB 档重复占比 41%→~10-15%、O3a 把 bootstrap 27-32ms/帧→数 ms；若成立，100MB 档 goodput 有望 60→90-110 KB/s（今日链路口径）。
+4. 预期收益模型（待现场验证）：O1 把 100MB 档重复占比 37-40%→~10-15%、O3a 把 bootstrap 27-32ms/帧→数 ms；若成立，100MB 档 goodput 有望 60→90-110 KB/s（今日链路口径）。
+5. **实现过程的关键教训**：`decoder_resume_store.cpp` 把"接收端解码器上限 ≤ 发送窗口"当成硬校验（`> senderUnifiedActiveSegmentWindowSize` 即拒绝启动）——O2 解耦后该隐含耦合使**所有解码启动失败**（首轮回归 2 个测试套件连带 14 个用例失败），同文件还有按窗口定尺寸的活跃段计数数组。均已改为跟随接收端上限。全库扫描确认无其它隐性耦合。
+6. **回归收口**：`ctest -C Release -E PBPresentationGate` **163/163 PASS**（含新增 fountain mid-join 探针、locked-geometry 测试与全部解耦后的期望更新）。改动已提交：`d37d98f feat(demod,scheduler): non-local throughput pass 1 ...`（20 文件，+1066/−65）。构建身份 gitCommit=d37d98f，encoder sha256 `493bd43f…`，decoder sha256 `e92f6992…`。
+7. **部署陷阱**：桥的 deploy 安全解包**拒绝 zip 目录项**——Qt 插件目录打进 kit 会被 `zip-directory-entry` 拒绝；kit 必须只含平铺文件（旧 kit 34 项无目录即此因）。重打包为 15 个平铺文件后部署成功。
 
 ### 11.5 A/B 计划
 
 构建（增量+重configure 取新 commit）→ `ctest -C Release -E PBPresentationGate` → `package_opt_kit.py`（kit-opt1-*.zip + local-receiver-opt + opt-build.json）→ `opt_matrix.py` 四格（bands 15/30×50/100，receiver 带 --stage-diagnostics --journal）→ 对比今日 vb-* 基线。
+
+### 11.6 A/B 第一轮（d37d98f，平坦 20% 喷泉预算）——4/4 完成，全部 digestMatch=true
+
+| 格子 | 基线 vb（cec4d35） | opt（d37d98f） | 变化 | 备注 |
+|---|---|---|---|---|
+| bands 15/50 | 117,973 | 113,490 | −3.8% | 基线重复本就 3.2%，无优化空间；链路噪声带内 |
+| bands 30/50 | 94,803 | **123,980** | **+30.7%** | rate 91.1→98.1、唯一占比 79.2→96.2%，两因子同升 |
+| bands 15/100 | 60,089 | 53,487 | **−11.0%** | **回归**：dups 46,026→56,737，机制见下 |
+| bands 30/100 | 51,996 | **68,182** | **+31.1%** | e2e 帧率上限 12.9→16.5；dups 仍 49,169 |
+
+- **O3a 窗口化 bootstrap 全胜**：32.3→**2.7ms/帧（12×）**，四格 fast-path 命中 26,822-6,437 帧、**回退仅 30 帧**（0.1%，且那些帧本身即被拒），几何锁极其稳定。
+- **15Hz 回归的机制**（重要设计教训）：今晚链路擦除使每段缺口 ≈28-40%×K，平坦 20% 预算迫使缺口段经历 2-3 个 wrap 才补齐，而**每个 wrap 都重访全部已解码段** → 重复接收反超基线。30Hz 因帧流加倍、wrap 节奏更快而不受此害。
+- **修复（7df05e2）**：pass k 预算翻倍 `max(16, ceil((K-1)×20%×2^min(k-1,3)/100)+1)`（20%→40%→80%，封顶 160%）——首 wrap 便宜、高缺口段 1-2 wrap 收敛。调度器相位测试的硬编码 8 一并改为窗口常量；PBUnifiedSenderSchedulerTests 14/14、PBApplicationTests 全过。
+- 30/100 格的 e2e 16.5fps、FEC 30.2ms/帧 → **FEC 已是下一个主导瓶颈**（O3b 数据支撑）。
+
+### 11.7 A/B 第二、三轮（翻倍预算 7df05e2 → 封顶 80% 594d6bb → 回退 55e4921）
+
+| 格子 | 基线 | flat20 (d37d98f) | 翻倍160 (7df05e2) | 封顶80 (594d6bb) |
+|---|---|---|---|---|
+| 15Hz/100MB goodput | **60,089** | 53,487 | 58,489 | 52,837 |
+| 15Hz/100MB rate×uFrac | 72.1×.634 | 69.7×.584 | 84.1×.529 | 80.0×.500 |
+| 15Hz/100MB dups | 46,026 | 56,737 | 70,922 | 79,741 |
+| 30Hz/50MB goodput | 94,803 | 123,980 | **124,898**（+31.7%）| — |
+| 30Hz/100MB goodput | 51,996 | 68,182（+31.1%）| **61,366（+18.0%）** | — |
+
+**机制结论（15Hz/100MB 三变体全输基线的原因）**：15Hz 下接收端接纳预算（72–84 sym/s）本已饱和于信源供给（~200 方程/s），.sender 多播的方程在接收端只能按帧存活率随机抽样接纳；喷泉变体把更多空口时间花在已解码段的 repair 上，接纳到的重复比例随之上升。翻倍预算提升 rate（大批次→更少控制边界）但降低 uFrac，二者近抵消、净输基线 3–12%。**30Hz 则相反**：接收端接纳率可达 111.9 sym/s（帧流翻倍），多出的有效空口被真正利用，+31% 稳定复现。
+
+**决策**：80% 封顶被现场否决（dups 再升）→ revert 为 160% 翻倍（55e4921，最终默认）。最终确认格 o4v-f30-s100（55e4921）= 61,366 B/s（+18.0%）、e2e 帧率 **19.3**（全场最高）；与 flat20 的 68,182 差异含 2.3h 链路漂移混杂（rate 84.0→80.5），不下变体优劣结论。翻倍 vs flat20 直接对比 2:1 占优（15/100 +9.4%、30/50 +0.7%、30/100 −10% 存疑）。**最终默认 = 翻倍喷泉（20%→40%→80%→160%封顶）**：30Hz 档 +31%（吞吐场景应选 30Hz），15Hz 档损失 ≤3%（7df05e2 口径）；O3a 在所有档位 12× 削减 bootstrap CPU。后续若追求 15Hz 亦不掉速，候选方向是 fps 感知预算（≤15Hz 回退 K+20% 行为）——未实施，避免过拟合单链路两天数据。
+
+**收官状态**：最终提交链 d37d98f → 7df05e2 → 594d6bb → revert 55e4921；`ctest -C Release -E PBPresentationGate` **163/163 PASS**（55e4921）；kit-opt4-6f6ce53f.zip（encoder 6f6ce53f/decoder 2256f521）为最终现场二进制。**推荐操作口径：吞吐场景用 30Hz + unified-bands + 55e4921 构建。**未竟事项：O4（已授权未实施）、O3b（FEC 并行，30.9-34.3ms/帧已是最大单项）、fps 感知预算（15Hz 兜底）。
+
+**过程中事故**：01:12 前一次 o3v 运行因远程 Encoder 早死被主人发现并指示重跑（display/心跳均正常，死因未留日志；重跑 o3v-f15-s100-r2 正常完成）。
