@@ -46,6 +46,7 @@ struct Options
     std::wstring replayInputPath;
     std::string runId;
     pbapp::CaptureBackend backend = pbapp::CaptureBackend::Wgc;
+    bool backendSpecified = false;
     pbapp::VisualProfile profile = pbapp::VisualProfile::DirectLevels2x2;
     RECT roi{};
     std::uint32_t timeoutSeconds = 120;
@@ -285,6 +286,7 @@ struct Options
             {
                 return false;
             }
+            options.backendSpecified = true;
         }
         else if (option == L"--profile")
         {
@@ -538,6 +540,13 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     pbapp::DecoderConfig config;
     config.outputDirectory = options.outputDirectory;
     config.captureBackend = options.backend;
+    // The unified family fixes Auto capture (the runtime selects WGC internally
+    // and rejects any explicit legacy backend). Only an unspecified backend may
+    // take that product default; an explicit --backend keeps failing closed.
+    if (!options.backendSpecified && pbapp::IsUnifiedVisualFamily(options.profile))
+    {
+        config.captureBackend = pbapp::CaptureBackend::Auto;
+    }
     config.visualProfile = options.profile;
     config.runId = options.runId;
     config.region = region;

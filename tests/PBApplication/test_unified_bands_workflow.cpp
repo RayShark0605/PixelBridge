@@ -1,6 +1,7 @@
 #include "unified_decoder_test_support.h"
 
 #include "pbmodulation/supplemental_band.h"
+#include "pbprotocol/product_visual_profile.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -115,8 +116,20 @@ BandsFrames MakeBandsFrames(const std::filesystem::path& root, const std::span<c
             (scaled43 ? 2560U : 1920U) * 4, pbmodulation::LumaPixelFormat::Bgra8};
         result.geometryStatus = scaled43 ? pbdemodd3d11::CaptureDemodulatorGeometryStatus::Scaled :
             pbdemodd3d11::CaptureDemodulatorGeometryStatus::ExactCanvas;
-        const auto observation = oracle.DecodeMixedFrame(view);
+        // The CPU oracle must expect the experimental wire identity for the
+        // scaffold validation, mirroring the binding the product demodulator
+        // passes on the live path.
+        pbmodulation::UnifiedExpectedFrameIdentity expected;
+        expected.visualProfileId = pbprotocol::kBlankControlExperimentalProfile.visualProfileId;
+        expected.visualLayoutVersion = pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion;
+        const auto observation = oracle.DecodeMixedFrame(view, expected);
         Check(observation.IsFrameAvailable(), "runtime pixel fixture could not be decoded");
+        // Lock the wire identity: layout 11 / experimental profile id on the
+        // Bootstrap itself, so a binding regression cannot hide behind the
+        // product profile while band mechanics still pass.
+        Check(observation.bootstrapRecord.visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
+            observation.bootstrapRecord.visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion,
+            "unified-bands frames must carry the experimental Bootstrap identity");
         result.bootstrap = observation.bootstrap;
         Check(static_cast<bool>(pbprotocol::SerializeBootstrapRecord(observation.bootstrapRecord, result.bootstrapRecord)),
             "cannot serialize observed Bootstrap");

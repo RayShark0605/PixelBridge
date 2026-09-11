@@ -855,7 +855,7 @@ struct ProfileBinding
 
 [[nodiscard]] ProfileBinding GetProfileBinding(const VisualProfile profile)
 {
-    if (IsUnifiedVisualFamily(profile))
+    if (profile == VisualProfile::UnifiedLc4)
     {
         return {profile, pbprotocol::kUnifiedVisualProfileId, pbprotocol::kUnifiedVisualLayoutVersion,
             static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codedBytes),

@@ -2,6 +2,7 @@
 
 #include "local_desktop_internal.h"
 #include "pbinnerfec/qc_ldpc_codec.h"
+#include "pbprotocol/product_visual_profile.h"
 #include "pbprotocol/transport_block_codec.h"
 
 #include <algorithm>
@@ -13,6 +14,22 @@
 
 namespace pbmodulation
 {
+
+namespace
+{
+// The experimental blank-control identity (layout 11) shares this entire
+// manifest's geometry and carrier contract; its Bootstrap differs only in the
+// profile pair, so packing, raster generation and the CPU oracle accept both.
+// It never enters the product catalog (see product_visual_profile.h).
+[[nodiscard]] bool IsUnifiedBootstrapProfilePair(const std::uint64_t visualProfileId,
+    const std::uint8_t visualLayoutVersion) noexcept
+{
+    return (visualProfileId == kUnifiedVisualProfile.productProfile.visualProfileId &&
+        visualLayoutVersion == kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
+        (visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
+        visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion);
+}
+} // namespace
 
 struct UnifiedVisualCpuOracle::Implementation
 {
@@ -1210,8 +1227,7 @@ ModulationStatus PackUnifiedVisualFrame(
     {
         return ModulationStatus::Failure(MapProtocolPackingError(bootstrap.Error().code), bootstrap.Error().offset);
     }
-    if (bootstrap.Value().visualProfileId != kUnifiedVisualProfile.productProfile.visualProfileId ||
-        bootstrap.Value().visualLayoutVersion != kUnifiedVisualProfile.productProfile.visualLayoutVersion)
+    if (!IsUnifiedBootstrapProfilePair(bootstrap.Value().visualProfileId, bootstrap.Value().visualLayoutVersion))
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 8);
     }
@@ -1337,8 +1353,7 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
         return ModulationStatus::Failure(parsed.Error().code == pbprotocol::ProtocolErrorCode::CrcMismatch ?
             ModulationErrorCode::CrcMismatch : ModulationErrorCode::InvalidInput, parsed.Error().offset);
     }
-    if (parsed.Value().visualProfileId != kUnifiedVisualProfile.productProfile.visualProfileId ||
-        parsed.Value().visualLayoutVersion != kUnifiedVisualProfile.productProfile.visualLayoutVersion)
+    if (!IsUnifiedBootstrapProfilePair(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion))
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 8);
     }
@@ -1477,8 +1492,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
     }
     const auto parsedBootstrap = pbprotocol::ParseBootstrapRecord(input.bootstrap.canonical44);
     if (!parsedBootstrap ||
-        parsedBootstrap.Value().visualProfileId != kUnifiedVisualProfile.productProfile.visualProfileId ||
-        parsedBootstrap.Value().visualLayoutVersion != kUnifiedVisualProfile.productProfile.visualLayoutVersion)
+        !IsUnifiedBootstrapProfilePair(parsedBootstrap.Value().visualProfileId, parsedBootstrap.Value().visualLayoutVersion))
     {
         ClearRejectedMetrics();
         return observation;
@@ -1594,8 +1608,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
         }
     }
 
-    const LocalDesktopBootstrapBinding binding{kUnifiedVisualProfile.productProfile.visualProfileId,
-        kUnifiedVisualProfile.productProfile.visualLayoutVersion};
+    const LocalDesktopBootstrapBinding binding{expectedIdentity.visualProfileId, expectedIdentity.visualLayoutVersion};
     const LocalDesktopDecodePolicy locatorPolicy = GetUnifiedLocatorPolicy(policy);
     if (view.width == kUnifiedVisualProfile.canvasWidth && view.height == kUnifiedVisualProfile.canvasHeight)
     {

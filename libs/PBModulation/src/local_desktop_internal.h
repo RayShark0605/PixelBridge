@@ -5,6 +5,7 @@
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbmodulation/unified_visual_profile.h"
+#include "pbprotocol/product_visual_profile.h"
 
 #include <array>
 #include <cstddef>
@@ -27,8 +28,12 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, Remo
     case LocalDesktopBinding::RemoteVisualLowFps:
         return profileId == kRemoteVisualLowFpsProfileId && layout == kRemoteVisualLowFpsLayoutVersion;
     case LocalDesktopBinding::UnifiedVisual:
-        return profileId == kUnifiedVisualProfile.productProfile.visualProfileId &&
-            layout == kUnifiedVisualProfile.productProfile.visualLayoutVersion;
+        // The experimental blank-control identity (layout 11) uses the same
+        // scaffold geometry; only the profile pair differs.
+        return (profileId == kUnifiedVisualProfile.productProfile.visualProfileId &&
+            layout == kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
+            (profileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
+            layout == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion);
     }
     return false;
 }

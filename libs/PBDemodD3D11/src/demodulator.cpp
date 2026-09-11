@@ -9,6 +9,7 @@
 #include "pbinterleave/tile_permutation.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/checked_integer.h"
+#include "pbprotocol/product_visual_profile.h"
 
 #include <dxgi1_2.h>
 #include <wrl/client.h>
@@ -302,9 +303,13 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
         binding.codewords = pbmodulation::kRemoteVisualLowFpsCodewords;
         binding.paddingBytes = pbmodulation::kRemoteVisualLowFpsPaddingBytes;
     }
-    else if (binding.profileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId &&
-        parsed.Value().visualLayoutVersion == pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion)
+    else if ((binding.profileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId &&
+        parsed.Value().visualLayoutVersion == pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
+        (binding.profileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
+            parsed.Value().visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion))
     {
+        // Layout 11 shares the layout 10 main-region geometry, so the GPU
+        // binding constants are identical for both unified identities.
         binding.mode = ProfileMode::UnifiedVisual;
         binding.tilePixels = pbmodulation::kUnifiedVisualProfile.tileWidth;
         binding.tileCount = pbmodulation::kUnifiedVisualProfile.dataTileCount;
@@ -2035,7 +2040,18 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
         prepared.baseLuma = unifiedBaseLuma;
         prepared.fineLuma = unifiedFineLuma;
         prepared.chroma = unifiedChroma;
-        auto unifiedObservation = state.unifiedOracle.DecodePreparedMixedFrame(prepared, {}, unifiedPolicy);
+        // The prepared handoff carries the Bootstrap the capture stage
+        // already validated; the CPU oracle must expect that same wire
+        // identity (product or experimental blank-control) for scaffold
+        // validation.
+        pbmodulation::UnifiedExpectedFrameIdentity unifiedExpected;
+        const auto unifiedBootstrapRecord = pbprotocol::ParseBootstrapRecord(unifiedBootstrap.canonical44);
+        if (unifiedBootstrapRecord)
+        {
+            unifiedExpected.visualProfileId = unifiedBootstrapRecord.Value().visualProfileId;
+            unifiedExpected.visualLayoutVersion = unifiedBootstrapRecord.Value().visualLayoutVersion;
+        }
+        auto unifiedObservation = state.unifiedOracle.DecodePreparedMixedFrame(prepared, unifiedExpected, unifiedPolicy);
         if (!unifiedObservation.inputValid)
         {
             RetireSlot(state, slot, true);

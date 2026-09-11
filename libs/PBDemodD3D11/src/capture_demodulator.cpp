@@ -118,6 +118,11 @@ bool ResolveBinding(const std::uint64_t visualProfileId, pbmodulation::LocalDesk
         output = {visualProfileId, pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
         return true;
     }
+    if (visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId)
+    {
+        output = {visualProfileId, pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion};
+        return true;
+    }
     if (visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId)
     {
         output = {visualProfileId, pbmodulation::kRemoteVisualLowFpsLayoutVersion};
@@ -148,7 +153,10 @@ bool IsRemoteVisualLowFps(const std::uint64_t visualProfileId) noexcept
 
 bool IsUnifiedVisual(const std::uint64_t visualProfileId) noexcept
 {
-    return visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId;
+    // The experimental blank-control identity shares the unified staged
+    // pipeline (layout 11 = layout 10 main region + two supplemental bands).
+    return visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId ||
+        visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId;
 }
 
 bool IsStagedVisual(const std::uint64_t visualProfileId) noexcept

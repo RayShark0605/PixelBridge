@@ -70,6 +70,12 @@ struct UnifiedExpectedFrameIdentity
     pbprotocol::SessionTag sessionTag{};
     bool requireFrameSequence = false;
     std::uint64_t frameSequence = 0;
+    // Expected wire identity of the Bootstrap scaffold. Defaults to the
+    // product profile pair; a caller bound to the experimental blank-control
+    // identity passes its own pair so scaffold validation uses the right
+    // contract instead of guessing.
+    std::uint64_t visualProfileId = kUnifiedVisualProfile.productProfile.visualProfileId;
+    std::uint8_t visualLayoutVersion = kUnifiedVisualProfile.productProfile.visualLayoutVersion;
 };
 
 struct UnifiedVisualDecodePolicy

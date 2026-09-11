@@ -4,6 +4,7 @@
 #include "luma_reader.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/crc32c.h"
+#include "pbprotocol/product_visual_profile.h"
 
 #include <algorithm>
 #include <array>
@@ -1052,8 +1053,12 @@ bool ResolveLocalDesktopBinding(const LocalDesktopBootstrapBinding& binding,
         return true;
     }
     if (binding == LocalDesktopBootstrapBinding{kUnifiedVisualProfile.productProfile.visualProfileId,
-        kUnifiedVisualProfile.productProfile.visualLayoutVersion})
+        kUnifiedVisualProfile.productProfile.visualLayoutVersion} ||
+        binding == LocalDesktopBootstrapBinding{pbprotocol::kBlankControlExperimentalProfile.visualProfileId,
+            pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion})
     {
+        // Layout 11 reuses the layout 10 scaffold geometry; the pair still
+        // gates via MatchesLocalDesktopBinding and the caller's exact binding.
         output = detail::LocalDesktopBinding::UnifiedVisual;
         return true;
     }

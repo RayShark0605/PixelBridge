@@ -470,7 +470,7 @@ private:
         !options.experimentMonitorDeviceName.empty();
     const bool anyMonitorArgument = !options.protectedMonitorDeviceName.empty() ||
         !options.experimentMonitorDeviceName.empty() || options.singleMonitorFullscreenSpecified;
-    const bool unifiedSingleMonitorFullscreen = options.profile == pbapp::VisualProfile::UnifiedLc4 &&
+    const bool unifiedSingleMonitorFullscreen = pbapp::IsUnifiedVisualFamily(options.profile) &&
         options.singleMonitorFullscreenSpecified && !options.protectedMonitorSpecified &&
         !options.experimentMonitorSpecified;
     if ((options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
@@ -615,7 +615,7 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         Usage();
         return 2;
     }
-    pbapp::EncoderConfig config = options.profile == pbapp::VisualProfile::UnifiedLc4 ?
+    pbapp::EncoderConfig config = pbapp::IsUnifiedVisualFamily(options.profile) ?
         pbapp::MakeUnifiedEncoderConfig(options.sourcePath, options.logicalVisualFps) : pbapp::EncoderConfig{};
     config.sourcePath = options.sourcePath;
     config.compressionEnabled = options.compression;
@@ -668,13 +668,13 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         }
     }
     if (options.singleMonitorFullscreenSpecified &&
-        (options.profile == pbapp::VisualProfile::UnifiedLc4 ||
+        (pbapp::IsUnifiedVisualFamily(options.profile) ||
          options.profile == pbapp::VisualProfile::RemoteVisualLowFps))
     {
         pbapp::MonitorInfo fullscreenMonitor;
         std::string monitorError;
         if (!ResolveFullscreenMonitor(options.singleMonitorFullscreenDeviceName,
-            fullscreenMonitor, monitorError, options.profile == pbapp::VisualProfile::UnifiedLc4))
+            fullscreenMonitor, monitorError, pbapp::IsUnifiedVisualFamily(options.profile)))
         {
             std::cerr << monitorError << '\n';
             return 2;
