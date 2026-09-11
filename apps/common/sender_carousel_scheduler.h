@@ -15,10 +15,12 @@ inline constexpr std::uint32_t senderCarouselMinimumRepairBlocks = 16;
 // Unified Pass 0 uses a 10% LocalRepairBurst plus a small fixed transition
 // guard. The guard spans more than two ordinary 14-Transport-slot frames, so a
 // near-threshold Segment is not abandoned at the bounded-window transition.
-// Later Wirehair passes are incremental fountain repair passes: each schedules
-// only max(16, ceil(K*20%)) fresh repair equations and never re-broadcasts the
-// K systematic equations, so a Carousel re-sweep of an already-recovered
-// Segment costs one small repair batch instead of a full K-sized pass.
+// Later Wirehair passes are incremental fountain repair passes with a doubling
+// budget: Pass 1 schedules only max(16, ceil(K*20%)) fresh repair equations
+// and never re-broadcasts the K systematic equations, so a Carousel re-sweep
+// of an already-recovered Segment costs one small batch; each later pass
+// doubles the fraction (capped at 160% of K) so high-erasure Segments converge
+// within a few wraps instead of many minimal wraps.
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentNumerator = 1;
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentDenominator = 10;
 inline constexpr std::uint32_t senderUnifiedMinimumInitialRepairBlocks = 16;

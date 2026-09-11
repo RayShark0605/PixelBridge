@@ -173,7 +173,8 @@ TEST_CASE("Unified periodic phase preserves startup and shifts only the first re
         pbapp::SenderUnifiedCarouselScheduler original;
         pbapp::SenderUnifiedCarouselScheduler candidate;
         REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 1}, original));
-        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 1, phaseIndex, 8}, candidate));
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 1, phaseIndex,
+            pbapp::senderUnifiedActiveSegmentWindowSize}, candidate));
         for (std::uint64_t tick = 0; tick < 2; tick++)
         {
             pbapp::SenderUnifiedScheduledFrame originalFrame;
@@ -184,7 +185,8 @@ TEST_CASE("Unified periodic phase preserves startup and shifts only the first re
             REQUIRE(original.CommitPreparedFrame());
             REQUIRE(candidate.CommitPreparedFrame());
         }
-        const std::uint64_t firstDeadline = 10 * second + 10 * second * phaseIndex / 8;
+        const std::uint64_t firstDeadline = 10 * second +
+            10 * second * phaseIndex / pbapp::senderUnifiedActiveSegmentWindowSize;
         pbapp::SenderUnifiedScheduledFrame before;
         REQUIRE(candidate.PrepareFrameAt(2, firstDeadline - 1, before));
         REQUIRE(before.controlBurstSlotCount == 0);
@@ -270,12 +272,13 @@ TEST_CASE("Unified periodic phase validates bounds and retains a pending frame a
     "[application][scheduler][control][control-phase]")
 {
     pbapp::SenderUnifiedCarouselScheduler scheduler;
-    for (const auto [phaseIndex, phaseCount] : std::array<std::pair<std::uint32_t, std::uint32_t>, 4>{{{0, 0}, {0, 9}, {8, 8}, {UINT32_MAX, 8}}})
+    const std::uint32_t phaseCount = pbapp::senderUnifiedActiveSegmentWindowSize;
+    for (const auto [phaseIndex, count] : std::array<std::pair<std::uint32_t, std::uint32_t>, 4>{{{0, 0}, {0, 9}, {8, 8}, {UINT32_MAX, 8}}})
     {
-        REQUIRE_FALSE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 0, phaseIndex, phaseCount}, scheduler));
+        REQUIRE_FALSE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 0, phaseIndex, count}, scheduler));
         REQUIRE(scheduler.IsComplete());
     }
-    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 0, 7, 8}, scheduler));
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 15, true, 0, phaseCount - 1, phaseCount}, scheduler));
     const std::uint64_t start = UINT64_MAX - 7 * pbapp::senderLogicalFrameNanosecondsPerSecond;
     pbapp::SenderUnifiedScheduledFrame frame;
     REQUIRE(scheduler.PrepareFrameAt(0, start, frame));
@@ -295,7 +298,8 @@ TEST_CASE("Dispersed periodic control still drops elapsed intervals instead of e
     "[application][scheduler][control][control-phase]")
 {
     pbapp::SenderUnifiedCarouselScheduler scheduler;
-    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 1, true, 1, 7, 8}, scheduler));
+    REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create({64000, 4, 1, true, 1,
+        pbapp::senderUnifiedActiveSegmentWindowSize - 1, pbapp::senderUnifiedActiveSegmentWindowSize}, scheduler));
     pbapp::SenderUnifiedScheduledFrame frame;
     for (std::uint64_t tick = 0; tick < 2; tick++)
     {
@@ -687,6 +691,26 @@ TEST_CASE("Unified Wirehair later passes schedule only the incremental fountain 
         REQUIRE(fullRepairIds[equationIndex] == firstFullRepairId + equationIndex);
     }
     REQUIRE(initialIds.back() < fullRepairIds.front());
+    // The doubling budget: Pass 2 schedules twice the Pass-1 fraction and
+    // Pass 3 four times it, so a high-deficit Segment converges in a few
+    // wraps instead of many minimal ones.
+    for (const std::uint64_t carouselPass : {2ULL, 3ULL})
+    {
+        std::uint64_t expectedDoubling = (systematicBlockCount - 1ULL) *
+            (static_cast<std::uint64_t>(pbapp::senderCarouselRepairPercentNumerator) << (carouselPass - 1ULL)) /
+            pbapp::senderCarouselRepairPercentDenominator + 1ULL;
+        if (expectedDoubling < pbapp::senderCarouselMinimumRepairBlocks)
+        {
+            expectedDoubling = pbapp::senderCarouselMinimumRepairBlocks;
+        }
+        pbapp::SenderUnifiedCarouselScheduler doubling;
+        REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
+            {systematicBlockCount, 4, 15, true, carouselPass}, doubling));
+        const pbapp::SenderUnifiedCarouselSnapshot snapshot = doubling.GetSnapshot();
+        REQUIRE(snapshot.systematicEquationCount == 0);
+        REQUIRE(snapshot.repairEquationCount == expectedDoubling);
+        REQUIRE(snapshot.scheduledEquationCount == snapshot.repairEquationCount);
+    }
 }
 
 TEST_CASE("Unified initial repair preserves the guard while phase balancing must cover the old fixed-phase deficit",

@@ -399,19 +399,26 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     {
         if (config.wirehair && config.carouselPass != 0)
         {
-            // Incremental fountain repair pass: every scheduled equation is a
-            // fresh repair ID and the budget is the repair amount alone, so a
-            // Carousel re-sweep of an already-recovered Segment costs
-            // max(16, ceil(K*20%)) equations instead of a full K-sized pass.
-            // Late joiners keep accumulating brand-new equations every pass.
-            const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
-                config.systematicBlockCount, config.wirehair, senderCarouselRepairPercentNumerator,
-                senderCarouselRepairPercentDenominator, senderCarouselMinimumRepairBlocks, 0,
-                scheduledEquationCount, repairEquationCount);
-            if (!equationStatus)
+            // Incremental fountain repair pass with a doubling budget. Pass 1
+            // schedules only max(16, ceil(K*20%)) fresh repair equations, so a
+            // Carousel re-sweep of an already-recovered Segment costs one small
+            // batch instead of a full K-sized pass. Each later pass doubles the
+            // fraction (20% -> 40% -> 80%, capped at 160%) so a Segment whose
+            // erasure deficit exceeds one batch converges within a few wraps
+            // instead of many minimal wraps whose re-visits of recovered
+            // Segments dominate the airtime.
+            const std::uint64_t doublingShift = (std::min<std::uint64_t>)(config.carouselPass - 1ULL, 3ULL);
+            const auto scaledNumerator = pbprotocol::CheckedMultiplyUint64(
+                senderCarouselRepairPercentNumerator, 1ULL << doublingShift);
+            const auto scaledRepair = scaledNumerator ?
+                pbprotocol::CheckedMultiplyUint64(config.systematicBlockCount - 1ULL, scaledNumerator.Value()) :
+                scaledNumerator;
+            if (!scaledNumerator || !scaledRepair)
             {
-                return equationStatus;
+                return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::ArithmeticOverflow);
             }
+            repairEquationCount = (std::max)(static_cast<std::uint64_t>(senderCarouselMinimumRepairBlocks),
+                scaledRepair.Value() / senderCarouselRepairPercentDenominator + 1ULL);
             scheduledEquationCount = repairEquationCount;
             systematicEquationCount = 0;
         }
