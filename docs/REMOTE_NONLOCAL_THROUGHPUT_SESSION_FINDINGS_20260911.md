@@ -435,3 +435,31 @@ git rev-parse HEAD          # cec4d358771332d0509017d89b11963fc4104405
 **收官状态**：最终提交链 d37d98f → 7df05e2 → 594d6bb → revert 55e4921；`ctest -C Release -E PBPresentationGate` **163/163 PASS**（55e4921）；kit-opt4-6f6ce53f.zip（encoder 6f6ce53f/decoder 2256f521）为最终现场二进制。**推荐操作口径：吞吐场景用 30Hz + unified-bands + 55e4921 构建。**未竟事项：O4（已授权未实施）、O3b（FEC 并行，30.9-34.3ms/帧已是最大单项）、fps 感知预算（15Hz 兜底）。
 
 **过程中事故**：01:12 前一次 o3v 运行因远程 Encoder 早死被主人发现并指示重跑（display/心跳均正常，死因未留日志；重跑 o3v-f15-s100-r2 正常完成）。
+
+
+---
+
+## 12. 第三会话（2026-09-12 凌晨）：O3b 落地、fps 感知预算、O4 设计交接
+
+### 12.1 已交付（提交 03a79a9，163/163 PASS）
+
+1. **O3b 并行码字 FEC**：`UnifiedVisualCpuOracle` 内建 15 条私有 Qc-LDPC 解码车道（每帧 15 个 codeword slot 从一个原子计数器认领、车道间零共享、串/并两路径共用同一逐槽解码函数），输出与串行**逐位一致**（新增专项测试 + 全量 495,140 断言语料通过）。逐槽 DiagnosticScope 保持串行（--stage-diagnostics 运行时自动回退串行路径，保留逐阶段归因）；内存按 RequiredBytes 计费（每车道 1 MiB）；任何分配失败优雅降级串行。预期：30Hz 接纳率从 111.9 sym/s 进一步上探（FEC 30.9-34.3ms/帧 → ~5-8ms/帧墙钟）。
+2. **fps 感知 repair 预算**：`senderUnifiedSerialRepairFpsThreshold=15`。≤15Hz 沿用历史 K+20% FullRepairPass（现场数据：低帧率下喷泉只添重复接纳）；>15Hz 用增量翻倍喷泉。调度器双档测试、striping/mid-join 探针期望同步；契约 §1.1 第 7 条改写。
+3. 现场验证进行中（30/50 + 15/100 两格）。**事故**：02:15 首跑失败于 `ROI resolution failed: not-single-monitor`——本机右屏 DISPLAY2 从桌面拓扑消失（疑似休眠/断链），需主人物理唤醒后重跑。
+
+### 12.2 O4（车道重分配）实施设计——已授权，待实施
+
+**目标**：新建实验视觉身份，把 15 个 codeword 槽中的 5 个 Chroma 槽（擦除率 67-99%）改判给 Luma 承载（BaseLuma），空口有效容量预期 +30-40%。
+
+**表面清单（实施前必读）**：
+- `kUnifiedVisualProfile` 是**单例 manifest**，被 13 个文件 147 处直接引用；`kUnifiedLaneCapacities`（telemetry/observation 结构按 3 车道定型）；`unified_visual_compute.hlsl`（GPU demod 着色器）按现行车道/载波契约编译；mapping/CPU/golden 生成器（`generate_unified_*_golden.py`）；GUI/CLI 身份表；demodulator 的 `ParseBinding`/`ResolveLocalDesktopBinding` 成对身份门（run7 教训）。
+- 关键决策点：新 manifest 的 lanes 如何表达"无 Chroma"（`UnifiedLaneContract{Chroma, firstSlot=15, count=0}` 是否被 manifest 验证接受，或需扩展 `std::array<LaneContract,3>` 语义）；`GetUnifiedLogicalCarrierBit` 的 tile→(lane,slot,bit) 确定性映射是否车道表驱动（需通读 unified_visual_mapping）；golden 向量需为新身份全新生成（mapping/CPU/raster 三套）。
+
+**建议实施顺序**（估计 2-3 个专注会话）：
+1. manifest + 容量/验证器扩展（含 0-slot 车道合法性）+ 新 profile pair 注册进 `kUnifiedVisualProfileCatalog`；
+2. `GetUnifiedLogicalCarrierBit`/编码栅格/CPU oracle 的 manifest 参数化（把 `kUnifiedVisualProfile` 直引改为经 FindUnifiedVisualProfile 的 profile 句柄）——本步即 147 处引用的主体改造；
+3. GPU shader 与 demodulator 绑定对（成对身份门）；
+4. golden 生成器 + 新向量冻结；CLI/GUI opt-in（模式同 unified-bands 的 5 提交路径）；
+5. 实机 A/B：同日同链路 30Hz/50MB + 30Hz/100MB vs 03a79a9 基线。
+
+**依据更新**：今晚 30Hz 全系 +18~32% 后，Chroma 车道的空口占比浪费变得相对更大（约 1/3 空口换 <5% 符号），O4 的预期收益仍成立。
