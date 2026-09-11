@@ -946,7 +946,7 @@ TEST_CASE("Decoder resume journal rejects active cache state above the restart d
     REQUIRE_FALSE(store);
 }
 
-TEST_CASE("Unified resume journal retains an eight-Segment window and rejects a ninth active Segment",
+TEST_CASE("Unified resume journal retains the full Segment window and rejects one more active Segment",
     "[application][g21][unified][decoder][resume][journal][quota]")
 {
     ScratchDirectory scratch(L"decoder-resume-unified-eight-active");
@@ -1010,7 +1010,7 @@ TEST_CASE("Unified resume journal retains an eight-Segment window and rejects a 
     store.reset();
 
     pbprotocol::ReceiverResourcePolicy unsupportedPolicy = fixture.policy;
-    unsupportedPolicy.maxActiveOuterFecDecoders = segmentCount + 1ULL;
+    unsupportedPolicy.maxActiveOuterFecDecoders = pbapp::senderUnifiedReceiverActiveDecoderLimit + 1ULL;
     const pbapp::DecoderResumeStoreStatus unsupportedStatus = pbapp::DecoderResumeStore::Open(
         scratch.GetPath(), sessionTag, fixture.sessionControl, unsupportedPolicy, store, loaded);
     REQUIRE_FALSE(unsupportedStatus);

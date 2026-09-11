@@ -108,6 +108,9 @@ struct LocalDesktopObservation
     double sampleMidGrayFraction = 0;
     std::uint32_t markerCandidates = 0;
     std::uint32_t geometryCandidates = 0;
+    // True when the full-ROI marker search was skipped because the locked-
+    // geometry windowed re-acquisition supplied all four role markers.
+    bool windowedFastPath = false;
     std::uint64_t workUnits = 0;
 
     [[nodiscard]] bool IsAccepted() const noexcept
@@ -141,6 +144,22 @@ struct LocalDesktopBootstrapBinding
 // acceptance and before sampling its payload.
 [[nodiscard]] LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view,
     const LocalDesktopBootstrapBinding& binding, const LocalDesktopDecodePolicy& policy = {}) noexcept;
+// Locked-geometry fast path over the same frozen binding. When geometryHint is
+// non-null and all four role markers are re-found inside bounded windows around
+// the hint-predicted centres, the full-ROI marker search is skipped; marker
+// re-read, edge refinement, quiet-zone checks, the geometry residual policy,
+// both Bootstrap copies and every distributed timing patch still run at full
+// strength on this frame. Any windowed miss, ambiguous window, or drift beyond
+// the guard falls back to the complete full-ROI search inside the same call.
+// Like the fixed-canvas fast path, a hint-consistent frame is accepted without
+// a full-ROI ambiguity sweep; downstream per-frame record-identity checks
+// remain the binding authority. On acceptance *acceptedGeometry (when non-null)
+// receives the observation geometry so the caller can refresh its hint; on any
+// decode erasure it is reset to a zero geometry (invalid view/policy inputs
+// leave it untouched).
+[[nodiscard]] LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view,
+    const LocalDesktopBootstrapBinding& binding, const LocalDesktopDecodePolicy& policy,
+    const LocalDesktopGeometry* geometryHint, LocalDesktopGeometry* acceptedGeometry) noexcept;
 // Certified 1920x1080 1:1 fast path. It skips the full-ROI marker search but
 // still re-reads and validates all four fixed markers, refines their edges,
 // independently RS/CRC/parses both Bootstrap copies, requires exact 44-byte

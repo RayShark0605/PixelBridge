@@ -156,6 +156,9 @@ struct CaptureDemodulatorSnapshot
     std::uint64_t bootstrapCpuTimeTotal100ns = 0;
     std::uint64_t bootstrapCpuTimeHighWater100ns = 0;
     std::uint64_t bootstrapCpuTimingSamples = 0;
+    // Locked-geometry windowed bootstrap fast path (staged visual profiles).
+    std::uint64_t bootstrapWindowedFastPathFrames = 0;
+    std::uint64_t bootstrapWindowedFallbackFrames = 0;
     std::uint64_t demodulationCpuTimeTotal100ns = 0;
     std::uint64_t demodulationCpuTimeHighWater100ns = 0;
     std::uint64_t demodulationCpuTimingSamples = 0;

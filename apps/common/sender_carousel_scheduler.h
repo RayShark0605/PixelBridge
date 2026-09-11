@@ -15,17 +15,20 @@ inline constexpr std::uint32_t senderCarouselMinimumRepairBlocks = 16;
 // Unified Pass 0 uses a 10% LocalRepairBurst plus a small fixed transition
 // guard. The guard spans more than two ordinary 14-Transport-slot frames, so a
 // near-threshold Segment is not abandoned at the bounded-window transition.
-// Later passes retain the complete K + 20% FullRepairPass budget for late join
-// and loss.
+// Later Wirehair passes are incremental fountain repair passes: each schedules
+// only max(16, ceil(K*20%)) fresh repair equations and never re-broadcasts the
+// K systematic equations, so a Carousel re-sweep of an already-recovered
+// Segment costs one small repair batch instead of a full K-sized pass.
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentNumerator = 1;
 inline constexpr std::uint32_t senderUnifiedInitialRepairPercentDenominator = 10;
 inline constexpr std::uint32_t senderUnifiedMinimumInitialRepairBlocks = 16;
 inline constexpr std::uint32_t senderUnifiedInitialTransitionGuardBlocks = 32;
 // Startup keeps four interleaved copies. Periodic refresh carries one complete
 // Session/Manifest/current-Segment triplet in a single mixed frame; every other
-// non-empty frame still carries its current SegmentDescriptor. A striped W=8
-// window therefore repeats Session/Manifest eight times per refresh interval,
-// without paying four copies per Segment on top of the per-frame prelude.
+// non-empty frame still carries its current SegmentDescriptor. A striped
+// window of W Segments therefore repeats Session/Manifest W times per refresh
+// interval, without paying four copies per Segment on top of the per-frame
+// prelude.
 inline constexpr std::uint32_t senderUnifiedPeriodicControlRepetitions = 1;
 inline constexpr std::uint32_t senderCarouselControlCadenceSeconds = 10;
 inline constexpr std::uint32_t senderCarouselMaximumLogicalFramesPerSecond = 240;
@@ -35,12 +38,20 @@ inline constexpr std::uint32_t senderUnifiedMaximumLogicalFramesPerSecond = 60;
 inline constexpr std::uint32_t senderUnifiedMaximumControlRepetitions = 64;
 // The certified Unified sender stripes one logical frame at a time across this
 // bounded Segment window and rotates the sweep start to avoid fixed capture-
-// phase aliasing. The matching Decoder policy and resume cache must cover the
-// same count; this is scheduler tuning and does not alter wire data.
-inline constexpr std::uint32_t senderUnifiedActiveSegmentWindowSize = 8;
+// phase aliasing. The window is sender-side scheduling tuning and is strictly
+// smaller than the Receiver decoder quota below: the headroom lets starved
+// Segments from earlier windows keep their decoders while the current window
+// streams, instead of deferring their late repair equations. Wire data is
+// unaffected; resume state and the Decoder policy cover the larger count.
+inline constexpr std::uint32_t senderUnifiedActiveSegmentWindowSize = 6;
+// Receiver-side concurrent outer-FEC decoder limit for the Unified family.
+// Kept at the historical eight-decoder reservation so ReceiverResourcePolicy,
+// resume caches, and decoder-memory budgeting do not shrink with the sender
+// window.
+inline constexpr std::uint32_t senderUnifiedReceiverActiveDecoderLimit = 8;
 // One sweep gives every active Segment one frame. Thirty-two sweeps per phase
-// visit all eight capture phases twice within an ordinary full-size Pass-0
-// window, rather than leaving half the phases unvisited until its repair tail.
+// visit every capture phase twice within an ordinary full-size Pass-0 window,
+// rather than leaving half the phases unvisited until its repair tail.
 inline constexpr std::uint32_t senderUnifiedSweepPhaseHold = 32;
 inline constexpr std::uint32_t senderUnifiedSweepPhaseStep = 1;
 inline constexpr std::uint64_t senderLogicalFrameNanosecondsPerSecond = 1000000000ULL;
@@ -249,8 +260,8 @@ struct SenderUnifiedCarouselSchedulerConfig
     std::uint32_t controlRepetitions = 4;
     std::uint32_t logicalFramesPerSecond = 15;
     bool wirehair = false;
-    // Pass 0 includes systematic equations. A later Wirehair FullRepairPass
-    // keeps the same K+R budget but maps every equation to a fresh repair ID.
+    // Pass 0 includes systematic equations. A later Wirehair pass schedules
+    // only its incremental fountain repair budget, all on fresh repair IDs.
     std::uint64_t carouselPass = 0;
     // Shift only the first periodic deadline, after the unchanged startup
     // burst. Runtime assigns one phase per active Segment; no extra repeat,

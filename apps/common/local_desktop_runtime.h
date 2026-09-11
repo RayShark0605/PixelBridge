@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -365,6 +366,29 @@ struct UnifiedLargeWindowRecoveryProbeSnapshot
     std::vector<std::uint64_t> phaseVisitCounts;
 };
 
+// Worst-case late join: the receiver observes no Pass-0 frame at all and must
+// recover every Segment purely from incremental fountain repair passes.
+struct UnifiedFountainMidJoinProbeSnapshot
+{
+    std::uint64_t sourceBytes = 0;
+    std::uint64_t segmentCount = 0;
+    std::uint64_t skippedPassZeroLogicalFrames = 0;
+    std::uint64_t observedRepairLogicalFrames = 0;
+    std::uint64_t senderLogicalFrames = 0;
+    std::uint64_t completedCarouselPasses = 0;
+    std::uint64_t completedSegments = 0;
+    std::uint64_t admittedUniqueOuterSymbols = 0;
+    std::uint64_t alreadyCompletedSymbols = 0;
+    std::uint64_t scheduledEquationsAfterSegmentCompleted = 0;
+    std::uint64_t receiverPeakActiveDecoderCount = 0;
+    std::uint64_t receiverDeferredResourceBusyCount = 0;
+    std::uint64_t receiverOuterFecQuotaExceededCount = 0;
+    std::uint64_t minimumObservedOuterBlockId = (std::numeric_limits<std::uint64_t>::max)();
+    std::vector<std::uint64_t> perSegmentFountainRepairBudget;
+    bool everySegmentDigestVerified = false;
+    bool everyAdmittedSymbolWasRepair = true;
+};
+
 struct UnifiedDescriptorPreludeProbeSnapshot
 {
     std::uint64_t observedLogicalFrames = 0;
@@ -457,6 +481,8 @@ public:
         UnifiedTemporalStripingProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeUnifiedLargeWindowRecovery(
         UnifiedLargeWindowRecoveryProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedFountainMidJoin(
+        UnifiedFountainMidJoinProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeUnifiedDescriptorPrelude(
         UnifiedDescriptorPreludeProbeSnapshot& output) noexcept;
     // Deterministic no-raster, Pass-0-only, 16-Segment checkpoint. Loss is a

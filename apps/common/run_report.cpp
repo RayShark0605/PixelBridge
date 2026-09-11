@@ -419,7 +419,15 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     stream << ",\"denominatorObservedUniqueFrames\":" << snapshot.unifiedTelemetry.uniqueFrames << ",\"unavailableReason\":";
     WriteEscaped(stream, metric.unavailableReason);
     stream << ",\"gate\":\"WholeFileDigest+safe publish+final reopen+complete current-run frame coverage\"}"
-        << ",\"preFecBerEstimate\":null,\"preFecBerUnavailableReason\":\"No independent sender truth\"";
+        << ",\"preFecBerEstimate\":null,\"preFecBerUnavailableReason\":\"No independent sender truth\""
+        << ",\"processCpuAveragePercent\":";
+    WriteOptionalNumber(stream, snapshot.processCpuAveragePercent);
+    stream << ",\"processCpuPeakPercent\":";
+    WriteOptionalNumber(stream, snapshot.processCpuPeakPercent);
+    stream << ",\"processCpuEquivalentCores\":";
+    WriteOptionalNumber(stream, snapshot.processCpuEquivalentCores);
+    stream << ",\"processCpuUnavailableReason\":";
+    WriteEscaped(stream, snapshot.processCpuAveragePercent ? "" : snapshot.processCpuUnavailableReason);
     if (snapshot.diagnostics)
     {
         stream << ",\"diagnostics\":" << pbcore::BuildStageDiagnosticsJson(snapshot.diagnostics->GetSnapshot());
@@ -446,6 +454,8 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
             << ",\"bootstrapAcceptedFrames\":" << snapshot.bootstrapAcceptedFrames
             << ",\"bootstrapRejectedFrames\":" << snapshot.bootstrapRejectedFrames
             << ",\"bootstrapCpuTimeTotal100ns\":" << snapshot.bootstrapCpuTimeTotal100ns
+            << ",\"bootstrapWindowedFastPathFrames\":" << snapshot.bootstrapWindowedFastPathFrames
+            << ",\"bootstrapWindowedFallbackFrames\":" << snapshot.bootstrapWindowedFallbackFrames
             << ",\"demodGpuTimeTotal100ns\":" << snapshot.demodGpuTimeTotal100ns
             << ",\"postGpuFecCpuTimeTotal100ns\":" << snapshot.postGpuFecCpuTimeTotal100ns
             << ",\"demodPendingHighWater\":" << snapshot.demodPendingHighWater
@@ -952,6 +962,8 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"roiGpuTimeTotal100ns\":" << snapshot.roiGpuTimeTotal100ns
            << ",\"demodGpuTimeTotal100ns\":" << snapshot.demodGpuTimeTotal100ns
            << ",\"bootstrapCpuTimeTotal100ns\":" << snapshot.bootstrapCpuTimeTotal100ns
+           << ",\"bootstrapWindowedFastPathFrames\":" << snapshot.bootstrapWindowedFastPathFrames
+           << ",\"bootstrapWindowedFallbackFrames\":" << snapshot.bootstrapWindowedFallbackFrames
            << ",\"postGpuFecCpuTimeTotal100ns\":" << snapshot.postGpuFecCpuTimeTotal100ns
            << ",\"wholeFileDigestVerified\":" << snapshot.wholeFileDigestVerified
            << ",\"finalPublishSucceeded\":" << snapshot.finalPublishSucceeded

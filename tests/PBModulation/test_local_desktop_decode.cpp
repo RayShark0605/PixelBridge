@@ -729,3 +729,77 @@ TEST_CASE("LocalDesktop malformed and weakened policy is never an unlimited fall
     }
     RequireErased(DecodeLocalDesktopBootstrap(blank.View()), Erasure::MarkersNotFound);
 }
+
+TEST_CASE("LocalDesktop locked-geometry windowed bootstrap re-validates the frame and falls back on drift",
+    "[pbmodulation][localdesktop][locked-geometry]")
+{
+    const LocalDesktopBootstrapBinding binding{kLocalDesktopVisualProfileId, kLocalDesktopLayoutVersion};
+    const auto source = GrayFromGolden(MakeGoldenRaster());
+    const auto expected = LoadGoldenRecord();
+    struct Transform
+    {
+        double scaleX;
+        double scaleY;
+        double originX;
+        double originY;
+    };
+    constexpr std::array<Transform, 4> transforms{{{1, 1, 0, 0}, {1.26, 1.26, 70, 28},
+        {0.625, 1.25, 12.25, 13.375}, {0.73, 1.41, 12.375, 13.625}}};
+    for (const auto& transform : transforms)
+    {
+        INFO("scale=" << transform.scaleX << ',' << transform.scaleY << " phase=" << transform.originX << ',' << transform.originY);
+        const auto raster = Resample(source, transform.scaleX, transform.scaleY, transform.originX, transform.originY,
+            FixtureFilter::Area);
+        const LumaView view = raster.View();
+        const auto searched = DecodeLocalDesktopBootstrap(view, binding);
+        RequireAccepted(searched, expected);
+        CHECK_FALSE(searched.windowedFastPath);
+
+        LocalDesktopGeometry accepted{};
+        const auto hinted = DecodeLocalDesktopBootstrap(view, binding, LocalDesktopDecodePolicy{},
+            &searched.geometry, &accepted);
+        RequireAccepted(hinted, expected);
+        CHECK(hinted.windowedFastPath);
+        CHECK(hinted.canonical44 == searched.canonical44);
+        CHECK(hinted.geometry.originX == Catch::Approx(searched.geometry.originX).margin(0.05));
+        CHECK(hinted.geometry.originY == Catch::Approx(searched.geometry.originY).margin(0.05));
+        CHECK(hinted.geometry.scaleX == Catch::Approx(searched.geometry.scaleX).margin(1.0e-4));
+        CHECK(hinted.geometry.scaleY == Catch::Approx(searched.geometry.scaleY).margin(1.0e-4));
+        CHECK(hinted.workUnits < searched.workUnits);
+        CHECK(accepted == hinted.geometry);
+
+        auto micro = searched.geometry;
+        micro.originX += 6;
+        micro.scaleX *= 1.001;
+        const auto microHinted = DecodeLocalDesktopBootstrap(view, binding, LocalDesktopDecodePolicy{}, &micro, &accepted);
+        RequireAccepted(microHinted, expected);
+        CHECK(microHinted.windowedFastPath);
+        CHECK(accepted == microHinted.geometry);
+
+        auto drifted = searched.geometry;
+        drifted.originX += 80;
+        const auto fallback = DecodeLocalDesktopBootstrap(view, binding, LocalDesktopDecodePolicy{}, &drifted, &accepted);
+        RequireAccepted(fallback, expected);
+        CHECK_FALSE(fallback.windowedFastPath);
+        CHECK(fallback.geometry == searched.geometry);
+        CHECK(accepted == searched.geometry);
+    }
+
+    // A torn frame must erase identically with and without a valid hint: the
+    // windowed marker re-acquisition never weakens the same-frame copies,
+    // timing, or identity gates, and acceptedGeometry stays untouched on erasure.
+    auto torn = source;
+    const auto otherWord = LoadGoldenBytes("b-rs76.bin", 76);
+    PaintCopy(torn, 1, otherWord);
+    const auto tornRaster = Resample(torn, 1.26, 1.26, 70, 28, FixtureFilter::Area);
+    const auto tornFull = DecodeLocalDesktopBootstrap(tornRaster.View(), binding);
+    RequireErased(tornFull, Erasure::BootstrapMismatch);
+    const auto clean = DecodeLocalDesktopBootstrap(Resample(source, 1.26, 1.26, 70, 28,
+        FixtureFilter::Area).View(), binding);
+    REQUIRE(clean.IsAccepted());
+    LocalDesktopGeometry tornAccepted{7, 7, 7, 7, 7};
+    const auto tornHinted = DecodeLocalDesktopBootstrap(tornRaster.View(), binding, LocalDesktopDecodePolicy{},
+        &clean.geometry, &tornAccepted);
+    RequireErased(tornHinted, Erasure::BootstrapMismatch);
+    CHECK(tornAccepted == LocalDesktopGeometry{});
+}

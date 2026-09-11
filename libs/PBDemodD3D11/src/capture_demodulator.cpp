@@ -17,6 +17,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <ranges>
 #include <utility>
 #include <vector>
@@ -197,9 +198,12 @@ pbmodulation::LocalDesktopObservation DecodeRemoteVisualLowFpsBootstrap(const pb
 
 pbmodulation::LocalDesktopObservation DecodeUnifiedBootstrap(const pbmodulation::LumaView& view,
     const pbmodulation::LocalDesktopBootstrapBinding& expectedBinding,
-    const pbmodulation::UnifiedVisualDecodePolicy& policy) noexcept
+    const pbmodulation::UnifiedVisualDecodePolicy& policy,
+    const pbmodulation::LocalDesktopGeometry* geometryHint,
+    pbmodulation::LocalDesktopGeometry& acceptedGeometry) noexcept
 {
-    auto observation = pbmodulation::DecodeLocalDesktopBootstrap(view, expectedBinding, policy.locator);
+    auto observation = pbmodulation::DecodeLocalDesktopBootstrap(view, expectedBinding, policy.locator,
+        geometryHint, &acceptedGeometry);
     if (observation.IsAccepted())
     {
         const auto parsed = pbprotocol::ParseBootstrapRecord(observation.canonical44);
@@ -715,6 +719,11 @@ struct CaptureDemodulator::Implementation
     std::array<Pending, maximumDemodulatorSlots> pending;
     pbmodulation::VisualIdentityTracker temporalIdentity;
     TemporalFrame temporalFrame;
+    // Locked-geometry bootstrap hint for the staged-visual windowed fast path.
+    // Refreshed by every accepted unified bootstrap and reset whenever a new
+    // capture domain starts or the current one is invalidated, so a geometry
+    // from another epoch can never seed the windowed search.
+    std::optional<pbmodulation::LocalDesktopGeometry> bootstrapGeometryHint;
     mutable std::mutex demodulatorMutex;
     std::unique_ptr<Demodulator> demodulator;
     std::vector<std::byte> referenceScratch;
@@ -967,6 +976,7 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     state.domain = domain;
     state.temporalIdentity.ResetBaseline();
     state.temporalFrame = {};
+    state.bootstrapGeometryHint.reset();
     state.active = true;
     {
         const std::lock_guard lock(state.mutex);
@@ -989,6 +999,7 @@ void CaptureDemodulator::DomainInvalidated(const ScreenCaptureDomain& domain) no
     }
     state.active = false;
     state.temporalFrame = {};
+    state.bootstrapGeometryHint.reset();
     DemodStatus demodStatus;
     bool invalidated = false;
     {
@@ -1229,9 +1240,17 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
             static_cast<std::size_t>(mappedBytesResult.Value()));
         const pbmodulation::LumaView view{mappedPixels, state.roiWidth, state.roiHeight, mapped.RowPitch,
             pbmodulation::LumaPixelFormat::Bgra8};
+        pbmodulation::LocalDesktopGeometry acceptedBootstrapGeometry{};
+        const pbmodulation::LocalDesktopGeometry* bootstrapHint = unifiedVisual && state.bootstrapGeometryHint ?
+            &*state.bootstrapGeometryHint : nullptr;
         bootstrap = remoteVisualLowFps ? DecodeRemoteVisualLowFpsBootstrap(view, state.binding,
             state.config.remoteVisualLowFpsPolicy) : unifiedVisual ? DecodeUnifiedBootstrap(view, state.binding,
-                state.config.unifiedVisualPolicy) : pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, state.binding);
+                state.config.unifiedVisualPolicy, bootstrapHint, acceptedBootstrapGeometry) :
+            pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, state.binding);
+        if (unifiedVisual && bootstrap.IsAccepted())
+        {
+            state.bootstrapGeometryHint = acceptedBootstrapGeometry;
+        }
         bool referenceCandidate = false;
         bool referenceAccepted = false;
         ExtractedControl extractedControl;
@@ -1321,6 +1340,17 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         {
             const std::lock_guard lock(state.mutex);
             pbprotocol::SaturatingIncrementUnsigned(state.snapshot.bootstrapMapCalls);
+            if (unifiedVisual)
+            {
+                if (bootstrap.windowedFastPath)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(state.snapshot.bootstrapWindowedFastPathFrames);
+                }
+                else if (bootstrapHint != nullptr)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(state.snapshot.bootstrapWindowedFallbackFrames);
+                }
+            }
             const std::uint64_t readbackBytes = static_cast<std::uint64_t>(state.roiWidth) * state.roiHeight * 4;
             state.snapshot.bootstrapReadbackBytes = pbprotocol::SaturatingAddUnsigned(state.snapshot.bootstrapReadbackBytes, readbackBytes);
             if (bootstrapTime)

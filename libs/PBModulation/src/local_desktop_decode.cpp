@@ -40,6 +40,13 @@ struct LocatorLimits
     static constexpr double scaleRoundoffTolerance = 1.0e-9;
     static constexpr std::uint64_t rsWorkUnits = 50000;
     static constexpr std::uint64_t timingWorkUnits = 1024;
+    // Locked-geometry windowed re-acquisition. The window must cover the full
+    // scaled marker plus quiet zone and tolerate prediction error in the hint;
+    // drift beyond twice the margin (or 5% scale change) within one frame
+    // forces the complete full-ROI search instead.
+    static constexpr std::uint32_t lockedWindowMarginPixels = 24;
+    static constexpr double lockedOriginDriftPixels = 48.0;
+    static constexpr double lockedScaleDrift = 0.05;
 };
 
 using Erasure = LocalDesktopErasureReason;
@@ -441,6 +448,116 @@ double LogicalCentreX(const std::size_t role) noexcept
 double LogicalCentreY(const std::size_t role) noexcept
 {
     return kLocalDesktopMarkerRegions[role].y + kLocalDesktopMarkerRegions[role].height * 0.5;
+}
+
+// Windowed re-acquisition of one role marker around a hint-predicted centre.
+// Detection inside the window is the identical run-length scan, VerticalCross
+// and VerifyMarker validation as the full-ROI search; the only difference is
+// the bounded region. The window must yield exactly one marker and it must
+// carry the expected role, otherwise the whole locked attempt fails closed.
+[[nodiscard]] bool LocateMarkerInWindow(const LumaView& view, const LocalDesktopDecodePolicy& policy,
+    const LocalDesktopGeometry& hint, const std::size_t expectedRole, Marker& output) noexcept
+{
+    const auto& region = kLocalDesktopMarkerRegions[expectedRole];
+    const double predictedCentreX = hint.originX + hint.scaleX * (static_cast<double>(region.x) + region.width * 0.5);
+    const double predictedCentreY = hint.originY + hint.scaleY * (static_cast<double>(region.y) + region.height * 0.5);
+    if (!std::isfinite(predictedCentreX) || !std::isfinite(predictedCentreY))
+    {
+        return false;
+    }
+    const double scaleBound = (std::max)((std::max)(std::abs(hint.scaleX), std::abs(hint.scaleY)),
+        static_cast<double>(policy.minimumScale));
+    const double halfExtent = 0.5 * static_cast<double>((std::max)(region.width, region.height)) * scaleBound +
+        LocatorLimits::lockedWindowMarginPixels;
+    const double centreMargin = static_cast<double>(LocatorLimits::lockedWindowMarginPixels) + 1.0;
+    if (predictedCentreX < centreMargin || predictedCentreY < centreMargin ||
+        predictedCentreX > static_cast<double>(view.width) - centreMargin ||
+        predictedCentreY > static_cast<double>(view.height) - centreMargin)
+    {
+        return false;
+    }
+    const auto left = static_cast<std::int64_t>(std::floor(predictedCentreX - halfExtent));
+    const auto top = static_cast<std::int64_t>(std::floor(predictedCentreY - halfExtent));
+    const auto right = static_cast<std::int64_t>(std::ceil(predictedCentreX + halfExtent));
+    const auto bottom = static_cast<std::int64_t>(std::ceil(predictedCentreY + halfExtent));
+    const std::int64_t clampedLeft = (std::max<std::int64_t>)(left, 0);
+    const std::int64_t clampedTop = (std::max<std::int64_t>)(top, 0);
+    const std::int64_t clampedRight = (std::min<std::int64_t>)(right, static_cast<std::int64_t>(view.width));
+    const std::int64_t clampedBottom = (std::min<std::int64_t>)(bottom, static_cast<std::int64_t>(view.height));
+    if (clampedRight - clampedLeft < 2 || clampedBottom - clampedTop < 2)
+    {
+        return false;
+    }
+    const std::size_t bytesPerPixel = detail::BytesPerPixel(view.pixelFormat);
+    if (bytesPerPixel == 0)
+    {
+        return false;
+    }
+    const std::uint64_t offset = static_cast<std::uint64_t>(clampedTop) * view.rowPitch +
+        static_cast<std::uint64_t>(clampedLeft) * bytesPerPixel;
+    const std::uint64_t footprint = static_cast<std::uint64_t>(clampedBottom - clampedTop - 1) * view.rowPitch +
+        static_cast<std::uint64_t>(clampedRight - clampedLeft) * bytesPerPixel;
+    if (offset > view.pixels.size() || footprint > view.pixels.size() - offset)
+    {
+        return false;
+    }
+    const LumaView window{view.pixels.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(footprint)),
+        static_cast<std::uint32_t>(clampedRight - clampedLeft), static_cast<std::uint32_t>(clampedBottom - clampedTop),
+        view.rowPitch, view.pixelFormat};
+    LumaReader windowReader(window, policy.maximumWorkUnits);
+    MarkerSet markers;
+    constexpr std::array<double, 3> thresholds{128, 64, 192};
+    for (const auto threshold : thresholds)
+    {
+        const auto status = window.pixelFormat == LumaPixelFormat::Bgra8 ?
+            ScanMarkers<true>(windowReader, window, policy, markers, threshold) :
+            ScanMarkers<false>(windowReader, window, policy, markers, threshold);
+        if (status != Erasure::None)
+        {
+            return false;
+        }
+    }
+    if (markers.size != 1 || markers.markers[0].role != expectedRole)
+    {
+        return false;
+    }
+    output = markers.markers[0];
+    output.centreX += static_cast<double>(clampedLeft);
+    output.centreY += static_cast<double>(clampedTop);
+    return true;
+}
+
+// Locked-geometry fast attempt: re-acquire all four role markers in bounded
+// windows and reject the whole attempt (falling back to the full-ROI search)
+// on any miss, any foreign marker inside a window, or geometry drift beyond
+// the guard relative to the hint.
+[[nodiscard]] bool MakeGeometry(const std::array<const Marker*, 4>& markers,
+    const LocalDesktopDecodePolicy& policy, LocalDesktopGeometry& geometry) noexcept;
+[[nodiscard]] bool TryLockedGeometryMarkers(const LumaView& view, const LocalDesktopDecodePolicy& policy,
+    const LocalDesktopGeometry& hint, MarkerSet& output) noexcept
+{
+    MarkerSet candidates;
+    for (std::size_t role = 0; role < kLocalDesktopMarkerRegions.size(); role++)
+    {
+        if (!LocateMarkerInWindow(view, policy, hint, role, candidates.markers[role]))
+        {
+            return false;
+        }
+    }
+    candidates.size = kLocalDesktopMarkerRegions.size();
+    const std::array<const Marker*, 4> markers{&candidates.markers[0], &candidates.markers[1],
+        &candidates.markers[2], &candidates.markers[3]};
+    LocalDesktopGeometry windowed;
+    if (!MakeGeometry(markers, policy, windowed) ||
+        std::abs(windowed.originX - hint.originX) > LocatorLimits::lockedOriginDriftPixels ||
+        std::abs(windowed.originY - hint.originY) > LocatorLimits::lockedOriginDriftPixels ||
+        std::abs(windowed.scaleX - hint.scaleX) > LocatorLimits::lockedScaleDrift ||
+        std::abs(windowed.scaleY - hint.scaleY) > LocatorLimits::lockedScaleDrift)
+    {
+        return false;
+    }
+    output = candidates;
+    return true;
 }
 
 bool WithinScale(const double value, const LocalDesktopDecodePolicy& policy) noexcept
@@ -1101,6 +1218,12 @@ Erasure SampleLuma(const LumaView& view, const double x, const double y, double&
 
 LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy, const LocalDesktopBinding binding) noexcept
 {
+    return detail::DecodeLocalDesktopScaffold(view, policy, binding, nullptr, nullptr);
+}
+
+LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy, const LocalDesktopBinding binding, const LocalDesktopGeometry* geometryHint,
+    LocalDesktopGeometry* acceptedGeometry) noexcept
+{
     LocalDesktopObservation result;
     result.erasure = ValidateLumaView(view);
     if (result.erasure != Erasure::None)
@@ -1112,15 +1235,29 @@ LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view,
         result.erasure = Erasure::InvalidPolicy;
         return result;
     }
+    if (acceptedGeometry != nullptr)
+    {
+        *acceptedGeometry = {};
+    }
     LumaReader reader(view, policy.maximumWorkUnits);
     MarkerSet markerSet;
-    result.erasure = LocateMarkers(reader, view, policy, markerSet);
-    result.markerCandidates = static_cast<std::uint32_t>(markerSet.size);
-    result.workUnits = reader.WorkUnits();
-    if (result.erasure != Erasure::None)
+    // Locked-geometry fast path first; every failure falls back to the complete
+    // full-ROI search so acceptance strength never drops below the unhinted call.
+    bool windowedFastPath = false;
+    if (geometryHint == nullptr || !TryLockedGeometryMarkers(view, policy, *geometryHint, markerSet))
     {
-        return result;
+        result.erasure = LocateMarkers(reader, view, policy, markerSet);
+        result.workUnits = reader.WorkUnits();
+        if (result.erasure != Erasure::None)
+        {
+            return result;
+        }
     }
+    else
+    {
+        windowedFastPath = true;
+    }
+    result.markerCandidates = static_cast<std::uint32_t>(markerSet.size);
     std::array<std::array<std::size_t, LocatorLimits::markerCapacity>, 4> roleIndices{};
     std::array<std::size_t, 4> roleCounts{};
     for (std::size_t index = 0; index < markerSet.size; index++)
@@ -1203,10 +1340,15 @@ LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view,
     result.markerCandidates = static_cast<std::uint32_t>(markerSet.size);
     result.geometryCandidates = geometryCount;
     result.workUnits = reader.WorkUnits();
+    result.windowedFastPath = windowedFastPath;
     if (!result.IsAccepted())
     {
         result.canonical44.fill(std::byte{0});
         result.quality = 0;
+    }
+    else if (acceptedGeometry != nullptr)
+    {
+        *acceptedGeometry = result.geometry;
     }
     return result;
 }
@@ -1318,6 +1460,24 @@ LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const 
         return result;
     }
     return detail::DecodeLocalDesktopScaffold(view, policy, family);
+}
+
+LocalDesktopObservation DecodeLocalDesktopBootstrap(const LumaView& view, const LocalDesktopBootstrapBinding& binding,
+    const LocalDesktopDecodePolicy& policy, const LocalDesktopGeometry* geometryHint,
+    LocalDesktopGeometry* acceptedGeometry) noexcept
+{
+    detail::LocalDesktopBinding family;
+    if (!ResolveLocalDesktopBinding(binding, family))
+    {
+        if (acceptedGeometry != nullptr)
+        {
+            *acceptedGeometry = {};
+        }
+        LocalDesktopObservation result;
+        result.erasure = LocalDesktopErasureReason::UnsupportedRecord;
+        return result;
+    }
+    return detail::DecodeLocalDesktopScaffold(view, policy, family, geometryHint, acceptedGeometry);
 }
 
 LocalDesktopObservation DecodeLocalDesktopFixedCanvasBootstrap(const LumaView& view, const LocalDesktopBootstrapBinding& binding,

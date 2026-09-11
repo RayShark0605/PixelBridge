@@ -509,7 +509,10 @@ template <typename Integer>
 
 [[nodiscard]] std::size_t CountActiveSegments(const std::vector<DecoderResumeAcceptedBlock>& blocks) noexcept
 {
-    std::array<std::uint64_t, senderUnifiedActiveSegmentWindowSize> ordinals{};
+    // Sized by the receiver decoder limit (the larger of the decoupled pair)
+    // so a journal claiming strictly more active Segments than any legal
+    // policy can hold still produces an over-limit count and is rejected.
+    std::array<std::uint64_t, senderUnifiedReceiverActiveDecoderLimit> ordinals{};
     std::size_t count = 0;
     for (const DecoderResumeAcceptedBlock& block : blocks)
     {
@@ -606,7 +609,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
     {
         if (outputDirectory.empty() || sessionControlRecord.empty() || resourcePolicy.maxResumeBytes == 0 ||
             resourcePolicy.maxActiveOuterFecDecoders == 0 ||
-            resourcePolicy.maxActiveOuterFecDecoders > senderUnifiedActiveSegmentWindowSize)
+            resourcePolicy.maxActiveOuterFecDecoders > senderUnifiedReceiverActiveDecoderLimit)
         {
             return DecoderResumeStoreStatus::Failure("resume store configuration is invalid");
         }

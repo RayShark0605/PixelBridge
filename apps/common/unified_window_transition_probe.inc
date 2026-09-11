@@ -6,10 +6,13 @@ void RunUnifiedWindowTransitionProbe(const std::wstring& sourcePath,
     UnifiedWindowTransitionProbeSnapshot& result)
 {
     constexpr std::uint64_t segmentCount = 16;
-    constexpr std::uint64_t windowSize = 8;
-    constexpr std::uint64_t maximumFrames = 11000;
+    constexpr std::uint64_t windowSize = senderUnifiedActiveSegmentWindowSize;
+    // Incremental fountain repair passes deliver fewer equations per Carousel
+    // wrap, so recovery under the loss projection spans more (cheaper) wraps
+    // than the historical K+20% FullRepairPass budget did.
+    constexpr std::uint64_t maximumFrames = 24000;
     constexpr std::uint64_t lossBandCount = 516;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(210);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(360);
     Require(biasedPhase < windowSize && erasedBands.size() <= lossBandCount &&
         std::ranges::all_of(erasedBands, [](const std::uint32_t band) { return band < lossBandCount; }),
         "Pass-0 loss projection exceeds its fixed bounds");
@@ -18,7 +21,9 @@ void RunUnifiedWindowTransitionProbe(const std::wstring& sourcePath,
         "Pass-0 transition probe requires exactly 16 full-size Segments");
     const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedLc4);
     const pbprotocol::ReceiverResourcePolicy policy = MakeReceiverResourcePolicyForVisualProfile(VisualProfile::UnifiedLc4);
-    Require(policy.maxActiveOuterFecDecoders == windowSize, "Pass-0 probe must retain the eight-decoder policy");
+    Require(policy.maxActiveOuterFecDecoders == senderUnifiedReceiverActiveDecoderLimit &&
+        windowSize < policy.maxActiveOuterFecDecoders,
+        "Pass-0 probe must retain the decoder policy strictly above the sender window");
     std::atomic<bool> stopRequested = false;
     DurableSenderPreparation preparation = PrepareDurableSender(source, false, 3, profile.visualProfileId,
         sessionStateRoot, stopRequested);

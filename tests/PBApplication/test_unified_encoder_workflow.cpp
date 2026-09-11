@@ -259,7 +259,8 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
     INFO(status.message);
     REQUIRE(status);
     REQUIRE(probe.configuredWindowSize == pbapp::senderUnifiedActiveSegmentWindowSize);
-    REQUIRE(probe.unifiedReceiverActiveDecoderLimit == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.unifiedReceiverActiveDecoderLimit == pbapp::senderUnifiedReceiverActiveDecoderLimit);
+    REQUIRE(pbapp::senderUnifiedActiveSegmentWindowSize < pbapp::senderUnifiedReceiverActiveDecoderLimit);
     REQUIRE(probe.legacyReceiverActiveDecoderLimit == 4);
     REQUIRE(probe.receiverActiveDecoderCount == pbapp::senderUnifiedActiveSegmentWindowSize);
     REQUIRE(probe.receiverDeferredResourceBusyCount == 0);
@@ -278,7 +279,8 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
     REQUIRE(probe.passZeroLogicalFrames >= probe.initialSegmentOrdinals.size());
     REQUIRE(probe.durablePositionUpdateCount == 1);
     REQUIRE(probe.peakResidentEncodedSegmentCount == pbapp::senderUnifiedActiveSegmentWindowSize);
-    REQUIRE(probe.peakResidentEncodedSegmentBytes == 8ULL * 64ULL * 1024ULL);
+    REQUIRE(probe.peakResidentEncodedSegmentBytes ==
+        static_cast<std::uint64_t>(pbapp::senderUnifiedActiveSegmentWindowSize) * 64ULL * 1024ULL);
     REQUIRE(probe.blockCounts.size() == pbapp::senderUnifiedActiveSegmentWindowSize);
     REQUIRE(probe.passZeroScheduledEquationCounts.size() == probe.blockCounts.size());
     REQUIRE(probe.passZeroUniqueOuterBlockCounts.size() == probe.blockCounts.size());
@@ -302,13 +304,44 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
             probe.passZeroScheduledEquationCounts[segmentIndex]);
         CHECK(probe.passOneFirstRepairIds[segmentIndex] ==
             probe.passZeroMaximumOuterBlockIds[segmentIndex] + 1ULL);
-        const std::uint64_t expectedFullRepairPassEquations = probe.blockCounts[segmentIndex] +
+        const std::uint64_t expectedFountainRepairPassEquations =
             (std::max)(static_cast<std::uint64_t>(pbapp::senderCarouselMinimumRepairBlocks),
                 (static_cast<std::uint64_t>(probe.blockCounts[segmentIndex]) - 1ULL) /
                     (pbapp::senderCarouselRepairPercentDenominator / pbapp::senderCarouselRepairPercentNumerator) + 1ULL);
         CHECK(probe.repairIdLeaseEnds[segmentIndex] ==
-            probe.passOneFirstRepairIds[segmentIndex] + expectedFullRepairPassEquations);
+            probe.passOneFirstRepairIds[segmentIndex] + expectedFountainRepairPassEquations);
     }
+}
+
+TEST_CASE("Unified fountain mid-join recovers every Segment from pure incremental repair passes",
+    "[application][g21][unified][fountain][mid-join]")
+{
+    pbapp::UnifiedFountainMidJoinProbeSnapshot probe;
+    const pbapp::RuntimeStatus status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedFountainMidJoin(probe);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(probe.segmentCount == pbapp::senderUnifiedActiveSegmentWindowSize);
+    REQUIRE(probe.completedSegments == probe.segmentCount);
+    REQUIRE(probe.everySegmentDigestVerified);
+    REQUIRE(probe.skippedPassZeroLogicalFrames > 0);
+    REQUIRE(probe.observedRepairLogicalFrames > 0);
+    // The receiver never saw a Pass-0 frame, so every admitted symbol must be
+    // a repair equation far above the systematic range.
+    REQUIRE(probe.everyAdmittedSymbolWasRepair);
+    REQUIRE(probe.admittedUniqueOuterSymbols >= probe.segmentCount);
+    REQUIRE(probe.alreadyCompletedSymbols == 0);
+    // Accumulating K repair equations per Segment from the incremental
+    // budget must span several Carousel passes, never just one.
+    REQUIRE(probe.completedCarouselPasses >= 2);
+    // The fountain waste bound: re-sweeping an already-recovered Segment only
+    // schedules the small incremental budget, never a full K-sized pass.
+    for (std::size_t segmentIndex = 0; segmentIndex < probe.perSegmentFountainRepairBudget.size(); segmentIndex++)
+    {
+        REQUIRE(probe.perSegmentFountainRepairBudget[segmentIndex] >= pbapp::senderCarouselMinimumRepairBlocks);
+    }
+    REQUIRE(probe.receiverDeferredResourceBusyCount == 0);
+    REQUIRE(probe.receiverOuterFecQuotaExceededCount == 0);
+    REQUIRE(probe.receiverPeakActiveDecoderCount <= pbapp::senderUnifiedActiveSegmentWindowSize);
 }
 
 TEST_CASE("Unified eight-Segment window recovers 64 MiB through sparse observations and bounded burst erasures",
@@ -318,7 +351,9 @@ TEST_CASE("Unified eight-Segment window recovers 64 MiB through sparse observati
     const pbapp::RuntimeStatus status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedLargeWindowRecovery(probe);
     INFO(status.message);
     REQUIRE(status);
-    REQUIRE(probe.sourceBytes == 8ULL * pbprotocol::kDefaultSourceSegmentTargetBytes);
+    REQUIRE(probe.sourceBytes ==
+        static_cast<std::uint64_t>(pbapp::senderUnifiedActiveSegmentWindowSize) *
+        pbprotocol::kDefaultSourceSegmentTargetBytes);
     REQUIRE(probe.completedSegments == pbapp::senderUnifiedActiveSegmentWindowSize);
     REQUIRE(probe.everySegmentDigestVerified);
     REQUIRE(probe.senderLogicalFrames > probe.uniqueLogicalFrames);
@@ -365,8 +400,10 @@ TEST_CASE("Unified current-Segment descriptor precedes Transport after a bounded
     REQUIRE(status);
     REQUIRE(probe.observedLogicalFrames > 0);
     REQUIRE(probe.activeDecoderTransitions.size() >= 3);
-    REQUIRE(probe.activeDecoderTransitions[probe.activeDecoderTransitions.size() - 3] == 6);
-    REQUIRE(probe.activeDecoderTransitions[probe.activeDecoderTransitions.size() - 2] == 7);
+    REQUIRE(probe.activeDecoderTransitions[probe.activeDecoderTransitions.size() - 3] ==
+        pbapp::senderUnifiedActiveSegmentWindowSize - 2);
+    REQUIRE(probe.activeDecoderTransitions[probe.activeDecoderTransitions.size() - 2] ==
+        pbapp::senderUnifiedActiveSegmentWindowSize - 1);
     REQUIRE(probe.activeDecoderTransitions.back() == pbapp::senderUnifiedActiveSegmentWindowSize);
     REQUIRE(probe.finalActiveDecoderCount == pbapp::senderUnifiedActiveSegmentWindowSize);
     REQUIRE(probe.resourceLimitExceededCount == 0);

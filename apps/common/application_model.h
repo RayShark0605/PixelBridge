@@ -597,6 +597,8 @@ struct DecoderSnapshot
     std::uint64_t demodGpuTimeTotal100ns = 0;
     std::uint64_t bootstrapCpuTimeTotal100ns = 0;
     std::uint64_t postGpuFecCpuTimeTotal100ns = 0;
+    std::uint64_t bootstrapWindowedFastPathFrames = 0;
+    std::uint64_t bootstrapWindowedFallbackFrames = 0;
     bool wholeFileDigestVerified = false;
     bool finalPublishSucceeded = false;
     std::string wholeFileDigestHex;

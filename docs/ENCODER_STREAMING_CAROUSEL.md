@@ -4,6 +4,8 @@
 > 性质：Encoder 本地实现/持久状态及 Unified scheduler 规范；G15 产品接线与安全删除见 [G22 GUI 发布与交互合同](UNIFIED_G22_GUI_RELEASE.md)，不是实屏或吞吐认证。
 > 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`、`libs/PBModulation/src/unified_visual.cpp`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`
 > G21 更新（2026-09-05）：下节当前调度合同已随唯一产品 manifest 改为 SC6 V3/layout 10；后文 G02/G09 的旧 LC4 测试计数保留为历史证据。
+> 非本机吞吐更新（2026-09-11）：Unified Wirehair later pass 由"整段 K+20% repair"改为**增量喷泉 repair pass**（每 pass 只调度 `max(16, ceil(K*20%))` 个全新 repair equation，systematic 永不重播），见 §1.1 第 7 条。依据与实测：`docs/REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md`（100 MB 档 41–61% 接受符号为已完成 Segment 的重复）。
+> 同日：发送端活跃 Segment 窗口 8 → 6（`senderUnifiedActiveSegmentWindowSize`），接收端解码器配额解耦保持 8（`senderUnifiedReceiverActiveDecoderLimit`）——窗口严格小于配额，使早窗口饥饿段保留解码器而不是被 deferred（当日实测 100 MB 档 quota deferred 30,532–31,645 次）。仅调度/资源调优，不改 wire 语义。
 
 ## 1. 已关闭的发送端合同
 
@@ -12,7 +14,7 @@
 3. 预扫描按固定 8 MiB Segment 顺序读取，同时计算 whole-file BLAKE3、每段 `RawDigest`、精确 encoded bytes、`EncodedDigest` 和 Outer FEC descriptor。zstd 使用 level 3 测试基线；压缩无收益时按规则回退 RAW。
 4. 预扫描结束后只保留 Session/Manifest/Segment descriptor/control table，不保留所有 Segment 的 encoded bytes。广播器常驻 current/next 两个 encoded Segment；重新读取和编码的临时工作区仍受单 Segment 上限约束。
 5. 广播时先验证重新读取的 `RawDigest`，再重新编码并验证 codec、encoded size 和 `EncodedDigest`；全部一致后才调用 `WirehairV2Encoder::Recreate`。
-6. Wirehair 每个 Segment round 精确调度 `K` 个 systematic equations 和 `max(16, ceil(K*20/100))` 个 repair equations。物理尾帧的空余 slot 复用 systematic ID，不增加 repair ID，也不推进 repair high-water。
+6. Wirehair 每个 Segment round 精确调度 `K` 个 systematic equations 和 `max(16, ceil(K*20/100))` 个 repair equations。物理尾帧的空余 slot 复用 systematic ID，不增加 repair ID，也不推进 repair high-water。（本条与第 7 条为 **G02 历史整帧调度器**的合同；产品 Unified 调度的 pass 预算合同见 §1.1 第 7 条，二者不可混读。）
 7. 后续 round 从进程内的精确 repair high-water 继续；崩溃恢复则从已经持久化的 lease endpoint 继续，因此允许跳号但不允许回退或重用。
 8. G02 的历史整帧调度器只认识 Control 类型、equation 顺序、每帧 slot 数与逻辑 FPS，不认识像素、lane 或最终 mixed-slot mapping。每个 Segment 开始有一组 Session/Manifest/Segment Control；长 round 以整个 Control burst 的起点计时。当 burst 短于 10 秒时，下一个 burst 起点精确间隔 `logicalFps * 10` 个逻辑帧；若 burst 自身已经占满该预算，则至少插入一个 Data frame 后再开始下一组，避免数据饥饿。G09 的产品 Unified 调度合同如下节所述，不再生成整帧 Control。
 
@@ -26,6 +28,7 @@ DirectRepeat 仍由 `ChooseOuterFecMode` 决定。它只调度固定 `[0,K)`，�
 4. `PrepareFrame(logicalTick)` 冻结同一 tick 的完整 15-slot 计划且重复调用逐值一致；它不推进任何 Carousel 状态。调用方只有在整张规范 raster 已成功构建后才能调用 `CommitPreparedFrame()`，该提交才一次性推进帧计数、Control offset 与真正新调度的 equation IDs。Control 与尾帧 systematic duplicates 均不分配新 ID。
 5. `SenderLogicalFrameClock` 只接受 1..60 Hz。一次 `Acquire(now)` 最多返回已经到期的最新 tick，并显式计数中间错过的 ticks；旧 tick 直接丢弃，不进入 catch-up queue。Scheduler 自身仅持有一个 prepared frame 和固定 15-slot 数组。
 6. 零字节 Session 的剩余 Transport slots 使用显式 inactive disposition，并编码为确定性全零 information word。它们不能形成有效 Transport Block；Session/Manifest 仍走既有 `ControlPlaneReceiver`，未扩大 control record、reassembly 或其他 receiver resource policy。
+7. Wirehair pass 预算（增量喷泉合同，2026-09-11 起）：pass 0 播放 `K` 个 systematic equations 加 `max(16, ceil(K*10%))+32` 个 repair equations（含 transition guard）。之后每个 pass 都是**增量喷泉 repair pass**：只调度 `max(16, ceil(K*20%))` 个全新 repair equation，`systematic` 永不重播，repair high-water 单调推进且不回退/不重用。物理尾帧的空余 slot 复用本 pass 已调度范围内的最低 ID（pass 0 为 systematic 区间、repair pass 为本 pass 的 repair 区间），不分配新 repair ID、不推进 high-water。晚加入者从未见到 pass 0 时，仍可跨多个 pass 累积 ≥K 个互不相同的 repair equation 完整恢复（喷泉性质；专项测试 `Unified fountain mid-join recovers every Segment from pure incremental repair passes`）。该预算同时是"重扫一个已恢复 Segment"的单 pass 空口成本上界。
 
 G09 关闭 scheduler、protocol packing 与 CPU reference-raster 合同；G15 已把它接入 Encoder 生命周期/GUI/默认 CLI。生产路径使用 `PrepareFrameAt(logicalTick, monotonicNanoseconds)`：长 round 的 Control cadence 按 burst 起点约 10 秒调度，不因动态 FPS/丢弃 tick 改变。slot plan 在 pending retry 时保持冻结，只有完整 raster 成功 Submit 后才 commit。历史 tick API 保留用于原 fixture，不能在同一 round 混用两种时间基准。Decoder 产品自动接线和实屏/capture 仍由后续目标完成。
 

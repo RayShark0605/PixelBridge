@@ -5,6 +5,7 @@
 #include "remote_visual_metadata_preset_qt.h"
 
 #include "pbcore/build_info.h"
+#include "pbcore/stage_diagnostics.h"
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
@@ -60,6 +61,7 @@ struct Options
     bool channelSpecified = false;
     bool offlineReplay = false;
     bool diagnosticCaptureOnly = false;
+    bool stageDiagnostics = false;
     std::wstring remoteProvider;
     std::wstring remoteMetadataPath;
     std::wstring protectedMonitorDeviceName;
@@ -213,6 +215,10 @@ struct Options
         else if (option == L"--diagnostic-capture-only")
         {
             options.diagnosticCaptureOnly = true;
+        }
+        else if (option == L"--stage-diagnostics")
+        {
+            options.stageDiagnostics = true;
         }
         else if (option == L"--replay-evidence-profile")
         {
@@ -509,7 +515,7 @@ void Usage()
                  "[--protected-monitor DEVICE --experiment-monitor DEVICE] "
                  "[--replay-output NEW_PATH --replay-frames 1..2048 --replay-max-mib 16..16384 "
                  "[--replay-sample-fps 1..60] [--diagnostic-capture-only --replay-evidence-profile direct|shape|lf4]] "
-                 "[--run-id 32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH]\n";
+                 "[--run-id 32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH] [--stage-diagnostics]\n";
     std::cerr << "       PixelBridgeDecoder --headless-replay --replay-input PATH --output-dir DIR "
                  "[--remote-provider NAME] [--remote-metadata PATH] [--profile direct|shape|remote|remote-lf4] [--timeout 1..3600] "
                  "[--no-progress-seconds 1..min(timeout,600)] "
@@ -675,6 +681,15 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         }
     }
     pbapp::DecoderRuntime runtime;
+    // The headless receiver is a measurement run: attaching the recorder makes
+    // the unified RunReport.3 carry stageCounters (outer admission, per-stage
+    // CPU totals) and captureFlow without enabling diagnostics or retaining
+    // pixels. Evidence failure is sticky but never enters admission decisions.
+    config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
+    if (options.stageDiagnostics)
+    {
+        config.diagnostics = std::make_shared<pbcore::StageDiagnostics>();
+    }
     const pbapp::RuntimeStatus started = runtime.Start(config);
     if (!started)
     {

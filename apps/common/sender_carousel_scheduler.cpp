@@ -397,21 +397,34 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     std::uint64_t repairEquationCount = 0;
     if (config.systematicBlockCount != 0)
     {
-        const bool initialPass = config.carouselPass == 0;
-        const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(config.systematicBlockCount,
-            config.wirehair, initialPass ? senderUnifiedInitialRepairPercentNumerator : senderCarouselRepairPercentNumerator,
-            initialPass ? senderUnifiedInitialRepairPercentDenominator : senderCarouselRepairPercentDenominator,
-            initialPass ? senderUnifiedMinimumInitialRepairBlocks : senderCarouselMinimumRepairBlocks,
-            initialPass ? senderUnifiedInitialTransitionGuardBlocks : 0,
-            scheduledEquationCount, repairEquationCount);
-        if (!equationStatus)
+        if (config.wirehair && config.carouselPass != 0)
         {
-            return equationStatus;
-        }
-        if (config.wirehair && !initialPass)
-        {
+            // Incremental fountain repair pass: every scheduled equation is a
+            // fresh repair ID and the budget is the repair amount alone, so a
+            // Carousel re-sweep of an already-recovered Segment costs
+            // max(16, ceil(K*20%)) equations instead of a full K-sized pass.
+            // Late joiners keep accumulating brand-new equations every pass.
+            const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
+                config.systematicBlockCount, config.wirehair, senderCarouselRepairPercentNumerator,
+                senderCarouselRepairPercentDenominator, senderCarouselMinimumRepairBlocks, 0,
+                scheduledEquationCount, repairEquationCount);
+            if (!equationStatus)
+            {
+                return equationStatus;
+            }
+            scheduledEquationCount = repairEquationCount;
             systematicEquationCount = 0;
-            repairEquationCount = scheduledEquationCount;
+        }
+        else
+        {
+            const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
+                config.systematicBlockCount, config.wirehair, senderUnifiedInitialRepairPercentNumerator,
+                senderUnifiedInitialRepairPercentDenominator, senderUnifiedMinimumInitialRepairBlocks,
+                senderUnifiedInitialTransitionGuardBlocks, scheduledEquationCount, repairEquationCount);
+            if (!equationStatus)
+            {
+                return equationStatus;
+            }
         }
     }
     const std::uint64_t controlRecordKindCount = config.systematicBlockCount == 0 ? 2 : 3;
@@ -514,10 +527,15 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         else
         {
             slot.transportDisposition = SenderUnifiedTransportSlotDisposition::PaddingDuplicate;
-            slot.equationIndex = (paddingDuplicateSlotCount_ + localPaddingDuplicateCount) %
-                config_.systematicBlockCount;
-            slot.repairEquation = slot.equationIndex >= systematicEquationCount_;
-            slot.repairEquationOffset = slot.repairEquation ? slot.equationIndex - systematicEquationCount_ : 0;
+            // Tail padding re-broadcasts the lowest IDs this round already
+            // scheduled: the systematic range on pass 0, this round's own
+            // repair range on a repair-only pass. No new repair ID is allocated
+            // and the repair high-water never advances on padding.
+            const std::uint64_t duplicateBase = systematicEquationCount_ != 0 ?
+                systematicEquationCount_ : repairEquationCount_;
+            slot.equationIndex = (paddingDuplicateSlotCount_ + localPaddingDuplicateCount) % duplicateBase;
+            slot.repairEquation = systematicEquationCount_ == 0;
+            slot.repairEquationOffset = slot.repairEquation ? slot.equationIndex : 0;
             localPaddingDuplicateCount++;
             frame.paddingDuplicateSlotCount++;
         }

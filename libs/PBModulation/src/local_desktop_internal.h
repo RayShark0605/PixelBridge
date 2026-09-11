@@ -52,6 +52,14 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, Remo
 }
 [[nodiscard]] ModulationStatus EncodeLocalDesktopScaffold(std::span<const std::byte> record, std::span<std::byte> pixels, LocalDesktopBinding binding) noexcept;
 [[nodiscard]] LocalDesktopObservation DecodeLocalDesktopScaffold(const LumaView& view, const LocalDesktopDecodePolicy& policy, LocalDesktopBinding binding) noexcept;
+// Locked-geometry variant of the continuous search. geometryHint enables a
+// bounded windowed marker re-acquisition around the hint-predicted centres;
+// any windowed miss or drift beyond the guard falls back to the complete
+// full-ROI search inside the same call. acceptedGeometry receives the
+// observation geometry only on acceptance.
+[[nodiscard]] LocalDesktopObservation DecodeLocalDesktopScaffold(const LumaView& view,
+    const LocalDesktopDecodePolicy& policy, LocalDesktopBinding binding, const LocalDesktopGeometry* geometryHint,
+    LocalDesktopGeometry* acceptedGeometry) noexcept;
 [[nodiscard]] LocalDesktopObservation DecodeLocalDesktopFixedCanvasScaffold(const LumaView& view,
     const LocalDesktopDecodePolicy& policy, LocalDesktopBinding binding, const LocalDesktopBootstrapBinding& expectedBinding) noexcept;
 // Encoding callers reach these stores only after exact-canvas validation and

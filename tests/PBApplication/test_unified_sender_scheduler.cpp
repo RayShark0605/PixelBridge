@@ -603,7 +603,7 @@ TEST_CASE("Unified mixed scheduler converges independent Segment rounds without 
     }
 }
 
-TEST_CASE("Unified Wirehair full repair passes spend the complete round budget on fresh repair IDs",
+TEST_CASE("Unified Wirehair later passes schedule only the incremental fountain repair budget on fresh IDs",
     "[application][g21][scheduler][carousel][repair-only]")
 {
     constexpr std::uint32_t systematicBlockCount = 799;
@@ -611,8 +611,7 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
     constexpr std::uint64_t initialRepairEquationCount =
         initialPercentRepairEquationCount + pbapp::senderUnifiedInitialTransitionGuardBlocks;
     constexpr std::uint64_t initialRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
-    constexpr std::uint64_t fullRepairOverheadEquationCount = 160;
-    constexpr std::uint64_t fullRepairRoundEquationCount = systematicBlockCount + fullRepairOverheadEquationCount;
+    constexpr std::uint64_t fountainRepairEquationCount = 160;
     constexpr std::uint32_t firstInitialRepairId = systematicBlockCount;
     constexpr std::uint32_t firstFullRepairId = static_cast<std::uint32_t>(initialRoundEquationCount);
 
@@ -625,9 +624,9 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
         const pbapp::SenderUnifiedCarouselSnapshot initial = scheduler.GetSnapshot();
         const std::uint64_t expectedSystematicCount = includeSystematicEquations ? systematicBlockCount : 0;
         const std::uint64_t expectedRepairCount = includeSystematicEquations ?
-            initialRepairEquationCount : fullRepairRoundEquationCount;
+            initialRepairEquationCount : fountainRepairEquationCount;
         const std::uint64_t expectedRoundEquationCount = includeSystematicEquations ?
-            initialRoundEquationCount : fullRepairRoundEquationCount;
+            initialRoundEquationCount : fountainRepairEquationCount;
         REQUIRE(initial.scheduledEquationCount == expectedRoundEquationCount);
         REQUIRE(initial.systematicEquationCount == expectedSystematicCount);
         REQUIRE(initial.repairEquationCount == expectedRepairCount);
@@ -646,7 +645,7 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
                 {
                     if (slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::PaddingDuplicate)
                     {
-                        REQUIRE(slot.equationIndex < systematicBlockCount);
+                        REQUIRE(slot.equationIndex < expectedRepairCount);
                         REQUIRE(slot.repairEquation == !includeSystematicEquations);
                         REQUIRE(slot.repairEquationOffset == (includeSystematicEquations ? 0 : slot.equationIndex));
                     }
@@ -683,7 +682,7 @@ TEST_CASE("Unified Wirehair full repair passes spend the complete round budget o
     {
         REQUIRE(initialIds[equationIndex] == equationIndex);
     }
-    for (std::uint32_t equationIndex = 0; equationIndex < fullRepairRoundEquationCount; equationIndex++)
+    for (std::uint32_t equationIndex = 0; equationIndex < fountainRepairEquationCount; equationIndex++)
     {
         REQUIRE(fullRepairIds[equationIndex] == firstFullRepairId + equationIndex);
     }

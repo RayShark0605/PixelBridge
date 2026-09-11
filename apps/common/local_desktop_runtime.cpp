@@ -6397,6 +6397,154 @@ void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot&
 
 #include "unified_window_transition_probe.inc"
 
+void RunUnifiedFountainMidJoinProbe(UnifiedFountainMidJoinProbeSnapshot& result)
+{
+    constexpr std::uint64_t segmentCount = senderUnifiedActiveSegmentWindowSize;
+    constexpr std::uint64_t maximumSenderLogicalFrames = 6000;
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedLc4);
+    UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(64U * 1024U);
+    const TransferDescription& description = fixture.description;
+    const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
+    const pbprotocol::ReceiverResourcePolicy unifiedPolicy =
+        MakeReceiverResourcePolicyForVisualProfile(VisualProfile::UnifiedLc4);
+    auto receiverResult = pbreceiver::ReceiverIngress::Create(unifiedPolicy, outerBlockBytes);
+    RequireResult(receiverResult, "Unified fountain mid-join ReceiverIngress creation failed");
+    pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
+    // The mid-join receiver already holds the complete control plane; only its
+    // data-plane observations start at the Pass-1 boundary.
+    RequireResult(receiver.ReceiveControlRecord(description.sessionControl),
+        "Unified fountain mid-join SessionDescriptor admission failed");
+    for (const TransferDescription::Segment& segment : description.segments)
+    {
+        RequireResult(receiver.ReceiveControlRecord(segment.control),
+            "Unified fountain mid-join SegmentDescriptor admission failed");
+    }
+    RequireResult(receiver.ReceiveControlRecord(description.manifestControl),
+        "Unified fountain mid-join FinalManifest admission failed");
+
+    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, 15);
+    std::vector<bool> completedSegments(static_cast<std::size_t>(segmentCount), false);
+    std::vector<std::uint64_t> blockCounts(static_cast<std::size_t>(segmentCount), 0);
+    result = {};
+    result.sourceBytes = fixture.source.size();
+    result.segmentCount = segmentCount;
+    result.perSegmentFountainRepairBudget.resize(static_cast<std::size_t>(segmentCount), 0);
+    while (result.completedSegments < segmentCount)
+    {
+        Require(result.senderLogicalFrames < maximumSenderLogicalFrames,
+            "Unified fountain mid-join recovery exceeded the live sender's bounded logical-frame budget");
+        const std::uint64_t logicalTick = result.senderLogicalFrames;
+        const std::uint64_t segmentOrdinal = builder.GetCurrentSegmentOrdinal();
+        Require(segmentOrdinal < segmentCount, "Unified fountain mid-join sender Segment ordinal is out of bounds");
+        const bool passZero = builder.GetCarouselSnapshot().cycleCount == 0;
+        if (passZero)
+        {
+            // The mid-join receiver observes nothing during Pass 0; the frame
+            // is still prepared and committed so the sender keeps advancing.
+            static_cast<void>(builder.PrepareHeadlessFrame(logicalTick));
+            result.skippedPassZeroLogicalFrames++;
+            blockCounts[static_cast<std::size_t>(segmentOrdinal)] = builder.GetBlockCount();
+            builder.Advance();
+            result.senderLogicalFrames++;
+            continue;
+        }
+        const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
+        result.observedRepairLogicalFrames++;
+        if (!completedSegments[static_cast<std::size_t>(segmentOrdinal)])
+        {
+            for (std::uint32_t slot = 0; slot < frame.slots.size(); slot++)
+            {
+                if (frame.slots[slot].transportDisposition !=
+                    SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+                {
+                    continue;
+                }
+                std::array<std::byte, outerBlockBytes> payload{};
+                const std::uint32_t outerBlockId = builder.GetOuterBlockIdForSlot(slot);
+                const std::uint32_t declaredPayloadBytes = builder.EncodeOuterPayloadForSlot(slot, payload);
+                Require(declaredPayloadBytes > 0 && declaredPayloadBytes <= (std::numeric_limits<std::uint16_t>::max)(),
+                    "Unified fountain mid-join sender produced an invalid payload size");
+                const std::uint64_t blockCount = blockCounts[static_cast<std::size_t>(segmentOrdinal)];
+                Require(blockCount != 0, "Unified fountain mid-join never observed the Segment block count");
+                if (outerBlockId < blockCount)
+                {
+                    result.everyAdmittedSymbolWasRepair = false;
+                }
+                result.minimumObservedOuterBlockId =
+                    (std::min)(result.minimumObservedOuterBlockId, static_cast<std::uint64_t>(outerBlockId));
+                const pbreceiver::ReceivedTransportBlock transport{sessionTag, segmentOrdinal, outerBlockId,
+                    static_cast<std::uint16_t>(declaredPayloadBytes), payload};
+                auto admission = receiver.ReceiveDataBlock(transport, logicalTick);
+                RequireResult(admission, "Unified fountain mid-join transport admission failed");
+                Require(admission.Value().disposition != pbreceiver::ReceiverDataDisposition::DeferredResourceBusy &&
+                    admission.Value().outerSymbolAdmission !=
+                        pbreceiver::ReceiverOuterSymbolAdmission::DeferredResourceBusy,
+                    "Unified fountain mid-join transport was deferred by Receiver resources");
+                if (admission.Value().outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::Unique)
+                {
+                    result.admittedUniqueOuterSymbols++;
+                }
+                else if (admission.Value().outerSymbolAdmission ==
+                    pbreceiver::ReceiverOuterSymbolAdmission::AlreadyCompleted)
+                {
+                    result.alreadyCompletedSymbols++;
+                }
+                if (!admission.Value().completedSegment)
+                {
+                    continue;
+                }
+                auto verified = receiver.VerifyRecoveredSegment(std::move(*admission.Value().completedSegment));
+                RequireResult(verified, "Unified fountain mid-join recovered Segment digest verification failed");
+                const pbprotocol::SegmentDescriptor& descriptor =
+                    verified.Value().GetBoundSegmentDescriptor().GetDescriptor();
+                Require(descriptor.segmentOrdinal == segmentOrdinal,
+                    "Unified fountain mid-join verified Segment binding is inconsistent");
+                const std::span<const std::byte> expected = std::span(fixture.source).subspan(
+                    static_cast<std::size_t>(descriptor.rawOffset), static_cast<std::size_t>(descriptor.rawSize));
+                Require(std::ranges::equal(verified.Value().GetRawBytes(), expected),
+                    "Unified fountain mid-join recovered Segment differs from the authoritative source bytes");
+                completedSegments[static_cast<std::size_t>(segmentOrdinal)] = true;
+                result.completedSegments++;
+                break;
+            }
+        }
+        else
+        {
+            for (const SenderUnifiedScheduledSlot& slot : frame.slots)
+            {
+                if (slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+                {
+                    result.scheduledEquationsAfterSegmentCompleted++;
+                }
+            }
+        }
+        const pbreceiver::ReceiverResourceTelemetrySnapshot telemetry = receiver.GetTelemetry();
+        result.receiverPeakActiveDecoderCount = (std::max)(result.receiverPeakActiveDecoderCount,
+            telemetry.activeOuterFecDecoderCount);
+        builder.Advance();
+        result.senderLogicalFrames++;
+    }
+    const pbreceiver::ReceiverResourceTelemetrySnapshot finalTelemetry = receiver.GetTelemetry();
+    result.receiverDeferredResourceBusyCount = finalTelemetry.deferredResourceBusyCount;
+    result.receiverOuterFecQuotaExceededCount = finalTelemetry.outerFecQuotaExceededCount;
+    result.completedCarouselPasses = builder.GetCarouselSnapshot().cycleCount;
+    result.everySegmentDigestVerified = std::ranges::all_of(completedSegments, [](const bool completed)
+    {
+        return completed;
+    });
+    for (std::size_t segmentIndex = 0; segmentIndex < blockCounts.size(); segmentIndex++)
+    {
+        result.perSegmentFountainRepairBudget[segmentIndex] =
+            (std::max)(static_cast<std::uint64_t>(senderCarouselMinimumRepairBlocks),
+                (blockCounts[segmentIndex] - 1ULL) /
+                    (senderCarouselRepairPercentDenominator / senderCarouselRepairPercentNumerator) + 1ULL);
+    }
+    Require(result.completedCarouselPasses >= 2,
+        "Unified fountain mid-join recovery must span more than one Carousel pass");
+    Require(result.admittedUniqueOuterSymbols != 0,
+        "Unified fountain mid-join admitted no repair symbols");
+}
+
 void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& result)
 {
     constexpr std::uint64_t lastLogicalTick = 335;
@@ -6470,7 +6618,7 @@ void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& res
                         {
                             result.resourceLimitExceededWhileSevenActive++;
                         }
-                        else if (activeDecoderCount >= senderUnifiedActiveSegmentWindowSize)
+                        else if (activeDecoderCount >= senderUnifiedReceiverActiveDecoderLimit)
                         {
                             result.resourceLimitExceededAfterEightActive++;
                         }
@@ -6554,6 +6702,27 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedLargeWindowRecovery(
     catch (...)
     {
         return RuntimeStatus::Failure("Unified large-window recovery probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedFountainMidJoin(
+    UnifiedFountainMidJoinProbeSnapshot& output) noexcept
+{
+    output = {};
+    try
+    {
+        UnifiedFountainMidJoinProbeSnapshot result;
+        RunUnifiedFountainMidJoinProbe(result);
+        output = std::move(result);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified fountain mid-join probe failed with an unknown error");
     }
 }
 
@@ -8099,9 +8268,12 @@ pbcompression::CompressionResult<pbcompression::EncodedSegment> PrepareEncodedSe
 pbprotocol::ReceiverResourcePolicy MakeUnifiedReceiverResourcePolicy() noexcept
 {
     pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
-    // Unified retains its bounded eight-Segment window. G22 removes size-only
-    // confirmation, not the accepted-file cap or the storage admission checks.
-    policy.maxActiveOuterFecDecoders = senderUnifiedActiveSegmentWindowSize;
+    // The decoder quota keeps the historical eight-slot reservation while the
+    // sender window stripes six Segments: starved Segments from earlier
+    // windows keep their decoders instead of deferring late repair equations.
+    // G22 removes size-only confirmation, not the accepted-file cap or the
+    // storage admission checks.
+    policy.maxActiveOuterFecDecoders = senderUnifiedReceiverActiveDecoderLimit;
     policy.maxOutputPreallocationBytesWithoutPrompt = policy.maxAcceptedFileBytes;
     return policy;
 }
@@ -9817,6 +9989,8 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 value.demodGpuTimeTotal100ns = demodSnapshot.demodulator.gpuTimeTotal100ns;
                 value.bootstrapCpuTimeTotal100ns = demodSnapshot.bootstrapCpuTimeTotal100ns;
                 value.postGpuFecCpuTimeTotal100ns = demodSnapshot.demodulationCpuTimeTotal100ns;
+                value.bootstrapWindowedFastPathFrames = demodSnapshot.bootstrapWindowedFastPathFrames;
+                value.bootstrapWindowedFallbackFrames = demodSnapshot.bootstrapWindowedFallbackFrames;
                 value.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started);
                 if (replayRecorder)
                 {
