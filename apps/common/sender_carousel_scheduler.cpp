@@ -402,12 +402,13 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
             // Incremental fountain repair pass with a doubling budget. Pass 1
             // schedules only max(16, ceil(K*20%)) fresh repair equations, so a
             // Carousel re-sweep of an already-recovered Segment costs one small
-            // batch instead of a full K-sized pass. Each later pass doubles the
-            // fraction (20% -> 40% -> 80%, capped at 160%) so a Segment whose
-            // erasure deficit exceeds one batch converges within a few wraps
-            // instead of many minimal wraps whose re-visits of recovered
-            // Segments dominate the airtime.
-            const std::uint64_t doublingShift = (std::min<std::uint64_t>)(config.carouselPass - 1ULL, 3ULL);
+            // batch instead of a full K-sized pass. Pass 2 doubles to 40% and
+            // every later pass stays at 80%: a Segment whose erasure deficit
+            // exceeds one batch converges within two wraps, while the steady
+            // per-wrap cost for already-recovered Segments remains below the
+            // historical K+20% budget (field data: a 160% cap regressed 15 Hz
+            // long runs because late wraps re-broadcast 1.6xK per Segment).
+            const std::uint64_t doublingShift = (std::min<std::uint64_t>)(config.carouselPass - 1ULL, 2ULL);
             const auto scaledNumerator = pbprotocol::CheckedMultiplyUint64(
                 senderCarouselRepairPercentNumerator, 1ULL << doublingShift);
             const auto scaledRepair = scaledNumerator ?
