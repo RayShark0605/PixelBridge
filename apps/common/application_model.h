@@ -458,6 +458,13 @@ struct DecoderSnapshot
     std::uint64_t bootstrapRejectedFrames = 0;
     std::uint64_t bootstrapMismatchFrames = 0;
     std::uint64_t bootstrapControlFrameFailures = 0;
+    // Experimental supplemental control bands (unified-bands identity only):
+    // attempts, admitted records and per-reason rejections mirror the capture
+    // demodulator counters (rejection order follows SupplementalBandDecodeStatus
+    // minus Admitted).
+    std::uint64_t supplementalBandDecodeAttempts = 0;
+    std::uint64_t supplementalBandsAdmitted = 0;
+    std::array<std::uint64_t, 6> supplementalBandRejections{};
     std::uint64_t evaluatedDataFrames = 0;
     std::uint64_t evaluatedCodewords = 0;
     std::uint64_t postFecFailedFrames = 0;

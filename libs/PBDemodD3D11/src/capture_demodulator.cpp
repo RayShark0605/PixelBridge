@@ -6,6 +6,7 @@
 #include "pbmodulation/shape_chroma.h"
 #include "pbprotocol/checked_integer.h"
 #include "pbprotocol/control_fragment_codec.h"
+#include "pbprotocol/product_visual_profile.h"
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -346,6 +347,10 @@ struct CaptureDemodulator::Implementation
         bool bootstrapAcceptedCounted = false;
         ScreenCaptureFrameMetadata metadata;
         pbmodulation::LocalDesktopObservation bootstrap;
+        // Decoded from the mapped staging pixels under the experimental
+        // blank-control binding; carried to the assembled result.
+        std::array<CaptureSupplementalBand, pbmodulation::kSupplementalBands.size()> supplementalBands{};
+        std::uint32_t admittedSupplementalBandCount = 0;
         ID3D11Texture2D* borrowedTexture = nullptr;
         DemodSubmission submission;
         CaptureDemodulatorTemporalDisposition temporalDisposition =
@@ -382,6 +387,8 @@ struct CaptureDemodulator::Implementation
         const pbmodulation::LocalDesktopBootstrapBinding expectedBinding, const std::int64_t frequency)
         : config(configured), binding(expectedBinding), qpcFrequency(frequency),
           referenceScratch(IsStagedVisual(configured.visualProfileId) ? 0 : pbmodulation::kReferenceFrameBgraBytes),
+          supplementalBandScratch(expectedBinding.visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId ?
+            pbmodulation::kSupplementalBandPatchBytes : 0),
           results(configured.resultQueueCapacity)
     {
         snapshot.reservation = reserved;
@@ -703,6 +710,7 @@ struct CaptureDemodulator::Implementation
     mutable std::mutex demodulatorMutex;
     std::unique_ptr<Demodulator> demodulator;
     std::vector<std::byte> referenceScratch;
+    std::vector<std::byte> supplementalBandScratch;
     std::array<std::byte, pbmodulation::kReferenceBootstrapRecordBytes> referenceBootstrap{};
     std::array<std::byte, pbmodulation::kReferenceControlWindowBytes> referenceControl{};
     std::array<std::byte, pbmodulation::kReferenceDataRegionBytes> referenceData{};
@@ -755,9 +763,12 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
     const auto first = staging && queue ? pbprotocol::CheckedAddUint64(budget.demodulatorBytes, staging.Value()) :
         pbprotocol::ProtocolResult<std::uint64_t>::Failure(pbprotocol::ProtocolErrorCode::LengthOverflow, 0);
     const std::uint64_t referenceScratchBytes = stagedVisual ? 0 : canvasBytes;
+    const std::uint64_t supplementalBandScratchBytes = config.visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId ?
+        pbmodulation::kSupplementalBandPatchBytes : 0;
     const auto second = first ? pbprotocol::CheckedAddUint64(first.Value(), referenceScratchBytes) : first;
     const auto third = second ? pbprotocol::CheckedAddUint64(second.Value(), queue.Value()) : second;
-    const auto total = third ? pbprotocol::CheckedAddUint64(third.Value(), fixedOverheadBytes) : third;
+    const auto thirdAndBand = third ? pbprotocol::CheckedAddUint64(third.Value(), supplementalBandScratchBytes) : third;
+    const auto total = thirdAndBand ? pbprotocol::CheckedAddUint64(thirdAndBand.Value(), fixedOverheadBytes) : thirdAndBand;
     if (!maximumPixels || !maximumFrameBytes || !staging || !queue || !total || total.Value() > config.maximumResidentBytes)
     {
         return CaptureStatus::Failure(CaptureError::ResourceLimit, CaptureStage::Configuration);
@@ -765,7 +776,7 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
     budget.bootstrapStagingBytes = staging.Value();
     budget.referenceScratchBytes = referenceScratchBytes;
     budget.resultQueueBytes = queue.Value();
-    budget.fixedOverheadBytes = fixedOverheadBytes;
+    budget.fixedOverheadBytes = fixedOverheadBytes + supplementalBandScratchBytes;
     budget.totalBytes = total.Value();
     output = budget;
     return {};
@@ -1248,6 +1259,53 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
                 }
             }
         }
+        // Experimental blank-control identity: decode both supplemental bands
+        // from the same mapped staging pixels while they are still valid. The
+        // parent Bootstrap must be accepted, the geometry goes through the
+        // original admission, and every band gate (ambiguity, RS, identity,
+        // CRC, record) stays exactly as frozen in the band library.
+        if (unifiedVisual && bootstrap.IsAccepted() &&
+            state.binding.visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId)
+        {
+            const auto parent = pbprotocol::ParseBootstrapRecord(bootstrap.canonical44);
+            pbmodulation::LocalDesktopGeometry resolved{};
+            if (parent && pbmodulation::ResolveUnifiedVisualSamplingGeometry(bootstrap.geometry,
+                view.width, view.height, state.config.unifiedVisualPolicy, resolved))
+            {
+                for (std::size_t bandIndex = 0; bandIndex < pending.supplementalBands.size(); bandIndex++)
+                {
+                    CaptureSupplementalBand& decoded = pending.supplementalBands[bandIndex];
+                    const auto outcome = pbmodulation::DecodeSupplementalBand(view, resolved, bandIndex,
+                        pbprotocol::SessionTag{parent.Value().sessionTag}, parent.Value().frameSequence,
+                        state.supplementalBandScratch, decoded.record);
+                    decoded.status = outcome.status;
+                    decoded.recordBytes = static_cast<std::uint32_t>(outcome.recordBytes);
+                    if (outcome.IsAdmitted())
+                    {
+                        pending.admittedSupplementalBandCount++;
+                    }
+                }
+                {
+                    const std::lock_guard lock(state.mutex);
+                    state.snapshot.supplementalBandDecodeAttempts = pbprotocol::SaturatingAddUnsigned(
+                        state.snapshot.supplementalBandDecodeAttempts,
+                        static_cast<std::uint64_t>(pending.supplementalBands.size()));
+                    state.snapshot.supplementalBandsAdmitted = pbprotocol::SaturatingAddUnsigned(
+                        state.snapshot.supplementalBandsAdmitted,
+                        static_cast<std::uint64_t>(pending.admittedSupplementalBandCount));
+                    for (const auto& decoded : pending.supplementalBands)
+                    {
+                        // Admitted == 0; each rejection reason maps to its own
+                        // bounded counter slot.
+                        const auto rejectionIndex = static_cast<std::size_t>(decoded.status) - 1;
+                        if (rejectionIndex < state.snapshot.supplementalBandRejections.size())
+                        {
+                            pbprotocol::SaturatingIncrementUnsigned(state.snapshot.supplementalBandRejections[rejectionIndex]);
+                        }
+                    }
+                }
+            }
+        }
         context->Unmap(state.bootstrapStaging[metadata.slotIndex].Get(), 0);
         const bool bootstrapEndValid = QueryPerformanceCounter(&bootstrapEnd) != FALSE;
         const auto bootstrapTime = bootstrapStartValid && bootstrapEndValid ?
@@ -1501,6 +1559,8 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
     result.metadata = metadata;
     result.bootstrapRecord = bootstrap.canonical44;
     result.bootstrap = bootstrap;
+    result.supplementalBands = pending.supplementalBands;
+    result.admittedSupplementalBandCount = pending.admittedSupplementalBandCount;
     result.geometryStatus = stagedVisual ? ClassifyGeometry(bootstrap, state.roiWidth, state.roiHeight) :
         CaptureDemodulatorGeometryStatus::NotApplicable;
     result.demodulation = demodulation;

@@ -3,6 +3,7 @@
 #include "pbdemodd3d11/demodulator.h"
 #include "pbmodulation/local_desktop_decode.h"
 #include "pbmodulation/reference_visual_profile.h"
+#include "pbmodulation/supplemental_band.h"
 #include "pbmodulation/visual_temporal.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 
@@ -34,6 +35,17 @@ enum class CaptureDemodulatorTemporalDisposition : std::uint8_t
     NotApplicable, Unique, DuplicateRefinement, DuplicateSuppressed, Reordered, StaleCompletion
 };
 
+// Supplemental control band outcome for the experimental unified-bands
+// identity. The embedded PB-Control-1 record is copied at most
+// pbmodulation::kSupplementalBandMaximumRecordBytes bytes; bytes are valid
+// only when status == Admitted.
+struct CaptureSupplementalBand
+{
+    pbmodulation::SupplementalBandDecodeStatus status = pbmodulation::SupplementalBandDecodeStatus::SamplingRejected;
+    std::uint32_t recordBytes = 0;
+    std::array<std::byte, pbmodulation::kSupplementalBandMaximumRecordBytes> record{};
+};
+
 struct CaptureDemodulatorResult
 {
     CaptureDemodulatorResultKind kind = CaptureDemodulatorResultKind::Transport;
@@ -42,6 +54,12 @@ struct CaptureDemodulatorResult
     std::array<std::byte, pbmodulation::kReferenceControlWindowBytes> controlBytes{};
     std::uint32_t controlByteCount = 0;
     pbmodulation::LocalDesktopObservation bootstrap;
+    // Decoded from the mapped staging pixels after an accepted parent
+    // Bootstrap under the experimental blank-control binding; the records are
+    // ordinary PB-Control-1 envelopes and feed the same control admission as
+    // main-region control slots.
+    std::array<CaptureSupplementalBand, pbmodulation::kSupplementalBands.size()> supplementalBands{};
+    std::uint32_t admittedSupplementalBandCount = 0;
     CaptureDemodulatorGeometryStatus geometryStatus = CaptureDemodulatorGeometryStatus::NotApplicable;
     CaptureDemodulatorTemporalDisposition temporalDisposition = CaptureDemodulatorTemporalDisposition::NotApplicable;
     DemodFrameResult demodulation;
@@ -107,6 +125,10 @@ struct CaptureDemodulatorSnapshot
     std::uint64_t captureErasures = 0;
     std::uint64_t bootstrapAcceptedFrames = 0;
     std::uint64_t bootstrapRejectedFrames = 0;
+    // Experimental supplemental control bands (unified-bands identity only).
+    std::uint64_t supplementalBandDecodeAttempts = 0;
+    std::uint64_t supplementalBandsAdmitted = 0;
+    std::array<std::uint64_t, 6> supplementalBandRejections{};
     std::uint64_t controlFrames = 0;
     std::uint64_t controlFrameFailures = 0;
     std::uint64_t stagedGpuSubmissions = 0;

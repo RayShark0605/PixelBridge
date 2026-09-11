@@ -748,6 +748,14 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"bootstrapRejectedFrames\":" << snapshot.bootstrapRejectedFrames
            << ",\"bootstrapMismatchFrames\":" << snapshot.bootstrapMismatchFrames
            << ",\"bootstrapControlFrameFailures\":" << snapshot.bootstrapControlFrameFailures
+           << ",\"supplementalBandDecodeAttempts\":" << snapshot.supplementalBandDecodeAttempts
+           << ",\"supplementalBandsAdmitted\":" << snapshot.supplementalBandsAdmitted
+           << ",\"supplementalBandRejections\":[" << snapshot.supplementalBandRejections[0]
+           << "," << snapshot.supplementalBandRejections[1]
+           << "," << snapshot.supplementalBandRejections[2]
+           << "," << snapshot.supplementalBandRejections[3]
+           << "," << snapshot.supplementalBandRejections[4]
+           << "," << snapshot.supplementalBandRejections[5] << "]"
            << ",\"evaluatedDataFrames\":" << snapshot.evaluatedDataFrames
            << ",\"evaluatedCodewords\":" << snapshot.evaluatedCodewords
            << ",\"postFecFailedFrames\":" << snapshot.postFecFailedFrames

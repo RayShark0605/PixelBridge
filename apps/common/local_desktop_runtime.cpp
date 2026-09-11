@@ -3736,6 +3736,24 @@ private:
             {
                 RecordUnifiedObservation(result);
             }
+            // Experimental supplemental bands: after the main Control passes
+            // and before Transport, mirroring the frozen experiment order.
+            // Only admitted records reach here; each is an ordinary
+            // PB-Control-1 envelope feeding the same admission path (with the
+            // UnknownSession wait semantics) as main-region control slots.
+            if (pass == 2 && result.admittedSupplementalBandCount != 0 && !published_)
+            {
+                for (const auto& band : result.supplementalBands)
+                {
+                    if (band.status != pbmodulation::SupplementalBandDecodeStatus::Admitted || published_)
+                    {
+                        continue;
+                    }
+                    const auto record = std::span(band.record).first(band.recordBytes);
+                    static_cast<void>(ProcessControlRecord(record, bootstrap.sessionTag,
+                        result.metadata.timestamp.monotonic100ns, nullptr));
+                }
+            }
             for (std::uint32_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
             {
                 auto* const decision = decisions ? &decisions->slots[slot] : nullptr;
@@ -9787,6 +9805,9 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 ApplyCaptureComponentSnapshot(captureSnapshot, value);
                 value.bootstrapAcceptedFrames = demodSnapshot.bootstrapAcceptedFrames;
                 value.bootstrapRejectedFrames = demodSnapshot.bootstrapRejectedFrames;
+                value.supplementalBandDecodeAttempts = demodSnapshot.supplementalBandDecodeAttempts;
+                value.supplementalBandsAdmitted = demodSnapshot.supplementalBandsAdmitted;
+                value.supplementalBandRejections = demodSnapshot.supplementalBandRejections;
                 value.bootstrapMismatchFrames = demodSnapshot.bootstrapErasures[
                     static_cast<std::size_t>(pbmodulation::LocalDesktopErasureReason::BootstrapMismatch)];
                 value.bootstrapControlFrameFailures = demodSnapshot.controlFrameFailures;
