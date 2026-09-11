@@ -1139,3 +1139,39 @@ TEST_CASE("Step2 timing cannot change pixel FEC admission even when evidence is 
         REQUIRE(instrumented.GetAcceptedBlocks().empty());
     }
 }
+
+TEST_CASE("Unified parallel codeword FEC sweep matches the serial diagnostics path bit for bit",
+    "[unified][cpu][fec][parallel]")
+{
+    const Fixture& fixture = GetFixture41();
+    const std::vector<std::byte> pixels = Render(fixture);
+    const UnifiedExpectedFrameIdentity identity{true, pbprotocol::SessionTag{0x1122334455667788ULL}, true, 41};
+    UnifiedVisualCpuOracle parallel = MakeOracle();
+    const UnifiedVisualObservation parallelObservation = parallel.Decode(View(pixels), fixture.plan, identity);
+    REQUIRE(parallelObservation.IsFrameAvailable());
+    // Attaching stage diagnostics forces the serial single-decoder sweep;
+    // without it the oracle decodes the 15 codeword slots on its FEC lanes.
+    pbcore::StageDiagnostics diagnostics;
+    UnifiedVisualCpuOracle serial = MakeOracle();
+    serial.SetStageDiagnostics(&diagnostics);
+    const UnifiedVisualObservation serialObservation = serial.Decode(View(pixels), fixture.plan, identity);
+    REQUIRE(serialObservation.IsFrameAvailable());
+    REQUIRE(parallelObservation.acceptedBlocks == serialObservation.acceptedBlocks);
+    REQUIRE(parallelObservation.acceptedControlRecords == serialObservation.acceptedControlRecords);
+    REQUIRE(parallelObservation.acceptedTransportBlocks == serialObservation.acceptedTransportBlocks);
+    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    {
+        REQUIRE(parallelObservation.slots[slot].fecValid == serialObservation.slots[slot].fecValid);
+        REQUIRE(parallelObservation.slots[slot].rejection == serialObservation.slots[slot].rejection);
+        REQUIRE(parallelObservation.slots[slot].iterationsUsed == serialObservation.slots[slot].iterationsUsed);
+        REQUIRE(parallelObservation.slots[slot].accepted == serialObservation.slots[slot].accepted);
+    }
+    const std::span<const UnifiedAcceptedBlock> parallelBlocks = parallel.GetAcceptedBlocks();
+    const std::span<const UnifiedAcceptedBlock> serialBlocks = serial.GetAcceptedBlocks();
+    REQUIRE(parallelBlocks.size() == serialBlocks.size());
+    for (std::size_t slot = 0; slot < parallelBlocks.size(); slot++)
+    {
+        REQUIRE(parallelBlocks[slot].size == serialBlocks[slot].size);
+        REQUIRE(parallelBlocks[slot].bytes == serialBlocks[slot].bytes);
+    }
+}

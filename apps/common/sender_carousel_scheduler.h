@@ -51,6 +51,12 @@ inline constexpr std::uint32_t senderUnifiedActiveSegmentWindowSize = 6;
 // resume caches, and decoder-memory budgeting do not shrink with the sender
 // window.
 inline constexpr std::uint32_t senderUnifiedReceiverActiveDecoderLimit = 8;
+// Repair-pass budget shape is frame-rate aware. At or below this rate the
+// receiver's admission budget saturates on the Pass-0 stream alone, so later
+// passes keep the historical K+20% FullRepairPass budget (field data: cheap
+// multi-wrap fountain passes only added duplicate admissions at 15 Hz).
+// Above it, later passes use the incremental doubling fountain budget.
+inline constexpr std::uint32_t senderUnifiedSerialRepairFpsThreshold = 15;
 // One sweep gives every active Segment one frame. Thirty-two sweeps per phase
 // visit every capture phase twice within an ordinary full-size Pass-0 window,
 // rather than leaving half the phases unvisited until its repair tail.

@@ -6422,7 +6422,11 @@ void RunUnifiedFountainMidJoinProbe(UnifiedFountainMidJoinProbeSnapshot& result)
     RequireResult(receiver.ReceiveControlRecord(description.manifestControl),
         "Unified fountain mid-join FinalManifest admission failed");
 
-    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, 15);
+    // Above the serial-repair threshold: this probe exercises the incremental
+    // fountain budget, where mid-join recovery accumulates several small
+    // repair passes instead of one K+20% batch.
+    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0,
+        pbapp::senderUnifiedSerialRepairFpsThreshold + 1);
     std::vector<bool> completedSegments(static_cast<std::size_t>(segmentCount), false);
     std::vector<std::uint64_t> blockCounts(static_cast<std::size_t>(segmentCount), 0);
     result = {};

@@ -7,10 +7,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <limits>
+#include <mutex>
 #include <new>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace pbmodulation
 {
@@ -33,17 +38,58 @@ namespace
 
 struct UnifiedVisualCpuOracle::Implementation
 {
-    explicit Implementation(pbinnerfec::QcLdpcDecoder&& decoderValue) noexcept : decoder(std::move(decoderValue))
+    explicit Implementation(pbinnerfec::QcLdpcDecoder&& decoderValue) noexcept
     {
+        fecLanes[0].decoder = std::make_unique<pbinnerfec::QcLdpcDecoder>(std::move(decoderValue));
     }
+
+    ~Implementation();
+
+    // One scratch set plus one private Qc-LDPC decoder per concurrent FEC lane.
+    // Lanes never share state; each frame's codeword slots are claimed from a
+    // shared atomic counter, so the parallel output is bit-identical to the
+    // serial order by construction.
+    struct FecLane
+    {
+        std::array<std::int16_t, kUnifiedVisualProfile.innerCodewordBits> slotMetrics{};
+        std::array<std::byte, kUnifiedCodewordBytes> decodedCodeword{};
+        std::unique_ptr<pbinnerfec::QcLdpcDecoder> decoder;
+    };
+    struct FecSlotOutput
+    {
+        bool fecValid = false;
+        bool innerFecFailure = false;
+        std::uint32_t iterationsUsed = 0;
+        std::array<std::byte, kUnifiedInformationBytes> information{};
+    };
 
     std::array<UnifiedSoftMetric, kUnifiedSoftMetricCount> metrics{};
     std::array<UnifiedAcceptedBlock, kUnifiedCodewordCount> accepted{};
-    std::array<std::int16_t, kUnifiedVisualProfile.innerCodewordBits> slotMetrics{};
-    std::array<std::byte, kUnifiedCodewordBytes> decodedCodeword{};
     std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedCodewordCount> decodedInformation{};
     std::array<bool, kUnifiedCodewordCount> decodedInformationValid{};
-    pbinnerfec::QcLdpcDecoder decoder;
+    std::array<FecLane, kUnifiedCodewordCount> fecLanes{};
+    std::array<FecSlotOutput, kUnifiedCodewordCount> fecSlotOutputs{};
+    std::vector<std::thread> fecThreads;
+
+    // One FEC sweep: claim a scratch lane, decode codeword slots from the
+    // shared atomic counter, then account completion under fecMutex. The
+    // owning thread participates with lane 0; pool threads use lanes 1..N.
+    void RunFecSweep(std::uint32_t laneIndex, const UnifiedSoftMetric* taskMetrics,
+        const pbinnerfec::InnerFecDecodeOptions& options) noexcept;
+    void FecThreadLoop(std::uint32_t laneIndex) noexcept;
+    void StartFecPool() noexcept;
+
+    std::mutex fecMutex;
+    std::condition_variable fecWorkerSignal;
+    std::condition_variable fecMainSignal;
+    const UnifiedSoftMetric* fecTaskMetrics = nullptr;
+    pbinnerfec::InnerFecDecodeOptions fecTaskOptions{};
+    std::uint32_t fecTaskGeneration = 0;
+    std::uint32_t fecWorkersDone = 0;
+    std::uint32_t fecParticipants = 1;
+    std::atomic<std::uint32_t> fecNextSlot{0};
+    bool fecShutdown = false;
+    bool fecPoolUsable = false;
     pbcore::StageDiagnostics* diagnostics = nullptr;
     std::uint32_t acceptedCount = 0;
     bool metricsValid = false;
@@ -1122,7 +1168,174 @@ void EvaluateAcceptedInformation(const std::uint32_t slot, const UnifiedSlotAssi
     AcceptBlock(slot, assignment.kind, record, slotObservation, accepted, acceptedCount);
 }
 
+// Decodes one codeword slot's inner FEC with caller-owned scratch and decoder.
+// Shared verbatim by the serial and parallel paths, so their outputs are
+// bit-identical by construction.
+struct UnifiedSlotFecResult
+{
+    bool fecValid = false;
+    bool innerFecFailure = false;
+    std::uint32_t iterationsUsed = 0;
+};
+
+[[nodiscard]] UnifiedSlotFecResult DecodeUnifiedSlotFec(const UnifiedSoftMetric* const metrics,
+    const std::uint32_t slot, const pbinnerfec::InnerFecDecodeOptions& decodeOptions,
+    std::span<std::int16_t, kUnifiedVisualProfile.innerCodewordBits> slotMetrics,
+    std::span<std::byte, kUnifiedCodewordBytes> decodedCodeword, pbinnerfec::QcLdpcDecoder& decoder,
+    std::span<std::byte, kUnifiedInformationBytes> informationOut) noexcept
+{
+    UnifiedSlotFecResult result;
+    std::ranges::fill(decodedCodeword, std::byte{0});
+    const std::size_t firstMetric = static_cast<std::size_t>(slot) * kUnifiedVisualProfile.innerCodewordBits;
+    for (std::size_t bit = 0; bit < slotMetrics.size(); bit++)
+    {
+        const std::int16_t metric = metrics[firstMetric + bit].value;
+        slotMetrics[bit] = metric;
+        if (metric < 0)
+        {
+            decodedCodeword[bit / 8] |= static_cast<std::byte>(1U << (bit % 8));
+        }
+    }
+    const auto syndrome = pbinnerfec::ComputeQcLdpcSyndrome(pbinnerfec::kInnerFecProfileIdRobust,
+        decodedCodeword);
+    if (!syndrome)
+    {
+        result.innerFecFailure = true;
+        return result;
+    }
+    if (!syndrome.Value())
+    {
+        const auto decoded = decoder.Decode(slotMetrics, decodeOptions, decodedCodeword);
+        if (!decoded)
+        {
+            result.iterationsUsed = static_cast<std::uint32_t>(decoded.Error().detail);
+            result.innerFecFailure = true;
+            return result;
+        }
+        result.iterationsUsed = decoded.Value().iterationsUsed;
+    }
+    result.fecValid = true;
+    std::copy_n(decodedCodeword.begin(), kUnifiedInformationBytes, informationOut.begin());
+    return result;
+}
+
 } // namespace
+
+UnifiedVisualCpuOracle::Implementation::~Implementation()
+{
+    if (!fecThreads.empty())
+    {
+        {
+            const std::lock_guard<std::mutex> lock(fecMutex);
+            fecShutdown = true;
+        }
+        fecWorkerSignal.notify_all();
+        for (std::thread& worker : fecThreads)
+        {
+            if (worker.joinable())
+            {
+                worker.join();
+            }
+        }
+    }
+}
+
+void UnifiedVisualCpuOracle::Implementation::StartFecPool() noexcept
+{
+    try
+    {
+        for (std::size_t laneIndex = 1; laneIndex < fecLanes.size(); laneIndex++)
+        {
+            auto decoderResult = pbinnerfec::QcLdpcDecoder::Create(pbinnerfec::kInnerFecProfileIdRobust);
+            if (!decoderResult)
+            {
+                break;
+            }
+            fecLanes[laneIndex].decoder =
+                std::make_unique<pbinnerfec::QcLdpcDecoder>(std::move(decoderResult).Value());
+        }
+        const std::size_t laneCount = static_cast<std::size_t>(std::ranges::count_if(fecLanes,
+            [](const FecLane& lane) { return lane.decoder != nullptr; }));
+        if (laneCount < 2)
+        {
+            return;
+        }
+        fecThreads.reserve(laneCount - 1);
+        for (std::size_t laneIndex = 1; laneIndex < laneCount; laneIndex++)
+        {
+            fecThreads.emplace_back([this, laneIndex]() noexcept
+            {
+                FecThreadLoop(static_cast<std::uint32_t>(laneIndex));
+            });
+        }
+        fecParticipants = static_cast<std::uint32_t>(laneCount);
+        fecPoolUsable = true;
+    }
+    catch (...)
+    {
+        // Decoder or thread allocation failed: the frame sweep degrades to the
+        // serial single-decoder path. Spawned threads exit cleanly through the
+        // destructor handshake; lanes without a thread are never dispatched.
+        fecPoolUsable = false;
+        fecParticipants = 1;
+    }
+}
+
+void UnifiedVisualCpuOracle::Implementation::RunFecSweep(const std::uint32_t laneIndex,
+    const UnifiedSoftMetric* const taskMetrics, const pbinnerfec::InnerFecDecodeOptions& options) noexcept
+{
+    FecLane& lane = fecLanes[laneIndex];
+    if (lane.decoder != nullptr)
+    {
+        for (;;)
+        {
+            const std::uint32_t slot = fecNextSlot.fetch_add(1, std::memory_order_relaxed);
+            if (slot >= kUnifiedCodewordCount)
+            {
+                break;
+            }
+            FecSlotOutput& output = fecSlotOutputs[slot];
+            const UnifiedSlotFecResult result = DecodeUnifiedSlotFec(taskMetrics, slot, options,
+                lane.slotMetrics, lane.decodedCodeword, *lane.decoder, output.information);
+            output.fecValid = result.fecValid;
+            output.innerFecFailure = result.innerFecFailure;
+            output.iterationsUsed = result.iterationsUsed;
+        }
+    }
+    const std::lock_guard<std::mutex> lock(fecMutex);
+    fecWorkersDone++;
+    if (fecWorkersDone == fecParticipants)
+    {
+        fecMainSignal.notify_one();
+    }
+}
+
+void UnifiedVisualCpuOracle::Implementation::FecThreadLoop(const std::uint32_t laneIndex) noexcept
+{
+    std::uint32_t workedGeneration = 0;
+    for (;;)
+    {
+        const UnifiedSoftMetric* taskMetrics = nullptr;
+        pbinnerfec::InnerFecDecodeOptions options{};
+        std::uint32_t generation = 0;
+        {
+            std::unique_lock<std::mutex> lock(fecMutex);
+            fecWorkerSignal.wait(lock, [this, &workedGeneration]()
+            {
+                return fecShutdown || fecTaskGeneration != workedGeneration;
+            });
+            if (fecShutdown)
+            {
+                return;
+            }
+            taskMetrics = fecTaskMetrics;
+            options = fecTaskOptions;
+            generation = fecTaskGeneration;
+        }
+        RunFecSweep(laneIndex, taskMetrics, options);
+        workedGeneration = generation;
+    }
+}
 
 bool ValidateUnifiedVisualDecodePolicy(const UnifiedVisualDecodePolicy& policy) noexcept
 {
@@ -1416,9 +1629,11 @@ UnifiedVisualCpuOracle::~UnifiedVisualCpuOracle() = default;
 
 std::uint64_t UnifiedVisualCpuOracle::RequiredBytes() noexcept
 {
-    // PBInnerFec documents a worst-case decoder workspace below 1 MiB. Keep
-    // that separately charged from the fixed implementation object.
-    return sizeof(Implementation) + 1024ULL * 1024ULL;
+    // PBInnerFec documents a worst-case decoder workspace below 1 MiB per
+    // decoder. The oracle reserves one private decoder per concurrent codeword
+    // lane so the frame sweep can decode the 15 slots in parallel; each lane
+    // is charged separately from the fixed implementation object.
+    return sizeof(Implementation) + static_cast<std::uint64_t>(kUnifiedCodewordCount) * 1024ULL * 1024ULL;
 }
 
 ModulationResult<UnifiedVisualCpuOracle> UnifiedVisualCpuOracle::Create(const std::uint64_t maximumBytes) noexcept
@@ -1438,6 +1653,7 @@ ModulationResult<UnifiedVisualCpuOracle> UnifiedVisualCpuOracle::Create(const st
     {
         UnifiedVisualCpuOracle oracle;
         oracle.implementation_ = std::make_unique<Implementation>(std::move(decoderResult).Value());
+        oracle.implementation_->StartFecPool();
         return ModulationResult<UnifiedVisualCpuOracle>::Success(std::move(oracle));
     }
     catch (const std::bad_alloc&)
@@ -1740,50 +1956,83 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     }
 
     const pbinnerfec::InnerFecDecodeOptions decodeOptions{policy.maximumFecIterations, 1, 2048, 3, 4};
+    std::array<bool, kUnifiedCodewordCount> slotLaneErased{};
     for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
     {
-        UnifiedSlotObservation& slotObservation = observation.slots[slot];
-        if (!LaneAvailable(slotObservation.lane, observation.baseLuma, observation.fineLuma, observation.chroma))
+        const UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        slotLaneErased[slot] = !LaneAvailable(slotObservation.lane, observation.baseLuma,
+            observation.fineLuma, observation.chroma);
+    }
+    // The parallel sweep is skipped while per-slot diagnostics are attached:
+    // DiagnosticScope is single-threaded, and the serial path preserves exact
+    // per-stage attribution for --stage-diagnostics runs.
+    if (state.fecPoolUsable && state.diagnostics == nullptr)
+    {
         {
-            slotObservation.rejection = UnifiedSlotRejection::LaneErasure;
-            continue;
+            const std::lock_guard<std::mutex> lock(state.fecMutex);
+            state.fecTaskMetrics = state.metrics.data();
+            state.fecTaskOptions = decodeOptions;
+            state.fecNextSlot.store(0, std::memory_order_relaxed);
+            state.fecWorkersDone = 0;
+            state.fecTaskGeneration++;
         }
-        const auto diagnosticStage = slotObservation.lane == UnifiedLane::BaseLuma ? pbcore::DiagnosticStage::BaseFec :
-            slotObservation.lane == UnifiedLane::FineLuma ? pbcore::DiagnosticStage::FineFec : pbcore::DiagnosticStage::ChromaFec;
-        const pbcore::DiagnosticScope fecTiming(state.diagnostics, diagnosticStage);
-        state.decodedCodeword.fill(std::byte{0});
-        const std::size_t firstMetric = static_cast<std::size_t>(slot) * kUnifiedVisualProfile.innerCodewordBits;
-        for (std::size_t bit = 0; bit < state.slotMetrics.size(); bit++)
+        state.fecWorkerSignal.notify_all();
+        state.RunFecSweep(0, state.metrics.data(), decodeOptions);
         {
-            const std::int16_t metric = state.metrics[firstMetric + bit].value;
-            state.slotMetrics[bit] = metric;
-            if (metric < 0)
+            std::unique_lock<std::mutex> lock(state.fecMutex);
+            state.fecMainSignal.wait(lock, [&state]()
             {
-                state.decodedCodeword[bit / 8] |= static_cast<std::byte>(1U << (bit % 8));
+                return state.fecWorkersDone == state.fecParticipants;
+            });
+        }
+        for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+        {
+            UnifiedSlotObservation& slotObservation = observation.slots[slot];
+            if (slotLaneErased[slot])
+            {
+                slotObservation.rejection = UnifiedSlotRejection::LaneErasure;
+                continue;
             }
-        }
-        const auto syndrome = pbinnerfec::ComputeQcLdpcSyndrome(
-            pbinnerfec::kInnerFecProfileIdRobust, state.decodedCodeword);
-        if (!syndrome)
-        {
-            slotObservation.rejection = UnifiedSlotRejection::InnerFecFailure;
-            continue;
-        }
-        if (!syndrome.Value())
-        {
-            const auto decoded = state.decoder.Decode(state.slotMetrics, decodeOptions, state.decodedCodeword);
-            if (!decoded)
+            const Implementation::FecSlotOutput& output = state.fecSlotOutputs[slot];
+            if (output.innerFecFailure)
             {
-                slotObservation.iterationsUsed = static_cast<std::uint32_t>(decoded.Error().detail);
+                slotObservation.rejection = UnifiedSlotRejection::InnerFecFailure;
+                slotObservation.iterationsUsed = output.iterationsUsed;
+                continue;
+            }
+            slotObservation.iterationsUsed = output.iterationsUsed;
+            slotObservation.fecValid = true;
+            state.decodedInformation[slot] = output.information;
+            state.decodedInformationValid[slot] = true;
+        }
+    }
+    else
+    {
+        Implementation::FecLane& serialLane = state.fecLanes[0];
+        for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+        {
+            UnifiedSlotObservation& slotObservation = observation.slots[slot];
+            if (slotLaneErased[slot])
+            {
+                slotObservation.rejection = UnifiedSlotRejection::LaneErasure;
+                continue;
+            }
+            const auto diagnosticStage = slotObservation.lane == UnifiedLane::BaseLuma ? pbcore::DiagnosticStage::BaseFec :
+                slotObservation.lane == UnifiedLane::FineLuma ? pbcore::DiagnosticStage::FineFec : pbcore::DiagnosticStage::ChromaFec;
+            const pbcore::DiagnosticScope fecTiming(state.diagnostics, diagnosticStage);
+            const UnifiedSlotFecResult result = DecodeUnifiedSlotFec(state.metrics.data(), slot, decodeOptions,
+                serialLane.slotMetrics, serialLane.decodedCodeword, *serialLane.decoder,
+                state.decodedInformation[slot]);
+            if (result.innerFecFailure)
+            {
+                slotObservation.iterationsUsed = result.iterationsUsed;
                 slotObservation.rejection = UnifiedSlotRejection::InnerFecFailure;
                 continue;
             }
-            slotObservation.iterationsUsed = decoded.Value().iterationsUsed;
+            slotObservation.iterationsUsed = result.iterationsUsed;
+            slotObservation.fecValid = true;
+            state.decodedInformationValid[slot] = true;
         }
-        slotObservation.fecValid = true;
-        std::copy_n(state.decodedCodeword.begin(), kUnifiedInformationBytes,
-            state.decodedInformation[slot].begin());
-        state.decodedInformationValid[slot] = true;
     }
 
     bool inferredPlanValid = true;

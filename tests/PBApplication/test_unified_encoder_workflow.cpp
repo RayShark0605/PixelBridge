@@ -304,12 +304,15 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
             probe.passZeroScheduledEquationCounts[segmentIndex]);
         CHECK(probe.passOneFirstRepairIds[segmentIndex] ==
             probe.passZeroMaximumOuterBlockIds[segmentIndex] + 1ULL);
-        const std::uint64_t expectedFountainRepairPassEquations =
+        // The striping probe drives a threshold-rate (15 Hz) sender, so Pass 1
+        // keeps the historical K+20% FullRepairPass budget.
+        const std::uint64_t expectedFullRepairPassEquations =
+            probe.blockCounts[segmentIndex] +
             (std::max)(static_cast<std::uint64_t>(pbapp::senderCarouselMinimumRepairBlocks),
                 (static_cast<std::uint64_t>(probe.blockCounts[segmentIndex]) - 1ULL) /
                     (pbapp::senderCarouselRepairPercentDenominator / pbapp::senderCarouselRepairPercentNumerator) + 1ULL);
         CHECK(probe.repairIdLeaseEnds[segmentIndex] ==
-            probe.passOneFirstRepairIds[segmentIndex] + expectedFountainRepairPassEquations);
+            probe.passOneFirstRepairIds[segmentIndex] + expectedFullRepairPassEquations);
     }
 }
 

@@ -607,7 +607,7 @@ TEST_CASE("Unified mixed scheduler converges independent Segment rounds without 
     }
 }
 
-TEST_CASE("Unified Wirehair later passes schedule only the incremental fountain repair budget on fresh IDs",
+TEST_CASE("Unified Wirehair later passes scale their repair budget with the logical frame rate",
     "[application][g21][scheduler][carousel][repair-only]")
 {
     constexpr std::uint32_t systematicBlockCount = 799;
@@ -615,22 +615,22 @@ TEST_CASE("Unified Wirehair later passes schedule only the incremental fountain 
     constexpr std::uint64_t initialRepairEquationCount =
         initialPercentRepairEquationCount + pbapp::senderUnifiedInitialTransitionGuardBlocks;
     constexpr std::uint64_t initialRoundEquationCount = systematicBlockCount + initialRepairEquationCount;
+    constexpr std::uint64_t fullRepairOverheadEquationCount = 160;
     constexpr std::uint64_t fountainRepairEquationCount = 160;
     constexpr std::uint32_t firstInitialRepairId = systematicBlockCount;
     constexpr std::uint32_t firstFullRepairId = static_cast<std::uint32_t>(initialRoundEquationCount);
 
-    const auto runRound = [](const std::uint64_t carouselPass, const std::uint32_t firstRepairId)
+    const auto runRound = [](const std::uint64_t carouselPass, const std::uint32_t firstRepairId,
+        const std::uint32_t logicalFramesPerSecond, const std::uint64_t expectedRepairCount)
     {
         const bool includeSystematicEquations = carouselPass == 0;
         pbapp::SenderUnifiedCarouselScheduler scheduler;
         REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
-            {systematicBlockCount, 4, 15, true, carouselPass}, scheduler));
+            {systematicBlockCount, 4, logicalFramesPerSecond, true, carouselPass}, scheduler));
         const pbapp::SenderUnifiedCarouselSnapshot initial = scheduler.GetSnapshot();
         const std::uint64_t expectedSystematicCount = includeSystematicEquations ? systematicBlockCount : 0;
-        const std::uint64_t expectedRepairCount = includeSystematicEquations ?
-            initialRepairEquationCount : fountainRepairEquationCount;
         const std::uint64_t expectedRoundEquationCount = includeSystematicEquations ?
-            initialRoundEquationCount : fountainRepairEquationCount;
+            initialRoundEquationCount : expectedRepairCount;
         REQUIRE(initial.scheduledEquationCount == expectedRoundEquationCount);
         REQUIRE(initial.systematicEquationCount == expectedSystematicCount);
         REQUIRE(initial.repairEquationCount == expectedRepairCount);
@@ -680,20 +680,30 @@ TEST_CASE("Unified Wirehair later passes schedule only the incremental fountain 
         return scheduledOuterBlockIds;
     };
 
-    const std::vector<std::uint32_t> initialIds = runRound(0, firstInitialRepairId);
-    const std::vector<std::uint32_t> fullRepairIds = runRound(1, firstFullRepairId);
+    // Low frame rates keep the historical K+20% FullRepairPass budget.
+    const std::vector<std::uint32_t> initialIds = runRound(0, firstInitialRepairId, 15, initialRepairEquationCount);
+    const std::vector<std::uint32_t> serialRepairIds = runRound(1, firstFullRepairId, 15,
+        fullRepairOverheadEquationCount + systematicBlockCount);
     for (std::uint32_t equationIndex = 0; equationIndex < initialRoundEquationCount; equationIndex++)
     {
         REQUIRE(initialIds[equationIndex] == equationIndex);
     }
+    for (std::uint32_t equationIndex = 0;
+        equationIndex < systematicBlockCount + fullRepairOverheadEquationCount; equationIndex++)
+    {
+        REQUIRE(serialRepairIds[equationIndex] == firstFullRepairId + equationIndex);
+    }
+    REQUIRE(initialIds.back() < serialRepairIds.front());
+    // Above the serial threshold the incremental fountain takes over: Pass 1
+    // carries only the repair fraction, Pass 2 doubles it, Pass 3 quadruples
+    // it, so a high-deficit Segment converges in a few wraps.
+    const std::uint32_t fountainFps = pbapp::senderUnifiedSerialRepairFpsThreshold + 1;
+    const std::vector<std::uint32_t> fountainIds = runRound(1, firstFullRepairId, fountainFps,
+        fountainRepairEquationCount);
     for (std::uint32_t equationIndex = 0; equationIndex < fountainRepairEquationCount; equationIndex++)
     {
-        REQUIRE(fullRepairIds[equationIndex] == firstFullRepairId + equationIndex);
+        REQUIRE(fountainIds[equationIndex] == firstFullRepairId + equationIndex);
     }
-    REQUIRE(initialIds.back() < fullRepairIds.front());
-    // The doubling budget: Pass 2 schedules twice the Pass-1 fraction and
-    // Pass 3 four times it, so a high-deficit Segment converges in a few
-    // wraps instead of many minimal ones.
     for (const std::uint64_t carouselPass : {2ULL, 3ULL})
     {
         std::uint64_t expectedDoubling = (systematicBlockCount - 1ULL) *
@@ -705,7 +715,7 @@ TEST_CASE("Unified Wirehair later passes schedule only the incremental fountain 
         }
         pbapp::SenderUnifiedCarouselScheduler doubling;
         REQUIRE(pbapp::SenderUnifiedCarouselScheduler::Create(
-            {systematicBlockCount, 4, 15, true, carouselPass}, doubling));
+            {systematicBlockCount, 4, fountainFps, true, carouselPass}, doubling));
         const pbapp::SenderUnifiedCarouselSnapshot snapshot = doubling.GetSnapshot();
         REQUIRE(snapshot.systematicEquationCount == 0);
         REQUIRE(snapshot.repairEquationCount == expectedDoubling);
