@@ -29,6 +29,8 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 
 实验身份 `0x504242414E443031`/layout 11 只服务于吞吐优化线的空白带控制研究，**不是**产品 Profile，任何文档或代码都不得把它当作已冻结合同。
 
+**2026-09-11 记账更新（提交 `da70009`…`ee1b25d`）：** 该实验身份已作为**显式 opt-in CLI 入口**进入产品二进制：双端 `--profile unified-bands`（GUI、默认值、产品 catalog、Golden Vector 均零改动）。带语义与冻结实验逐字节一致：RS(255,223) 全长码字、4×4 cell、中心 2×2 硬判决、96<luma<160 歧义拒整条、两带 {1056,16,608,64}/{256,1000,608,64}、内容=镜像当前帧控制槽记录；解码全程 fail-closed，每帧 ≤2 条记录、预分配 scratch。右屏实机冒烟通过（1 MiB：远程 Encoder → 第三方远控查看器 → 本机产品 Decoder CLI，三方 SHA-256 一致、Bootstrap 118 接纳/0 拒、letterbox scale≈1.2604/1.2611、补充带 236 试/188 接纳、exit 0）。证据根 `<PBLine root>\`（`session-log.md` §13、`bands-smoke\run7`、`evidence\bands06-encoder`）；实机证据基于 `619455d`/`1fbddb6` 工作树构建，当时未提交的身份修复链现已全部收录于 `ee1b25d`。本条目为状态登记，**不构成吞吐、晋级或产品合同变更结论**。
+
 ### 2.1 仍在工作树的权威与规范文档
 
 | 文档 | 约束范围 |
@@ -55,7 +57,7 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 | 远端 | 仓库**无 remote**，全程未 push、未 reset、未 rebase、未重写历史 | `git remote -v` |
 | 工作树 | 干净；唯一未跟踪的项目文件为受保护的 `docs/PHASE1_GATE_REPORT.md`（另可有本地会话目录 `.zcode/`，非项目内容） | `git status --porcelain -uall` |
 | 受保护文件 | SHA-256 `076ef4c9b9f89eabccd323dbe4bffc4dc125ddaf96e6ee437d2cf5b1b1cea306`，永不 add/修改/移动/删除 | `Get-FileHash` |
-| 源码最后改动 | `fca42e1 fix(tools)`（2026-09-10 新增 PBRemoteOpsBridge 远程操作桥及部署修复）；其后为文档提交 | `git log -- libs apps tests tools CMakeLists.txt` |
+| 源码最后改动 | `ee1b25d fix(app)`（2026-09-11 空白带实验身份以 opt-in 进入产品二进制，`da70009`…`ee1b25d` 五提交；此前最后源码改动为 `fca42e1 fix(tools)` 2026-09-10） | `git log -- libs apps tests tools CMakeLists.txt` |
 | 工作区遗留 | 仓库根 `display_probe.obj`（366,491 B，被 `*.obj` 规则忽略）**未删除**，需用户确认后才可清理 | `Test-Path display_probe.obj` |
 | 证据区 | `artifacts/`（约 12.9 GiB）、119 个 `build-*` 目录、现场录像与 raw 像素全部保留，本次整理未触碰 | 目录存在性 |
 

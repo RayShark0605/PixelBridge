@@ -25,13 +25,24 @@
 | 身份 | `VisualProfileId` | layout | 画布 | 状态 |
 | --- | --- | --- | --- | --- |
 | `PB-Unified-SC6-V3` | `0x5042554E49534333`（= 5783278666223141683） | `10` | 1920x1080 物理像素 | **现行产品合同** |
-| `PB-Experimental-BlankControl-1` | `0x504242414E443031` | `11` | 同主区 + 空白带补充控制 | 实验身份，**未进正式 catalog**，非产品合同 |
+| `PB-Experimental-BlankControl-1` | `0x504242414E443031` | `11` | 同主区 + 空白带补充控制 | 实验身份，**未进正式 catalog**，非产品合同；2026-09-11 起以显式 `--profile unified-bands` opt-in 进入产品二进制（见 §2.1） |
 
 | 项 | 值 |
 | --- | --- |
 | 规范 Profile JSON SHA-256 | `312c7832854f8710719ee2d0e44e920e7270b48638044eaa4b6af9ee24b1cb8b` |
 
 `0x5042554E49534333` 与 G21 豁免记录内的十进制值一致（本轮核对）。
+
+## 2.1 实验身份 opt-in 集成与右屏实机冒烟（2026-09-11，Step9）
+
+| 项 | 值 |
+| --- | --- |
+| 源码身份 | 提交 `da70009`/`4c977cc`/`619455d`/`1fbddb6`/`ee1b25d`（`ee1b25d` 为实机证据之后补录的身份修复链：`ResolveLocalDesktopBinding`、GPU `ParseBinding` 等实验对分支；`163/163` 非交互 CTest） |
+| 实机构建身份 | 远程 Encoder `gitCommit=619455d`（编码端报告）；本机 Decoder 同工作树构建（未含当时未提交的修复链） |
+| 证据根 | 本机会话目录 `<PBLine root>\`（`session-log.md` §13、`bands-smoke\run7`、`evidence\bands06-encoder\`、`evidence\bands03-local\`）；未封存为 artifacts |
+| 链路 | SENDER-LAPTOP Encoder `--profile unified-bands` → UnknownThirdParty 远控查看器（letterbox scale≈1.2604/1.2611）→ RECEIVER-DESKTOP 产品 Decoder CLI `--profile unified-bands --roi 2560 0 5120 1440` |
+| 终态 | 1 MiB：`Completed`、exit 0、三方 SHA-256 `37f99176…` 一致（源 manifest=发送端 poststop=本地发布文件）、wire BLAKE3 `e338ad6d…` 双端一致、Bootstrap 118 接纳/0 拒、补充带 236 试/188 接纳（48 拒全为 AmbiguousCell）、801 传输块、9.14s |
+| 不得越界 | 冒烟单样本、正确性验证；**不构成吞吐、晋级、认证或产品合同变更结论**；实验身份仍未进 catalog |
 
 ## 3. Gate 证据索引（G00-G22）
 

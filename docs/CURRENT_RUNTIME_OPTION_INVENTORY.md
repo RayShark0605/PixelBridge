@@ -65,6 +65,16 @@ The following are application-only and have no protocol or acceptance effect:
 - `ChannelType`, remote provider version/mode, target/observed FPS, chroma mode, remote resolution/window scale, network note, observed bandwidth, and latency;
 - `RunId` used to correlate independently exported Encoder and Decoder JSON reports.
 
+## Experimental opt-in CLI profiles (2026-09-11)
+
+Real public CLI bindings added by commits `da70009`…`ee1b25d`. They are reachable only through an explicit token, never through the GUI, defaults, the product profile catalog, or Golden Vectors; `PB-Unified-SC6-V3` remains the only product contract.
+
+| Binding | Runtime effect and boundary |
+| --- | --- |
+| `PixelBridgeEncoder --headless-broadcast ... --profile unified-bands --single-monitor-fullscreen primary` | Renders the unified layout-10 main region byte-identically and overlays two 608×64 supplemental bands at {1056,16}/{256,1000} carrying full-length RS(255,223) codewords that mirror the current frame's control-slot records. Same Session/capacity semantics as `unified-lc4`; skipped-band frames leave the band area as neutral matte. |
+| `PixelBridgeDecoder --headless-receive ... --profile unified-bands --roi W H` | Runs the unified capture pipeline bound to the experimental identity (`0x504242414E443031`, layout 11). Auto capture is fixed unless `--backend` is explicit. After Bootstrap acceptance the demodulator decodes both bands from staging pixels before Unmap (fail-closed: ambiguous-cell, RS, identity and CRC rejections are counted, never admitted); decoded band records feed ingress before the frame's main-region blocks. Accepts letterboxed/scaled ROIs through the same unified locator; strict 1:1 is not required. |
+| GUI exposure | None. `VisualProfile::UnifiedBands` exists in the application model and CLI parsing only; the GUI profile list, defaults and Golden Vectors are unchanged. |
+
 They never change CRC, FEC, digest, descriptor, or final-publish acceptance.
 
 ## Evidence-only headless bindings
