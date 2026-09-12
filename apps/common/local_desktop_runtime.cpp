@@ -1985,11 +1985,12 @@ private:
             if (nextOrdinal < description_.segments.size() &&
                 unifiedSegmentStates_.size() < static_cast<std::size_t>(senderUnifiedActiveSegmentWindowSize))
             {
-                const std::uint32_t phaseCount = static_cast<std::uint32_t>(
-                    (std::min)(description_.segments.size() - nextOrdinal,
-                        static_cast<std::uint64_t>(senderUnifiedActiveSegmentWindowSize)));
+                // The phase pair only staggers periodic control deadlines;
+                // keep the window-constant count so a tail admission never
+                // violates phaseIndex < phaseCount.
                 unifiedSegmentStates_.push_back(BuildUnifiedSegmentState(nextOrdinal,
-                    static_cast<std::uint32_t>(unifiedSegmentStates_.size()), phaseCount));
+                    static_cast<std::uint32_t>(unifiedSegmentStates_.size()),
+                    static_cast<std::uint32_t>(senderUnifiedActiveSegmentWindowSize)));
             }
         }
         if (!unifiedSegmentStates_.empty())
