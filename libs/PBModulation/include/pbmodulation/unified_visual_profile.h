@@ -270,6 +270,20 @@ inline constexpr std::array<const UnifiedVisualProfileManifest*, 1> kUnifiedVisu
         visualLayoutVersion == pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion;
 }
 
+// Gray raster semantics: layout 12 (Robust inner FEC, 1314-byte Transport
+// payload) and layout 13 (Fast inner FEC, 1629-byte Transport payload) share
+// the same seven-plane, eighteen-codeword gray carrier - rendering, mapping,
+// metric extraction and slot contracts are identical. Only the inner-FEC
+// profile and the information/Transport dimensions differ; see
+// UnifiedGrayCarrierFec in unified_visual.h.
+[[nodiscard]] constexpr bool IsUnifiedGrayCarrierPair(
+    const std::uint64_t visualProfileId, const std::uint8_t visualLayoutVersion) noexcept
+{
+    return IsUnifiedGrayStatesProfilePair(visualProfileId, visualLayoutVersion) ||
+        (visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId &&
+            visualLayoutVersion == pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion);
+}
+
 struct UnifiedFrameCapacity
 {
     std::uint64_t dataPixels = 0;

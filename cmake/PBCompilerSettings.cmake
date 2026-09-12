@@ -20,4 +20,10 @@ if(MSVC)
         /Zc:__cplusplus
         /Zc:preprocessor
         $<$<BOOL:${PB_TREAT_WARNINGS_AS_ERRORS}>:/WX>)
+    # In-memory demodulation results carry the maximum accepted-Transport
+    # buffers across all carriers; several live copies on one deep call chain
+    # exceeded the MSVC 1 MiB default stack (LF4 replay probe). 4 MiB keeps
+    # every thread of the process, including std::thread defaults, clear of
+    # that ceiling; the cost is reserved address space only.
+    target_link_options(PBCompilerSettings INTERFACE "/STACK:4194304")
 endif()

@@ -39,7 +39,12 @@ enum class VisualProfile : std::uint8_t
     // (four gray luma foreground levels instead of iso-luma chroma colors,
     // so the second carrier survives chroma-destroying remote links). CLI
     // opt-in only; never the default and never exposed by the product GUI.
-    UnifiedGray
+    UnifiedGray,
+    // The gray carrier under the experimental gray-fast identity (layout 13):
+    // identical seven-plane raster, DVB-S2 Short Fast inner FEC (37/45) and a
+    // 1629-byte Transport payload per slot. CLI opt-in only; never the
+    // default and never exposed by the product GUI.
+    UnifiedGrayFast
 };
 
 // Profiles that share the unified mixed-slot main-region machinery. Behavior
@@ -48,7 +53,7 @@ enum class VisualProfile : std::uint8_t
 [[nodiscard]] constexpr bool IsUnifiedVisualFamily(const VisualProfile profile) noexcept
 {
     return profile == VisualProfile::UnifiedLc4 || profile == VisualProfile::UnifiedBands ||
-        profile == VisualProfile::UnifiedGray;
+        profile == VisualProfile::UnifiedGray || profile == VisualProfile::UnifiedGrayFast;
 }
 
 struct VisualProfileOption

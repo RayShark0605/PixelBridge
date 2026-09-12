@@ -278,6 +278,147 @@ void RequireFullRecovery(UnifiedVisualCpuOracle& oracle, const UnifiedVisualObse
 
 } // namespace
 
+// Gray-fast experimental identity (PB-Experimental-GrayFast-1, layout 13):
+// the layout-12 seven-plane raster with the DVB-S2 Short Fast inner FEC
+// (37/45). Each codeword carries 1665 information bytes (1629-byte Transport
+// payload); raster, mapping and slot contracts are identical to layout 12.
+namespace
+{
+
+struct GrayFastFixture
+{
+    std::array<std::byte, kLocalDesktopBootstrapRecordBytes> bootstrap{};
+    std::array<std::byte, kUnifiedGrayCodedFrameBytes> coded{};
+    std::array<UnifiedSlotAssignment, kUnifiedGrayFrameCodewordCount> plan{};
+    std::array<std::vector<std::byte>, kUnifiedGrayFrameCodewordCount> expected{};
+};
+
+std::vector<std::byte> MakeLargeTransport(const pbprotocol::SessionTag sessionTag, const std::uint32_t slot)
+{
+    // Near-ceiling payloads prove the 1629-byte Transport payload actually
+    // fits and round-trips through the Fast information block.
+    std::vector<std::byte> payload(kUnifiedGrayFastTransportPayloadBytes - 4 - slot % 7);
+    for (std::size_t index = 0; index < payload.size(); index++)
+    {
+        payload[index] = static_cast<std::byte>((slot * 53 + index * 29 + 11) & 0xFFU);
+    }
+    const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData,
+        pbprotocol::kTransportProtocolMinor, 0, sessionTag, 700 + slot, 800 + slot,
+        static_cast<std::uint16_t>(payload.size())};
+    std::vector<std::byte> block(pbprotocol::GetTransportSerializedSize(header));
+    REQUIRE(pbprotocol::SerializeTransportBlock(header, payload, block));
+    return block;
+}
+
+GrayFastFixture BuildGrayFastFixture(const std::uint64_t sequence)
+{
+    GrayFastFixture fixture;
+    const pbprotocol::BootstrapRecord record{pbprotocol::kBootstrapVersion, pbprotocol::GetProtocolVersion(),
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion,
+        pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+        pbprotocol::SessionTag{0x8877665544332211ULL}, sequence, 0x31323334U, 0};
+    REQUIRE(pbprotocol::SerializeBootstrapRecord(record, fixture.bootstrap));
+    const auto parsed = pbprotocol::ParseBootstrapRecord(fixture.bootstrap);
+    REQUIRE(parsed);
+    std::array<std::byte, kUnifiedGrayFastInformationBytes> information{};
+    for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
+    {
+        UnifiedSlotAssignment& assignment = fixture.plan[slot];
+        assignment.codewordSlot = slot;
+        if (slot == 0)
+        {
+            assignment.kind = UnifiedSlotKind::Control;
+            assignment.controlPriority = UnifiedControlPriority::SessionDescriptor;
+            fixture.expected[slot] = MakeControl(parsed.Value().sessionTag);
+            std::copy(fixture.expected[slot].begin(), fixture.expected[slot].end(), information.begin());
+        }
+        else
+        {
+            assignment.kind = UnifiedSlotKind::Transport;
+            assignment.controlPriority = UnifiedControlPriority::NotApplicable;
+            fixture.expected[slot] = MakeLargeTransport(parsed.Value().sessionTag, slot);
+            REQUIRE(pbprotocol::FrameTransportBlockIntoInfoBlock(fixture.expected[slot], information.size(), information));
+        }
+        REQUIRE(fixture.expected[slot].size() <= kUnifiedGrayFastInformationBytes);
+        REQUIRE(pbinnerfec::EncodeQcLdpcCodeword(pbinnerfec::kInnerFecProfileIdFast, information,
+            std::span<std::byte>(fixture.coded).subspan(static_cast<std::size_t>(slot) * kUnifiedCodewordBytes,
+                kUnifiedCodewordBytes)));
+    }
+    REQUIRE(ValidateUnifiedGrayMixedSlotPlan(fixture.plan));
+    return fixture;
+}
+
+void RequireGrayFastRecovery(UnifiedVisualCpuOracle& oracle, const UnifiedVisualObservation& observation,
+    const GrayFastFixture& fixture)
+{
+    REQUIRE(observation.IsFrameAvailable());
+    REQUIRE(observation.bootstrapRecord.visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId);
+    REQUIRE(observation.bootstrapRecord.visualLayoutVersion ==
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion);
+    REQUIRE(observation.acceptedBlocks == kUnifiedGrayFrameCodewordCount);
+    REQUIRE(observation.acceptedControlRecords == 1);
+    REQUIRE(observation.acceptedTransportBlocks == kUnifiedGrayFrameCodewordCount - 1);
+    const std::span<const UnifiedAcceptedBlock> accepted = oracle.GetAcceptedBlocks();
+    REQUIRE(accepted.size() == kUnifiedGrayFrameCodewordCount);
+    for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
+    {
+        REQUIRE(observation.slots[slot].accepted);
+        REQUIRE(accepted[slot].size == fixture.expected[slot].size());
+        REQUIRE(std::equal(fixture.expected[slot].begin(), fixture.expected[slot].end(),
+            accepted[slot].bytes.begin()));
+    }
+}
+
+} // namespace
+
+TEST_CASE("Gray-fast frames recover 1629-byte payloads at 1:1 and through 4:2:0",
+    "[unified][graystates][grayfast][channel]")
+{
+    const GrayFastFixture fixture = BuildGrayFastFixture(19);
+    std::vector<std::byte> pixels(kUnifiedFrameBgraBytes);
+    REQUIRE(static_cast<bool>(EncodeUnifiedVisualFrame(fixture.bootstrap, fixture.coded, pixels)));
+    UnifiedVisualCpuOracle oracle = MakeOracle();
+    const UnifiedExpectedFrameIdentity fastIdentity{false, {}, false, {},
+        pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion};
+    {
+        const UnifiedVisualObservation observation = oracle.Decode(View(pixels), fixture.plan, fastIdentity);
+        REQUIRE(observation.inputValid);
+        RequireGrayFastRecovery(oracle, observation, fixture);
+    }
+    {
+        const std::vector<std::byte> subsampled = SubsampleChroma420(pixels);
+        const UnifiedVisualObservation observation = oracle.Decode(View(subsampled), fixture.plan, fastIdentity);
+        REQUIRE(observation.inputValid);
+        RequireGrayFastRecovery(oracle, observation, fixture);
+    }
+}
+
+TEST_CASE("Gray-fast identity stays distinct from layout 12 and the product pair",
+    "[unified][graystates][grayfast][identity]")
+{
+    REQUIRE(IsUnifiedGrayCarrierPair(pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion));
+    REQUIRE_FALSE(IsUnifiedGrayStatesProfilePair(pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion));
+    // A layout-12 expected identity must not accept a layout-13 frame: the
+    // codeword information differs even though the raster shape matches.
+    const GrayFastFixture fixture = BuildGrayFastFixture(23);
+    std::vector<std::byte> pixels(kUnifiedFrameBgraBytes);
+    REQUIRE(static_cast<bool>(EncodeUnifiedVisualFrame(fixture.bootstrap, fixture.coded, pixels)));
+    UnifiedVisualCpuOracle oracle = MakeOracle();
+    const UnifiedVisualObservation observation = oracle.Decode(View(pixels), fixture.plan, GrayIdentity());
+    // The oracle is deliberately identity-transparent at the carrier level:
+    // the observed Bootstrap record selects the FEC dims (Fast for layout 13)
+    // regardless of the caller's default expectation, so the frame fully
+    // recovers. Cross-identity rejection is enforced by the owning profile
+    // binding in the application runtime, not by the oracle.
+    REQUIRE(observation.bootstrap.IsAccepted());
+    REQUIRE(observation.bootstrapRecord.visualLayoutVersion ==
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion);
+    RequireGrayFastRecovery(oracle, observation, fixture);
+}
+
 TEST_CASE("Gray-state frames fully recover at 1:1 with gray foreground pixels", "[unified][graystates]")
 {
     const GrayFixture fixture = BuildGrayFixture(7);

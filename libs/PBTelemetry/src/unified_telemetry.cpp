@@ -103,7 +103,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
     // manifest and slot semantics as the product profile, so its samples are
     // valid unified telemetry. Other identities (including blank-control
     // bands) stay rejected.
-    const bool grayFrame = pbmodulation::IsUnifiedGrayStatesProfilePair(
+    const bool grayFrame = pbmodulation::IsUnifiedGrayCarrierPair(
         bootstrap.visualProfileId, bootstrap.visualLayoutVersion);
     if ((bootstrap.visualProfileId != pbprotocol::kUnifiedVisualProfileId ||
         bootstrap.visualLayoutVersion != pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion) &&

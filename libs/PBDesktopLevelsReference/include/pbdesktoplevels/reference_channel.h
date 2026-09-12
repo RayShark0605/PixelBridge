@@ -22,6 +22,11 @@ namespace pbdesktoplevels
 inline constexpr std::size_t kInfoBytes = 1350;
 inline constexpr std::size_t kCodewordBytes = 2025;
 inline constexpr std::size_t kPayloadBytes = 1314;
+// In-memory accepted-Transport handoff ceiling across all carriers: the
+// gray-fast identity (layout 13) frames 1665 information bytes per slot.
+// The wire contracts keep their own frozen dimensions (kInfoBytes /
+// kPayloadBytes); only in-memory buffers use this maximum.
+inline constexpr std::size_t kMaximumAcceptedTransportBytes = 1665;
 inline constexpr std::size_t kCodewordBits = 16200;
 inline constexpr std::size_t kMaximumCodewords = 42;
 // Conservative complete processing reservation, including modulation scratch,
@@ -89,7 +94,7 @@ struct AcceptedTransportBlock
 {
     std::uint32_t slot = 0;
     std::uint32_t byteCount = 0;
-    std::array<std::byte, kInfoBytes> bytes{};
+    std::array<std::byte, kMaximumAcceptedTransportBytes> bytes{};
     bool operator==(const AcceptedTransportBlock&) const = default;
 };
 

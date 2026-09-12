@@ -38,6 +38,19 @@ inline constexpr std::size_t kUnifiedMaximumSoftMetricCount =
     kUnifiedSoftMetricCount > kUnifiedGraySoftMetricCount ? kUnifiedSoftMetricCount : kUnifiedGraySoftMetricCount;
 inline constexpr std::size_t kUnifiedMaximumCodedFrameBytes =
     kUnifiedCodedFrameBytes > kUnifiedGrayCodedFrameBytes ? kUnifiedCodedFrameBytes : kUnifiedGrayCodedFrameBytes;
+// Gray carrier v4 (layout 13, "gray-fast") dimensions: the same 16,200-bit
+// codewords carry the frozen DVB-S2 Short Fast profile (37/45), so each slot
+// holds 1665 information bytes and a 1629-byte Transport payload instead of
+// 1350/1314. Raster, mapping, metric extraction and slot count are identical
+// to layout 12; only the inner-FEC profile and these byte dimensions differ.
+inline constexpr std::uint32_t kUnifiedGrayFastInformationBytes = 13320 / 8;
+inline constexpr std::uint32_t kUnifiedGrayFastTransportPayloadBytes =
+    kUnifiedGrayFastInformationBytes - kUnifiedVisualProfile.transportOverheadBytes;
+inline constexpr std::uint32_t kUnifiedMaximumInformationBytes =
+    kUnifiedInformationBytes > kUnifiedGrayFastInformationBytes ?
+    kUnifiedInformationBytes : kUnifiedGrayFastInformationBytes;
+static_assert(kUnifiedGrayFastInformationBytes == 1665);
+static_assert(kUnifiedGrayFastTransportPayloadBytes == 1629);
 inline constexpr std::size_t kUnifiedFrameBgraBytes = static_cast<std::size_t>(kUnifiedVisualProfile.canvasWidth) *
     kUnifiedVisualProfile.canvasHeight * 4;
 inline constexpr std::uint32_t kUnifiedDataRegionCount = 12;
@@ -183,7 +196,9 @@ struct UnifiedAcceptedBlock
     std::uint8_t codewordSlot = 0;
     UnifiedSlotKind kind = UnifiedSlotKind::Transport;
     std::uint32_t size = 0;
-    std::array<std::byte, kUnifiedInformationBytes> bytes{};
+    // Sized for the largest information block (gray-fast 1665); the gray-fast
+    // carrier's transport payload is 1629 bytes plus framing.
+    std::array<std::byte, kUnifiedMaximumInformationBytes> bytes{};
 };
 
 // Read-only statistics of the quantized, locally erased metrics actually sent

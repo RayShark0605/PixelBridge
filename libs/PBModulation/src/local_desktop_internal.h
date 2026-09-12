@@ -35,7 +35,7 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, Remo
             layout == kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
             (profileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
             layout == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion) ||
-            IsUnifiedGrayStatesProfilePair(profileId, layout);
+            IsUnifiedGrayCarrierPair(profileId, layout);
     }
     return false;
 }

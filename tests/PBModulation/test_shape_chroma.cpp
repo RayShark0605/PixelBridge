@@ -190,7 +190,10 @@ TEST_CASE("ShapeChroma CPU oracle and shared Transport FEC interface recover exa
         for (std::size_t slot = 0; slot < accepted.size(); slot++)
         {
             REQUIRE(accepted[slot].slot == slot);
-            REQUIRE(std::equal(accepted[slot].bytes.begin(), accepted[slot].bytes.end(), data.begin() + slot * pbdesktoplevels::kCodewordBytes));
+            REQUIRE(accepted[slot].byteCount == pbdesktoplevels::kInfoBytes);
+            REQUIRE(std::equal(accepted[slot].bytes.begin(),
+                accepted[slot].bytes.begin() + accepted[slot].byteCount,
+                data.begin() + slot * pbdesktoplevels::kCodewordBytes));
         }
         REQUIRE(channel.GetShapeMarginHistogram().size() == pbmodulation::kShapeChromaMetricBins);
         REQUIRE(channel.GetChromaMarginHistogram().size() == pbmodulation::kShapeChromaMetricBins);

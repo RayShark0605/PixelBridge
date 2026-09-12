@@ -166,7 +166,8 @@ UnifiedFixture MakeUnifiedFixture(const std::uint64_t sequence,
     REQUIRE(controlSize);
     fixture.blocks[0].resize(controlSize.Value());
     REQUIRE(pbprotocol::SerializeControlRecord(controlRecord, fixture.blocks[0]));
-    const bool grayCarrier = profile.visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId;
+    const bool grayCarrier = profile.visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId ||
+        profile.visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId;
     const std::uint32_t slotCount = grayCarrier ? pbmodulation::kUnifiedGrayFrameCodewordCount :
         pbmodulation::kUnifiedCodewordCount;
     for (std::uint32_t slot = 1; slot < slotCount; slot++)
@@ -3065,7 +3066,7 @@ TEST_CASE("D3D11 demod configuration is bounded and failure leaves output owners
         pbdemodd3d11::DemodError::ResourceLimit);
     REQUIRE(output == nullptr);
 
-    config.maximumResidentBytes = 80ULL * 1024 * 1024;
+    config.maximumResidentBytes = 112ULL * 1024 * 1024;
     config.evaluationMode = static_cast<pbdesktoplevels::EvaluationMode>(255);
     REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, output).code ==
         pbdemodd3d11::DemodError::InvalidConfiguration);
@@ -3177,6 +3178,63 @@ TEST_CASE("Unified gray-state D3D11 demod recovers all eighteen slots through ch
     // three v3 capacity slots, through the same canonical FEC gate.
     REQUIRE(result.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedGrayFrameCodewordCount);
     REQUIRE(result.unifiedObservation.acceptedTransportBlocks == pbmodulation::kUnifiedGrayFrameCodewordCount - 1);
+    REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedGrayFrameCodewordCount);
+    for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
+    {
+        const auto& accepted = result.acceptedUnifiedBlocks[index];
+        REQUIRE(accepted.kind == (index == 0 ? pbmodulation::UnifiedSlotKind::Control :
+            pbmodulation::UnifiedSlotKind::Transport));
+        REQUIRE(accepted.size == fixture.blocks[index].size());
+        REQUIRE(std::equal(fixture.blocks[index].begin(), fixture.blocks[index].end(), accepted.bytes.begin()));
+    }
+    REQUIRE(result.remoteMetricSamples == pbmodulation::kUnifiedGraySoftMetricCount);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
+}
+
+TEST_CASE("Unified gray-fast D3D11 demod recovers all eighteen Fast-FEC slots through chroma subsampling",
+    "[demod][d3d11][unified][grayfast][warp][fec]")
+{
+    auto environment = CreateWarpEnvironment();
+    const auto fixture = MakeUnifiedFixture(63, pbprotocol::kGrayFastExperimentalProfile);
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion};
+    const pbmodulation::LumaView view{fixture.pixels, pbmodulation::kUnifiedVisualProfile.canvasWidth,
+        pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4,
+        pbmodulation::LumaPixelFormat::Bgra8};
+    const auto bootstrap = pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, binding);
+    REQUIRE(bootstrap.IsAccepted());
+
+    std::vector<std::byte> subsampled(fixture.pixels.size());
+    for (std::size_t index = 0; index + 2 < fixture.pixels.size(); index += 4)
+    {
+        // Gray frames carry zero opponent chroma: copying the luma plane is
+        // exactly the 4:2:0 subsampling transform.
+        subsampled[index] = fixture.pixels[index];
+        subsampled[index + 1] = fixture.pixels[index + 1];
+        subsampled[index + 2] = fixture.pixels[index + 2];
+        subsampled[index + 3] = fixture.pixels[index + 3];
+    }
+
+    pbdemodd3d11::DemodConfig config;
+    config.readbackSlotCount = 2;
+    std::uint64_t residentBytes = 0;
+    REQUIRE(pbdemodd3d11::CalculateDemodulatorResidentBytes(config, residentBytes));
+    config.maximumResidentBytes = residentBytes;
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, demodulator));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x79}}, 1};
+    const auto texture = UploadBgraTexture(environment.device.Get(), subsampled,
+        pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4);
+    const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, 1);
+    pbdemodd3d11::DemodSubmission submission;
+    REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, {}, submission));
+    const auto result = PollUntilReady(*demodulator, environment.context.Get(), submission);
+    REQUIRE(result.visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId);
+    REQUIRE(result.unifiedObservation.IsFrameAvailable());
+    REQUIRE(result.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedGrayFrameCodewordCount);
     REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedGrayFrameCodewordCount);
     for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
     {

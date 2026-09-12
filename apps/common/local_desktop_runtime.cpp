@@ -80,6 +80,15 @@ namespace
 using detail::OptionalDiagnosticFanout;
 
 inline constexpr std::uint32_t outerBlockBytes = 1314;
+// Gray-fast (layout 13) carries 1665 information bytes per slot and a
+// 1629-byte Transport payload; the product contract stays frozen at
+// 1350/1314 and every non-gray-fast profile keeps it.
+inline constexpr std::uint32_t maximumOuterBlockBytes = 1629;
+[[nodiscard]] constexpr std::uint32_t GetOuterBlockBytesForProfileId(const std::uint64_t visualProfileId)
+{
+    return visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId ?
+        maximumOuterBlockBytes : outerBlockBytes;
+}
 inline constexpr std::size_t informationBytes = 1350;
 inline constexpr std::size_t codewordBytes = 2025;
 inline constexpr std::uint32_t minimumControlRepetitions = 1;
@@ -95,9 +104,10 @@ inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
 inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
 inline constexpr std::uint32_t captureResultQueueCapacity = 128;
 // The demodulator's fixed reservation is sized for the largest carrier
-// (gray v3 eighteen-slot tile bindings and decoder lanes), so every profile
-// preflights the same worst-case budget.
-inline constexpr std::uint64_t maximumDemodulatorResidentBytes = 160ULL * 1024ULL * 1024ULL;
+// (gray v3 eighteen-slot tile bindings, and the oracle's dual Robust+Fast
+// decoder set per lane), so every profile preflights the same worst-case
+// budget.
+inline constexpr std::uint64_t maximumDemodulatorResidentBytes = 192ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t maximumRemoteVisualLowFpsDemodulatorResidentBytes = 256ULL * 1024ULL * 1024ULL;
 // Four 3840x2160 staging slots plus the existing fixed metric/FEC workspace
 // and result queue are preflighted by CalculateCaptureDemodulatorBudget.
@@ -854,6 +864,10 @@ struct ProfileBinding
     std::uint8_t layoutVersion = 0;
     std::uint32_t dataBytes = 0;
     std::uint32_t codewords = 0;
+    // Outer FEC block / Transport payload bytes and per-slot inner-FEC
+    // information bytes for this identity (gray-fast: 1629/1665).
+    std::uint32_t blockBytes = outerBlockBytes;
+    std::uint32_t slotInformationBytes = static_cast<std::uint32_t>(informationBytes);
 };
 
 [[nodiscard]] ProfileBinding GetProfileBinding(const VisualProfile profile)
@@ -885,6 +899,17 @@ struct ProfileBinding
             pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion,
             static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayCodedFrameBytes),
             static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayFrameCodewordCount)};
+    }
+    if (profile == VisualProfile::UnifiedGrayFast)
+    {
+        // Gray carrier under the Fast inner-FEC identity: same raster and
+        // slot count as layout 12, 1665 information bytes per codeword and a
+        // 1629-byte Transport payload.
+        return {profile, pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+            pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion,
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayCodedFrameBytes),
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayFrameCodewordCount),
+            maximumOuterBlockBytes, pbmodulation::kUnifiedGrayFastInformationBytes};
     }
     if (profile == VisualProfile::ShapeChroma)
     {
@@ -948,12 +973,13 @@ struct TransferDescription
 
 [[nodiscard]] TransferDescription::Segment PrepareSegmentDescription(const pbprotocol::SessionDescriptor& session,
     const pbprotocol::SessionTag sessionTag, const std::uint64_t segmentOrdinal, const std::uint64_t rawOffset,
-    const std::span<const std::byte> rawBytes, const bool compressionEnabled, const int compressionLevel)
+    const std::span<const std::byte> rawBytes, const bool compressionEnabled, const int compressionLevel,
+    const std::uint32_t blockBytes)
 {
     auto prepared = PrepareEncodedSegment(rawBytes, compressionEnabled, compressionLevel);
     RequireResult(prepared, "Segment compression/RAW preparation failed");
     pbcompression::EncodedSegment encoded = std::move(prepared).Value();
-    const auto selectedMode = pbouterfec::ChooseOuterFecMode(encoded.bytes.size(), outerBlockBytes);
+    const auto selectedMode = pbouterfec::ChooseOuterFecMode(encoded.bytes.size(), blockBytes);
     RequireResult(selectedMode, "Outer FEC mode selection failed");
     pbprotocol::SegmentDescriptor segment;
     segment.sessionTag = sessionTag;
@@ -963,18 +989,18 @@ struct TransferDescription
     segment.encodedSize = encoded.bytes.size();
     segment.compressionCodec = encoded.codec;
     segment.outerFecMode = selectedMode.Value();
-    segment.outerBlockBytes = outerBlockBytes;
+    segment.outerBlockBytes = blockBytes;
     segment.rawDigest = pbprotocol::RawDigest{pbprotocol::ComputeBlake3Digest(rawBytes)};
     segment.encodedDigest = pbprotocol::EncodedDigest{pbprotocol::ComputeBlake3Digest(encoded.bytes)};
     if (segment.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
     {
-        const auto encoder = pbouterfec::WirehairV2Encoder::Create(encoded.bytes, outerBlockBytes);
+        const auto encoder = pbouterfec::WirehairV2Encoder::Create(encoded.bytes, blockBytes);
         RequireResult(encoder, "Wirehair V2 descriptor creation failed");
         segment.wirehairV2SerializedProfile = encoder.Value().GetSerializedProfile();
     }
     else
     {
-        const auto encoder = pbouterfec::DirectRepeatEncoder::Create(encoded.bytes, outerBlockBytes);
+        const auto encoder = pbouterfec::DirectRepeatEncoder::Create(encoded.bytes, blockBytes);
         RequireResult(encoder, "DirectRepeat descriptor validation failed");
     }
     const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
@@ -1069,16 +1095,27 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     FinalizeTransferControls(description);
 }
 
-[[nodiscard]] std::uint64_t CalculateSegmentCount(const std::uint64_t fileBytes)
+[[nodiscard]] std::uint32_t GetSegmentTargetBytes(const std::uint64_t visualProfileId)
+{
+    // Gray experimental family: 15 MiB segments keep 100MB sessions at seven
+    // segments inside the receiver policy's 16 MiB raw cap and its historical
+    // eight-decoder quota. Every other profile keeps the frozen 8 MiB target.
+    return visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId ||
+        visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId ?
+        15U * 1024U * 1024U : pbprotocol::kDefaultSourceSegmentTargetBytes;
+}
+
+[[nodiscard]] std::uint64_t CalculateSegmentCount(const std::uint64_t fileBytes,
+    const std::uint64_t visualProfileId)
 {
     if (fileBytes == 0)
     {
         return 0;
     }
-    const auto roundedBytes = pbprotocol::CheckedAddUint64(fileBytes,
-        pbprotocol::kDefaultSourceSegmentTargetBytes - 1ULL);
+    const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
+    const auto roundedBytes = pbprotocol::CheckedAddUint64(fileBytes, segmentTargetBytes - 1ULL);
     RequireResult(roundedBytes, "SegmentCount 计算溢出");
-    return roundedBytes.Value() / pbprotocol::kDefaultSourceSegmentTargetBytes;
+    return roundedBytes.Value() / segmentTargetBytes;
 }
 
 [[nodiscard]] pbprotocol::SessionDescriptor MakeSessionDescriptor(const pbprotocol::SessionId& sessionId,
@@ -1092,7 +1129,7 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     session.segmentCount = segmentCount;
     session.digestAlgorithm = pbprotocol::DigestAlgorithm::Blake3_256;
     session.sessionVisualProfileId = visualProfileId;
-    session.sourceSegmentTargetBytes = pbprotocol::kDefaultSourceSegmentTargetBytes;
+    session.sourceSegmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
     session.compressionPolicy = pbprotocol::CompressionPolicy::AutomaticZstandardLevel3RawFallback;
     session.fileNameUtf8 = std::move(fileNameUtf8);
     const auto fileNameStatus = pbprotocol::ValidateFileNameUtf8(session.fileNameUtf8);
@@ -1106,7 +1143,7 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     const auto sessionId = pbprotocol::GenerateRandomSessionId();
     RequireResult(sessionId, "OS CSPRNG SessionId generation failed");
     TransferDescription description;
-    const std::uint64_t segmentCount = CalculateSegmentCount(rawBytes.size());
+    const std::uint64_t segmentCount = CalculateSegmentCount(rawBytes.size(), visualProfileId);
     description.session = MakeSessionDescriptor(sessionId.Value(), rawBytes.size(), segmentCount,
         visualProfileId, "payload.bin");
     const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
@@ -1117,7 +1154,8 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
         const std::size_t rawSize = static_cast<std::size_t>((std::min)(remainingBytes,
             static_cast<std::uint64_t>(pbprotocol::kDefaultSourceSegmentTargetBytes)));
         description.segments.push_back(PrepareSegmentDescription(description.session, sessionTag, segmentOrdinal,
-            rawOffset, rawBytes.subspan(static_cast<std::size_t>(rawOffset), rawSize), compressionEnabled, compressionLevel));
+            rawOffset, rawBytes.subspan(static_cast<std::size_t>(rawOffset), rawSize), compressionEnabled,
+            compressionLevel, GetOuterBlockBytesForProfileId(visualProfileId)));
     }
     description.manifest = {description.session.sessionId, rawBytes.size(), segmentCount,
         pbprotocol::WholeFileDigest{pbprotocol::ComputeBlake3Digest(rawBytes)},
@@ -1137,7 +1175,7 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
 #endif
     const std::filesystem::path sourcePath(source.path);
     const std::string fileNameUtf8 = Utf8FromWide(sourcePath.filename().wstring());
-    const std::uint64_t segmentCount = CalculateSegmentCount(source.fileBytes);
+    const std::uint64_t segmentCount = CalculateSegmentCount(source.fileBytes, visualProfileId);
     const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
     Require(segmentCount <= policy.maxSegmentCount, "源文件 SegmentCount 超过 ReceiverResourcePolicy");
     TransferDescription description;
@@ -1155,7 +1193,8 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
         const std::vector<std::byte> rawBytes = ReadSourceRange(source, rawOffset, rawSize);
         wholeFileHasher.Update(rawBytes);
         TransferDescription::Segment segment = PrepareSegmentDescription(description.session, sessionTag,
-            segmentOrdinal, rawOffset, rawBytes, compressionEnabled, compressionLevel);
+            segmentOrdinal, rawOffset, rawBytes, compressionEnabled, compressionLevel,
+            GetOuterBlockBytesForProfileId(visualProfileId));
         std::vector<std::byte>().swap(segment.inMemoryEncodedBytes);
         description.segments.push_back(std::move(segment));
 #ifdef PB_PROCESS_FAULT_TESTS
@@ -1634,15 +1673,18 @@ public:
     {
         const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::OuterGenerate);
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
-        std::fill(outerPayload_.begin(), outerPayload_.end(), std::byte{0});
+        // The storage array is sized for the largest carrier; this profile's
+        // outer blocks never exceed its own frozen block size.
+        const std::span<std::byte> outerPayload(outerPayload_.data(), profile_.blockBytes);
+        std::fill(outerPayload.begin(), outerPayload.end(), std::byte{0});
         const UnifiedSegmentState* const unifiedState = IsUnifiedVisualFamily(profile_.profile) &&
             !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
         const auto encoded = unifiedState ? (unifiedState->wirehair ?
-            unifiedState->wirehair->EncodeBlock(blockId, outerPayload_) :
-            unifiedState->directRepeat->EncodeBlock(blockId, outerPayload_)) :
-            wirehair_ ? wirehair_->EncodeBlock(blockId, outerPayload_) : directRepeat_->EncodeBlock(blockId, outerPayload_);
+            unifiedState->wirehair->EncodeBlock(blockId, outerPayload) :
+            unifiedState->directRepeat->EncodeBlock(blockId, outerPayload)) :
+            wirehair_ ? wirehair_->EncodeBlock(blockId, outerPayload) : directRepeat_->EncodeBlock(blockId, outerPayload);
         RequireResult(encoded, "Outer FEC block encoding failed");
-        Require(encoded.Value() > 0 && encoded.Value() <= outerPayload_.size() &&
+        Require(encoded.Value() > 0 && encoded.Value() <= outerPayload.size() &&
             encoded.Value() <= (std::numeric_limits<std::uint16_t>::max)(),
             "Outer FEC produced an invalid payload length");
         const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData,
@@ -1653,6 +1695,8 @@ public:
         Require(serializedBytes <= output.size(), "Transport block exceeds its bounded output");
         RequireResult(pbprotocol::SerializeTransportBlock(header, std::span(outerPayload_).first(encoded.Value()),
             output.first(serializedBytes)), "Transport serialization failed");
+        Require(serializedBytes <= profile_.slotInformationBytes,
+            "Transport block exceeds this profile's information block");
         payloadBytes = encoded.Value();
         return serializedBytes;
     }
@@ -2276,7 +2320,7 @@ private:
     std::vector<std::byte> pixels_;
     std::array<std::byte, pbmodulation::kReferenceControlWindowBytes> controlWindow_{};
     std::array<std::byte, pbmodulation::kReferenceDataRegionBytes> referenceData_{};
-    std::array<std::byte, outerBlockBytes> outerPayload_{};
+    std::array<std::byte, maximumOuterBlockBytes> outerPayload_{};
     std::array<std::byte, informationBytes> transport_{};
     std::array<std::byte, informationBytes> information_{};
     SegmentLoader segmentLoader_;
@@ -2309,7 +2353,7 @@ private:
     SenderCarouselScheduler roundScheduler_;
     SenderUnifiedCarouselScheduler unifiedScheduler_;
     SenderUnifiedScheduledFrame unifiedFrame_;
-    std::array<std::array<std::byte, informationBytes>, senderUnifiedMaximumCodewordSlotCount> unifiedTransport_{};
+    std::array<std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes>, senderUnifiedMaximumCodewordSlotCount> unifiedTransport_{};
     // Reused 608x64 raster scratch for the supplemental band overlay; the
     // builder is single-threaded by contract, so one buffer serves both bands.
     std::array<std::byte, pbmodulation::kSupplementalBandPatchBytes> supplementalBandPatch_{};
@@ -4670,13 +4714,16 @@ private:
                 SetReceiverSlotReason(decision, ReceiverSlotReason::SessionMismatch);
                 continue;
             }
+            const std::size_t profileBlockBytes = GetProfileBinding(visualProfile_).blockBytes;
             Require(transport.header.payloadBytes == transport.payload.size() &&
-                transport.payload.size() <= paddedPayload_.size(), "Transport payload is out of bounds");
-            std::fill(paddedPayload_.begin(), paddedPayload_.end(), std::byte{0});
-            std::copy(transport.payload.begin(), transport.payload.end(), paddedPayload_.begin());
+                transport.payload.size() <= profileBlockBytes, "Transport payload is out of bounds");
+            // Outer FEC blocks are fixed-size per identity with zero padding.
+            const std::span<std::byte> paddedPayload(paddedPayload_.data(), profileBlockBytes);
+            std::fill(paddedPayload.begin(), paddedPayload.end(), std::byte{0});
+            std::copy(transport.payload.begin(), transport.payload.end(), paddedPayload.begin());
             const pbreceiver::ReceivedTransportBlock block{transport.header.sessionTag,
                 transport.header.segmentOrdinal, transport.header.outerBlockId,
-                transport.header.payloadBytes, paddedPayload_};
+                transport.header.payloadBytes, paddedPayload};
             if (decision)
             {
                 decision->receiverCalled = true;
@@ -4787,7 +4834,8 @@ private:
                     segments_[static_cast<std::size_t>(transport.header.segmentOrdinal)].has_value())
                 {
                     PersistAcceptedBlock(transport.header.segmentOrdinal, transport.header.outerBlockId,
-                        transport.header.payloadBytes, paddedPayload_);
+                        transport.header.payloadBytes,
+                        std::span<const std::byte>(paddedPayload_.data(), GetProfileBinding(visualProfile_).blockBytes));
                 }
                 break;
             case pbreceiver::ReceiverOuterSymbolAdmission::IdenticalDuplicate:
@@ -4909,8 +4957,9 @@ private:
         {
             return;
         }
-        const auto activeBytes = pbprotocol::CheckedMultiplyUint64(resumeStore_->GetActiveBlockCount(), outerBlockBytes);
-        const auto pendingBytes = pbprotocol::CheckedMultiplyUint64(resumeStore_->GetPendingBlockCount(), outerBlockBytes);
+        const std::uint64_t profileBlockBytes = GetProfileBinding(visualProfile_).blockBytes;
+        const auto activeBytes = pbprotocol::CheckedMultiplyUint64(resumeStore_->GetActiveBlockCount(), profileBlockBytes);
+        const auto pendingBytes = pbprotocol::CheckedMultiplyUint64(resumeStore_->GetPendingBlockCount(), profileBlockBytes);
         RequireResult(activeBytes, "active resume payload-byte accounting overflow");
         RequireResult(pendingBytes, "pending resume payload-byte accounting overflow");
         const auto residentBytes = pbprotocol::CheckedAddUint64(activeBytes.Value(), pendingBytes.Value());
@@ -5368,7 +5417,7 @@ private:
     std::vector<std::optional<pbprotocol::SegmentDescriptor>> segments_;
     std::vector<bool> storedSegments_;
     std::optional<pbprotocol::FinalManifest> manifest_;
-    std::array<std::byte, outerBlockBytes> paddedPayload_{};
+    std::array<std::byte, maximumOuterBlockBytes> paddedPayload_{};
     DecoderProgressTracker progress_;
     VisualIdentityTracker visualRate_;
     VisualIdentityTracker endToEndRate_;
@@ -5869,7 +5918,7 @@ struct DurableSenderPreparation
         compressionEnabled, compressionSettings);
     preparation.outerFecIdentity = std::string(pbouterfec::kWirehairV2ImplementationIdentity) +
         ";profile=" + std::to_string(pbouterfec::kWirehairV2CertifiedProfileId) +
-        ";outer-block=" + std::to_string(outerBlockBytes);
+        ";outer-block=" + std::to_string(GetOuterBlockBytesForProfileId(visualProfileId));
     preparation.sourceIdentity = GetEncoderSourceIdentity(source);
     bool foundPersistedSession = false;
     const EncoderSessionStoreStatus findStatus = EncoderSessionStore::FindMatching(sessionStateRoot,
@@ -6344,7 +6393,8 @@ struct UnifiedStripingFixture
     {
         const std::size_t rawOffset = static_cast<std::size_t>(segmentOrdinal) * segmentBytes;
         fixture.description.segments.push_back(PrepareSegmentDescription(fixture.description.session, sessionTag,
-            segmentOrdinal, rawOffset, std::span(fixture.source).subspan(rawOffset, segmentBytes), false, 3));
+            segmentOrdinal, rawOffset, std::span(fixture.source).subspan(rawOffset, segmentBytes), false, 3,
+            outerBlockBytes));
         Require(fixture.description.segments.back().descriptor.outerFecMode == pbprotocol::OuterFecMode::WirehairV2,
             "Unified temporal-striping probe requires Wirehair segments");
     }
@@ -8935,7 +8985,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         snapshot_.Update([&](EncoderSnapshot& value)
         {
             value.sourceBytes = source.fileBytes;
-            value.segmentCount = CalculateSegmentCount(source.fileBytes);
+            value.segmentCount = CalculateSegmentCount(source.fileBytes, profile.visualProfileId);
             value.visualProfileId = profile.visualProfileId;
             value.visualLayoutVersion = profile.layoutVersion;
         });
@@ -9014,8 +9064,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         const std::string runId = config.runId.empty() ? GenerateRunId() : config.runId;
         const CarouselSnapshot initialCarousel = builder.GetCarouselSnapshot();
         const auto rawVisualBits = pbprotocol::CheckedMultiplyUint64(profile.dataBytes, 8);
-        const auto informationBytesPerFrame = pbprotocol::CheckedMultiplyUint64(profile.codewords, informationBytes);
-        const auto transportPayloadCeiling = pbprotocol::CheckedMultiplyUint64(profile.codewords, outerBlockBytes);
+        const auto informationBytesPerFrame = pbprotocol::CheckedMultiplyUint64(profile.codewords, profile.slotInformationBytes);
+        const auto transportPayloadCeiling = pbprotocol::CheckedMultiplyUint64(profile.codewords, profile.blockBytes);
         RequireResult(rawVisualBits, "profile raw visual capacity overflow");
         RequireResult(informationBytesPerFrame, "profile Inner-FEC information capacity overflow");
         RequireResult(transportPayloadCeiling, "profile Transport payload ceiling overflow");
@@ -9966,7 +10016,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         {
             policy.maxOutputPreallocationBytesWithoutPrompt = *services_.outputConfirmationThresholdBytes;
         }
-        auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, outerBlockBytes);
+        auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, profile.blockBytes);
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
         const auto pipelineOwner = std::make_unique<ReceiverPipeline>(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,

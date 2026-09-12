@@ -36,7 +36,26 @@ namespace
         visualLayoutVersion == kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
         (visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
         visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion) ||
-        IsUnifiedGrayStatesProfilePair(visualProfileId, visualLayoutVersion);
+        IsUnifiedGrayCarrierPair(visualProfileId, visualLayoutVersion);
+}
+
+// Per-identity inner-FEC dimensions. Layout 13 (gray-fast) packs the frozen
+// DVB-S2 Short Fast profile (37/45): 1665 information bytes per codeword;
+// every other unified identity keeps Robust (2/3, 1350).
+struct UnifiedCarrierFecDims
+{
+    pbinnerfec::InnerFecProfileId profileId = pbinnerfec::kInnerFecProfileIdRobust;
+    std::uint32_t informationBytes = kUnifiedInformationBytes;
+};
+[[nodiscard]] constexpr UnifiedCarrierFecDims GetUnifiedCarrierFecDims(
+    const std::uint64_t visualProfileId, const std::uint8_t visualLayoutVersion) noexcept
+{
+    if (visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId &&
+        visualLayoutVersion == pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion)
+    {
+        return {pbinnerfec::kInnerFecProfileIdFast, kUnifiedGrayFastInformationBytes};
+    }
+    return {};
 }
 } // namespace
 
@@ -45,6 +64,11 @@ struct UnifiedVisualCpuOracle::Implementation
     explicit Implementation(pbinnerfec::QcLdpcDecoder&& decoderValue) noexcept
     {
         fecLanes[0].decoder = std::make_unique<pbinnerfec::QcLdpcDecoder>(std::move(decoderValue));
+        if (auto fastDecoder = pbinnerfec::QcLdpcDecoder::Create(pbinnerfec::kInnerFecProfileIdFast))
+        {
+            fecLanes[0].fastDecoder =
+                std::make_unique<pbinnerfec::QcLdpcDecoder>(std::move(fastDecoder).Value());
+        }
     }
 
     ~Implementation();
@@ -52,19 +76,21 @@ struct UnifiedVisualCpuOracle::Implementation
     // One scratch set plus one private Qc-LDPC decoder per concurrent FEC lane.
     // Lanes never share state; each frame's codeword slots are claimed from a
     // shared atomic counter, so the parallel output is bit-identical to the
-    // serial order by construction.
+    // serial order by construction. Each lane holds both profile decoders so
+    // any frame identity can be claimed by any lane.
     struct FecLane
     {
         std::array<std::int16_t, kUnifiedVisualProfile.innerCodewordBits> slotMetrics{};
         std::array<std::byte, kUnifiedCodewordBytes> decodedCodeword{};
         std::unique_ptr<pbinnerfec::QcLdpcDecoder> decoder;
+        std::unique_ptr<pbinnerfec::QcLdpcDecoder> fastDecoder;
     };
     struct FecSlotOutput
     {
         bool fecValid = false;
         bool innerFecFailure = false;
         std::uint32_t iterationsUsed = 0;
-        std::array<std::byte, kUnifiedInformationBytes> information{};
+        std::array<std::byte, kUnifiedMaximumInformationBytes> information{};
     };
 
     // Slot-count-dependent arrays are sized for the larger gray frame; the
@@ -72,7 +98,7 @@ struct UnifiedVisualCpuOracle::Implementation
     // the tail entries.
     std::array<UnifiedSoftMetric, kUnifiedMaximumSoftMetricCount> metrics{};
     std::array<UnifiedAcceptedBlock, kUnifiedMaximumFrameSlotCount> accepted{};
-    std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedMaximumFrameSlotCount> decodedInformation{};
+    std::array<std::array<std::byte, kUnifiedMaximumInformationBytes>, kUnifiedMaximumFrameSlotCount> decodedInformation{};
     std::array<bool, kUnifiedMaximumFrameSlotCount> decodedInformationValid{};
     std::array<FecLane, kUnifiedMaximumFrameSlotCount> fecLanes{};
     std::array<FecSlotOutput, kUnifiedMaximumFrameSlotCount> fecSlotOutputs{};
@@ -82,6 +108,10 @@ struct UnifiedVisualCpuOracle::Implementation
     // sizes the public GetSoftMetrics span the same way.
     std::uint32_t fecSlotCount = kUnifiedCodewordCount;
     std::size_t activeMetricCount = kUnifiedSoftMetricCount;
+    // Per-frame inner-FEC profile and information length for the current
+    // sweep, snapshot under fecMutex alongside the other task fields.
+    pbinnerfec::InnerFecProfileId fecTaskProfileId = pbinnerfec::kInnerFecProfileIdRobust;
+    std::uint32_t fecTaskInformationBytes = kUnifiedInformationBytes;
 
     // One FEC sweep: claim a scratch lane, decode codeword slots from the
     // shared atomic counter, then account completion under fecMutex. The
@@ -1489,9 +1519,10 @@ struct UnifiedSlotFecResult
 
 [[nodiscard]] UnifiedSlotFecResult DecodeUnifiedSlotFec(const UnifiedSoftMetric* const metrics,
     const std::uint32_t slot, const pbinnerfec::InnerFecDecodeOptions& decodeOptions,
+    const pbinnerfec::InnerFecProfileId fecProfileId, const std::uint32_t informationBytes,
     std::span<std::int16_t, kUnifiedVisualProfile.innerCodewordBits> slotMetrics,
     std::span<std::byte, kUnifiedCodewordBytes> decodedCodeword, pbinnerfec::QcLdpcDecoder& decoder,
-    std::span<std::byte, kUnifiedInformationBytes> informationOut) noexcept
+    std::span<std::byte, kUnifiedMaximumInformationBytes> informationOut) noexcept
 {
     UnifiedSlotFecResult result;
     std::ranges::fill(decodedCodeword, std::byte{0});
@@ -1505,8 +1536,7 @@ struct UnifiedSlotFecResult
             decodedCodeword[bit / 8] |= static_cast<std::byte>(1U << (bit % 8));
         }
     }
-    const auto syndrome = pbinnerfec::ComputeQcLdpcSyndrome(pbinnerfec::kInnerFecProfileIdRobust,
-        decodedCodeword);
+    const auto syndrome = pbinnerfec::ComputeQcLdpcSyndrome(fecProfileId, decodedCodeword);
     if (!syndrome)
     {
         result.innerFecFailure = true;
@@ -1524,7 +1554,7 @@ struct UnifiedSlotFecResult
         result.iterationsUsed = decoded.Value().iterationsUsed;
     }
     result.fecValid = true;
-    std::copy_n(decodedCodeword.begin(), kUnifiedInformationBytes, informationOut.begin());
+    std::copy_n(decodedCodeword.begin(), informationBytes, informationOut.begin());
     return result;
 }
 
@@ -1562,10 +1592,20 @@ void UnifiedVisualCpuOracle::Implementation::StartFecPool() noexcept
             }
             fecLanes[laneIndex].decoder =
                 std::make_unique<pbinnerfec::QcLdpcDecoder>(std::move(decoderResult).Value());
+            auto fastResult = pbinnerfec::QcLdpcDecoder::Create(pbinnerfec::kInnerFecProfileIdFast);
+            if (!fastResult)
+            {
+                break;
+            }
+            fecLanes[laneIndex].fastDecoder =
+                std::make_unique<pbinnerfec::QcLdpcDecoder>(std::move(fastResult).Value());
         }
+        // The pool only forms when every participating lane (including lane 0
+        // from the constructor) holds BOTH profile decoders; otherwise frames
+        // of the missing profile would be silently skipped by some lanes.
         const std::size_t laneCount = static_cast<std::size_t>(std::ranges::count_if(fecLanes,
-            [](const FecLane& lane) { return lane.decoder != nullptr; }));
-        if (laneCount < 2)
+            [](const FecLane& lane) { return lane.decoder != nullptr && lane.fastDecoder != nullptr; }));
+        if (laneCount < 2 || fecLanes[0].fastDecoder == nullptr)
         {
             return;
         }
@@ -1594,7 +1634,12 @@ void UnifiedVisualCpuOracle::Implementation::RunFecSweep(const std::uint32_t lan
     const UnifiedSoftMetric* const taskMetrics, const pbinnerfec::InnerFecDecodeOptions& options) noexcept
 {
     FecLane& lane = fecLanes[laneIndex];
-    if (lane.decoder != nullptr)
+    // A lane without the frame profile's decoder cannot claim slots; the
+    // sweep stays correct because other lanes (or the serial fallback) pick
+    // them up. The pool only forms when every lane holds both decoders.
+    pbinnerfec::QcLdpcDecoder* const laneDecoder = fecTaskProfileId == pbinnerfec::kInnerFecProfileIdFast ?
+        lane.fastDecoder.get() : lane.decoder.get();
+    if (laneDecoder != nullptr)
     {
         for (;;)
         {
@@ -1605,7 +1650,8 @@ void UnifiedVisualCpuOracle::Implementation::RunFecSweep(const std::uint32_t lan
             }
             FecSlotOutput& output = fecSlotOutputs[slot];
             const UnifiedSlotFecResult result = DecodeUnifiedSlotFec(taskMetrics, slot, options,
-                lane.slotMetrics, lane.decodedCodeword, *lane.decoder, output.information);
+                fecTaskProfileId, fecTaskInformationBytes, lane.slotMetrics, lane.decodedCodeword,
+                *laneDecoder, output.information);
             output.fecValid = result.fecValid;
             output.innerFecFailure = result.innerFecFailure;
             output.iterationsUsed = result.iterationsUsed;
@@ -1773,10 +1819,12 @@ ModulationStatus PackUnifiedVisualFrame(
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 8);
     }
-    const bool grayFrame = IsUnifiedGrayStatesProfilePair(
+    const bool grayFrame = IsUnifiedGrayCarrierPair(
         bootstrap.Value().visualProfileId, bootstrap.Value().visualLayoutVersion);
     const std::size_t frameSlotCount = grayFrame ? kUnifiedGrayFrameCodewordCount : kUnifiedCodewordCount;
     const std::size_t codedFrameBytes = grayFrame ? kUnifiedGrayCodedFrameBytes : kUnifiedCodedFrameBytes;
+    const UnifiedCarrierFecDims fecDims = GetUnifiedCarrierFecDims(
+        bootstrap.Value().visualProfileId, bootstrap.Value().visualLayoutVersion);
     if (input.bootstrapRecord.data() == nullptr || input.bootstrapRecord.size() != pbprotocol::kBootstrapRecordBytes ||
         input.slots.data() == nullptr || input.slots.size() != frameSlotCount ||
         outCodedFrame.data() == nullptr)
@@ -1814,7 +1862,7 @@ ModulationStatus PackUnifiedVisualFrame(
             continue;
         }
         if (slotInput.block.data() == nullptr || slotInput.block.empty() ||
-            slotInput.block.size() > kUnifiedInformationBytes)
+            slotInput.block.size() > fecDims.informationBytes)
         {
             return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, assignment.codewordSlot);
         }
@@ -1845,7 +1893,8 @@ ModulationStatus PackUnifiedVisualFrame(
     }
 
     std::array<std::byte, kUnifiedMaximumCodedFrameBytes> codedFrame{};
-    std::array<std::byte, kUnifiedInformationBytes> information{};
+    std::array<std::byte, kUnifiedMaximumInformationBytes> informationStorage{};
+    const std::span<std::byte> information(informationStorage.data(), fecDims.informationBytes);
     for (const UnifiedFrameSlotInput& slotInput : input.slots)
     {
         const UnifiedSlotAssignment& assignment = slotInput.assignment;
@@ -1867,7 +1916,7 @@ ModulationStatus PackUnifiedVisualFrame(
         const std::span<std::byte> codeword = std::span(codedFrame).subspan(
             static_cast<std::size_t>(assignment.codewordSlot) * kUnifiedCodewordBytes, kUnifiedCodewordBytes);
         const pbinnerfec::InnerFecStatus fecStatus = pbinnerfec::EncodeQcLdpcCodeword(
-            pbinnerfec::kInnerFecProfileIdRobust, information, codeword);
+            fecDims.profileId, information, codeword);
         if (!fecStatus)
         {
             return ModulationStatus::Failure(ModulationErrorCode::InternalInvariantViolation,
@@ -1883,7 +1932,7 @@ ModulationStatus EncodeUnifiedVisualFrame(
     const UnifiedVisualFrameInput& input, const std::span<std::byte> outBgra) noexcept
 {
     const auto packed = pbprotocol::ParseBootstrapRecord(input.bootstrapRecord);
-    const std::size_t packedBytes = packed && IsUnifiedGrayStatesProfilePair(
+    const std::size_t packedBytes = packed && IsUnifiedGrayCarrierPair(
         packed.Value().visualProfileId, packed.Value().visualLayoutVersion) ?
         kUnifiedGrayCodedFrameBytes : kUnifiedCodedFrameBytes;
     std::array<std::byte, kUnifiedMaximumCodedFrameBytes> codedFrame{};
@@ -1906,7 +1955,7 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
     }
     const auto preparse = pbprotocol::ParseBootstrapRecord(bootstrapRecord);
-    const std::size_t expectedCodedBytes = preparse && IsUnifiedGrayStatesProfilePair(
+    const std::size_t expectedCodedBytes = preparse && IsUnifiedGrayCarrierPair(
         preparse.Value().visualProfileId, preparse.Value().visualLayoutVersion) ?
         kUnifiedGrayCodedFrameBytes : kUnifiedCodedFrameBytes;
     if (codedFrame.size() != expectedCodedBytes)
@@ -1939,7 +1988,7 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
         return scaffold;
     }
     const bool grayStates =
-        IsUnifiedGrayStatesProfilePair(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion);
+        IsUnifiedGrayCarrierPair(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion);
     RenderCalibrationPilots(outBgra, grayStates);
     RenderPhasePilots(outBgra, parsed.Value().frameSequence);
     for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
@@ -2032,10 +2081,12 @@ std::uint64_t UnifiedVisualCpuOracle::RequiredBytes() noexcept
 {
     // PBInnerFec documents a worst-case decoder workspace below 1 MiB per
     // decoder. The oracle reserves one private decoder per concurrent codeword
-    // lane so the frame sweep can decode the 15 slots in parallel; each lane
-    // is charged separately from the fixed implementation object.
+    // lane so the frame sweep can decode the 18 slots in parallel; since the
+    // gray-fast identity, each lane holds BOTH profile decoders (Robust and
+    // Fast), and each is charged separately from the fixed implementation
+    // object.
     return sizeof(Implementation) +
-        static_cast<std::uint64_t>(kUnifiedMaximumFrameSlotCount) * 1024ULL * 1024ULL;
+        static_cast<std::uint64_t>(kUnifiedMaximumFrameSlotCount) * 2ULL * 1024ULL * 1024ULL;
 }
 
 ModulationResult<UnifiedVisualCpuOracle> UnifiedVisualCpuOracle::Create(const std::uint64_t maximumBytes) noexcept
@@ -2091,7 +2142,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
     const bool preparedGray = [&]()
     {
         const auto parsed = pbprotocol::ParseBootstrapRecord(input.bootstrap.canonical44);
-        return parsed && IsUnifiedGrayStatesProfilePair(
+        return parsed && IsUnifiedGrayCarrierPair(
             parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion);
     }();
     const std::size_t preparedMetricCount = preparedGray ? kUnifiedGraySoftMetricCount : kUnifiedSoftMetricCount;
@@ -2267,7 +2318,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     state.metricsValid = true;
     // The gray identity carries eighteen slots and its own mixed-slot plan;
     // the SC6 product path keeps the frozen fifteen-slot manifest contract.
-    const bool grayDecode = IsUnifiedGrayStatesProfilePair(expectedIdentity.visualProfileId,
+    const bool grayDecode = IsUnifiedGrayCarrierPair(expectedIdentity.visualProfileId,
         expectedIdentity.visualLayoutVersion);
     const std::uint32_t decodeSlotCount = grayDecode ? kUnifiedGrayFrameCodewordCount : kUnifiedCodewordCount;
     const bool explicitPlanValid = grayDecode ?
@@ -2360,7 +2411,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     // The observed (already pair-validated) Bootstrap record selects the
     // state-table variant: gray-state frames decode their second carrier on
     // luma regardless of the caller's expected-identity defaults.
-    const bool grayStates = IsUnifiedGrayStatesProfilePair(
+    const bool grayStates = IsUnifiedGrayCarrierPair(
         observation.bootstrapRecord.visualProfileId, observation.bootstrapRecord.visualLayoutVersion);
     const UnifiedCalibration calibration = Calibrate(view, samplingGeometry, policy, grayStates);
     if (!calibration.lumaValid)
@@ -2448,6 +2499,12 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     }
 
     const pbinnerfec::InnerFecDecodeOptions decodeOptions{policy.maximumFecIterations, 1, 2048, 3, 4};
+    // The frame's own wire identity selects the inner-FEC profile and the
+    // information length for the whole sweep (layout 13 = Fast/1665).
+    const UnifiedCarrierFecDims fecDims = GetUnifiedCarrierFecDims(
+        observation.bootstrapRecord.visualProfileId, observation.bootstrapRecord.visualLayoutVersion);
+    state.fecTaskProfileId = fecDims.profileId;
+    state.fecTaskInformationBytes = fecDims.informationBytes;
     std::array<bool, kUnifiedMaximumFrameSlotCount> slotLaneErased{};
     for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
     {
@@ -2501,6 +2558,9 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     else
     {
         Implementation::FecLane& serialLane = state.fecLanes[0];
+        pbinnerfec::QcLdpcDecoder* const serialDecoder =
+            fecDims.profileId == pbinnerfec::kInnerFecProfileIdFast ?
+            serialLane.fastDecoder.get() : serialLane.decoder.get();
         for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
         {
             UnifiedSlotObservation& slotObservation = observation.slots[slot];
@@ -2509,12 +2569,19 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
                 slotObservation.rejection = UnifiedSlotRejection::LaneErasure;
                 continue;
             }
+            if (serialDecoder == nullptr)
+            {
+                // Resource exhaustion on this profile's decoder fails the
+                // slot closed; it never fabricates information bytes.
+                slotObservation.rejection = UnifiedSlotRejection::InnerFecFailure;
+                continue;
+            }
             const auto diagnosticStage = slotObservation.lane == UnifiedLane::BaseLuma ? pbcore::DiagnosticStage::BaseFec :
                 slotObservation.lane == UnifiedLane::FineLuma ? pbcore::DiagnosticStage::FineFec : pbcore::DiagnosticStage::ChromaFec;
             const pbcore::DiagnosticScope fecTiming(state.diagnostics, diagnosticStage);
             const UnifiedSlotFecResult result = DecodeUnifiedSlotFec(state.metrics.data(), slot, decodeOptions,
-                serialLane.slotMetrics, serialLane.decodedCodeword, *serialLane.decoder,
-                state.decodedInformation[slot]);
+                fecDims.profileId, fecDims.informationBytes, serialLane.slotMetrics, serialLane.decodedCodeword,
+                *serialDecoder, state.decodedInformation[slot]);
             if (result.innerFecFailure)
             {
                 slotObservation.iterationsUsed = result.iterationsUsed;
@@ -2536,7 +2603,8 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
             {
                 continue;
             }
-            const std::span<const std::byte> information = state.decodedInformation[slot];
+            const std::span<const std::byte> information(
+                state.decodedInformation[slot].data(), fecDims.informationBytes);
             if (IsControlInformationBlock(information))
             {
                 assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Control,
@@ -2563,7 +2631,8 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
         }
         const pbcore::DiagnosticScope protocolTiming(state.diagnostics, pbcore::DiagnosticStage::SlotProtocol);
         EvaluateAcceptedInformation(slot, assignmentsBySlot[slot], observation.bootstrapRecord.sessionTag,
-            state.decodedInformation[slot], slotObservation, state.accepted, state.acceptedCount);
+            std::span<const std::byte>(state.decodedInformation[slot].data(), fecDims.informationBytes),
+            slotObservation, state.accepted, state.acceptedCount);
         if (slotObservation.accepted)
         {
             observation.acceptedBlocks++;

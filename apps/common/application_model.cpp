@@ -24,6 +24,11 @@ constexpr VisualProfileOption unifiedBandsProfileOption{
 constexpr VisualProfileOption unifiedGrayProfileOption{
     VisualProfile::UnifiedGray, "unified-gray", "PB-Experimental-GrayStates-1", false, 15, 4};
 
+// Experimental opt-in: the gray carrier under the gray-fast identity
+// (layout 13, Fast inner FEC, 1629-byte Transport payload). CLI-only.
+constexpr VisualProfileOption unifiedGrayFastProfileOption{
+    VisualProfile::UnifiedGrayFast, "unified-gray-fast", "PB-Experimental-GrayFast-1", false, 15, 4};
+
 // Historical diagnostic selectors remain unchanged until their respective
 // product GUI migrations. The Encoder product binds Unified explicitly.
 constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
@@ -754,6 +759,10 @@ const VisualProfileOption* FindVisualProfileOption(const VisualProfile profile) 
     {
         return &unifiedGrayProfileOption;
     }
+    if (profile == VisualProfile::UnifiedGrayFast)
+    {
+        return &unifiedGrayFastProfileOption;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [profile](const VisualProfileOption& value) { return value.profile == profile; });
     return option == visualProfileOptions.end() ? nullptr : &*option;
@@ -773,6 +782,10 @@ std::optional<VisualProfile> ParseVisualProfileToken(const std::string_view toke
     {
         return unifiedGrayProfileOption.profile;
     }
+    if (token == unifiedGrayFastProfileOption.cliToken)
+    {
+        return unifiedGrayFastProfileOption.profile;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return value.cliToken == token; });
     return option == visualProfileOptions.end() ? std::nullopt : std::optional(option->profile);
@@ -791,6 +804,10 @@ std::optional<VisualProfile> ParseVisualProfileToken(const std::wstring_view tok
     if (EqualsAsciiToken(token, unifiedGrayProfileOption.cliToken))
     {
         return unifiedGrayProfileOption.profile;
+    }
+    if (EqualsAsciiToken(token, unifiedGrayFastProfileOption.cliToken))
+    {
+        return unifiedGrayFastProfileOption.profile;
     }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return EqualsAsciiToken(token, value.cliToken); });

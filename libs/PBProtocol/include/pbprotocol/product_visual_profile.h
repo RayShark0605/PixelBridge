@@ -96,4 +96,22 @@ static_assert(!IsProductSessionVisualProfileId(kGrayStatesExperimentalProfile.vi
 static_assert(kGrayStatesExperimentalProfile.visualProfileId != kBlankControlExperimentalProfile.visualProfileId);
 static_assert(kGrayStatesExperimentalProfile.visualProfileId != kUnifiedVisualProfileId);
 
+// Experimental gray-fast identity (layout 13): the layout-12 seven-plane,
+// eighteen-codeword gray raster unchanged; the inner Robust QC-LDPC (2/3)
+// swaps for the frozen DVB-S2 Short Fast profile (37/45) so each codeword
+// carries 1665 information bytes (1629-byte Transport payload) instead of
+// 1350 (1314). Field telemetry on layout 12 ran 57k slots with zero FEC
+// failures at about one iteration, so the weaker code trades unused
+// correction headroom for payload. Opt-in only, outside
+// kProductVisualProfiles; a layout-12 decoder rejects layout 13 and vice
+// versa, so mixed kits fail closed.
+inline constexpr ProductVisualProfile kGrayFastExperimentalProfile{
+    "PB-Experimental-GrayFast-1",
+    0x5042475246535431ULL,
+    13};
+static_assert(!IsProductSessionVisualProfileId(kGrayFastExperimentalProfile.visualProfileId));
+static_assert(kGrayFastExperimentalProfile.visualProfileId != kGrayStatesExperimentalProfile.visualProfileId);
+static_assert(kGrayFastExperimentalProfile.visualProfileId != kBlankControlExperimentalProfile.visualProfileId);
+static_assert(kGrayFastExperimentalProfile.visualProfileId != kUnifiedVisualProfileId);
+
 } // namespace pbprotocol

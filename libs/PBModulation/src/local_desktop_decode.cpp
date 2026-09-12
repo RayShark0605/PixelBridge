@@ -1173,7 +1173,7 @@ bool ResolveLocalDesktopBinding(const LocalDesktopBootstrapBinding& binding,
         kUnifiedVisualProfile.productProfile.visualLayoutVersion} ||
         binding == LocalDesktopBootstrapBinding{pbprotocol::kBlankControlExperimentalProfile.visualProfileId,
             pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion} ||
-        IsUnifiedGrayStatesProfilePair(binding.visualProfileId, binding.visualLayoutVersion))
+        IsUnifiedGrayCarrierPair(binding.visualProfileId, binding.visualLayoutVersion))
     {
         // Layout 11 and layout 12 reuse the layout 10 scaffold geometry; the
         // pair still gates via MatchesLocalDesktopBinding and the caller's

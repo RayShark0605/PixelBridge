@@ -316,12 +316,14 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
         (binding.profileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
             parsed.Value().visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion) ||
         (binding.profileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId &&
-            parsed.Value().visualLayoutVersion == pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion))
+            parsed.Value().visualLayoutVersion == pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion) ||
+        (binding.profileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId &&
+            parsed.Value().visualLayoutVersion == pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion))
     {
-        // Layout 11 and layout 12 share the layout 10 main-region geometry, so
-        // the GPU binding constants are identical for all unified identities
-        // except the gray carrier's own frame and metric dimensions.
-        binding.grayStates = pbmodulation::IsUnifiedGrayStatesProfilePair(
+        // Layouts 11-13 share the layout 10 main-region geometry, so the GPU
+        // binding constants are identical for all unified identities except
+        // the gray carrier's own frame and metric dimensions.
+        binding.grayStates = pbmodulation::IsUnifiedGrayCarrierPair(
             binding.profileId, parsed.Value().visualLayoutVersion);
         binding.mode = ProfileMode::UnifiedVisual;
         binding.tilePixels = pbmodulation::kUnifiedVisualProfile.tileWidth;

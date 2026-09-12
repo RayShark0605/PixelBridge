@@ -62,9 +62,10 @@ struct DemodConfig
 {
     std::uint32_t readbackSlotCount = 3;
     // Sized above CalculateDemodulatorResidentBytes for every carrier: the
-    // gray v3 frame raised the per-slot tile-binding buffer and the CPU
-    // oracle's eighteen concurrent decoder lanes.
-    std::uint64_t maximumResidentBytes = 80ULL * 1024 * 1024;
+    // gray v3 frame raised the per-slot tile-binding buffer, and the CPU
+    // oracle holds both profile decoders (Robust and Fast) on each of its
+    // eighteen concurrent lanes.
+    std::uint64_t maximumResidentBytes = 112ULL * 1024 * 1024;
     pbdesktoplevels::EvaluationMode evaluationMode = pbdesktoplevels::EvaluationMode::DiagnosticTruth;
     std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
     // Independent recording tools only; never enabled by a live capture config.
