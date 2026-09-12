@@ -575,3 +575,59 @@ goodput ≈ 内容率(fps) × 有效槽/帧 × 1314B × 唯一率。当前 30Hz 
 - **晨间质量链路（内容率 ~25fps）**：现有构建理论上限 ~450KB/s——**当前构建很可能已在好链路上达标 300KB/s**，待晨间复测确认。
 - **劣化链路（~10fps）**：15 槽已打满（承载位 251,232/251,232），唯一结构性杠杆是**扩画布**：本地右屏解码区 ~2420×1361（scale≥1 硬门），最大安全画布 ~2304×1296（1.44× 面积 → ~22 码字/帧）→ 午后链路 ~274KB/s（+57%）、12fps 以上链路即破 300。代价：新视觉身份（layout 13）、全部尺寸常量/着色器/绑定/测试/golden 重冻结（约 2-3 个专注会话），且 ToDesk 每帧像素 +44% 可能使内容率下降（带宽权衡需实测定）。
 - 17% 的重复观察（同一逻辑帧被采两次）是观看器呈现行为，不可软件修复。
+
+---
+
+## 17. 第八会话（2026-09-12 深夜 ~ 09-13 凌晨）：v3 七位/瓦片载体全线落地与实机根因修复
+
+### 17.1 范围与提交链（全部全绿后提交，164 用例回归两轮通过）
+
+| 提交 | 内容 |
+|---|---|
+| e8d4e82 | 阶段C：调度器 slots 数组 max 化(18) + 每帧 slotCount + GetActiveSlots() + frameCodewordSlots 配置（0=产品 15，非法值 Create 拒绝） |
+| 428d84a | 阶段B 遗留回归修复：oracle laneMetrics 汇总按 activeMetricCount 界定；PBTelemetry RecordSample 按 frameSlotCount 界定 + 灰 lane=BaseLuma 语义；遥测测试 helper 空指针修复 |
+| b456176 | 阶段D：GetProfileBinding 灰 18/36450、两处调度器 Create 传 frameCodewordSlots、重开调度相位窗口常量化、接收侧 per-slot 存储 max 化（含 demodulator acceptedUnifiedBlocks 15→18 溢出修复） |
+| 7f20f39 | 阶段E：UnifiedTileBinding 48B 七索引、ParseBinding 灰 291,600 度量/36,450 字节/18 码字、HLSL v3 灰分支、tile 绑定缓冲步长 sizeof 化（原硬编码 8×uint32 欠分配）、资源预留 64→80MiB 默认 / 128→160MiB RemoteVisual 帽 |
+| f705dc3 | 测试修复：SC6 corpus 槽遍历按 frameSlotCount 界定；着色器条目数 12→14（v2 遗留） |
+| 52f6e10 | 实机根因修复（见 17.3）：电平位并入 64 码本 min 分割 + min(raw, 锐化) 双表示假设 + 峰值对比度标尺；CPU + HLSL 同构 |
+
+### 17.2 实机首跑故障（v3-f30-s050：14.7 分钟 0 字节）与定位方法
+
+- 症状：编码端正常（灰身份 layout 12，26,024 帧 @29.7fps，报告 state=Failed 仅为人工停机记录）；接收端 locator 100% 接受引导（3,523/3,523），但 0 个槽评估、永远 WaitingForBootstrap。
+- 定定方法（可复用工具链，<PBLine root>3\）：右屏 PNG 采集 → png_to_bgra → decode_probe（显式灰身份 CPU oracle 解码，分割 CPU/GPU）→ roundtrip_probe（encode→双线性缩放→decode 硅内实验室，无需 ToDesk）。
+- 关键中间结论：链路近无损（阶梯实测 {7,64,160,234}，度量幅值健康、擦除 0.5%），CPU oracle 对真实捕获只解出 2/18 码字 → 故障在调制层本身而非 GPU/链路。
+
+### 17.3 根因与修复
+
+- **根因**：plane-6 电平位用 tile 前景均值对比阶梯中点 148 判定。纯 1.1× 双线性重采样就把交替的 8/232 单像素 chip 混合成 ~104 均值灰（实测 dump），恰好跨过判定中点——所有 HIGH tile 电平位满置信（±8192）翻转，按 tile 区间聚类（每码字的位集中在自己的 tile 区间），LDPC 18/18 全灭。产品路径不受影响因其从不用 per-tile 均值（固定阶梯电平 + min 分割）。
+- **修复（CPU unified_visual.cpp + unified_visual_compute.hlsl 同构）**：
+  1. 64 掩码 × 2 电平两张距离表：电平位 = 两半最优符号距离之差；掩码位 = 符号按最优电平假设分区取 min；
+  2. 每符号距离 = min(raw 距离, SC6 同款 cross 锐化核距离)：1:1 画布保持近零真符号距离，重采样画布回落到锐化拟合；
+  3. 对比度标尺锚定 tile 峰值 luma（9-chip 翻转恒 18,432 的不变量在两档电平下同时成立；阶梯中点标尺会使 LOW tile 度量跌破 min-sum offset 2048 安全区——中途验证时踩到）。
+- 验证：硅内 1.0/1.25/1.26×（含实地几何 1.2604/1.2611@origin 69.99,27.99）全 18/18（1.1× 为 13/18，可接受）；多交织相位（seq 0/1/77/55942/123456）与分数原点全稳；真实链路捕获 18/18（含控制槽，1 次迭代收敛）。
+
+### 17.4 实机终局（v3b-f30-s050 @52f6e10，30Hz/50MB）
+
+| 指标 | v2 灰（gyv4，b2b9c5c） | v3（52f6e10） | 产品基线（03a79a9） |
+|---|---|---|---|
+| 绝对吞吐 | 175,121 B/s | **162,095 B/s** | 196,212 B/s |
+| 链路内容率 | 9.92 fps | **8.08 fps**（深夜劣化） | ~9.9 fps（午后） |
+| 每帧验证字节 | 17,648 B | **20,416 B** | ~19,800 B |
+| BaseLuma 通道 FEC | — | 57,114/57,114 槽，0 失败 | — |
+
+- 全摘要链绿：digestMatch / wholeDigestVerified / finalReopenVerified 全 true；frameCoverageComplete=true；control 3,342/3,342 全接受。
+- **归一结论**：v3 每帧效率 vs v2 灰 +15.7%（贴近理论 +20%）；绝对值低于产品基线完全由深夜链路内容率（8.08 vs ~10fps）压制，午后链路推算 ≈200KB/s。
+- 诊断首跑时确认：ToDesk 视图 = SENDER-LAPTOP（即 \RECEIVER-DESKTOP，桥实例表 §2.1 唯一实例）；DISPLAY2 2560×1440 在位；远程原生 2880×1620。
+
+### 17.5 新教训（会再踩的）
+
+1. **旧测试二进制假绿**：阶段B（4c2c523）只跑过 PBModulation 测试；PBApplicationTests/PBTelemetryTests/PBDemodD3D11Tests 的陈旧 exe 让全绿跑了旧代码。此后任何共享结构改动必须显式重建全部消费测试目标（本会话被同一陷阱咬了两次）。
+2. 资源预留连锁：oracle 18×1MiB 解码 lane + 48B tile 绑定使 DemodConfig 默认 64MiB 与 RemoteVisual 128MiB 帽双破——共享 demodulator 的预留是跨 profile 最坏情形，帽子必须随之调整。
+3. 远程构建身份（PB_GIT_COMMIT）在 CMake configure 时固化：打包前必须重新 configure，否则 kit 报告落后一个提交。
+4. 纯双线性 1.1× 重采样即可在硅内复现实链故障——调制层改动先过 roundtrip 实验室再上实机。
+5. ab_run 长超时下若需提前终止：只杀本地 PixelBridgeDecoder.exe，让编排脚本走正常 stop/collect 收尾。
+
+### 17.6 当晚后续计划（自主执行，结果见后续小节）
+
+1. 60Hz 逻辑帧率 A/B（现有 v3 kit，零代码改动，验证更高逻辑 fps 是否提升每传输帧的喷泉多样性收益）。
+2. v4 实验室原型：4 电平灰阶（阶梯 64/160/232 + 第二载波条纹已校准的 {56,113,169,250} 基础设施）× 64 掩码 = 8 位/tile → 20 码字/帧（+11% 槽容量），先在 roundtrip 实验室验证 1.26× 稳健性再决定全链路实现。
