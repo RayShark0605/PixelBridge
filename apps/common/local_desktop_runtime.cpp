@@ -94,7 +94,10 @@ inline constexpr std::uint64_t timeUnitsPerSecond100ns = 10000000ULL;
 inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
 inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
 inline constexpr std::uint32_t captureResultQueueCapacity = 128;
-inline constexpr std::uint64_t maximumDemodulatorResidentBytes = 128ULL * 1024ULL * 1024ULL;
+// The demodulator's fixed reservation is sized for the largest carrier
+// (gray v3 eighteen-slot tile bindings and decoder lanes), so every profile
+// preflights the same worst-case budget.
+inline constexpr std::uint64_t maximumDemodulatorResidentBytes = 160ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t maximumRemoteVisualLowFpsDemodulatorResidentBytes = 256ULL * 1024ULL * 1024ULL;
 // Four 3840x2160 staging slots plus the existing fixed metric/FEC workspace
 // and result queue are preflighted by CalculateCaptureDemodulatorBudget.

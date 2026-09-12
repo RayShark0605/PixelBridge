@@ -59,8 +59,6 @@ inline constexpr std::uint32_t remoteVisualLowFpsSymbolMaskBytes =
 inline constexpr std::uint32_t remoteVisualLowFpsSamplesPerTile = 16 * 5;
 inline constexpr std::uint32_t remoteVisualLowFpsCalibrationSamples = 4 * 2 * 8 * 8;
 inline constexpr std::uint32_t remoteVisualLowFpsMaximumTexelsPerSample = 4;
-inline constexpr std::uint32_t unifiedTileBindingBytes =
-    pbmodulation::kUnifiedVisualProfile.dataTileCount * sizeof(std::uint32_t) * 8;
 inline constexpr std::uint32_t unifiedExpectedFreshnessBytes =
     pbmodulation::kUnifiedFreshnessRegionCount * pbmodulation::kLocalDesktopTimingBits * sizeof(std::uint32_t);
 inline constexpr std::uint32_t unifiedTileSamplingBytes =
@@ -196,10 +194,15 @@ struct alignas(16) UnifiedTileBinding
 {
     std::uint32_t originX = 0;
     std::uint32_t originY = 0;
-    std::array<std::uint32_t, 4> lumaBits{};
+    // Product binds four luma planes plus two chroma planes; gray v3 binds
+    // six mask planes plus the seventh foreground-level plane in lumaBits[4].
+    std::array<std::uint32_t, 5> lumaBits{};
     std::array<std::uint32_t, 2> chromaBits{};
+    std::array<std::uint32_t, 3> reserved{};
 };
-static_assert(sizeof(UnifiedTileBinding) == 32);
+static_assert(sizeof(UnifiedTileBinding) == 48);
+inline constexpr std::uint32_t unifiedTileBindingBytes =
+    pbmodulation::kUnifiedVisualProfile.dataTileCount * sizeof(UnifiedTileBinding);
 
 bool EqualLuid(const LUID& left, const LUID& right) noexcept
 {
@@ -316,17 +319,23 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
             parsed.Value().visualLayoutVersion == pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion))
     {
         // Layout 11 and layout 12 share the layout 10 main-region geometry, so
-        // the GPU binding constants are identical for all unified identities.
+        // the GPU binding constants are identical for all unified identities
+        // except the gray carrier's own frame and metric dimensions.
         binding.grayStates = pbmodulation::IsUnifiedGrayStatesProfilePair(
             binding.profileId, parsed.Value().visualLayoutVersion);
         binding.mode = ProfileMode::UnifiedVisual;
         binding.tilePixels = pbmodulation::kUnifiedVisualProfile.tileWidth;
         binding.tileCount = pbmodulation::kUnifiedVisualProfile.dataTileCount;
         binding.rowTiles = 0;
-        binding.dataBytes = static_cast<std::uint32_t>(pbmodulation::kUnifiedCodedFrameBytes);
-        binding.metricCount = static_cast<std::uint32_t>(pbmodulation::kUnifiedSoftMetricCount);
+        binding.dataBytes = binding.grayStates ?
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayCodedFrameBytes) :
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedCodedFrameBytes);
+        binding.metricCount = binding.grayStates ?
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedGraySoftMetricCount) :
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedSoftMetricCount);
         binding.codedMetricCount = binding.metricCount;
-        binding.codewords = pbmodulation::kUnifiedCodewordCount;
+        binding.codewords = binding.grayStates ?
+            pbmodulation::kUnifiedGrayFrameCodewordCount : pbmodulation::kUnifiedCodewordCount;
         binding.paddingBytes = 0;
     }
     else
@@ -979,6 +988,7 @@ DemodStatus BuildUnifiedFrameBindings(Demodulator::Implementation& state, const 
     const std::span<const std::byte> bootstrapRecord) noexcept
 {
     constexpr std::uint32_t invalidMetric = static_cast<std::uint32_t>(pbmodulation::kUnifiedSoftMetricCount);
+    constexpr std::uint32_t invalidGrayMetric = static_cast<std::uint32_t>(pbmodulation::kUnifiedGraySoftMetricCount);
     for (std::uint32_t tileOrdinal = 0; tileOrdinal < pbmodulation::kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
     {
         const pbmodulation::UnifiedDataTile tile = pbmodulation::GetUnifiedDataTile(tileOrdinal);
@@ -990,12 +1000,14 @@ DemodStatus BuildUnifiedFrameBindings(Demodulator::Implementation& state, const 
         destination = {};
         destination.originX = tile.bounds.x;
         destination.originY = tile.bounds.y;
-        destination.lumaBits.fill(invalidMetric);
-        destination.chromaBits.fill(invalidMetric);
+        destination.lumaBits.fill(binding.grayStates ? invalidGrayMetric : invalidMetric);
+        destination.chromaBits.fill(binding.grayStates ? invalidGrayMetric : invalidMetric);
         if (binding.grayStates)
         {
-            // Gray carrier v2: the six mask planes ride lumaBits[0..3] plus
-            // chromaBits[0..1]; the flat logical bit IS the metric index.
+            // Gray carrier v3: the six mask planes ride lumaBits[0..3] plus
+            // chromaBits[0..1]; the seventh foreground-level plane rides
+            // lumaBits[4]. The flat logical bit IS the metric index, bounded
+            // by the gray metric count.
             if (tileOrdinal < pbmodulation::kUnifiedGrayActiveTiles)
             {
                 for (std::uint8_t bitPlane = 0; bitPlane < 4; bitPlane++)
@@ -1015,6 +1027,13 @@ DemodStatus BuildUnifiedFrameBindings(Demodulator::Implementation& state, const 
                     {
                         destination.chromaBits[bitPlane] = logical.logicalBit;
                     }
+                }
+                const auto levelLogical = pbmodulation::GetUnifiedGrayLogicalBit(
+                    {true, pbmodulation::UnifiedCarrier::Luma, tileOrdinal,
+                        static_cast<std::uint8_t>(pbmodulation::kUnifiedGrayCarrierPlanes - 1)}, binding.frameSequence);
+                if (levelLogical.valid)
+                {
+                    destination.lumaBits[4] = levelLogical.logicalBit;
                 }
             }
         }

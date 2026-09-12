@@ -34,12 +34,11 @@ struct UnifiedTileBinding
 {
     uint OriginX;
     uint OriginY;
-    uint LumaBit0;
-    uint LumaBit1;
-    uint LumaBit2;
-    uint LumaBit3;
-    uint ChromaBit0;
-    uint ChromaBit1;
+    // Product binds four luma planes plus two chroma planes; gray v3 binds
+    // six mask planes plus the seventh foreground-level plane in LumaBits[4].
+    uint LumaBits[5];
+    uint ChromaBits[2];
+    uint Reserved[3];
 };
 
 Texture2D<float4> RoiTexture : register(t0);
@@ -69,6 +68,7 @@ RWStructuredBuffer<uint> ForegroundHistogram : register(u5);
 RWStructuredBuffer<float4> UnifiedStateModes : register(u6);
 
 static const uint UnifiedMetricCount = 243000;
+static const uint UnifiedGrayMetricCount = 291600;
 static const uint UnifiedBaseLumaMetricCount = 145800;
 static const uint UnifiedLumaMetricCount = 162000;
 static const uint2 CalibrationOrigins[4] =
@@ -628,50 +628,118 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float lumaGap = high - low;
     if (StateLumaMode != 0)
     {
-        // Gray carrier v2: classify the tile against the 64-symbol codebook
-        // with raw sample luma, then min-partition the symbol distances
-        // into the six mask planes (lumaBits[0..3] + chromaBits[0..1]).
+        // Gray carrier v3: six punctured-Hadamard mask planes plus one
+        // foreground-level plane per tile. The mask planes classify against
+        // the 64-symbol book using the tile's own measured foreground mean,
+        // so a level bit of either value never disturbs the mask distances.
+        const float background = GetLumaCentroid(0);
+        const float ladderLow = GetLumaCentroid(1);
+        const float ladderHigh = GetLumaCentroid(3);
+        const float foregroundGate = (background + ladderLow) * 0.5;
+        uint foregroundSamples = 0;
+        float foregroundLumaSum = 0.0;
+        [loop]
+        for (uint gateChip = 0; gateChip < 25; gateChip++)
+        {
+            const float foregroundValue = Luma(samples[gateChip]);
+            if (foregroundValue >= foregroundGate)
+            {
+                foregroundSamples++;
+                foregroundLumaSum += foregroundValue;
+            }
+        }
+        const uint grayPlanes[7] = {binding.LumaBits[0], binding.LumaBits[1], binding.LumaBits[2],
+            binding.LumaBits[3], binding.ChromaBits[0], binding.ChromaBits[1], binding.LumaBits[4]};
+        if (foregroundSamples == 0)
+        {
+            // An all-background tile uniquely identifies its mask: symbol 32
+            // is the only zero-foreground symbol, so all six mask bits are
+            // decided at full confidence and only the level plane stays
+            // erased (metric 0). A pure 0-LLR erasure would zero every
+            // min-sum message of its check rows and stall the decoder.
+            [unroll]
+            for (uint plane = 0; plane < 7; plane++)
+            {
+                if (grayPlanes[plane] < UnifiedGrayMetricCount)
+                {
+                    MetricOutput[grayPlanes[plane]] = plane == 6 ? 0.0 :
+                        (((32u >> plane) & 1u) != 0 ? -32767.0 : 32767.0);
+                }
+            }
+            return;
+        }
+        const float tileForeground = foregroundLumaSum / (float)foregroundSamples;
+        const uint baseModel = (uint)PhaseOutput[InterleavePhase & 7].w;
+        uint projected[25];
+        bool symbolModelValid = true;
+        [loop]
+        for (uint projectionChip = 0; projectionChip < 25; projectionChip++)
+        {
+            projected[projectionChip] = ProjectLumaChip(uint2(binding.OriginX, binding.OriginY),
+                projectionChip, baseModel);
+            symbolModelValid = symbolModelValid && projected[projectionChip] < 25;
+        }
         float symbolDistances[64];
         [unroll]
         for (uint symbol = 0; symbol < 64; symbol++)
         {
             float distance = 0.0;
-            const uint mask = GrayMasksBySymbol[symbol];
-            [loop]
-            for (uint chip = 0; chip < 25; chip++)
+            if (symbolModelValid)
             {
-                const float expected = ((mask >> chip) & 1) != 0 ? high : low;
-                const float difference = Luma(samples[chip]) - expected;
-                distance += difference * difference;
+                const uint mask = GrayMasksBySymbol[symbol];
+                [loop]
+                for (uint chip = 0; chip < 25; chip++)
+                {
+                    const float expected = ((mask >> min(projected[chip], 24)) & 1) != 0 ?
+                        tileForeground : background;
+                    const float difference = Luma(samples[chip]) - expected;
+                    distance += difference * difference;
+                }
             }
             symbolDistances[symbol] = distance;
         }
-        uint grayPlanes[6] = {binding.LumaBit0, binding.LumaBit1, binding.LumaBit2,
-            binding.LumaBit3, binding.ChromaBit0, binding.ChromaBit1};
+        // Normalize by the tile's own foreground contrast: a nine-chip mask
+        // flip at any level then yields 9 x 2048 = 18432, the magnitude the
+        // frozen min-sum offset (2048) and message accumulation proved safe
+        // in the SC6 product path. A fixed ladder-gap scale would leave
+        // LOW-level tiles at a magnitude mid-decode accumulation can flip.
+        const float tileContrast = tileForeground - background;
+        const float maskScale = tileContrast > 0.0 ? 2048.0 / (tileContrast * tileContrast) : 0.0;
+        const float levelGap = ladderHigh - ladderLow;
         [unroll]
-        for (uint plane = 0; plane < 6; plane++)
+        for (uint plane = 0; plane < 7; plane++)
         {
-            float zeroDistance = 3.402823466e+38;
-            float oneDistance = 3.402823466e+38;
-            [unroll]
-            for (uint symbol = 0; symbol < 64; symbol++)
+            float metric = 0.0;
+            if (symbolModelValid && plane == 6)
             {
-                if (((symbol >> plane) & 1) != 0)
-                {
-                    oneDistance = min(oneDistance, symbolDistances[symbol]);
-                }
-                else
-                {
-                    zeroDistance = min(zeroDistance, symbolDistances[symbol]);
-                }
+                const float lowDistance = tileForeground - ladderLow;
+                const float highDistance = tileForeground - ladderHigh;
+                metric = levelGap > 0.0 ? (highDistance * highDistance - lowDistance * lowDistance) *
+                    8192.0 / (levelGap * levelGap) : 0.0;
             }
-            if (grayPlanes[plane] < UnifiedMetricCount)
+            else if (symbolModelValid)
             {
-                MetricOutput[grayPlanes[plane]] = lumaGap > 0.0 ?
-                    (oneDistance - zeroDistance) * 2048.0 / (lumaGap * lumaGap) : 0.0;
+                float zeroDistance = 3.402823466e+38;
+                float oneDistance = 3.402823466e+38;
+                [unroll]
+                for (uint symbol = 0; symbol < 64; symbol++)
+                {
+                    if (((symbol >> plane) & 1) != 0)
+                    {
+                        oneDistance = min(oneDistance, symbolDistances[symbol]);
+                    }
+                    else
+                    {
+                        zeroDistance = min(zeroDistance, symbolDistances[symbol]);
+                    }
+                }
+                metric = (oneDistance - zeroDistance) * maskScale;
+            }
+            if (grayPlanes[plane] < UnifiedGrayMetricCount)
+            {
+                MetricOutput[grayPlanes[plane]] = metric;
             }
         }
-        TileSamplingFailures[tileOrdinal] = valid ? 0 : 1;
         return;
     }
     const float foregroundThreshold = (low + high) * 0.5;
@@ -731,7 +799,7 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         baseDistances[label] = baseValid ? baseDistance : 0.0;
         fineDistances[label] = fineValid ? (baseModel == fineModel ? baseDistance : fineDistance) : 0.0;
     }
-    const uint lumaBits[4] = {binding.LumaBit0, binding.LumaBit1, binding.LumaBit2, binding.LumaBit3};
+    const uint lumaBits[4] = {binding.LumaBits[0], binding.LumaBits[1], binding.LumaBits[2], binding.LumaBits[3]};
     [unroll]
     for (uint bitPlane = 0; bitPlane < 4; bitPlane++)
     {
@@ -780,7 +848,7 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     }
-    const uint chromaBits[2] = {binding.ChromaBit0, binding.ChromaBit1};
+    const uint chromaBits[2] = {binding.ChromaBits[0], binding.ChromaBits[1]};
     [unroll]
     for (uint chromaPlane = 0; chromaPlane < 2; chromaPlane++)
     {

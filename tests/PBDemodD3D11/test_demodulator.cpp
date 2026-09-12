@@ -147,7 +147,7 @@ std::vector<std::byte> MakeRemoteVisualLowFpsControlData(const std::span<const s
 struct UnifiedFixture
 {
     std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bootstrap{};
-    std::array<std::vector<std::byte>, pbmodulation::kUnifiedCodewordCount> blocks;
+    std::array<std::vector<std::byte>, pbmodulation::kUnifiedMaximumFrameSlotCount> blocks;
     std::vector<std::byte> pixels;
 };
 
@@ -166,7 +166,10 @@ UnifiedFixture MakeUnifiedFixture(const std::uint64_t sequence,
     REQUIRE(controlSize);
     fixture.blocks[0].resize(controlSize.Value());
     REQUIRE(pbprotocol::SerializeControlRecord(controlRecord, fixture.blocks[0]));
-    for (std::uint32_t slot = 1; slot < pbmodulation::kUnifiedCodewordCount; slot++)
+    const bool grayCarrier = profile.visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId;
+    const std::uint32_t slotCount = grayCarrier ? pbmodulation::kUnifiedGrayFrameCodewordCount :
+        pbmodulation::kUnifiedCodewordCount;
+    for (std::uint32_t slot = 1; slot < slotCount; slot++)
     {
         std::vector<std::byte> payload(48 + slot % 13);
         for (std::size_t index = 0; index < payload.size(); index++)
@@ -179,8 +182,8 @@ UnifiedFixture MakeUnifiedFixture(const std::uint64_t sequence,
         fixture.blocks[slot].resize(pbprotocol::GetTransportSerializedSize(header));
         REQUIRE(pbprotocol::SerializeTransportBlock(header, payload, fixture.blocks[slot]));
     }
-    std::array<pbmodulation::UnifiedFrameSlotInput, pbmodulation::kUnifiedCodewordCount> inputs{};
-    for (std::uint32_t slot = 0; slot < inputs.size(); slot++)
+    std::array<pbmodulation::UnifiedFrameSlotInput, pbmodulation::kUnifiedMaximumFrameSlotCount> inputs{};
+    for (std::uint32_t slot = 0; slot < slotCount; slot++)
     {
         inputs[slot].assignment.codewordSlot = slot;
         inputs[slot].assignment.kind = slot == 0 ? pbmodulation::UnifiedSlotKind::Control :
@@ -192,7 +195,8 @@ UnifiedFixture MakeUnifiedFixture(const std::uint64_t sequence,
         inputs[slot].block = fixture.blocks[slot];
     }
     fixture.pixels.resize(pbmodulation::kUnifiedFrameBgraBytes);
-    REQUIRE(pbmodulation::EncodeUnifiedVisualFrame({fixture.bootstrap, inputs}, fixture.pixels));
+    const std::span<const pbmodulation::UnifiedFrameSlotInput> plannedInputs(inputs.data(), slotCount);
+    REQUIRE(pbmodulation::EncodeUnifiedVisualFrame({fixture.bootstrap, plannedInputs}, fixture.pixels));
     return fixture;
 }
 
@@ -3061,7 +3065,7 @@ TEST_CASE("D3D11 demod configuration is bounded and failure leaves output owners
         pbdemodd3d11::DemodError::ResourceLimit);
     REQUIRE(output == nullptr);
 
-    config.maximumResidentBytes = 64ULL * 1024 * 1024;
+    config.maximumResidentBytes = 80ULL * 1024 * 1024;
     config.evaluationMode = static_cast<pbdesktoplevels::EvaluationMode>(255);
     REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, output).code ==
         pbdemodd3d11::DemodError::InvalidConfiguration);
@@ -3085,7 +3089,7 @@ TEST_CASE("D3D11 demod configuration is bounded and failure leaves output owners
     REQUIRE(output->Shutdown(environment.context.Get()));
 }
 
-TEST_CASE("Unified gray-state D3D11 demod recovers all fifteen slots through chroma subsampling",
+TEST_CASE("Unified gray-state D3D11 demod recovers all eighteen slots through chroma subsampling",
     "[demod][d3d11][unified][graystates][warp][fec]")
 {
     auto environment = CreateWarpEnvironment();
@@ -3169,11 +3173,11 @@ TEST_CASE("Unified gray-state D3D11 demod recovers all fifteen slots through chr
     REQUIRE(result.visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId);
     REQUIRE(result.unifiedObservation.IsFrameAvailable());
     REQUIRE(result.unifiedObservation.chroma.IsAvailable());
-    // The GPU gray-state branch feeds all fifteen codewords, including the
-    // five second-carrier slots, through the same canonical FEC gate.
-    REQUIRE(result.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedCodewordCount);
-    REQUIRE(result.unifiedObservation.acceptedTransportBlocks == pbmodulation::kUnifiedCodewordCount - 1);
-    REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedCodewordCount);
+    // The GPU gray-carrier branch feeds all eighteen codewords, including the
+    // three v3 capacity slots, through the same canonical FEC gate.
+    REQUIRE(result.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedGrayFrameCodewordCount);
+    REQUIRE(result.unifiedObservation.acceptedTransportBlocks == pbmodulation::kUnifiedGrayFrameCodewordCount - 1);
+    REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedGrayFrameCodewordCount);
     for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
     {
         const auto& accepted = result.acceptedUnifiedBlocks[index];
@@ -3182,7 +3186,7 @@ TEST_CASE("Unified gray-state D3D11 demod recovers all fifteen slots through chr
         REQUIRE(accepted.size == fixture.blocks[index].size());
         REQUIRE(std::equal(fixture.blocks[index].begin(), fixture.blocks[index].end(), accepted.bytes.begin()));
     }
-    REQUIRE(result.remoteMetricSamples == pbmodulation::kUnifiedSoftMetricCount);
+    REQUIRE(result.remoteMetricSamples == pbmodulation::kUnifiedGraySoftMetricCount);
     REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
