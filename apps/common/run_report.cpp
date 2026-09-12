@@ -1,4 +1,3 @@
-#include <cstdio>
 #include "run_report.h"
 
 #include <array>
@@ -627,7 +626,6 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
 std::string BuildDecoderRunReportJson(const RunReportContext& context,
     const DecoderSnapshot& snapshot)
 {
-    std::fprintf(stderr, "DBG report profile enum=%d id=%llu layout=%d\n", static_cast<int>(snapshot.visualProfile), static_cast<unsigned long long>(snapshot.visualProfileId), static_cast<int>(snapshot.visualLayoutVersion));
     // Same unified RunReport.3 routing as the encoder side.
     if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
         snapshot.visualProfile == VisualProfile::UnifiedGray)

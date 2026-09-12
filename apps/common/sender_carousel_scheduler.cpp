@@ -440,6 +440,15 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
                 }
                 repairEquationCount = (std::max)(static_cast<std::uint64_t>(senderCarouselMinimumRepairBlocks),
                     scaledRepair.Value() / senderCarouselRepairPercentDenominator + 1ULL);
+                if (config.repairBudgetOverride != 0)
+                {
+                    if (config.repairBudgetOverride > config.systematicBlockCount * 16ULL)
+                    {
+                        return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
+                    }
+                    repairEquationCount = (std::max)(static_cast<std::uint64_t>(senderCarouselMinimumRepairBlocks),
+                        config.repairBudgetOverride);
+                }
                 scheduledEquationCount = repairEquationCount;
                 systematicEquationCount = 0;
             }

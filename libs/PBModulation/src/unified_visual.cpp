@@ -11,7 +11,6 @@
 #include <cmath>
 #include <condition_variable>
 #include <string>
-#include <cstdio>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -881,7 +880,6 @@ void StoreMetric(const UnifiedLogicalCarrierBit logical, const UnifiedDataTile& 
     const std::size_t globalBit = static_cast<std::size_t>(capacity.firstCodewordSlot) *
         kUnifiedVisualProfile.innerCodewordBits + logical.logicalBit;
     UnifiedSoftMetric& metric = metrics[globalBit];
-    if (globalBit == 478) { std::fprintf(stderr, "DBG store478 tileValid=%d value=%d lane=%d\n", tile.valid ? 1 : 0, static_cast<int>(value), static_cast<int>(logical.lane)); }
     if (!LaneAvailable(logical.lane, base, fine, chroma))
     {
         metric.erasureReason = LaneReason(logical.lane, base, fine, chroma);

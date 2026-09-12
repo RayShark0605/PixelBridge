@@ -276,6 +276,12 @@ struct SenderUnifiedCarouselSchedulerConfig
     // catch-up queue, wire field or Receiver feedback is introduced.
     std::uint32_t periodicControlPhaseIndex = 0;
     std::uint32_t periodicControlPhaseCount = 1;
+    // Zero keeps the pass-formula budget. When positive, a Wirehair pass
+    // schedules exactly this many fresh repair equations (still bounded by
+    // the Create-time consistency checks); the runtime uses it to graduate a
+    // Segment at a precise cumulative-equation target instead of absorbing
+    // the doubling formula's coarse last-pass overshoot.
+    std::uint64_t repairBudgetOverride = 0;
 };
 
 struct SenderUnifiedCarouselSnapshot

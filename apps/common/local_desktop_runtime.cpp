@@ -1210,6 +1210,14 @@ class SenderFrameBuilder
         std::uint32_t blockCount = 0;
         SenderUnifiedCarouselScheduler scheduler;
         bool repairIdsFinalized = false;
+        // Graduation accounting: cumulative committed equations across this
+        // Segment's scheduler instances (seeded from the per-ordinal ledger on
+        // wrap re-admission), the Segment-local pass index for the doubling
+        // budget, and the graduated flag that removes it from the sweep.
+        std::uint64_t committedEquationsTotal = 0;
+        std::uint64_t segmentPassCount = 0;
+        std::uint64_t graduationTarget = 0;
+        bool graduated = false;
     };
 
 public:
@@ -1446,9 +1454,24 @@ public:
             UnifiedSegmentState& currentState = GetCurrentUnifiedSegmentState();
             if (unifiedScheduler.IsComplete())
             {
-                FinalizeUnifiedSegmentRound(currentState);
+                CompleteUnifiedSegmentPass(currentState);
+                SlideUnifiedSegmentWindow();
+                if (unifiedSegmentStates_.empty())
+                {
+                    AdvanceUnifiedSegmentWindow();
+                    return;
+                }
             }
             if (SelectNextUnifiedSegment())
+            {
+                return;
+            }
+            // Every in-window scheduler is complete: each Segment either
+            // graduated (fronts already popped) or just opened a re-pass, so
+            // reaching here means the sweep could not reselect - treat as
+            // graduation drain and slide again.
+            SlideUnifiedSegmentWindow();
+            if (!unifiedSegmentStates_.empty() && SelectNextUnifiedSegment())
             {
                 return;
             }
@@ -1739,6 +1762,34 @@ private:
         return description_.segments.empty() ? unifiedScheduler_ : GetCurrentUnifiedSegmentState().scheduler;
     }
 
+    [[nodiscard]] std::uint64_t CalculateUnifiedGraduationTarget(const std::uint32_t blockCount) const
+    {
+        const std::uint64_t factor = blockCount * senderUnifiedGraduationFactorPercent;
+        return factor / 100 + (factor % 100 != 0 ? 1 : 0) +
+            carouselPass_ * (blockCount * senderUnifiedWrapTopUpPercent / 100 + 1);
+    }
+
+    [[nodiscard]] SenderCarouselSchedulerStatus CreateUnifiedSegmentScheduler(UnifiedSegmentState& state,
+        const std::uint32_t periodicControlPhaseIndex, const std::uint32_t periodicControlPhaseCount) const
+    {
+        // The Segment-local pass index drives the budget class (pass 0 =
+        // systematic + initial repair; later passes are repair-only). Re-pass
+        // budgets are sized to the exact remaining distance to the graduation
+        // target, floored at the scheduler minimum, so the doubling formula's
+        // coarse last pass never overshoots a graduating Segment.
+        std::uint64_t overrideBudget = 0;
+        if (state.segmentPassCount != 0)
+        {
+            overrideBudget = state.graduationTarget > state.committedEquationsTotal ?
+                state.graduationTarget - state.committedEquationsTotal :
+                static_cast<std::uint64_t>(senderCarouselMinimumRepairBlocks);
+        }
+        return SenderUnifiedCarouselScheduler::Create(
+            {state.blockCount, controlRepetitions_, logicalVisualFps_, static_cast<bool>(state.wirehair),
+                state.segmentPassCount, periodicControlPhaseIndex, periodicControlPhaseCount, overrideBudget},
+            state.scheduler);
+    }
+
     [[nodiscard]] UnifiedSegmentState BuildUnifiedSegmentState(const std::uint64_t segmentOrdinal,
         const std::uint32_t periodicControlPhaseIndex, const std::uint32_t periodicControlPhaseCount)
     {
@@ -1771,10 +1822,23 @@ private:
                 "Unified DirectRepeat block count is invalid");
             state.blockCount = static_cast<std::uint32_t>(state.directRepeat->GetBlockCount());
         }
-        Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
-            {state.blockCount, controlRepetitions_, logicalVisualFps_, static_cast<bool>(state.wirehair), carouselPass_,
-                periodicControlPhaseIndex, periodicControlPhaseCount},
-            state.scheduler)), "Unified Segment-window scheduler creation failed");
+        state.segmentPassCount = unifiedPassLedger_.empty() ? 0 : unifiedPassLedger_[segmentOrdinal];
+        if (!unifiedCommittedLedger_.empty() &&
+            unifiedCommittedLedger_[segmentOrdinal] == kUnifiedLedgerUnseeded)
+        {
+            // First admission of this ordinal: a resumed Session seeds the
+            // cumulative count from the persisted repair-ID high-water
+            // (systematic range plus leased repairs), a fresh Session starts
+            // at zero.
+            unifiedCommittedLedger_[segmentOrdinal] = nextRepairIds_[segmentOrdinal] != 0 ?
+                nextRepairIds_[segmentOrdinal] : 0;
+        }
+        state.committedEquationsTotal = unifiedCommittedLedger_.empty() ? 0 :
+            unifiedCommittedLedger_[segmentOrdinal];
+        state.graduationTarget = CalculateUnifiedGraduationTarget(state.blockCount);
+        state.graduated = false;
+        Require(static_cast<bool>(CreateUnifiedSegmentScheduler(state, periodicControlPhaseIndex,
+            periodicControlPhaseCount)), "Unified Segment-window scheduler creation failed");
         if (state.wirehair && repairLeaseCallback_)
         {
             const auto required = pbprotocol::CheckedAddUint64(nextRepairIds_[segmentOrdinal],
@@ -1802,6 +1866,14 @@ private:
         unifiedSegmentStates_.clear();
         unifiedCurrentStateIndex_ = 0;
         unifiedWindowStartSegmentOrdinal_ = currentSegmentOrdinal_;
+        if (unifiedCommittedLedger_.size() != description_.segments.size())
+        {
+            // The pass ledger carries the resumed Carousel pass so a resumed
+            // Session never replays systematic equations; the committed
+            // ledger is seeded per ordinal on first admission.
+            unifiedCommittedLedger_.assign(description_.segments.size(), kUnifiedLedgerUnseeded);
+            unifiedPassLedger_.assign(description_.segments.size(), carouselPass_);
+        }
         const std::uint64_t remainingSegments = description_.segments.size() - currentSegmentOrdinal_;
         const std::uint64_t activeSegments = (std::min)(remainingSegments,
             static_cast<std::uint64_t>(senderUnifiedActiveSegmentWindowSize));
@@ -1834,6 +1906,46 @@ private:
         state.repairIdsFinalized = true;
     }
 
+    void CompleteUnifiedSegmentPass(UnifiedSegmentState& state)
+    {
+        Require(state.scheduler.IsComplete(), "Unified Segment pass completion requires a complete scheduler");
+        state.committedEquationsTotal += state.scheduler.GetSnapshot().committedEquationCount;
+        if (!unifiedCommittedLedger_.empty())
+        {
+            unifiedCommittedLedger_[state.segmentOrdinal] = state.committedEquationsTotal;
+        }
+        FinalizeUnifiedSegmentRound(state);
+        if (state.committedEquationsTotal >= state.graduationTarget ||
+            state.segmentPassCount >= senderUnifiedMaximumSegmentPasses)
+        {
+            state.graduated = true;
+            return;
+        }
+        // Under-served Segment: open the next local pass immediately instead
+        // of waiting for a whole-Carousel wrap that re-visits every recovered
+        // Segment. The repair lease extends from the finalized high-water.
+        state.segmentPassCount++;
+        if (!unifiedPassLedger_.empty())
+        {
+            unifiedPassLedger_[state.segmentOrdinal] = state.segmentPassCount;
+        }
+        state.repairIdsFinalized = false;
+        const std::uint32_t phaseCount = static_cast<std::uint32_t>(unifiedSegmentStates_.size());
+        const std::uint32_t phaseIndex = static_cast<std::uint32_t>(
+            (state.segmentOrdinal - unifiedWindowStartSegmentOrdinal_) % (std::max<std::uint32_t>(phaseCount, 1)));
+        const auto created = CreateUnifiedSegmentScheduler(state, phaseIndex, phaseCount);
+        Require(static_cast<bool>(created), "Unified Segment re-pass scheduler creation failed");
+        if (state.wirehair && repairLeaseCallback_)
+        {
+            const auto required = pbprotocol::CheckedAddUint64(nextRepairIds_[state.segmentOrdinal],
+                state.scheduler.GetSnapshot().repairEquationCount);
+            RequireResult(required, "Unified Segment re-pass repair lease overflow");
+            Require(required.Value() <= (std::numeric_limits<std::uint32_t>::max)(),
+                "Unified Wirehair repair ID space exhausted");
+            repairLeaseCallback_(state.segmentOrdinal, required.Value());
+        }
+    }
+
     [[nodiscard]] bool SelectNextUnifiedSegment()
     {
         const std::uint64_t windowSize = unifiedSegmentStates_.size();
@@ -1856,24 +1968,46 @@ private:
         return false;
     }
 
+    void SlideUnifiedSegmentWindow()
+    {
+        // Pop graduated fronts and admit fresh Segments one at a time so the
+        // pipeline keeps fresh systematic flowing while under-served Segments
+        // continue their focused local repair passes.
+        while (!unifiedSegmentStates_.empty() && unifiedSegmentStates_.front().graduated)
+        {
+            const std::uint64_t nextOrdinal = unifiedWindowStartSegmentOrdinal_ + unifiedSegmentStates_.size();
+            unifiedSegmentStates_.erase(unifiedSegmentStates_.begin());
+            if (unifiedCurrentStateIndex_ != 0)
+            {
+                unifiedCurrentStateIndex_--;
+            }
+            unifiedWindowStartSegmentOrdinal_++;
+            if (nextOrdinal < description_.segments.size() &&
+                unifiedSegmentStates_.size() < static_cast<std::size_t>(senderUnifiedActiveSegmentWindowSize))
+            {
+                const std::uint32_t phaseCount = static_cast<std::uint32_t>(
+                    (std::min)(description_.segments.size() - nextOrdinal,
+                        static_cast<std::uint64_t>(senderUnifiedActiveSegmentWindowSize)));
+                unifiedSegmentStates_.push_back(BuildUnifiedSegmentState(nextOrdinal,
+                    static_cast<std::uint32_t>(unifiedSegmentStates_.size()), phaseCount));
+            }
+        }
+        if (!unifiedSegmentStates_.empty())
+        {
+            UpdateResidentSegmentHighWater();
+        }
+    }
+
     void AdvanceUnifiedSegmentWindow()
     {
-        Require(std::ranges::all_of(unifiedSegmentStates_, [](const UnifiedSegmentState& state)
-        {
-            return state.scheduler.IsComplete() && state.repairIdsFinalized;
-        }), "Unified Segment window advanced before every round completed");
-        const auto nextWindowStart = pbprotocol::CheckedAddUint64(unifiedWindowStartSegmentOrdinal_,
-            unifiedSegmentStates_.size());
-        RequireResult(nextWindowStart, "Unified Segment-window ordinal overflow");
-        Require(nextWindowStart.Value() <= description_.segments.size(),
-            "Unified Segment-window advance exceeded the descriptor table");
-        currentSegmentOrdinal_ = nextWindowStart.Value();
-        if (currentSegmentOrdinal_ == description_.segments.size())
-        {
-            currentSegmentOrdinal_ = 0;
-            Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
-            carouselPass_++;
-        }
+        // Reached only when the window emptied: every Segment graduated and no
+        // fresh ordinal remains. Wrap raises each graduation target by
+        // wrapTopUpPercent of K so residual stragglers converge while
+        // recovered Segments re-graduate after one minimal top-up pass.
+        Require(unifiedSegmentStates_.empty(), "Unified Segment window wrapped while Segments remain");
+        Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
+        carouselPass_++;
+        currentSegmentOrdinal_ = 0;
         InitializeUnifiedSegmentWindow();
     }
 
@@ -2073,7 +2207,21 @@ private:
     std::vector<std::byte> currentEncodedBytes_;
     std::vector<std::byte> nextEncodedBytes_;
     std::optional<std::uint64_t> nextEncodedSegmentOrdinal_;
+    // Per-Segment graduation policy (one-way channel, no receiver feedback):
+    // a Segment leaves the active window once its cumulative committed
+    // equations reach graduationFactorPercent of K, so airtime flows to fresh
+    // Segments instead of whole-Carousel wrap re-visits that dominated the
+    // duplicate admissions on degraded links (findings sections 13-14). Each
+    // wrap re-opens everything with the target raised by wrapTopUpPercent of K
+    // so residual stragglers converge while recovered Segments re-graduate
+    // after one minimal top-up pass.
+    static constexpr std::uint64_t senderUnifiedGraduationFactorPercent = 300;
+    static constexpr std::uint64_t senderUnifiedWrapTopUpPercent = 25;
+    static constexpr std::uint64_t senderUnifiedMaximumSegmentPasses = 8;
+    static constexpr std::uint64_t kUnifiedLedgerUnseeded = (std::numeric_limits<std::uint64_t>::max)();
     std::vector<UnifiedSegmentState> unifiedSegmentStates_;
+    std::vector<std::uint64_t> unifiedCommittedLedger_;
+    std::vector<std::uint64_t> unifiedPassLedger_;
     std::size_t unifiedCurrentStateIndex_ = 0;
     std::uint64_t unifiedWindowStartSegmentOrdinal_ = 0;
     std::uint64_t currentSegmentOrdinal_ = 0;
