@@ -637,15 +637,15 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         const float ladderHigh = GetLumaCentroid(3);
         const float foregroundGate = (background + ladderLow) * 0.5;
         uint foregroundSamples = 0;
-        float foregroundLumaSum = 0.0;
+        float peakLuma = 0.0;
         [loop]
         for (uint gateChip = 0; gateChip < 25; gateChip++)
         {
             const float foregroundValue = Luma(samples[gateChip]);
+            peakLuma = max(peakLuma, foregroundValue);
             if (foregroundValue >= foregroundGate)
             {
                 foregroundSamples++;
-                foregroundLumaSum += foregroundValue;
             }
         }
         const uint grayPlanes[7] = {binding.LumaBits[0], binding.LumaBits[1], binding.LumaBits[2],
@@ -668,7 +668,6 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             }
             return;
         }
-        const float tileForeground = foregroundLumaSum / (float)foregroundSamples;
         const uint baseModel = (uint)PhaseOutput[InterleavePhase & 7].w;
         uint projected[25];
         bool symbolModelValid = true;
@@ -679,65 +678,88 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                 projectionChip, baseModel);
             symbolModelValid = symbolModelValid && projected[projectionChip] < 25;
         }
+        // Two distance tables: every mask scored against its LOW-level and its
+        // HIGH-level ladder expectation, each under two representation
+        // hypotheses - raw chip luma (exact at a 1:1 canvas) and the
+        // cross-sharpened kernel that deconvolves resampling blur (the same
+        // kernel the SC6 luma lanes use). The per-symbol minimum keeps the
+        // exact canvas at a near-zero true-symbol distance while resampled
+        // captures fall back to the sharpened fit; a per-tile foreground-mean
+        // level decision cannot survive resampling (the chip mixture crosses
+        // the level midpoint and flips every HIGH tile at full confidence).
         float symbolDistances[64];
+        float highLevelDistances[64];
         [unroll]
         for (uint symbol = 0; symbol < 64; symbol++)
         {
-            float distance = 0.0;
+            float lowDistance = 0.0;
+            float lowSharpened = 0.0;
+            float highDistance = 0.0;
+            float highSharpened = 0.0;
             if (symbolModelValid)
             {
                 const uint mask = GrayMasksBySymbol[symbol];
                 [loop]
                 for (uint chip = 0; chip < 25; chip++)
                 {
-                    const float expected = ((mask >> min(projected[chip], 24)) & 1) != 0 ?
-                        tileForeground : background;
-                    const float difference = Luma(samples[chip]) - expected;
-                    distance += difference * difference;
+                    const bool foregroundChip = ((mask >> min(projected[chip], 24)) & 1) != 0;
+                    const float lowExpected = foregroundChip ? ladderLow : background;
+                    const float highExpected = foregroundChip ? ladderHigh : background;
+                    const float rawValue = Luma(samples[chip]);
+                    const float rawLow = rawValue - lowExpected;
+                    const float rawHigh = rawValue - highExpected;
+                    lowDistance += rawLow * rawLow;
+                    highDistance += rawHigh * rawHigh;
+                    const float sharpenedValue = lumaSamples[chip];
+                    const float sharpenedLow = sharpenedValue - lowExpected;
+                    const float sharpenedHigh = sharpenedValue - highExpected;
+                    lowSharpened += sharpenedLow * sharpenedLow;
+                    highSharpened += sharpenedHigh * sharpenedHigh;
                 }
             }
-            symbolDistances[symbol] = distance;
+            symbolDistances[symbol] = min(lowDistance, lowSharpened);
+            highLevelDistances[symbol] = min(highDistance, highSharpened);
         }
-        // Normalize by the tile's own foreground contrast: a nine-chip mask
-        // flip at any level then yields 9 x 2048 = 18432, the magnitude the
-        // frozen min-sum offset (2048) and message accumulation proved safe
-        // in the SC6 product path. A fixed ladder-gap scale would leave
-        // LOW-level tiles at a magnitude mid-decode accumulation can flip.
-        const float tileContrast = tileForeground - background;
+        // Normalize by the tile's peak-luma contrast: a nine-chip mask flip
+        // then yields 9 x 2048 = 18432 at EITHER ladder level, the magnitude
+        // the frozen min-sum offset (2048) and message accumulation proved
+        // safe in the SC6 product path. The peak survives capture resampling
+        // gracefully, unlike a per-tile foreground mean.
+        const float tileContrast = peakLuma - background;
         const float maskScale = tileContrast > 0.0 ? 2048.0 / (tileContrast * tileContrast) : 0.0;
-        const float levelGap = ladderHigh - ladderLow;
         [unroll]
         for (uint plane = 0; plane < 7; plane++)
         {
-            float metric = 0.0;
-            if (symbolModelValid && plane == 6)
+            float zeroDistance = 3.402823466e+38;
+            float oneDistance = 3.402823466e+38;
+            [unroll]
+            for (uint symbol = 0; symbol < 64; symbol++)
             {
-                const float lowDistance = tileForeground - ladderLow;
-                const float highDistance = tileForeground - ladderHigh;
-                metric = levelGap > 0.0 ? (highDistance * highDistance - lowDistance * lowDistance) *
-                    8192.0 / (levelGap * levelGap) : 0.0;
-            }
-            else if (symbolModelValid)
-            {
-                float zeroDistance = 3.402823466e+38;
-                float oneDistance = 3.402823466e+38;
-                [unroll]
-                for (uint symbol = 0; symbol < 64; symbol++)
+                if (plane == 6)
                 {
+                    // The level bit compares the best HIGH-level symbol with
+                    // the best LOW-level symbol.
+                    zeroDistance = min(zeroDistance, symbolDistances[symbol]);
+                    oneDistance = min(oneDistance, highLevelDistances[symbol]);
+                }
+                else
+                {
+                    // Mask planes partition symbols by their best level
+                    // hypothesis.
+                    const float best = min(symbolDistances[symbol], highLevelDistances[symbol]);
                     if (((symbol >> plane) & 1) != 0)
                     {
-                        oneDistance = min(oneDistance, symbolDistances[symbol]);
+                        oneDistance = min(oneDistance, best);
                     }
                     else
                     {
-                        zeroDistance = min(zeroDistance, symbolDistances[symbol]);
+                        zeroDistance = min(zeroDistance, best);
                     }
                 }
-                metric = (oneDistance - zeroDistance) * maskScale;
             }
             if (grayPlanes[plane] < UnifiedGrayMetricCount)
             {
-                MetricOutput[grayPlanes[plane]] = metric;
+                MetricOutput[grayPlanes[plane]] = (oneDistance - zeroDistance) * maskScale;
             }
         }
         return;

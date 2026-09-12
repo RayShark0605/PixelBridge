@@ -1142,17 +1142,22 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                 continue;
             }
             std::uint32_t grayForegroundSamples = 0;
-            double grayForegroundLumaSum = 0;
+            double grayPeakLuma = 0.0;
             // Foreground/background gate sits between the calibrated background
             // (ladder level 0) and the LOW foreground level (ladder level 1),
             // so both foreground levels clear it and the background never does.
+            // Only the all-background decision uses the count: per-tile
+            // foreground means do not survive capture resampling (the chip
+            // mixture crosses decision boundaries), so every level-aware
+            // decision lives inside the symbol min-partition below.
             const double foregroundGate = (calibration.lumaLevels[0] + calibration.lumaLevels[1]) * 0.5;
             for (const Sample& sample : samples)
             {
-                if (Luma(sample) >= foregroundGate)
+                const double sampleLuma = Luma(sample);
+                grayPeakLuma = std::max(grayPeakLuma, sampleLuma);
+                if (sampleLuma >= foregroundGate)
                 {
                     grayForegroundSamples++;
-                    grayForegroundLumaSum += Luma(sample);
                 }
             }
             // An all-background tile uniquely identifies its mask: the
@@ -1166,8 +1171,6 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             const bool grayAllBackground = !samplingFailed && grayForegroundSamples == 0;
             const bool grayTileSamplingFailed = samplingFailed ||
                 (grayForegroundSamples == 0 && !grayAllBackground);
-            const double tileForeground = grayTileSamplingFailed ? high :
-                grayForegroundSamples != 0 ? grayForegroundLumaSum / grayForegroundSamples : high;
             if (grayAllBackground)
             {
                 for (std::uint8_t plane = 0; plane < kUnifiedGrayCarrierPlanes; plane++)
@@ -1192,53 +1195,91 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                 projected[chip] = ProjectLumaChip(geometry, tile.bounds.x, tile.bounds.y, chip, lumaModels[0]);
                 symbolModelValid = symbolModelValid && projected[chip] < kUnifiedDataGlyphCells;
             }
+            // Two representation hypotheses per symbol: raw chip luma (exact
+            // at a 1:1 canvas) and the cross-sharpened kernel (deconvolves the
+            // adjacent-chip mixing of provider or capture resampling, exactly
+            // like the SC6 luma lanes). The per-symbol minimum lets the exact
+            // canvas keep its near-zero true-symbol distance while resampled
+            // captures fall back to the sharpened fit.
             std::array<double, 64> symbolDistances{};
+            std::array<double, 64> highLevelDistances{};
             if (symbolModelValid)
             {
                 for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
                 {
                     const std::uint32_t symbolMask = kUnifiedGrayMasksBySymbol[symbol];
-                    for (std::size_t chip = 0; chip < samples.size(); chip++)
+                    // Each level half scores every mask against its own ladder
+                    // expectation (plane 6: LOW tiles carry level-1 chips,
+                    // HIGH tiles level-3 chips). A per-tile foreground-mean
+                    // level decision instead measured the blurred chip mixture
+                    // (field resampling at 1.1x mixes the alternating 8/232
+                    // chips into ~104 luma, crossing the 148 level midpoint and
+                    // flipping every HIGH tile's level bit at full confidence).
+                    for (const double symbolForeground :
+                        {calibration.lumaLevels[1], calibration.lumaLevels[3]})
                     {
-                        const double expected = ((symbolMask >> projected[chip]) & 1U) != 0 ? tileForeground : low;
-                        const double difference = Luma(samples[chip]) - expected;
-                        symbolDistances[symbol] += difference * difference;
+                        double rawDistance = 0.0;
+                        double sharpenedDistance = 0.0;
+                        for (std::size_t chip = 0; chip < samples.size(); chip++)
+                        {
+                            const double expected = ((symbolMask >> projected[chip]) & 1U) != 0 ?
+                                symbolForeground : low;
+                            const double rawDifference = Luma(samples[chip]) - expected;
+                            rawDistance += rawDifference * rawDifference;
+                            const double sharpenedDifference = lumaSamples[chip] - expected;
+                            sharpenedDistance += sharpenedDifference * sharpenedDifference;
+                        }
+                        const double distance = std::min(rawDistance, sharpenedDistance);
+                        if (symbolForeground == calibration.lumaLevels[3])
+                        {
+                            highLevelDistances[symbol] = distance;
+                        }
+                        else
+                        {
+                            symbolDistances[symbol] = distance;
+                        }
                     }
                 }
             }
             for (std::uint8_t plane = 0; plane < kUnifiedGrayCarrierPlanes; plane++)
             {
                 std::int16_t metric = 0;
-                bool metricErased = grayTileSamplingFailed || !symbolModelValid;
-                if (plane == 6)
-                {
-                    const double levelGap = calibration.lumaLevels[3] - calibration.lumaLevels[1];
-                    if (!metricErased && levelGap > 0)
-                    {
-                        const double lowDistance = tileForeground - calibration.lumaLevels[1];
-                        const double highDistance = tileForeground - calibration.lumaLevels[3];
-                        const double scaled = (highDistance * highDistance - lowDistance * lowDistance) *
-                            8192.0 / (levelGap * levelGap);
-                        metric = QuantizeMetric(scaled);
-                    }
-                }
-                else
+                const bool metricErased = grayTileSamplingFailed || !symbolModelValid;
                 {
                     double zeroDistance = std::numeric_limits<double>::infinity();
                     double oneDistance = std::numeric_limits<double>::infinity();
-                    for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
+                    if (plane == 6)
                     {
-                        double& destination = ((symbol >> plane) & 1U) != 0 ? oneDistance : zeroDistance;
-                        destination = std::min(destination, symbolDistances[symbol]);
+                        // The level bit compares the best HIGH-level symbol
+                        // with the best LOW-level symbol; each half keeps its
+                        // own ladder expectation, so resampled chip mixtures
+                        // cannot cross a per-tile mean decision boundary.
+                        for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
+                        {
+                            zeroDistance = std::min(zeroDistance, symbolDistances[symbol]);
+                            oneDistance = std::min(oneDistance, highLevelDistances[symbol]);
+                        }
                     }
-                    // Normalize by the tile's own foreground contrast: a
-                    // nine-chip mask flip at any level then yields
-                    // 9 x 2048 = 18432, the magnitude the frozen min-sum
-                    // offset (2048) and message accumulation proved safe in
-                    // the SC6 product path. The fixed ladder-gap scale left
-                    // LOW-level tiles at 3336, which message accumulation
-                    // can flip mid-decode (field BP oscillation).
-                    const double tileContrast = tileForeground - low;
+                    else
+                    {
+                        // Mask planes partition symbols by their best level
+                        // hypothesis: the tile's actual level must not bias the
+                        // mask distance of the other level class.
+                        for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
+                        {
+                            const double best = std::min(symbolDistances[symbol], highLevelDistances[symbol]);
+                            double& destination = ((symbol >> plane) & 1U) != 0 ? oneDistance : zeroDistance;
+                            destination = std::min(destination, best);
+                        }
+                    }
+                    // Normalize by the tile's peak-luma contrast: a nine-chip
+                    // mask flip then yields 9 x 2048 = 18432 at EITHER ladder
+                    // level, the magnitude the frozen min-sum offset (2048)
+                    // and message accumulation proved safe in the SC6 product
+                    // path. The peak survives capture resampling gracefully,
+                    // unlike a per-tile foreground mean (resampling mixes the
+                    // alternating chip levels before any mean converges).
+                    const double tileContrast = grayPeakLuma - low;
                     const double maskScale = tileContrast > 0 ? 2048.0 / (tileContrast * tileContrast) : 0.0;
                     metric = QuantizeMetric((oneDistance - zeroDistance) * maskScale);
                 }
