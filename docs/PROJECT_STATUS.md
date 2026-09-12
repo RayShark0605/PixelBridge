@@ -95,7 +95,9 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 
 已完成的 Gate 序列：G00-G22（协议/Descriptor/FEC/Carousel/恢复/遥测/工作流/大文件/本地门/远程门/GUI）。产品合同冻结在 `PB-Unified-SC6-V3` + layout 10，GUI 处于本地发布候选。逐 Gate 的终态、证据根与哈希见 [`EVIDENCE_INDEX.md`](EVIDENCE_INDEX.md)。
 
-### 5.2 非本机吞吐优化线（G22 之后）——**已停止**
+### 5.2 非本机吞吐优化线（G22 之后）——**进行中（2026-09-10 用户重开，2026-09-12 第二期收官）**
+
+> 以下 2026-09-09 的"已停止"记录为历史事实，原样保留；重开后的状态见本节末尾的追加记录。
 
 **2026-09-09 由用户主动停止**：非技术阻塞、非任务完成。恢复工作只在用户重新开启目标后进行。
 
@@ -104,6 +106,15 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 - 四轮归因 A1/B1/B2/A2：原组 B 更快、反序观察 A 更快，但 A2 主进程残留后由用户人工结束、exit1/预算告警，**不存在完全合规的反序配对**，因此"稳定增益已证明"不成立。
 - 第 22 节空白带固定 codec A/B 两组均 `NOT_RECOVERED`（A：15 次 LocatorFailure + 15 次 CanvasClipped；B：30 次 CanvasClipped），主帧准入在 Outer FEC 之前被拒。
 - CPU 侧的两项优化（QC-LDPC 行归一化复用 `1.8984 -> 1.4471 ms`，约 23.8%；Bootstrap 顺序 BGRA 扫描游标，中位 -12.2%/-9.6%）**只是对应 CPU 阶段耗时**，不是远控吞吐百分比。
+
+**2026-09-10 至 2026-09-12 追加记录（第二期，用户重开该线并逐项授权）：**
+
+- **机制模型确立**（真实远程画面链路实测，RunReport 口径）：`goodput = 符号接受率 × 唯一符号占比 × 1314 B`，在链路条件差异显著的两个不同日期均以 **<0.1% 误差**复现；接收端单核 CPU、符号接受率常数、重复符号致超线性劣化三条结论全部当日复验确认。
+- **四项优化已入库**（用户批准的默认行为变更，`ctest -C Release -E PBPresentationGate` 全绿）：①增量喷泉 repair 调度（pass≥1 不再整段 K+20%，且按逻辑帧率分档：≤15 Hz 沿用 K+20%、>15 Hz 用 20%→40%→80%→160% 翻倍预算，`docs/ENCODER_STREAMING_CAROUSEL.md` §1.1 第 7 条）；②发送端活跃段窗口 8→6、接收端解码器配额解耦保持 8（`senderUnifiedReceiverActiveDecoderLimit`）；③锁定几何窗口化 Bootstrap（32.3→2.7 ms/帧，实机 10 万+帧 fast-path 命中率 >99.8%，含漂移守卫与全扫描回退）；④15 码字并行 Qc-LDPC FEC（私有解码车道，与串行逐位一致有专项测试与全量语料背书；`--stage-diagnostics` 运行自动回退串行）。另：headless Decoder CLI 常驻 RunMeasurementRecorder（RunReport.3 具备 stageCounters/captureFlow/processCpu 归因）+ `--stage-diagnostics` 开关。
+- **现场单样本数字**（第三方面板远控链路、50/100 MiB、15/30 Hz、`--profile unified-bands`、同日同链路基线对比，全部 `digestMatch=true`）：30 Hz/50 MiB **94,803 → 196,212 B/s（2.07×）**；15 Hz/100 MiB 60,089 → 77,593 B/s（+29%）。两因子模型对每格预测误差 <0.1%。
+- **边界**：以上为现场单样本工作口径，**不构成认证吞吐、晋级 Gate 或产品合同变更结论**；每格单次采样系用户批准的实验口径。
+- **未竟**：O4 车道重分配（Chroma 5 槽改判 Luma，用户已授权，实施设计与五步顺序见 `docs/REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md` §12.2）；15 Hz 档瓶颈已转移至发送端空口重复占比，O4 是唯一正交杠杆。
+- 证据根：`<PBLine root>\`、`<PBLine root>\`（vb-/opt-/o2v-/o3v-/o4v-/o5v-/o6v- 系列 runs 与 evidence 日志）；完整过程记录于 `docs/REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md` §1-§12。
 
 ## 6. 度量口径（不得混淆）
 
@@ -125,7 +136,7 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 
 | 事项 | 现状 | 关闭所需 |
 | --- | --- | --- |
-| 非本机整文件吞吐提升 | 未确立，用户主动停止 | 用户重新开启目标，从恢复入口续做 |
+| 非本机整文件吞吐提升 | 2026-09-10 用户重开；第二期四项优化入库（提交 d37d98f…03a79a9），现场单样本 30 Hz/50 MiB 达基线 2.07×（196,212 B/s）；**未做认证级多样本矩阵** | O4 车道重分配实施（设计见 findings §12.2）+ 认证口径多样本矩阵 |
 | 4/3 显示采样适配（夜间记录第 23 节） | 仅只读核对，未实现/构建/运行 | 新授权 + 新 root/build/output + 有界验证 |
 | 空白带补充控制（layout 11） | CPU 参考通过；真实 codec 未恢复；控制槽未释放 | 独立显示采样变量 + 明确擦除预算，不降门限 |
 | 以当前源码身份建立对照基线 | 未完成（`baseCommit`/`sourceFingerprintSha256` 仍是旧 build 注入值） | 重新 freeze、build、test、package、seal |
@@ -151,6 +162,7 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 | 流式与恢复 | `ENCODER_STREAMING_CAROUSEL.md`、`DECODER_RESUMABLE_RECOVERY.md` |
 | 工具合同 | `GOLDEN_VECTOR_HARNESS.md` |
 | 远程实验通道 | `REMOTE_OPS_BRIDGE.md`（2026-09-10 新增；SMB 文件协议操作桥的机制与用法入口） |
+| 非本机吞吐线第二期 | `REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md`（2026-09-11 新增；两因子模型、四项优化机制与实测、O4 实施设计。会话工作日志性质：现状判定以本文件与 `EVIDENCE_INDEX.md` 为准） |
 
 ### 8.2 `docs/` 之外
 

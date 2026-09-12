@@ -178,6 +178,21 @@ G00-G22 的**逐项验收条款与实现史**保留在 [`UNIFIED_VISUAL_LARGE_FI
 5. §22 终态 `FIXED_CODEC_AB_DIAGNOSTIC_COMPLETE；BOTH_NOT_RECOVERED；REMOTE_GAIN_NOT_ESTABLISHED`；`CanvasClipped` 来自 `ResolveUnifiedSamplingGeometryInternal` 的拒绝，**不得**扩写为真实 ROI 被裁剪。
 6. 停止时路线图状态：Step5 `IN_PROGRESS／未晋级`，Step6/Step9 `NOT_STARTED`；未晋级任何默认值，未改主区控制、layout 10、摘要、安全发布或 reopen 规则。
 
+### 6.1 非本机吞吐优化线第二期（2026-09-10 至 2026-09-12）——**进行中**
+
+用户 2026-09-10 重开该线（第一期见上节，其"已停止/未确立"结论为当时事实）。第二期为真实远程画面链路（Encoder 本机 → 右屏第三方远控查看器 → 远程机产品 Decoder CLI）上的机制定位、授权优化与同日基线 A/B。
+
+| 项 | 内容 |
+| --- | --- |
+| 机制模型 | `goodput = 符号接受率 × 唯一符号占比 × 1314 B`；两日复现误差 <0.1%（`outerAdmission` 计数器精确推导） |
+| 入库优化（用户批准默认行为） | 增量喷泉 repair（fps 分档：≤15 Hz K+20%、>15 Hz 20%→40%→80%→160% 翻倍）；发送窗口 8→6 + 接收配额解耦 8；锁定几何窗口化 Bootstrap（32.3→2.7 ms/帧）；15 码字并行 Qc-LDPC FEC（与串行逐位一致） |
+| 关键提交 | `d37d98f` → `7df05e2` → `55e4921`（revert 80% 封顶）→ `03a79a9`（并行 FEC + fps 感知） |
+| 现场单样本 | 30 Hz/50 MiB **196,212 B/s（2.07× 同日基线）**；15 Hz/100 MiB 77,593 B/s（+29%）；全部 `digestMatch=true`，模型预测误差 <0.1% |
+| 证据根 | `<PBLine root>\`（交错 A/B、空白带、GOP/码率机制）；`<PBLine root>\`（vb-/opt-/o2v-/o3v-/o4v-/o5v-/o6v- runs、evidence 日志、matrix/validate-index*.json） |
+| 过程记录 | `docs/REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md` §1-§12（含三次现场事故处置与预算调参三轮教训） |
+| 不得越界 | **单样本现场工作口径**：不作认证吞吐、Gate 晋级或产品合同结论；每格单次采样系用户批准的实验口径；优化为经用户授权的默认行为变更，wire 格式/摘要/发布/冲突拒绝/资源限制零改动 |
+| 未竟 | O4 车道重分配（Chroma 5 槽→Luma，已授权，设计见 findings §12.2）；认证级多样本矩阵 |
+
 ## 7. RemoteVisual 历史路线（已被统一产品路线取代）
 
 | 项 | 终态 | 备注 |
@@ -230,7 +245,7 @@ G00-G22 的**逐项验收条款与实现史**保留在 [`UNIFIED_VISUAL_LARGE_FI
 
 | 事项 | 现状 | 关闭所需 |
 | --- | --- | --- |
-| 非本机整文件吞吐提升 | 未确立；用户主动停止 | 用户重新开启目标，从恢复入口续做 |
+| 非本机整文件吞吐提升 | 第二期进行中（§6.1）：四项优化入库，现场单样本 30 Hz/50 MiB 达基线 2.07×；未做认证级矩阵 | O4 实施（findings §12.2）+ 认证口径多样本矩阵 |
 | Citrix Encoder 显示兼容 | `CITRIX_FIELD_PENDING` | 原 Citrix 会话完整解压包、观察数据帧、人工按 Esc |
 | Step1 完整现场矩阵 / Step2-Step3 现场门 | `NOT_RUN` | 现场窗口 + 人工操作（右屏，不用输入自动化） |
 | 4/3 显示采样适配（夜间 §23） | 仅只读核对 | 新授权 + 新 root/build/output + 有界验证 |

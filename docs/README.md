@@ -42,6 +42,7 @@
 | [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md) | G22 GUI 发布内容与交互合同（右屏、Esc、不干扰左屏） |
 | [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) | G00-G22 统一路线的目标定义、决策与验收口径（历史权威） |
 | [`REMOTE_OPS_BRIDGE.md`](REMOTE_OPS_BRIDGE.md)（2026-09-10 新增） | 远程实验操作桥（PBRemoteOpsBridge）：SMB 文件协议机制、远程 Encoder 实验编排用法、部署与故障排查入口 |
+| [`REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md`](REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md)（2026-09-11 新增） | 非本机吞吐线第二期的会话工作日志：两因子模型、四项授权优化的机制与实测、现场事故处置、O4 实施设计。现状判定以 `PROJECT_STATUS.md`/`EVIDENCE_INDEX.md` 为准 |
 
 ## 4. `docs/` 之外的文档
 

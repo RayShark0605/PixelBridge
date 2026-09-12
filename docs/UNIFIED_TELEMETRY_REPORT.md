@@ -81,7 +81,9 @@ Unified Encoder / Decoder 导出 `PixelBridge.RunReport.3`，Decoder 内嵌 `Pix
 - fresh published run 缺少 encoded-byte 证据：`null` / `EncodedByteCoverageUnavailable`；
 - 0-byte 文件在全部 gate 满足时允许实测值 0，这不同于 unavailable。
 
-没有独立 sender truth 时，`preFecBerEstimate` 为 `null` / `No independent sender truth`。provider、mode、version 等只出现在 `NonDecodingOperatorMetadata` 中；测试改变这些字段后逐项比较实际 Unified demodulator 配置、locator/metric/FEC 阈值、输出 bytes/digest 和 lane 遥测，不能通过 provider 标签选择解码参数。
+没有独立 sender truth 时，`preFecBerEstimate` 为 `null` / `No independent sender truth`。
+
+**2026-09-12 归因字段补齐（提交 `03a79a9` 前 d37d98f 引入）：** headless Decoder CLI 常驻 `RunMeasurementRecorder`，因此产品 `RunReport.3` 现在总是携带 `stageCounters`（outer admission 系列、bootstrap/GPU/FEC 阶段 CPU 总量、`bootstrapWindowedFastPath/FallbackFrames`）、`captureFlow` 与 `measurement`；`processCpuAveragePercent/Peak/EquivalentCores` 无条件输出。`--stage-diagnostics` 开关额外接通逐阶段 `pbcore::StageDiagnostics`，并**按设计强制串行 FEC 路径**（诊断保真；并行口径的跑分不得携带该开关）。字段语义与既有 `.2` 扁平分支一致，不改变本文件第 4 节的度量真值口径。provider、mode、version 等只出现在 `NonDecodingOperatorMetadata` 中；测试改变这些字段后逐项比较实际 Unified demodulator 配置、locator/metric/FEC 阈值、输出 bytes/digest 和 lane 遥测，不能通过 provider 标签选择解码参数。
 
 ## 5. 已运行的最小验证与最终结果
 
