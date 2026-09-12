@@ -1148,12 +1148,12 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     description.session = MakeSessionDescriptor(sessionId.Value(), rawBytes.size(), segmentCount,
         visualProfileId, "payload.bin");
     const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
+    const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
     for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < segmentCount; segmentOrdinal++)
     {
-        const std::uint64_t rawOffset = segmentOrdinal * pbprotocol::kDefaultSourceSegmentTargetBytes;
+        const std::uint64_t rawOffset = segmentOrdinal * segmentTargetBytes;
         const std::uint64_t remainingBytes = rawBytes.size() - rawOffset;
-        const std::size_t rawSize = static_cast<std::size_t>((std::min)(remainingBytes,
-            static_cast<std::uint64_t>(pbprotocol::kDefaultSourceSegmentTargetBytes)));
+        const std::size_t rawSize = static_cast<std::size_t>((std::min)(remainingBytes, segmentTargetBytes));
         description.segments.push_back(PrepareSegmentDescription(description.session, sessionTag, segmentOrdinal,
             rawOffset, rawBytes.subspan(static_cast<std::size_t>(rawOffset), rawSize), compressionEnabled,
             compressionLevel, GetOuterBlockBytesForProfileId(visualProfileId)));
@@ -1188,9 +1188,9 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
     for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < segmentCount; segmentOrdinal++)
     {
         Require(!stopRequested, "Stopped during source preparation");
-        const std::uint64_t rawOffset = segmentOrdinal * pbprotocol::kDefaultSourceSegmentTargetBytes;
-        const std::uint64_t rawSize = (std::min)(source.fileBytes - rawOffset,
-            static_cast<std::uint64_t>(pbprotocol::kDefaultSourceSegmentTargetBytes));
+        const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
+        const std::uint64_t rawOffset = segmentOrdinal * segmentTargetBytes;
+        const std::uint64_t rawSize = (std::min)(source.fileBytes - rawOffset, segmentTargetBytes);
         const std::vector<std::byte> rawBytes = ReadSourceRange(source, rawOffset, rawSize);
         wholeFileHasher.Update(rawBytes);
         TransferDescription::Segment segment = PrepareSegmentDescription(description.session, sessionTag,
@@ -5166,8 +5166,13 @@ private:
         }
         const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(session_->sessionId);
         const auto finalized = receiver_.PrepareFinalization(sessionTag);
-        RequireResult(finalized, "Receiver finalization was not authoritative after stored commit: " +
-            DescribeReceiverError(finalized.Error()));
+        if (!finalized)
+        {
+            // The error string is built only on the failure path: Error() is
+            // an optional access on the success result.
+            Require(false, "Receiver finalization was not authoritative after stored commit: " +
+                DescribeReceiverError(finalized.Error()));
+        }
         Require(finalized.Value() == *manifest_, "Receiver returned a different FinalManifest");
         snapshot_.Update([this](DecoderSnapshot& value)
         {
