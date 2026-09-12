@@ -798,11 +798,11 @@ struct SourceFile
 }
 
 [[nodiscard]] std::vector<std::byte> ReadSourceRange(SourceFile& source, const std::uint64_t offset,
-    const std::uint64_t byteCount)
+    const std::uint64_t byteCount, const std::uint64_t maximumSegmentBytes)
 {
     const auto endOffset = pbprotocol::CheckedAddUint64(offset, byteCount);
     RequireResult(endOffset, "源文件读取区间溢出");
-    Require(endOffset.Value() <= source.fileBytes && byteCount <= pbprotocol::kDefaultSourceSegmentTargetBytes,
+    Require(endOffset.Value() <= source.fileBytes && byteCount <= maximumSegmentBytes,
         "源文件读取区间超过已冻结的文件身份或 Segment 上限");
     LARGE_INTEGER fileOffset{};
     Require(offset <= static_cast<std::uint64_t>((std::numeric_limits<LONGLONG>::max)()),
@@ -1191,7 +1191,7 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
         const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
         const std::uint64_t rawOffset = segmentOrdinal * segmentTargetBytes;
         const std::uint64_t rawSize = (std::min)(source.fileBytes - rawOffset, segmentTargetBytes);
-        const std::vector<std::byte> rawBytes = ReadSourceRange(source, rawOffset, rawSize);
+        const std::vector<std::byte> rawBytes = ReadSourceRange(source, rawOffset, rawSize, segmentTargetBytes);
         wholeFileHasher.Update(rawBytes);
         TransferDescription::Segment segment = PrepareSegmentDescription(description.session, sessionTag,
             segmentOrdinal, rawOffset, rawBytes, compressionEnabled, compressionLevel,
@@ -1225,11 +1225,13 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
 }
 
 [[nodiscard]] std::vector<std::byte> LoadEncodedSegment(SourceFile& source,
-    const TransferDescription::Segment& segment, const bool compressionEnabled, const int compressionLevel)
+    const TransferDescription::Segment& segment, const bool compressionEnabled, const int compressionLevel,
+    const std::uint64_t maximumSegmentBytes)
 {
     const pbprotocol::SegmentDescriptor& descriptor = segment.descriptor;
     Require(IsSourceStable(source), "源文件身份在 Segment 重建前发生变化");
-    const std::vector<std::byte> rawBytes = ReadSourceRange(source, descriptor.rawOffset, descriptor.rawSize);
+    const std::vector<std::byte> rawBytes = ReadSourceRange(source, descriptor.rawOffset, descriptor.rawSize,
+        maximumSegmentBytes);
     Require(pbprotocol::ComputeBlake3Digest(rawBytes) == descriptor.rawDigest.bytes,
         "重新读取的 Segment RawDigest 与预扫描结果不一致");
     auto prepared = PrepareEncodedSegment(rawBytes, compressionEnabled, compressionLevel);
@@ -6029,7 +6031,8 @@ void RunHeadlessMultiSegmentFileProbe(const std::wstring& sourcePath,
             Require(segmentOrdinal < description.segments.size(),
                 "headless application Segment loader ordinal is invalid");
             return LoadEncodedSegment(source, description.segments[static_cast<std::size_t>(segmentOrdinal)],
-                options.compressionEnabled, options.compressionLevel);
+                options.compressionEnabled, options.compressionLevel,
+                description.session.sourceSegmentTargetBytes);
         },
         [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint32_t systematicBlockCount)
         {
@@ -7270,7 +7273,7 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeStreamingCarouselFile(const std::ws
                 {
                     Require(segmentOrdinal < description.segments.size(), "headless Segment loader ordinal is invalid");
                     return LoadEncodedSegment(source, description.segments[segmentOrdinal],
-                        compressionEnabled, compressionLevel);
+                        compressionEnabled, compressionLevel, description.session.sourceSegmentTargetBytes);
                 },
                 [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint32_t systematicBlockCount)
                 {
@@ -7446,7 +7449,8 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeStreamingCarouselFile(const std::ws
             if (!reproducedRepairEquation && segmentResult.outerFecMode == pbprotocol::OuterFecMode::WirehairV2)
             {
                 const std::vector<std::byte> encodedBytes = LoadEncodedSegment(restartSource,
-                    restartPreparation.description.segments[index], compressionEnabled, compressionLevel);
+                    restartPreparation.description.segments[index], compressionEnabled, compressionLevel,
+                    restartPreparation.description.session.sourceSegmentTargetBytes);
                 auto encoderResult = pbouterfec::WirehairV2Encoder::Recreate(encodedBytes,
                     restartPreparation.description.segments[index].descriptor);
                 RequireResult(encoderResult, "restart Wirehair equation recreation failed");
@@ -9055,7 +9059,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             {
                 Require(segmentOrdinal < description.segments.size(), "广播 Segment ordinal 越界");
                 return LoadEncodedSegment(source, description.segments[segmentOrdinal],
-                    config.compressionEnabled, config.compressionLevel);
+                    config.compressionEnabled, config.compressionLevel,
+                    description.session.sourceSegmentTargetBytes);
             },
             [&sessionStore](const std::uint64_t segmentOrdinal, const std::uint32_t systematicBlockCount)
             {

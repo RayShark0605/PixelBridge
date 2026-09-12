@@ -37,7 +37,8 @@ void RunUnifiedWindowTransitionProbe(const std::wstring& sourcePath,
     SenderFrameBuilder builder(profile, description, 4,
         [&source, &description](const std::uint64_t ordinal)
         {
-            return LoadEncodedSegment(source, description.segments.at(static_cast<std::size_t>(ordinal)), false, 3);
+            return LoadEncodedSegment(source, description.segments.at(static_cast<std::size_t>(ordinal)), false, 3,
+                description.session.sourceSegmentTargetBytes);
         },
         [&sessionStore](const std::uint64_t ordinal, const std::uint32_t blockCount)
         {
