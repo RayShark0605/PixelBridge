@@ -284,29 +284,27 @@ TEST_CASE("Gray-state frames fully recover at 1:1 with gray foreground pixels", 
     const std::vector<std::byte> pixels = RenderGray(fixture);
     // The raster itself must carry the gray identity: a foreground data-tile
     // chip is one of the four gray levels, never a saturated color state.
+    // The v2 carrier renders mask symbols at fixed high/low luma; verify a
+    // data tile carries both a foreground chip at the calibrated high level
+    // and a background chip at the low level.
     bool sawForeground = false;
-    for (const UnifiedChromaState& state : kUnifiedGrayStatesByLabel)
+    bool sawBackground = false;
     {
-        const std::array<std::byte, 3> gray{std::byte{state.blue}, std::byte{state.green}, std::byte{state.red}};
-        REQUIRE(gray[0] == gray[1]);
-        REQUIRE(gray[1] == gray[2]);
-        for (const UnifiedChromaState& color : kUnifiedChromaStatesByLabel)
+        const UnifiedDataTile tile = GetUnifiedDataTile(0);
+        for (std::uint32_t row = 0; row < 5 && (!sawForeground || !sawBackground); row++)
         {
-            REQUIRE(gray[0] != std::byte{color.blue});
-        }
-    }
-    for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount && !sawForeground; tileOrdinal++)
-    {
-        const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
-        const std::byte* const pixel = pixels.data() +
-            (static_cast<std::size_t>(tile.bounds.y) * kUnifiedVisualProfile.canvasWidth + tile.bounds.x) * 4;
-        for (const UnifiedChromaState& state : kUnifiedGrayStatesByLabel)
-        {
-            sawForeground = sawForeground || (pixel[0] == std::byte{state.blue} &&
-                pixel[1] == std::byte{state.green} && pixel[2] == std::byte{state.red});
+            for (std::uint32_t column = 0; column < 5 && (!sawForeground || !sawBackground); column++)
+            {
+                const std::byte* const pixel = pixels.data() +
+                    (static_cast<std::size_t>(tile.bounds.y + row) * kUnifiedVisualProfile.canvasWidth +
+                        tile.bounds.x + column) * 4;
+                sawForeground = sawForeground || std::to_integer<std::uint8_t>(pixel[1]) == kUnifiedDataHighLuma;
+                sawBackground = sawBackground || std::to_integer<std::uint8_t>(pixel[1]) == kUnifiedDataLowLuma;
+            }
         }
     }
     REQUIRE(sawForeground);
+    REQUIRE(sawBackground);
 
     UnifiedVisualCpuOracle oracle = MakeOracle();
     const UnifiedVisualObservation observation = oracle.Decode(View(pixels), fixture.plan, GrayIdentity());

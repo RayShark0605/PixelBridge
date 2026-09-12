@@ -36,6 +36,17 @@ CALIBRATION = ((736, 16), (1696, 16), (96, 1000), (1056, 1000))
 PHASE = ((896, 16), (896, 1000))
 # Gray foreground levels replace the SC6-V3 iso-luma chroma colors; spacing is
 # 56, comfortably above the decode policy's minimum luma level gap of 32.
+GRAY_MASKS_BY_SYMBOL = (
+    0x1FFFFFF, 0x0AAAAAA, 0x0666666, 0x1333333, 0x01E1E1E, 0x14B4B4B, 0x1878787, 0x0D2D2D2,
+    0x001FE01, 0x154AB54, 0x1986798, 0x0CD32CD, 0x1E01FE0, 0x0B54AB5, 0x0798679, 0x12CD32C,
+    0x00001FF, 0x15554AA, 0x1999866, 0x0CCCD33, 0x1E1E01E, 0x0B4B54B, 0x0787987, 0x12D2CD2,
+    0x1FE0001, 0x0AB5554, 0x0679998, 0x132CCCD, 0x01FE1E0, 0x14AB4B5, 0x1867879, 0x0D32D2C,
+    0x0000000, 0x1555555, 0x1999999, 0x0CCCCCC, 0x1E1E1E1, 0x0B4B4B4, 0x0787878, 0x12D2D2D,
+    0x1FE01FE, 0x0AB54AB, 0x0679867, 0x132CD32, 0x01FE01F, 0x14AB54A, 0x1867986, 0x0D32CD3,
+    0x1FFFE00, 0x0AAAB55, 0x0666799, 0x13332CC, 0x01E1FE1, 0x14B4AB4, 0x1878678, 0x0D2D32D,
+    0x001FFFE, 0x154AAAB, 0x1986667, 0x0CD3332, 0x1E01E1F, 0x0B54B4A, 0x0798786, 0x12CD2D3,
+)
+
 GRAY_STATES_BY_LABEL = (
     (56, 56, 56, 0),
     (112, 112, 112, 1),
@@ -51,6 +62,28 @@ def Record(sequence: int) -> bytes:
     assert len(prefix) == 40
     import generate_local_desktop_golden as scaffold
     return prefix + struct.pack("<I", scaffold.Crc32C(prefix))
+
+
+def GrayActiveTiles() -> int:
+    return 15 * 16200 // 6
+
+
+def GraySiteLogical(tile: int, plane: int, sequence: int) -> int | None:
+    domain_bit = tile * 6 + plane
+    modulus, multiplier, _inverse, offset, phase_step, phase_count = mapping.CODEWORD_INTERLEAVE
+    phase = sequence % phase_count
+    phase_offset = (offset + phase * phase_step) % modulus
+    slot = domain_bit // modulus
+    within = domain_bit % modulus
+    # inverse of x -> x * multiplier within the slot
+    shifted = (within - phase_offset) % modulus
+    inv = pow(multiplier, -1, modulus)
+    logical = slot * modulus + (shifted * inv) % modulus
+    return logical if logical < 15 * modulus else None
+
+
+def ReadCodedBit(codewords: bytes, logical: int) -> int:
+    return (codewords[logical // 8] >> (logical % 8)) & 1
 
 
 def Raster(sequence: int, record: bytes, codewords: bytes) -> bytes:
@@ -74,26 +107,21 @@ def Raster(sequence: int, record: bytes, codewords: bytes) -> bytes:
                     foreground = row < 5 and column < 5 and mask & (1 << (row * 5 + column))
                     sc6cpu.Fill(image, tile_x + column, tile_y + row, 1, 1, HIGH if foreground else LOW)
 
-    luma_labels = bytearray(mapping.DATA_TILE_COUNT)
-    chroma_labels = bytearray(mapping.DATA_TILE_COUNT)
-    lane_starts = (0, 9 * 16200, 10 * 16200)
-    for lane, lane_contract in enumerate(mapping.LANES):
-        for logical_bit in range(lane_contract[1]):
-            carrier, tile, plane = mapping.MapLogicalBit(lane, logical_bit, sequence)
-            global_bit = lane_starts[lane] + logical_bit
-            value = (codewords[global_bit // 8] >> (global_bit % 8)) & 1
-            if carrier == 0:
-                luma_labels[tile] |= value << plane
-            else:
-                chroma_labels[tile] |= value << plane
     coordinates = sc6cpu.DataCoordinates()
     for tile, (x, y) in enumerate(coordinates):
-        mask = mapping.MASKS_BY_LABEL[luma_labels[tile]]
-        level = GRAY_STATES_BY_LABEL[chroma_labels[tile]][0]
+        symbol = 1
+        if tile < GrayActiveTiles():
+            symbol = 0
+            for plane in range(6):
+                logical = GraySiteLogical(tile, plane, sequence)
+                assert logical is not None
+                if ReadCodedBit(codewords, logical):
+                    symbol |= 1 << plane
+        mask = GRAY_MASKS_BY_SYMBOL[symbol]
         for row in range(6):
             for column in range(6):
                 foreground = row < 5 and column < 5 and mask & (1 << (row * 5 + column))
-                sc6cpu.Fill(image, x + column, y + row, 1, 1, level if foreground else LOW)
+                sc6cpu.Fill(image, x + column, y + row, 1, 1, HIGH if foreground else LOW)
     return bytes(image)
 
 

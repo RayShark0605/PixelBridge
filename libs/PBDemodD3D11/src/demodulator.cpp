@@ -992,26 +992,55 @@ DemodStatus BuildUnifiedFrameBindings(Demodulator::Implementation& state, const 
         destination.originY = tile.bounds.y;
         destination.lumaBits.fill(invalidMetric);
         destination.chromaBits.fill(invalidMetric);
-        for (std::uint8_t bitPlane = 0; bitPlane < destination.lumaBits.size(); bitPlane++)
+        if (binding.grayStates)
         {
-            const auto logical = pbmodulation::GetUnifiedLogicalCarrierBit(
-                {true, pbmodulation::UnifiedCarrier::Luma, tileOrdinal, bitPlane}, binding.frameSequence);
-            if (logical.valid)
+            // Gray carrier v2: the six mask planes ride lumaBits[0..3] plus
+            // chromaBits[0..1]; the flat logical bit IS the metric index.
+            if (tileOrdinal < pbmodulation::kUnifiedGrayActiveTiles)
             {
-                const auto capacity = pbmodulation::GetUnifiedLaneCapacity(logical.lane);
-                destination.lumaBits[bitPlane] = capacity.firstCodewordSlot *
-                    pbmodulation::kUnifiedVisualProfile.innerCodewordBits + logical.logicalBit;
+                for (std::uint8_t bitPlane = 0; bitPlane < 4; bitPlane++)
+                {
+                    const auto logical = pbmodulation::GetUnifiedGrayLogicalBit(
+                        {true, pbmodulation::UnifiedCarrier::Luma, tileOrdinal, bitPlane}, binding.frameSequence);
+                    if (logical.valid)
+                    {
+                        destination.lumaBits[bitPlane] = logical.logicalBit;
+                    }
+                }
+                for (std::uint8_t bitPlane = 0; bitPlane < 2; bitPlane++)
+                {
+                    const auto logical = pbmodulation::GetUnifiedGrayLogicalBit(
+                        {true, pbmodulation::UnifiedCarrier::Luma, tileOrdinal, static_cast<std::uint8_t>(4 + bitPlane)}, binding.frameSequence);
+                    if (logical.valid)
+                    {
+                        destination.chromaBits[bitPlane] = logical.logicalBit;
+                    }
+                }
             }
         }
-        for (std::uint8_t bitPlane = 0; bitPlane < destination.chromaBits.size(); bitPlane++)
+        else
         {
-            const auto logical = pbmodulation::GetUnifiedLogicalCarrierBit(
-                {true, pbmodulation::UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, binding.frameSequence);
-            if (logical.valid)
+            for (std::uint8_t bitPlane = 0; bitPlane < destination.lumaBits.size(); bitPlane++)
             {
-                const auto capacity = pbmodulation::GetUnifiedLaneCapacity(logical.lane);
-                destination.chromaBits[bitPlane] = capacity.firstCodewordSlot *
-                    pbmodulation::kUnifiedVisualProfile.innerCodewordBits + logical.logicalBit;
+                const auto logical = pbmodulation::GetUnifiedLogicalCarrierBit(
+                    {true, pbmodulation::UnifiedCarrier::Luma, tileOrdinal, bitPlane}, binding.frameSequence);
+                if (logical.valid)
+                {
+                    const auto capacity = pbmodulation::GetUnifiedLaneCapacity(logical.lane);
+                    destination.lumaBits[bitPlane] = capacity.firstCodewordSlot *
+                        pbmodulation::kUnifiedVisualProfile.innerCodewordBits + logical.logicalBit;
+                }
+            }
+            for (std::uint8_t bitPlane = 0; bitPlane < destination.chromaBits.size(); bitPlane++)
+            {
+                const auto logical = pbmodulation::GetUnifiedLogicalCarrierBit(
+                    {true, pbmodulation::UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, binding.frameSequence);
+                if (logical.valid)
+                {
+                    const auto capacity = pbmodulation::GetUnifiedLaneCapacity(logical.lane);
+                    destination.chromaBits[bitPlane] = capacity.firstCodewordSlot *
+                        pbmodulation::kUnifiedVisualProfile.innerCodewordBits + logical.logicalBit;
+                }
             }
         }
     }
@@ -1680,25 +1709,6 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
         context->CSSetUnorderedAccessViews(0, 5, phaseOutputs, nullptr);
         context->CSSetShader(state.evaluateUnifiedPhase.Get(), nullptr, 0);
         context->Dispatch(1, 1, 1);
-        // Gray-state mode: bin every tile foreground mean, then derive the
-        // four data-driven state centers before the demod consumes them.
-        if (binding.grayStates)
-        {
-            ID3D11UnorderedAccessView* binOutputs[]{nullptr, nullptr, nullptr, nullptr, nullptr,
-                slot.unifiedForegroundHistogramUav.Get(), nullptr};
-            context->CSSetUnorderedAccessViews(0, 7, binOutputs, nullptr);
-            context->CSSetShader(state.binUnifiedForeground.Get(), nullptr, 0);
-            context->Dispatch((binding.tileCount + 63) / 64, 1, 1);
-            ID3D11UnorderedAccessView* modeOutputs[]{nullptr, nullptr, nullptr, nullptr, nullptr,
-                slot.unifiedForegroundHistogramUav.Get(), slot.unifiedStateModesUav.Get()};
-            context->CSSetUnorderedAccessViews(0, 7, modeOutputs, nullptr);
-            context->CSSetShader(state.findUnifiedModes.Get(), nullptr, 0);
-            context->Dispatch(1, 1, 1);
-            // Unbind the mode UAVs: the demod pass reads the same buffer
-            // through its SRV, and D3D11 forbids a simultaneous UAV binding.
-            ID3D11UnorderedAccessView* modeCleared[]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-            context->CSSetUnorderedAccessViews(0, 7, modeCleared, nullptr);
-        }
         ID3D11UnorderedAccessView* dataOutputs[]{nullptr, slot.metricsUav.Get(),
             slot.unifiedTileSamplingFailuresUav.Get(), nullptr, slot.unifiedPhaseUav.Get()};
         context->CSSetUnorderedAccessViews(0, 5, dataOutputs, nullptr);

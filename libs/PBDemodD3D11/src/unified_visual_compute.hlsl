@@ -47,6 +47,17 @@ StructuredBuffer<float4> Calibration : register(t1);
 StructuredBuffer<uint4> UnusedTileMappings : register(t2);
 StructuredBuffer<UnifiedTileBinding> UnifiedBindings : register(t3);
 StructuredBuffer<uint> SymbolMasks : register(t4);
+static const uint GrayMasksBySymbol[64] =
+{
+    0x1FFFFFF, 0x0AAAAAA, 0x0666666, 0x1333333, 0x01E1E1E, 0x14B4B4B, 0x1878787, 0x0D2D2D2,
+    0x001FE01, 0x154AB54, 0x1986798, 0x0CD32CD, 0x1E01FE0, 0x0B54AB5, 0x0798679, 0x12CD32C,
+    0x00001FF, 0x15554AA, 0x1999866, 0x0CCCD33, 0x1E1E01E, 0x0B4B54B, 0x0787987, 0x12D2CD2,
+    0x1FE0001, 0x0AB5554, 0x0679998, 0x132CCCD, 0x01FE1E0, 0x14AB4B5, 0x1867879, 0x0D32D2C,
+    0x0000000, 0x1555555, 0x1999999, 0x0CCCCCC, 0x1E1E1E1, 0x0B4B4B4, 0x0787878, 0x12D2D2D,
+    0x1FE01FE, 0x0AB54AB, 0x0679867, 0x132CD32, 0x01FE01F, 0x14AB54A, 0x1867986, 0x0D32CD3,
+    0x1FFFE00, 0x0AAAB55, 0x0666799, 0x13332CC, 0x01E1FE1, 0x14B4AB4, 0x1878678, 0x0D2D32D,
+    0x001FFFE, 0x154AAAB, 0x1986667, 0x0CD3332, 0x1E01E1F, 0x0B54B4A, 0x0798786, 0x12CD2D3,
+};
 StructuredBuffer<uint> ExpectedFreshnessBits : register(t5);
 StructuredBuffer<float4> StateModes : register(t6);
 RWStructuredBuffer<float4> CalibrationOutput : register(u0);
@@ -615,44 +626,55 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float low = GetLumaCentroid(0);
     const float high = GetLumaCentroid(2);
     const float lumaGap = high - low;
-    // Gray-state mode: the four foreground levels span well below and above
-    // the ladder high, so the mask classifier uses this tile's own measured
-    // foreground mean and the foreground gate drops to the lowest gray
-    // centroid; the two state bits classify that mean against the gray levels.
-    // Gray-state mode: the mask classifier uses this tile's own measured
-    // foreground mean and the foreground gate is the ladder 0/1 midpoint
-    // (independent of the state calibration); the two state bits classify
-    // that mean against the data-driven mode centers, or the stripe
-    // centroids when the mode estimate is invalid.
-    float stateCenters[4];
-    float effectiveStateScale = 0.0;
     if (StateLumaMode != 0)
     {
-        const float4 modes = StateModes[0];
-        const bool modesValid = StateModes[1].x > 0.5;
-        if (modesValid)
+        // Gray carrier v2: classify the tile against the 64-symbol codebook
+        // with raw sample luma, then min-partition the symbol distances
+        // into the six mask planes (lumaBits[0..3] + chromaBits[0..1]).
+        float symbolDistances[64];
+        [unroll]
+        for (uint symbol = 0; symbol < 64; symbol++)
         {
-            stateCenters[0] = modes.x;
-            stateCenters[1] = modes.y;
-            stateCenters[2] = modes.z;
-            stateCenters[3] = modes.w;
-            const float minimumModeGap = min(stateCenters[1] - stateCenters[0],
-                min(stateCenters[2] - stateCenters[1], stateCenters[3] - stateCenters[2]));
-            effectiveStateScale = minimumModeGap > 0.0 ? 2048.0 / (minimumModeGap * minimumModeGap) : 0.0;
-        }
-        else
-        {
-            [unroll]
-            for (uint fallback = 0; fallback < 4; fallback++)
+            float distance = 0.0;
+            const uint mask = GrayMasksBySymbol[symbol];
+            [loop]
+            for (uint chip = 0; chip < 25; chip++)
             {
-                stateCenters[fallback] = GetChromaCentroid(fallback).x;
+                const float expected = ((mask >> chip) & 1) != 0 ? high : low;
+                const float difference = Luma(samples[chip]) - expected;
+                distance += difference * difference;
             }
-            const float fallbackGap = min(min(abs(stateCenters[1] - stateCenters[0]),
-                abs(stateCenters[2] - stateCenters[1])), abs(stateCenters[3] - stateCenters[2]));
-            effectiveStateScale = fallbackGap > 0.0 ? 2048.0 / (fallbackGap * fallbackGap) : 0.0;
+            symbolDistances[symbol] = distance;
         }
+        uint grayPlanes[6] = {binding.LumaBit0, binding.LumaBit1, binding.LumaBit2,
+            binding.LumaBit3, binding.ChromaBit0, binding.ChromaBit1};
+        [unroll]
+        for (uint plane = 0; plane < 6; plane++)
+        {
+            float zeroDistance = 3.402823466e+38;
+            float oneDistance = 3.402823466e+38;
+            [unroll]
+            for (uint symbol = 0; symbol < 64; symbol++)
+            {
+                if (((symbol >> plane) & 1) != 0)
+                {
+                    oneDistance = min(oneDistance, symbolDistances[symbol]);
+                }
+                else
+                {
+                    zeroDistance = min(zeroDistance, symbolDistances[symbol]);
+                }
+            }
+            if (grayPlanes[plane] < UnifiedMetricCount)
+            {
+                MetricOutput[grayPlanes[plane]] = lumaGap > 0.0 ?
+                    (oneDistance - zeroDistance) * 2048.0 / (lumaGap * lumaGap) : 0.0;
+            }
+        }
+        TileSamplingFailures[tileOrdinal] = valid ? 0 : 1;
+        return;
     }
-    const float foregroundThreshold = StateLumaMode != 0 ? (low + GetLumaCentroid(1)) * 0.5 : (low + high) * 0.5;
+    const float foregroundThreshold = (low + high) * 0.5;
     uint foregroundSamples = 0;
     float foregroundLumaSum = 0.0;
     [loop]
@@ -666,8 +688,7 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
     }
     TileSamplingFailures[tileOrdinal] = valid && foregroundSamples != 0 ? 0 : 1;
-    const float tileExpectedForeground = StateLumaMode != 0 && foregroundSamples != 0 ?
-        foregroundLumaSum / (float)foregroundSamples : high;
+    const float tileExpectedForeground = high;
     const uint baseModel = (uint)PhaseOutput[InterleavePhase & 7].w;
     const uint fineModel = (uint)PhaseOutput[8 + (InterleavePhase & 7)].w;
     uint baseChips[25];
@@ -737,39 +758,27 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
     }
     float chromaDistances[4];
-    if (StateLumaMode != 0)
     {
-        // The state is classified from the tile's measured foreground luma
-        // against the calibrated gray centroids; the mask decode consumed the
-        // same estimate as its expected foreground level.
-        [unroll]
-        for (uint grayLabel = 0; grayLabel < 4; grayLabel++)
+    float2 averageOpponent = 0.0;
+    [loop]
+    for (uint opponentChip = 0; opponentChip < 25; opponentChip++)
+    {
+        if (Luma(samples[opponentChip]) >= foregroundThreshold)
         {
-            const float grayDifference = tileExpectedForeground - stateCenters[grayLabel];
-            chromaDistances[grayLabel] = grayDifference * grayDifference;
+            averageOpponent += Opponent(samples[opponentChip]);
         }
     }
-    else
+    if (foregroundSamples != 0)
     {
-        float2 averageOpponent = 0.0;
-        [loop]
-        for (uint opponentChip = 0; opponentChip < 25; opponentChip++)
-        {
-            if (Luma(samples[opponentChip]) >= foregroundThreshold)
-            {
-                averageOpponent += Opponent(samples[opponentChip]);
-            }
-        }
-        if (foregroundSamples != 0)
-        {
-            averageOpponent /= (float)foregroundSamples;
-        }
-        [unroll]
-        for (uint chromaLabel = 0; chromaLabel < 4; chromaLabel++)
-        {
-            const float2 difference = averageOpponent - GetChromaCentroid(chromaLabel);
-            chromaDistances[chromaLabel] = dot(difference, difference);
-        }
+        averageOpponent /= (float)foregroundSamples;
+    }
+    [unroll]
+    for (uint chromaLabel = 0; chromaLabel < 4; chromaLabel++)
+    {
+        const float2 difference = averageOpponent - GetChromaCentroid(chromaLabel);
+        chromaDistances[chromaLabel] = dot(difference, difference);
+    }
+
     }
     const uint chromaBits[2] = {binding.ChromaBit0, binding.ChromaBit1};
     [unroll]
@@ -792,7 +801,7 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         if (chromaBits[chromaPlane] < UnifiedMetricCount)
         {
             MetricOutput[chromaBits[chromaPlane]] = foregroundSamples == 0 ? 0.0 :
-                (oneDistance - zeroDistance) * (StateLumaMode != 0 ? effectiveStateScale : 4.0);
+                (oneDistance - zeroDistance) * 4.0;
         }
     }
 }

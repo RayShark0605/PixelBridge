@@ -71,6 +71,29 @@ inline constexpr std::array<UnifiedChromaState, 4> kUnifiedGrayStatesByLabel{
     UnifiedChromaState{168, 168, 168, 2},
     UnifiedChromaState{248, 248, 248, 3}};
 
+// Gray-state carrier v2 (experimental layout 12): a 64-symbol, 25-chip
+// punctured-Hadamard mask codebook (32x32 Sylvester rows plus complements,
+// seven columns greedily removed; minimum pairwise Hamming distance 9,
+// complement pairs intact, symbol 32 is the all-background mask whose
+// tiles self-erase like sampling failures). Six bits per data tile carry
+// ALL fifteen codewords on the mask carrier - the level-state encoding
+// proved unresolvable at degraded-link SNR (2026-09-12), while the mask
+// carrier ran the whole day with zero FEC failures.
+inline constexpr std::array<std::uint32_t, 64> kUnifiedGrayMasksBySymbol{
+    0x1FFFFFF, 0x0AAAAAA, 0x0666666, 0x1333333, 0x01E1E1E, 0x14B4B4B, 0x1878787, 0x0D2D2D2,
+    0x001FE01, 0x154AB54, 0x1986798, 0x0CD32CD, 0x1E01FE0, 0x0B54AB5, 0x0798679, 0x12CD32C,
+    0x00001FF, 0x15554AA, 0x1999866, 0x0CCCD33, 0x1E1E01E, 0x0B4B54B, 0x0787987, 0x12D2CD2,
+    0x1FE0001, 0x0AB5554, 0x0679998, 0x132CCCD, 0x01FE1E0, 0x14AB4B5, 0x1867879, 0x0D32D2C,
+    0x0000000, 0x1555555, 0x1999999, 0x0CCCCCC, 0x1E1E1E1, 0x0B4B4B4, 0x0787878, 0x12D2D2D,
+    0x1FE01FE, 0x0AB54AB, 0x0679867, 0x132CD32, 0x01FE01F, 0x14AB54A, 0x1867986, 0x0D32CD3,
+    0x1FFFE00, 0x0AAAB55, 0x0666799, 0x13332CC, 0x01E1FE1, 0x14B4AB4, 0x1878678, 0x0D2D32D,
+    0x001FFFE, 0x154AAAB, 0x1986667, 0x0CD3332, 0x1E01E1F, 0x0B54B4A, 0x0798786, 0x12CD2D3,
+};
+inline constexpr std::uint32_t kUnifiedGrayCarrierPlanes = 6;
+// 15 codewords x 16200 bits / 6 planes per tile; cross-checked against
+// kUnifiedCodewordCount by static_assert in unified_visual.h.
+inline constexpr std::uint32_t kUnifiedGrayActiveTiles = 15 * 16200 / 6;
+
 struct UnifiedLaneMappingContract
 {
     UnifiedLane lane = UnifiedLane::BaseLuma;
@@ -438,6 +461,50 @@ inline constexpr std::uint32_t kCodewordBits = kUnifiedVisualProfile.innerCodewo
 }
 
 } // namespace unified_mapping_detail
+
+// Gray-carrier v2 mapping: logical bit (codeword * 16200 + bit) passes through
+// the same per-codeword interleave, then fills the six mask planes of the
+// active tiles in flat order. Inverse pair; sites beyond 15 * 16200 are
+// invalid by construction.
+[[nodiscard]] constexpr UnifiedPhysicalCarrierSite GetUnifiedGrayPhysicalSite(
+    const std::uint32_t logicalBit, const std::uint64_t frameSequence) noexcept
+{
+    constexpr std::uint32_t kCodewordBits = 16200;
+    constexpr std::uint32_t kGrayCarrierBits = kUnifiedGrayActiveTiles * kUnifiedGrayCarrierPlanes;
+    if (logicalBit >= 15 * kCodewordBits)
+    {
+        return {};
+    }
+    const std::uint32_t domainBit = unified_mapping_detail::PermuteLaneCodewordBit(logicalBit, frameSequence);
+    if (domainBit >= kGrayCarrierBits)
+    {
+        return {};
+    }
+    return {true, UnifiedCarrier::Luma, domainBit / kUnifiedGrayCarrierPlanes,
+        static_cast<std::uint8_t>(domainBit % kUnifiedGrayCarrierPlanes)};
+}
+
+[[nodiscard]] constexpr UnifiedLogicalCarrierBit GetUnifiedGrayLogicalBit(
+    const UnifiedPhysicalCarrierSite& site, const std::uint64_t frameSequence) noexcept
+{
+    constexpr std::uint32_t kCodewordBits = 16200;
+    if (!site.valid || site.tileOrdinal >= kUnifiedGrayActiveTiles ||
+        site.carrier != UnifiedCarrier::Luma || site.bitPlane >= kUnifiedGrayCarrierPlanes ||
+        site.tileOrdinal >= kUnifiedVisualProfile.dataTileCount)
+    {
+        return {};
+    }
+    const std::uint32_t domainBit = site.tileOrdinal * kUnifiedGrayCarrierPlanes + site.bitPlane;
+    // InvertLaneCodewordBit already returns the slot-offset global logical bit.
+    const std::uint32_t globalLogical = unified_mapping_detail::InvertLaneCodewordBit(domainBit, frameSequence);
+    if (globalLogical >= 15 * kCodewordBits)
+    {
+        return {};
+    }
+    // Lane identity is irrelevant on the single gray carrier; report BaseLuma
+    // so observation summaries classify these metrics consistently.
+    return {true, UnifiedLane::BaseLuma, globalLogical};
+}
 
 [[nodiscard]] constexpr const UnifiedLaneMappingContract* GetUnifiedLaneMapping(
     const UnifiedLane lane) noexcept

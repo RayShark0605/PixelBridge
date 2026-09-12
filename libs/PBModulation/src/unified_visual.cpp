@@ -11,6 +11,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <string>
+#include <cstdio>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -68,10 +69,6 @@ struct UnifiedVisualCpuOracle::Implementation
     };
 
     std::array<UnifiedSoftMetric, kUnifiedSoftMetricCount> metrics{};
-    // Per-tile foreground means for the gray-state second pass: negative
-    // marks a sampling-failed tile so it never feeds the mode histogram.
-    std::array<double, kUnifiedVisualProfile.dataTileCount> tileForegroundMeans{};
-    std::array<std::uint32_t, 256> tileForegroundHistogram{};
     std::array<UnifiedAcceptedBlock, kUnifiedCodewordCount> accepted{};
     std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedCodewordCount> decodedInformation{};
     std::array<bool, kUnifiedCodewordCount> decodedInformationValid{};
@@ -884,6 +881,7 @@ void StoreMetric(const UnifiedLogicalCarrierBit logical, const UnifiedDataTile& 
     const std::size_t globalBit = static_cast<std::size_t>(capacity.firstCodewordSlot) *
         kUnifiedVisualProfile.innerCodewordBits + logical.logicalBit;
     UnifiedSoftMetric& metric = metrics[globalBit];
+    if (globalBit == 478) { std::fprintf(stderr, "DBG store478 tileValid=%d value=%d lane=%d\n", tile.valid ? 1 : 0, static_cast<int>(value), static_cast<int>(logical.lane)); }
     if (!LaneAvailable(logical.lane, base, fine, chroma))
     {
         metric.erasureReason = LaneReason(logical.lane, base, fine, chroma);
@@ -1021,37 +1019,13 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
     const std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount>& freshness,
     const UnifiedBaseLumaObservation& base, const UnifiedFineLumaObservation& fine,
     const UnifiedChromaObservation& chroma, const std::array<std::uint32_t, 2>& lumaModels,
-    const bool grayStates, const std::span<UnifiedSoftMetric> metrics,
-    const std::span<double> foregroundMeans, const std::span<std::uint32_t> foregroundHistogram) noexcept
+    const bool grayStates, const std::span<UnifiedSoftMetric> metrics) noexcept
 {
     const double low = calibration.lumaLevels[0];
     const double high = calibration.lumaLevels[2];
     const double lumaGap = high - low;
     const double lumaScale = calibration.lumaValid && lumaGap > 0 ? 2048 / (lumaGap * lumaGap) : 0;
-    // Gray-state mode: the four foreground levels span 88..248, so the
-    // mask classifier cannot assume a single calibrated high level. The
-    // foreground gate drops to the lowest state level and each tile's
-    // expected foreground becomes its own measured mean; the two state bits
-    // classify that mean against the calibrated gray centroids.
-    double stateFloor = high;
-    double minimumStateGap = 0;
-    if (grayStates)
-    {
-        stateFloor = std::min({calibration.chromaCentroids[0][0], calibration.chromaCentroids[1][0],
-            calibration.chromaCentroids[2][0], calibration.chromaCentroids[3][0]});
-        minimumStateGap = std::min({std::abs(calibration.chromaCentroids[1][0] - calibration.chromaCentroids[0][0]),
-            std::abs(calibration.chromaCentroids[2][0] - calibration.chromaCentroids[1][0]),
-            std::abs(calibration.chromaCentroids[3][0] - calibration.chromaCentroids[2][0])});
-    }
-    // The gray-mode foreground gate uses the ladder midpoint between levels
-    // 0 and 1 so it stays independent of the state calibration: collapsed or
-    // remapped state stripes must never disturb the mask classifier gate.
-    const double foregroundThreshold = grayStates ? (low + calibration.lumaLevels[1]) * 0.5 : (low + high) * 0.5;
-    const double stateScale = grayStates && minimumStateGap > 0 ? 2048 / (minimumStateGap * minimumStateGap) : 0;
-    if (grayStates)
-    {
-        std::fill(foregroundHistogram.begin(), foregroundHistogram.end(), 0);
-    }
+    const double foregroundThreshold = (low + high) * 0.5;
     for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
     {
         const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
@@ -1087,81 +1061,122 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             }
         }
         std::uint32_t foregroundSamples = 0;
-        double foregroundLumaSum = 0;
         for (const Sample& sample : samples)
         {
             if (Luma(sample) >= foregroundThreshold)
             {
                 foregroundSamples++;
-                foregroundLumaSum += Luma(sample);
             }
         }
         const bool tileSamplingFailed = samplingFailed || foregroundSamples == 0;
-        const double tileExpectedForeground = grayStates && foregroundSamples != 0 ?
-            foregroundLumaSum / foregroundSamples : high;
+        const double tileExpectedForeground = high;
 
-        std::array<std::array<double, 16>, 2> lumaDistances{};
-        std::array<bool, 2> modelValid{true, true};
-        for (std::size_t lane = 0; lane < lumaModels.size(); lane++)
+        if (!grayStates)
         {
-            if (lane == 1 && lumaModels[0] == lumaModels[1])
+            std::array<std::array<double, 16>, 2> lumaDistances{};
+            std::array<bool, 2> modelValid{true, true};
+            for (std::size_t lane = 0; lane < lumaModels.size(); lane++)
             {
-                lumaDistances[1] = lumaDistances[0];
-                modelValid[1] = modelValid[0];
-                continue;
-            }
-            std::array<std::uint32_t, kUnifiedDataGlyphCells> projected{};
-            for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
-            {
-                projected[chip] = ProjectLumaChip(geometry, tile.bounds.x, tile.bounds.y, chip, lumaModels[lane]);
-                modelValid[lane] = modelValid[lane] && projected[chip] < kUnifiedDataGlyphCells;
-            }
-            if (!modelValid[lane])
-            {
-                // The sample is in bounds, but this model cannot predict its
-                // neighbour. Zero distances erase the lane by decision margin,
-                // matching compact GPU metric admission without harming Chroma.
-                continue;
-            }
-            for (std::size_t label = 0; label < 16; label++)
-            {
-                const std::uint32_t mask = kUnifiedSymbolMasksByLabel[label];
-                for (std::size_t chip = 0; chip < samples.size(); chip++)
+                if (lane == 1 && lumaModels[0] == lumaModels[1])
                 {
-                    const double expected = ((mask >> projected[chip]) & 1U) != 0 ? tileExpectedForeground : low;
-                    const double difference = lumaSamples[chip] - expected;
-                    lumaDistances[lane][label] += difference * difference;
+                    lumaDistances[1] = lumaDistances[0];
+                    modelValid[1] = modelValid[0];
+                    continue;
+                }
+                std::array<std::uint32_t, kUnifiedDataGlyphCells> projected{};
+                for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
+                {
+                    projected[chip] = ProjectLumaChip(geometry, tile.bounds.x, tile.bounds.y, chip, lumaModels[lane]);
+                    modelValid[lane] = modelValid[lane] && projected[chip] < kUnifiedDataGlyphCells;
+                }
+                if (!modelValid[lane])
+                {
+                    // The sample is in bounds, but this model cannot predict its
+                    // neighbour. Zero distances erase the lane by decision margin,
+                    // matching compact GPU metric admission without harming Chroma.
+                    continue;
+                }
+                for (std::size_t label = 0; label < 16; label++)
+                {
+                    const std::uint32_t mask = kUnifiedSymbolMasksByLabel[label];
+                    for (std::size_t chip = 0; chip < samples.size(); chip++)
+                    {
+                        const double expected = ((mask >> projected[chip]) & 1U) != 0 ? tileExpectedForeground : low;
+                        const double difference = lumaSamples[chip] - expected;
+                        lumaDistances[lane][label] += difference * difference;
+                    }
                 }
             }
-        }
-        for (std::uint8_t bitPlane = 0; bitPlane < 4; bitPlane++)
-        {
-            const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
-                UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, bitPlane}, frameSequence);
-            const std::size_t lane = logical.valid && logical.lane == UnifiedLane::FineLuma ? 1 : 0;
-            double zeroDistance = std::numeric_limits<double>::infinity();
-            double oneDistance = std::numeric_limits<double>::infinity();
-            for (std::size_t label = 0; label < 16; label++)
+            for (std::uint8_t bitPlane = 0; bitPlane < 4; bitPlane++)
             {
-                double& destination = ((label >> bitPlane) & 1U) != 0 ? oneDistance : zeroDistance;
-                destination = std::min(destination, lumaDistances[lane][label]);
+                const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
+                    UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, bitPlane}, frameSequence);
+                const std::size_t lane = logical.valid && logical.lane == UnifiedLane::FineLuma ? 1 : 0;
+                double zeroDistance = std::numeric_limits<double>::infinity();
+                double oneDistance = std::numeric_limits<double>::infinity();
+                for (std::size_t label = 0; label < 16; label++)
+                {
+                    double& destination = ((label >> bitPlane) & 1U) != 0 ? oneDistance : zeroDistance;
+                    destination = std::min(destination, lumaDistances[lane][label]);
+                }
+                const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * lumaScale);
+                StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
             }
-            const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * lumaScale);
-            StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
         }
 
         if (grayStates)
         {
-            // Pass A stores this tile's measured foreground mean; the state
-            // classification happens in a second pass once the frame-wide mode
-            // histogram is complete (remote links remap luma context-dependently,
-            // so the classifier uses data-driven centers with the stripe
-            // centroids as fallback).
-            foregroundMeans[tileOrdinal] = tileSamplingFailed ? -1.0 : tileExpectedForeground;
-            if (!tileSamplingFailed)
+            // Gray carrier v2: classify the tile against the 64-symbol
+            // punctured-Hadamard codebook exactly like the sixteen-symbol
+            // product path (sharpened samples, base projection model, fixed
+            // calibrated high/low), then min-partition the symbol distances
+            // into the six mask planes.
+            if (tileOrdinal >= kUnifiedGrayActiveTiles)
             {
-                foregroundHistogram[static_cast<std::size_t>(
-                    std::clamp(tileExpectedForeground, 0.0, 255.0))]++;
+                continue;
+            }
+            std::array<std::uint32_t, kUnifiedDataGlyphCells> projected{};
+            bool symbolModelValid = true;
+            for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
+            {
+                projected[chip] = ProjectLumaChip(geometry, tile.bounds.x, tile.bounds.y, chip, lumaModels[0]);
+                symbolModelValid = symbolModelValid && projected[chip] < kUnifiedDataGlyphCells;
+            }
+            std::array<double, 64> symbolDistances{};
+            if (symbolModelValid)
+            {
+                for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
+                {
+                    const std::uint32_t symbolMask = kUnifiedGrayMasksBySymbol[symbol];
+                    for (std::size_t chip = 0; chip < samples.size(); chip++)
+                    {
+                        const double expected = ((symbolMask >> projected[chip]) & 1U) != 0 ? high : low;
+                        // Raw sample luma: the sum-one cross kernel blooms edge
+                        // chips far past the calibrated levels, and the 64-symbol
+                        // book's tighter neighbor spacing magnifies that kernel
+                        // artifact into systematic confusions on thin data bands.
+                        // The raw value keeps the full high/low margin for the
+                        // d >= 9 neighborhood while provider blur only shrinks it
+                        // proportionally, never inverts it.
+                        const double difference = Luma(samples[chip]) - expected;
+                        symbolDistances[symbol] += difference * difference;
+                    }
+                }
+            }
+            for (std::uint8_t plane = 0; plane < kUnifiedGrayCarrierPlanes; plane++)
+            {
+                double zeroDistance = std::numeric_limits<double>::infinity();
+                double oneDistance = std::numeric_limits<double>::infinity();
+                for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
+                {
+                    double& destination = ((symbol >> plane) & 1U) != 0 ? oneDistance : zeroDistance;
+                    destination = std::min(destination, symbolDistances[symbol]);
+                }
+                const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * lumaScale);
+                const UnifiedLogicalCarrierBit logical = GetUnifiedGrayLogicalBit(
+                    UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, plane}, frameSequence);
+                StoreMetric(logical, tile, metric, tileSamplingFailed || !symbolModelValid, freshness, policy, base, fine,
+                    chroma, metrics);
             }
             continue;
         }
@@ -1204,58 +1219,6 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
         }
     }
 
-    if (grayStates)
-    {
-        // Pass B: mode-based state classification from the stored means. The
-        // data-driven centers absorb any monotone provider remap; the stripe
-        // centroids remain the fail-closed fallback.
-        std::array<double, 4> stateCenters{};
-        for (std::size_t label = 0; label < stateCenters.size(); label++)
-        {
-            stateCenters[label] = calibration.chromaCentroids[label][0];
-        }
-        double effectiveStateScale = stateScale;
-        const UnifiedStateModeEstimate modes = ComputeUnifiedStateModes(foregroundHistogram);
-        if (modes.valid)
-        {
-            stateCenters = modes.centers;
-            double minimumModeGap = stateCenters[1] - stateCenters[0];
-            for (std::uint32_t label = 2; label < 4; label++)
-            {
-                minimumModeGap = std::min(minimumModeGap, stateCenters[label] - stateCenters[label - 1]);
-            }
-            if (minimumModeGap > 0)
-            {
-                effectiveStateScale = 2048 / (minimumModeGap * minimumModeGap);
-            }
-        }
-        for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
-        {
-            const double mean = foregroundMeans[tileOrdinal];
-            const bool tileFailed = mean < 0;
-            std::array<double, 4> distances{};
-            for (std::size_t label = 0; label < distances.size(); label++)
-            {
-                const double difference = (tileFailed ? stateCenters[label] : mean) - stateCenters[label];
-                distances[label] = difference * difference;
-            }
-            const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
-            for (std::uint8_t bitPlane = 0; bitPlane < 2; bitPlane++)
-            {
-                double zeroDistance = std::numeric_limits<double>::infinity();
-                double oneDistance = std::numeric_limits<double>::infinity();
-                for (std::size_t label = 0; label < distances.size(); label++)
-                {
-                    double& destination = ((label >> bitPlane) & 1U) != 0 ? oneDistance : zeroDistance;
-                    destination = std::min(destination, distances[label]);
-                }
-                const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * effectiveStateScale);
-                const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
-                    UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, frameSequence);
-                StoreMetric(logical, tile, metric, tileFailed, freshness, policy, base, fine, chroma, metrics);
-            }
-        }
-    }
 }
 
 [[nodiscard]] bool ControlTypeMatchesPriority(const pbprotocol::ControlRecordType type,
@@ -1842,10 +1805,44 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
             }
         }
         const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
+        if (grayStates)
+        {
+            // Gray carrier v2: six interleaved mask planes per active tile
+            // through the 64-symbol codebook, fixed high-luma foreground.
+            // Inactive tail tiles render a deterministic neutral symbol.
+            std::uint32_t symbol = 1;
+            if (tileOrdinal < kUnifiedGrayActiveTiles)
+            {
+                symbol = 0;
+                for (std::uint8_t plane = 0; plane < kUnifiedGrayCarrierPlanes; plane++)
+                {
+                    const UnifiedLogicalCarrierBit logical = GetUnifiedGrayLogicalBit(
+                        UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, plane},
+                        parsed.Value().frameSequence);
+                    if (logical.valid && ReadBit(codedFrame, logical.logicalBit))
+                    {
+                        symbol |= 1U << plane;
+                    }
+                }
+            }
+            const std::uint32_t grayMask = kUnifiedGrayMasksBySymbol[symbol];
+            for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
+            {
+                for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
+                {
+                    const bool glyphCell = row < kUnifiedDataGlyphWidth && column < kUnifiedDataGlyphWidth;
+                    const std::uint32_t chip = row * kUnifiedDataGlyphWidth + column;
+                    const bool foreground = glyphCell && ((grayMask >> chip) & 1U) != 0;
+                    FillPixel(outBgra, tile.bounds.x + column, tile.bounds.y + row,
+                        foreground ? kUnifiedDataHighLuma : kUnifiedDataLowLuma,
+                        foreground ? kUnifiedDataHighLuma : kUnifiedDataLowLuma,
+                        foreground ? kUnifiedDataHighLuma : kUnifiedDataLowLuma);
+                }
+            }
+            continue;
+        }
         const std::uint32_t mask = kUnifiedSymbolMasksByLabel[lumaLabel];
-        const std::array<UnifiedChromaState, 4>& states =
-            grayStates ? kUnifiedGrayStatesByLabel : kUnifiedChromaStatesByLabel;
-        const UnifiedChromaState state = states[chromaLabel];
+        const UnifiedChromaState state = kUnifiedChromaStatesByLabel[chromaLabel];
         for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
         {
             for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
@@ -2161,7 +2158,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     }
     DecodeDataTiles(view, samplingGeometry, observation.bootstrapRecord.frameSequence, calibration, policy,
         observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, lumaModels,
-        grayStates, state.metrics, state.tileForegroundMeans, state.tileForegroundHistogram);
+        grayStates, state.metrics);
 
     return FinalizeDecodedMetrics(std::move(observation), slotPlan, inferSlotKinds, policy);
 }

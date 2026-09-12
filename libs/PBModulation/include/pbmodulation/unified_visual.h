@@ -331,6 +331,8 @@ private:
 static_assert(kUnifiedCodewordBytes == 2025);
 static_assert(kUnifiedInformationBytes == 1350);
 static_assert(kUnifiedCodewordCount == 15);
+static_assert(kUnifiedCodewordCount * kUnifiedVisualProfile.innerCodewordBits ==
+    kUnifiedGrayActiveTiles * kUnifiedGrayCarrierPlanes);
 static_assert(kUnifiedCodedFrameBytes == 30375);
 static_assert(kUnifiedSoftMetricCount == 243000);
 static_assert(kUnifiedPhasePilotTilesPerRegion == 210);
