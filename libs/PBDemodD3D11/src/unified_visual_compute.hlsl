@@ -302,22 +302,15 @@ void FindUnifiedModesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             }
             const uint low = peaks[mode] > 6 ? peaks[mode] - 6 : 0;
             const uint high = peaks[mode] + 7 < 256 ? peaks[mode] + 7 : 256;
-            float weightedSum = 0.0;
-            float mass = 0.0;
+            // Peak bin is the robust center (field sigma 15..20 luma makes
+            // tail-chasing refinement displace class boundaries); the +/-6
+            // window only feeds the combined-coverage validity gate.
             [loop]
             for (uint index = low; index < high; index++)
             {
-                const float weight = (float)histogram[index];
-                weightedSum += (float)index * weight;
-                mass += weight;
+                coveredMass += (float)histogram[index];
             }
-            if (mass <= 0.0)
-            {
-                valid = false;
-                break;
-            }
-            coveredMass += mass;
-            centers[mode] = weightedSum / mass;
+            centers[mode] = (float)peaks[mode];
         }
         if (valid)
         {

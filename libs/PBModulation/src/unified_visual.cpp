@@ -986,22 +986,19 @@ UnifiedStateModeEstimate ComputeUnifiedStateModes(const std::span<const std::uin
         {
             return estimate;
         }
-        double weightedSum = 0;
-        double mass = 0;
+        // Field measurement (2026-09-12 degraded link): population sigma is
+        // 15..20 luma and strongly skewed, so a +/-6-bin weighted refinement
+        // chases tails and displaces the 2/3-class boundary enough to flip the
+        // majority of a label's tiles. The smoothed peak bin itself is the
+        // robust center at this noise level; coverage accounting keeps the
+        // original +/-6 window only for the combined-mass validity gate.
+        centers[mode] = static_cast<double>(peaks[mode]);
         const std::size_t low = peaks[mode] > refinementRadius ? peaks[mode] - refinementRadius : 0;
         const std::size_t high = peaks[mode] + refinementRadius + 1 < bins ? peaks[mode] + refinementRadius + 1 : bins;
         for (std::size_t index = low; index < high; index++)
         {
-            const double weight = static_cast<double>(histogram[index]);
-            weightedSum += static_cast<double>(index) * weight;
-            mass += weight;
+            coveredMass += static_cast<double>(histogram[index]);
         }
-        if (mass <= 0)
-        {
-            return estimate;
-        }
-        coveredMass += mass;
-        centers[mode] = weightedSum / mass;
     }
     for (std::uint32_t mode = 1; mode < 4; mode++)
     {
