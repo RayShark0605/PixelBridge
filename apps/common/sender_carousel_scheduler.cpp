@@ -1,5 +1,6 @@
 #include "sender_carousel_scheduler.h"
 
+#include "pbmodulation/unified_visual.h"
 #include "pbprotocol/checked_integer.h"
 
 #include <algorithm>
@@ -387,7 +388,10 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
         config.periodicControlPhaseCount == 0 ||
         config.periodicControlPhaseCount > senderUnifiedActiveSegmentWindowSize ||
         config.periodicControlPhaseIndex >= config.periodicControlPhaseCount ||
-        (config.wirehair && config.systematicBlockCount < 2))
+        (config.wirehair && config.systematicBlockCount < 2) ||
+        (config.frameCodewordSlots != 0 &&
+            config.frameCodewordSlots != static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount) &&
+            config.frameCodewordSlots != pbmodulation::kUnifiedGrayFrameCodewordCount))
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
     }
@@ -481,6 +485,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
     scheduler.config_ = config;
     scheduler.scheduledEquationCount_ = scheduledEquationCount;
     scheduler.systematicEquationCount_ = systematicEquationCount;
+    scheduler.frameCodewordSlots_ = config.frameCodewordSlots != 0 ?
+        config.frameCodewordSlots : static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount);
     scheduler.repairEquationCount_ = repairEquationCount;
     scheduler.totalControlItemsPerBurst_ = totalControlItemsPerBurst;
     scheduler.periodicControlItemsPerBurst_ = periodicControlItemsPerBurst;
@@ -518,8 +524,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     const std::uint32_t descriptorPreludeSlotCount =
         !controlBurstActive && config_.systematicBlockCount != 0 ? 1U : 0U;
     const std::uint32_t controlSlotCount = controlBurstSlotCount + descriptorPreludeSlotCount;
-    const std::uint32_t codewordCount = static_cast<std::uint32_t>(
-        pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount);
+    const std::uint32_t codewordCount = frameCodewordSlots_;
     const std::uint64_t controlRecordKindCount = config_.systematicBlockCount == 0 ? 2 : 3;
     if ((controlBurstActive && controlBurstSlotCount == 0) || controlSlotCount >= codewordCount)
     {
@@ -529,6 +534,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     SenderUnifiedScheduledFrame frame;
     frame.logicalTickOrdinal = logicalTickOrdinal;
     frame.firstEquationIndex = committedEquationCount_;
+    frame.slotCount = codewordCount;
     frame.controlBurstSlotCount = controlBurstSlotCount;
     frame.controlSlotCount = controlSlotCount;
     frame.transportSlotCount = codewordCount - controlSlotCount;
@@ -578,14 +584,19 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
             frame.paddingDuplicateSlotCount++;
         }
     }
-    std::array<pbmodulation::UnifiedSlotAssignment, senderUnifiedCodewordSlotCount> assignments{};
-    for (std::size_t slotIndex = 0; slotIndex < frame.slots.size(); slotIndex++)
+    std::array<pbmodulation::UnifiedSlotAssignment, senderUnifiedMaximumCodewordSlotCount> assignments{};
+    for (std::uint32_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
     {
         assignments[slotIndex] = frame.slots[slotIndex].assignment;
     }
-    if (!pbmodulation::ValidateUnifiedMixedSlotPlan(assignments) ||
+    const std::span<const pbmodulation::UnifiedSlotAssignment> plannedAssignments(
+        assignments.data(), frameCodewordSlots_);
+    const bool planValid = frameCodewordSlots_ == pbmodulation::kUnifiedGrayFrameCodewordCount ?
+        pbmodulation::ValidateUnifiedGrayMixedSlotPlan(plannedAssignments) :
+        pbmodulation::ValidateUnifiedMixedSlotPlan(plannedAssignments);
+    if (!planValid ||
         frame.controlBurstSlotCount > frame.controlSlotCount ||
-        frame.controlSlotCount + frame.transportSlotCount != frame.slots.size())
+        frame.controlSlotCount + frame.transportSlotCount != frame.slotCount)
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
     }

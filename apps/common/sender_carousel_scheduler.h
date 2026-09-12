@@ -1,10 +1,12 @@
 #pragma once
 
+#include "pbmodulation/unified_visual_mapping.h"
 #include "pbmodulation/unified_visual_profile.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace pbapp
 {
@@ -65,6 +67,15 @@ inline constexpr std::uint32_t senderUnifiedSweepPhaseStep = 1;
 inline constexpr std::uint64_t senderLogicalFrameNanosecondsPerSecond = 1000000000ULL;
 inline constexpr std::size_t senderUnifiedCodewordSlotCount =
     static_cast<std::size_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount);
+// Storage bound across the Unified carrier variants: the product SC6 frame
+// and the gray v3 eighteen-codeword frame. Frames carry their own slotCount,
+// so every iteration must be bounded by that count, never by the storage
+// array bound (default-constructed tail slots are Transport-kind and would
+// otherwise be miscounted as payload).
+inline constexpr std::size_t senderUnifiedMaximumCodewordSlotCount =
+    senderUnifiedCodewordSlotCount > static_cast<std::size_t>(pbmodulation::kUnifiedGrayCodewordCount)
+    ? senderUnifiedCodewordSlotCount
+    : static_cast<std::size_t>(pbmodulation::kUnifiedGrayCodewordCount);
 
 enum class SenderScheduledFrameKind : std::uint8_t
 {
@@ -255,7 +266,16 @@ struct SenderUnifiedScheduledFrame
     std::uint32_t transportSlotCount = 0;
     std::uint32_t paddingDuplicateSlotCount = 0;
     std::uint32_t inactiveTransportSlotCount = 0;
-    std::array<SenderUnifiedScheduledSlot, senderUnifiedCodewordSlotCount> slots;
+    // Active slot count for this carrier: product SC6 keeps 15, the gray v3
+    // frame carries 18. The slots array is sized for the largest carrier, so
+    // only GetActiveSlots() (or slotCount-bounded loops) may iterate it.
+    std::uint32_t slotCount = static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount);
+    std::array<SenderUnifiedScheduledSlot, senderUnifiedMaximumCodewordSlotCount> slots;
+
+    [[nodiscard]] std::span<const SenderUnifiedScheduledSlot> GetActiveSlots() const noexcept
+    {
+        return std::span<const SenderUnifiedScheduledSlot>(slots.data(), slotCount);
+    }
 
     bool operator==(const SenderUnifiedScheduledFrame&) const = default;
 };
@@ -282,6 +302,10 @@ struct SenderUnifiedCarouselSchedulerConfig
     // Segment at a precise cumulative-equation target instead of absorbing
     // the doubling formula's coarse last-pass overshoot.
     std::uint64_t repairBudgetOverride = 0;
+    // Codeword slots per frame for this carrier. Zero keeps the product SC6
+    // frame count; the gray v3 carrier passes its eighteen-codeword count.
+    // Any other value is rejected at Create.
+    std::uint32_t frameCodewordSlots = 0;
 };
 
 struct SenderUnifiedCarouselSnapshot
@@ -337,6 +361,7 @@ private:
         std::uint64_t cadencePosition, bool monotonicCadence, SenderUnifiedScheduledFrame& output) noexcept;
 
     SenderUnifiedCarouselSchedulerConfig config_{};
+    std::uint32_t frameCodewordSlots_ = static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount);
     SenderUnifiedScheduledFrame preparedFrame_{};
     std::uint64_t scheduledEquationCount_ = 0;
     std::uint64_t systematicEquationCount_ = 0;

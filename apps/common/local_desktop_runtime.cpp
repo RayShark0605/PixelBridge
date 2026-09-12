@@ -1302,10 +1302,10 @@ public:
             SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
             Require(static_cast<bool>(unifiedScheduler.PrepareFrameAt(logicalTickOrdinal, nowNanoseconds,
                 unifiedFrame_)), "Unified mixed-slot frame preparation failed");
-            std::array<pbmodulation::UnifiedFrameSlotInput, senderUnifiedCodewordSlotCount> slots{};
+            std::array<pbmodulation::UnifiedFrameSlotInput, senderUnifiedMaximumCodewordSlotCount> slots{};
             generatedPayloadBytesInFrame_ = 0;
             std::span<const std::byte> supplementalControlRecord{};
-            for (std::size_t slotIndex = 0; slotIndex < slots.size(); slotIndex++)
+            for (std::size_t slotIndex = 0; slotIndex < unifiedFrame_.slotCount; slotIndex++)
             {
                 const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slotIndex];
                 pbmodulation::UnifiedFrameSlotInput& slot = slots[slotIndex];
@@ -1333,20 +1333,29 @@ public:
                     generatedPayloadBytesInFrame_ += payloadBytes;
                 }
             }
+            // The diagnostics path slices the carrier-sized storage down to
+            // this frame's exact packed size: Pack and the two-span Encode
+            // both reject any other coded-frame length.
+            const std::size_t codedFrameBytes =
+                static_cast<std::size_t>(unifiedFrame_.slotCount) * pbmodulation::kUnifiedCodewordBytes;
+            const std::span<const pbmodulation::UnifiedFrameSlotInput> plannedSlots(
+                slots.data(), unifiedFrame_.slotCount);
             if (diagnostics == nullptr)
             {
-                RequireResult(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, slots}, pixels_),
+                RequireResult(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, plannedSlots}, pixels_),
                     "Unified mixed-slot canonical raster generation failed");
             }
             else
             {
-                std::array<std::byte, pbmodulation::kUnifiedCodedFrameBytes> codedFrame{};
+                std::array<std::byte, pbmodulation::kUnifiedMaximumCodedFrameBytes> codedFrame{};
                 {
                     const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::InnerPackEncode);
-                    RequireResult(pbmodulation::PackUnifiedVisualFrame({bootstrap, slots}, codedFrame), "Unified packing failed");
+                    RequireResult(pbmodulation::PackUnifiedVisualFrame({bootstrap, plannedSlots},
+                        std::span<std::byte>(codedFrame.data(), codedFrameBytes)), "Unified packing failed");
                 }
                 const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::Raster);
-                RequireResult(pbmodulation::EncodeUnifiedVisualFrame(bootstrap, codedFrame, pixels_), "Unified raster failed");
+                RequireResult(pbmodulation::EncodeUnifiedVisualFrame(bootstrap,
+                    std::span<const std::byte>(codedFrame.data(), codedFrameBytes), pixels_), "Unified raster failed");
             }
             if (profile_.profile == VisualProfile::UnifiedBands)
             {
@@ -1536,7 +1545,7 @@ public:
     {
         if (IsUnifiedVisualFamily(profile_.profile))
         {
-            for (const SenderUnifiedScheduledSlot& slot : unifiedFrame_.slots)
+            for (const SenderUnifiedScheduledSlot& slot : unifiedFrame_.GetActiveSlots())
             {
                 if (slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation ||
                     slot.transportDisposition == SenderUnifiedTransportSlotDisposition::PaddingDuplicate)
@@ -1559,7 +1568,7 @@ public:
     [[nodiscard]] std::uint32_t GetControlSlotsInFrame() const noexcept
     {
         return IsUnifiedVisualFamily(profile_.profile) ? static_cast<std::uint32_t>(std::ranges::count_if(
-            unifiedFrame_.slots, [](const SenderUnifiedScheduledSlot& slot)
+            unifiedFrame_.GetActiveSlots(), [](const SenderUnifiedScheduledSlot& slot)
             {
                 return slot.assignment.kind == pbmodulation::UnifiedSlotKind::Control;
             })) : 0;
@@ -2286,7 +2295,7 @@ private:
     SenderCarouselScheduler roundScheduler_;
     SenderUnifiedCarouselScheduler unifiedScheduler_;
     SenderUnifiedScheduledFrame unifiedFrame_;
-    std::array<std::array<std::byte, informationBytes>, senderUnifiedCodewordSlotCount> unifiedTransport_{};
+    std::array<std::array<std::byte, informationBytes>, senderUnifiedMaximumCodewordSlotCount> unifiedTransport_{};
     // Reused 608x64 raster scratch for the supplemental band overlay; the
     // builder is single-threaded by contract, so one buffer serves both bands.
     std::array<std::byte, pbmodulation::kSupplementalBandPatchBytes> supplementalBandPatch_{};
@@ -6392,7 +6401,7 @@ void RunUnifiedTemporalStripingProbe(UnifiedTemporalStripingProbeSnapshot& resul
         const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
         result.passZeroScheduledEquationCounts[segmentIndex] += frame.scheduledEquationCount;
         std::optional<std::uint32_t> firstOuterBlockId;
-        for (std::uint32_t slot = 0; slot < frame.slots.size(); slot++)
+        for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
         {
             if (frame.slots[slot].transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
             {
@@ -6411,11 +6420,12 @@ void RunUnifiedTemporalStripingProbe(UnifiedTemporalStripingProbeSnapshot& resul
         {
             Require(firstOuterBlockId.has_value(), "Unified temporal-striping seed frame has no equation");
             std::array<std::byte, outerBlockBytes> payload{};
+            const std::span<const SenderUnifiedScheduledSlot> activeSeedSlots = frame.GetActiveSlots();
             const std::uint32_t declaredPayloadBytes = builder.EncodeOuterPayloadForSlot(
-                static_cast<std::uint32_t>(std::ranges::find_if(frame.slots, [](const SenderUnifiedScheduledSlot& slot)
+                static_cast<std::uint32_t>(std::ranges::find_if(activeSeedSlots, [](const SenderUnifiedScheduledSlot& slot)
                 {
                     return slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation;
-                }) - frame.slots.begin()), payload);
+                }) - activeSeedSlots.begin()), payload);
             Require(declaredPayloadBytes > 0 && declaredPayloadBytes <= (std::numeric_limits<std::uint16_t>::max)(),
                 "Unified temporal-striping seed payload size is invalid");
             const pbreceiver::ReceivedTransportBlock transport{sessionTag, segmentOrdinal, *firstOuterBlockId,
@@ -6455,14 +6465,15 @@ void RunUnifiedTemporalStripingProbe(UnifiedTemporalStripingProbeSnapshot& resul
             "Unified temporal-striping pass-one observation bound exceeded");
         const std::size_t segmentIndex = static_cast<std::size_t>(builder.GetCurrentSegmentOrdinal());
         const SenderUnifiedScheduledFrame& frame = builder.PrepareHeadlessFrame(logicalTick);
-        const auto scheduled = std::ranges::find_if(frame.slots, [](const SenderUnifiedScheduledSlot& slot)
+        const std::span<const SenderUnifiedScheduledSlot> activePassOneSlots = frame.GetActiveSlots();
+        const auto scheduled = std::ranges::find_if(activePassOneSlots, [](const SenderUnifiedScheduledSlot& slot)
         {
             return slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation;
         });
-        Require(scheduled != frame.slots.end(), "Unified temporal-striping pass-one frame has no repair equation");
+        Require(scheduled != activePassOneSlots.end(), "Unified temporal-striping pass-one frame has no repair equation");
         if (!passOneObserved[segmentIndex])
         {
-            const std::uint32_t slot = static_cast<std::uint32_t>(scheduled - frame.slots.begin());
+            const std::uint32_t slot = static_cast<std::uint32_t>(scheduled - activePassOneSlots.begin());
             result.passOneFirstRepairIds[segmentIndex] = builder.GetOuterBlockIdForSlot(slot);
             passOneObserved[segmentIndex] = true;
             observedPassOneSegments++;
@@ -6542,7 +6553,7 @@ void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot&
             }
             else if (!completedSegments[static_cast<std::size_t>(segmentOrdinal)])
             {
-                for (std::uint32_t slot = 0; slot < frame.slots.size(); slot++)
+                for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
                 {
                     if (frame.slots[slot].transportDisposition !=
                         SenderUnifiedTransportSlotDisposition::ScheduledEquation)
@@ -6670,7 +6681,7 @@ void RunUnifiedFountainMidJoinProbe(UnifiedFountainMidJoinProbeSnapshot& result)
         result.observedRepairLogicalFrames++;
         if (!completedSegments[static_cast<std::size_t>(segmentOrdinal)])
         {
-            for (std::uint32_t slot = 0; slot < frame.slots.size(); slot++)
+            for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
             {
                 if (frame.slots[slot].transportDisposition !=
                     SenderUnifiedTransportSlotDisposition::ScheduledEquation)
@@ -6728,7 +6739,7 @@ void RunUnifiedFountainMidJoinProbe(UnifiedFountainMidJoinProbeSnapshot& result)
         }
         else
         {
-            for (const SenderUnifiedScheduledSlot& slot : frame.slots)
+            for (const SenderUnifiedScheduledSlot& slot : frame.GetActiveSlots())
             {
                 if (slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                 {
@@ -6788,7 +6799,7 @@ void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& res
         if (observeFrame)
         {
             result.observedLogicalFrames++;
-            for (const SenderUnifiedScheduledSlot& slot : frame.slots)
+            for (const SenderUnifiedScheduledSlot& slot : frame.GetActiveSlots())
             {
                 if (slot.assignment.kind != pbmodulation::UnifiedSlotKind::Control)
                 {
@@ -6804,7 +6815,7 @@ void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& res
                 RequireResult(controlResult, "Unified descriptor-prelude Control admission failed");
             }
 
-            for (std::uint32_t slotIndex = 0; slotIndex < frame.slots.size(); slotIndex++)
+            for (std::uint32_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
             {
                 const SenderUnifiedScheduledSlot& slot = frame.slots[slotIndex];
                 if (slot.transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation &&

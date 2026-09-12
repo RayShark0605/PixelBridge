@@ -35,13 +35,13 @@ namespace
 
 void RequireExactSlotAccounting(const pbapp::SenderUnifiedScheduledFrame& frame)
 {
-    std::array<pbmodulation::UnifiedSlotAssignment, pbapp::senderUnifiedCodewordSlotCount> assignments{};
+    std::array<pbmodulation::UnifiedSlotAssignment, pbapp::senderUnifiedMaximumCodewordSlotCount> assignments{};
     std::uint32_t controlSlots = 0;
     std::uint32_t transportSlots = 0;
     std::uint32_t scheduledEquations = 0;
     std::uint32_t paddingDuplicates = 0;
     std::uint32_t inactiveTransportSlots = 0;
-    for (std::size_t slotIndex = 0; slotIndex < frame.slots.size(); slotIndex++)
+    for (std::size_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
     {
         const pbapp::SenderUnifiedScheduledSlot& slot = frame.slots[slotIndex];
         assignments[slotIndex] = slot.assignment;
@@ -71,14 +71,19 @@ void RequireExactSlotAccounting(const pbapp::SenderUnifiedScheduledFrame& frame)
             }
         }
     }
-    REQUIRE(pbmodulation::ValidateUnifiedMixedSlotPlan(assignments));
+    const std::span<const pbmodulation::UnifiedSlotAssignment> plannedAssignments(
+        assignments.data(), frame.slotCount);
+    const bool planValid = frame.slotCount == pbapp::senderUnifiedCodewordSlotCount ?
+        pbmodulation::ValidateUnifiedMixedSlotPlan(plannedAssignments) :
+        pbmodulation::ValidateUnifiedGrayMixedSlotPlan(plannedAssignments);
+    REQUIRE(planValid);
     REQUIRE(controlSlots == frame.controlSlotCount);
     REQUIRE(frame.controlBurstSlotCount <= frame.controlSlotCount);
     REQUIRE(transportSlots == frame.transportSlotCount);
     REQUIRE(scheduledEquations == frame.scheduledEquationCount);
     REQUIRE(paddingDuplicates == frame.paddingDuplicateSlotCount);
     REQUIRE(inactiveTransportSlots == frame.inactiveTransportSlotCount);
-    REQUIRE(controlSlots + transportSlots == frame.slots.size());
+    REQUIRE(controlSlots + transportSlots == frame.slotCount);
 }
 
 [[nodiscard]] pbprotocol::SessionId MakeSessionId()
@@ -418,7 +423,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
                 REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 1);
             }
             controlBearingFrames++;
-            for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.slots)
+            for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.GetActiveSlots())
             {
                 if (slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                 {
@@ -578,7 +583,7 @@ TEST_CASE("Unified mixed scheduler converges independent Segment rounds without 
             pbapp::SenderUnifiedScheduledFrame frame;
             REQUIRE(scheduler.PrepareFrame(logicalTickOrdinal, frame));
             RequireExactSlotAccounting(frame);
-            for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.slots)
+            for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.GetActiveSlots())
             {
                 if (slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                 {
@@ -643,7 +648,7 @@ TEST_CASE("Unified Wirehair later passes scale their repair budget with the logi
             pbapp::SenderUnifiedScheduledFrame frame;
             REQUIRE(scheduler.PrepareFrame(logicalTickOrdinal, frame));
             RequireExactSlotAccounting(frame);
-            for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.slots)
+            for (const pbapp::SenderUnifiedScheduledSlot& slot : frame.GetActiveSlots())
             {
                 if (slot.transportDisposition != pbapp::SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                 {
@@ -900,7 +905,7 @@ TEST_CASE("Zero-byte Unified Session recovers Session and Manifest from one mixe
 
     const auto bootstrap = MakeBootstrap(controls.sessionTag, 0);
     std::array<pbmodulation::UnifiedFrameSlotInput, pbapp::senderUnifiedCodewordSlotCount> inputs{};
-    for (std::size_t slotIndex = 0; slotIndex < frame.slots.size(); slotIndex++)
+    for (std::size_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
     {
         const pbapp::SenderUnifiedScheduledSlot& scheduledSlot = frame.slots[slotIndex];
         if (scheduledSlot.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
