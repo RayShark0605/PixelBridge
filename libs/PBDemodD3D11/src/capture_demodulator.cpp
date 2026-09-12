@@ -129,6 +129,11 @@ bool ResolveBinding(const std::uint64_t visualProfileId, pbmodulation::LocalDesk
         output = {visualProfileId, pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion};
         return true;
     }
+    if (visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId)
+    {
+        output = {visualProfileId, pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion};
+        return true;
+    }
     if (visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId)
     {
         output = {visualProfileId, pbmodulation::kRemoteVisualLowFpsLayoutVersion};
@@ -165,7 +170,8 @@ bool IsUnifiedVisual(const std::uint64_t visualProfileId) noexcept
     // pipeline.
     return visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId ||
         visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId ||
-        visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId;
+        visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId ||
+        visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId;
 }
 
 bool IsStagedVisual(const std::uint64_t visualProfileId) noexcept
