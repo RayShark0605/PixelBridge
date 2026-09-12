@@ -81,4 +81,19 @@ inline constexpr ProductVisualProfile kBlankControlExperimentalProfile{
     11};
 static_assert(!IsProductSessionVisualProfileId(kBlankControlExperimentalProfile.visualProfileId));
 
+// Experimental gray-state identity (layout 12): the unified layout-10
+// manifest, mapping and slot contract unchanged; the four data-tile
+// foreground states and the calibration state stripes switch from iso-luma
+// chroma colors to four gray luma levels, so the second carrier's two bits
+// survive chroma-destroying (4:2:0) remote links. Opt-in only — like the
+// blank-control identity it stays outside kProductVisualProfiles so product
+// admission rejects it and it can never become a released default.
+inline constexpr ProductVisualProfile kGrayStatesExperimentalProfile{
+    "PB-Experimental-GrayStates-1",
+    0x5042475953544131ULL,
+    12};
+static_assert(!IsProductSessionVisualProfileId(kGrayStatesExperimentalProfile.visualProfileId));
+static_assert(kGrayStatesExperimentalProfile.visualProfileId != kBlankControlExperimentalProfile.visualProfileId);
+static_assert(kGrayStatesExperimentalProfile.visualProfileId != kUnifiedVisualProfileId);
+
 } // namespace pbprotocol

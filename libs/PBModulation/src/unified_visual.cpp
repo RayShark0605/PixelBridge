@@ -25,14 +25,17 @@ namespace
 // The experimental blank-control identity (layout 11) shares this entire
 // manifest's geometry and carrier contract; its Bootstrap differs only in the
 // profile pair, so packing, raster generation and the CPU oracle accept both.
-// It never enters the product catalog (see product_visual_profile.h).
+// The experimental gray-state identity (layout 12) additionally swaps the
+// four foreground states for gray levels; raster and decode select the state
+// table from the same pair. Neither enters the product catalog.
 [[nodiscard]] bool IsUnifiedBootstrapProfilePair(const std::uint64_t visualProfileId,
     const std::uint8_t visualLayoutVersion) noexcept
 {
     return (visualProfileId == kUnifiedVisualProfile.productProfile.visualProfileId &&
         visualLayoutVersion == kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
         (visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
-        visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion);
+        visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion) ||
+        IsUnifiedGrayStatesProfilePair(visualProfileId, visualLayoutVersion);
 }
 } // namespace
 
@@ -185,8 +188,10 @@ void FillPixel(const std::span<std::byte> pixels, const std::uint32_t x, const s
     pixel[3] = std::byte{255};
 }
 
-void RenderCalibrationPilots(const std::span<std::byte> pixels) noexcept
+void RenderCalibrationPilots(const std::span<std::byte> pixels, const bool grayStates) noexcept
 {
+    const std::array<UnifiedChromaState, 4>& states =
+        grayStates ? kUnifiedGrayStatesByLabel : kUnifiedChromaStatesByLabel;
     for (const UnifiedRegionContract& contract : kUnifiedVisualProfile.regions)
     {
         if (contract.kind != UnifiedRegionKind::Pilot ||
@@ -219,7 +224,7 @@ void RenderCalibrationPilots(const std::span<std::byte> pixels) noexcept
             for (std::uint32_t column = 0; column < region.width; column++)
             {
                 const std::uint32_t label = column / (region.width / 4);
-                const UnifiedChromaState state = kUnifiedChromaStatesByLabel[label];
+                const UnifiedChromaState state = states[label];
                 FillPixel(pixels, region.x + column, region.y + row, state.blue, state.green, state.red);
             }
         }
@@ -457,7 +462,7 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
 }
 
 [[nodiscard]] UnifiedCalibration Calibrate(const LumaView& view, const LocalDesktopGeometry& geometry,
-    const UnifiedVisualDecodePolicy& policy) noexcept
+    const UnifiedVisualDecodePolicy& policy, const bool grayStates) noexcept
 {
     std::array<ScalarStatistics, 4> lumaStatistics{};
     std::array<ScalarStatistics, 4> chromaBlueStatistics{};
@@ -525,11 +530,26 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
                         continue;
                     }
                     const std::size_t label = column / (region.width / 4);
-                    const std::array<double, 2> opponent = Opponent(sample);
-                    chromaBlueStatistics[label].Add(opponent[0]);
-                    chromaRedStatistics[label].Add(opponent[1]);
-                    localChromaBlue[label].Add(opponent[0]);
-                    localChromaRed[label].Add(opponent[1]);
+                    if (grayStates)
+                    {
+                        // Gray-state stripes calibrate the second carrier on
+                        // luma; the opponent coordinate stays exactly zero so
+                        // the shared consistency/neutral checks keep their
+                        // existing form.
+                        const double luma = Luma(sample);
+                        chromaBlueStatistics[label].Add(luma);
+                        chromaRedStatistics[label].Add(0.0);
+                        localChromaBlue[label].Add(luma);
+                        localChromaRed[label].Add(0.0);
+                    }
+                    else
+                    {
+                        const std::array<double, 2> opponent = Opponent(sample);
+                        chromaBlueStatistics[label].Add(opponent[0]);
+                        chromaRedStatistics[label].Add(opponent[1]);
+                        localChromaBlue[label].Add(opponent[0]);
+                        localChromaRed[label].Add(opponent[1]);
+                    }
                 }
             }
         }
@@ -575,9 +595,11 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     {
         for (std::size_t other = 0; other < label; other++)
         {
-            calibration.chromaValid = calibration.chromaValid &&
+            calibration.chromaValid = calibration.chromaValid && (grayStates ?
+                std::abs(calibration.chromaCentroids[label][0] - calibration.chromaCentroids[other][0]) >=
+                    policy.minimumLumaLevelGap :
                 std::sqrt(SquaredDistance(calibration.chromaCentroids[label],
-                    calibration.chromaCentroids[other])) >= policy.minimumChromaSeparation;
+                    calibration.chromaCentroids[other])) >= policy.minimumChromaSeparation);
         }
     }
     return calibration;
@@ -885,12 +907,29 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
     const std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount>& freshness,
     const UnifiedBaseLumaObservation& base, const UnifiedFineLumaObservation& fine,
     const UnifiedChromaObservation& chroma, const std::array<std::uint32_t, 2>& lumaModels,
-    const std::span<UnifiedSoftMetric> metrics) noexcept
+    const bool grayStates, const std::span<UnifiedSoftMetric> metrics) noexcept
 {
     const double low = calibration.lumaLevels[0];
     const double high = calibration.lumaLevels[2];
     const double lumaGap = high - low;
     const double lumaScale = calibration.lumaValid && lumaGap > 0 ? 2048 / (lumaGap * lumaGap) : 0;
+    // Gray-state mode: the four foreground levels span 88..248, so the
+    // mask classifier cannot assume a single calibrated high level. The
+    // foreground gate drops to the lowest state level and each tile's
+    // expected foreground becomes its own measured mean; the two state bits
+    // classify that mean against the calibrated gray centroids.
+    double stateFloor = high;
+    double minimumStateGap = 0;
+    if (grayStates)
+    {
+        stateFloor = std::min({calibration.chromaCentroids[0][0], calibration.chromaCentroids[1][0],
+            calibration.chromaCentroids[2][0], calibration.chromaCentroids[3][0]});
+        minimumStateGap = std::min({std::abs(calibration.chromaCentroids[1][0] - calibration.chromaCentroids[0][0]),
+            std::abs(calibration.chromaCentroids[2][0] - calibration.chromaCentroids[1][0]),
+            std::abs(calibration.chromaCentroids[3][0] - calibration.chromaCentroids[2][0])});
+    }
+    const double foregroundThreshold = grayStates ? (low + stateFloor) * 0.5 : (low + high) * 0.5;
+    const double stateScale = grayStates && minimumStateGap > 0 ? 2048 / (minimumStateGap * minimumStateGap) : 0;
     for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
     {
         const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
@@ -925,13 +964,19 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                     5 * Luma(sample) - Luma(left) - Luma(right) - Luma(top) - Luma(bottom), 0.0, 255.0);
             }
         }
-        const double foregroundThreshold = (low + high) * 0.5;
-        const std::uint32_t foregroundSamples = static_cast<std::uint32_t>(std::ranges::count_if(samples,
-            [foregroundThreshold](const Sample& sample)
+        std::uint32_t foregroundSamples = 0;
+        double foregroundLumaSum = 0;
+        for (const Sample& sample : samples)
+        {
+            if (Luma(sample) >= foregroundThreshold)
             {
-                return Luma(sample) >= foregroundThreshold;
-            }));
+                foregroundSamples++;
+                foregroundLumaSum += Luma(sample);
+            }
+        }
         const bool tileSamplingFailed = samplingFailed || foregroundSamples == 0;
+        const double tileExpectedForeground = grayStates && foregroundSamples != 0 ?
+            foregroundLumaSum / foregroundSamples : high;
 
         std::array<std::array<double, 16>, 2> lumaDistances{};
         std::array<bool, 2> modelValid{true, true};
@@ -961,7 +1006,7 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                 const std::uint32_t mask = kUnifiedSymbolMasksByLabel[label];
                 for (std::size_t chip = 0; chip < samples.size(); chip++)
                 {
-                    const double expected = ((mask >> projected[chip]) & 1U) != 0 ? high : low;
+                    const double expected = ((mask >> projected[chip]) & 1U) != 0 ? tileExpectedForeground : low;
                     const double difference = lumaSamples[chip] - expected;
                     lumaDistances[lane][label] += difference * difference;
                 }
@@ -983,26 +1028,40 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
         }
 
-        std::array<double, 2> averageOpponent{};
-        for (const Sample& sample : samples)
-        {
-            if (Luma(sample) < foregroundThreshold)
-            {
-                continue;
-            }
-            const std::array<double, 2> opponent = Opponent(sample);
-            averageOpponent[0] += opponent[0];
-            averageOpponent[1] += opponent[1];
-        }
-        if (foregroundSamples != 0)
-        {
-            averageOpponent[0] /= foregroundSamples;
-            averageOpponent[1] /= foregroundSamples;
-        }
         std::array<double, 4> chromaDistances{};
-        for (std::size_t label = 0; label < chromaDistances.size(); label++)
+        if (grayStates)
         {
-            chromaDistances[label] = SquaredDistance(averageOpponent, calibration.chromaCentroids[label]);
+            // The state is classified from the tile's measured foreground
+            // luma against the calibrated gray centroids; the mask decode
+            // consumed the same estimate as its expected foreground level.
+            for (std::size_t label = 0; label < chromaDistances.size(); label++)
+            {
+                const double difference = tileExpectedForeground - calibration.chromaCentroids[label][0];
+                chromaDistances[label] = difference * difference;
+            }
+        }
+        else
+        {
+            std::array<double, 2> averageOpponent{};
+            for (const Sample& sample : samples)
+            {
+                if (Luma(sample) < foregroundThreshold)
+                {
+                    continue;
+                }
+                const std::array<double, 2> opponent = Opponent(sample);
+                averageOpponent[0] += opponent[0];
+                averageOpponent[1] += opponent[1];
+            }
+            if (foregroundSamples != 0)
+            {
+                averageOpponent[0] /= foregroundSamples;
+                averageOpponent[1] /= foregroundSamples;
+            }
+            for (std::size_t label = 0; label < chromaDistances.size(); label++)
+            {
+                chromaDistances[label] = SquaredDistance(averageOpponent, calibration.chromaCentroids[label]);
+            }
         }
         for (std::uint8_t bitPlane = 0; bitPlane < 2; bitPlane++)
         {
@@ -1013,7 +1072,8 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                 double& destination = ((label >> bitPlane) & 1U) != 0 ? oneDistance : zeroDistance;
                 destination = std::min(destination, chromaDistances[label]);
             }
-            const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * 4);
+            const std::int16_t metric =
+                QuantizeMetric((oneDistance - zeroDistance) * (grayStates ? stateScale : 4));
             const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
                 UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, frameSequence);
             StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
@@ -1576,7 +1636,9 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
     {
         return scaffold;
     }
-    RenderCalibrationPilots(outBgra);
+    const bool grayStates =
+        IsUnifiedGrayStatesProfilePair(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion);
+    RenderCalibrationPilots(outBgra, grayStates);
     RenderPhasePilots(outBgra, parsed.Value().frameSequence);
     for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
     {
@@ -1604,7 +1666,9 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
         }
         const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
         const std::uint32_t mask = kUnifiedSymbolMasksByLabel[lumaLabel];
-        const UnifiedChromaState state = kUnifiedChromaStatesByLabel[chromaLabel];
+        const std::array<UnifiedChromaState, 4>& states =
+            grayStates ? kUnifiedGrayStatesByLabel : kUnifiedChromaStatesByLabel;
+        const UnifiedChromaState state = states[chromaLabel];
         for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
         {
             for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
@@ -1882,7 +1946,12 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     observation.frameErasure = UnifiedErasureReason::None;
     EvaluateFreshness(view, samplingGeometry, observation.bootstrap, observation.bootstrap.canonical44,
         policy, observation.freshness);
-    const UnifiedCalibration calibration = Calibrate(view, samplingGeometry, policy);
+    // The observed (already pair-validated) Bootstrap record selects the
+    // state-table variant: gray-state frames decode their second carrier on
+    // luma regardless of the caller's expected-identity defaults.
+    const bool grayStates = IsUnifiedGrayStatesProfilePair(
+        observation.bootstrapRecord.visualProfileId, observation.bootstrapRecord.visualLayoutVersion);
+    const UnifiedCalibration calibration = Calibrate(view, samplingGeometry, policy, grayStates);
     if (!calibration.lumaValid)
     {
         observation.baseLuma = {UnifiedErasureScope::Lane, UnifiedErasureReason::BaseLumaPilotFailure};
@@ -1914,7 +1983,8 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
         finePilot = true;
     }
     DecodeDataTiles(view, samplingGeometry, observation.bootstrapRecord.frameSequence, calibration, policy,
-        observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, lumaModels, state.metrics);
+        observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, lumaModels,
+        grayStates, state.metrics);
 
     return FinalizeDecodedMetrics(std::move(observation), slotPlan, inferSlotKinds, policy);
 }

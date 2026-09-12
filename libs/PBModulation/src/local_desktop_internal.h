@@ -28,12 +28,14 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, Remo
     case LocalDesktopBinding::RemoteVisualLowFps:
         return profileId == kRemoteVisualLowFpsProfileId && layout == kRemoteVisualLowFpsLayoutVersion;
     case LocalDesktopBinding::UnifiedVisual:
-        // The experimental blank-control identity (layout 11) uses the same
-        // scaffold geometry; only the profile pair differs.
+        // The experimental blank-control identity (layout 11) and the
+        // gray-state identity (layout 12) use the same scaffold geometry;
+        // only the profile pair differs.
         return (profileId == kUnifiedVisualProfile.productProfile.visualProfileId &&
             layout == kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
             (profileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
-            layout == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion);
+            layout == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion) ||
+            IsUnifiedGrayStatesProfilePair(profileId, layout);
     }
     return false;
 }

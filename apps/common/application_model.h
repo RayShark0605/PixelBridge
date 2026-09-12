@@ -34,7 +34,12 @@ enum class VisualProfile : std::uint8_t
     // Unified main contract under the experimental blank-control identity
     // (supplemental control bands in the blank canvas areas). CLI opt-in
     // only; never the default and never exposed by the product GUI.
-    UnifiedBands
+    UnifiedBands,
+    // Unified main contract under the experimental gray-state identity
+    // (four gray luma foreground levels instead of iso-luma chroma colors,
+    // so the second carrier survives chroma-destroying remote links). CLI
+    // opt-in only; never the default and never exposed by the product GUI.
+    UnifiedGray
 };
 
 // Profiles that share the unified mixed-slot main-region machinery. Behavior
@@ -42,7 +47,8 @@ enum class VisualProfile : std::uint8_t
 // the experimental bands variant rides the same encode/decode path.
 [[nodiscard]] constexpr bool IsUnifiedVisualFamily(const VisualProfile profile) noexcept
 {
-    return profile == VisualProfile::UnifiedLc4 || profile == VisualProfile::UnifiedBands;
+    return profile == VisualProfile::UnifiedLc4 || profile == VisualProfile::UnifiedBands ||
+        profile == VisualProfile::UnifiedGray;
 }
 
 struct VisualProfileOption

@@ -12,6 +12,7 @@
 #include "pbmodulation/shape_chroma.h"
 #include "pbmodulation/unified_visual.h"
 #include "pbprotocol/blake3_digest.h"
+#include "pbprotocol/product_visual_profile.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 #include "pbprotocol/transport_block_codec.h"
 #include "pbremotevisualsimulator/channel_transform.h"
@@ -150,12 +151,12 @@ struct UnifiedFixture
     std::vector<std::byte> pixels;
 };
 
-UnifiedFixture MakeUnifiedFixture(const std::uint64_t sequence)
+UnifiedFixture MakeUnifiedFixture(const std::uint64_t sequence,
+    const pbprotocol::ProductVisualProfile& profile = pbmodulation::kUnifiedVisualProfile.productProfile)
 {
     UnifiedFixture fixture;
     constexpr std::uint64_t sessionTagValue = 0x1122334455667788ULL;
-    fixture.bootstrap = MakeRecord(pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId,
-        pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion, sequence, sessionTagValue);
+    fixture.bootstrap = MakeRecord(profile.visualProfileId, profile.visualLayoutVersion, sequence, sessionTagValue);
     const pbprotocol::SessionTag sessionTag{sessionTagValue};
     const std::array<std::byte, 9> controlPayload{std::byte{1}, std::byte{3}, std::byte{5},
         std::byte{7}, std::byte{9}, std::byte{11}, std::byte{13}, std::byte{15}, std::byte{17}};
@@ -3082,6 +3083,107 @@ TEST_CASE("D3D11 demod configuration is bounded and failure leaves output owners
     REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, output));
     REQUIRE(output->GetSnapshot().residentBytes == exactResidentBytes);
     REQUIRE(output->Shutdown(environment.context.Get()));
+}
+
+TEST_CASE("Unified gray-state D3D11 demod recovers all fifteen slots through chroma subsampling",
+    "[demod][d3d11][unified][graystates][warp][fec]")
+{
+    auto environment = CreateWarpEnvironment();
+    const auto fixture = MakeUnifiedFixture(57, pbprotocol::kGrayStatesExperimentalProfile);
+    const pbmodulation::LocalDesktopBootstrapBinding binding{
+        pbprotocol::kGrayStatesExperimentalProfile.visualProfileId,
+        pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion};
+    const pbmodulation::LumaView view{fixture.pixels, pbmodulation::kUnifiedVisualProfile.canvasWidth,
+        pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4,
+        pbmodulation::LumaPixelFormat::Bgra8};
+    const auto bootstrap = pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view, binding);
+    REQUIRE(bootstrap.IsAccepted());
+
+    // Idealized 4:2:0: keep each pixel's BT.709 luma, replace opponent chroma
+    // by the 2x2 block mean. Gray pixels carry zero opponent, so the gray
+    // state levels pass through unchanged while any color carrier would be
+    // destroyed - the same idealization the modulation suite uses.
+    std::vector<std::byte> subsampled(fixture.pixels.size());
+    std::copy(fixture.pixels.begin(), fixture.pixels.end(), subsampled.begin());
+    for (std::uint32_t blockRow = 0; blockRow < 1080 / 2; blockRow++)
+    {
+        for (std::uint32_t blockColumn = 0; blockColumn < 1920 / 2; blockColumn++)
+        {
+            double opponentBlueSum = 0;
+            double opponentRedSum = 0;
+            std::array<double, 4> luma{};
+            std::size_t sample = 0;
+            for (std::uint32_t row = 0; row < 2; row++)
+            {
+                for (std::uint32_t column = 0; column < 2; column++)
+                {
+                    const std::size_t index =
+                        (static_cast<std::size_t>(blockRow * 2 + row) * 1920 + blockColumn * 2 + column) * 4;
+                    const double blue = std::to_integer<std::uint8_t>(subsampled[index]);
+                    const double green = std::to_integer<std::uint8_t>(subsampled[index + 1]);
+                    const double red = std::to_integer<std::uint8_t>(subsampled[index + 2]);
+                    luma[sample] = 0.0722 * blue + 0.7152 * green + 0.2126 * red;
+                    opponentBlueSum += blue - luma[sample];
+                    opponentRedSum += red - luma[sample];
+                    sample++;
+                }
+            }
+            const double opponentBlueMean = opponentBlueSum / 4.0;
+            const double opponentRedMean = opponentRedSum / 4.0;
+            sample = 0;
+            for (std::uint32_t row = 0; row < 2; row++)
+            {
+                for (std::uint32_t column = 0; column < 2; column++)
+                {
+                    const std::size_t index =
+                        (static_cast<std::size_t>(blockRow * 2 + row) * 1920 + blockColumn * 2 + column) * 4;
+                    const double blue = luma[sample] + opponentBlueMean;
+                    const double red = luma[sample] + opponentRedMean;
+                    const double green = luma[sample] -
+                        (0.0722 * opponentBlueMean + 0.2126 * opponentRedMean) / 0.7152;
+                    subsampled[index] = static_cast<std::byte>(std::lround(std::clamp(blue, 0.0, 255.0)));
+                    subsampled[index + 1] = static_cast<std::byte>(std::lround(std::clamp(green, 0.0, 255.0)));
+                    subsampled[index + 2] = static_cast<std::byte>(std::lround(std::clamp(red, 0.0, 255.0)));
+                    sample++;
+                }
+            }
+        }
+    }
+
+    pbdemodd3d11::DemodConfig config;
+    config.readbackSlotCount = 2;
+    std::uint64_t residentBytes = 0;
+    REQUIRE(pbdemodd3d11::CalculateDemodulatorResidentBytes(config, residentBytes));
+    config.maximumResidentBytes = residentBytes;
+    std::unique_ptr<pbdemodd3d11::Demodulator> demodulator;
+    REQUIRE(pbdemodd3d11::Demodulator::Create(environment.device.Get(), config, demodulator));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x72}}, 1};
+    const auto texture = UploadBgraTexture(environment.device.Get(), subsampled,
+        pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,
+        static_cast<std::size_t>(pbmodulation::kUnifiedVisualProfile.canvasWidth) * 4);
+    const auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, 1);
+    pbdemodd3d11::DemodSubmission submission;
+    REQUIRE(demodulator->SubmitUnifiedVisual(frame, environment.context.Get(), bootstrap, {}, submission));
+    const auto result = PollUntilReady(*demodulator, environment.context.Get(), submission);
+    REQUIRE(result.visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId);
+    REQUIRE(result.unifiedObservation.IsFrameAvailable());
+    REQUIRE(result.unifiedObservation.chroma.IsAvailable());
+    // The GPU gray-state branch feeds all fifteen codewords, including the
+    // five second-carrier slots, through the same canonical FEC gate.
+    REQUIRE(result.unifiedObservation.acceptedBlocks == pbmodulation::kUnifiedCodewordCount);
+    REQUIRE(result.unifiedObservation.acceptedTransportBlocks == pbmodulation::kUnifiedCodewordCount - 1);
+    REQUIRE(result.acceptedUnifiedBlockCount == pbmodulation::kUnifiedCodewordCount);
+    for (std::uint32_t index = 0; index < result.acceptedUnifiedBlockCount; index++)
+    {
+        const auto& accepted = result.acceptedUnifiedBlocks[index];
+        REQUIRE(accepted.kind == (index == 0 ? pbmodulation::UnifiedSlotKind::Control :
+            pbmodulation::UnifiedSlotKind::Transport));
+        REQUIRE(accepted.size == fixture.blocks[index].size());
+        REQUIRE(std::equal(fixture.blocks[index].begin(), fixture.blocks[index].end(), accepted.bytes.begin()));
+    }
+    REQUIRE(result.remoteMetricSamples == pbmodulation::kUnifiedSoftMetricCount);
+    REQUIRE(demodulator->Shutdown(environment.context.Get()));
 }
 
 TEST_CASE("Unified layout-9 D3D11 demod hands compact same-frame metrics to the canonical mixed-block gate",

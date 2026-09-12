@@ -1172,10 +1172,12 @@ bool ResolveLocalDesktopBinding(const LocalDesktopBootstrapBinding& binding,
     if (binding == LocalDesktopBootstrapBinding{kUnifiedVisualProfile.productProfile.visualProfileId,
         kUnifiedVisualProfile.productProfile.visualLayoutVersion} ||
         binding == LocalDesktopBootstrapBinding{pbprotocol::kBlankControlExperimentalProfile.visualProfileId,
-            pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion})
+            pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion} ||
+        IsUnifiedGrayStatesProfilePair(binding.visualProfileId, binding.visualLayoutVersion))
     {
-        // Layout 11 reuses the layout 10 scaffold geometry; the pair still
-        // gates via MatchesLocalDesktopBinding and the caller's exact binding.
+        // Layout 11 and layout 12 reuse the layout 10 scaffold geometry; the
+        // pair still gates via MatchesLocalDesktopBinding and the caller's
+        // exact binding.
         output = detail::LocalDesktopBinding::UnifiedVisual;
         return true;
     }
@@ -1250,6 +1252,10 @@ LocalDesktopObservation detail::DecodeLocalDesktopScaffold(const LumaView& view,
         result.workUnits = reader.WorkUnits();
         if (result.erasure != Erasure::None)
         {
+            // Keep the candidate count observable on the erasure path: the
+            // budget tests distinguish MarkerBudgetExceeded/IncompleteMarkers
+            // from MarkersNotFound through exactly this field.
+            result.markerCandidates = static_cast<std::uint32_t>(markerSet.size);
             return result;
         }
     }

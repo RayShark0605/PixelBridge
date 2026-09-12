@@ -490,7 +490,10 @@ std::string BuildRemoteVisualRunMetadataJson(const RemoteRunMetadata& metadata)
 std::string BuildEncoderRunReportJson(const RunReportContext& context,
     const EncoderSnapshot& snapshot)
 {
-    if (snapshot.visualProfile == VisualProfile::UnifiedLc4)
+    // The gray-state experimental identity shares the unified RunReport.3
+    // schema (per-lane FEC telemetry is exactly what its field A/B needs).
+    if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
+        snapshot.visualProfile == VisualProfile::UnifiedGray)
     {
         return BuildUnifiedEncoderReport(context, snapshot);
     }
@@ -615,7 +618,9 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
 std::string BuildDecoderRunReportJson(const RunReportContext& context,
     const DecoderSnapshot& snapshot)
 {
-    if (snapshot.visualProfile == VisualProfile::UnifiedLc4)
+    // Same unified RunReport.3 routing as the encoder side.
+    if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
+        snapshot.visualProfile == VisualProfile::UnifiedGray)
     {
         return BuildUnifiedDecoderReport(context, snapshot);
     }

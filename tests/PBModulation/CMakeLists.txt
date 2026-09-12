@@ -101,6 +101,12 @@ target_compile_definitions(PBSupplementalBandTests PRIVATE
     PB_SUPPLEMENTAL_BAND_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/supplemental-band")
 set_tests_properties(PBSupplementalBandTests PROPERTIES LABELS "supplemental-band;modulation;golden" TIMEOUT 120)
 
+PbAddUnitTest(PBUnifiedGrayStatesTests test_unified_graystates.cpp)
+target_link_libraries(PBUnifiedGrayStatesTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
+target_compile_definitions(PBUnifiedGrayStatesTests PRIVATE
+    PB_UNIFIED_GRAY_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-graystates-cpu-oracle")
+set_tests_properties(PBUnifiedGrayStatesTests PROPERTIES LABELS "modulation;graystates;unified;fec" TIMEOUT 240)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

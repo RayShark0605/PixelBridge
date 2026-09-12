@@ -259,6 +259,17 @@ inline constexpr std::array<const UnifiedVisualProfileManifest*, 1> kUnifiedVisu
     return nullptr;
 }
 
+// Experimental gray-state identity (layout 12): same manifest, mapping and
+// slot contract as the unified product profile, but the four data-tile
+// foreground states (and calibration state stripes) are gray luma levels, so
+// the second carrier's two bits per tile survive chroma-destroying links.
+[[nodiscard]] constexpr bool IsUnifiedGrayStatesProfilePair(
+    const std::uint64_t visualProfileId, const std::uint8_t visualLayoutVersion) noexcept
+{
+    return visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId &&
+        visualLayoutVersion == pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion;
+}
+
 struct UnifiedFrameCapacity
 {
     std::uint64_t dataPixels = 0;

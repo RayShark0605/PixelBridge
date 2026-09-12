@@ -7,7 +7,7 @@ cbuffer FrameConstants : register(b0)
     uint InterleavePhase;
     uint MetricCount;
     uint Reserved0;
-    uint Reserved1;
+    uint StateLumaMode;
     float OriginX;
     float OriginY;
     float ScaleX;
@@ -211,15 +211,36 @@ void CalibrateUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             {
                 float3 sample = 0.0;
                 valid = ReadSample((float)(origin.x + column), (float)(origin.y + row), sample) && valid;
-                const float2 value = Opponent(sample);
-                sum += value;
-                squareSum += value * value;
+                if (StateLumaMode != 0)
+                {
+                    // Gray-state stripes calibrate the second carrier on luma;
+                    // the opponent coordinate stays exactly zero so the CPU
+                    // readback keeps its existing centroid/variance form.
+                    const float value = Luma(sample);
+                    sum.x += value;
+                    squareSum.x += value * value;
+                }
+                else
+                {
+                    const float2 value = Opponent(sample);
+                    sum += value;
+                    squareSum += value * value;
+                }
                 samples++;
             }
         }
-        const float2 mean = samples == 0 ? 0.0 : sum / (float)samples;
-        const float2 variance = samples == 0 ? 0.0 : max(0.0, squareSum / (float)samples - mean * mean);
-        CalibrationOutput[entry] = float4(mean, variance);
+        if (StateLumaMode != 0)
+        {
+            const float mean = samples == 0 ? 0.0 : sum.x / (float)samples;
+            const float variance = samples == 0 ? 0.0 : max(0.0, squareSum.x / (float)samples - mean * mean);
+            CalibrationOutput[entry] = float4(mean, 0.0, variance, 0.0);
+        }
+        else
+        {
+            const float2 mean = samples == 0 ? 0.0 : sum / (float)samples;
+            const float2 variance = samples == 0 ? 0.0 : max(0.0, squareSum / (float)samples - mean * mean);
+            CalibrationOutput[entry] = float4(mean, variance);
+        }
         if (!valid)
         {
             CalibrationOutput[entry].w = -1.0;
@@ -421,6 +442,38 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float low = GetLumaCentroid(0);
     const float high = GetLumaCentroid(2);
     const float lumaGap = high - low;
+    // Gray-state mode: the four foreground levels span well below and above
+    // the ladder high, so the mask classifier uses this tile's own measured
+    // foreground mean and the foreground gate drops to the lowest gray
+    // centroid; the two state bits classify that mean against the gray levels.
+    float stateFloor = high;
+    float stateScale = 0.0;
+    if (StateLumaMode != 0)
+    {
+        const float level0 = GetChromaCentroid(0).x;
+        const float level1 = GetChromaCentroid(1).x;
+        const float level2 = GetChromaCentroid(2).x;
+        const float level3 = GetChromaCentroid(3).x;
+        stateFloor = min(min(level0, level1), min(level2, level3));
+        const float stateGap = min(min(abs(level1 - level0), abs(level2 - level1)), abs(level3 - level2));
+        stateScale = stateGap > 0.0 ? 2048.0 / (stateGap * stateGap) : 0.0;
+    }
+    const float foregroundThreshold = StateLumaMode != 0 ? (low + stateFloor) * 0.5 : (low + high) * 0.5;
+    uint foregroundSamples = 0;
+    float foregroundLumaSum = 0.0;
+    [loop]
+    for (uint foregroundChip = 0; foregroundChip < 25; foregroundChip++)
+    {
+        const float foregroundValue = Luma(samples[foregroundChip]);
+        if (foregroundValue >= foregroundThreshold)
+        {
+            foregroundSamples++;
+            foregroundLumaSum += foregroundValue;
+        }
+    }
+    TileSamplingFailures[tileOrdinal] = valid && foregroundSamples != 0 ? 0 : 1;
+    const float tileExpectedForeground = StateLumaMode != 0 && foregroundSamples != 0 ?
+        foregroundLumaSum / (float)foregroundSamples : high;
     const uint baseModel = (uint)PhaseOutput[InterleavePhase & 7].w;
     const uint fineModel = (uint)PhaseOutput[8 + (InterleavePhase & 7)].w;
     uint baseChips[25];
@@ -448,12 +501,14 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         for (uint chipIndex = 0; chipIndex < 25; chipIndex++)
         {
             const float value = lumaSamples[chipIndex];
-            const float baseExpected = ((mask >> min(baseChips[chipIndex], 24)) & 1) != 0 ? high : low;
+            const float baseExpected = ((mask >> min(baseChips[chipIndex], 24)) & 1) != 0 ?
+                tileExpectedForeground : low;
             const float baseDifference = value - baseExpected;
             baseDistance += baseDifference * baseDifference;
             if (baseModel != fineModel)
             {
-                const float fineExpected = ((mask >> min(fineChips[chipIndex], 24)) & 1) != 0 ? high : low;
+                const float fineExpected = ((mask >> min(fineChips[chipIndex], 24)) & 1) != 0 ?
+                    tileExpectedForeground : low;
                 const float fineDifference = value - fineExpected;
                 fineDistance += fineDifference * fineDifference;
             }
@@ -487,29 +542,40 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                 (oneDistance - zeroDistance) * 2048.0 / (lumaGap * lumaGap) : 0.0;
         }
     }
-    float2 averageOpponent = 0.0;
-    uint foregroundSamples = 0;
-    const float foregroundThreshold = (low + high) * 0.5;
-    [loop]
-    for (uint opponentChip = 0; opponentChip < 25; opponentChip++)
+    float chromaDistances[4];
+    if (StateLumaMode != 0)
     {
-        if (Luma(samples[opponentChip]) >= foregroundThreshold)
+        // The state is classified from the tile's measured foreground luma
+        // against the calibrated gray centroids; the mask decode consumed the
+        // same estimate as its expected foreground level.
+        [unroll]
+        for (uint grayLabel = 0; grayLabel < 4; grayLabel++)
         {
-            averageOpponent += Opponent(samples[opponentChip]);
-            foregroundSamples++;
+            const float grayDifference = tileExpectedForeground - GetChromaCentroid(grayLabel).x;
+            chromaDistances[grayLabel] = grayDifference * grayDifference;
         }
     }
-    if (foregroundSamples != 0)
+    else
     {
-        averageOpponent /= (float)foregroundSamples;
-    }
-    TileSamplingFailures[tileOrdinal] = valid && foregroundSamples != 0 ? 0 : 1;
-    float chromaDistances[4];
-    [unroll]
-    for (uint chromaLabel = 0; chromaLabel < 4; chromaLabel++)
-    {
-        const float2 difference = averageOpponent - GetChromaCentroid(chromaLabel);
-        chromaDistances[chromaLabel] = dot(difference, difference);
+        float2 averageOpponent = 0.0;
+        [loop]
+        for (uint opponentChip = 0; opponentChip < 25; opponentChip++)
+        {
+            if (Luma(samples[opponentChip]) >= foregroundThreshold)
+            {
+                averageOpponent += Opponent(samples[opponentChip]);
+            }
+        }
+        if (foregroundSamples != 0)
+        {
+            averageOpponent /= (float)foregroundSamples;
+        }
+        [unroll]
+        for (uint chromaLabel = 0; chromaLabel < 4; chromaLabel++)
+        {
+            const float2 difference = averageOpponent - GetChromaCentroid(chromaLabel);
+            chromaDistances[chromaLabel] = dot(difference, difference);
+        }
     }
     const uint chromaBits[2] = {binding.ChromaBit0, binding.ChromaBit1};
     [unroll]
@@ -532,7 +598,7 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         if (chromaBits[chromaPlane] < UnifiedMetricCount)
         {
             MetricOutput[chromaBits[chromaPlane]] = foregroundSamples == 0 ? 0.0 :
-                (oneDistance - zeroDistance) * 4.0;
+                (oneDistance - zeroDistance) * (StateLumaMode != 0 ? stateScale : 4.0);
         }
     }
 }

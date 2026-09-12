@@ -21,6 +21,7 @@ target_sources(PBApplicationTests PRIVATE test_unified_run_report.cpp)
 target_sources(PBApplicationTests PRIVATE test_throughput_observation_report.cpp)
 target_sources(PBApplicationTests PRIVATE test_step1_measurement.cpp)
 target_sources(PBApplicationTests PRIVATE test_unified_bands_workflow.cpp)
+target_sources(PBApplicationTests PRIVATE test_unified_graystates_workflow.cpp)
 PbAddUnitTest(PBStep1GuiEvidenceTests test_step1_gui_evidence.cpp
     "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp")
 target_link_libraries(PBStep1GuiEvidenceTests PRIVATE PB::PBApplication Qt${QT_VERSION_MAJOR}::Core)

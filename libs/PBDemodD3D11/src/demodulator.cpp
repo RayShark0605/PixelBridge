@@ -117,6 +117,9 @@ struct Binding
 {
     ProfileMode mode = ProfileMode::ShapeChroma;
     std::uint64_t profileId = 0;
+    // Gray-state experimental identity (layout 12): the second carrier is
+    // decoded on luma; the shader and calibration readback branch on it.
+    bool grayStates = false;
     std::uint32_t tilePixels = 0;
     std::uint32_t tileCount = 0;
     std::uint32_t rowTiles = 0;
@@ -139,7 +142,7 @@ struct alignas(16) FrameConstants
     std::uint32_t interleavePhase;
     std::uint32_t metricCount;
     std::uint32_t reserved0;
-    std::uint32_t reserved1;
+    std::uint32_t stateLumaMode;
     float originX;
     float originY;
     float scaleX;
@@ -306,10 +309,14 @@ DemodStatus ParseBinding(const std::span<const std::byte> bytes, Binding& output
     else if ((binding.profileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId &&
         parsed.Value().visualLayoutVersion == pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion) ||
         (binding.profileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId &&
-            parsed.Value().visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion))
+            parsed.Value().visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion) ||
+        (binding.profileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId &&
+            parsed.Value().visualLayoutVersion == pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion))
     {
-        // Layout 11 shares the layout 10 main-region geometry, so the GPU
-        // binding constants are identical for both unified identities.
+        // Layout 11 and layout 12 share the layout 10 main-region geometry, so
+        // the GPU binding constants are identical for all unified identities.
+        binding.grayStates = pbmodulation::IsUnifiedGrayStatesProfilePair(
+            binding.profileId, parsed.Value().visualLayoutVersion);
         binding.mode = ProfileMode::UnifiedVisual;
         binding.tilePixels = pbmodulation::kUnifiedVisualProfile.tileWidth;
         binding.tileCount = pbmodulation::kUnifiedVisualProfile.dataTileCount;
@@ -550,7 +557,7 @@ DemodStatus ValidateCalibration(const ProfileMode mode,
 }
 
 DemodStatus ResolveUnifiedCalibration(const std::array<std::array<float, 4>, calibrationEntries>& calibration,
-    const pbmodulation::UnifiedVisualDecodePolicy& policy,
+    const pbmodulation::UnifiedVisualDecodePolicy& policy, const bool grayStates,
     pbmodulation::UnifiedBaseLumaObservation& baseLuma,
     pbmodulation::UnifiedFineLumaObservation& fineLuma,
     pbmodulation::UnifiedChromaObservation& chroma) noexcept
@@ -617,9 +624,13 @@ DemodStatus ResolveUnifiedCalibration(const std::array<std::array<float, 4>, cal
     {
         for (std::size_t other = 0; other < label; other++)
         {
-            chromaValid = chromaValid && std::hypot(
-                chromaCentroids[label][0] - chromaCentroids[other][0],
-                chromaCentroids[label][1] - chromaCentroids[other][1]) >= policy.minimumChromaSeparation;
+            // Gray-state stripes calibrate on luma, so the state separation
+            // gate reuses the luma level gap rather than opponent distance.
+            chromaValid = chromaValid && (grayStates ?
+                std::abs(chromaCentroids[label][0] - chromaCentroids[other][0]) >=
+                    policy.minimumLumaLevelGap :
+                std::hypot(chromaCentroids[label][0] - chromaCentroids[other][0],
+                    chromaCentroids[label][1] - chromaCentroids[other][1]) >= policy.minimumChromaSeparation);
         }
     }
     if (!lumaValid)
@@ -1513,6 +1524,7 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
     constants.interleavePhase = binding.interleavePhase;
     constants.metricCount = binding.metricCount;
     constants.reserved0 = binding.codedMetricCount;
+    constants.stateLumaMode = binding.grayStates ? 1U : 0U;
     if (remoteVisualLowFps)
     {
         constants.originX = static_cast<float>(remoteVisualLowFpsSamplingGeometry.originX);
@@ -1906,7 +1918,7 @@ DemodPollResult PollInternal(Demodulator::Implementation& state, ID3D11DeviceCon
     pbmodulation::UnifiedBaseLumaObservation unifiedBaseLuma;
     pbmodulation::UnifiedFineLumaObservation unifiedFineLuma;
     pbmodulation::UnifiedChromaObservation unifiedChroma;
-    status = unifiedVisual ? ResolveUnifiedCalibration(calibration, slot.unifiedPolicy,
+    status = unifiedVisual ? ResolveUnifiedCalibration(calibration, slot.unifiedPolicy, slot.binding.grayStates,
         unifiedBaseLuma, unifiedFineLuma, unifiedChroma) : ValidateCalibration(slot.binding.mode, calibration,
             remoteVisualLowFps ? std::addressof(slot.remoteVisualLowFpsPolicy) : nullptr);
     if (!status)

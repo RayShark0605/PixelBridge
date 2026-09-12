@@ -871,6 +871,16 @@ struct ProfileBinding
             static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codedBytes),
             static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount)};
     }
+    if (profile == VisualProfile::UnifiedGray)
+    {
+        // Same main-region geometry and capacity as the unified product
+        // contract; the wire identity changes to the gray-state pair (layout
+        // 12 swaps the four foreground states for gray luma levels).
+        return {profile, pbprotocol::kGrayStatesExperimentalProfile.visualProfileId,
+            pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion,
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codedBytes),
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount)};
+    }
     if (profile == VisualProfile::ShapeChroma)
     {
         return {profile, pbmodulation::kShapeChromaProfileId, pbmodulation::kShapeChromaLayoutVersion,

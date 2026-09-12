@@ -99,8 +99,14 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
         InvalidateFrameCoverage(UnifiedCoverageFailureReason::TimestampOrder, &bootstrap, captureEpoch, timestamp100ns);
         return TelemetryStatus::Failure(TelemetryError::TimestampOrder);
     }
-    if (bootstrap.visualProfileId != pbprotocol::kUnifiedVisualProfileId ||
-        bootstrap.visualLayoutVersion != pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion)
+    // The experimental gray-state identity (layout 12) renders the same
+    // manifest and lane structure as the product profile, so its samples are
+    // valid unified telemetry; its field attribution depends on them. Other
+    // identities (including blank-control bands) stay rejected.
+    if ((bootstrap.visualProfileId != pbprotocol::kUnifiedVisualProfileId ||
+        bootstrap.visualLayoutVersion != pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion) &&
+        !pbmodulation::IsUnifiedGrayStatesProfilePair(
+            bootstrap.visualProfileId, bootstrap.visualLayoutVersion))
     {
         InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &bootstrap, captureEpoch, timestamp100ns);
         return TelemetryStatus::Failure(TelemetryError::InvalidSample);

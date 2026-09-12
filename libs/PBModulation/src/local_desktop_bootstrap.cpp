@@ -191,11 +191,12 @@ ModulationStatus detail::EncodeLocalDesktopScaffold(const std::span<const std::b
         return FromProtocolError(parsed.Error());
     }
     // The unified scaffold accepts the product layout and the experimental
-    // blank-control layout; MatchesLocalDesktopBinding below still requires
-    // the exact (id, layout) pair.
+    // blank-control (11) and gray-state (12) layouts; MatchesLocalDesktopBinding
+    // below still requires the exact (id, layout) pair.
     const bool unifiedLayout = binding == detail::LocalDesktopBinding::UnifiedVisual &&
         (parsed.Value().visualLayoutVersion == kUnifiedVisualProfile.productProfile.visualLayoutVersion ||
-        parsed.Value().visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion);
+        parsed.Value().visualLayoutVersion == pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion ||
+        parsed.Value().visualLayoutVersion == pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion);
     if (parsed.Value().visualLayoutVersion != GetLocalDesktopBindingLayoutVersion(binding) && !unifiedLayout)
     {
         return ModulationStatus::Failure(ModulationErrorCode::UnsupportedVersion, 7);

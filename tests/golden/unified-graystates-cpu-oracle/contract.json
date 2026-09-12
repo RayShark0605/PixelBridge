@@ -1,0 +1,86 @@
+{
+  "artifact": "PB-Experimental-GrayStates-1 CPU oracle Golden",
+  "canvas": {
+    "height": 1080,
+    "pixelFormat": "BGRA8_UNORM_SDR",
+    "width": 1920
+  },
+  "codewords": {
+    "bytesEach": 2025,
+    "count": 15,
+    "informationBytesEach": 1350,
+    "innerFecProfile": "DVB-S2-Short-N16200-K10800"
+  },
+  "data": {
+    "foregroundStates": "gray",
+    "glyphPixels": 5,
+    "grayLevels": [
+      88,
+      144,
+      200,
+      248
+    ],
+    "highLuma": 160,
+    "lowLuma": 8,
+    "neutralLuma": 128,
+    "separatorPixels": 1,
+    "tilePixels": 6,
+    "tiles": 41872
+  },
+  "freshnessPartition": {
+    "columnBoundaries": [
+      560,
+      1360
+    ],
+    "rowBoundaries": [
+      382,
+      698
+    ]
+  },
+  "independentRebuild": "tests/PBModulation/generate_unified_graystates_golden.py --check",
+  "pilots": {
+    "lumaLevels": [
+      8,
+      64,
+      160,
+      232
+    ],
+    "lumaRows": 24,
+    "neutralRows": 8,
+    "stateRows": 32,
+    "stateStripes": "gray"
+  },
+  "profile": {
+    "layoutVersion": 12,
+    "name": "PB-Experimental-GrayStates-1",
+    "profileIdHex": "5042475953544131"
+  },
+  "rasterBlake3": {
+    "base-neutralized": "6c2b0600104df8a9deb4f59e4af454376accd3dcb0a2949fb2543693c53b6ac8",
+    "clean": "736236d13b4a6ad8ba25a278b8a90660a4d9db0b9c8887dac9b712c8ab72c926",
+    "fine-neutralized": "807a4c903ac8e79ddc923f33042ff367e67d86ab0bec7e0bceac976ced833f40",
+    "localized-stale": "98b71258671e6fffd219d0f5c71be31edf5697cbf8b2454a99155a60a904a2ea",
+    "state-collapsed": "c21bd6765a6c49e351353a178e9b87a474553ecefbf6813b2e5356c395f6659e",
+    "wrong-sequence": "e1293c9fc1ddc4a3b7c795903b1e1f9f8dedd47561ec375fa523bc0acdc327fd"
+  },
+  "slotPlan": {
+    "slot0": "Control/SessionDescriptor",
+    "slots1To14": "Transport"
+  },
+  "variantTransforms": {
+    "base-neutralized": "replace top 128x64 phase checker by neutral 128",
+    "clean": "sequence41 canonical raster",
+    "fine-neutralized": "replace bottom 128x64 phase checker by neutral 128",
+    "localized-stale": "copy sequence40 center timing patch and freshness-region-4 data tiles",
+    "state-collapsed": "replace the four gray state stripes of every calibration pilot by neutral 128",
+    "wrong-sequence": "copy every sequence40 data rectangle under sequence41 Bootstrap and pilots"
+  },
+  "variants": [
+    "clean",
+    "state-collapsed",
+    "base-neutralized",
+    "fine-neutralized",
+    "localized-stale",
+    "wrong-sequence"
+  ]
+}

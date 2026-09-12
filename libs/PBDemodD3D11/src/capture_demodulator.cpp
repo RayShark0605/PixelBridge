@@ -124,6 +124,11 @@ bool ResolveBinding(const std::uint64_t visualProfileId, pbmodulation::LocalDesk
         output = {visualProfileId, pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion};
         return true;
     }
+    if (visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId)
+    {
+        output = {visualProfileId, pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion};
+        return true;
+    }
     if (visualProfileId == pbmodulation::kRemoteVisualLowFpsProfileId)
     {
         output = {visualProfileId, pbmodulation::kRemoteVisualLowFpsLayoutVersion};
@@ -154,10 +159,13 @@ bool IsRemoteVisualLowFps(const std::uint64_t visualProfileId) noexcept
 
 bool IsUnifiedVisual(const std::uint64_t visualProfileId) noexcept
 {
-    // The experimental blank-control identity shares the unified staged
-    // pipeline (layout 11 = layout 10 main region + two supplemental bands).
+    // The experimental blank-control identity (layout 11 = layout 10 main
+    // region + two supplemental bands) and the gray-state identity (layout 12
+    // = layout 10 with luma-gray foreground states) share the unified staged
+    // pipeline.
     return visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId ||
-        visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId;
+        visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId ||
+        visualProfileId == pbprotocol::kGrayStatesExperimentalProfile.visualProfileId;
 }
 
 bool IsStagedVisual(const std::uint64_t visualProfileId) noexcept
