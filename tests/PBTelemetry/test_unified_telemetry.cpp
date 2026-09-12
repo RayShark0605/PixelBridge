@@ -17,7 +17,10 @@ pbmodulation::UnifiedVisualObservation Observation(const std::uint64_t sequence)
     observation.bootstrapRecord.frameSequence = sequence;
     observation.bootstrapRecord.visualProfileId = pbprotocol::kUnifiedVisualProfileId;
     observation.bootstrapRecord.visualLayoutVersion = pbprotocol::kUnifiedVisualLayoutVersion;
-    for (std::uint32_t index = 0; index < observation.slots.size(); index++)
+    // Product-identity observation: only the fifteen SC6 slots are active;
+    // the storage tail belongs to the larger gray carrier and is never
+    // populated or evaluated for this identity.
+    for (std::uint32_t index = 0; index < pbmodulation::kUnifiedCodewordCount; index++)
     {
         auto& slot = observation.slots[index];
         slot.lane = pbmodulation::FindUnifiedLaneForCodewordSlot(index)->lane;
@@ -26,7 +29,7 @@ pbmodulation::UnifiedVisualObservation Observation(const std::uint64_t sequence)
         slot.acceptedBytes = 100;
     }
     observation.slots[0].kind = pbmodulation::UnifiedSlotKind::Control;
-    observation.acceptedBlocks = static_cast<std::uint32_t>(observation.slots.size());
+    observation.acceptedBlocks = pbmodulation::kUnifiedCodewordCount;
     observation.acceptedTransportBlocks = observation.acceptedBlocks - 1;
     observation.acceptedControlRecords = 1;
     constexpr std::array<std::uint32_t, 3> codewords{
@@ -82,7 +85,7 @@ TEST_CASE("G17 malformed observations cannot partially mutate lane counters", "[
     }
     SECTION("accepted FEC conflict")
     {
-        invalid.slots.back().fecValid = false;
+        invalid.slots[pbmodulation::kUnifiedCodewordCount - 1].fecValid = false;
     }
     SECTION("accepted total conflict")
     {
@@ -90,11 +93,13 @@ TEST_CASE("G17 malformed observations cannot partially mutate lane counters", "[
     }
     SECTION("unknown slot kind")
     {
-        invalid.slots.back().kind = static_cast<pbmodulation::UnifiedSlotKind>(255);
+        invalid.slots[pbmodulation::kUnifiedCodewordCount - 1].kind =
+            static_cast<pbmodulation::UnifiedSlotKind>(255);
     }
     SECTION("unknown rejection")
     {
-        invalid.slots.back().rejection = static_cast<pbmodulation::UnifiedSlotRejection>(255);
+        invalid.slots[pbmodulation::kUnifiedCodewordCount - 1].rejection =
+            static_cast<pbmodulation::UnifiedSlotRejection>(255);
     }
     SECTION("erased frame cannot report accepted bytes")
     {

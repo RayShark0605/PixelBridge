@@ -2365,8 +2365,12 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     const UnifiedVisualDecodePolicy& policy) noexcept
 {
     Implementation& state = *implementation_;
-    for (const UnifiedSoftMetric& metric : state.metrics)
+    // Only the active carrier's metric prefix was populated for this frame;
+    // the storage tail keeps default entries from the larger carrier variant
+    // and must not leak into the per-lane summaries.
+    for (std::size_t metricIndex = 0; metricIndex < state.activeMetricCount; metricIndex++)
     {
+        const UnifiedSoftMetric& metric = state.metrics[metricIndex];
         const std::size_t laneIndex = metric.lane == UnifiedLane::BaseLuma ? 0 : metric.lane == UnifiedLane::FineLuma ? 1 : 2;
         auto& summary = observation.laneMetrics[laneIndex];
         const auto magnitude = static_cast<std::uint32_t>(std::abs(static_cast<std::int32_t>(metric.value)));

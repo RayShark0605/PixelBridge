@@ -100,13 +100,14 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
         return TelemetryStatus::Failure(TelemetryError::TimestampOrder);
     }
     // The experimental gray-state identity (layout 12) renders the same
-    // manifest and lane structure as the product profile, so its samples are
-    // valid unified telemetry; its field attribution depends on them. Other
-    // identities (including blank-control bands) stay rejected.
+    // manifest and slot semantics as the product profile, so its samples are
+    // valid unified telemetry. Other identities (including blank-control
+    // bands) stay rejected.
+    const bool grayFrame = pbmodulation::IsUnifiedGrayStatesProfilePair(
+        bootstrap.visualProfileId, bootstrap.visualLayoutVersion);
     if ((bootstrap.visualProfileId != pbprotocol::kUnifiedVisualProfileId ||
         bootstrap.visualLayoutVersion != pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion) &&
-        !pbmodulation::IsUnifiedGrayStatesProfilePair(
-            bootstrap.visualProfileId, bootstrap.visualLayoutVersion))
+        !grayFrame)
     {
         InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &bootstrap, captureEpoch, timestamp100ns);
         return TelemetryStatus::Failure(TelemetryError::InvalidSample);
@@ -124,8 +125,12 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
             {
                 continue;
             }
-            const std::uint32_t expectedSamples = pbmodulation::kUnifiedLaneCapacities[lane].codewordCount *
-                pbmodulation::kUnifiedVisualProfile.innerCodewordBits;
+            // Gray carries every metric on Base Luma; the SC6 lane table
+            // covers only the product's three-lane split.
+            const std::uint32_t expectedSamples = grayFrame ?
+                (lane == 0 ? static_cast<std::uint32_t>(pbmodulation::kUnifiedGraySoftMetricCount) : 0) :
+                pbmodulation::kUnifiedLaneCapacities[lane].codewordCount *
+                    pbmodulation::kUnifiedVisualProfile.innerCodewordBits;
             if (metric.samples != expectedSamples || metric.zeroMetrics > metric.samples || metric.erasedMetrics > metric.zeroMetrics ||
                 metric.minimumAbsoluteMetric > 32768 || metric.absoluteMetricSum > static_cast<std::uint64_t>(metric.samples) * 32768)
             {
@@ -141,11 +146,28 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
         }
         std::uint32_t accepted = 0;
         std::uint32_t controls = 0;
-        for (std::size_t slot = 0; slot < observation->slots.size(); slot++)
+        // Slot accounting covers only this carrier's active prefix: fifteen
+        // for SC6, eighteen for gray. The storage array is sized for the
+        // larger carrier, so its default-constructed tail must never be
+        // evaluated as a slot sample.
+        const std::uint32_t frameSlotCount = observation->frameSlotCount;
+        if (frameSlotCount != (grayFrame ? pbmodulation::kUnifiedGrayFrameCodewordCount :
+            pbmodulation::kUnifiedCodewordCount))
+        {
+            InvalidateFrameCoverage(UnifiedCoverageFailureReason::InvalidSample, &bootstrap, captureEpoch, timestamp100ns);
+            return TelemetryStatus::Failure(TelemetryError::InvalidSample);
+        }
+        for (std::uint32_t slot = 0; slot < frameSlotCount; slot++)
         {
             const auto& sample = observation->slots[slot];
-            const auto* contract = pbmodulation::FindUnifiedLaneForCodewordSlot(static_cast<std::uint32_t>(slot));
-            if (contract == nullptr || sample.lane != contract->lane ||
+            // Gray slots all ride Base Luma; the manifest lane table only
+            // covers the fifteen product slots.
+            const auto* const contract = grayFrame ? nullptr :
+                pbmodulation::FindUnifiedLaneForCodewordSlot(slot);
+            const bool laneMismatch = grayFrame ?
+                sample.lane != pbmodulation::UnifiedLane::BaseLuma :
+                (contract == nullptr || sample.lane != contract->lane);
+            if (laneMismatch ||
                 (sample.kind != pbmodulation::UnifiedSlotKind::Control && sample.kind != pbmodulation::UnifiedSlotKind::Transport) ||
                 sample.rejection > pbmodulation::UnifiedSlotRejection::IdentityFailure ||
                 (sample.accepted && (!sample.fecValid || !sample.paddingValid || !sample.crcValid || !sample.identityValid ||
