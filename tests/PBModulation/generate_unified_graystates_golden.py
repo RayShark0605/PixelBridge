@@ -37,9 +37,9 @@ PHASE = ((896, 16), (896, 1000))
 # Gray foreground levels replace the SC6-V3 iso-luma chroma colors; spacing is
 # 56, comfortably above the decode policy's minimum luma level gap of 32.
 GRAY_STATES_BY_LABEL = (
-    (88, 88, 88, 0),
-    (144, 144, 144, 1),
-    (200, 200, 200, 2),
+    (56, 56, 56, 0),
+    (112, 112, 112, 1),
+    (168, 168, 168, 2),
     (248, 248, 248, 3))
 VARIANTS = ("clean", "state-collapsed", "base-neutralized", "fine-neutralized",
             "localized-stale", "wrong-sequence")
@@ -144,7 +144,7 @@ def BuildFiles() -> dict[str, bytes]:
                       "innerFecProfile": "DVB-S2-Short-N16200-K10800"},
         "data": {"lowLuma": LOW, "highLuma": HIGH, "neutralLuma": NEUTRAL,
                  "tiles": mapping.DATA_TILE_COUNT, "tilePixels": 6, "glyphPixels": 5,
-                 "separatorPixels": 1, "foregroundStates": "gray", "grayLevels": [88, 144, 200, 248]},
+                 "separatorPixels": 1, "foregroundStates": "gray", "grayLevels": [56, 112, 168, 248]},
         "pilots": {"lumaRows": 24, "neutralRows": 8, "stateRows": 32,
                    "lumaLevels": LUMA_LEVELS, "stateStripes": "gray"},
         "freshnessPartition": {"columnBoundaries": [560, 1360], "rowBoundaries": [382, 698]},

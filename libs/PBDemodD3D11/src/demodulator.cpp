@@ -86,6 +86,8 @@ static_assert(std::ranges::all_of(pbmodulation::kRemoteVisualLadders,
     [](const pbmodulation::LocalDesktopRegion& region) { return region.width == 128 && region.height == 64; }));
 static_assert(pbmodulation::kUnifiedVisualProfile.tileWidth == 6 && pbmodulation::kUnifiedVisualProfile.tileHeight == 6);
 static_assert(pbmodulation::kUnifiedVisualProfile.dataTileCount == 41872);
+constexpr std::uint32_t unifiedForegroundHistogramBytes = 256 * sizeof(std::uint32_t);
+constexpr std::uint32_t unifiedStateModesBytes = 2 * sizeof(float) * 4;
 static_assert(pbmodulation::kUnifiedSoftMetricCount == 243000);
 static_assert(pbmodulation::kUnifiedFreshnessRegionCount == 9 && pbmodulation::kLocalDesktopTimingBits == 256);
 static_assert(pbmodulation::kUnifiedSymbolMasksByLabel.size() == 16);
@@ -731,6 +733,11 @@ struct Demodulator::Implementation
         ComPtr<ID3D11Buffer> unifiedExpectedFreshness;
         ComPtr<ID3D11ShaderResourceView> unifiedExpectedFreshnessSrv;
         ComPtr<ID3D11Buffer> unifiedTileSamplingFailures;
+        ComPtr<ID3D11Buffer> unifiedForegroundHistogram;
+        ComPtr<ID3D11UnorderedAccessView> unifiedForegroundHistogramUav;
+        ComPtr<ID3D11Buffer> unifiedStateModes;
+        ComPtr<ID3D11UnorderedAccessView> unifiedStateModesUav;
+        ComPtr<ID3D11ShaderResourceView> unifiedStateModesSrv;
         ComPtr<ID3D11Buffer> unifiedTileSamplingFailuresStaging;
         ComPtr<ID3D11UnorderedAccessView> unifiedTileSamplingFailuresUav;
         ComPtr<ID3D11Buffer> unifiedFreshness;
@@ -769,6 +776,8 @@ struct Demodulator::Implementation
     ComPtr<ID3D11ComputeShader> demodRemoteVisualLowFpsFreshness;
     ComPtr<ID3D11ComputeShader> demodRemoteVisualLowFps;
     ComPtr<ID3D11ComputeShader> calibrateUnified;
+    ComPtr<ID3D11ComputeShader> binUnifiedForeground;
+    ComPtr<ID3D11ComputeShader> findUnifiedModes;
     ComPtr<ID3D11ComputeShader> evaluateUnifiedFreshness;
     ComPtr<ID3D11ComputeShader> evaluateUnifiedPhase;
     ComPtr<ID3D11ComputeShader> demodUnified;
@@ -1223,7 +1232,7 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
             std::span<const unsigned char> bytecode;
             ComPtr<ID3D11ComputeShader>* output;
         };
-        const std::array<ShaderRequest, 12> shaders{{
+        const std::array<ShaderRequest, 14> shaders{{
 #define PB_DEMOD_SHADER(source, entryPoint, member) {detail::member##Bytecode, std::addressof(state->member)},
 #include "demod_shader_entries.inc"
 #undef PB_DEMOD_SHADER
@@ -1291,6 +1300,17 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
             }
             if (status)
             {
+                status = CreateStructuredBuffer(device, unifiedForegroundHistogramBytes, sizeof(std::uint32_t),
+                    D3D11_BIND_UNORDERED_ACCESS, D3D11_USAGE_DEFAULT, 0, slot.unifiedForegroundHistogram);
+            }
+            if (status)
+            {
+                status = CreateStructuredBuffer(device, unifiedStateModesBytes, sizeof(float) * 4,
+                    D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0,
+                    slot.unifiedStateModes);
+            }
+            if (status)
+            {
                 status = CreateStructuredBuffer(device, unifiedTileSamplingBytes, sizeof(std::uint32_t), 0,
                     D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, slot.unifiedTileSamplingFailuresStaging);
             }
@@ -1351,6 +1371,21 @@ DemodStatus Demodulator::Create(ID3D11Device* device, const DemodConfig& config,
             {
                 native = device->CreateUnorderedAccessView(slot.unifiedTileSamplingFailures.Get(), nullptr,
                     &slot.unifiedTileSamplingFailuresUav);
+            }
+            if (SUCCEEDED(native))
+            {
+                native = device->CreateUnorderedAccessView(slot.unifiedForegroundHistogram.Get(), nullptr,
+                    &slot.unifiedForegroundHistogramUav);
+            }
+            if (SUCCEEDED(native))
+            {
+                native = device->CreateUnorderedAccessView(slot.unifiedStateModes.Get(), nullptr,
+                    &slot.unifiedStateModesUav);
+            }
+            if (SUCCEEDED(native))
+            {
+                native = device->CreateShaderResourceView(slot.unifiedStateModes.Get(), nullptr,
+                    &slot.unifiedStateModesSrv);
             }
             if (SUCCEEDED(native))
             {
@@ -1590,6 +1625,8 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
         const UINT clearValues[4]{};
         context->ClearUnorderedAccessViewUint(slot.metricsUav.Get(), clearValues);
         context->ClearUnorderedAccessViewUint(slot.unifiedTileSamplingFailuresUav.Get(), clearValues);
+        context->ClearUnorderedAccessViewUint(slot.unifiedForegroundHistogramUav.Get(), clearValues);
+        context->ClearUnorderedAccessViewUint(slot.unifiedStateModesUav.Get(), clearValues);
         context->ClearUnorderedAccessViewUint(slot.unifiedFreshnessUav.Get(), clearValues);
         context->ClearUnorderedAccessViewUint(slot.unifiedPhaseUav.Get(), clearValues);
     }
@@ -1617,8 +1654,9 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
             unifiedVisual ? slot.unifiedTileBindingsSrv.Get() : nullptr,
         remoteVisualLowFps ? state.remoteVisualLowFpsSymbolMasksSrv.Get() :
             unifiedVisual ? state.unifiedSymbolMasksSrv.Get() : nullptr,
-        unifiedVisual ? slot.unifiedExpectedFreshnessSrv.Get() : nullptr};
-    context->CSSetShaderResources(0, 6, demodInputs);
+        unifiedVisual ? slot.unifiedExpectedFreshnessSrv.Get() : nullptr,
+        unifiedVisual ? slot.unifiedStateModesSrv.Get() : nullptr};
+    context->CSSetShaderResources(0, 7, demodInputs);
     if (remoteVisualLowFps)
     {
         ID3D11UnorderedAccessView* freshnessOutputs[]{nullptr, nullptr, slot.remoteVisualLowFpsFreshnessSummaryUav.Get()};
@@ -1642,6 +1680,21 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
         context->CSSetUnorderedAccessViews(0, 5, phaseOutputs, nullptr);
         context->CSSetShader(state.evaluateUnifiedPhase.Get(), nullptr, 0);
         context->Dispatch(1, 1, 1);
+        // Gray-state mode: bin every tile foreground mean, then derive the
+        // four data-driven state centers before the demod consumes them.
+        if (binding.grayStates)
+        {
+            ID3D11UnorderedAccessView* binOutputs[]{nullptr, nullptr, nullptr, nullptr, nullptr,
+                slot.unifiedForegroundHistogramUav.Get(), nullptr};
+            context->CSSetUnorderedAccessViews(0, 7, binOutputs, nullptr);
+            context->CSSetShader(state.binUnifiedForeground.Get(), nullptr, 0);
+            context->Dispatch((binding.tileCount + 63) / 64, 1, 1);
+            ID3D11UnorderedAccessView* modeOutputs[]{nullptr, nullptr, nullptr, nullptr, nullptr,
+                slot.unifiedForegroundHistogramUav.Get(), slot.unifiedStateModesUav.Get()};
+            context->CSSetUnorderedAccessViews(0, 7, modeOutputs, nullptr);
+            context->CSSetShader(state.findUnifiedModes.Get(), nullptr, 0);
+            context->Dispatch(1, 1, 1);
+        }
         ID3D11UnorderedAccessView* dataOutputs[]{nullptr, slot.metricsUav.Get(),
             slot.unifiedTileSamplingFailuresUav.Get(), nullptr, slot.unifiedPhaseUav.Get()};
         context->CSSetUnorderedAccessViews(0, 5, dataOutputs, nullptr);

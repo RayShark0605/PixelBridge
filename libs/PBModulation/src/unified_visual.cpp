@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <string>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -67,6 +68,10 @@ struct UnifiedVisualCpuOracle::Implementation
     };
 
     std::array<UnifiedSoftMetric, kUnifiedSoftMetricCount> metrics{};
+    // Per-tile foreground means for the gray-state second pass: negative
+    // marks a sampling-failed tile so it never feeds the mode histogram.
+    std::array<double, kUnifiedVisualProfile.dataTileCount> tileForegroundMeans{};
+    std::array<std::uint32_t, 256> tileForegroundHistogram{};
     std::array<UnifiedAcceptedBlock, kUnifiedCodewordCount> accepted{};
     std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedCodewordCount> decodedInformation{};
     std::array<bool, kUnifiedCodewordCount> decodedInformationValid{};
@@ -902,12 +907,125 @@ void StoreMetric(const UnifiedLogicalCarrierBit logical, const UnifiedDataTile& 
     }
 }
 
+UnifiedStateModeEstimate ComputeUnifiedStateModes(const std::span<const std::uint32_t> histogram) noexcept
+{
+    constexpr std::size_t bins = 256;
+    constexpr std::uint32_t minimumSeparationLevels = 32;
+    constexpr std::size_t refinementRadius = 6;
+    UnifiedStateModeEstimate estimate;
+    if (histogram.size() != bins)
+    {
+        return estimate;
+    }
+    std::uint32_t total = 0;
+    for (const std::uint32_t count : histogram)
+    {
+        total += count;
+    }
+    estimate.totalSamples = total;
+    if (total < 1024)
+    {
+        return estimate;
+    }
+    std::array<std::uint32_t, bins> smoothed{};
+    for (std::size_t index = 1; index + 1 < bins; index++)
+    {
+        smoothed[index] = histogram[index - 1] + 2 * histogram[index] + histogram[index + 1];
+    }
+    std::array<std::size_t, 4> peaks{};
+    std::uint32_t peakCount = 0;
+    std::array<bool, bins> taken{};
+    while (peakCount < 4)
+    {
+        std::size_t best = bins;
+        std::uint32_t bestMass = 0;
+        for (std::size_t index = 1; index + 1 < bins; index++)
+        {
+            const bool localMaximum = smoothed[index] > smoothed[index - 1] &&
+                smoothed[index] >= smoothed[index + 1];
+            if (taken[index] || smoothed[index] <= bestMass || !localMaximum)
+            {
+                continue;
+            }
+            best = index;
+            bestMass = smoothed[index];
+        }
+        if (best == bins)
+        {
+            break;
+        }
+        bool separated = true;
+        for (std::uint32_t existing = 0; existing < peakCount; existing++)
+        {
+            const std::uint32_t distance = static_cast<std::uint32_t>(
+                best > peaks[existing] ? best - peaks[existing] : peaks[existing] - best);
+            separated = separated && distance >= minimumSeparationLevels;
+        }
+        if (!separated)
+        {
+            taken[best] = true;
+            continue;
+        }
+        peaks[peakCount++] = best;
+        taken[best] = true;
+    }
+    if (peakCount != 4)
+    {
+        return estimate;
+    }
+    // Codeword label distributions are not guaranteed uniform (adjacent coded
+    // bits correlate), so a legitimate state label can be rare. Require each
+    // peak to carry at least half a percent and the four peaks together to
+    // cover at least half the tiles; separation and ordering still guard
+    // against noise peaks, and the stripe centroids remain the fallback.
+    double coveredMass = 0;
+    std::array<double, 4> centers{};
+    for (std::uint32_t mode = 0; mode < 4; mode++)
+    {
+        if (smoothed[peaks[mode]] * 200U < total)
+        {
+            return estimate;
+        }
+        double weightedSum = 0;
+        double mass = 0;
+        const std::size_t low = peaks[mode] > refinementRadius ? peaks[mode] - refinementRadius : 0;
+        const std::size_t high = peaks[mode] + refinementRadius + 1 < bins ? peaks[mode] + refinementRadius + 1 : bins;
+        for (std::size_t index = low; index < high; index++)
+        {
+            const double weight = static_cast<double>(histogram[index]);
+            weightedSum += static_cast<double>(index) * weight;
+            mass += weight;
+        }
+        if (mass <= 0)
+        {
+            return estimate;
+        }
+        coveredMass += mass;
+        centers[mode] = weightedSum / mass;
+    }
+    for (std::uint32_t mode = 1; mode < 4; mode++)
+    {
+        if (centers[mode] - centers[mode - 1] < minimumSeparationLevels)
+        {
+            return estimate;
+        }
+    }
+    if (coveredMass < static_cast<double>(total) * 0.5)
+    {
+        return estimate;
+    }
+    estimate.valid = true;
+    estimate.centers = centers;
+    return estimate;
+}
+
 void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
     const std::uint64_t frameSequence, const UnifiedCalibration& calibration, const UnifiedVisualDecodePolicy& policy,
     const std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount>& freshness,
     const UnifiedBaseLumaObservation& base, const UnifiedFineLumaObservation& fine,
     const UnifiedChromaObservation& chroma, const std::array<std::uint32_t, 2>& lumaModels,
-    const bool grayStates, const std::span<UnifiedSoftMetric> metrics) noexcept
+    const bool grayStates, const std::span<UnifiedSoftMetric> metrics,
+    const std::span<double> foregroundMeans, const std::span<std::uint32_t> foregroundHistogram) noexcept
 {
     const double low = calibration.lumaLevels[0];
     const double high = calibration.lumaLevels[2];
@@ -928,8 +1046,15 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             std::abs(calibration.chromaCentroids[2][0] - calibration.chromaCentroids[1][0]),
             std::abs(calibration.chromaCentroids[3][0] - calibration.chromaCentroids[2][0])});
     }
-    const double foregroundThreshold = grayStates ? (low + stateFloor) * 0.5 : (low + high) * 0.5;
+    // The gray-mode foreground gate uses the ladder midpoint between levels
+    // 0 and 1 so it stays independent of the state calibration: collapsed or
+    // remapped state stripes must never disturb the mask classifier gate.
+    const double foregroundThreshold = grayStates ? (low + calibration.lumaLevels[1]) * 0.5 : (low + high) * 0.5;
     const double stateScale = grayStates && minimumStateGap > 0 ? 2048 / (minimumStateGap * minimumStateGap) : 0;
+    if (grayStates)
+    {
+        std::fill(foregroundHistogram.begin(), foregroundHistogram.end(), 0);
+    }
     for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
     {
         const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
@@ -1028,19 +1153,22 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
         }
 
-        std::array<double, 4> chromaDistances{};
         if (grayStates)
         {
-            // The state is classified from the tile's measured foreground
-            // luma against the calibrated gray centroids; the mask decode
-            // consumed the same estimate as its expected foreground level.
-            for (std::size_t label = 0; label < chromaDistances.size(); label++)
+            // Pass A stores this tile's measured foreground mean; the state
+            // classification happens in a second pass once the frame-wide mode
+            // histogram is complete (remote links remap luma context-dependently,
+            // so the classifier uses data-driven centers with the stripe
+            // centroids as fallback).
+            foregroundMeans[tileOrdinal] = tileSamplingFailed ? -1.0 : tileExpectedForeground;
+            if (!tileSamplingFailed)
             {
-                const double difference = tileExpectedForeground - calibration.chromaCentroids[label][0];
-                chromaDistances[label] = difference * difference;
+                foregroundHistogram[static_cast<std::size_t>(
+                    std::clamp(tileExpectedForeground, 0.0, 255.0))]++;
             }
+            continue;
         }
-        else
+        std::array<double, 4> chromaDistances{};
         {
             std::array<double, 2> averageOpponent{};
             for (const Sample& sample : samples)
@@ -1072,11 +1200,63 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                 double& destination = ((label >> bitPlane) & 1U) != 0 ? oneDistance : zeroDistance;
                 destination = std::min(destination, chromaDistances[label]);
             }
-            const std::int16_t metric =
-                QuantizeMetric((oneDistance - zeroDistance) * (grayStates ? stateScale : 4));
+            const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * 4);
             const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
                 UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, frameSequence);
             StoreMetric(logical, tile, metric, tileSamplingFailed, freshness, policy, base, fine, chroma, metrics);
+        }
+    }
+
+    if (grayStates)
+    {
+        // Pass B: mode-based state classification from the stored means. The
+        // data-driven centers absorb any monotone provider remap; the stripe
+        // centroids remain the fail-closed fallback.
+        std::array<double, 4> stateCenters{};
+        for (std::size_t label = 0; label < stateCenters.size(); label++)
+        {
+            stateCenters[label] = calibration.chromaCentroids[label][0];
+        }
+        double effectiveStateScale = stateScale;
+        const UnifiedStateModeEstimate modes = ComputeUnifiedStateModes(foregroundHistogram);
+        if (modes.valid)
+        {
+            stateCenters = modes.centers;
+            double minimumModeGap = stateCenters[1] - stateCenters[0];
+            for (std::uint32_t label = 2; label < 4; label++)
+            {
+                minimumModeGap = std::min(minimumModeGap, stateCenters[label] - stateCenters[label - 1]);
+            }
+            if (minimumModeGap > 0)
+            {
+                effectiveStateScale = 2048 / (minimumModeGap * minimumModeGap);
+            }
+        }
+        for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
+        {
+            const double mean = foregroundMeans[tileOrdinal];
+            const bool tileFailed = mean < 0;
+            std::array<double, 4> distances{};
+            for (std::size_t label = 0; label < distances.size(); label++)
+            {
+                const double difference = (tileFailed ? stateCenters[label] : mean) - stateCenters[label];
+                distances[label] = difference * difference;
+            }
+            const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
+            for (std::uint8_t bitPlane = 0; bitPlane < 2; bitPlane++)
+            {
+                double zeroDistance = std::numeric_limits<double>::infinity();
+                double oneDistance = std::numeric_limits<double>::infinity();
+                for (std::size_t label = 0; label < distances.size(); label++)
+                {
+                    double& destination = ((label >> bitPlane) & 1U) != 0 ? oneDistance : zeroDistance;
+                    destination = std::min(destination, distances[label]);
+                }
+                const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * effectiveStateScale);
+                const UnifiedLogicalCarrierBit logical = GetUnifiedLogicalCarrierBit(
+                    UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Chroma, tileOrdinal, bitPlane}, frameSequence);
+                StoreMetric(logical, tile, metric, tileFailed, freshness, policy, base, fine, chroma, metrics);
+            }
         }
     }
 }
@@ -1984,7 +2164,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     }
     DecodeDataTiles(view, samplingGeometry, observation.bootstrapRecord.frameSequence, calibration, policy,
         observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, lumaModels,
-        grayStates, state.metrics);
+        grayStates, state.metrics, state.tileForegroundMeans, state.tileForegroundHistogram);
 
     return FinalizeDecodedMetrics(std::move(observation), slotPlan, inferSlotKinds, policy);
 }

@@ -10,4 +10,6 @@ PB_DEMOD_SHADER(kRemoteVisualLowFpsComputeShader, DemodRemoteVisualLowFpsCS, dem
 PB_DEMOD_SHADER(kUnifiedVisualComputeShader, CalibrateUnifiedCS, calibrateUnified)
 PB_DEMOD_SHADER(kUnifiedVisualComputeShader, EvaluateUnifiedFreshnessCS, evaluateUnifiedFreshness)
 PB_DEMOD_SHADER(kUnifiedVisualComputeShader, EvaluateUnifiedPhaseCS, evaluateUnifiedPhase)
+PB_DEMOD_SHADER(kUnifiedVisualComputeShader, BinUnifiedForegroundCS, binUnifiedForeground)
+PB_DEMOD_SHADER(kUnifiedVisualComputeShader, FindUnifiedModesCS, findUnifiedModes)
 PB_DEMOD_SHADER(kUnifiedVisualComputeShader, DemodUnifiedCS, demodUnified)

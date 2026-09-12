@@ -48,11 +48,14 @@ StructuredBuffer<uint4> UnusedTileMappings : register(t2);
 StructuredBuffer<UnifiedTileBinding> UnifiedBindings : register(t3);
 StructuredBuffer<uint> SymbolMasks : register(t4);
 StructuredBuffer<uint> ExpectedFreshnessBits : register(t5);
+StructuredBuffer<float4> StateModes : register(t6);
 RWStructuredBuffer<float4> CalibrationOutput : register(u0);
 RWStructuredBuffer<float> MetricOutput : register(u1);
 RWStructuredBuffer<uint> TileSamplingFailures : register(u2);
 RWStructuredBuffer<float4> FreshnessOutput : register(u3);
 RWStructuredBuffer<float4> PhaseOutput : register(u4);
+RWStructuredBuffer<uint> ForegroundHistogram : register(u5);
+RWStructuredBuffer<float4> UnifiedStateModes : register(u6);
 
 static const uint UnifiedMetricCount = 243000;
 static const uint UnifiedBaseLumaMetricCount = 145800;
@@ -167,6 +170,183 @@ float2 GetChromaCentroid(uint label)
         result += Calibration[16 + pilot * 4 + label].xy * 0.25;
     }
     return result;
+}
+
+// Gray-state mode helpers: the per-frame tile foreground-mean histogram feeds
+// a deterministic four-peak mode estimate (mirroring the CPU oracle's
+// ComputeUnifiedStateModes exactly), because remote links remap glyph
+// foreground luma differently from flat calibration stripes.
+void AccumulateTileForegroundMean(uint tileOrdinal, uint2 tileOrigin, float foregroundThreshold)
+{
+    float lumaSum = 0.0;
+    uint foregroundChips = 0;
+    [loop]
+    for (uint chip = 0; chip < 25; chip++)
+    {
+        float3 sample = 0.0;
+        if (ReadSample((float)(tileOrigin.x + chip % 5), (float)(tileOrigin.y + chip / 5), sample) &&
+            Luma(sample) >= foregroundThreshold)
+        {
+            lumaSum += Luma(sample);
+            foregroundChips++;
+        }
+    }
+    if (foregroundChips == 0)
+    {
+        return;
+    }
+    const uint bin = (uint)clamp(lumaSum / (float)foregroundChips, 0.0, 255.0);
+    InterlockedAdd(ForegroundHistogram[bin], 1u);
+}
+
+[numthreads(64, 1, 1)]
+void BinUnifiedForegroundCS(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint tileOrdinal = dispatchThreadId.x;
+    if (StateLumaMode == 0 || tileOrdinal >= TileCount)
+    {
+        return;
+    }
+    const UnifiedTileBinding binding = UnifiedBindings[tileOrdinal];
+    const float low = GetLumaCentroid(0);
+    const float ladderMid = GetLumaCentroid(1);
+    const float foregroundThreshold = (low + ladderMid) * 0.5;
+    AccumulateTileForegroundMean(tileOrdinal, uint2(binding.OriginX, binding.OriginY), foregroundThreshold);
+}
+
+[numthreads(1, 1, 1)]
+void FindUnifiedModesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    // Single-thread deterministic pass: reads the binned means, mirrors the CPU
+    // peak selection (smoothed local maxima, greedy by mass, separation >= 32,
+    // each peak >= 0.5% of tiles, combined >= 50%, +/-6-bin refinement), then
+    // clears the histogram for the next frame.
+    uint histogram[256];
+    uint total = 0;
+    [unroll]
+    for (uint load = 0; load < 256; load++)
+    {
+        histogram[load] = ForegroundHistogram[load];
+        total += histogram[load];
+    }
+    bool valid = total >= 1024;
+    uint peaks[4];
+    uint peakCount = 0;
+    bool taken[256];
+    [unroll]
+    for (uint clear = 0; clear < 256; clear++)
+    {
+        taken[clear] = false;
+    }
+    while (valid && peakCount < 4)
+    {
+        uint best = 256;
+        uint bestMass = 0;
+        [loop]
+        for (uint index = 1; index < 255; index++)
+        {
+            // Mirrors the CPU smoothed array whose 0/255 entries stay zero.
+            const uint smoothedHere = histogram[index - 1] + 2 * histogram[index] + histogram[index + 1];
+            const uint below = index >= 2 ? index - 2 : 0;
+            const uint above = index + 2 <= 255 ? index + 2 : 255;
+            const uint smoothedPrev = index > 1 ? histogram[below] + 2 * histogram[index - 1] + histogram[index] : 0;
+            const uint smoothedNext = index < 254 ? histogram[index] + 2 * histogram[index + 1] + histogram[above] : 0;
+            const bool isLocalMax = smoothedHere > smoothedPrev && smoothedHere >= smoothedNext;
+            if (taken[index] || bestMass >= smoothedHere || !isLocalMax)
+            {
+                continue;
+            }
+            best = index;
+            bestMass = smoothedHere;
+        }
+        if (best == 256)
+        {
+            break;
+        }
+        bool separated = true;
+        [unroll]
+        for (uint existing = 0; existing < 4; existing++)
+        {
+            if (existing < peakCount)
+            {
+                const uint distance = best > peaks[existing] ? best - peaks[existing] : peaks[existing] - best;
+                separated = separated && distance >= 32;
+            }
+        }
+        if (!separated)
+        {
+            taken[best] = true;
+            continue;
+        }
+        peaks[peakCount] = best;
+        peakCount++;
+        taken[best] = true;
+    }
+    float centers[4];
+    float coveredMass = 0.0;
+    [unroll]
+    for (uint mode = 0; mode < 4; mode++)
+    {
+        centers[mode] = -1.0;
+    }
+    if (valid && peakCount == 4)
+    {
+        [unroll]
+        for (uint mode = 0; mode < 4; mode++)
+        {
+            const uint smoothedPeak = histogram[peaks[mode] - 1] + 2 * histogram[peaks[mode]] + histogram[peaks[mode] + 1];
+            if (smoothedPeak * 200u < total)
+            {
+                valid = false;
+                break;
+            }
+            const uint low = peaks[mode] > 6 ? peaks[mode] - 6 : 0;
+            const uint high = peaks[mode] + 7 < 256 ? peaks[mode] + 7 : 256;
+            float weightedSum = 0.0;
+            float mass = 0.0;
+            [loop]
+            for (uint index = low; index < high; index++)
+            {
+                const float weight = (float)histogram[index];
+                weightedSum += (float)index * weight;
+                mass += weight;
+            }
+            if (mass <= 0.0)
+            {
+                valid = false;
+                break;
+            }
+            coveredMass += mass;
+            centers[mode] = weightedSum / mass;
+        }
+        if (valid)
+        {
+            [unroll]
+            for (uint mode = 1; mode < 4; mode++)
+            {
+                if (centers[mode] - centers[mode - 1] < 32.0)
+                {
+                    valid = false;
+                }
+            }
+            if (coveredMass < (float)total * 0.5)
+            {
+                valid = false;
+            }
+        }
+    }
+    else
+    {
+        valid = false;
+    }
+    UnifiedStateModes[0] = float4(valid ? centers[0] : -1.0, valid ? centers[1] : -1.0,
+        valid ? centers[2] : -1.0, valid ? centers[3] : -1.0);
+    UnifiedStateModes[1] = float4(valid ? 1.0 : 0.0, 0.0, 0.0, 0.0);
+    [unroll]
+    for (uint zero = 0; zero < 256; zero++)
+    {
+        ForegroundHistogram[zero] = 0u;
+    }
 }
 
 [numthreads(36, 1, 1)]
@@ -446,19 +626,40 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     // the ladder high, so the mask classifier uses this tile's own measured
     // foreground mean and the foreground gate drops to the lowest gray
     // centroid; the two state bits classify that mean against the gray levels.
-    float stateFloor = high;
-    float stateScale = 0.0;
+    // Gray-state mode: the mask classifier uses this tile's own measured
+    // foreground mean and the foreground gate is the ladder 0/1 midpoint
+    // (independent of the state calibration); the two state bits classify
+    // that mean against the data-driven mode centers, or the stripe
+    // centroids when the mode estimate is invalid.
+    float stateCenters[4];
+    float effectiveStateScale = 0.0;
     if (StateLumaMode != 0)
     {
-        const float level0 = GetChromaCentroid(0).x;
-        const float level1 = GetChromaCentroid(1).x;
-        const float level2 = GetChromaCentroid(2).x;
-        const float level3 = GetChromaCentroid(3).x;
-        stateFloor = min(min(level0, level1), min(level2, level3));
-        const float stateGap = min(min(abs(level1 - level0), abs(level2 - level1)), abs(level3 - level2));
-        stateScale = stateGap > 0.0 ? 2048.0 / (stateGap * stateGap) : 0.0;
+        const float4 modes = StateModes[0];
+        const bool modesValid = StateModes[1].x > 0.5;
+        if (modesValid)
+        {
+            stateCenters[0] = modes.x;
+            stateCenters[1] = modes.y;
+            stateCenters[2] = modes.z;
+            stateCenters[3] = modes.w;
+            const float minimumModeGap = min(stateCenters[1] - stateCenters[0],
+                min(stateCenters[2] - stateCenters[1], stateCenters[3] - stateCenters[2]));
+            effectiveStateScale = minimumModeGap > 0.0 ? 2048.0 / (minimumModeGap * minimumModeGap) : 0.0;
+        }
+        else
+        {
+            [unroll]
+            for (uint fallback = 0; fallback < 4; fallback++)
+            {
+                stateCenters[fallback] = GetChromaCentroid(fallback).x;
+            }
+            const float fallbackGap = min(min(abs(stateCenters[1] - stateCenters[0]),
+                abs(stateCenters[2] - stateCenters[1])), abs(stateCenters[3] - stateCenters[2]));
+            effectiveStateScale = fallbackGap > 0.0 ? 2048.0 / (fallbackGap * fallbackGap) : 0.0;
+        }
     }
-    const float foregroundThreshold = StateLumaMode != 0 ? (low + stateFloor) * 0.5 : (low + high) * 0.5;
+    const float foregroundThreshold = StateLumaMode != 0 ? (low + GetLumaCentroid(1)) * 0.5 : (low + high) * 0.5;
     uint foregroundSamples = 0;
     float foregroundLumaSum = 0.0;
     [loop]
@@ -551,7 +752,7 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         [unroll]
         for (uint grayLabel = 0; grayLabel < 4; grayLabel++)
         {
-            const float grayDifference = tileExpectedForeground - GetChromaCentroid(grayLabel).x;
+            const float grayDifference = tileExpectedForeground - stateCenters[grayLabel];
             chromaDistances[grayLabel] = grayDifference * grayDifference;
         }
     }
@@ -598,7 +799,7 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         if (chromaBits[chromaPlane] < UnifiedMetricCount)
         {
             MetricOutput[chromaBits[chromaPlane]] = foregroundSamples == 0 ? 0.0 :
-                (oneDistance - zeroDistance) * (StateLumaMode != 0 ? stateScale : 4.0);
+                (oneDistance - zeroDistance) * (StateLumaMode != 0 ? effectiveStateScale : 4.0);
         }
     }
 }

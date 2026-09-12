@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "run_report.h"
 
 #include <array>
@@ -237,13 +238,19 @@ void WriteContext(std::ostream& stream, const RunReportContext& context, const b
     WriteEscaped(stream, context.exportedAtUtc);
 }
 
-void WriteUnifiedIdentity(std::ostream& stream, const std::string& runId, const std::string& sessionId,
-    const std::uint64_t sessionTag, const std::uint64_t started, const std::optional<std::uint64_t>& ended)
+void WriteUnifiedIdentity(std::ostream& stream, const VisualProfile visualProfile,
+    const std::uint64_t visualProfileId, const std::uint8_t visualLayoutVersion, const std::string& runId,
+    const std::string& sessionId, const std::uint64_t sessionTag, const std::uint64_t started,
+    const std::optional<std::uint64_t>& ended)
 {
+    // The unified schema historically pinned the product identity here; the
+    // gray-state experimental identity shares this schema, so these fields
+    // now carry the run actual binding (both snapshots populate them from
+    // GetProfileBinding).
     stream << ",\"profile\":";
-    WriteEscaped(stream, pbprotocol::kUnifiedVisualProfileName);
-    stream << ",\"visualProfileId\":" << pbprotocol::kUnifiedVisualProfileId
-        << ",\"visualLayoutVersion\":" << static_cast<unsigned int>(pbprotocol::kUnifiedVisualLayoutVersion)
+    WriteEscaped(stream, GetVisualProfileName(visualProfile));
+    stream << ",\"visualProfileId\":" << visualProfileId
+        << ",\"visualLayoutVersion\":" << static_cast<unsigned int>(visualLayoutVersion)
         << ",\"runId\":";
     WriteEscaped(stream, runId);
     stream << ",\"sessionId\":";
@@ -273,7 +280,8 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
     WriteContext(stream, context, true);
     stream << ",\"role\":\"Encoder\",\"state\":";
     WriteEscaped(stream, GetEncoderStateName(snapshot.state));
-    WriteUnifiedIdentity(stream, snapshot.runId, snapshot.sessionIdHex, snapshot.sessionTag,
+    WriteUnifiedIdentity(stream, snapshot.visualProfile, snapshot.visualProfileId,
+        snapshot.visualLayoutVersion, snapshot.runId, snapshot.sessionIdHex, snapshot.sessionTag,
         snapshot.runStartedUnixMilliseconds, snapshot.runEndedUnixMilliseconds);
     stream << ",\"fileBytes\":" << snapshot.sourceBytes << ",\"preparation\":{\"complete\":" << snapshot.preparationComplete
         << ",\"verifiedSourceBytes\":" << snapshot.preparedSourceBytes << ",\"verifiedSegments\":" << snapshot.preparedSegmentCount
@@ -349,7 +357,8 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     WriteContext(stream, context, true);
     stream << ",\"role\":\"Decoder\",\"state\":";
     WriteEscaped(stream, GetDecoderStateName(snapshot.state));
-    WriteUnifiedIdentity(stream, snapshot.runId, snapshot.sessionIdHex, snapshot.sessionTag,
+    WriteUnifiedIdentity(stream, snapshot.visualProfile, snapshot.visualProfileId,
+        snapshot.visualLayoutVersion, snapshot.runId, snapshot.sessionIdHex, snapshot.sessionTag,
         snapshot.runStartedUnixMilliseconds, snapshot.runEndedUnixMilliseconds);
     stream << ",\"originalFileName\":";
     WriteEscaped(stream, snapshot.originalFileNameUtf8);
@@ -618,6 +627,7 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
 std::string BuildDecoderRunReportJson(const RunReportContext& context,
     const DecoderSnapshot& snapshot)
 {
+    std::fprintf(stderr, "DBG report profile enum=%d id=%llu layout=%d\n", static_cast<int>(snapshot.visualProfile), static_cast<unsigned long long>(snapshot.visualProfileId), static_cast<int>(snapshot.visualLayoutVersion));
     // Same unified RunReport.3 routing as the encoder side.
     if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
         snapshot.visualProfile == VisualProfile::UnifiedGray)

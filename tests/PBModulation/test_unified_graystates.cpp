@@ -341,6 +341,49 @@ TEST_CASE("Gray-state frames are immune to chroma neutralization", "[unified][gr
     RequireFullRecovery(oracle, observation, fixture);
 }
 
+// Field-measured degradation model (2026-09-12 ToDesk link): flat calibration
+// stripes pass nearly unchanged while tiny glyph foreground chips above the
+// provider knee compress toward the tile DC - the top level lost ~34 luma and
+// the two top populations became inseparable under the original 88/144/200/248
+// set. This case replays that monotone concave remap on the data tiles only
+// (pilots stay pristine) against the retuned 56/112/168/248 levels and the
+// data-driven mode classifier.
+TEST_CASE("Gray-state second carrier survives provider level compression", "[unified][graystates][channel][compression]")
+{
+    const GrayFixture fixture = BuildGrayFixture(29);
+    const std::vector<std::byte> clean = RenderGray(fixture);
+    std::vector<std::byte> compressed = clean;
+    for (std::uint32_t tileOrdinal = 0; tileOrdinal < kUnifiedVisualProfile.dataTileCount; tileOrdinal++)
+    {
+        const UnifiedDataTile tile = GetUnifiedDataTile(tileOrdinal);
+        for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
+        {
+            for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
+            {
+                std::byte* const pixel = compressed.data() +
+                    (static_cast<std::size_t>(tile.bounds.y + row) * kUnifiedVisualProfile.canvasWidth +
+                        tile.bounds.x + column) * 4;
+                const std::int32_t luma = std::to_integer<std::uint8_t>(pixel[1]);
+                std::int32_t remapped = luma;
+                if (luma > 176)
+                {
+                    remapped = 176 + static_cast<std::int32_t>((luma - 176) * 0.45);
+                }
+                const std::int32_t offset = static_cast<std::int32_t>(
+                    (tileOrdinal * 17 + row * 3 + column * 7) % 13) - 6;
+                const std::int32_t jittered = std::clamp(remapped + offset, 0, 255);
+                pixel[0] = static_cast<std::byte>(jittered);
+                pixel[1] = static_cast<std::byte>(jittered);
+                pixel[2] = static_cast<std::byte>(jittered);
+            }
+        }
+    }
+    UnifiedVisualCpuOracle oracle = MakeOracle();
+    const UnifiedVisualObservation observation = oracle.Decode(View(compressed), fixture.plan, GrayIdentity());
+    REQUIRE(observation.inputValid);
+    RequireFullRecovery(oracle, observation, fixture);
+}
+
 TEST_CASE("Gray-state frames tolerate bounded luma jitter on data tiles", "[unified][graystates][channel]")
 {
     const GrayFixture fixture = BuildGrayFixture(17);

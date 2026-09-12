@@ -95,6 +95,28 @@ struct UnifiedVisualDecodePolicy
     std::uint32_t maximumFecIterations = 12;
 };
 
+// Per-frame estimate of the four effective gray-state foreground levels from
+// the observed data-tile foreground-mean histogram. Remote video links remap
+// luma monotonically and context-dependently (tiny glyph chips compress toward
+// the tile DC while flat calibration stripes pass nearly unchanged), so the
+// classifier uses these data-driven centers when they are separable and falls
+// back to the stripe centroids otherwise. The algorithm is integer-input and
+// fully deterministic so the CPU oracle and the D3D11 single-thread pass
+// produce identical results.
+struct UnifiedStateModeEstimate
+{
+    bool valid = false;
+    std::array<double, 4> centers{};
+    std::uint32_t totalSamples = 0;
+};
+
+// histogram must hold exactly 256 bins of tile foreground means (0..255).
+// A valid estimate requires four smoothed local maxima, each at least two
+// percent of the samples, pairwise separated by at least 40 luma levels and
+// strictly increasing; peak centers are refined by a +/-6-bin weighted mean.
+[[nodiscard]] UnifiedStateModeEstimate ComputeUnifiedStateModes(
+    const std::span<const std::uint32_t> histogram) noexcept;
+
 struct UnifiedSoftMetric
 {
     // Positive values prefer zero and negative values prefer one, matching

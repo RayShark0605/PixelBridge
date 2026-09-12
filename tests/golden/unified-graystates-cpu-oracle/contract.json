@@ -15,9 +15,9 @@
     "foregroundStates": "gray",
     "glyphPixels": 5,
     "grayLevels": [
-      88,
-      144,
-      200,
+      56,
+      112,
+      168,
       248
     ],
     "highLuma": 160,
@@ -56,12 +56,12 @@
     "profileIdHex": "5042475953544131"
   },
   "rasterBlake3": {
-    "base-neutralized": "6c2b0600104df8a9deb4f59e4af454376accd3dcb0a2949fb2543693c53b6ac8",
-    "clean": "736236d13b4a6ad8ba25a278b8a90660a4d9db0b9c8887dac9b712c8ab72c926",
-    "fine-neutralized": "807a4c903ac8e79ddc923f33042ff367e67d86ab0bec7e0bceac976ced833f40",
-    "localized-stale": "98b71258671e6fffd219d0f5c71be31edf5697cbf8b2454a99155a60a904a2ea",
-    "state-collapsed": "c21bd6765a6c49e351353a178e9b87a474553ecefbf6813b2e5356c395f6659e",
-    "wrong-sequence": "e1293c9fc1ddc4a3b7c795903b1e1f9f8dedd47561ec375fa523bc0acdc327fd"
+    "base-neutralized": "baca729da2ec54b18a98794d926bcb83273d453fd122edae0135e4f6e3af4694",
+    "clean": "e21417b264214236e7c58c33ecb92b6775a28b5d2ee7b46542181d9df7986006",
+    "fine-neutralized": "83156a9801077d3eca4b4ddf695029c7fb06f0893ab2f84b2b64cc24c24c9a57",
+    "localized-stale": "4901f9d65e51ec328ebbcd3d6356887a39229e28f3b7bb4a6dd143e79ecec1e9",
+    "state-collapsed": "680573fe5d81aeff60e3efe47f9f07ed05030c42bb1b8681f50860483e7dfb33",
+    "wrong-sequence": "1f83921c60c566e500b2150d95214f45c80976fef1c543d2ae28e6125fd7a12c"
   },
   "slotPlan": {
     "slot0": "Control/SessionDescriptor",

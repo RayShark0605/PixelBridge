@@ -62,13 +62,13 @@ inline constexpr std::array<UnifiedChromaState, 4> kUnifiedChromaStatesByLabel{
 // Gray-state variant (experimental layout 12): the same 2 bits per tile ride
 // four achromatic foreground levels instead of opponent chroma, so the
 // second carrier survives 4:2:0 chroma destruction on remote video links.
-// Levels are spaced 56 apart, stay >= 80 above the dark background 8 and 7
+// Levels are spaced 56/56/80 apart, stay >= 80 above the dark background 8 and 7
 // below gamut end 255, and the minimum state gap comfortably exceeds the
 // policy's minimumLumaLevelGate (32) after channel deviation (<= 8).
 inline constexpr std::array<UnifiedChromaState, 4> kUnifiedGrayStatesByLabel{
-    UnifiedChromaState{88, 88, 88, 0},
-    UnifiedChromaState{144, 144, 144, 1},
-    UnifiedChromaState{200, 200, 200, 2},
+    UnifiedChromaState{56, 56, 56, 0},
+    UnifiedChromaState{112, 112, 112, 1},
+    UnifiedChromaState{168, 168, 168, 2},
     UnifiedChromaState{248, 248, 248, 3}};
 
 struct UnifiedLaneMappingContract
