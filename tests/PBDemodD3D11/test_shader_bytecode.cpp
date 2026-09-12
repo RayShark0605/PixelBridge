@@ -27,7 +27,8 @@ TEST_CASE("Embedded demod bytecode exactly matches the former runtime compiler c
 #include "demod_shader_entries.inc"
 #undef PB_DEMOD_SHADER
     };
-    REQUIRE(std::size(shaders) == 12);
+    // Twelve product entries plus the two gray foreground-mode kernels.
+    REQUIRE(std::size(shaders) == 14);
     for (const auto& entry : shaders)
     {
         INFO(entry.entryPoint);

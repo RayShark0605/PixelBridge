@@ -296,8 +296,11 @@ CorpusRecord RunCase(UnifiedVisualCpuOracle& oracle, const std::string& name, co
         record.hardBitErrors[lane] += static_cast<std::uint32_t>((metric.value < 0) != expectedBit);
     }
 
-    for (const UnifiedSlotObservation& slot : observation.slots)
+    // Only the active carrier prefix holds real slot observations; the
+    // storage tail keeps default FrameErasure entries of the larger carrier.
+    for (std::uint32_t slotIndex = 0; slotIndex < observation.frameSlotCount; slotIndex++)
     {
+        const UnifiedSlotObservation& slot = observation.slots[slotIndex];
         const std::size_t lane = LaneIndex(slot.lane);
         const std::size_t rejection = static_cast<std::size_t>(slot.rejection);
         REQUIRE(lane < kLaneCount);
