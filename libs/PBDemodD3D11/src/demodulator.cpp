@@ -1694,6 +1694,10 @@ DemodStatus SubmitInternal(Demodulator::Implementation& state, const ScreenCaptu
             context->CSSetUnorderedAccessViews(0, 7, modeOutputs, nullptr);
             context->CSSetShader(state.findUnifiedModes.Get(), nullptr, 0);
             context->Dispatch(1, 1, 1);
+            // Unbind the mode UAVs: the demod pass reads the same buffer
+            // through its SRV, and D3D11 forbids a simultaneous UAV binding.
+            ID3D11UnorderedAccessView* modeCleared[]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+            context->CSSetUnorderedAccessViews(0, 7, modeCleared, nullptr);
         }
         ID3D11UnorderedAccessView* dataOutputs[]{nullptr, slot.metricsUav.Get(),
             slot.unifiedTileSamplingFailuresUav.Get(), nullptr, slot.unifiedPhaseUav.Get()};
