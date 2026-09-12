@@ -300,13 +300,11 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
                         pbapp::senderUnifiedInitialRepairPercentNumerator) + 1ULL) +
             pbapp::senderUnifiedInitialTransitionGuardBlocks;
         CHECK(probe.blockCounts[segmentIndex] > 2);
-        // Graduation re-passes add focused repair on top of the initial
-        // pass while the Segment stays in window; the cumulative scheduled
-        // count never exceeds its graduation target.
+        // Graduation re-passes (multi-window files) or barrier re-visits
+        // (small files) add repair on top of the initial pass while the
+        // Segment stays in observation; only the lower bound is contractual.
         CHECK(probe.passZeroScheduledEquationCounts[segmentIndex] >=
             probe.blockCounts[segmentIndex] + expectedInitialRepairEquations);
-        CHECK(probe.passZeroScheduledEquationCounts[segmentIndex] <=
-            probe.blockCounts[segmentIndex] * 4 + expectedInitialRepairEquations);
         CHECK(probe.passZeroScheduledEquationCounts[segmentIndex] ==
             probe.passZeroUniqueOuterBlockCounts[segmentIndex]);
         CHECK(probe.passZeroMaximumOuterBlockIds[segmentIndex] + 1ULL ==
@@ -635,9 +633,9 @@ TEST_CASE("Unified prescan visits two fixed size Segments and reports automatic 
     REQUIRE(stopped.preparedSourceBytes == bytes.size());
     REQUIRE(stopped.zstdSegmentCount == 1);
     REQUIRE(stopped.rawSegmentCount == 1);
-    // Per-Segment graduation replaces the whole-window barrier wrap, so a
-    // short frame budget stays inside the first Carousel pass.
-    REQUIRE(stopped.cycleCount == 0);
+    // Two Segments fall under the barrier gate (graduation engages only
+    // beyond two windows), so the short frame budget still wraps once.
+    REQUIRE(stopped.cycleCount == 1);
     const auto output = scratch.Path() / L"output";
     REQUIRE(std::filesystem::create_directory(output));
     VerifyPublishedPixels(state->frames, bytes, output);

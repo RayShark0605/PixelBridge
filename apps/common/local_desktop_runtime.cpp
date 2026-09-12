@@ -1762,8 +1762,21 @@ private:
         return description_.segments.empty() ? unifiedScheduler_ : GetCurrentUnifiedSegmentState().scheduler;
     }
 
+    [[nodiscard]] bool UnifiedGraduationEnabled() const
+    {
+        // Graduation pays off only when many windows separate the Segments;
+        // a one-or-two-window file starves its tail Segments under sliding
+        // (they enter late) and the whole-window barrier wins instead.
+        return description_.segments.size() >
+            2 * static_cast<std::uint64_t>(senderUnifiedActiveSegmentWindowSize);
+    }
+
     [[nodiscard]] std::uint64_t CalculateUnifiedGraduationTarget(const std::uint32_t blockCount) const
     {
+        if (!UnifiedGraduationEnabled())
+        {
+            return kUnifiedLedgerUnseeded / 4;
+        }
         const std::uint64_t factor = blockCount * senderUnifiedGraduationFactorPercent;
         return factor / 100 + (factor % 100 != 0 ? 1 : 0) +
             carouselPass_ * (blockCount * senderUnifiedWrapTopUpPercent / 100 + 1);
@@ -1778,7 +1791,7 @@ private:
         // target, floored at the scheduler minimum, so the doubling formula's
         // coarse last pass never overshoots a graduating Segment.
         std::uint64_t overrideBudget = 0;
-        if (state.segmentPassCount != 0)
+        if (state.segmentPassCount != 0 && UnifiedGraduationEnabled())
         {
             overrideBudget = state.graduationTarget > state.committedEquationsTotal ?
                 state.graduationTarget - state.committedEquationsTotal :
@@ -1822,6 +1835,13 @@ private:
                 "Unified DirectRepeat block count is invalid");
             state.blockCount = static_cast<std::uint32_t>(state.directRepeat->GetBlockCount());
         }
+        if (!unifiedPassLedger_.empty() && unifiedPassLedger_[segmentOrdinal] == kUnifiedLedgerUnseeded)
+        {
+            // Barrier files always admit at the global Carousel pass (the
+            // pre-graduation contract); graduation files pin their local pass
+            // count once and keep it across wrap re-admissions.
+            unifiedPassLedger_[segmentOrdinal] = carouselPass_;
+        }
         state.segmentPassCount = unifiedPassLedger_.empty() ? 0 : unifiedPassLedger_[segmentOrdinal];
         if (!unifiedCommittedLedger_.empty() &&
             unifiedCommittedLedger_[segmentOrdinal] == kUnifiedLedgerUnseeded)
@@ -1835,6 +1855,12 @@ private:
         }
         state.committedEquationsTotal = unifiedCommittedLedger_.empty() ? 0 :
             unifiedCommittedLedger_[segmentOrdinal];
+        if (!UnifiedGraduationEnabled() && !unifiedPassLedger_.empty())
+        {
+            unifiedPassLedger_[segmentOrdinal] = carouselPass_;
+        }
+        state.segmentPassCount = unifiedPassLedger_.empty() ? carouselPass_ :
+            unifiedPassLedger_[segmentOrdinal];
         state.graduationTarget = CalculateUnifiedGraduationTarget(state.blockCount);
         state.graduated = false;
         Require(static_cast<bool>(CreateUnifiedSegmentScheduler(state, periodicControlPhaseIndex,
@@ -1868,11 +1894,14 @@ private:
         unifiedWindowStartSegmentOrdinal_ = currentSegmentOrdinal_;
         if (unifiedCommittedLedger_.size() != description_.segments.size())
         {
-            // The pass ledger carries the resumed Carousel pass so a resumed
-            // Session never replays systematic equations; the committed
-            // ledger is seeded per ordinal on first admission.
+            // Both ledgers resolve per ordinal at first admission: the pass
+            // ledger records the admission-time Carousel pass (a resumed
+            // Session never replays systematic equations; a barrier file's
+            // later windows keep the original admission-pass semantics), and
+            // the committed ledger seeds from the durable repair-ID
+            // high-water on resumed Sessions.
             unifiedCommittedLedger_.assign(description_.segments.size(), kUnifiedLedgerUnseeded);
-            unifiedPassLedger_.assign(description_.segments.size(), carouselPass_);
+            unifiedPassLedger_.assign(description_.segments.size(), kUnifiedLedgerUnseeded);
         }
         const std::uint64_t remainingSegments = description_.segments.size() - currentSegmentOrdinal_;
         const std::uint64_t activeSegments = (std::min)(remainingSegments,
@@ -1915,6 +1944,13 @@ private:
             unifiedCommittedLedger_[state.segmentOrdinal] = state.committedEquationsTotal;
         }
         FinalizeUnifiedSegmentRound(state);
+        if (!UnifiedGraduationEnabled())
+        {
+            // Small-file path: the round completes like the pre-graduation
+            // contract; the whole-window barrier advances when every
+            // in-window scheduler reaches this state.
+            return;
+        }
         if (state.committedEquationsTotal >= state.graduationTarget ||
             state.segmentPassCount >= senderUnifiedMaximumSegmentPasses)
         {
@@ -2001,14 +2037,33 @@ private:
 
     void AdvanceUnifiedSegmentWindow()
     {
-        // Reached only when the window emptied: every Segment graduated and no
-        // fresh ordinal remains. Wrap raises each graduation target by
-        // wrapTopUpPercent of K so residual stragglers converge while
-        // recovered Segments re-graduate after one minimal top-up pass.
-        Require(unifiedSegmentStates_.empty(), "Unified Segment window wrapped while Segments remain");
+        // Two arrival paths share this entry point. An emptied window means
+        // every Segment graduated and no fresh ordinal remains: wrap to zero,
+        // raising each graduation target by wrapTopUpPercent of K so residual
+        // stragglers converge while recovered Segments re-graduate after one
+        // minimal top-up pass. A non-empty window with every scheduler
+        // complete is the small-file barrier: graduation is disabled there,
+        // so advance the window start past the whole window exactly like the
+        // pre-graduation contract.
+        if (!unifiedSegmentStates_.empty())
+        {
+            const auto nextWindowStart = pbprotocol::CheckedAddUint64(unifiedWindowStartSegmentOrdinal_,
+                unifiedSegmentStates_.size());
+            RequireResult(nextWindowStart, "Unified Segment-window ordinal overflow");
+            Require(nextWindowStart.Value() <= description_.segments.size(),
+                "Unified Segment-window advance exceeded the descriptor table");
+            currentSegmentOrdinal_ = nextWindowStart.Value();
+            if (currentSegmentOrdinal_ == description_.segments.size())
+            {
+                currentSegmentOrdinal_ = 0;
+            }
+        }
+        else
+        {
+            currentSegmentOrdinal_ = 0;
+        }
         Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
         carouselPass_++;
-        currentSegmentOrdinal_ = 0;
         InitializeUnifiedSegmentWindow();
     }
 
