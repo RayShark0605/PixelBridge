@@ -118,9 +118,20 @@ def command_send(root: Path, command_type, params, timeout_seconds=None):
 
 def read_result(root: Path, command_id):
     primary = root / "results" / ("res-{}.json".format(command_id))
-    if primary.is_file():
+    if not primary.is_file():
+        return None
+    try:
         return json.loads(primary.read_text(encoding="utf-8-sig"))
-    return None
+    except OSError:
+        # The share is written by the remote listener and read here over SMB. A
+        # reader that arrives while the result is still being flushed observes a
+        # sharing violation, which the caller must treat as "not finished yet"
+        # rather than as a failed command.
+        return None
+    except ValueError:
+        # Partially flushed JSON: keep polling until the listener replaces the
+        # file atomically with the complete result.
+        return None
 
 
 def command_await(root: Path, command_id, timeout_seconds, poll_seconds=0.3):
