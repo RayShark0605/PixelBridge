@@ -473,3 +473,35 @@ git rev-parse HEAD          # cec4d358771332d0509017d89b11963fc4104405
 5. 实机 A/B：同日同链路 30Hz/50MB + 30Hz/100MB vs 03a79a9 基线。
 
 **依据更新**：今晚 30Hz 全系 +18~32% 后，Chroma 车道的空口占比浪费变得相对更大（约 1/3 空口换 <5% 符号），O4 的预期收益仍成立。
+
+---
+
+## 13. 第四会话（2026-09-12 白天）：O4 灰阶身份落地、实机事件与信道实测定论
+
+### 13.1 已交付（提交 `01cb14a` + `08500e4` + `626cd89`，ctest -E PBPresentationGate 全绿）
+
+1. **unified-gray 实验身份**（`PB-Experimental-GrayStates-1`，`0x5042475953544131`，layout 12，CLI `--profile unified-gray`，不入产品 catalog）：数据 tile 前景状态与校准状态条从 4 种等亮度彩色改为 4 个灰度台阶，掩码/映射/槽位/脚手架与 SC6-V3 逐字节一致；六处成对身份门按 bands 模式扩展；RunReport.3 路由共享（并修复其 profile 三字段硬编码——现在写真实验身份）。
+2. **测试**：调制层 8 用例（1:1/420 抽样/中性化/抖动/级距坍缩 fail-closed/压缩信道/独立 Python golden 对拍）、GPU WARP 用例、workflow 整文件恢复 ×3；golden 目录 `tests/golden/unified-graystates-cpu-oracle/`。
+3. **数据驱动众数分类器**（`08500e4`）：实测定论——ToDesk 类链路对平坦校准条近乎无损（实测 {56.0,113.4,168.9,250.0}），但对 glyph 级前景按上下文压缩（248→~214、顶部总体混叠）。分类器改为每帧 tile 前景均值直方图找 4 众数（确定性算法，CPU oracle 与单线程 CS 逐位一致），校准条质心为 fail-closed 回退；前景门改为梯子 0/1 中点与状态校准解耦；级距重调为 56/112/168/248。
+4. **修既存缺陷**：O3a 擦除路径 markerCandidates 丢失（stash 对照证明非本会话引入）；GPU 修复 modes 缓冲 UAV/SRV 同绑（`626cd89`）。
+
+### 13.2 实机事件与处置（重要操作教训）
+
+- **探针 1-3 全部 WaitingForBootstrap 的根因是环境而非代码**：远程机物理分辨率 2880×1620（display-info 的 1920×1080 是 DPI 虚拟值；桥截屏尺寸=物理地面真相）+ 查看器非等比映射；用户恢复 1920×1080 后同一二进制 1MB 探针 13.8s Completed+digest ✓。旧 kit 同链路基线对照 11.1s ✓（排除代码回归）。
+- **bash 工具的 heredoc 会吞反斜杠**：UNC 路径 `\RECEIVER-DESKTOP\j` 经 heredoc 变 `\RECEIVER-DESKTOP\j`/`\RECEIVER-DESKTOP\j`，导致所有手动桥启动 "源文件不存在" 假象；harness 从文件读参数无恙。修法：补丁/脚本一律 Write 工具落盘或 chr(92) 构造；正斜杠 UNC 对编码器 CLI 也可用。
+- **RunReport 硬编码陷阱**：unified 档报告的 profile 字段曾硬编码产品对，灰阶运行的报告会"谎报"身份（本次已修）；诊断身份问题必须用 stderr 探针或 bridge 截屏地面真相，勿信报告字段。
+
+### 13.3 实测数字（同刻对照，全部 digestMatch=true）
+
+| 格子 | 结果 |
+| --- | --- |
+| 基线（bands, 03a79a9）30Hz/50MB | **129,153 B/s**（405.9s）——链路比晨间劣化 ~34%（o6v 同格 196,212） |
+| unified-gray（`08500e4` 完整形态）30Hz/50MB | 101,247 B/s（517.8s）；10 个 Luma 码字全程 0 失败 |
+| 状态（Chroma）车道 | **0 接纳/全帧 InnerFecFailure**：glyph 前景总体 σ≈15-20、顶部总体拖尾重叠（边界错分 ~17%），LDPC 无法收敛；众数 {50.3,102.1,145.9,184.9} 可测但不足以救分类 |
+
+### 13.4 结论与未竟
+
+- **概念端到端成立**：灰阶身份在真实链路 bootstrap/几何/10 Luma 码字全通，1MB 整文件仅靠 Luma 码字即 Completed+digest（外层喷泉兜底）。
+- **当日链路不承载 4 级灰度**：状态车道失败闭合（不伤恢复），但灰阶格因 GPU 众数 pass + CPU 二段开销反低于基线 22%。**灰阶收益需在晨间质量链路复测**（未测：当日链路已劣化）。
+- **状态车道在劣化链路存活的候选路径**（未实施，按预期收益排序）：①谷值边界 + 擦除中心解码（边界 ±15 强制擦除，LDPC 擦除码率 2/3 理论容忍 33%）；②2 级强健状态（1 bit/tile，间距拉满 64/224）+ 重映射（容量减半但每比特极稳）；③链路质量自适应（校准条方差/众数宽度作为档位开关）。
+- 会话证据根：`<PBLine root>\`（runs/、evidence/、token-probe/、vis-*、meas-*、cp-right.bgra 等）。
