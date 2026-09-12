@@ -25,6 +25,19 @@ inline constexpr std::uint32_t kUnifiedInformationBytes = kUnifiedVisualProfile.
 inline constexpr std::uint32_t kUnifiedCodewordCount = static_cast<std::uint32_t>(kUnifiedFrameCapacity.capacity.codewordCount);
 inline constexpr std::size_t kUnifiedCodedFrameBytes = static_cast<std::size_t>(kUnifiedCodewordCount) * kUnifiedCodewordBytes;
 inline constexpr std::size_t kUnifiedSoftMetricCount = static_cast<std::size_t>(kUnifiedCodewordCount) * kUnifiedVisualProfile.innerCodewordBits;
+// Gray carrier v3 frame geometry: eighteen codeword slots per frame ride
+// the seven-plane tile carrier (see unified_visual_mapping.h).
+inline constexpr std::uint32_t kUnifiedGrayFrameCodewordCount = kUnifiedGrayCodewordCount;
+inline constexpr std::size_t kUnifiedGraySoftMetricCount =
+    static_cast<std::size_t>(kUnifiedGrayCodewordCount) * kUnifiedVisualProfile.innerCodewordBits;
+inline constexpr std::size_t kUnifiedGrayCodedFrameBytes =
+    static_cast<std::size_t>(kUnifiedGrayCodewordCount) * kUnifiedCodewordBytes;
+inline constexpr std::uint32_t kUnifiedMaximumFrameSlotCount =
+    kUnifiedCodewordCount > kUnifiedGrayCodewordCount ? kUnifiedCodewordCount : kUnifiedGrayCodewordCount;
+inline constexpr std::size_t kUnifiedMaximumSoftMetricCount =
+    kUnifiedSoftMetricCount > kUnifiedGraySoftMetricCount ? kUnifiedSoftMetricCount : kUnifiedGraySoftMetricCount;
+inline constexpr std::size_t kUnifiedMaximumCodedFrameBytes =
+    kUnifiedCodedFrameBytes > kUnifiedGrayCodedFrameBytes ? kUnifiedCodedFrameBytes : kUnifiedGrayCodedFrameBytes;
 inline constexpr std::size_t kUnifiedFrameBgraBytes = static_cast<std::size_t>(kUnifiedVisualProfile.canvasWidth) *
     kUnifiedVisualProfile.canvasHeight * 4;
 inline constexpr std::uint32_t kUnifiedDataRegionCount = 12;
@@ -195,8 +208,10 @@ struct UnifiedVisualObservation
     UnifiedFineLumaObservation fineLuma;
     UnifiedChromaObservation chroma;
     std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount> freshness;
-    std::array<UnifiedSlotObservation, kUnifiedCodewordCount> slots;
+    std::array<UnifiedSlotObservation, kUnifiedMaximumFrameSlotCount> slots;
     std::array<UnifiedLaneMetricObservation, 3> laneMetrics{};
+    // Active frame slot count for this observation (15 SC6 / 18 gray).
+    std::uint32_t frameSlotCount = kUnifiedCodewordCount;
     std::uint32_t acceptedBlocks = 0;
     std::uint32_t acceptedTransportBlocks = 0;
     std::uint32_t acceptedControlRecords = 0;
@@ -224,6 +239,10 @@ struct UnifiedPreparedMetricFrame
 };
 
 [[nodiscard]] bool ValidateUnifiedVisualDecodePolicy(const UnifiedVisualDecodePolicy& policy) noexcept;
+// Eighteen-slot gray mixed-slot plan: identical control-region contract to
+// the SC6 plan (control only inside Base Luma slots 0..8, at least one
+// Transport slot, every slot exactly once), bounded by the gray frame size.
+[[nodiscard]] bool ValidateUnifiedGrayMixedSlotPlan(std::span<const UnifiedSlotAssignment> assignments) noexcept;
 [[nodiscard]] bool ResolveUnifiedVisualSamplingGeometry(const LocalDesktopGeometry& geometry,
     std::uint32_t frameWidth, std::uint32_t frameHeight, const UnifiedVisualDecodePolicy& policy,
     LocalDesktopGeometry& output) noexcept;
@@ -331,8 +350,10 @@ private:
 static_assert(kUnifiedCodewordBytes == 2025);
 static_assert(kUnifiedInformationBytes == 1350);
 static_assert(kUnifiedCodewordCount == 15);
-static_assert(kUnifiedCodewordCount * kUnifiedVisualProfile.innerCodewordBits ==
-    kUnifiedGrayActiveTiles * kUnifiedGrayCarrierPlanes);
+static_assert(kUnifiedGrayCodewordCount * kUnifiedVisualProfile.innerCodewordBits <=
+    kUnifiedVisualProfile.dataTileCount * kUnifiedGrayCarrierPlanes);
+static_assert((kUnifiedGrayCodewordCount * kUnifiedVisualProfile.innerCodewordBits +
+    kUnifiedGrayCarrierPlanes - 1) / kUnifiedGrayCarrierPlanes == kUnifiedGrayActiveTiles);
 static_assert(kUnifiedCodedFrameBytes == 30375);
 static_assert(kUnifiedSoftMetricCount == 243000);
 static_assert(kUnifiedPhasePilotTilesPerRegion == 210);

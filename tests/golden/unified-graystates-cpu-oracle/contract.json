@@ -7,19 +7,17 @@
   },
   "codewords": {
     "bytesEach": 2025,
-    "count": 15,
+    "count": 18,
     "informationBytesEach": 1350,
     "innerFecProfile": "DVB-S2-Short-N16200-K10800"
   },
   "data": {
+    "foregroundLevels": [
+      64,
+      232
+    ],
     "foregroundStates": "gray",
     "glyphPixels": 5,
-    "grayLevels": [
-      56,
-      112,
-      168,
-      248
-    ],
     "highLuma": 160,
     "lowLuma": 8,
     "neutralLuma": 128,
@@ -56,16 +54,16 @@
     "profileIdHex": "5042475953544131"
   },
   "rasterBlake3": {
-    "base-neutralized": "73cd61ee087d54b2ff0c050a880ce9f1e686baec1755701f5c53cd7488badcb9",
-    "clean": "a404e478f9c4310fba27a9c209fc06d4f9d170d9b6380ae8411380ffb22c1cd6",
-    "fine-neutralized": "c021edc36fba60550c280fc0cdbebed3b53c40c7464ff41fa06083d6d413f4fd",
-    "localized-stale": "c53ab707dd0bad3da200d7388194668869edb6102911a2766539025b153019ef",
-    "state-collapsed": "aed7c9e9c7472db65904791d9e78277aca165767c5ef354fcf846d664f67d5ca",
-    "wrong-sequence": "c2117193d278bef4aa032b3c64129ae864f063397149d03eea02d35314bc8d6b"
+    "base-neutralized": "c34d5400b1261fd6f9274f859d6fb293c81d79260030be0886ef1cdbe26c73f8",
+    "clean": "07a3d7950a32813699bde824b9b490f454126f526fa3ea2dcffc76a71e758cdd",
+    "fine-neutralized": "0f39803e5a094fc8b6c9cd93668ff63e36ee81ffb3427cc14d6d38ba0f63c5d7",
+    "localized-stale": "4d3f4d8a982fc6b9e311a56dcf5f278a77215e887bb6c77ff700ea018161906e",
+    "state-collapsed": "3154a71aed0daa8037b0f510dbd14a93a054c9acb54a66c768ae7aa5c0ab68cb",
+    "wrong-sequence": "c578af6fb378c82d16966836f3d3cbf2cc37d1607718105df94d1a77cc4bc989"
   },
   "slotPlan": {
     "slot0": "Control/SessionDescriptor",
-    "slots1To14": "Transport"
+    "slots1To17": "Transport"
   },
   "variantTransforms": {
     "base-neutralized": "replace top 128x64 phase checker by neutral 128",

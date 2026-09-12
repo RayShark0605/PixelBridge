@@ -56,6 +56,14 @@ VARIANTS = ("clean", "state-collapsed", "base-neutralized", "fine-neutralized",
             "localized-stale", "wrong-sequence")
 
 
+# Carrier v3: seven planes per tile - six mask bits plus one
+# foreground-level bit rendered as ladder level 1 (64) or 3 (232).
+LOW_FOREGROUND = 64
+HIGH_FOREGROUND = 232
+GRAY_PLANES = 7
+GRAY_ACTIVE_TILES = (18 * 16200 + GRAY_PLANES - 1) // GRAY_PLANES
+
+
 def Record(sequence: int) -> bytes:
     prefix = struct.pack("<4sBBBBQQQII", b"PBRG", 1, 1, 0, LAYOUT_VERSION, PROFILE_ID,
                          sc6cpu.SESSION_TAG, sequence, 0x21222324, 0)
@@ -65,11 +73,11 @@ def Record(sequence: int) -> bytes:
 
 
 def GrayActiveTiles() -> int:
-    return 15 * 16200 // 6
+    return GRAY_ACTIVE_TILES
 
 
 def GraySiteLogical(tile: int, plane: int, sequence: int) -> int | None:
-    domain_bit = tile * 6 + plane
+    domain_bit = tile * GRAY_PLANES + plane
     modulus, multiplier, _inverse, offset, phase_step, phase_count = mapping.CODEWORD_INTERLEAVE
     phase = sequence % phase_count
     phase_offset = (offset + phase * phase_step) % modulus
@@ -79,7 +87,7 @@ def GraySiteLogical(tile: int, plane: int, sequence: int) -> int | None:
     shifted = (within - phase_offset) % modulus
     inv = pow(multiplier, -1, modulus)
     logical = slot * modulus + (shifted * inv) % modulus
-    return logical if logical < 15 * modulus else None
+    return logical if logical < 18 * modulus else None
 
 
 def ReadCodedBit(codewords: bytes, logical: int) -> int:
@@ -112,16 +120,20 @@ def Raster(sequence: int, record: bytes, codewords: bytes) -> bytes:
         symbol = 1
         if tile < GrayActiveTiles():
             symbol = 0
-            for plane in range(6):
+            for plane in range(GRAY_PLANES):
                 logical = GraySiteLogical(tile, plane, sequence)
-                assert logical is not None
-                if ReadCodedBit(codewords, logical):
+                # The last active tile owns six valid sites plus one carrier
+                # leftover beyond the 18-codeword logical range; the C++
+                # raster contributes a zero bit for it.
+                if logical is not None and ReadCodedBit(codewords, logical):
                     symbol |= 1 << plane
-        mask = GRAY_MASKS_BY_SYMBOL[symbol]
+        mask = GRAY_MASKS_BY_SYMBOL[symbol & 63]
+        foreground_level = HIGH_FOREGROUND if (symbol & (1 << 6)) else LOW_FOREGROUND
         for row in range(6):
             for column in range(6):
                 foreground = row < 5 and column < 5 and mask & (1 << (row * 5 + column))
-                sc6cpu.Fill(image, x + column, y + row, 1, 1, HIGH if foreground else LOW)
+                level = foreground_level if foreground else LOW
+                sc6cpu.Fill(image, x + column, y + row, 1, 1, level)
     return bytes(image)
 
 
@@ -154,6 +166,21 @@ def RasterDigests(previous: bytes, current: bytes) -> tuple[bytes, dict[str, str
     return b"".join(digests), {name: digest.hex() for name, digest in zip(VARIANTS, digests, strict=True)}
 
 
+def MixedCodewords18() -> tuple[bytes, tuple[bytes, ...]]:
+    """Eighteen Transport wire blocks with their Robust codewords, reusing
+    the frozen sc6 fixture builders for byte-exact framing."""
+    blocks = (sc6cpu.Control(),) + tuple(sc6cpu.Transport(slot, 0) for slot in range(1, 18))
+    coded = bytearray()
+    for block in blocks:
+        information = bytearray(1350)
+        # FrameTransportBlockIntoInfoBlock equivalent: header CRCs already
+        # validated by the builder; copy the block then zero-pad.
+        information[:len(block)] = block
+        coded += sc6cpu.RobustEncode(bytes(information))
+    assert len(coded) == 18 * 2025
+    return bytes(coded), blocks
+
+
 def BuildFiles() -> dict[str, bytes]:
     mapping.ValidateFrozenConstants()
     for level, _, _, state_label in GRAY_STATES_BY_LABEL:
@@ -161,23 +188,23 @@ def BuildFiles() -> dict[str, bytes]:
         assert state_label == GRAY_STATES_BY_LABEL.index((level, level, level, state_label))
     previous_record = Record(40)
     current_record = Record(41)
-    codewords, blocks = sc6cpu.MixedCodewords(41)
+    codewords, blocks = MixedCodewords18()
     previous = Raster(40, previous_record, codewords)
     current = Raster(41, current_record, codewords)
     digest_bytes, digest_map = RasterDigests(previous, current)
     contract = {
         "artifact": f"{PROFILE_NAME} CPU oracle Golden",
         "canvas": {"width": 1920, "height": 1080, "pixelFormat": "BGRA8_UNORM_SDR"},
-        "codewords": {"count": 15, "bytesEach": 2025, "informationBytesEach": 1350,
+        "codewords": {"count": 18, "bytesEach": 2025, "informationBytesEach": 1350,
                       "innerFecProfile": "DVB-S2-Short-N16200-K10800"},
         "data": {"lowLuma": LOW, "highLuma": HIGH, "neutralLuma": NEUTRAL,
                  "tiles": mapping.DATA_TILE_COUNT, "tilePixels": 6, "glyphPixels": 5,
-                 "separatorPixels": 1, "foregroundStates": "gray", "grayLevels": [56, 112, 168, 248]},
+                 "separatorPixels": 1, "foregroundStates": "gray", "foregroundLevels": [64, 232]},
         "pilots": {"lumaRows": 24, "neutralRows": 8, "stateRows": 32,
                    "lumaLevels": LUMA_LEVELS, "stateStripes": "gray"},
         "freshnessPartition": {"columnBoundaries": [560, 1360], "rowBoundaries": [382, 698]},
         "profile": {"name": PROFILE_NAME, "profileIdHex": f"{PROFILE_ID:016x}", "layoutVersion": LAYOUT_VERSION},
-        "slotPlan": {"slot0": "Control/SessionDescriptor", "slots1To14": "Transport"},
+        "slotPlan": {"slot0": "Control/SessionDescriptor", "slots1To17": "Transport"},
         "variants": list(VARIANTS),
         "variantTransforms": {
             "clean": "sequence41 canonical raster",

@@ -36,9 +36,9 @@ using namespace pbmodulation;
 struct GrayFixture
 {
     std::array<std::byte, kLocalDesktopBootstrapRecordBytes> bootstrap{};
-    std::array<std::byte, kUnifiedCodedFrameBytes> coded{};
-    std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> plan{};
-    std::array<std::vector<std::byte>, kUnifiedCodewordCount> expected{};
+    std::array<std::byte, kUnifiedGrayCodedFrameBytes> coded{};
+    std::array<UnifiedSlotAssignment, kUnifiedGrayFrameCodewordCount> plan{};
+    std::array<std::vector<std::byte>, kUnifiedGrayFrameCodewordCount> expected{};
 };
 
 std::array<std::byte, kLocalDesktopBootstrapRecordBytes> MakeGrayBootstrap(const std::uint64_t sequence)
@@ -86,7 +86,7 @@ GrayFixture BuildGrayFixture(const std::uint64_t sequence)
     fixture.bootstrap = MakeGrayBootstrap(sequence);
     const auto parsed = pbprotocol::ParseBootstrapRecord(fixture.bootstrap);
     REQUIRE(parsed);
-    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
     {
         UnifiedSlotAssignment& assignment = fixture.plan[slot];
         assignment.codewordSlot = slot;
@@ -109,7 +109,7 @@ GrayFixture BuildGrayFixture(const std::uint64_t sequence)
             std::span<std::byte>(fixture.coded).subspan(static_cast<std::size_t>(slot) * kUnifiedCodewordBytes,
                 kUnifiedCodewordBytes)));
     }
-    REQUIRE(ValidateUnifiedMixedSlotPlan(fixture.plan));
+    REQUIRE(ValidateUnifiedGrayMixedSlotPlan(fixture.plan));
     return fixture;
 }
 
@@ -262,12 +262,12 @@ void RequireFullRecovery(UnifiedVisualCpuOracle& oracle, const UnifiedVisualObse
     REQUIRE(observation.baseLuma.IsAvailable());
     REQUIRE(observation.fineLuma.IsAvailable());
     REQUIRE(observation.chroma.IsAvailable());
-    REQUIRE(observation.acceptedBlocks == frameCount * kUnifiedCodewordCount);
+    REQUIRE(observation.acceptedBlocks == frameCount * kUnifiedGrayFrameCodewordCount);
     REQUIRE(observation.acceptedControlRecords == frameCount);
-    REQUIRE(observation.acceptedTransportBlocks == frameCount * (kUnifiedCodewordCount - 1));
+    REQUIRE(observation.acceptedTransportBlocks == frameCount * (kUnifiedGrayFrameCodewordCount - 1));
     const std::span<const UnifiedAcceptedBlock> accepted = oracle.GetAcceptedBlocks();
-    REQUIRE(accepted.size() == frameCount * kUnifiedCodewordCount);
-    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    REQUIRE(accepted.size() == frameCount * kUnifiedGrayFrameCodewordCount);
+    for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
     {
         REQUIRE(observation.slots[slot].accepted);
         REQUIRE(accepted[frameCount - 1 + slot].size == fixture.expected[slot].size());
@@ -298,8 +298,10 @@ TEST_CASE("Gray-state frames fully recover at 1:1 with gray foreground pixels", 
                 const std::byte* const pixel = pixels.data() +
                     (static_cast<std::size_t>(tile.bounds.y + row) * kUnifiedVisualProfile.canvasWidth +
                         tile.bounds.x + column) * 4;
-                sawForeground = sawForeground || std::to_integer<std::uint8_t>(pixel[1]) == kUnifiedDataHighLuma;
-                sawBackground = sawBackground || std::to_integer<std::uint8_t>(pixel[1]) == kUnifiedDataLowLuma;
+                const std::uint8_t lumaValue = std::to_integer<std::uint8_t>(pixel[1]);
+                sawForeground = sawForeground || lumaValue == kUnifiedGrayLowForegroundLuma ||
+                    lumaValue == kUnifiedGrayHighForegroundLuma;
+                sawBackground = sawBackground || lumaValue == kUnifiedDataLowLuma;
             }
         }
     }
@@ -394,7 +396,8 @@ TEST_CASE("Gray-state frames tolerate bounded luma jitter on data tiles", "[unif
     RequireFullRecovery(oracle, observation, fixture);
 }
 
-TEST_CASE("Collapsed gray state stripes erase only the state lane", "[unified][graystates][erasure]")
+TEST_CASE("Collapsed gray state stripes fail the state pilot without harming data slots",
+    "[unified][graystates][erasure]")
 {
     const GrayFixture fixture = BuildGrayFixture(19);
     const std::vector<std::byte> clean = RenderGray(fixture);
@@ -407,9 +410,12 @@ TEST_CASE("Collapsed gray state stripes erase only the state lane", "[unified][g
     REQUIRE(observation.fineLuma.IsAvailable());
     REQUIRE_FALSE(observation.chroma.IsAvailable());
     REQUIRE(observation.chroma.erasureReason == UnifiedErasureReason::ChromaPilotFailure);
-    REQUIRE(observation.acceptedBlocks == 10);
+    // Carrier v3: every slot rides the Base Luma observation and the level
+    // bit calibrates from the ladder stripes, so the collapsed state stripes
+    // cost the Chroma pilot observation only - no data slot is erased.
+    REQUIRE(observation.acceptedBlocks == kUnifiedGrayFrameCodewordCount);
     REQUIRE(observation.acceptedControlRecords == 1);
-    REQUIRE(observation.acceptedTransportBlocks == 9);
+    REQUIRE(observation.acceptedTransportBlocks == kUnifiedGrayFrameCodewordCount - 1);
 }
 
 
@@ -499,7 +505,7 @@ TEST_CASE("Gray-state CPU oracle matches the independently regenerated Golden",
     const std::vector<std::byte> digests = ReadGrayGolden("raster-digests.bin");
     REQUIRE(previousBootstrap.size() == kLocalDesktopBootstrapRecordBytes);
     REQUIRE(currentBootstrap.size() == kLocalDesktopBootstrapRecordBytes);
-    REQUIRE(codewords.size() == kUnifiedCodedFrameBytes);
+    REQUIRE(codewords.size() == kUnifiedGrayCodedFrameBytes);
 
     std::vector<std::byte> previous(kUnifiedFrameBgraBytes);
     std::vector<std::byte> current(kUnifiedFrameBgraBytes);
@@ -539,8 +545,8 @@ TEST_CASE("Gray-state CPU oracle matches the independently regenerated Golden",
         RequireGrayRasterDigest(digests, 5, variant);
     }
 
-    std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> plan{};
-    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    std::array<UnifiedSlotAssignment, kUnifiedGrayFrameCodewordCount> plan{};
+    for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
     {
         plan[slot] = slot == 0 ?
             UnifiedSlotAssignment{slot, UnifiedSlotKind::Control, UnifiedControlPriority::SessionDescriptor} :
@@ -548,9 +554,9 @@ TEST_CASE("Gray-state CPU oracle matches the independently regenerated Golden",
     }
     UnifiedVisualCpuOracle oracle = MakeOracle();
     const UnifiedVisualObservation observation = oracle.Decode(View(current), plan, GrayIdentity());
-    REQUIRE(observation.acceptedBlocks == kUnifiedCodewordCount);
+    REQUIRE(observation.acceptedBlocks == kUnifiedGrayFrameCodewordCount);
     const std::span<const UnifiedAcceptedBlock> accepted = oracle.GetAcceptedBlocks();
-    REQUIRE(accepted.size() == kUnifiedCodewordCount);
+    REQUIRE(accepted.size() == kUnifiedGrayFrameCodewordCount);
     std::size_t offset = 0;
     for (std::size_t slot = 0; slot < accepted.size(); slot++)
     {

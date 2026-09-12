@@ -89,10 +89,23 @@ inline constexpr std::array<std::uint32_t, 64> kUnifiedGrayMasksBySymbol{
     0x1FFFE00, 0x0AAAB55, 0x0666799, 0x13332CC, 0x01E1FE1, 0x14B4AB4, 0x1878678, 0x0D2D32D,
     0x001FFFE, 0x154AAAB, 0x1986667, 0x0CD3332, 0x1E01E1F, 0x0B54B4A, 0x0798786, 0x12CD2D3,
 };
-inline constexpr std::uint32_t kUnifiedGrayCarrierPlanes = 6;
-// 15 codewords x 16200 bits / 6 planes per tile; cross-checked against
-// kUnifiedCodewordCount by static_assert in unified_visual.h.
-inline constexpr std::uint32_t kUnifiedGrayActiveTiles = 15 * 16200 / 6;
+// Carrier v3: every data tile carries seven interleaved planes - the six
+// punctured-Hadamard mask bits plus one foreground-level bit rendered as
+// one of two ladder reference levels (64/232). The ladder is re-measured
+// every frame, so the level bit self-calibrates against the provider
+// monotone luma remap; the nominal 168-luma gap sits above seven sigmas
+// of the glyph-foreground noise measured on degraded links.
+inline constexpr std::uint32_t kUnifiedGrayCarrierPlanes = 7;
+inline constexpr std::uint32_t kUnifiedGrayCodewordCount = 18;
+inline constexpr std::uint64_t kUnifiedGrayCarrierBits =
+    static_cast<std::uint64_t>(kUnifiedVisualProfile.dataTileCount) * kUnifiedGrayCarrierPlanes;
+inline constexpr std::uint64_t kUnifiedGrayLogicalBits =
+    static_cast<std::uint64_t>(kUnifiedGrayCodewordCount) * 16200;
+inline constexpr std::uint32_t kUnifiedGrayActiveTiles =
+    static_cast<std::uint32_t>((kUnifiedGrayLogicalBits + kUnifiedGrayCarrierPlanes - 1) /
+        kUnifiedGrayCarrierPlanes);
+inline constexpr std::uint32_t kUnifiedGrayLowForegroundLuma = 64;
+inline constexpr std::uint32_t kUnifiedGrayHighForegroundLuma = 232;
 
 struct UnifiedLaneMappingContract
 {
@@ -469,14 +482,12 @@ inline constexpr std::uint32_t kCodewordBits = kUnifiedVisualProfile.innerCodewo
 [[nodiscard]] constexpr UnifiedPhysicalCarrierSite GetUnifiedGrayPhysicalSite(
     const std::uint32_t logicalBit, const std::uint64_t frameSequence) noexcept
 {
-    constexpr std::uint32_t kCodewordBits = 16200;
-    constexpr std::uint32_t kGrayCarrierBits = kUnifiedGrayActiveTiles * kUnifiedGrayCarrierPlanes;
-    if (logicalBit >= 15 * kCodewordBits)
+    if (logicalBit >= kUnifiedGrayLogicalBits)
     {
         return {};
     }
     const std::uint32_t domainBit = unified_mapping_detail::PermuteLaneCodewordBit(logicalBit, frameSequence);
-    if (domainBit >= kGrayCarrierBits)
+    if (domainBit >= kUnifiedGrayCarrierBits)
     {
         return {};
     }
@@ -487,7 +498,6 @@ inline constexpr std::uint32_t kCodewordBits = kUnifiedVisualProfile.innerCodewo
 [[nodiscard]] constexpr UnifiedLogicalCarrierBit GetUnifiedGrayLogicalBit(
     const UnifiedPhysicalCarrierSite& site, const std::uint64_t frameSequence) noexcept
 {
-    constexpr std::uint32_t kCodewordBits = 16200;
     if (!site.valid || site.tileOrdinal >= kUnifiedGrayActiveTiles ||
         site.carrier != UnifiedCarrier::Luma || site.bitPlane >= kUnifiedGrayCarrierPlanes ||
         site.tileOrdinal >= kUnifiedVisualProfile.dataTileCount)
@@ -497,7 +507,7 @@ inline constexpr std::uint32_t kCodewordBits = kUnifiedVisualProfile.innerCodewo
     const std::uint32_t domainBit = site.tileOrdinal * kUnifiedGrayCarrierPlanes + site.bitPlane;
     // InvertLaneCodewordBit already returns the slot-offset global logical bit.
     const std::uint32_t globalLogical = unified_mapping_detail::InvertLaneCodewordBit(domainBit, frameSequence);
-    if (globalLogical >= 15 * kCodewordBits)
+    if (globalLogical >= kUnifiedGrayLogicalBits)
     {
         return {};
     }

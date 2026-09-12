@@ -67,13 +67,21 @@ struct UnifiedVisualCpuOracle::Implementation
         std::array<std::byte, kUnifiedInformationBytes> information{};
     };
 
-    std::array<UnifiedSoftMetric, kUnifiedSoftMetricCount> metrics{};
-    std::array<UnifiedAcceptedBlock, kUnifiedCodewordCount> accepted{};
-    std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedCodewordCount> decodedInformation{};
-    std::array<bool, kUnifiedCodewordCount> decodedInformationValid{};
-    std::array<FecLane, kUnifiedCodewordCount> fecLanes{};
-    std::array<FecSlotOutput, kUnifiedCodewordCount> fecSlotOutputs{};
+    // Slot-count-dependent arrays are sized for the larger gray frame; the
+    // SC6 paths drive their loops by kUnifiedCodewordCount and never touch
+    // the tail entries.
+    std::array<UnifiedSoftMetric, kUnifiedMaximumSoftMetricCount> metrics{};
+    std::array<UnifiedAcceptedBlock, kUnifiedMaximumFrameSlotCount> accepted{};
+    std::array<std::array<std::byte, kUnifiedInformationBytes>, kUnifiedMaximumFrameSlotCount> decodedInformation{};
+    std::array<bool, kUnifiedMaximumFrameSlotCount> decodedInformationValid{};
+    std::array<FecLane, kUnifiedMaximumFrameSlotCount> fecLanes{};
+    std::array<FecSlotOutput, kUnifiedMaximumFrameSlotCount> fecSlotOutputs{};
     std::vector<std::thread> fecThreads;
+    // Active frame slot count for the current decode (15 SC6 / 18 gray);
+    // bounds the parallel FEC sweep's atomic slot claims. activeMetricCount
+    // sizes the public GetSoftMetrics span the same way.
+    std::uint32_t fecSlotCount = kUnifiedCodewordCount;
+    std::size_t activeMetricCount = kUnifiedSoftMetricCount;
 
     // One FEC sweep: claim a scratch lane, decode codeword slots from the
     // shared atomic counter, then account completion under fecMutex. The
@@ -1124,13 +1132,57 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
 
         if (grayStates)
         {
-            // Gray carrier v2: classify the tile against the 64-symbol
-            // punctured-Hadamard codebook exactly like the sixteen-symbol
-            // product path (sharpened samples, base projection model, fixed
-            // calibrated high/low), then min-partition the symbol distances
-            // into the six mask planes.
+            // Gray carrier v3: plane 6 selects one of the two ladder
+            // foreground levels; the mask planes classify against the
+            // six-bit punctured-Hadamard book using the tile's own measured
+            // foreground mean as the expected level, so a level bit of either
+            // value never disturbs the mask distances.
             if (tileOrdinal >= kUnifiedGrayActiveTiles)
             {
+                continue;
+            }
+            std::uint32_t grayForegroundSamples = 0;
+            double grayForegroundLumaSum = 0;
+            // Foreground/background gate sits between the calibrated background
+            // (ladder level 0) and the LOW foreground level (ladder level 1),
+            // so both foreground levels clear it and the background never does.
+            const double foregroundGate = (calibration.lumaLevels[0] + calibration.lumaLevels[1]) * 0.5;
+            for (const Sample& sample : samples)
+            {
+                if (Luma(sample) >= foregroundGate)
+                {
+                    grayForegroundSamples++;
+                    grayForegroundLumaSum += Luma(sample);
+                }
+            }
+            // An all-background tile uniquely identifies its mask: the
+            // punctured-Hadamard book contains exactly one zero-foreground
+            // symbol (32, the complement of the all-foreground symbol 0), so
+            // zero foreground chips decide all six mask bits with full
+            // confidence; only the foreground-level bit stays erased. This
+            // keeps pure 0-LLR erasures out of the LDPC (a zero-LLR variable
+            // zeroes every min-sum message of its check rows, which made some
+            // 7%-erasure codewords exhaust all iterations).
+            const bool grayAllBackground = !samplingFailed && grayForegroundSamples == 0;
+            const bool grayTileSamplingFailed = samplingFailed ||
+                (grayForegroundSamples == 0 && !grayAllBackground);
+            const double tileForeground = grayTileSamplingFailed ? high :
+                grayForegroundSamples != 0 ? grayForegroundLumaSum / grayForegroundSamples : high;
+            if (grayAllBackground)
+            {
+                for (std::uint8_t plane = 0; plane < kUnifiedGrayCarrierPlanes; plane++)
+                {
+                    std::int16_t metric = 0;
+                    bool metricErased = plane == 6;
+                    if (!metricErased)
+                    {
+                        const bool maskBit = ((32U >> plane) & 1U) != 0;
+                        metric = maskBit ? -32767 : 32767;
+                    }
+                    const UnifiedLogicalCarrierBit logical = GetUnifiedGrayLogicalBit(
+                        UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, plane}, frameSequence);
+                    StoreMetric(logical, tile, metric, metricErased, freshness, policy, base, fine, chroma, metrics);
+                }
                 continue;
             }
             std::array<std::uint32_t, kUnifiedDataGlyphCells> projected{};
@@ -1148,14 +1200,7 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                     const std::uint32_t symbolMask = kUnifiedGrayMasksBySymbol[symbol];
                     for (std::size_t chip = 0; chip < samples.size(); chip++)
                     {
-                        const double expected = ((symbolMask >> projected[chip]) & 1U) != 0 ? high : low;
-                        // Raw sample luma: the sum-one cross kernel blooms edge
-                        // chips far past the calibrated levels, and the 64-symbol
-                        // book's tighter neighbor spacing magnifies that kernel
-                        // artifact into systematic confusions on thin data bands.
-                        // The raw value keeps the full high/low margin for the
-                        // d >= 9 neighborhood while provider blur only shrinks it
-                        // proportionally, never inverts it.
+                        const double expected = ((symbolMask >> projected[chip]) & 1U) != 0 ? tileForeground : low;
                         const double difference = Luma(samples[chip]) - expected;
                         symbolDistances[symbol] += difference * difference;
                     }
@@ -1163,18 +1208,43 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
             }
             for (std::uint8_t plane = 0; plane < kUnifiedGrayCarrierPlanes; plane++)
             {
-                double zeroDistance = std::numeric_limits<double>::infinity();
-                double oneDistance = std::numeric_limits<double>::infinity();
-                for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
+                std::int16_t metric = 0;
+                bool metricErased = grayTileSamplingFailed || !symbolModelValid;
+                if (plane == 6)
                 {
-                    double& destination = ((symbol >> plane) & 1U) != 0 ? oneDistance : zeroDistance;
-                    destination = std::min(destination, symbolDistances[symbol]);
+                    const double levelGap = calibration.lumaLevels[3] - calibration.lumaLevels[1];
+                    if (!metricErased && levelGap > 0)
+                    {
+                        const double lowDistance = tileForeground - calibration.lumaLevels[1];
+                        const double highDistance = tileForeground - calibration.lumaLevels[3];
+                        const double scaled = (highDistance * highDistance - lowDistance * lowDistance) *
+                            8192.0 / (levelGap * levelGap);
+                        metric = QuantizeMetric(scaled);
+                    }
                 }
-                const std::int16_t metric = QuantizeMetric((oneDistance - zeroDistance) * lumaScale);
+                else
+                {
+                    double zeroDistance = std::numeric_limits<double>::infinity();
+                    double oneDistance = std::numeric_limits<double>::infinity();
+                    for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
+                    {
+                        double& destination = ((symbol >> plane) & 1U) != 0 ? oneDistance : zeroDistance;
+                        destination = std::min(destination, symbolDistances[symbol]);
+                    }
+                    // Normalize by the tile's own foreground contrast: a
+                    // nine-chip mask flip at any level then yields
+                    // 9 x 2048 = 18432, the magnitude the frozen min-sum
+                    // offset (2048) and message accumulation proved safe in
+                    // the SC6 product path. The fixed ladder-gap scale left
+                    // LOW-level tiles at 3336, which message accumulation
+                    // can flip mid-decode (field BP oscillation).
+                    const double tileContrast = tileForeground - low;
+                    const double maskScale = tileContrast > 0 ? 2048.0 / (tileContrast * tileContrast) : 0.0;
+                    metric = QuantizeMetric((oneDistance - zeroDistance) * maskScale);
+                }
                 const UnifiedLogicalCarrierBit logical = GetUnifiedGrayLogicalBit(
                     UnifiedPhysicalCarrierSite{true, UnifiedCarrier::Luma, tileOrdinal, plane}, frameSequence);
-                StoreMetric(logical, tile, metric, tileSamplingFailed || !symbolModelValid, freshness, policy, base, fine,
-                    chroma, metrics);
+                StoreMetric(logical, tile, metric, metricErased, freshness, policy, base, fine, chroma, metrics);
             }
             continue;
         }
@@ -1488,7 +1558,7 @@ void UnifiedVisualCpuOracle::Implementation::RunFecSweep(const std::uint32_t lan
         for (;;)
         {
             const std::uint32_t slot = fecNextSlot.fetch_add(1, std::memory_order_relaxed);
-            if (slot >= kUnifiedCodewordCount)
+            if (slot >= fecSlotCount)
             {
                 break;
             }
@@ -1533,6 +1603,37 @@ void UnifiedVisualCpuOracle::Implementation::FecThreadLoop(const std::uint32_t l
         RunFecSweep(laneIndex, taskMetrics, options);
         workedGeneration = generation;
     }
+}
+
+bool ValidateUnifiedGrayMixedSlotPlan(const std::span<const UnifiedSlotAssignment> assignments) noexcept
+{
+    if (!kUnifiedFrameCapacity.valid ||
+        assignments.size() != kUnifiedGrayFrameCodewordCount)
+    {
+        return false;
+    }
+    std::array<bool, kUnifiedGrayFrameCodewordCount> seenSlots{};
+    std::uint32_t controlSlots = 0;
+    for (const UnifiedSlotAssignment& assignment : assignments)
+    {
+        if (assignment.codewordSlot >= kUnifiedGrayFrameCodewordCount ||
+            seenSlots[assignment.codewordSlot])
+        {
+            return false;
+        }
+        seenSlots[assignment.codewordSlot] = true;
+        // The gray carrier ignores the manifest lanes, but keeps the mixed
+        // control contract: control lives only inside the Base Luma slot
+        // range and at least one Transport slot remains.
+        if (assignment.kind == UnifiedSlotKind::Control &&
+            (assignment.codewordSlot >= 9 || !IsUnifiedControlPriority(assignment.controlPriority)))
+        {
+            return false;
+        }
+        controlSlots += static_cast<std::uint32_t>(assignment.kind == UnifiedSlotKind::Control);
+    }
+    return controlSlots <= GetUnifiedMaximumControlSlots() &&
+        assignments.size() - controlSlots >= 1;
 }
 
 bool ValidateUnifiedVisualDecodePolicy(const UnifiedVisualDecodePolicy& policy) noexcept
@@ -1622,17 +1723,6 @@ std::uint8_t GetUnifiedPhasePilotLabel(const bool finePilot, const std::uint32_t
 ModulationStatus PackUnifiedVisualFrame(
     const UnifiedVisualFrameInput& input, const std::span<std::byte> outCodedFrame) noexcept
 {
-    if (input.bootstrapRecord.data() == nullptr || input.bootstrapRecord.size() != pbprotocol::kBootstrapRecordBytes ||
-        input.slots.data() == nullptr || input.slots.size() != kUnifiedCodewordCount ||
-        outCodedFrame.data() == nullptr)
-    {
-        return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
-    }
-    if (outCodedFrame.size() != kUnifiedCodedFrameBytes)
-    {
-        return ModulationStatus::Failure(outCodedFrame.size() < kUnifiedCodedFrameBytes ?
-            ModulationErrorCode::OutputBufferTooSmall : ModulationErrorCode::InvalidInput, 0);
-    }
     const auto bootstrap = pbprotocol::ParseBootstrapRecord(input.bootstrapRecord);
     if (!bootstrap)
     {
@@ -1642,13 +1732,31 @@ ModulationStatus PackUnifiedVisualFrame(
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 8);
     }
+    const bool grayFrame = IsUnifiedGrayStatesProfilePair(
+        bootstrap.Value().visualProfileId, bootstrap.Value().visualLayoutVersion);
+    const std::size_t frameSlotCount = grayFrame ? kUnifiedGrayFrameCodewordCount : kUnifiedCodewordCount;
+    const std::size_t codedFrameBytes = grayFrame ? kUnifiedGrayCodedFrameBytes : kUnifiedCodedFrameBytes;
+    if (input.bootstrapRecord.data() == nullptr || input.bootstrapRecord.size() != pbprotocol::kBootstrapRecordBytes ||
+        input.slots.data() == nullptr || input.slots.size() != frameSlotCount ||
+        outCodedFrame.data() == nullptr)
+    {
+        return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
+    }
+    if (outCodedFrame.size() != codedFrameBytes)
+    {
+        return ModulationStatus::Failure(outCodedFrame.size() < codedFrameBytes ?
+            ModulationErrorCode::OutputBufferTooSmall : ModulationErrorCode::InvalidInput, 0);
+    }
 
-    std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> assignments{};
+    std::array<UnifiedSlotAssignment, kUnifiedMaximumFrameSlotCount> assignments{};
     for (std::size_t inputIndex = 0; inputIndex < input.slots.size(); inputIndex++)
     {
         assignments[inputIndex] = input.slots[inputIndex].assignment;
     }
-    if (!ValidateUnifiedMixedSlotPlan(assignments))
+    const bool planValid = grayFrame ?
+        ValidateUnifiedGrayMixedSlotPlan(std::span<const UnifiedSlotAssignment>(assignments.data(), frameSlotCount)) :
+        ValidateUnifiedMixedSlotPlan(std::span<const UnifiedSlotAssignment>(assignments.data(), frameSlotCount));
+    if (!planValid)
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
     }
@@ -1695,7 +1803,7 @@ ModulationStatus PackUnifiedVisualFrame(
         }
     }
 
-    std::array<std::byte, kUnifiedCodedFrameBytes> codedFrame{};
+    std::array<std::byte, kUnifiedMaximumCodedFrameBytes> codedFrame{};
     std::array<std::byte, kUnifiedInformationBytes> information{};
     for (const UnifiedFrameSlotInput& slotInput : input.slots)
     {
@@ -1725,27 +1833,42 @@ ModulationStatus PackUnifiedVisualFrame(
                 assignment.codewordSlot);
         }
     }
-    std::copy(codedFrame.begin(), codedFrame.end(), outCodedFrame.begin());
+    std::copy(codedFrame.begin(), codedFrame.begin() + static_cast<std::ptrdiff_t>(codedFrameBytes),
+        outCodedFrame.begin());
     return ModulationStatus::Success();
 }
 
 ModulationStatus EncodeUnifiedVisualFrame(
     const UnifiedVisualFrameInput& input, const std::span<std::byte> outBgra) noexcept
 {
-    std::array<std::byte, kUnifiedCodedFrameBytes> codedFrame{};
-    const ModulationStatus packingStatus = PackUnifiedVisualFrame(input, codedFrame);
+    const auto packed = pbprotocol::ParseBootstrapRecord(input.bootstrapRecord);
+    const std::size_t packedBytes = packed && IsUnifiedGrayStatesProfilePair(
+        packed.Value().visualProfileId, packed.Value().visualLayoutVersion) ?
+        kUnifiedGrayCodedFrameBytes : kUnifiedCodedFrameBytes;
+    std::array<std::byte, kUnifiedMaximumCodedFrameBytes> codedFrame{};
+    const ModulationStatus packingStatus = PackUnifiedVisualFrame(input,
+        std::span<std::byte>(codedFrame.data(), packedBytes));
     if (!packingStatus)
     {
         return packingStatus;
     }
-    return EncodeUnifiedVisualFrame(input.bootstrapRecord, codedFrame, outBgra);
+    return EncodeUnifiedVisualFrame(input.bootstrapRecord,
+        std::span<const std::byte>(codedFrame.data(), packedBytes), outBgra);
 }
 
 ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> bootstrapRecord,
     const std::span<const std::byte> codedFrame, const std::span<std::byte> outBgra) noexcept
 {
     if (bootstrapRecord.data() == nullptr || codedFrame.data() == nullptr || outBgra.data() == nullptr ||
-        bootstrapRecord.size() != kLocalDesktopBootstrapRecordBytes || codedFrame.size() != kUnifiedCodedFrameBytes)
+        bootstrapRecord.size() != kLocalDesktopBootstrapRecordBytes)
+    {
+        return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
+    }
+    const auto preparse = pbprotocol::ParseBootstrapRecord(bootstrapRecord);
+    const std::size_t expectedCodedBytes = preparse && IsUnifiedGrayStatesProfilePair(
+        preparse.Value().visualProfileId, preparse.Value().visualLayoutVersion) ?
+        kUnifiedGrayCodedFrameBytes : kUnifiedCodedFrameBytes;
+    if (codedFrame.size() != expectedCodedBytes)
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
     }
@@ -1823,7 +1946,10 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
                     }
                 }
             }
-            const std::uint32_t grayMask = kUnifiedGrayMasksBySymbol[symbol];
+            const std::uint32_t grayMask = kUnifiedGrayMasksBySymbol[symbol & 63U];
+            const std::uint8_t foregroundLevel = (symbol & (1U << 6U)) != 0 ?
+                static_cast<std::uint8_t>(kUnifiedGrayHighForegroundLuma) :
+                static_cast<std::uint8_t>(kUnifiedGrayLowForegroundLuma);
             for (std::uint32_t row = 0; row < kUnifiedVisualProfile.tileHeight; row++)
             {
                 for (std::uint32_t column = 0; column < kUnifiedVisualProfile.tileWidth; column++)
@@ -1831,10 +1957,8 @@ ModulationStatus EncodeUnifiedVisualFrame(const std::span<const std::byte> boots
                     const bool glyphCell = row < kUnifiedDataGlyphWidth && column < kUnifiedDataGlyphWidth;
                     const std::uint32_t chip = row * kUnifiedDataGlyphWidth + column;
                     const bool foreground = glyphCell && ((grayMask >> chip) & 1U) != 0;
-                    FillPixel(outBgra, tile.bounds.x + column, tile.bounds.y + row,
-                        foreground ? kUnifiedDataHighLuma : kUnifiedDataLowLuma,
-                        foreground ? kUnifiedDataHighLuma : kUnifiedDataLowLuma,
-                        foreground ? kUnifiedDataHighLuma : kUnifiedDataLowLuma);
+                    const std::uint8_t level = foreground ? foregroundLevel : kUnifiedDataLowLuma;
+                    FillPixel(outBgra, tile.bounds.x + column, tile.bounds.y + row, level, level, level);
                 }
             }
             continue;
@@ -1869,7 +1993,8 @@ std::uint64_t UnifiedVisualCpuOracle::RequiredBytes() noexcept
     // decoder. The oracle reserves one private decoder per concurrent codeword
     // lane so the frame sweep can decode the 15 slots in parallel; each lane
     // is charged separately from the fixed implementation object.
-    return sizeof(Implementation) + static_cast<std::uint64_t>(kUnifiedCodewordCount) * 1024ULL * 1024ULL;
+    return sizeof(Implementation) +
+        static_cast<std::uint64_t>(kUnifiedMaximumFrameSlotCount) * 1024ULL * 1024ULL;
 }
 
 ModulationResult<UnifiedVisualCpuOracle> UnifiedVisualCpuOracle::Create(const std::uint64_t maximumBytes) noexcept
@@ -1922,7 +2047,14 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
         InitializeMetrics(0, UnifiedErasureReason::CanvasClipped, state.metrics);
         state.metricsValid = true;
     };
-    const bool metricsValid = input.logicalMetrics.size() == kUnifiedSoftMetricCount &&
+    const bool preparedGray = [&]()
+    {
+        const auto parsed = pbprotocol::ParseBootstrapRecord(input.bootstrap.canonical44);
+        return parsed && IsUnifiedGrayStatesProfilePair(
+            parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion);
+    }();
+    const std::size_t preparedMetricCount = preparedGray ? kUnifiedGraySoftMetricCount : kUnifiedSoftMetricCount;
+    const bool metricsValid = input.logicalMetrics.size() == preparedMetricCount &&
         std::ranges::all_of(input.logicalMetrics, [](const float value) { return std::isfinite(value); });
     const bool samplingValid = input.tileSamplingFailures.size() == kUnifiedVisualProfile.dataTileCount &&
         std::ranges::all_of(input.tileSamplingFailures, [](const std::uint8_t value) { return value <= 1; });
@@ -1969,6 +2101,60 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
     // sequence-zero initialization and second physical-site lookup duplicated
     // full-frame work on the capture owner before its unchanged age gate.
     // Every metric is replaced, including zero/erased values after a good frame.
+    if (preparedGray)
+    {
+        // Gray carrier v3: eighteen flat slots through the seven-plane
+        // mapping, gated by the Base Luma observation.
+        const bool laneAvailable = LaneAvailable(UnifiedLane::BaseLuma, observation.baseLuma,
+            observation.fineLuma, observation.chroma);
+        const UnifiedErasureReason laneReason = LaneReason(UnifiedLane::BaseLuma, observation.baseLuma,
+            observation.fineLuma, observation.chroma);
+        for (std::uint32_t globalLogical = 0; globalLogical < kUnifiedGraySoftMetricCount; globalLogical++)
+        {
+            const UnifiedPhysicalCarrierSite site = GetUnifiedGrayPhysicalSite(
+                globalLogical, observation.bootstrapRecord.frameSequence);
+            UnifiedSoftMetric& metric = state.metrics[globalLogical];
+            metric = UnifiedSoftMetric{0, UnifiedLane::BaseLuma,
+                static_cast<std::uint8_t>(globalLogical /
+                    static_cast<std::uint32_t>(kUnifiedVisualProfile.innerCodewordBits)),
+                site.valid ? GetUnifiedDataTile(site.tileOrdinal).dataRegion :
+                    static_cast<std::uint8_t>(0),
+                site.valid ? GetUnifiedDataTile(site.tileOrdinal).freshnessRegion :
+                    static_cast<std::uint8_t>(0),
+                UnifiedErasureReason::LocalSamplingFailure};
+            if (!site.valid || !laneAvailable)
+            {
+                metric.erasureReason = site.valid ? laneReason : UnifiedErasureReason::LocalSamplingFailure;
+                continue;
+            }
+            const UnifiedDataTile tile = GetUnifiedDataTile(site.tileOrdinal);
+            metric.dataRegion = tile.dataRegion;
+            metric.freshnessRegion = tile.freshnessRegion;
+            const std::int16_t value = QuantizeMetric(input.logicalMetrics[globalLogical]);
+            if (!observation.freshness[tile.freshnessRegion].current)
+            {
+                metric.erasureReason = UnifiedErasureReason::LocalStaleRegion;
+            }
+            else if (input.tileSamplingFailures[site.tileOrdinal] != 0)
+            {
+                metric.erasureReason = UnifiedErasureReason::LocalSamplingFailure;
+            }
+            else if (std::abs(static_cast<std::int32_t>(value)) < policy.minimumDecisionMetric)
+            {
+                metric.erasureReason = UnifiedErasureReason::LocalLowDecisionMargin;
+            }
+            else
+            {
+                metric.value = value;
+                metric.erasureReason = UnifiedErasureReason::None;
+            }
+        }
+        state.metricsValid = true;
+        state.fecSlotCount = kUnifiedGrayFrameCodewordCount;
+        state.activeMetricCount = kUnifiedGraySoftMetricCount;
+        observation.frameSlotCount = kUnifiedGrayFrameCodewordCount;
+        return FinalizeDecodedMetrics(std::move(observation), {}, true, policy);
+    }
     for (const UnifiedLaneContract& laneContract : kUnifiedVisualProfile.lanes)
     {
         const UnifiedLaneCapacity capacity = GetUnifiedLaneCapacity(laneContract.lane);
@@ -2010,6 +2196,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodePreparedMixedFrame(const 
         }
     }
     state.metricsValid = true;
+    state.activeMetricCount = kUnifiedSoftMetricCount;
     return FinalizeDecodedMetrics(std::move(observation), {}, true, policy);
 }
 
@@ -2037,18 +2224,29 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     state.metricsValid = false;
     InitializeMetrics(0, UnifiedErasureReason::CanvasClipped, state.metrics);
     state.metricsValid = true;
-    if (!ValidateUnifiedVisualDecodePolicy(policy) || (!inferSlotKinds && !ValidateUnifiedMixedSlotPlan(slotPlan)) ||
+    // The gray identity carries eighteen slots and its own mixed-slot plan;
+    // the SC6 product path keeps the frozen fifteen-slot manifest contract.
+    const bool grayDecode = IsUnifiedGrayStatesProfilePair(expectedIdentity.visualProfileId,
+        expectedIdentity.visualLayoutVersion);
+    const std::uint32_t decodeSlotCount = grayDecode ? kUnifiedGrayFrameCodewordCount : kUnifiedCodewordCount;
+    const bool explicitPlanValid = grayDecode ?
+        (inferSlotKinds || ValidateUnifiedGrayMixedSlotPlan(slotPlan)) :
+        (inferSlotKinds || ValidateUnifiedMixedSlotPlan(slotPlan));
+    if (!ValidateUnifiedVisualDecodePolicy(policy) || !explicitPlanValid ||
         ValidateLumaView(view) != LocalDesktopErasureReason::None || view.pixelFormat != LumaPixelFormat::Bgra8)
     {
         return observation;
     }
     observation.inputValid = true;
-    std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> assignmentsBySlot{};
-    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    observation.frameSlotCount = decodeSlotCount;
+    state.activeMetricCount = static_cast<std::size_t>(decodeSlotCount) *
+        kUnifiedVisualProfile.innerCodewordBits;
+    std::array<UnifiedSlotAssignment, kUnifiedMaximumFrameSlotCount> assignmentsBySlot{};
+    for (std::uint32_t slot = 0; slot < decodeSlotCount; slot++)
     {
         assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
         UnifiedSlotObservation& slotObservation = observation.slots[slot];
-        const UnifiedLaneContract* const lane = FindUnifiedLaneForCodewordSlot(slot);
+        const UnifiedLaneContract* const lane = grayDecode ? nullptr : FindUnifiedLaneForCodewordSlot(slot);
         slotObservation.lane = lane == nullptr ? UnifiedLane::BaseLuma : lane->lane;
     }
     if (!inferSlotKinds)
@@ -2157,7 +2355,8 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     DecodeDataTiles(view, samplingGeometry, observation.bootstrapRecord.frameSequence, calibration, policy,
         observation.freshness, observation.baseLuma, observation.fineLuma, observation.chroma, lumaModels,
         grayStates, state.metrics);
-
+    state.activeMetricCount = static_cast<std::size_t>(decodeSlotCount) *
+        kUnifiedVisualProfile.innerCodewordBits;
     return FinalizeDecodedMetrics(std::move(observation), slotPlan, inferSlotKinds, policy);
 }
 
@@ -2180,12 +2379,18 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     }
     state.acceptedCount = 0;
     state.decodedInformationValid.fill(false);
-    std::array<UnifiedSlotAssignment, kUnifiedCodewordCount> assignmentsBySlot{};
-    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    const std::uint32_t finalizeSlotCount = observation.frameSlotCount;
+    state.fecSlotCount = finalizeSlotCount;
+    // An eighteen-slot frame is the gray carrier: every slot rides the mask
+    // quality of the Base Luma observation. The manifest lane table only
+    // covers the fifteen SC6 slots.
+    const bool finalizeGray = finalizeSlotCount == kUnifiedGrayFrameCodewordCount;
+    std::array<UnifiedSlotAssignment, kUnifiedMaximumFrameSlotCount> assignmentsBySlot{};
+    for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
     {
         assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
         UnifiedSlotObservation& slotObservation = observation.slots[slot];
-        const UnifiedLaneContract* const lane = FindUnifiedLaneForCodewordSlot(slot);
+        const UnifiedLaneContract* const lane = finalizeGray ? nullptr : FindUnifiedLaneForCodewordSlot(slot);
         slotObservation.lane = lane == nullptr ? UnifiedLane::BaseLuma : lane->lane;
     }
     if (!inferSlotKinds)
@@ -2198,8 +2403,8 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     }
 
     const pbinnerfec::InnerFecDecodeOptions decodeOptions{policy.maximumFecIterations, 1, 2048, 3, 4};
-    std::array<bool, kUnifiedCodewordCount> slotLaneErased{};
-    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    std::array<bool, kUnifiedMaximumFrameSlotCount> slotLaneErased{};
+    for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
     {
         const UnifiedSlotObservation& slotObservation = observation.slots[slot];
         slotLaneErased[slot] = !LaneAvailable(slotObservation.lane, observation.baseLuma,
@@ -2227,7 +2432,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
                 return state.fecWorkersDone == state.fecParticipants;
             });
         }
-        for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+        for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
         {
             UnifiedSlotObservation& slotObservation = observation.slots[slot];
             if (slotLaneErased[slot])
@@ -2251,7 +2456,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     else
     {
         Implementation::FecLane& serialLane = state.fecLanes[0];
-        for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+        for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
         {
             UnifiedSlotObservation& slotObservation = observation.slots[slot];
             if (slotLaneErased[slot])
@@ -2280,7 +2485,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     bool inferredPlanValid = true;
     if (inferSlotKinds)
     {
-        for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+        for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
         {
             if (!state.decodedInformationValid[slot])
             {
@@ -2294,10 +2499,12 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
                 observation.slots[slot].kind = UnifiedSlotKind::Control;
             }
         }
-        inferredPlanValid = ValidateUnifiedMixedSlotPlan(assignmentsBySlot);
+        const std::span<const UnifiedSlotAssignment> inferredPlan(assignmentsBySlot.data(), finalizeSlotCount);
+        inferredPlanValid = finalizeSlotCount == kUnifiedGrayFrameCodewordCount ?
+            ValidateUnifiedGrayMixedSlotPlan(inferredPlan) : ValidateUnifiedMixedSlotPlan(inferredPlan);
     }
 
-    for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
+    for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
     {
         if (!state.decodedInformationValid[slot])
         {
@@ -2330,8 +2537,12 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
 
 std::span<const UnifiedSoftMetric> UnifiedVisualCpuOracle::GetSoftMetrics() const noexcept
 {
-    return implementation_ && implementation_->metricsValid ?
-        std::span<const UnifiedSoftMetric>(implementation_->metrics) : std::span<const UnifiedSoftMetric>{};
+    if (!implementation_ || !implementation_->metricsValid)
+    {
+        return std::span<const UnifiedSoftMetric>{};
+    }
+    return std::span<const UnifiedSoftMetric>(implementation_->metrics.data(),
+        implementation_->activeMetricCount);
 }
 
 void UnifiedVisualCpuOracle::SetStageDiagnostics(pbcore::StageDiagnostics* const diagnostics) noexcept
