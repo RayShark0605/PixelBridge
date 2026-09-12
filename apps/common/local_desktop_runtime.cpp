@@ -25,6 +25,7 @@
 #include "pbouterfec/direct_repeat.h"
 #include "pbouterfec/wirehair_v2.h"
 #include "pbreceiver/receiver_ingress.h"
+#include "pbreceiver/receiver_result.h"
 #include "pbrealcapturereplay/replay_v2.h"
 #include "pbscreencapturedxgi/dxgi_capture.h"
 #include "pbscreencapturewgc/wgc_capture.h"
@@ -5165,7 +5166,8 @@ private:
         }
         const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(session_->sessionId);
         const auto finalized = receiver_.PrepareFinalization(sessionTag);
-        RequireResult(finalized, "Receiver finalization was not authoritative after stored commit");
+        RequireResult(finalized, "Receiver finalization was not authoritative after stored commit: " +
+            DescribeReceiverError(finalized.Error()));
         Require(finalized.Value() == *manifest_, "Receiver returned a different FinalManifest");
         snapshot_.Update([this](DecoderSnapshot& value)
         {
