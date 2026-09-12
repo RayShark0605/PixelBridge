@@ -113,7 +113,9 @@ struct DemodFrameResult
     std::uint32_t remoteFreshnessErasedDataMetrics = 0;
     std::uint32_t remoteUnreliableSymbols = 0;
     pbmodulation::UnifiedVisualObservation unifiedObservation;
-    std::array<pbmodulation::UnifiedAcceptedBlock, pbmodulation::kUnifiedCodewordCount> acceptedUnifiedBlocks{};
+    // Sized for the largest Unified carrier (gray v3 carries eighteen slots);
+    // acceptedUnifiedBlockCount bounds the valid prefix.
+    std::array<pbmodulation::UnifiedAcceptedBlock, pbmodulation::kUnifiedMaximumFrameSlotCount> acceptedUnifiedBlocks{};
     std::uint32_t acceptedUnifiedBlockCount = 0;
 };
 

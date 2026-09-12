@@ -873,13 +873,15 @@ struct ProfileBinding
     }
     if (profile == VisualProfile::UnifiedGray)
     {
-        // Same main-region geometry and capacity as the unified product
-        // contract; the wire identity changes to the gray-state pair (layout
-        // 12 swaps the four foreground states for gray luma levels).
+        // Gray carrier v3: same main-region geometry and slot contract, but
+        // every data tile carries seven interleaved planes and the frame
+        // holds eighteen codewords (layout 12 selects the gray pack/raster
+        // path inside PBModulation). This binding sizes the runtime frame
+        // accounting to the eighteen-slot carrier.
         return {profile, pbprotocol::kGrayStatesExperimentalProfile.visualProfileId,
             pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion,
-            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codedBytes),
-            static_cast<std::uint32_t>(pbmodulation::kUnifiedFrameCapacity.capacity.codewordCount)};
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayCodedFrameBytes),
+            static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayFrameCodewordCount)};
     }
     if (profile == VisualProfile::ShapeChroma)
     {
@@ -1808,7 +1810,8 @@ private:
         }
         return SenderUnifiedCarouselScheduler::Create(
             {state.blockCount, controlRepetitions_, logicalVisualFps_, static_cast<bool>(state.wirehair),
-                state.segmentPassCount, periodicControlPhaseIndex, periodicControlPhaseCount, overrideBudget},
+                state.segmentPassCount, periodicControlPhaseIndex, periodicControlPhaseCount, overrideBudget,
+                profile_.codewords},
             state.scheduler);
     }
 
@@ -1975,9 +1978,12 @@ private:
             unifiedPassLedger_[state.segmentOrdinal] = state.segmentPassCount;
         }
         state.repairIdsFinalized = false;
-        const std::uint32_t phaseCount = static_cast<std::uint32_t>(unifiedSegmentStates_.size());
+        // Keep the window-constant phase count here too: the shrinking tail
+        // window's live size would renumber phases against tail admissions
+        // that reserved them with the full-window count.
+        const std::uint32_t phaseCount = static_cast<std::uint32_t>(senderUnifiedActiveSegmentWindowSize);
         const std::uint32_t phaseIndex = static_cast<std::uint32_t>(
-            (state.segmentOrdinal - unifiedWindowStartSegmentOrdinal_) % (std::max<std::uint32_t>(phaseCount, 1)));
+            (state.segmentOrdinal - unifiedWindowStartSegmentOrdinal_) % phaseCount);
         const auto created = CreateUnifiedSegmentScheduler(state, phaseIndex, phaseCount);
         Require(static_cast<bool>(created), "Unified Segment re-pass scheduler creation failed");
         if (state.wirehair && repairLeaseCallback_)
@@ -2167,9 +2173,14 @@ private:
     {
         Require(description_.segments.empty() && blockCount_ == 0,
             "the standalone Unified scheduler is only valid for zero-byte Sessions");
-        Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
-            {blockCount_, controlRepetitions_, logicalVisualFps_, static_cast<bool>(wirehair_), carouselPass_},
-            unifiedScheduler_)),
+        SenderUnifiedCarouselSchedulerConfig unifiedConfig;
+        unifiedConfig.systematicBlockCount = blockCount_;
+        unifiedConfig.controlRepetitions = controlRepetitions_;
+        unifiedConfig.logicalFramesPerSecond = logicalVisualFps_;
+        unifiedConfig.wirehair = static_cast<bool>(wirehair_);
+        unifiedConfig.carouselPass = carouselPass_;
+        unifiedConfig.frameCodewordSlots = profile_.codewords;
+        Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(unifiedConfig, unifiedScheduler_)),
             "Unified Carousel scheduler creation failed");
         unifiedFrame_ = {};
         cyclePosition_ = 0;
@@ -3871,7 +3882,7 @@ private:
             return {}; // An older duplicate does not displace the single retained frame.
         }
         Require(*unifiedFrameIdentity_ == bootstrap, "conflicting same-sequence Unified Bootstrap");
-        std::array<bool, pbmodulation::kUnifiedCodewordCount> seenSlots{};
+        std::array<bool, pbmodulation::kUnifiedMaximumFrameSlotCount> seenSlots{};
         std::uint32_t controlSlots = 0;
         // Validate the whole compact handoff before any Receiver mutation. The
         // cache holds only one frame, never pixels or an unbounded frame history.
@@ -5366,8 +5377,8 @@ private:
     std::uint64_t totalVerifiedRawBytes_ = 0;
     std::uint64_t completedSegmentCount_ = 0;
     std::optional<pbprotocol::BootstrapRecord> unifiedFrameIdentity_;
-    std::array<std::optional<pbmodulation::UnifiedAcceptedBlock>, pbmodulation::kUnifiedCodewordCount> unifiedFrameBlocks_;
-    std::array<bool, pbmodulation::kUnifiedCodewordCount> unifiedFrameAdmitted_{};
+    std::array<std::optional<pbmodulation::UnifiedAcceptedBlock>, pbmodulation::kUnifiedMaximumFrameSlotCount> unifiedFrameBlocks_;
+    std::array<bool, pbmodulation::kUnifiedMaximumFrameSlotCount> unifiedFrameAdmitted_{};
     std::uint64_t pendingDroppedFrames_ = 0;
     std::uint64_t lastCaptureDroppedFrames_ = 0;
     std::uint64_t lastResultQueueDrops_ = 0;

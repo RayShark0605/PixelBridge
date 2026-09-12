@@ -58,7 +58,7 @@ struct ReceiverDecisionTrace
     ReceiverFrameReason reason = ReceiverFrameReason::NotEvaluated;
     ReceiverDecisionState before;
     ReceiverDecisionState after;
-    std::array<ReceiverSlotDecision, pbmodulation::kUnifiedCodewordCount> slots{};
+    std::array<ReceiverSlotDecision, pbmodulation::kUnifiedMaximumFrameSlotCount> slots{};
 };
 
 inline void SetReceiverFrameReason(ReceiverDecisionTrace* const trace, const ReceiverFrameReason reason) noexcept
