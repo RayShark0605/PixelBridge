@@ -445,7 +445,17 @@ git rev-parse HEAD          # cec4d358771332d0509017d89b11963fc4104405
 
 1. **O3b 并行码字 FEC**：`UnifiedVisualCpuOracle` 内建 15 条私有 Qc-LDPC 解码车道（每帧 15 个 codeword slot 从一个原子计数器认领、车道间零共享、串/并两路径共用同一逐槽解码函数），输出与串行**逐位一致**（新增专项测试 + 全量 495,140 断言语料通过）。逐槽 DiagnosticScope 保持串行（--stage-diagnostics 运行时自动回退串行路径，保留逐阶段归因）；内存按 RequiredBytes 计费（每车道 1 MiB）；任何分配失败优雅降级串行。预期：30Hz 接纳率从 111.9 sym/s 进一步上探（FEC 30.9-34.3ms/帧 → ~5-8ms/帧墙钟）。
 2. **fps 感知 repair 预算**：`senderUnifiedSerialRepairFpsThreshold=15`。≤15Hz 沿用历史 K+20% FullRepairPass（现场数据：低帧率下喷泉只添重复接纳）；>15Hz 用增量翻倍喷泉。调度器双档测试、striping/mid-join 探针期望同步；契约 §1.1 第 7 条改写。
-3. 现场验证进行中（30/50 + 15/100 两格）。**事故**：02:15 首跑失败于 `ROI resolution failed: not-single-monitor`——本机右屏 DISPLAY2 从桌面拓扑消失（疑似休眠/断链），需主人物理唤醒后重跑。
+3. 现场验证（09-12 晨，全部 digestMatch=true，vs 昨日 cec4d35 基线）：
+
+| 格子 | 昨日基线 | 今晨串行 FEC* | **今晨并行 FEC（03a79a9 完整形态）** |
+|---|---|---|---|
+| 30Hz/50MB | 94,803 | 116,489（+23%）| **196,212（+107%，2.07×）** |
+| 15Hz/100MB | 60,089 | 78,431（+31%）| 77,593（+29%） |
+
+   并行格细节：30/50 rate **158.8 sym/s**、FEC 32.1→**13.1ms/帧**、e2e 帧率 25.0、进程 1.149 核（多核首次真正参与）、uFrac 0.940、模型误差 0.02%。15/100：FEC 11.7ms、rate 109.5，但 uFrac 跌至 0.539（dups 68,160）——两因子相消。
+   **机制定论**：15Hz 的瓶颈已从接收端 CPU 转移到**发送端空口的重复符号占比**——更快的接纳能力被 wrap 重访已解码段的重复吃掉。15Hz 的下一步唯一正交杠杆是 O4（提高每帧有效符号密度），与 §12.2 设计一致。
+   \* 串行格意外发现：`--stage-diagnostics` 会按设计强制串行 FEC 路径（诊断保真）；CLI 常驻 measurement recorder 已覆盖计数器归因，A/B 中该开关冗余，已从 harness 移除。
+   **事故记录**：02:15 首跑失败于 `ROI resolution failed: not-single-monitor`——本机右屏 DISPLAY2 凌晨从桌面拓扑消失（休眠/断链），主人唤醒后恢复；右屏拓扑现在是现场测试的前置检查项。
 
 ### 12.2 O4（车道重分配）实施设计——已授权，待实施
 
