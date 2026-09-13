@@ -50,9 +50,11 @@ struct Options
     std::uint32_t seconds = 30;
     std::uint32_t logicalVisualFps = 0;
     std::uint32_t controlRepetitions = 4;
+    std::uint32_t segmentTargetMb = 0;
     bool hasOrigin = false;
     bool logicalVisualFpsSpecified = false;
     bool controlRepetitionsSpecified = false;
+    bool segmentTargetSpecified = false;
     bool manualStop = false;
     bool manualStopSpecified = false;
     bool remoteChannel = false;
@@ -405,6 +407,17 @@ private:
             }
             options.controlRepetitionsSpecified = true;
         }
+        else if (option == L"--segment-target-mb")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || !ParseUnsigned(value, options.segmentTargetMb) ||
+                options.segmentTargetMb == 0 || options.segmentTargetMb > 15 ||
+                options.segmentTargetSpecified)
+            {
+                return false;
+            }
+            options.segmentTargetSpecified = true;
+        }
         else if (option == L"--manual-stop")
         {
             if (options.manualStopSpecified)
@@ -441,6 +454,7 @@ private:
         }
         if (options.logicalVisualFps < 1 || options.logicalVisualFps > 60 ||
             options.compressionLevel != 3 || options.controlRepetitions != 4 ||
+            options.segmentTargetSpecified ||
             (options.compressionSpecified && !options.compression))
         {
             return false;
@@ -601,6 +615,8 @@ void Usage()
                  "experimental opt-in: --profile unified-gray-fast keeps the layout-12 gray raster but packs "
                  "the DVB-S2 Short Fast inner FEC (37/45) with 1629-byte Transport payloads under the "
                  "PB-Experimental-GrayFast-1 identity (layout 13); matching decoder required\n"
+                 "experimental opt-in: --segment-target-mb 1..15 overrides the per-Segment raw target "
+                 "(gray family default 15, product 8; certified product sessions reject the flag)\n"
                  "historical diagnostics: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
                  "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on "
                  "(--origin X Y --seconds 1..7200 | --single-monitor-fullscreen primary|DEVICE --manual-stop --loop) "
@@ -633,6 +649,7 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     }
     config.logicalVisualFps = options.logicalVisualFps;
     config.controlRepetitions = options.controlRepetitions;
+    config.segmentTargetBytes = options.segmentTargetMb != 0 ? options.segmentTargetMb * 1024U * 1024U : 0;
     config.runId = options.runId;
     if (options.remoteChannel)
     {

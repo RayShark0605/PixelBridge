@@ -1096,8 +1096,15 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     FinalizeTransferControls(description);
 }
 
-[[nodiscard]] std::uint32_t GetSegmentTargetBytes(const std::uint64_t visualProfileId)
+[[nodiscard]] std::uint32_t GetSegmentTargetBytes(const std::uint64_t visualProfileId,
+    const std::uint32_t overrideBytes = 0)
 {
+    if (overrideBytes != 0)
+    {
+        Require(overrideBytes >= 1024U * 1024U && overrideBytes <= 15U * 1024U * 1024U,
+            "Segment target override is outside 1..15 MiB");
+        return overrideBytes;
+    }
     // Gray experimental family: 15 MiB segments keep 100MB sessions at seven
     // segments inside the receiver policy's 16 MiB raw cap and its historical
     // eight-decoder quota. Every other profile keeps the frozen 8 MiB target.
@@ -1107,13 +1114,13 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
 }
 
 [[nodiscard]] std::uint64_t CalculateSegmentCount(const std::uint64_t fileBytes,
-    const std::uint64_t visualProfileId)
+    const std::uint64_t visualProfileId, const std::uint32_t segmentTargetOverride = 0)
 {
     if (fileBytes == 0)
     {
         return 0;
     }
-    const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
+    const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId, segmentTargetOverride);
     const auto roundedBytes = pbprotocol::CheckedAddUint64(fileBytes, segmentTargetBytes - 1ULL);
     RequireResult(roundedBytes, "SegmentCount 计算溢出");
     return roundedBytes.Value() / segmentTargetBytes;
@@ -1169,14 +1176,15 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
 
 [[nodiscard]] TransferDescription DescribeSource(SourceFile& source, const bool compressionEnabled,
     const int compressionLevel, const std::uint64_t visualProfileId, const pbprotocol::SessionId& sessionId,
-    const std::atomic<bool>& stopRequested, const PreparationProgressCallback& progress = {})
+    const std::atomic<bool>& stopRequested, const PreparationProgressCallback& progress = {},
+    const std::uint32_t segmentTargetOverride = 0)
 {
 #ifdef PB_PROCESS_FAULT_TESTS
     const auto processTestPrescanStarted = std::chrono::steady_clock::now();
 #endif
     const std::filesystem::path sourcePath(source.path);
     const std::string fileNameUtf8 = Utf8FromWide(sourcePath.filename().wstring());
-    const std::uint64_t segmentCount = CalculateSegmentCount(source.fileBytes, visualProfileId);
+    const std::uint64_t segmentCount = CalculateSegmentCount(source.fileBytes, visualProfileId, segmentTargetOverride);
     const pbprotocol::ReceiverResourcePolicy policy = pbprotocol::GetDefaultReceiverResourcePolicy();
     Require(segmentCount <= policy.maxSegmentCount, "源文件 SegmentCount 超过 ReceiverResourcePolicy");
     TransferDescription description;
@@ -1188,7 +1196,7 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
     for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < segmentCount; segmentOrdinal++)
     {
         Require(!stopRequested, "Stopped during source preparation");
-        const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
+        const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId, segmentTargetOverride);
         const std::uint64_t rawOffset = segmentOrdinal * segmentTargetBytes;
         const std::uint64_t rawSize = (std::min)(source.fileBytes - rawOffset, segmentTargetBytes);
         const std::vector<std::byte> rawBytes = ReadSourceRange(source, rawOffset, rawSize, segmentTargetBytes);
@@ -5912,7 +5920,7 @@ struct DurableSenderPreparation
 [[nodiscard]] DurableSenderPreparation PrepareDurableSender(SourceFile& source,
     const bool compressionEnabled, const int compressionLevel, const std::uint64_t visualProfileId,
     const std::filesystem::path& configuredSessionRoot, const std::atomic<bool>& stopRequested,
-    const PreparationProgressCallback& progress = {})
+    const PreparationProgressCallback& progress = {}, const std::uint32_t segmentTargetOverride = 0)
 {
     std::filesystem::path sessionStateRoot;
     const EncoderSessionStoreStatus rootStatus = ResolveEncoderSessionRoot(configuredSessionRoot, sessionStateRoot);
@@ -5927,7 +5935,8 @@ struct DurableSenderPreparation
         compressionEnabled, compressionSettings);
     preparation.outerFecIdentity = std::string(pbouterfec::kWirehairV2ImplementationIdentity) +
         ";profile=" + std::to_string(pbouterfec::kWirehairV2CertifiedProfileId) +
-        ";outer-block=" + std::to_string(GetOuterBlockBytesForProfileId(visualProfileId));
+        ";outer-block=" + std::to_string(GetOuterBlockBytesForProfileId(visualProfileId)) +
+        ";segment-target=" + std::to_string(GetSegmentTargetBytes(visualProfileId, segmentTargetOverride));
     preparation.sourceIdentity = GetEncoderSourceIdentity(source);
     bool foundPersistedSession = false;
     const EncoderSessionStoreStatus findStatus = EncoderSessionStore::FindMatching(sessionStateRoot,
@@ -5946,7 +5955,7 @@ struct DurableSenderPreparation
         selectedSessionId = generatedSessionId.Value();
     }
     preparation.description = DescribeSource(source, compressionEnabled, compressionLevel,
-        visualProfileId, selectedSessionId, stopRequested, progress);
+        visualProfileId, selectedSessionId, stopRequested, progress, segmentTargetOverride);
     std::vector<std::byte> descriptorBundle = BuildDescriptorBundle(preparation.description);
     if (foundPersistedSession && !preparation.sessionStore->MatchesDescriptorBundle(descriptorBundle))
     {
@@ -8996,7 +9005,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         snapshot_.Update([&](EncoderSnapshot& value)
         {
             value.sourceBytes = source.fileBytes;
-            value.segmentCount = CalculateSegmentCount(source.fileBytes, profile.visualProfileId);
+            value.segmentCount = CalculateSegmentCount(source.fileBytes, profile.visualProfileId,
+                config.segmentTargetBytes);
             value.visualProfileId = profile.visualProfileId;
             value.visualLayoutVersion = profile.layoutVersion;
         });

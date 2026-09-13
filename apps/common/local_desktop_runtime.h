@@ -51,6 +51,12 @@ struct EncoderConfig
     // least 200 ms stable dwell; it never changes the encoded bytes.
     std::uint32_t logicalVisualFps = 0;
     std::uint32_t controlRepetitions = 4;
+    // Zero keeps the profile default (8 MiB product / 15 MiB gray family).
+    // A positive value overrides the per-Segment raw target (bounded by the
+    // receiver policy's 16 MiB raw-segment cap); the SessionDescriptor
+    // declares the actual target, and the durable resume identity includes
+    // it so differently-segmented preparations never cross-match.
+    std::uint32_t segmentTargetBytes = 0;
     // Empty selects %LOCALAPPDATA%\PixelBridge\EncoderSessions. Tests and
     // headless automation may provide an isolated root without changing wire
     // semantics.
