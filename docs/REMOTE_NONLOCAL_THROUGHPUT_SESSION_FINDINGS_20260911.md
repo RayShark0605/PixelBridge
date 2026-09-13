@@ -702,4 +702,9 @@ layout-12（灰 Robust）1MB 探针同模式同症状：引导 1529/2259（68%�
 ## 20. v0.5.0 发布（2026-09-13，主人指令）
 
 - 版本 0.5.0（project VERSION → --version/RunReport/构建身份全线）；双端 GUI 主页新增"传输模式/接收模式"选择器：标准（SC6-V3，默认不变）与 灰阶高速 v4（gray-fast 实验载体）；偏好键 g22/carrier，会话激活期锁定；标题栏带版本。提交 05be1b7，164/164 回归绿。
-- 组装包 `<PBLine root>elease-v0.5\PixelBridge-v0.5.0-win64.zip`（52.9MB，sha256 7ac0eb87…）：Encoder/Decoder 各自完整 Qt 6.10 部署（windeployqt 后构建）、README.txt（模式说明/快速开始/安全语义）、build-identity.json（双 exe sha256+gitCommit）。包内双 GUI offscreen 冒烟 PASS；打包 exe --version/身份/实验旗标帮助核验通过。
+- 组装包 `<PBLine root>
+elease-v0.5\PixelBridge-v0.5.0-win64.zip`（52.9MB，sha256 7ac0eb87…）：Encoder/Decoder 各自完整 Qt 6.10 部署（windeployqt 后构建）、README.txt（模式说明/快速开始/安全语义）、build-identity.json（双 exe sha256+gitCommit）。包内双 GUI offscreen 冒烟 PASS；打包 exe --version/身份/实验旗标帮助核验通过。
+
+### 20.1 v0.5.0 进度显示修复（重打包 12175b3）
+
+主人报告：接收中 .resume 增长但"当前进度/恢复速度"为 0、剩余时间"估算中"。根因：GUI 进度只在 Segment 验证时跳变，15MiB 灰家族段首验需数分钟。修复：运行时每次快照发布 `estimatedReceivedRawBytes`（唯一接纳符号 × profile 块字节 − 已完成段编码字节，× 会话实测 raw/encoded 比；饱和算术、8GiB/64× 敌意上限、夹逼 [verified, declared]）；GUI 进度区五项实时字段（进度/已接收大小含已验分子/已花费时间 GUI 时钟驱动/平均速度/ceil 界 ETA），各含明确不可用态（无描述符/首秒/画面停滞/已停止）；完成态冻结于 runEnded + 验证均值；发布前永不 100%。重打包 sha256 ae64aa1b…（gitCommit 12175b3），包内双 GUI 冒烟 PASS，164/164 回归绿。
