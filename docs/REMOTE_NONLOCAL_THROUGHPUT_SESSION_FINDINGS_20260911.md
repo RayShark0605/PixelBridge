@@ -687,3 +687,12 @@ goodput ≈ 内容率(fps) × 有效槽/帧 × 1314B × 唯一率。当前 30Hz 
 ### 19.3 layout-13 Golden 冻结
 
 `tests/PBModulation/generate_unified_grayfast_golden.py`：独立 Python oracle 复刻 DVB-S2 Short Fast 矩阵（37 行 shifts 逐值转录自 ETSI 表 5b/C++ 头）与 Q=8 累加编码；1629B 近上限运输载荷 fixture；栅格 digest 复用 layout-12 六变体。**C++ Pack 与 Python golden 交叉验证 36,450 字节完全一致**；`PBUnifiedGrayStatesTests` 新增 gray-fast golden 用例（含 >1600B 载荷断言），全量回归绿后提交。
+
+### 19.4 模式不兼容的家族性确证（二分实验）
+
+layout-12（灰 Robust）1MB 探针同模式同症状：引导 1529/2259（68%）、transport 0、解调 0 评估——与 gray-fast 完全一致。**新模式破坏的是整个 Unified 家族共享的静态 scaffold 高频结构**（定位标记/引导 RS 块/timing patches 逐帧不变 → 远控编码器静态区域低码率重建），与内检 profile、载体版本无关。阶梯（32px 大块低频）不受影响，四角标记（精细结构）中间电平 32-47%。CPU oracle 与 GPU 管线同败（hint 锁定几何也失败）——非接收端代码问题。
+
+**给操作者的选择**（信道设置归操作者）：
+- 切回旧画质档：v4 立即可用，旧模式下实测 100MB 193.7KB/s（8fps 深夜链路）；链路恢复 ~10fps 时推算 ~242KB/s。
+- 若远控端有"高帧率+高画质"组合档：15.6fps 潜力 + 24.2KB/帧 ≈ 378KB/s，值得一次切换实测。
+- 我们侧不改冻结 scaffold 契约（让静态区抖动骗编码器）与定位器容差（reference 契约）——两者都会破坏 wire 冻结与 golden。
