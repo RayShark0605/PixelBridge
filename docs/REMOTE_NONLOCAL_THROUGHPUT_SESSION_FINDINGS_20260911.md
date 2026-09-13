@@ -696,3 +696,10 @@ layout-12（灰 Robust）1MB 探针同模式同症状：引导 1529/2259（68%�
 - 切回旧画质档：v4 立即可用，旧模式下实测 100MB 193.7KB/s（8fps 深夜链路）；链路恢复 ~10fps 时推算 ~242KB/s。
 - 若远控端有"高帧率+高画质"组合档：15.6fps 潜力 + 24.2KB/帧 ≈ 378KB/s，值得一次切换实测。
 - 我们侧不改冻结 scaffold 契约（让静态区抖动骗编码器）与定位器容差（reference 契约）——两者都会破坏 wire 冻结与 golden。
+
+---
+
+## 20. v0.5.0 发布（2026-09-13，主人指令）
+
+- 版本 0.5.0（project VERSION → --version/RunReport/构建身份全线）；双端 GUI 主页新增"传输模式/接收模式"选择器：标准（SC6-V3，默认不变）与 灰阶高速 v4（gray-fast 实验载体）；偏好键 g22/carrier，会话激活期锁定；标题栏带版本。提交 05be1b7，164/164 回归绿。
+- 组装包 `<PBLine root>elease-v0.5\PixelBridge-v0.5.0-win64.zip`（52.9MB，sha256 7ac0eb87…）：Encoder/Decoder 各自完整 Qt 6.10 部署（windeployqt 后构建）、README.txt（模式说明/快速开始/安全语义）、build-identity.json（双 exe sha256+gitCommit）。包内双 GUI offscreen 冒烟 PASS；打包 exe --version/身份/实验旗标帮助核验通过。
