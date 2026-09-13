@@ -86,12 +86,14 @@ public:
         services_(std::move(services)), controller_(nullptr, services_.runtime), evidence_(evidence)
     {
         settings_ = settingsPath.isEmpty() ? std::make_unique<QSettings>() : std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
-        setWindowTitle(QStringLiteral("PixelBridge Decoder"));
+        setWindowTitle(QStringLiteral("PixelBridge Decoder v%1").arg(QString::fromStdString(pbcore::GetBuildInfo().version)));
         setMinimumSize(680, 550);
         resize(780, 600);
         BuildUi();
         outputEdit_->setText(settings_->value(QStringLiteral("g22/outputDirectory"),
             QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).toString());
+        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), 0).toInt();
+        carrierCombo_->setCurrentIndex(savedCarrier == 1 ? 1 : 0);
         const int interval = settings_->value(QStringLiteral("g22/statusRefreshMilliseconds"), 250).toInt();
         refreshSpin_->setValue(interval >= 100 && interval <= 2000 ? interval : 250);
         static_cast<void>(controller_.SetStatusRefreshMilliseconds(refreshSpin_->value()));
@@ -365,6 +367,13 @@ private:
         QVBoxLayout* const mainLayout = new QVBoxLayout(mainPage);
         mainLayout->setContentsMargins(20, 20, 20, 20);
         mainLayout->setSpacing(14);
+        mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("接收模式")));
+        carrierCombo_ = new QComboBox();
+        carrierCombo_->setObjectName(QStringLiteral("carrierMode"));
+        carrierCombo_->addItem(QStringLiteral("标准（PB-Unified-SC6-V3）"));
+        carrierCombo_->addItem(QStringLiteral("灰阶高速 v4（实验，远控链路推荐）"));
+        carrierCombo_->setToolTip(QStringLiteral("必须与编码端选择同一模式，否则无法建立会话。"));
+        mainLayout->addWidget(carrierCombo_);
         mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("文件保存目录")));
         QHBoxLayout* const outputRow = new QHBoxLayout();
         outputEdit_ = new QLineEdit();
@@ -626,6 +635,7 @@ private:
     void SavePreferences()
     {
         settings_->setValue(QStringLiteral("g22/outputDirectory"), outputEdit_->text());
+        settings_->setValue(QStringLiteral("g22/carrier"), carrierCombo_->currentIndex());
         settings_->setValue(QStringLiteral("g22/statusRefreshMilliseconds"), refreshSpin_->value());
         settings_->sync();
     }
@@ -658,6 +668,8 @@ private:
         }
         region_ = region;
         auto config = pbapp::MakeUnifiedDecoderConfig(outputEdit_->text().toStdWString(), region_);
+        config.visualProfile = carrierCombo_->currentIndex() == 1 ?
+            pbapp::VisualProfile::UnifiedGrayFast : pbapp::VisualProfile::UnifiedLc4;
         if (evidence_)
         {
             QString evidenceError;
@@ -710,6 +722,7 @@ private:
         const bool idle = !active && !closePending_ && !selectingRoi_;
         const bool selected = SelectedMonitor() != nullptr;
         outputEdit_->setEnabled(idle);
+        carrierCombo_->setEnabled(idle);
         browseButton_->setEnabled(idle);
         monitorCombo_->setEnabled(idle);
         reloadButton_->setEnabled(idle);
@@ -773,6 +786,7 @@ private:
     bool closePending_ = false;
     QTabWidget* tabs_ = nullptr;
     QLineEdit* outputEdit_ = nullptr;
+    QComboBox* carrierCombo_ = nullptr;
     QComboBox* monitorCombo_ = nullptr;
     QPushButton* browseButton_ = nullptr;
     QPushButton* wholeButton_ = nullptr;

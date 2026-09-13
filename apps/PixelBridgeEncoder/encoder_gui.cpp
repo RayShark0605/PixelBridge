@@ -9,6 +9,7 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -96,7 +97,7 @@ public:
     {
         settings_ = settingsFile.isEmpty() ? std::make_unique<QSettings>() :
             std::make_unique<QSettings>(settingsFile, QSettings::IniFormat);
-        setWindowTitle(QStringLiteral("PixelBridge Encoder"));
+        setWindowTitle(QStringLiteral("PixelBridge Encoder v%1").arg(QString::fromStdString(pbcore::GetBuildInfo().version)));
         setMinimumSize(640, 460);
         resize(740, 520);
         BuildUi();
@@ -105,6 +106,8 @@ public:
         cacheEdit_->setText(settings_->value(QStringLiteral("g22/sessionRoot")).toString());
         const int savedFps = settings_->value(QStringLiteral("g22/logicalFps"), 15).toInt();
         fpsSpin_->setValue(savedFps >= 1 && savedFps <= 60 ? savedFps : 15);
+        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), 0).toInt();
+        carrierCombo_->setCurrentIndex(savedCarrier == 1 ? 1 : 0);
         connect(&controller_, &EncoderApplicationController::SnapshotChanged, this, &EncoderWindow::UpdateSnapshot);
         connect(&controller_, &EncoderApplicationController::TerminalStateReached, this, [this]()
         {
@@ -342,6 +345,13 @@ private:
         fileRow->addWidget(sourceEdit_, 1);
         fileRow->addWidget(browseButton_);
         mainLayout->addLayout(fileRow);
+        mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("传输模式")));
+        carrierCombo_ = new QComboBox();
+        carrierCombo_->setObjectName(QStringLiteral("carrierMode"));
+        carrierCombo_->addItem(QStringLiteral("标准（PB-Unified-SC6-V3）"));
+        carrierCombo_->addItem(QStringLiteral("灰阶高速 v4（实验，远控链路推荐）"));
+        carrierCombo_->setToolTip(QStringLiteral("编码端与接收端必须选择同一模式。标准模式即产品 SC6-V3 会话；灰阶高速 v4 为实验灰阶载体（更大单帧容量）。"));
+        mainLayout->addWidget(carrierCombo_);
         QHBoxLayout* const rateRow = new QHBoxLayout();
         rateRow->addWidget(pbgui::TextLabel(QStringLiteral("刷新帧率")));
         fpsSpin_ = new QSpinBox();
@@ -427,6 +437,7 @@ private:
         settings_->setValue(QStringLiteral("g22/sourcePath"), sourceEdit_->text());
         settings_->setValue(QStringLiteral("g22/sessionRoot"), cacheEdit_->text());
         settings_->setValue(QStringLiteral("g22/logicalFps"), fpsSpin_->value());
+        settings_->setValue(QStringLiteral("g22/carrier"), carrierCombo_->currentIndex());
         settings_->sync();
     }
 
@@ -438,6 +449,7 @@ private:
         sourceEdit_->setEnabled(editable);
         browseButton_->setEnabled(editable);
         fpsSpin_->setEnabled(editable);
+        carrierCombo_->setEnabled(editable);
         cacheEdit_->setEnabled(editable);
         cacheBrowse_->setEnabled(editable);
         const QFileInfo source(sourceEdit_->text());
@@ -455,6 +467,8 @@ private:
             return;
         }
         auto config = pbapp::MakeUnifiedEncoderConfig(sourceEdit_->text().toStdWString(), static_cast<std::uint32_t>(fpsSpin_->value()));
+        config.visualProfile = carrierCombo_->currentIndex() == 1 ?
+            pbapp::VisualProfile::UnifiedGrayFast : pbapp::VisualProfile::UnifiedLc4;
         config.sessionStateRoot = cacheEdit_->text().toStdWString();
         const QString targetError = configureTarget_(config, *this);
         if (!targetError.isEmpty())
@@ -572,6 +586,7 @@ private:
     QLineEdit* sourceEdit_ = nullptr;
     QLineEdit* cacheEdit_ = nullptr;
     QSpinBox* fpsSpin_ = nullptr;
+    QComboBox* carrierCombo_ = nullptr;
     QPushButton* browseButton_ = nullptr;
     QPushButton* cacheBrowse_ = nullptr;
     QPushButton* startButton_ = nullptr;
