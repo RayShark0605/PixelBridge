@@ -410,6 +410,12 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
                 // admission budget saturates on the Pass-0 stream alone, and
                 // field data showed cheap multi-wrap fountain passes only add
                 // duplicate admissions there (findings document section 11.7).
+                // The graduation repairBudgetOverride still applies: a Segment
+                // re-opened to reach its exact graduation distance must not
+                // cycle through nine minimal K+20% batches on large files
+                // (954MB at the GUI's default 15 Hz froze the receiver's
+                // progress for ~17 minutes per window while the sender pumped
+                // repair the receiver already had).
                 const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
                     config.systematicBlockCount, config.wirehair, senderCarouselRepairPercentNumerator,
                     senderCarouselRepairPercentDenominator, senderCarouselMinimumRepairBlocks, 0,
@@ -417,6 +423,15 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
                 if (!equationStatus)
                 {
                     return equationStatus;
+                }
+                if (config.repairBudgetOverride != 0)
+                {
+                    if (config.repairBudgetOverride > config.systematicBlockCount * 16ULL)
+                    {
+                        return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
+                    }
+                    scheduledEquationCount = (std::max)(static_cast<std::uint64_t>(senderCarouselMinimumRepairBlocks),
+                        config.repairBudgetOverride);
                 }
                 systematicEquationCount = 0;
                 repairEquationCount = scheduledEquationCount;

@@ -351,6 +351,18 @@ private:
         carrierCombo_->addItem(QStringLiteral("标准（PB-Unified-SC6-V3）"));
         carrierCombo_->addItem(QStringLiteral("灰阶高速 v4（实验，远控链路推荐）"));
         carrierCombo_->setToolTip(QStringLiteral("编码端与接收端必须选择同一模式。标准模式即产品 SC6-V3 会话；灰阶高速 v4 为实验灰阶载体（更大单帧容量）。"));
+        connect(carrierCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](const int index)
+        {
+            // Gray-fast field results are at 30 Hz; the 15 Hz default triggers
+            // the serial repair mode whose graduation re-passes were the
+            // large-file freeze. Nudge to 30 once when the user selects the
+            // gray carrier and has not saved a preference for it yet.
+            if (index == 1 && fpsSpin_->value() == 15 &&
+                !settings_->contains(QStringLiteral("g22/carrier")))
+            {
+                fpsSpin_->setValue(30);
+            }
+        });
         mainLayout->addWidget(carrierCombo_);
         QHBoxLayout* const rateRow = new QHBoxLayout();
         rateRow->addWidget(pbgui::TextLabel(QStringLiteral("刷新帧率")));

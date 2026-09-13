@@ -2349,7 +2349,13 @@ private:
     // wrap re-opens everything with the target raised by wrapTopUpPercent of K
     // so residual stragglers converge while recovered Segments re-graduate
     // after one minimal top-up pass.
-    static constexpr std::uint64_t senderUnifiedGraduationFactorPercent = 300;
+    // Graduation holds each Segment in the sender window until this much of
+    // K has been committed. The receiver typically decodes at 105-110%; the
+    // margin covers degraded-link erasure. 300% froze large-file progress
+    // for ~17 minutes per window (954MB field report): the sender pumped
+    // repair the receiver already had while the estimate sat still. 200%
+    // keeps 2x decode margin while halving the waste.
+    static constexpr std::uint64_t senderUnifiedGraduationFactorPercent = 200;
     static constexpr std::uint64_t senderUnifiedWrapTopUpPercent = 25;
     static constexpr std::uint64_t senderUnifiedMaximumSegmentPasses = 8;
     static constexpr std::uint64_t kUnifiedLedgerUnseeded = (std::numeric_limits<std::uint64_t>::max)();
