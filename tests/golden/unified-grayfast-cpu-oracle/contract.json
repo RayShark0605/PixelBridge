@@ -1,0 +1,52 @@
+{
+  "acceptedStream": "18 slot-framed near-ceiling Transport blocks",
+  "artifact": "PB-Experimental-GrayFast-1 CPU oracle Golden",
+  "canvas": {
+    "height": 1080,
+    "pixelFormat": "BGRA8_UNORM_SDR",
+    "width": 1920
+  },
+  "codewords": {
+    "bytesEach": 2025,
+    "count": 18,
+    "informationBytesEach": 1665,
+    "innerFecProfile": "DVB-S2-Short-N16200-K13320"
+  },
+  "data": {
+    "foregroundLevels": [
+      64,
+      232
+    ],
+    "foregroundStates": "gray",
+    "glyphPixels": 5,
+    "highLuma": 160,
+    "lowLuma": 8,
+    "neutralLuma": 128,
+    "separatorPixels": 1,
+    "tilePixels": 6,
+    "tiles": 41872
+  },
+  "digestsSha256Of": "raster-digests.bin",
+  "independentRebuild": "tests/PBModulation/generate_unified_grayfast_golden.py --check",
+  "profile": {
+    "layoutVersion": 13,
+    "name": "PB-Experimental-GrayFast-1",
+    "profileIdHex": "5042475246535431"
+  },
+  "slotPlan": {
+    "slot0": "Control/SessionDescriptor",
+    "slots1To17": "Transport"
+  },
+  "transport": {
+    "payloadLimitBytes": 1629,
+    "slotPayloadPattern": "1629-4-slot%7"
+  },
+  "variants": [
+    "clean",
+    "state-collapsed",
+    "base-neutralized",
+    "fine-neutralized",
+    "localized-stale",
+    "wrong-sequence"
+  ]
+}

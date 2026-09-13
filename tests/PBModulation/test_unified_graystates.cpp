@@ -720,6 +720,124 @@ TEST_CASE("Gray-state CPU oracle matches the independently regenerated Golden",
     REQUIRE(offset == expectedAccepted.size());
 }
 
+#ifndef PB_UNIFIED_GRAYFAST_GOLDEN_DIR
+#error PB_UNIFIED_GRAYFAST_GOLDEN_DIR must name the independent gray-fast CPU oracle Golden directory
+#endif
+
+TEST_CASE("Gray-fast CPU oracle matches the independently regenerated Golden",
+    "[unified][graystates][grayfast][golden]")
+{
+    const std::filesystem::path root = PB_UNIFIED_GRAYFAST_GOLDEN_DIR;
+    const auto readGolden = [&root](const char* const name)
+    {
+        std::ifstream input(root / name, std::ios::binary | std::ios::ate);
+        REQUIRE(input);
+        const auto size = static_cast<std::size_t>(input.tellg());
+        std::vector<std::byte> content(size);
+        input.seekg(0);
+        if (!content.empty())
+        {
+            input.read(reinterpret_cast<char*>(content.data()),
+                static_cast<std::streamsize>(content.size()));
+            REQUIRE(input);
+        }
+        return content;
+    };
+    const std::vector<std::byte> previousBootstrap = readGolden("bootstrap-sequence40.bin");
+    const std::vector<std::byte> currentBootstrap = readGolden("bootstrap-sequence41.bin");
+    const std::vector<std::byte> codewords = readGolden("mixed-codewords.bin");
+    const std::vector<std::byte> expectedAccepted = readGolden("accepted-stream.bin");
+    const std::vector<std::byte> digests = readGolden("raster-digests.bin");
+    REQUIRE(previousBootstrap.size() == kLocalDesktopBootstrapRecordBytes);
+    REQUIRE(currentBootstrap.size() == kLocalDesktopBootstrapRecordBytes);
+    REQUIRE(codewords.size() == kUnifiedGrayCodedFrameBytes);
+
+    // The raster is the layout-12 seven-plane carrier; only the codeword
+    // bits differ (Fast parity), so the digest variants reuse the same
+    // transforms and the C++ raster must reproduce them byte-for-byte.
+    std::vector<std::byte> previous(kUnifiedFrameBgraBytes);
+    std::vector<std::byte> current(kUnifiedFrameBgraBytes);
+    REQUIRE(static_cast<bool>(EncodeUnifiedVisualFrame(previousBootstrap, codewords, previous)));
+    REQUIRE(static_cast<bool>(EncodeUnifiedVisualFrame(currentBootstrap, codewords, current)));
+    RequireGrayRasterDigest(digests, 0, current);
+    {
+        std::vector<std::byte> variant = current;
+        CollapseStateStripes(variant);
+        RequireGrayRasterDigest(digests, 1, variant);
+    }
+    {
+        std::vector<std::byte> variant = current;
+        FillGrayRegion(variant, kUnifiedVisualProfile.regions[19].bounds, kUnifiedNeutralLuma);
+        RequireGrayRasterDigest(digests, 2, variant);
+    }
+    {
+        std::vector<std::byte> variant = current;
+        FillGrayRegion(variant, kUnifiedVisualProfile.regions[20].bounds, kUnifiedNeutralLuma);
+        RequireGrayRasterDigest(digests, 3, variant);
+    }
+    {
+        std::vector<std::byte> variant = current;
+        CopyPixels(previous, variant, kUnifiedVisualProfile.regions[10].bounds);
+        CopyFreshnessRegionData(previous, variant, 4);
+        RequireGrayRasterDigest(digests, 4, variant);
+    }
+    {
+        std::vector<std::byte> variant = current;
+        for (const UnifiedRegionContract& contract : kUnifiedVisualProfile.regions)
+        {
+            if (contract.kind == UnifiedRegionKind::Data)
+            {
+                CopyPixels(previous, variant, contract.bounds);
+            }
+        }
+        RequireGrayRasterDigest(digests, 5, variant);
+    }
+
+    // Decode the golden raster under the gray-fast identity: Fast FEC must
+    // recover all eighteen near-ceiling payloads exactly.
+    std::array<UnifiedSlotAssignment, kUnifiedGrayFrameCodewordCount> plan{};
+    for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
+    {
+        plan[slot] = slot == 0 ?
+            UnifiedSlotAssignment{slot, UnifiedSlotKind::Control, UnifiedControlPriority::SessionDescriptor} :
+            UnifiedSlotAssignment{slot, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
+    }
+    UnifiedVisualCpuOracle oracle = MakeOracle();
+    const UnifiedExpectedFrameIdentity fastIdentity{false, {}, false, {},
+        pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+        pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion};
+    const UnifiedVisualObservation observation = oracle.Decode(View(current), plan, fastIdentity);
+    REQUIRE(observation.acceptedBlocks == kUnifiedGrayFrameCodewordCount);
+    const std::span<const UnifiedAcceptedBlock> accepted = oracle.GetAcceptedBlocks();
+    REQUIRE(accepted.size() == kUnifiedGrayFrameCodewordCount);
+    std::size_t offset = 0;
+    for (std::size_t slot = 0; slot < accepted.size(); slot++)
+    {
+        REQUIRE(offset <= expectedAccepted.size());
+        REQUIRE(expectedAccepted.size() - offset >= 4);
+        REQUIRE(std::to_integer<std::uint8_t>(expectedAccepted[offset]) == slot);
+        const bool transport = std::to_integer<std::uint8_t>(expectedAccepted[offset + 1]) != 0;
+        REQUIRE(accepted[slot].kind == (transport ? UnifiedSlotKind::Transport : UnifiedSlotKind::Control));
+        const std::uint16_t size = static_cast<std::uint16_t>(
+            std::to_integer<std::uint16_t>(expectedAccepted[offset + 2]) |
+            (std::to_integer<std::uint16_t>(expectedAccepted[offset + 3]) << 8U));
+        offset += 4;
+        REQUIRE(offset <= expectedAccepted.size());
+        REQUIRE(expectedAccepted.size() - offset >= size);
+        // Near-ceiling Transport payloads: every transport slot exercises
+        // the 1629-byte payload contract.
+        if (transport)
+        {
+            REQUIRE(size > 1600);
+        }
+        REQUIRE(accepted[slot].size == size);
+        REQUIRE(std::equal(expectedAccepted.begin() + static_cast<std::ptrdiff_t>(offset),
+            expectedAccepted.begin() + static_cast<std::ptrdiff_t>(offset + size), accepted[slot].bytes.begin()));
+        offset += size;
+    }
+    REQUIRE(offset == expectedAccepted.size());
+}
+
 TEST_CASE("Gray-state identity rejects the product color pair and vice versa", "[unified][graystates][identity]")
 {
     const GrayFixture fixture = BuildGrayFixture(23);

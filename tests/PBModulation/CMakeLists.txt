@@ -104,7 +104,8 @@ set_tests_properties(PBSupplementalBandTests PROPERTIES LABELS "supplemental-ban
 PbAddUnitTest(PBUnifiedGrayStatesTests test_unified_graystates.cpp)
 target_link_libraries(PBUnifiedGrayStatesTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
 target_compile_definitions(PBUnifiedGrayStatesTests PRIVATE
-    PB_UNIFIED_GRAY_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-graystates-cpu-oracle")
+    PB_UNIFIED_GRAY_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-graystates-cpu-oracle"
+    PB_UNIFIED_GRAYFAST_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-grayfast-cpu-oracle")
 set_tests_properties(PBUnifiedGrayStatesTests PROPERTIES LABELS "modulation;graystates;unified;fec" TIMEOUT 240)
 
 if(TARGET PBDesktopLevelsBaseline)

@@ -667,3 +667,23 @@ goodput ≈ 内容率(fps) × 有效槽/帧 × 1314B × 唯一率。当前 30Hz 
 3. 远端 run 目录残留会使 deploy 拒绝（run-exists）——崩溃后先 `cleanup` 再重跑。
 4. 构建身份（PB_GIT_COMMIT）在 configure 时固化：每次打包前 `cmake -S . -B <build>` 重跑（本会话又踩一次）。
 5. 本会话两度被"陈旧测试二进制"迷惑后新增：全量 ctest 前先整体构建（cmake --build 全目标）。
+
+---
+
+## 19. 第十会话（2026-09-13 白天，授权自主）：远控高帧率模式实测不兼容 + 段目标 CLI + layout-13 Golden 冻结
+
+### 19.1 远控软件新模式（用户切换）诊断结论
+
+- 新模式 capture fps 15.6（旧档 ~10.3，+51%）——内容率潜力大：若载体可用，15.6 × 24.2KB ≈ **378KB/s 已超 300 目标**。
+- 但实测**静态 scaffold 被高帧率档糊化**：四角定位标记中间电平占比 32-47%（旧档 ≈0，振铃+对比度压缩），接收端引导 0/1824 全失败（`IncompleteMarkers`）；锁定几何 hint 同样失败；CPU oracle 对捕获同样失败（排除接收端因素）。
+- **数据瓦片（逐帧全变区域）保真与旧档相当**（tile 中心中间电平 27% vs 20%）——远控编码器按内容变化分配码率：静态区域停留在低码率 I 帧重建，动态区域每帧获得正常码率。
+- 结论：新模式与"冻结静态 scaffold + 高密度动态数据"的纯视觉载体**根本性不兼容**。修复需要么让 scaffold 逐帧抖动骗过编码器（违反栅格冻结契约/golden），要么放宽定位器容差（改冻结 reference 契约且引导 RS 大概率同挂）。**归用户决策**：若远控端存在"高帧率+高画质"组合档值得切换；旧画质档下 15.6fps 潜力仍在。
+- 诊断工具链：右屏 PNG → 标记四角/阶梯/瓦片三电平分布对比 + hint_probe（锁定几何引导实验）——三分钟出结论。
+
+### 19.2 --segment-target-mb CLI（提交 937e9b2）
+
+50MB 口径（4 段）喷泉产量 81% vs 100MB（7 段）92.7%——段数影响毕业节奏与槽位利用率。`--segment-target-mb 1..15` 让吞吐线按文件尺寸调段数；SessionDescriptor 声明实际值、durable resume 身份串含段目标（不同分段的预扫描不互配）、认证产品会话拒绝该旗标。配套 ab_run `--seg-mb` 透传。
+
+### 19.3 layout-13 Golden 冻结
+
+`tests/PBModulation/generate_unified_grayfast_golden.py`：独立 Python oracle 复刻 DVB-S2 Short Fast 矩阵（37 行 shifts 逐值转录自 ETSI 表 5b/C++ 头）与 Q=8 累加编码；1629B 近上限运输载荷 fixture；栅格 digest 复用 layout-12 六变体。**C++ Pack 与 Python golden 交叉验证 36,450 字节完全一致**；`PBUnifiedGrayStatesTests` 新增 gray-fast golden 用例（含 >1600B 载荷断言），全量回归绿后提交。
