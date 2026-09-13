@@ -410,12 +410,19 @@ private:
         progress->setVerticalSpacing(12);
         progressLabel_ = pbgui::TextLabel();
         progressLabel_->setObjectName(QStringLiteral("recoveryPercent"));
+        receivedLabel_ = pbgui::TextLabel();
+        receivedLabel_->setObjectName(QStringLiteral("receivedSize"));
+        receivedLabel_->setToolTip(QStringLiteral("已验证字节 + 按已接纳唯一传输块估算的接收中字节；整文件摘要验证通过前不会达到文件大小。"));
+        elapsedLabel_ = pbgui::TextLabel();
+        elapsedLabel_->setObjectName(QStringLiteral("elapsedTime"));
         speedLabel_ = pbgui::TextLabel();
-        speedLabel_->setToolTip(QStringLiteral("已通过 Segment 校验的原始字节恢复速度；按 Windows 单位换算，1 KB = 1024 B，不是屏幕帧率或收包速率。"));
+        speedLabel_->setToolTip(QStringLiteral("本次运行的平均接收速度（含接收中估算）；按 Windows 单位换算，1 KB = 1024 B，不是屏幕帧率或收包速率。"));
         etaLabel_ = pbgui::TextLabel();
         progress->addRow(QStringLiteral("当前进度"), progressLabel_);
-        progress->addRow(QStringLiteral("恢复速度"), speedLabel_);
-        progress->addRow(QStringLiteral("剩余时间"), etaLabel_);
+        progress->addRow(QStringLiteral("已接收大小"), receivedLabel_);
+        progress->addRow(QStringLiteral("已花费时间"), elapsedLabel_);
+        progress->addRow(QStringLiteral("当前平均速度"), speedLabel_);
+        progress->addRow(QStringLiteral("预估剩余时间"), etaLabel_);
         mainLayout->addLayout(progress);
         messageLabel_ = pbgui::TextLabel();
         mainLayout->addWidget(messageLabel_);
@@ -748,8 +755,11 @@ private:
     {
         const auto snapshot = controller_.GetSnapshot();
         stateLabel_->setText(StateText(snapshot));
-        const auto progress = pbgui::FormatDecoderProgress(snapshot);
+        const auto progress = pbgui::FormatDecoderProgress(snapshot,
+            QDateTime::currentMSecsSinceEpoch());
         progressLabel_->setText(progress.percent);
+        receivedLabel_->setText(progress.received);
+        elapsedLabel_->setText(progress.elapsed);
         speedLabel_->setText(progress.speed);
         etaLabel_->setText(progress.remaining);
         if (snapshot.state == pbapp::DecoderState::Failed)
@@ -767,7 +777,7 @@ private:
         details_->setPlainText(QStringLiteral("PB-Unified-SC6-V3 · layout 10\n"
             "捕获：Auto，WGC 优先；只在明确的后端故障时切换 DXGI\n"
             "资源上限：500 GB；所有支持的文件大小均无需再次确认\n"
-            "进度仅统计已验证原始字节，100% 还需要整文件摘要、安全发布和最终重新打开复验\n"
+            "进度 = 已验证字节 + 接收中估算（唯一传输块 × 块字节 × 压缩比）；100% 仍需整文件摘要、安全发布与最终重开复验\n"
             "1 KB = 1024 B；样本不足或画面停滞时不猜测剩余时间\n\n") +
             (snapshot.runGeneration == 0 ? QStringLiteral("尚未开始接收。捕获及恢复详情将在启动后显示。") :
                 pbgui::FromUtf8(pbapp::BuildDecoderDiagnostics(snapshot))));
@@ -801,6 +811,8 @@ private:
     QLabel* roiLabel_ = nullptr;
     QLabel* stateLabel_ = nullptr;
     QLabel* progressLabel_ = nullptr;
+    QLabel* receivedLabel_ = nullptr;
+    QLabel* elapsedLabel_ = nullptr;
     QLabel* speedLabel_ = nullptr;
     QLabel* etaLabel_ = nullptr;
     QLabel* messageLabel_ = nullptr;

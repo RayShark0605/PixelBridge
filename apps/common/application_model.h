@@ -414,6 +414,13 @@ struct DecoderSnapshot
     bool outputVolumeCompressed = false;
     bool outputRecoveredAfterPublish = false;
     std::uint64_t verifiedRawBytes = 0;
+    // Continuous reception estimate: verified raw bytes plus the in-flight
+    // estimate derived from unique admitted outer symbols scaled by this
+    // profile's block size and the session's observed raw-per-encoded ratio.
+    // Grows between Segment verifications (large segments can take minutes);
+    // zero until the first descriptor binds; never reaches originalFileBytes
+    // before the verified publish.
+    std::uint64_t estimatedReceivedRawBytes = 0;
     std::uint64_t remainingRawBytes = 0;
     std::optional<double> recoveryProgress;
     double instantVerifiedRawGoodputBytesPerSecond = 0;

@@ -4367,6 +4367,7 @@ private:
             value.state = deferCompletedState_ ? DecoderState::Publishing : DecoderState::Completed;
             value.runEndedUnixMilliseconds = deferCompletedState_ ? 0 : GetUnixTimeMilliseconds();
             value.verifiedRawBytes = session_->originalFileSize;
+            value.estimatedReceivedRawBytes = session_->originalFileSize;
             value.remainingRawBytes = 0;
             value.recoveryProgress = 1.0;
             value.wholeFileDigestVerified = true;
@@ -5262,6 +5263,43 @@ private:
         });
     }
 
+    // Continuous reception estimate for UI progress: unique admitted outer
+    // symbols approximate the encoded bytes in flight (each symbol carries
+    // one Transport block of this profile's frozen size); the completed
+    // Segments' observed raw-per-encoded ratio converts that to raw bytes.
+    // Saturating arithmetic keeps hostile counters from overflowing the
+    // estimate, and the result is clamped to [verified, total].
+    [[nodiscard]] std::uint64_t EstimateReceivedRawBytes(const ProgressSnapshot& progress) const noexcept
+    {
+        const std::uint64_t blockBytes = GetProfileBinding(visualProfile_).blockBytes;
+        const auto admittedPayload = pbprotocol::CheckedMultiplyUint64(outerUniqueSymbols_, blockBytes);
+        const std::uint64_t admitted = admittedPayload ?
+            (admittedPayload.Value() > 8ULL * 1024 * 1024 * 1024 ?
+                8ULL * 1024 * 1024 * 1024 : admittedPayload.Value()) : 0;
+        const std::uint64_t inFlightEncoded = admitted > storedEncodedBytes_ ? admitted - storedEncodedBytes_ : 0;
+        double rawPerEncoded = 1.0;
+        if (storedEncodedBytes_ != 0 && totalVerifiedRawBytes_ != 0)
+        {
+            rawPerEncoded = static_cast<double>(totalVerifiedRawBytes_) / static_cast<double>(storedEncodedBytes_);
+            if (!(rawPerEncoded >= 0.0))
+            {
+                rawPerEncoded = 1.0;
+            }
+            rawPerEncoded = rawPerEncoded > 64.0 ? 64.0 : rawPerEncoded < 0.0 ? 0.0 : rawPerEncoded;
+        }
+        const double inFlightRaw = static_cast<double>(inFlightEncoded) * rawPerEncoded;
+        std::uint64_t estimate = progress.verifiedRawBytes;
+        if (inFlightRaw > 0.0 && inFlightRaw <= 1.0e15)
+        {
+            estimate += static_cast<std::uint64_t>(inFlightRaw);
+        }
+        if (progress.totalRawBytes != 0 && estimate > progress.totalRawBytes)
+        {
+            estimate = progress.totalRawBytes;
+        }
+        return estimate;
+    }
+
     void ApplyProgress()
     {
         const ProgressSnapshot progress = progress_.GetSnapshot();
@@ -5274,6 +5312,7 @@ private:
             value.descriptorKnown = progress.descriptorKnown;
             value.originalFileBytes = progress.totalRawBytes;
             value.verifiedRawBytes = progress.verifiedRawBytes;
+            value.estimatedReceivedRawBytes = EstimateReceivedRawBytes(progress);
             value.verifiedSegmentCount = completedSegmentCount_;
             value.verifiedEncodedSegmentBytes = storedEncodedBytes_;
             value.remainingRawBytes = progress.remainingRawBytes;
