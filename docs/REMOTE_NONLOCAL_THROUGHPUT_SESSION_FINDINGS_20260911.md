@@ -1459,3 +1459,5 @@ T4资源拒绝、Outer冲突、deferred、orphan quota/conflict为0；**orphanAd
 机器可读产物：`artifacts/nonlocal-stall-20260913-2111/nl0915-profile-offline-grayfast8-01/`（`profile_spec.json`、`packing_benchmark.json`、`identity.json`、`NOTES.md`、`run-receipt.json`、可复跑 `profile_offline_model.py`）。本节只证明存在 +11.11% 的理论载荷空间，不证明视觉可恢复性或总传输时间改善；完整 Medium/Big 目标仍未完成。
 
 静态 admission 检查 `admission-check.json` 已复核：候选 identity 与 unified 产品及现有三个实验 identity 均不冲突，当前生产 catalog 仍只有一个正式 Profile，候选继续保持 fail-closed / not accepted。
+
+补充 representation-risk 静态证据：当前 GrayFast 实际 raster 由 6-bit glyph mask、bit-6 前景亮度二值选择和固定低亮度背景组成，源码循环上限仍为 7 个 plane。故“直接再追加第 8 个 bit”并不是现有路径的局部改动，必须引入新的正交像素可观测量或多级亮度/校准合同；证据 `nl0915-profile-offline-grayfast8-01/representation-risk.json`，仍未实现、未远端运行。
