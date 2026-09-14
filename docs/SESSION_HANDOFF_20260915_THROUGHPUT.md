@@ -63,3 +63,9 @@ T4仅在确有新证据需要复跑且获准的情况下，用**全新tag**：
 下阶段应先明确一个能够提高实际有效帧payload率的新窄假设；需要新visual profile/layout时先询问，不把CPU单项小优化或兼容性修复等同于总目标。完整Medium成功并有充分性能依据后才考虑Big，仍保留既有timeout和资源门。
 
 历史指定文件成绩仅属于O：Medium273806498B/860828ms，Big1059917774B/3451641ms，合计4312469ms；不得拼接或改名给当前候选。
+
+## 7. 2026-09-15 授权后的 GrayFast8 离线候选
+
+用户已明确回复“可以”，授权仅限提高单帧净载荷的新 visual Profile/layout 离线可行性对照，不含部署或远端文件运行。artifact-only 候选 `PB-Experimental-GrayFast8-Offline-1` 使用新 identity `0x5042475246383031`、layout 14：在 layout 13 的 6×6/41,872 tiles/7 planes/18 Fast slots 基础上，假设增加第 8 个独立中性亮度 plane，容量模型为 20 slots、32,580 B/unique frame（+11.111111%），保守 19 slots 为 30,951 B（+5.555556%）。确定性 128 帧 packing benchmark 显示新增 plane 增加本机工作量；不含 FEC、GPU、capture、远端、摘要、发布、reopen，不能视为吞吐证据。
+
+产物：`artifacts/nonlocal-stall-20260913-2111/nl0915-profile-offline-grayfast8-01/`。后续若继续，先做 canonical raster/mapping/Decoder oracle/Golden 与错误 identity/layout、资源和冲突门，再以 ≤25 MB 完整摘要/发布/reopen 验证；未完成这些门前不得改默认、生产 Decoder 或启动 Medium/Big。
