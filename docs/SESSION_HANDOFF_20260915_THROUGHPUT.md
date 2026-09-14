@@ -112,3 +112,9 @@ artifact-only 研究找到一个可继续审查的 6×6 方案：3×3 二值 mac
 为针对 §14 的对比度失败边界，新增 `structured_multicell_calibration_proxy.py` 与 `structured-multicell-calibration-proxy.json`。假设每帧两个已知 0/255 pilot macrocell，估计全局 gain+bias 后归一化数据 macrocell；在 contrast 1/0.75/0.5、offset 0/+12/-12 及 ±8 合成 macrocell 噪声下，9 组均 `256/256 exact`、无 ambiguous/wrong。该结果只支持理想 affine 模型下“校准可恢复”的窄假设，不覆盖 gamma/clip/缩放/codec/4:2:0/WGC/Citrix/BER/FER。
 
 若两个 pilot 占用 20 槽中的 2 槽，净有效槽仅 18，Transport 上限回到 `29,322 B/frame`，相对现有为 0%；将 pilot 放入现有 Control 或跨帧复用需要新的 wire/调度/资源合同，不能作为免费收益。候选继续 `ARTIFACT_ONLY_NOT_ACCEPTED`，没有 field-test 授权，不得启动 ≤25 MB、100 MB、Medium 或 Big。
+
+## 16. 现有空间 pilot 合同的再利用边界（artifact-only）
+
+静态源码证据显示 layout 10 已有 4 个 `CalibrationReferences` 空间区域与 2 个 `PhaseChecker` 区域，校准区不消耗 Data codeword slot；Control 仍按 BaseLuma mixed-slot 合同计费。详见 `nl0915-profile-offline-grayfast8-01/calibration-pilot-inventory.json`。
+
+因此，若未来新 layout 14 保留该空间 pilot 几何，20 槽候选不必自动因 pilot 变成 18 槽；但不能把现有校准值、raster 或 Decoder 语义直接复用为新四级 macrocell 的证明。仍需完成新 profile identity/layout、canonical raster、mapping/Golden、资源/安全门及 codec/缩放/phase/gamma proxy，之后再取得单独 ≤25 MB field 授权。当前没有 field 授权，不运行任何远端文件测试。

@@ -1529,3 +1529,9 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 为验证 §21.56 的主要失败点是否仅来自未知对比度，新增 artifact-only `structured_multicell_calibration_proxy.py`。模型仍使用 6×6 tile、2×2 个 3×3 macrocell、`[0,85,170,255]` 四级梯度和 radius1 box blur；假设每帧存在两个已知 pilot macrocell（0 与 255），由其均值估计全局 gain+bias，再将数据 macrocell 归一化后做最近距离解码。对 contrast=`1/0.75/0.5`、offset=`0/+12/-12` 的 9 组组合，理想 pilot 均值和各 macrocell 注入 ±8 合成噪声时均为 `256/256 exact`、`ambiguous=0`、`wrong=0`。这证明“显式校准可以消除该简化 affine 失配”这一窄假设，但不证明真实 gamma、clip、缩放相位、codec 或 Citrix 可校准。
 
 容量代价是决定性的：若 20 个候选 Fast 槽中固定保留 2 槽发送 pilot，净有效槽回到 18，代数 Transport 上限为 `29,322 B/frame`，相对当前为 `0%`；若 pilot 复用或放入已有 Control 而不占 Data 槽，则需另建 wire/调度/资源合同，不能假设“免费”。机器可读证据 `nl0915-profile-offline-grayfast8-01/structured-multicell-calibration-proxy.json`（SHA-256=`411003d71301219021112bd9084e7ec23db619c22461346e8d21b982e2114f5b`）。该候选仍未建立 canonical raster、mapping/Golden、Decoder 资源门或任何远端摘要/安全发布/reopen 证据；不改生产、不启动 field、Medium 或 Big。
+
+### 21.58 现有 Profile 已有空间校准区：两 pilot 槽位模型不是唯一成本边界
+
+静态核对当前 `unified_visual_profile.h` 发现，layout 10 的 manifest 已包含 4 个 `CalibrationReferences` 空间 pilot 区（另有 2 个 `PhaseChecker` 区），它们不占用 Data codeword slot；Control 则在 BaseLuma slot 0..8 的 mixed-slot 合同内单独计费。证据 `nl0915-profile-offline-grayfast8-01/calibration-pilot-inventory.json`，source SHA-256=`17139f591c200fcc541a07e82fd89d537718e3174832ea782003743a09f8350a`。
+
+这修正了 §21.57 的一个条件边界：若新 layout 14 保留同等空间 pilot 几何并完成新的 raster/Decoder 合同，校准不必然再占用两个 Data 槽，20 槽仍可能保持名义 `32,580 B/frame`；但这是“可保留现有空间 pilot 合同”的结构性假设，不是现有实现对新码本的兼容证明。必须重新验证 pilot 的四级 luma 值、采样/缩放/phase、gamma/clip、codec/4:2:0 和资源成本，且仍需新 identity/layout、canonical raster、mapping/Golden、Decoder 安全门与独立 ≤25 MB field 授权。该静态发现不改变当前生产代码、catalog、远端运行态或 Medium/Big 冻结状态。
