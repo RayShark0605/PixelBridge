@@ -58,6 +58,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <iomanip>
@@ -470,6 +471,26 @@ void ComposeUnifiedFullscreenSampledBgra(const std::span<const std::byte> source
             const std::byte* const bottomRow = source.data() + static_cast<std::size_t>(clampedBottom) * sourceRowBytes;
             std::byte* const destinationRow = destination.data() +
                 static_cast<std::size_t>(destinationY) * destinationRowBytes;
+            if (neutralRaster)
+            {
+                // Preserve the reference's four terms and their evaluation order.
+                // For a nonnegative convex byte interpolation, truncation plus
+                // an exact fractional comparison is std::round without a library
+                // call; adding 0.5 first would incorrectly round some near-ties.
+                for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+                {
+                    const LinearColumn& column = columns[destinationX];
+                    const double value = static_cast<double>(std::to_integer<unsigned int>(topRow[column.leftOffset])) * column.oneMinusFractionX * oneMinusFractionY +
+                        static_cast<double>(std::to_integer<unsigned int>(topRow[column.rightOffset])) * column.fractionX * oneMinusFractionY +
+                        static_cast<double>(std::to_integer<unsigned int>(bottomRow[column.leftOffset])) * column.oneMinusFractionX * fractionY +
+                        static_cast<double>(std::to_integer<unsigned int>(bottomRow[column.rightOffset])) * column.fractionX * fractionY;
+                    const auto integral = static_cast<unsigned int>(value);
+                    const auto rounded = std::min(255U, integral + static_cast<unsigned int>(value - integral >= 0.5));
+                    const std::uint32_t pixel = 0xFF000000U | rounded * 0x00010101U;
+                    std::memcpy(destinationRow + static_cast<std::size_t>(destinationX) * 4U, &pixel, sizeof(pixel));
+                }
+                continue;
+            }
             for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
             {
                 const LinearColumn& column = columns[destinationX];
