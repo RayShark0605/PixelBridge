@@ -118,3 +118,9 @@ artifact-only 研究找到一个可继续审查的 6×6 方案：3×3 二值 mac
 静态源码证据显示 layout 10 已有 4 个 `CalibrationReferences` 空间区域与 2 个 `PhaseChecker` 区域，校准区不消耗 Data codeword slot；Control 仍按 BaseLuma mixed-slot 合同计费。详见 `nl0915-profile-offline-grayfast8-01/calibration-pilot-inventory.json`。
 
 因此，若未来新 layout 14 保留该空间 pilot 几何，20 槽候选不必自动因 pilot 变成 18 槽；但不能把现有校准值、raster 或 Decoder 语义直接复用为新四级 macrocell 的证明。仍需完成新 profile identity/layout、canonical raster、mapping/Golden、资源/安全门及 codec/缩放/phase/gamma proxy，之后再取得单独 ≤25 MB field 授权。当前没有 field 授权，不运行任何远端文件测试。
+
+## 17. Canonical oracle 与安全前置门结果
+
+已在 artifact-only 范围内建立结构化 2×2 macrocell 候选的 canonical raster/mapping/Golden oracle：256 symbols、base-4 LSB-first row-major，mapping hash=`d74ad6e0aac3c1b5d63159bd0708932997ad364b99f95b17e12775d2773977c9`，Golden hash=`7ba1ca8e1e7c4c7052395d738b77e1b97b5e0ad645b08d4d4c3d0420f9639259`。整数 1:1 采样下 identity/radius1/radius2 以及 gain 0.5/0.75/1.25 的 affine 校准代理均 256/256 exact；tie 和 invalid pilot 全部 fail-closed。fractional phase、rescale、chroma siting、gamma、codec/4:2:0、WGC/Citrix 未覆盖。
+
+`structured-multicell-safety-gates.json` 的 15 项模型安全门全部通过，但候选仍未进入生产 catalog/wire。完成 field 前仍需新 profile 审查、采样/codec 代理、构建封存，并由主人授权全新 tag 的 ≤25 MB 远端摘要/安全发布/reopen 运行；Medium/Big 不因该授权自动启动。

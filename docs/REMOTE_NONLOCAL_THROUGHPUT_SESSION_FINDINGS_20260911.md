@@ -1535,3 +1535,11 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 静态核对当前 `unified_visual_profile.h` 发现，layout 10 的 manifest 已包含 4 个 `CalibrationReferences` 空间 pilot 区（另有 2 个 `PhaseChecker` 区），它们不占用 Data codeword slot；Control 则在 BaseLuma slot 0..8 的 mixed-slot 合同内单独计费。证据 `nl0915-profile-offline-grayfast8-01/calibration-pilot-inventory.json`，source SHA-256=`17139f591c200fcc541a07e82fd89d537718e3174832ea782003743a09f8350a`。
 
 这修正了 §21.57 的一个条件边界：若新 layout 14 保留同等空间 pilot 几何并完成新的 raster/Decoder 合同，校准不必然再占用两个 Data 槽，20 槽仍可能保持名义 `32,580 B/frame`；但这是“可保留现有空间 pilot 合同”的结构性假设，不是现有实现对新码本的兼容证明。必须重新验证 pilot 的四级 luma 值、采样/缩放/phase、gamma/clip、codec/4:2:0 和资源成本，且仍需新 identity/layout、canonical raster、mapping/Golden、Decoder 安全门与独立 ≤25 MB field 授权。该静态发现不改变当前生产代码、catalog、远端运行态或 Medium/Big 冻结状态。
+
+### 21.59 结构化多-cell canonical raster / mapping / Golden oracle 与安全前置门
+
+主人授权后，针对 2×2×3×3 四级 luma 候选建立独立 canonical raster 与 mapping oracle（仍未接入生产）。完整 256 symbols 使用 base-4、宏单元 row-major、LSB-first 映射；`mappingRoundTrip=true`，256 个 Golden vectors 完整通过。mapping hash=`d74ad6e0aac3c1b5d63159bd0708932997ad364b99f95b17e12775d2773977c9`，Golden hash=`7ba1ca8e1e7c4c7052395d738b77e1b97b5e0ad645b08d4d4c3d0420f9639259`。整数 1:1 采样下，identity 与 radius 1/2 box-blur 均 `256/256 exact`、无 ambiguous/wrong；gain=`0.5/0.75/1.25` 加 offset 的校准代理在 radius 0/1/2 也均 `256/256 exact`。midpoint tie（winners `[0,1]`）和 black/white pilot 重合、过小间隔、NaN/Inf 均 fail-closed 拒绝。
+
+采样边界已显式记录：仅覆盖整数对齐 1:1 pixel centers；fractional phase、rescale、chroma siting、gamma、codec/4:2:0、WGC/Citrix 均未通过。产物 `structured-multicell-canonical-oracle.py/json`，状态仍 `ARTIFACT_ONLY_NOT_ACCEPTED`。
+
+另建 `structured_multicell_safety_gates.py/json`，15 项模型门全部通过：identity/layout 与 mapping hash、20-slot/残余资源上限、重复/冲突 payload、pilot separation、tie ambiguity、摘要→安全发布→reopen、摘要不匹配阻断和既有 final target 防覆盖。该结果是安全状态模型证据，不是远端视觉或完整文件证据；仍需新 profile wire/catalog 审查、fractional phase/codec 代理和 ≤25 MB field test。
