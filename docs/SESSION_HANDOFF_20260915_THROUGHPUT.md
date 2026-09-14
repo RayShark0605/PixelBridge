@@ -90,3 +90,7 @@ artifact-only mask-repair 屏蔽性试探把 index 32 替换为 `0x13B0C15`，�
 ## 11. Mask-repair geometry proxy 结果
 
 mask-repair 在无变换下 256-symbol exact round-trip，但简单 1-cell box blur 仅 53/256 exact、2-cell blur 仅 17/256；对比度 75% 仅 192/256，50% 仅 96/256。该模型不是 Citrix/codec 实测，但已否定“直接进入 ≤25 MB field test”的证据链。当前不请求 field 授权、不启动远端；若继续必须重新设计对 blur/contrast/phase 稳健的视觉表达，再重复 mapping/Golden/安全门。
+
+## 12. 低频码本研究边界
+
+artifact-only 低频候选包括 3×3 二值宏单元偶校验码本与多种 tile geometry。偶校验候选在 blur-aware affine 模型下原始脚本曾把 1 个 tie 计作 exact，现已按 fail-closed 修正为 255/256 accepted + 1 ambiguous；随机扰动也为 255/2048。不同 tile 几何显示 10×10 以上才在简化 blur proxy 下接近全 mask 可分，但 8-plane 容量跌至 11 slots 或更低，无法满足当前单帧载荷目标。以上均未建模远端 codec/缩放/BER，不得 field test。
