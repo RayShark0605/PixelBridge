@@ -1475,3 +1475,5 @@ artifact-only 安全 gate 已通过 16 项，但需与上述 oracle 拒绝同时
 
 
 汇总索引 `nl0915-profile-offline-grayfast8-01/grayfast8-study-summary.json` 已把当前状态固定为：mapping 可逆、16 项安全 gate 全通过，但原始 8-plane raster 完整字节可逆性拒绝；mask-repair 仅屏蔽性通过，仍无 field evidence。
+
+mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固定 36-cell tile、最近距离解码、均匀偏移与 ±2/4/8/16 随机 cell 扰动（256 symbols×8 trials）下，修复表 256/256 exact decode，ambiguous=0。该结果仅说明离线亮度间隔在简化模型下有余量；没有建模 gamma、缩放/相位、模糊、codec、4:2:0、WGC/Citrix 或真实 BER/FER，不能作为 field 或吞吐证据。产物 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-noise-model.json`。
