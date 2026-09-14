@@ -72,6 +72,7 @@ T4仅在确有新证据需要复跑且获准的情况下，用**全新tag**：
 
 ## 8. GrayFast8 oracle 结果与当前门禁
 
-layout 14 artifact-only oracle 已建立。现有 64-mask + 两个亮度 bit 的直接背景-plane 假设在完整 256 符号域失败：mask index 32 为全零，`32/96` 与 `160/224` 发生不可观测碰撞；结果为 `mappingRoundTrip=true`、`selectedGoldenVectorsRoundTrip=true`，但 `rasterRoundTrip=false`、`fullByteRoundTrip=false`、`REJECTED_AMBIGUOUS_SYMBOLS`。15 项安全/兼容 gate 仍全部通过，但那只是状态机与资源/摘要模型证据，不代表视觉表达可恢复。
+layout 14 artifact-only oracle 已建立。现有 64-mask + 两个亮度 bit 的直接背景-plane 假设在完整 256 符号域失败：mask index 32 为全零，`32/96` 与 `160/224` 发生不可观测碰撞；结果为 `mappingRoundTrip=true`、`selectedGoldenVectorsRoundTrip=true`，但 `rasterRoundTrip=false`、`fullByteRoundTrip=false`、`REJECTED_AMBIGUOUS_SYMBOLS`。16 项安全/兼容 gate 仍全部通过，但那只是状态机与资源/摘要模型证据，不代表视觉表达可恢复。
 
 artifact-only mask-repair 屏蔽性试探把 index 32 替换为 `0x13B0C15`，得到 256 符号 exact round-trip、64 个唯一 mask，但最小 Hamming 距离降为 8，必须重新定义完整 mapping/Golden/Decoder 并验证远端鲁棒性，不能接入现有 layout 13。证据位于 `artifacts/nonlocal-stall-20260913-2111/nl0915-profile-offline-grayfast8-01/`。在 mask-repair 或另一种正交表达未通过新的离线鲁棒门前，不得启动远端测试；Medium/Big 继续冻结。
+

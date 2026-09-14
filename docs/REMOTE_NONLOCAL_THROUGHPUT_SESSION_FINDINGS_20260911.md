@@ -1462,7 +1462,7 @@ T4资源拒绝、Outer冲突、deferred、orphan quota/conflict为0；**orphanAd
 
 补充 representation-risk 静态证据：当前 GrayFast 实际 raster 由 6-bit glyph mask、bit-6 前景亮度二值选择和固定低亮度背景组成，源码循环上限仍为 7 个 plane。故“直接再追加第 8 个 bit”并不是现有路径的局部改动，必须引入新的正交像素可观测量或多级亮度/校准合同；证据 `nl0915-profile-offline-grayfast8-01/representation-risk.json`，仍未实现、未远端运行。
 
-GrayFast8 artifact-only gate 模型已通过 16 项：identity/layout 精确 admission、13/14 混用与未知 identity 拒绝、FEC/residual 资源边界、重复/冲突 payload、亮度 plane collapse、摘要→安全发布→reopen，以及既有 final target 防覆盖。输出 `nl0915-profile-offline-grayfast8-01/grayfast8-gate-tests.json`，其 `allPassed=true`；这些是模型级安全证据，不是远端视觉恢复或端到端吞吐证据。
+GrayFast8 artifact-only gate 模型已通过 16 项：identity/layout 精确 admission、13/14 混用与未知 identity 拒绝、FEC/residual 资源边界、重复/冲突 payload、亮度 plane collapse、摘要→安全发布→reopen、既有 final target 防覆盖，以及歧义符号的 fail-closed 拒绝。输出 `nl0915-profile-offline-grayfast8-01/grayfast8-gate-tests.json`，其 `allPassed=true`；这些是模型级安全证据，不是远端视觉恢复或端到端吞吐证据。
 
 ### 21.51 GrayFast8 canonical raster / CPU oracle：原始背景 plane 假设被完整字节可逆性拒绝
 
@@ -1470,5 +1470,6 @@ GrayFast8 artifact-only gate 模型已通过 16 项：identity/layout 精确 adm
 
 随后做了一个仍然只在 artifact 中的 mask-repair 屏蔽性试探：将 index 32 替换为确定性非零 mask `0x13B0C15` 后，256 符号 exact round-trip 可通过、mask table 保持 64 个唯一值，但全表最小 Hamming 距离降至 8；这改变 canonical glyph table，尚未有远端/缩放/BER 证据，不能直接接入现有布局。证据 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-model.json`。该结果只说明“可继续设计”，不构成 layout 14 接受或现场测试许可。
 
-artifact-only 安全 gate 已通过 15 项，但需与上述 oracle 拒绝同时解释：安全状态机和摘要/发布/reopen 模型通过，不等于视觉表达已可恢复。当前不启动任何远端 25 MB/100 MB、Medium 或 Big；若要继续，必须先对 mask-repair 或另一种正交观测量建立新的完整 canonical raster、mapping hash、Golden vectors、抗亮度坍缩测试，并重新确认 field-test 授权。
+artifact-only 安全 gate 已通过 16 项，但需与上述 oracle 拒绝同时解释：安全状态机和摘要/发布/reopen 模型通过，不等于视觉表达已可恢复。当前不启动任何远端 25 MB/100 MB、Medium 或 Big；若要继续，必须先对 mask-repair 或另一种正交观测量建立新的完整 canonical raster、mapping hash、Golden vectors、抗亮度坍缩测试，并重新确认 field-test 授权。
+
 
