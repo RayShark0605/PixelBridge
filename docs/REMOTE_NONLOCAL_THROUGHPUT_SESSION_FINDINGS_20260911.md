@@ -1363,3 +1363,25 @@ point组526930ms与R的525968ms（同配置、Q期二进制）相差+0.18%，同
 三次的 SHA256 分别与源元数据匹配（25MB=`f9fa18860c159080d860b654903f272846a5af5fa51ba303e39825ce4b53c3e4`；100MB=`4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`），wholeDigestVerified、renameSucceeded、finalReopenVerified、published 均为 true，资源拒绝/延期/孤儿/冲突均为 0，前台句柄前后相同且桥 `liveProcesses=[]`。25MB 成对结果 linear 仅快约1.18%，属于单次观察；100MB linear 比当前 point 526930ms 慢约35.4%，虽较旧 linear 752227ms 快约5.1%，仍不足以支撑长文件路线。故 `--fullscreen-sampling` 继续保持显式 opt-in、默认 point，不进入完整 Medium/Big 重测。
 
 证据目录：`candidate-t-compose-fast-20260914-2201/`（本地基线/源码快照与汇总）、`nl0914-fss-fast-point-25m-f30-s6/`、`nl0914-fss-fast-linear-25m-f30-s6/`、`nl0914-fss-fast-linear-100m-f30-s6/`。本节不把100MB窄样本升级为完整目标结论；完整 Medium/Big 仍只引用 §21.29–§21.31 的 O 组合实测。
+
+### 21.44 对§21.43现场参数与归因的勘误（保留原始证据）
+
+复核 Encoder report 后发现，§21.43 三次直接调用底层 `field_run_fullscreen_sampling.py` 时漏传了 `--grayfast-spatial-interleave`，实际 `grayFastSpatialInterleave=false`。因此三次文件摘要/发布/重开及独立SHA成功仍成立，25MB pair在非spatial配置下的1.18%单次差异也可保留，但**714137ms不能与R/S spatial point 526930ms作为单变量性能比较，也不足以否定fast-linear在正确spatial配置下的表现**。§21.43关于“同R/S配置”和“仍慢35.4%故不晋级”的直接归因撤回；旧tag不覆盖、不复用。
+
+本次底层调用未经过外层display前后guard；没有执行display-set或输入/焦点操作，报告显示远端2560×1600@240且前台端点相同、最终桥liveProcesses=[]，但不能据此宣称完成了外层前后显示模式一致性验证。候选T的build-identity曾误把源码commit写入actualBuildIdentity；实际exe报告的内嵌commit仍为configure时的25a08aa。新create-only `candidate-t2-compose-fast-release`保留同一Encoder SHA256 `f510ba36f9f5b91157ec22d2a350db8692e0dea09693b256e4aac8a74bdb60bf`，明确记录源码e8c9c5b、完整patch/源hash和内嵌commit陈旧的差异，不冒充新发布。
+
+纠正入口为 `run_fast_fullscreen_sampling_guarded.py`，沿用原sampling外层guard并固定新候选hash，强制spatial/首轮100%/30FPS/6MiB和同Session/源稳定/无resume/完整最终门，前后核对右屏ROI、远端模式与登记进程。纠正run只用全新tag，先25MB，结果再决定是否100MB；原始错误及其修正均保留。
+
+### 21.45 T2正确 spatial 参数结果：fast-linear 小文件改善、100MB 仍慢于 point
+
+使用 §21.44 的 guarded 入口和新候选（Encoder SHA256 `f510ba36f9f5b91157ec22d2a350db8692e0dea09693b256e4aac8a74bdb60bf`，Decoder 为 v0.6 冻结件）补做成对/升级验证。每个 tag 均为新 Session、Receiver-first、`--grayfast-spatial-interleave`、30FPS、6MiB、首轮100%、`--budget-bound-decoders`；外层 guard 确认本机 ROI、远端2560×1600@240 前后不变、无输入/焦点自动化和 `liveProcesses=[]`。
+
+| tag | bytes | sampling | runtime ms | UniqueVisualFPS | Sender submitted fps | allFinalGates |
+|---|---:|---|---:|---:|---:|---|
+| `nl0914-t2-spatial-point25` | 25,000,000 | point | 126906 | 7.51 | 28.74 | true |
+| `nl0914-t2-spatial-linear25` | 25,000,000 | linear | 120974 | 7.85 | 21.90 | true |
+| `nl0914-t2-spatial-linear100` | 100,000,000 | linear | 660758 | 7.74 | 21.66 | true |
+
+三个 run 的 25MB SHA256 均为 `f9fa18860c159080d860b654903f272846a5af5fa51ba303e39825ce4b53c3e4`，100MB SHA256 为 `4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`；wholeDigestVerified、renameSucceeded、finalReopenVerified、published 和第二次独立 SHA 全部通过，资源拒绝/延期/孤儿/冲突均为0。25MB linear 相对同候选 point 快4.67%，但仍是单次小文件观察；100MB linear 相对已知 point 526930ms 慢25.3%，相对旧未优化 linear 752227ms 快12.2%，说明本地合成优化生效但采样模式在多段 graduation 下仍使发送节奏/每帧新信息不足，不能晋级或用于完整 Medium/Big。O1 授权已记录；当前30FPS later-pass repair-only 与发送窗口6已在 live scheduler 中，不再重复改写同一语义。
+
+证据目录：`nl0914-t2-spatial-point25/`、`nl0914-t2-spatial-linear25/`、`nl0914-t2-spatial-linear100/`、候选构建与源快照 `candidate-t2-compose-fast-release/`。完整目标文件仍保持 O 组合历史最好，不以本节100MB推演替代完整摘要/发布/重开实测。
