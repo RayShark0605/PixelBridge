@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -782,9 +783,20 @@ PresentationStatus DataWindow::SubmitFrame(const CanonicalBgraFrameView& frame) 
         return PresentationStatus::Failure(PresentationErrorCode::Paused, PresentationStage::FrameValidation);
     }
     const std::size_t rowBytes = static_cast<std::size_t>(frame.width) * 4;
-    for (std::size_t row = 0; row < frame.height; row++)
+    if (frame.rowPitch == rowBytes)
     {
-        std::copy_n(frame.pixels.data() + row * frame.rowPitch, rowBytes, implementation_->pendingPixels.data() + row * rowBytes);
+        // The production fullscreen path always supplies a tightly packed
+        // BGRA raster.  Preserve the general strided-row fallback below, but
+        // collapse the common case to one bounded copy so frame submission
+        // spends less time under stateMutex.
+        std::memcpy(implementation_->pendingPixels.data(), frame.pixels.data(), implementation_->pendingPixels.size());
+    }
+    else
+    {
+        for (std::size_t row = 0; row < frame.height; row++)
+        {
+            std::copy_n(frame.pixels.data() + row * frame.rowPitch, rowBytes, implementation_->pendingPixels.data() + row * rowBytes);
+        }
     }
     if (implementation_->snapshot.pendingFrame)
     {
