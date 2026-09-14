@@ -1439,3 +1439,21 @@ T4资源拒绝、Outer冲突、deferred、orphan quota/conflict为0；**orphanAd
 当前GrayFast每码字净Transport上限1629B、最多18槽，全部都当有效payload也仅29322B/unique frame（乐观忽略Control/repair等开销）。若有效帧率仍维持当前约7.8Hz，则乐观encoded goodput≤228711.6B/s；以历史完整两个文件的encoded bytes总计1326192709B估算，乐观总时间也要5798.54秒，未计安全发布/重开耗时。这是“同encoded bytes且帧率不提高”条件下的代数上界，**不证明链路帧率不可提高，不替代真实整文件计时**。
 
 要匹配历史O两个完整文件4312.469秒，即使18槽全有用也需至少10.487864Hz；若每帧留1个Control槽则需11.104798Hz。故仅本地编码节省0.7ms、修复linear过量预算，尚不足以证明总目标改善；后续需要对实际unique-frame有效载荷率有直接证据的方案。新的visual profile/layout/Golden方向需另行明确授权，不能把历史O4（已演进为GrayFast）再说成未实现。证据 `nl0914-o3b-conditional-capacity-bound.json`。完整Medium/Big未在本轮重测，历史O成绩不改名为T2/T3/T4成绩。
+
+### 21.50 已获授权的新 Profile 离线可行性对照：GrayFast8（layout 14）仅保留为 artifact 候选
+
+主人批准先做“提高单帧净载荷”的新视觉 Profile／布局离线对照。本轮严格停留在 artifact-only：未改生产源代码、默认 Profile、Decoder、Golden Vector、Citrix、显示模式、输入或远端运行态，也未进行 Medium/Big 或新的远端文件传输。基线取当前 `PB-Experimental-GrayFast-1`（layout 13、6×6 tile、41,872 Data tiles、7 个灰阶 carrier plane、18 个 Fast codeword）。
+
+离线候选命名为 `PB-Experimental-GrayFast8-Offline-1`，新 identity=`0x5042475246383031`、layout=`14`，明确状态 `ARTIFACT_ONLY_NOT_ACCEPTED`。候选保持 1920×1080、6×6 tile、现有 16,200-bit Fast inner FEC 与 1,629 B Transport payload，仅假设增加第 8 个独立视觉 plane（逐帧独立校准的二值中性亮度 ladder），不假定现有 Control reservation、pilot、mapping 或 Decoder 可以直接复用。
+
+| 模型 | carrier bits | Fast codeword slots | 单帧 Transport 上限 | 相对当前 |
+|---|---:|---:|---:|---:|
+| GrayFast 当前 7-plane/18-slot | 293,104 | 18 | 29,322 B | — |
+| GrayFast8 候选 8-plane/20-slot | 334,976 | 20 | 32,580 B | +11.111111% |
+| GrayFast8 保守 8-plane/19-slot | 334,976 | 19 | 30,951 B | +5.555556% |
+
+这是 carrier/代码字整除得到的容量上界，不是吞吐实测；没有扣除新 pilot、Control、repair、丢帧或重复等待。确定性 packing benchmark（128 帧、41,872 tile/frame）反而显示增加 plane 会增加本机 synthetic 工作量：当前 7-plane/18-slot 为 687.5444 ms，8-plane/20-slot 为 765.1697 ms，8-plane/19-slot 为 769.2151 ms；该 benchmark 不含 FEC、GPU、WGC/DXGI、远端 codec、摘要、safe publish 或 reopen。
+
+若仅作条件代数估计，并假设 T4 的 `7.754428 Hz` unique visual rate、其余开销及新 plane 恢复质量均不变，则 100 MB 的 `529,685 ms` 可按 18/20 缩至约 `476,716.5 ms`；此数字不是现场结果，不得替代完整门。更小 tile 或额外 plane 会改变误码率、亮度/色度映射、缩放相位、pilot/locator 几何及资源预算，必须新建 canonical raster、mapping hash、Decoder oracle、Golden vectors，并先通过错误 identity/layout 混用、冲突 payload、资源耗尽和 ≤25 MB 的完整摘要/安全发布/reopen 验证，再考虑 ≤100 MB paired 对照；Big 不因本授权自动获得许可。
+
+机器可读产物：`artifacts/nonlocal-stall-20260913-2111/nl0915-profile-offline-grayfast8-01/`（`profile_spec.json`、`packing_benchmark.json`、`identity.json`、`NOTES.md`、`run-receipt.json`、可复跑 `profile_offline_model.py`）。本节只证明存在 +11.11% 的理论载荷空间，不证明视觉可恢复性或总传输时间改善；完整 Medium/Big 目标仍未完成。
