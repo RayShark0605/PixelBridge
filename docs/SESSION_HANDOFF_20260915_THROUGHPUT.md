@@ -94,3 +94,7 @@ mask-repair 在无变换下 256-symbol exact round-trip，但简单 1-cell box b
 ## 12. 低频码本研究边界
 
 artifact-only 低频候选包括 3×3 二值宏单元偶校验码本与多种 tile geometry。偶校验候选在 blur-aware affine 模型下原始脚本曾把 1 个 tie 计作 exact，现已按 fail-closed 修正为 255/256 accepted + 1 ambiguous；随机扰动也为 255/2048。不同 tile 几何显示 10×10 以上才在简化 blur proxy 下接近全 mask 可分，但 8-plane 容量跌至 11 slots 或更低，无法满足当前单帧载荷目标。以上均未建模远端 codec/缩放/BER，不得 field test。
+
+## 13. 结构化多-cell 码本候选
+
+artifact-only 研究找到一个可继续审查的 6×6 方案：3×3 二值 macrocell、每格 2×2 像素，使用 9-bit 偶校验码本排除全零常量 pattern，再加入奇校验 pattern 1，保持 256 symbols / 8 bits per tile。blur-aware affine proxy 在 identity/contrast75/contrast50 与 ±2/4/8/16/24 随机 luma 扰动下 256/256 accepted、0 ambiguous。该 decoder 语义和 codebook 均不同于当前生产 GrayFast，且可能增加每 tile 拟合成本；无真实远端、codec、缩放、BER/FER 或端到端证据。候选仍不允许 field test，需先做资源/映射/Golden/复杂度审查并取得单独 field 授权。
