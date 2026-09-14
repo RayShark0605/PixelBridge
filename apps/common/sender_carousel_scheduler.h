@@ -280,6 +280,21 @@ struct SenderUnifiedScheduledFrame
     bool operator==(const SenderUnifiedScheduledFrame&) const = default;
 };
 
+// A complete bank visits each (source row, physical slot) exactly once. The
+// physical index is never permuted: Control must remain in a Control-capable slot.
+[[nodiscard]] inline bool SelectUnifiedSpatialSourceRow(const std::uint32_t rowCount,
+    const std::uint32_t phase, const std::uint32_t bankPhase, const std::uint32_t physicalSlot,
+    std::uint32_t& sourceRow) noexcept
+{
+    if (rowCount == 0 || rowCount > senderUnifiedActiveSegmentWindowSize || phase >= rowCount ||
+        bankPhase >= rowCount || physicalSlot >= senderUnifiedMaximumCodewordSlotCount)
+    {
+        return false;
+    }
+    sourceRow = (phase + physicalSlot + bankPhase) % rowCount;
+    return true;
+}
+
 struct SenderUnifiedCarouselSchedulerConfig
 {
     // Zero denotes the formal zero-byte Session: it has Session and Manifest

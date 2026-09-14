@@ -90,6 +90,87 @@ void ChangeValidTransportPayload(pbdemodd3d11::CaptureDemodulatorResult& frame)
 const pbapp::RunReportContext context{"test", "g17", "fixture-commit", "2026-09-04T00:00:00Z"};
 } // namespace
 
+TEST_CASE("Gray fast report identifies budget-bound admission without optional instrumentation",
+    "[application][report][budgeted-decoder-runtime]")
+{
+    pbapp::DecoderSnapshot snapshot;
+    snapshot.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    snapshot.visualProfileId = pbprotocol::kGrayFastExperimentalProfile.visualProfileId;
+    snapshot.visualLayoutVersion = pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion;
+    REQUIRE_FALSE(snapshot.diagnostics);
+    REQUIRE_FALSE(snapshot.measurement);
+    const auto normal = Json(pbapp::BuildDecoderRunReportJson(context, snapshot));
+    REQUIRE(normal["budgetBoundDecoderAdmission"].isBool());
+    REQUIRE_FALSE(normal["budgetBoundDecoderAdmission"].toBool());
+    snapshot.budgetBoundDecoderAdmission = true;
+    const auto experimental = Json(pbapp::BuildDecoderRunReportJson(context, snapshot));
+    REQUIRE(experimental["budgetBoundDecoderAdmission"].toBool());
+    REQUIRE(experimental["stageCounters"].toObject()["budgetBoundDecoderAdmission"].toBool());
+    REQUIRE_FALSE(experimental.contains("measurement"));
+    REQUIRE(experimental["publish"].toObject()["finalReopenVerified"].isNull());
+    REQUIRE(experimental["verifiedEncodedBytesPerUniqueFrame"].isNull());
+}
+
+TEST_CASE("Gray fast sender reports explicit initial airtime without fabricating receiver success",
+    "[application][report][grayfast-initial-airtime-bounds]")
+{
+    pbapp::EncoderSnapshot snapshot;
+    snapshot.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    const auto normal = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
+    REQUIRE_FALSE(normal["grayFastSpatialInterleave"].toBool());
+    REQUIRE(normal["configuredInitialAirtimePercent"].toInt() == 100);
+    snapshot.grayFastSpatialInterleave = true;
+    snapshot.configuredInitialAirtimePercent = 65;
+    const auto experimental = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
+    REQUIRE(experimental["grayFastSpatialInterleave"].toBool());
+    REQUIRE(experimental["configuredInitialAirtimePercent"].toInt() == 65);
+    REQUIRE(experimental["receiverProgress"].isNull());
+    REQUIRE(experimental["verifiedGoodput"].isNull());
+    REQUIRE_FALSE(experimental.contains("measurement"));
+}
+
+TEST_CASE("Gray fast reports retain Unified measurement and publication evidence", "[application][report][grayfast-report]")
+{
+    pbapp::EncoderSnapshot encoder;
+    pbapp::DecoderSnapshot decoder;
+    encoder.visualProfile = decoder.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    encoder.visualProfileId = decoder.visualProfileId = pbprotocol::kGrayFastExperimentalProfile.visualProfileId;
+    encoder.visualLayoutVersion = decoder.visualLayoutVersion = pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion;
+    encoder.measurement.emplace();
+    decoder.measurement.emplace();
+    decoder.recoveryRuntimeMilliseconds = 12345;
+    const auto encoderJson = Json(pbapp::BuildEncoderRunReportJson(context, encoder));
+    const auto decoderJson = Json(pbapp::BuildDecoderRunReportJson(context, decoder));
+    REQUIRE(encoderJson["schema"] == "PixelBridge.RunReport.3");
+    REQUIRE(decoderJson["schema"] == "PixelBridge.RunReport.3");
+    REQUIRE(encoderJson["profile"] == "PB-Experimental-GrayFast-1");
+    REQUIRE(decoderJson["visualLayoutVersion"].toInt() == 13);
+    REQUIRE(decoderJson["recoveryRuntimeMilliseconds"].toDouble() == 12345);
+    REQUIRE(decoderJson.contains("unifiedTelemetry"));
+    REQUIRE(decoderJson.contains("measurement"));
+    REQUIRE(decoderJson.contains("publish"));
+    REQUIRE(decoderJson["publish"].toObject().contains("finalReopenVerified"));
+    REQUIRE(decoderJson["publish"].toObject()["finalReopenVerified"].isNull());
+    REQUIRE(decoderJson["verifiedEncodedBytesPerUniqueFrame"].isNull());
+    encoder.submittedLogicalFrames = 2;
+    encoder.submittedControlSlots = 12;
+    REQUIRE(Json(pbapp::BuildEncoderRunReportJson(context, encoder))["scheduler"].toObject()["controlSlotOccupancy"].isNull());
+    encoder.codewordsPerFrame = 18;
+    const auto scheduler = Json(pbapp::BuildEncoderRunReportJson(context, encoder))["scheduler"].toObject();
+    REQUIRE(scheduler["codewordsPerFrame"].toInt() == 18);
+    REQUIRE(scheduler["controlSlotOccupancy"].toDouble() == 12.0 / 36.0);
+    encoder.controlSlotCounterOverflow = true;
+    REQUIRE(Json(pbapp::BuildEncoderRunReportJson(context, encoder))["scheduler"].toObject()["controlSlotOccupancy"].isNull());
+    decoder.wholeFileDigestVerified = true;
+    decoder.wholeFileDigestCheck = true;
+    decoder.finalPublishSucceeded = true;
+    decoder.finalRenameSucceeded = true;
+    decoder.finalReopenVerified = false;
+    const auto notReopened = Json(pbapp::BuildDecoderRunReportJson(context, decoder));
+    REQUIRE(notReopened["publish"].toObject()["finalReopenVerified"] == false);
+    REQUIRE(notReopened["verifiedEncodedBytesPerUniqueFrame"].isNull());
+}
+
 TEST_CASE("G17 report has a versioned Unified boundary and never upgrades legacy diagnostics", "[application][report][g17]")
 {
     pbapp::EncoderSnapshot encoder;
@@ -118,6 +199,7 @@ TEST_CASE("G17 report has a versioned Unified boundary and never upgrades legacy
     encoder.resumeVerificationMilliseconds = 8;
     encoder.submittedLogicalFrames = 2;
     encoder.submittedControlSlots = 12;
+    encoder.codewordsPerFrame = 15;
     encoder.cycleCount = 3;
     encoder.durableRepairIdLeaseEnd = 123;
     const auto populated = Json(pbapp::BuildEncoderRunReportJson(context, encoder));

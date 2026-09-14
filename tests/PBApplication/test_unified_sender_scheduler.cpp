@@ -982,3 +982,40 @@ TEST_CASE("Zero-byte Unified Session recovers Session and Manifest from one mixe
     REQUIRE(completed.committedEquationCount == 0);
     REQUIRE(completed.inactiveTransportSlotCount == 7);
 }
+
+TEST_CASE("Spatial source rows form a bounded physical-slot-preserving bijection", "[unified][spatial-matrix]")
+{
+    for (std::uint32_t rowCount = 1; rowCount <= pbapp::senderUnifiedActiveSegmentWindowSize; rowCount++)
+    {
+        for (std::uint32_t bankPhase = 0; bankPhase < rowCount; bankPhase++)
+        {
+            std::array<std::array<bool, pbapp::senderUnifiedMaximumCodewordSlotCount>, pbapp::senderUnifiedActiveSegmentWindowSize> seen{};
+            for (std::uint32_t phase = 0; phase < rowCount; phase++)
+            {
+                for (std::uint32_t slot = 0; slot < pbapp::senderUnifiedMaximumCodewordSlotCount; slot++)
+                {
+                    std::uint32_t sourceRow = 99;
+                    REQUIRE(pbapp::SelectUnifiedSpatialSourceRow(rowCount, phase, bankPhase, slot, sourceRow));
+                    REQUIRE(sourceRow < rowCount);
+                    REQUIRE_FALSE(seen[sourceRow][slot]);
+                    seen[sourceRow][slot] = true;
+                }
+            }
+            for (std::uint32_t sourceRow = 0; sourceRow < rowCount; sourceRow++)
+            {
+                for (const bool visited : seen[sourceRow])
+                {
+                    REQUIRE(visited);
+                }
+            }
+        }
+    }
+    for (const auto invalid : std::array{std::array{0U, 0U, 0U, 0U}, std::array{7U, 0U, 0U, 0U},
+        std::array{6U, 6U, 0U, 0U}, std::array{6U, 0U, 6U, 0U}, std::array{6U, 0U, 0U, 18U},
+        std::array{0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU}})
+    {
+        std::uint32_t sourceRow = 99;
+        REQUIRE_FALSE(pbapp::SelectUnifiedSpatialSourceRow(invalid[0], invalid[1], invalid[2], invalid[3], sourceRow));
+        REQUIRE(sourceRow == 99);
+    }
+}

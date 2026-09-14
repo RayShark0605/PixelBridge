@@ -976,7 +976,7 @@ DemodStatus ValidateUnifiedSubmission(const ScreenCaptureFrame& frame,
     {
         return DemodStatus::Failure(DemodError::InvalidBinding, DemodStage::Binding);
     }
-    if (!pbmodulation::ResolveUnifiedVisualSamplingGeometry(bootstrap.geometry,
+    if (!pbmodulation::ResolveUnifiedVisualSamplingGeometry(bootstrap,
         static_cast<std::uint32_t>(frame.metadata.roiSize.width),
         static_cast<std::uint32_t>(frame.metadata.roiSize.height), policy, samplingGeometry))
     {

@@ -45,3 +45,7 @@ ZIP 解压校验以封印长度加单字节 sentinel 限制实际读出，不能
 无签名的哈希/seal 只用于完整性与身份一致性，不证明发布者真实性。
 包完整性通过后仍需从新解压目录执行版本检查、双端 `--gui-smoke` 和 G22 右屏最小实际像素恢复；
 本工具本身不产生 GUI/实屏、性能或完整 G22 通过声明。
+
+## 版本化交付（v0.6起）
+
+`-VersionedPackageName`可替代`-CompactPackageName`，从双端实际runtime identity的一致版本生成`PixelBridge-v0.6.0-win64`类名称；二者不能同时指定。SBOM项目版本同样来自实际应用版本，不再硬编码0.1.0。可用`-ReleaseDocumentation docs/RELEASE_V0.6.md,docs/SESSION_HANDOFF_20260914_V0.6.md,docs/NEXT_TASK_PROMPT_V0.6.md`将最多8个、每个不超过2MiB的仓库docs Markdown纳入同一哈希清单。PowerShell命令行可用数组调用传参。源码干净提交、tag、预算、profile、SBOM/notices、封印和独立verifier等原检查不变。

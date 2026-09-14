@@ -307,12 +307,15 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
         std::optional<std::uint64_t>(snapshot.submittedControlSlots) : std::nullopt);
     stream << ",\"submittedSupplementalBands\":" << snapshot.submittedSupplementalBands
         << ",\"skippedSupplementalBandFrames\":" << snapshot.skippedSupplementalBandFrames;
+    stream << ",\"codewordsPerFrame\":";
+    WriteOptionalNumber(stream, snapshot.codewordsPerFrame != 0 ? std::optional<std::uint32_t>(snapshot.codewordsPerFrame) : std::nullopt);
     stream << ",\"controlSlotOccupancy\":";
-    WriteOptionalNumber(stream, !snapshot.controlSlotCounterOverflow && snapshot.submittedLogicalFrames != 0 ?
+    WriteOptionalNumber(stream, !snapshot.controlSlotCounterOverflow && snapshot.submittedLogicalFrames != 0 && snapshot.codewordsPerFrame != 0 ?
         std::optional<double>(static_cast<double>(snapshot.submittedControlSlots) /
-            (static_cast<double>(snapshot.submittedLogicalFrames) * pbmodulation::kUnifiedCodewordCount)) : std::nullopt);
-    stream << ",\"occupancyBasis\":\"Control slots in successfully submitted complete logical rasters / ("
-        << pbmodulation::kUnifiedCodewordCount << " * submittedLogicalFrames); repeated Presents excluded\"}"
+            (static_cast<double>(snapshot.submittedLogicalFrames) * snapshot.codewordsPerFrame)) : std::nullopt);
+    stream << ",\"occupancyBasis\":\"Control slots in successfully submitted complete logical rasters / (codewordsPerFrame * submittedLogicalFrames); repeated Presents excluded\"}"
+        << ",\"grayFastSpatialInterleave\":" << snapshot.grayFastSpatialInterleave
+        << ",\"configuredInitialAirtimePercent\":" << snapshot.configuredInitialAirtimePercent
         << ",\"configuredLogicalFps\":" << snapshot.configuredLogicalVisualFps << ",\"observedSubmittedLogicalFps\":";
     WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);
     stream << ",\"sourceWholeFileDigest\":";
@@ -354,6 +357,7 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     stream.imbue(std::locale::classic());
     stream << std::boolalpha << std::setprecision(17) << '{';
     WriteContext(stream, context, true);
+    stream << ",\"budgetBoundDecoderAdmission\":" << snapshot.budgetBoundDecoderAdmission;
     stream << ",\"role\":\"Decoder\",\"state\":";
     WriteEscaped(stream, GetDecoderStateName(snapshot.state));
     WriteUnifiedIdentity(stream, snapshot.visualProfile, snapshot.visualProfileId,
@@ -363,6 +367,7 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     WriteEscaped(stream, snapshot.originalFileNameUtf8);
     stream << ",\"fileBytes\":";
     WriteOptionalNumber(stream, snapshot.descriptorKnown ? std::optional<std::uint64_t>(snapshot.originalFileBytes) : std::nullopt);
+    stream << ",\"recoveryRuntimeMilliseconds\":" << snapshot.recoveryRuntimeMilliseconds;
     stream << ",\"capture\":{\"requestedBackend\":\"Auto\",\"actualBackend\":";
     if (snapshot.actualBackend)
     {
@@ -440,7 +445,7 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     {
         stream << ",\"diagnostics\":" << pbcore::BuildStageDiagnosticsJson(snapshot.diagnostics->GetSnapshot());
     }
-    if (snapshot.diagnostics || snapshot.measurement)
+    if (snapshot.diagnostics || snapshot.measurement || snapshot.budgetBoundDecoderAdmission)
     {
         stream << ",\"stageCounters\":{\"authority\":\"ProductionDecoderSnapshot\""
             << ",\"outerUniqueSymbols\":" << snapshot.outerUniqueSymbols
@@ -459,6 +464,7 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
             << ",\"outerPeakReservedDecoderBytes\":" << snapshot.outerPeakReservedDecoderBytes
             << ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit
             << ",\"outerTotalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit
+            << ",\"budgetBoundDecoderAdmission\":" << snapshot.budgetBoundDecoderAdmission
             << ",\"bootstrapAcceptedFrames\":" << snapshot.bootstrapAcceptedFrames
             << ",\"bootstrapRejectedFrames\":" << snapshot.bootstrapRejectedFrames
             << ",\"bootstrapCpuTimeTotal100ns\":" << snapshot.bootstrapCpuTimeTotal100ns
@@ -501,7 +507,7 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     // The gray-state experimental identity shares the unified RunReport.3
     // schema (per-lane FEC telemetry is exactly what its field A/B needs).
     if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
-        snapshot.visualProfile == VisualProfile::UnifiedGray)
+        snapshot.visualProfile == VisualProfile::UnifiedGray || snapshot.visualProfile == VisualProfile::UnifiedGrayFast)
     {
         return BuildUnifiedEncoderReport(context, snapshot);
     }
@@ -628,7 +634,7 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
 {
     // Same unified RunReport.3 routing as the encoder side.
     if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
-        snapshot.visualProfile == VisualProfile::UnifiedGray)
+        snapshot.visualProfile == VisualProfile::UnifiedGray || snapshot.visualProfile == VisualProfile::UnifiedGrayFast)
     {
         return BuildUnifiedDecoderReport(context, snapshot);
     }
@@ -816,6 +822,7 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount
            << ",\"activeDecoderLimit\":" << snapshot.outerActiveDecoderLimit
            << ",\"totalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit
+           << ",\"budgetBoundDecoderAdmission\":" << snapshot.budgetBoundDecoderAdmission
            << ",\"activeDecoderCount\":" << snapshot.outerActiveDecoderCount
            << ",\"peakActiveDecoderCount\":" << snapshot.outerPeakActiveDecoderCount
            << ",\"reservedDecoderBytes\":" << snapshot.outerReservedDecoderBytes

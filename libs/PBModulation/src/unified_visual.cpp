@@ -417,8 +417,14 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     return blue * blue + red * red;
 }
 
-[[nodiscard]] double GetUnifiedMinimumScale() noexcept
+[[nodiscard]] double GetUnifiedMinimumScale(const bool grayCarrier = false) noexcept
 {
+    // Gray's pixel-forward model has separate sub-unit-scale evidence. This
+    // does not change the SC6 presentation or geometry-only decode contract.
+    if (grayCarrier)
+    {
+        return 0.75;
+    }
     return static_cast<double>(kUnifiedVisualProfile.presentation.minimumScaleNumerator) /
         kUnifiedVisualProfile.presentation.minimumScaleDenominator;
 }
@@ -429,10 +435,10 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
         kUnifiedVisualProfile.presentation.maximumScaleDenominator;
 }
 
-[[nodiscard]] LocalDesktopDecodePolicy GetUnifiedLocatorPolicy(const UnifiedVisualDecodePolicy& policy) noexcept
+[[nodiscard]] LocalDesktopDecodePolicy GetUnifiedLocatorPolicy(const UnifiedVisualDecodePolicy& policy, const bool grayCarrier = false) noexcept
 {
     LocalDesktopDecodePolicy locator = policy.locator;
-    locator.minimumScale = std::max(locator.minimumScale, GetUnifiedMinimumScale());
+    locator.minimumScale = std::max(locator.minimumScale, GetUnifiedMinimumScale(grayCarrier));
     locator.maximumScale = std::min(locator.maximumScale, GetUnifiedMaximumScale());
     return locator;
 }
@@ -448,18 +454,19 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     if (frameWidth == 0 || frameHeight == 0 || !std::ranges::all_of(values, [](const double value)
         {
             return std::isfinite(value);
-        }) || geometry.scaleX < GetUnifiedMinimumScale() - scaleTolerance ||
-        geometry.scaleX > GetUnifiedMaximumScale() + scaleTolerance ||
-        geometry.scaleY < GetUnifiedMinimumScale() - scaleTolerance ||
-        geometry.scaleY > GetUnifiedMaximumScale() + scaleTolerance ||
+        }) || locatorPolicy.minimumScale > locatorPolicy.maximumScale ||
+        geometry.scaleX < locatorPolicy.minimumScale - scaleTolerance ||
+        geometry.scaleX > locatorPolicy.maximumScale + scaleTolerance ||
+        geometry.scaleY < locatorPolicy.minimumScale - scaleTolerance ||
+        geometry.scaleY > locatorPolicy.maximumScale + scaleTolerance ||
         geometry.markerResidualPixels < 0)
     {
         return false;
     }
 
     LocalDesktopGeometry candidate = geometry;
-    candidate.scaleX = std::clamp(candidate.scaleX, GetUnifiedMinimumScale(), GetUnifiedMaximumScale());
-    candidate.scaleY = std::clamp(candidate.scaleY, GetUnifiedMinimumScale(), GetUnifiedMaximumScale());
+    candidate.scaleX = std::clamp(candidate.scaleX, locatorPolicy.minimumScale, locatorPolicy.maximumScale);
+    candidate.scaleY = std::clamp(candidate.scaleY, locatorPolicy.minimumScale, locatorPolicy.maximumScale);
     // A point-sampled integer ROI cannot remove less than one complete physical
     // pixel. A fitted boundary that is strictly inside the half-pixel support of
     // the edge sample is therefore estimator quantization, not proof of a crop.
@@ -491,8 +498,8 @@ void RenderPhasePilots(const std::span<std::byte> pixels, const std::uint64_t fr
     };
     if (!SnapAxisToFrame(frameWidth, kUnifiedVisualProfile.canvasWidth, candidate.originX, candidate.scaleX) ||
         !SnapAxisToFrame(frameHeight, kUnifiedVisualProfile.canvasHeight, candidate.originY, candidate.scaleY) ||
-        candidate.scaleX < GetUnifiedMinimumScale() || candidate.scaleX > GetUnifiedMaximumScale() ||
-        candidate.scaleY < GetUnifiedMinimumScale() || candidate.scaleY > GetUnifiedMaximumScale())
+        candidate.scaleX < locatorPolicy.minimumScale || candidate.scaleX > locatorPolicy.maximumScale ||
+        candidate.scaleY < locatorPolicy.minimumScale || candidate.scaleY > locatorPolicy.maximumScale)
     {
         return false;
     }
@@ -1218,48 +1225,76 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                 }
                 continue;
             }
-            std::array<std::uint32_t, kUnifiedDataGlyphCells> projected{};
-            bool symbolModelValid = true;
-            for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
-            {
-                projected[chip] = ProjectLumaChip(geometry, tile.bounds.x, tile.bounds.y, chip, lumaModels[0]);
-                symbolModelValid = symbolModelValid && projected[chip] < kUnifiedDataGlyphCells;
-            }
-            // Two representation hypotheses per symbol: raw chip luma (exact
-            // at a 1:1 canvas) and the cross-sharpened kernel (deconvolves the
-            // adjacent-chip mixing of provider or capture resampling, exactly
-            // like the SC6 luma lanes). The per-symbol minimum lets the exact
-            // canvas keep its near-zero true-symbol distance while resampled
-            // captures fall back to the sharpened fit.
             std::array<double, 64> symbolDistances{};
             std::array<double, 64> highLevelDistances{};
+            // Predict each candidate on the captured pixel grid. Count a physical
+            // observation once even when several logical chips project onto it.
+            bool symbolModelValid = true;
+            std::array<double, kUnifiedDataGlyphCells> observedLuma{};
+            std::array<std::array<double, 4>, kUnifiedDataGlyphCells> interpolationWeights{};
+            std::array<std::array<std::uint32_t, 4>, kUnifiedDataGlyphCells> sourceChips{};
+            std::array<std::uint64_t, kUnifiedDataGlyphCells> capturedCoordinates{};
+            std::array<bool, kUnifiedDataGlyphCells> distinct{};
+            for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
+            {
+                const double physicalX = geometry.originX + geometry.scaleX * (tile.bounds.x + chip % 5 + 0.5) - 0.5;
+                const double physicalY = geometry.originY + geometry.scaleY * (tile.bounds.y + chip / 5 + 0.5) - 0.5;
+                const double capturedX = std::floor(physicalX + 0.5);
+                const double capturedY = std::floor(physicalY + 0.5);
+                if (capturedX < 0 || capturedY < 0 || capturedX >= view.width || capturedY >= view.height)
+                {
+                    symbolModelValid = false;
+                    break;
+                }
+                const std::uint32_t pixelX = static_cast<std::uint32_t>(capturedX);
+                const std::uint32_t pixelY = static_cast<std::uint32_t>(capturedY);
+                capturedCoordinates[chip] = static_cast<std::uint64_t>(pixelY) * view.width + pixelX;
+                distinct[chip] = true;
+                for (std::uint32_t previous = 0; previous < chip; previous++)
+                {
+                    distinct[chip] = distinct[chip] && capturedCoordinates[previous] != capturedCoordinates[chip];
+                }
+                observedLuma[chip] = Luma(ReadPixel(view, pixelX, pixelY));
+                const double logicalX = (capturedX + 0.5 - geometry.originX) / geometry.scaleX - 0.5 - tile.bounds.x;
+                const double logicalY = (capturedY + 0.5 - geometry.originY) / geometry.scaleY - 0.5 - tile.bounds.y;
+                const double left = std::floor(logicalX);
+                const double top = std::floor(logicalY);
+                const double fractionX = logicalX - left;
+                const double fractionY = logicalY - top;
+                for (std::uint32_t neighbor = 0; neighbor < 4; neighbor++)
+                {
+                    const double column = left + neighbor % 2;
+                    const double row = top + neighbor / 2;
+                    interpolationWeights[chip][neighbor] = (neighbor % 2 == 0 ? 1 - fractionX : fractionX) *
+                        (neighbor / 2 == 0 ? 1 - fractionY : fractionY);
+                    sourceChips[chip][neighbor] = column >= 0 && column < 5 && row >= 0 && row < 5 ?
+                        static_cast<std::uint32_t>(row) * 5 + static_cast<std::uint32_t>(column) : 25;
+                }
+            }
             if (symbolModelValid)
             {
                 for (std::size_t symbol = 0; symbol < symbolDistances.size(); symbol++)
                 {
                     const std::uint32_t symbolMask = kUnifiedGrayMasksBySymbol[symbol];
-                    // Each level half scores every mask against its own ladder
-                    // expectation (plane 6: LOW tiles carry level-1 chips,
-                    // HIGH tiles level-3 chips). A per-tile foreground-mean
-                    // level decision instead measured the blurred chip mixture
-                    // (field resampling at 1.1x mixes the alternating 8/232
-                    // chips into ~104 luma, crossing the 148 level midpoint and
-                    // flipping every HIGH tile's level bit at full confidence).
-                    for (const double symbolForeground :
-                        {calibration.lumaLevels[1], calibration.lumaLevels[3]})
+                    for (const double symbolForeground : {calibration.lumaLevels[1], calibration.lumaLevels[3]})
                     {
-                        double rawDistance = 0.0;
-                        double sharpenedDistance = 0.0;
-                        for (std::size_t chip = 0; chip < samples.size(); chip++)
+                        double distance = 0;
+                        for (std::uint32_t chip = 0; chip < kUnifiedDataGlyphCells; chip++)
                         {
-                            const double expected = ((symbolMask >> projected[chip]) & 1U) != 0 ?
-                                symbolForeground : low;
-                            const double rawDifference = Luma(samples[chip]) - expected;
-                            rawDistance += rawDifference * rawDifference;
-                            const double sharpenedDifference = lumaSamples[chip] - expected;
-                            sharpenedDistance += sharpenedDifference * sharpenedDifference;
+                            if (!distinct[chip])
+                            {
+                                continue;
+                            }
+                            double foregroundWeight = 0;
+                            for (std::uint32_t neighbor = 0; neighbor < 4; neighbor++)
+                            {
+                                foregroundWeight += ((symbolMask >> sourceChips[chip][neighbor]) & 1U) != 0 ?
+                                    interpolationWeights[chip][neighbor] : 0;
+                            }
+                            const double expected = low + (symbolForeground - low) * foregroundWeight;
+                            const double difference = observedLuma[chip] - expected;
+                            distance += difference * difference;
                         }
-                        const double distance = std::min(rawDistance, sharpenedDistance);
                         if (symbolForeground == calibration.lumaLevels[3])
                         {
                             highLevelDistances[symbol] = distance;
@@ -1302,15 +1337,15 @@ void DecodeDataTiles(const LumaView& view, const LocalDesktopGeometry& geometry,
                             destination = std::min(destination, best);
                         }
                     }
-                    // Normalize by the tile's peak-luma contrast: a nine-chip
-                    // mask flip then yields 9 x 2048 = 18432 at EITHER ladder
-                    // level, the magnitude the frozen min-sum offset (2048)
-                    // and message accumulation proved safe in the SC6 product
-                    // path. The peak survives capture resampling gracefully,
-                    // unlike a per-tile foreground mean (resampling mixes the
-                    // alternating chip levels before any mean converges).
+                    // Forward resampling spreads contrast over shared physical
+                    // pixels. Keep the validated gray gain identical on CPU
+                    // and GPU before the existing metric quantization and FEC
+                    // options. Normalize by peak contrast, not the foreground
+                    // mean: the latter mixes alternating chip levels and can
+                    // cross the two foreground-state decision boundary. This
+                    // gain does not apply to any of the SC6 color lanes.
                     const double tileContrast = grayPeakLuma - low;
-                    const double maskScale = tileContrast > 0 ? 2048.0 / (tileContrast * tileContrast) : 0.0;
+                    const double maskScale = tileContrast > 0 ? 8192.0 / (tileContrast * tileContrast) : 0.0;
                     metric = QuantizeMetric((oneDistance - zeroDistance) * maskScale);
                 }
                 const UnifiedLogicalCarrierBit logical = GetUnifiedGrayLogicalBit(
@@ -1751,6 +1786,24 @@ bool ResolveUnifiedVisualSamplingGeometry(const LocalDesktopGeometry& geometry,
     }
     return ResolveUnifiedSamplingGeometryInternal(
         geometry, frameWidth, frameHeight, GetUnifiedLocatorPolicy(policy), output);
+}
+
+bool ResolveUnifiedVisualSamplingGeometry(const LocalDesktopObservation& bootstrap,
+    const std::uint32_t frameWidth, const std::uint32_t frameHeight,
+    const UnifiedVisualDecodePolicy& policy, LocalDesktopGeometry& output) noexcept
+{
+    if (!bootstrap.IsAccepted() || !ValidateUnifiedVisualDecodePolicy(policy))
+    {
+        return false;
+    }
+    const auto parsed = pbprotocol::ParseBootstrapRecord(bootstrap.canonical44);
+    if (!parsed || !IsUnifiedBootstrapProfilePair(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion))
+    {
+        return false;
+    }
+    const bool grayCarrier = IsUnifiedGrayCarrierPair(parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion);
+    return ResolveUnifiedSamplingGeometryInternal(bootstrap.geometry, frameWidth, frameHeight,
+        GetUnifiedLocatorPolicy(policy, grayCarrier), output);
 }
 
 bool BuildUnifiedFreshnessBits(const std::span<const std::byte> canonicalRecord,
@@ -2351,7 +2404,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     }
 
     const LocalDesktopBootstrapBinding binding{expectedIdentity.visualProfileId, expectedIdentity.visualLayoutVersion};
-    const LocalDesktopDecodePolicy locatorPolicy = GetUnifiedLocatorPolicy(policy);
+    const LocalDesktopDecodePolicy locatorPolicy = GetUnifiedLocatorPolicy(policy, grayDecode);
     if (view.width == kUnifiedVisualProfile.canvasWidth && view.height == kUnifiedVisualProfile.canvasHeight)
     {
         observation.bootstrap = detail::DecodeLocalDesktopFixedCanvasScaffold(
@@ -2391,8 +2444,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     InitializeMetrics(observation.bootstrapRecord.frameSequence, UnifiedErasureReason::LocalSamplingFailure,
         state.metrics);
     LocalDesktopGeometry samplingGeometry;
-    if (!ResolveUnifiedSamplingGeometryInternal(observation.bootstrap.geometry, view.width, view.height,
-        locatorPolicy, samplingGeometry))
+    if (!ResolveUnifiedVisualSamplingGeometry(observation.bootstrap, view.width, view.height, policy, samplingGeometry))
     {
         observation.frameErasure = UnifiedErasureReason::CanvasClipped;
         InitializeMetrics(observation.bootstrapRecord.frameSequence, observation.frameErasure, state.metrics);

@@ -105,3 +105,9 @@
 ## 8. 发布入口
 
 首次推送前执行发布检查清单：原文已删除，取回 `git cat-file blob 9b554bda9c8009886cdaa474e7dcecf3bbec7668`（记录日期 2026-09-05；当前源代码仓库不应包含 build tree、vcpkg 安装目录、`.part`、resume journal、日志、压缩发布包或真实传输数据）。项目 LICENSE、GitHub 可见性、远程 URL 与默认分支由维护者明确决定，仓库当前**无 remote**。
+
+## 2026-09-14 v0.6交付与续接
+
+- [`RELEASE_V0.6.md`](RELEASE_V0.6.md)：版本内容、使用及验证边界。
+- [`SESSION_HANDOFF_20260914_V0.6.md`](SESSION_HANDOFF_20260914_V0.6.md)：详细现状、证据、代码地图和已知限制。
+- [`NEXT_TASK_PROMPT_V0.6.md`](NEXT_TASK_PROMPT_V0.6.md)：下一任务直接粘贴的prompt。

@@ -2,11 +2,13 @@
 #include "atomic_replace_retry.h"
 #include "encoder_session_store.h"
 #include "sender_carousel_scheduler.h"
+#include "local_desktop_runtime.h"
 
 #include "pbreceiver/receiver_ingress.h"
 #include "pbouterfec/wirehair_v2.h"
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/bootstrap_control_codec.h"
+#include "pbprotocol/control_plane_receiver.h"
 #include "pbprotocol/byte_io.h"
 #include "pbprotocol/descriptor_codec.h"
 #include "pbstorage/output_file.h"
@@ -21,6 +23,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <span>
 #include <string>
@@ -1016,6 +1019,195 @@ TEST_CASE("Unified resume journal retains the full Segment window and rejects on
     REQUIRE_FALSE(unsupportedStatus);
     REQUIRE(unsupportedStatus.message == "resume store configuration is invalid");
     REQUIRE_FALSE(store);
+}
+
+TEST_CASE("Budget-bound real Wirehair allocations stop at the unchanged one GiB reservation limit",
+    "[application][budgeted-decoder-reservations][quota]")
+{
+    for (const auto& [segmentMiB, expectedCount] : std::array{std::pair{6ULL, 24ULL}, std::pair{15ULL, 10ULL}})
+    {
+        CAPTURE(segmentMiB, expectedCount);
+        ResumeFixture fixture;
+        fixture.policy = pbapp::MakeBudgetBoundUnifiedReceiverResourcePolicy();
+        const auto message = MakeBytes(segmentMiB * 1024ULL * 1024ULL);
+        constexpr std::uint32_t blockBytes = 1629;
+        const auto encoder = pbouterfec::WirehairV2Encoder::Create(message, blockBytes);
+        REQUIRE(encoder);
+        const auto digest = pbprotocol::ComputeBlake3Digest(message);
+        fixture.session.originalFileSize = message.size();
+        fixture.segment.rawSize = message.size();
+        fixture.segment.encodedSize = message.size();
+        fixture.segment.outerBlockBytes = blockBytes;
+        fixture.segment.outerFecMode = pbprotocol::OuterFecMode::WirehairV2;
+        fixture.segment.wirehairV2SerializedProfile = encoder.Value().GetSerializedProfile();
+        fixture.segment.rawDigest = pbprotocol::RawDigest{digest};
+        fixture.segment.encodedDigest = pbprotocol::EncodedDigest{digest};
+        const auto sessionSize = pbprotocol::GetSerializedSize(fixture.session);
+        const auto segmentSize = pbprotocol::GetSerializedSize(fixture.segment);
+        REQUIRE(sessionSize);
+        REQUIRE(segmentSize);
+        std::vector<std::byte> sessionBytes(sessionSize.Value());
+        std::vector<std::byte> segmentBytes(segmentSize.Value());
+        REQUIRE(pbprotocol::SerializeSessionDescriptor(fixture.session, fixture.policy, sessionBytes));
+        REQUIRE(pbprotocol::SerializeSegmentDescriptor(fixture.segment, fixture.session, fixture.policy, segmentBytes));
+        auto controlsResult = pbprotocol::ControlPlaneReceiver::Create(fixture.policy);
+        REQUIRE(controlsResult);
+        auto controls = std::move(controlsResult).Value();
+        const auto sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+        REQUIRE(controls.ReceiveControlRecord(WrapControl(pbprotocol::ControlRecordType::SessionDescriptor, 1, sessionTag, sessionBytes)));
+        REQUIRE(controls.ReceiveControlRecord(WrapControl(pbprotocol::ControlRecordType::SegmentDescriptor, 2, sessionTag, segmentBytes)));
+        const auto bound = controls.GetBoundSegmentDescriptor(sessionTag, 0);
+        REQUIRE(bound);
+        auto managerResult = pbouterfec::OuterFecDecoderResourceManager::Create(fixture.policy);
+        REQUIRE(managerResult);
+        auto manager = std::move(managerResult).Value();
+        std::vector<pbouterfec::WirehairV2Decoder> decoders;
+        // Each instance is real; only allocation, not a synthetic reservation
+        // or fake backend, exercises the shared allocator admission boundary.
+        for (std::uint64_t index = 0; index < expectedCount; index++)
+        {
+            auto decoder = pbouterfec::WirehairV2Decoder::Create(bound.Value(), blockBytes, manager);
+            REQUIRE(decoder);
+            decoders.push_back(std::move(decoder).Value());
+            REQUIRE(manager.GetReservedDecoderBytes() <= fixture.policy.maxTotalOuterFecDecoderBytes);
+        }
+        const std::uint64_t reserved = manager.GetReservedDecoderBytes();
+        REQUIRE(manager.GetActiveDecoderCount() == expectedCount);
+        REQUIRE(expectedCount > 8);
+        const auto denied = pbouterfec::WirehairV2Decoder::Create(bound.Value(), blockBytes, manager);
+        REQUIRE_FALSE(denied);
+        REQUIRE(denied.Error().code == pbouterfec::OuterFecErrorCode::OuterFecDecoderQuotaExceeded);
+        REQUIRE(manager.GetActiveDecoderCount() == expectedCount);
+        REQUIRE(manager.GetReservedDecoderBytes() == reserved);
+        REQUIRE(manager.GetQuotaExceededCount() == 1);
+        std::cout << "{\"probe\":\"BudgetBoundRealAllocation\",\"segmentMiB\":" << segmentMiB
+            << ",\"admitted\":" << expectedCount << ",\"reservedBytes\":" << reserved
+            << ",\"byteLimit\":" << fixture.policy.maxTotalOuterFecDecoderBytes << ",\"nextRejected\":true}\n";
+        decoders.pop_back();
+        REQUIRE(manager.GetActiveDecoderCount() == expectedCount - 1);
+        auto replacement = pbouterfec::WirehairV2Decoder::Create(bound.Value(), blockBytes, manager);
+        REQUIRE(replacement);
+        decoders.push_back(std::move(replacement).Value());
+        REQUIRE(manager.GetReservedDecoderBytes() == reserved);
+        decoders.clear();
+        REQUIRE(manager.GetActiveDecoderCount() == 0);
+        REQUIRE(manager.GetReservedDecoderBytes() == 0);
+    }
+}
+
+TEST_CASE("Budget-bound resume opt-in retains nine segments without weakening conflicts or default reopening",
+    "[application][budgeted-decoder-policy][decoder][resume][journal][quota]")
+{
+    ScratchDirectory scratch(L"decoder-resume-budget-bound");
+    ResumeFixture fixture;
+    fixture.policy = pbapp::MakeBudgetBoundUnifiedReceiverResourcePolicy();
+    fixture.policy.maxActiveOuterFecDecoders = 9;
+    constexpr std::size_t segmentCount = 10;
+    fixture.session.originalFileSize = fixture.rawBytes.size() * segmentCount;
+    fixture.session.segmentCount = segmentCount;
+    const auto sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    const auto sessionSize = pbprotocol::GetSerializedSize(fixture.session);
+    REQUIRE(sessionSize);
+    std::vector<std::byte> sessionPayload(sessionSize.Value());
+    REQUIRE(pbprotocol::SerializeSessionDescriptor(fixture.session, fixture.policy, sessionPayload));
+    fixture.sessionControl = WrapControl(pbprotocol::ControlRecordType::SessionDescriptor, 1, sessionTag, sessionPayload);
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+    pbapp::DecoderResumeLoadedState loaded;
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true));
+    std::array<pbprotocol::SegmentDescriptor, segmentCount> descriptors;
+    for (std::size_t ordinal = 0; ordinal < segmentCount; ordinal++)
+    {
+        auto& descriptor = descriptors[ordinal];
+        descriptor = fixture.segment;
+        descriptor.segmentOrdinal = ordinal;
+        descriptor.rawOffset = ordinal * fixture.rawBytes.size();
+        const auto size = pbprotocol::GetSerializedSize(descriptor);
+        REQUIRE(size);
+        std::vector<std::byte> payload(size.Value());
+        REQUIRE(pbprotocol::SerializeSegmentDescriptor(descriptor, fixture.session, fixture.policy, payload));
+        REQUIRE(store->RecordSegmentControl(WrapControl(pbprotocol::ControlRecordType::SegmentDescriptor, ordinal + 2, sessionTag, payload)));
+    }
+    pbapp::DecoderResumeAcceptedBlock block;
+    block.outerBlockId = 0;
+    block.declaredPayloadBytes = 16;
+    block.paddedPayload.assign(fixture.rawBytes.begin(), fixture.rawBytes.begin() + 16);
+    for (std::uint64_t ordinal = 0; ordinal < 9; ordinal++)
+    {
+        block.segmentOrdinal = ordinal;
+        REQUIRE(store->RecordAcceptedBlock(block));
+    }
+    REQUIRE(store->RecordAcceptedBlock(block));
+    auto conflicting = block;
+    conflicting.paddedPayload[0] ^= std::byte{1};
+    REQUIRE_FALSE(store->RecordAcceptedBlock(conflicting));
+    REQUIRE(store->GetActiveBlockCount() == 9);
+    REQUIRE(store->GetPendingBlockCount() == 9);
+    block.segmentOrdinal = 9;
+    const auto overflow = store->RecordAcceptedBlock(block);
+    REQUIRE_FALSE(overflow);
+    REQUIRE(overflow.message == "resume active Segment limit exceeded");
+    REQUIRE(store->GetActiveBlockCount() == 9);
+    REQUIRE(store->GetPendingBlockCount() == 9);
+    REQUIRE(store->Checkpoint());
+    const auto journalPath = store->GetPath();
+    store.reset();
+    const auto originalJournal = ReadAllBytes(journalPath);
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+    REQUIRE_FALSE(store);
+    const auto normalPolicy = pbapp::MakeUnifiedReceiverResourcePolicy();
+    const auto defaultReopen = pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, normalPolicy, store, loaded);
+    REQUIRE_FALSE(defaultReopen);
+    REQUIRE(defaultReopen.message == "resume journal exceeds the active Segment limit");
+    REQUIRE_FALSE(store);
+    REQUIRE(ReadAllBytes(journalPath) == originalJournal);
+    for (unsigned int invalidCase = 0; invalidCase < 5; invalidCase++)
+    {
+        auto invalid = fixture.policy;
+        switch (invalidCase)
+        {
+        case 0: invalid.maxActiveOuterFecDecoders = normalPolicy.maxSegmentCount + 1; break;
+        case 1: invalid.maxTotalOuterFecDecoderBytes++; break;
+        case 2: invalid.maxOuterFecDecoderBytes++; break;
+        case 3: invalid.maxResumeBytes++; break;
+        default: invalid.maxActiveOuterFecDecoders = 0; break;
+        }
+        REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, invalid, store, loaded, true));
+        REQUIRE_FALSE(store);
+        REQUIRE(ReadAllBytes(journalPath) == originalJournal);
+    }
+    auto smallResume = fixture.policy;
+    smallResume.maxResumeBytes = originalJournal.size() - 1;
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, smallResume, store, loaded, true));
+    REQUIRE(ReadAllBytes(journalPath) == originalJournal);
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true));
+    REQUIRE(loaded.resumed);
+    REQUIRE(loaded.activeBlocks.size() == 9);
+    pbprotocol::ResumeCompletedSegmentRecord completed;
+    completed.sessionId = fixture.session.sessionId;
+    completed.segmentOrdinal = 0;
+    completed.rawOffset = 0;
+    completed.rawSize = fixture.rawBytes.size();
+    completed.rawDigest = descriptors[0].rawDigest;
+    REQUIRE(store->RecordCompletedSegment(completed));
+    REQUIRE(store->GetActiveBlockCount() == 8);
+    REQUIRE(store->RecordAcceptedBlock(block));
+    REQUIRE(store->GetActiveBlockCount() == 9);
+    REQUIRE(store->Checkpoint());
+    store.reset();
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true));
+    REQUIRE(loaded.activeBlocks.size() == 9);
+    REQUIRE(loaded.completedSegments.size() == 1);
+    REQUIRE(loaded.completedSegments[0].segmentOrdinal == 0);
+    REQUIRE(std::ranges::none_of(loaded.activeBlocks, [](const auto& value)
+    {
+        return value.segmentOrdinal == 0;
+    }));
+    store.reset();
+    CorruptLastByte(journalPath);
+    const auto corruptedJournal = ReadAllBytes(journalPath);
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true));
+    REQUIRE_FALSE(store);
+    REQUIRE(ReadAllBytes(journalPath) == corruptedJournal);
 }
 
 TEST_CASE("Decoder restart revalidates completed part bytes before storage adoption",

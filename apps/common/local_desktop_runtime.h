@@ -57,10 +57,16 @@ struct EncoderConfig
     // declares the actual target, and the durable resume identity includes
     // it so differently-segmented preparations never cross-match.
     std::uint32_t segmentTargetBytes = 0;
+    // Sender-only, wire-compatible experiment. Never enabled for other profiles
+    // or selected from receiver feedback; the normal GrayFast path stays default.
+    bool grayFastSpatialInterleave = false;
     // Empty selects %LOCALAPPDATA%\PixelBridge\EncoderSessions. Tests and
     // headless automation may provide an isolated root without changing wire
     // semantics.
     std::filesystem::path sessionStateRoot;
+    // Opt-in initial-visit tuning for the measured faster remote channel.
+    // Later full repair visits are unchanged; not a universal loss guarantee.
+    bool grayFastShortInitialAirtime = false;
 };
 
 struct DecoderConfig
@@ -95,11 +101,19 @@ struct DecoderConfig
     // 1..60 applies an authoritative pre-readback time sampler. For production
     // LF4 the primary GPU demodulator remains unsampled.
     std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
+    // Explicit GrayFast experiment. Never enabled by the product factory or
+    // GUI; all byte budgets and recovery checks remain unchanged.
+    bool budgetBoundDecoders = false;
 };
 
 // Production Unified accepts every supported file size without a size prompt.
 // The generic protocol policy remains available for historical diagnostics.
 [[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeUnifiedReceiverResourcePolicy() noexcept;
+
+// Explicit experimental admission policy; the normal factory and GUI/CLI
+// defaults remain unchanged. Per-codec, aggregate, orphan and resume budgets
+// are identical; the existing descriptor-count ceiling bounds tiny objects.
+[[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeBudgetBoundUnifiedReceiverResourcePolicy() noexcept;
 
 [[nodiscard]] DecoderConfig MakeUnifiedDecoderConfig(std::wstring outputDirectory,
     const pbscreenregion::ScreenCaptureRegion& region);
@@ -244,7 +258,7 @@ public:
         EncoderCarouselProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeRemoteVisualFullscreenComposition(std::span<const std::byte> source,
         std::uint32_t destinationWidth, std::uint32_t destinationHeight,
-        std::vector<std::byte>& output) noexcept;
+        std::vector<std::byte>& output, bool fillScreen = false) noexcept;
     // Opens the real source handle and exercises production pre-scan,
     // descriptor persistence, current/next encoded Segment buffering,
     // Carousel scheduling, durable ID leases, and restart recreation without
@@ -395,6 +409,88 @@ struct UnifiedFountainMidJoinProbeSnapshot
     bool everyAdmittedSymbolWasRepair = true;
 };
 
+// Scheduler-only regression evidence; no pixel-channel or throughput authority.
+struct UnifiedGraduationProbeSnapshot
+{
+    std::uint64_t senderLogicalFrames = 0;
+    std::uint64_t completedCarouselPasses = 0;
+    std::uint64_t laterSystematicEquations = 0;
+    std::uint64_t repeatedScheduledRepairIds = 0;
+    std::uint64_t repairIdsBelowLeaseStart = 0;
+    std::uint64_t peakResidentEncodedSegmentCount = 0;
+    std::vector<std::uint32_t> blockCounts;
+    std::vector<std::uint64_t> firstCarouselEquations;
+    std::vector<std::uint64_t> firstCarouselSystematicEquations;
+    std::vector<std::uint64_t> secondCarouselEquations;
+};
+
+enum class UnifiedRecoveryErasureModel : std::uint8_t
+{
+    None,
+    PermutedThird,
+    PeriodicThird,
+    PeriodicQuarter,
+    SparseBursty,
+    PeriodicFifth,
+    PeriodicTwoFifths,
+    PeriodicHalf
+};
+
+struct UnifiedGraduationRecoveryProbeConfig
+{
+    std::uint32_t segmentCount = 13;
+    std::uint32_t segmentBytes = 256U * 1024U;
+    std::uint32_t logicalVisualFps = 30;
+    UnifiedRecoveryErasureModel erasureModel = UnifiedRecoveryErasureModel::PermutedThird;
+    bool grayFastSpatialInterleave = false;
+    std::uint64_t firstObservedLogicalFrame = 0;
+    std::uint64_t maximumSenderLogicalFrames = 20000;
+    bool collectSegmentTrace = false;
+    bool budgetBoundDecoders = false;
+    std::uint32_t initialAirtimePercent = 100;
+};
+
+struct UnifiedSegmentRecoveryProbeTrace
+{
+    std::uint32_t blockCount = 0;
+    std::optional<std::uint64_t> firstObservedFrame;
+    std::optional<std::uint64_t> lastObservedFrame;
+    std::optional<std::uint64_t> firstUniqueFrame;
+    std::optional<std::uint64_t> firstBoundUniqueFrame;
+    std::optional<std::uint64_t> completedFrame;
+    std::uint64_t observedDataFrames = 0;
+    std::uint64_t longestObservedFrameGap = 0;
+    std::uint64_t uniqueAdmissionEvents = 0;
+    std::uint64_t orphanUniqueAdmissionEvents = 0;
+    std::uint64_t deferredBlocks = 0;
+    std::uint64_t resourceRejections = 0;
+    std::uint64_t orphanQuotaDrops = 0;
+    std::uint64_t alreadyCompletedBlocks = 0;
+};
+
+struct UnifiedGraduationRecoveryProbeSnapshot
+{
+    std::uint64_t senderLogicalFrames = 0;
+    std::uint64_t observedLogicalFrames = 0;
+    std::uint64_t completedCarouselPasses = 0;
+    std::uint64_t peakActiveDecoders = 0;
+    std::uint64_t peakReservedDecoderBytes = 0;
+    std::uint64_t deferredResourceBusyCount = 0;
+    std::uint64_t longestNoUsefulEquationFrames = 0;
+    std::uint64_t spatialBankStorageBytes = 0;
+    bool spatialCommitAndLeaseVerified = false;
+    std::uint64_t firstObservedCarouselPass = 0;
+    std::uint64_t longestAfterJoinNoUsefulEquationFrames = 0;
+    std::uint64_t activeDecodersAtLongestDrought = 0;
+    std::uint64_t verifiedRawBytesAtLongestDrought = 0;
+    std::array<std::byte, pbprotocol::kDigestBytes> expectedWholeFileDigest{};
+    std::filesystem::path publishedPath;
+    DecoderSnapshot decoder;
+    // Test-only, at most one summary per bounded fixture Segment. Observation
+    // and outcome counters never feed back into the sender's schedule.
+    std::vector<UnifiedSegmentRecoveryProbeTrace> segmentTrace;
+};
+
 struct UnifiedDescriptorPreludeProbeSnapshot
 {
     std::uint64_t observedLogicalFrames = 0;
@@ -489,6 +585,15 @@ public:
         UnifiedLargeWindowRecoveryProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeUnifiedFountainMidJoin(
         UnifiedFountainMidJoinProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedGraduation(std::uint32_t segmentCount,
+        std::uint64_t initialCarouselPass, std::uint32_t unusedRepairLeaseIds, std::uint32_t logicalVisualFps,
+        UnifiedGraduationProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedGraduationRecovery(const std::wstring& outputDirectory,
+        bool eraseTwoThirds, std::uint32_t logicalVisualFps, UnifiedGraduationRecoveryProbeSnapshot& output,
+        bool periodicErasure = false) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedGraduationRecovery(const std::wstring& outputDirectory,
+        const UnifiedGraduationRecoveryProbeConfig& config, UnifiedGraduationRecoveryProbeSnapshot& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedHeadlessClock(std::uint32_t logicalVisualFps) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeUnifiedDescriptorPrelude(
         UnifiedDescriptorPreludeProbeSnapshot& output) noexcept;
     // Deterministic no-raster, Pass-0-only, 16-Segment checkpoint. Loss is a

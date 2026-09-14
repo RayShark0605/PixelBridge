@@ -261,6 +261,11 @@ struct UnifiedPreparedMetricFrame
 [[nodiscard]] bool ResolveUnifiedVisualSamplingGeometry(const LocalDesktopGeometry& geometry,
     std::uint32_t frameWidth, std::uint32_t frameHeight, const UnifiedVisualDecodePolicy& policy,
     LocalDesktopGeometry& output) noexcept;
+// Only a valid same-frame Bootstrap's exact gray profile/layout pair admits
+// the experimental sub-unit scale. The geometry-only overload remains SC6.
+[[nodiscard]] bool ResolveUnifiedVisualSamplingGeometry(const LocalDesktopObservation& bootstrap,
+    std::uint32_t frameWidth, std::uint32_t frameHeight, const UnifiedVisualDecodePolicy& policy,
+    LocalDesktopGeometry& output) noexcept;
 [[nodiscard]] bool BuildUnifiedFreshnessBits(std::span<const std::byte> canonicalRecord,
     std::uint32_t freshnessRegion, std::span<std::uint8_t> output) noexcept;
 

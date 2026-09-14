@@ -102,6 +102,7 @@ inline constexpr std::string_view encoderBroadcastingStatus =
     "Broadcasting continuously; receiver completion is visible only on Decoder";
 inline constexpr std::uint64_t timeUnitsPerSecond100ns = 10000000ULL;
 inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
+inline constexpr std::uint32_t grayFastShortInitialAirtimePercent = 65;
 inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
 inline constexpr std::uint32_t captureResultQueueCapacity = 128;
 // The demodulator's fixed reservation is sized for the largest carrier
@@ -398,7 +399,7 @@ void RequireResult(const ResultType& result, const std::string& message)
 }
 
 void ComposeRemoteVisualFullscreenBgra(const std::span<const std::byte> source, const std::uint32_t destinationWidth,
-    const std::uint32_t destinationHeight, std::span<std::byte> destination)
+    const std::uint32_t destinationHeight, std::span<std::byte> destination, const bool fillScreen)
 {
     Require(destinationWidth >= phase1CanvasWidth && destinationWidth <= maximumRemoteVisualLowFpsRoiWidth &&
         destinationHeight >= phase1CanvasHeight && destinationHeight <= maximumRemoteVisualLowFpsRoiHeight,
@@ -409,6 +410,48 @@ void ComposeRemoteVisualFullscreenBgra(const std::span<const std::byte> source, 
     const std::size_t expectedDestinationBytes = destinationRowBytes * destinationHeight;
     Require(source.size() == expectedSourceBytes && destination.size() == expectedDestinationBytes,
         "remote-lf4 fullscreen raster size mismatch");
+    if (fillScreen)
+    {
+        // Map physical pixel centers independently on both axes. The dimension
+        // checks above bound every product; no interpolation changes the wire
+        // raster's colors, and no frame-sized scratch or hot-path heap is added.
+        std::array<std::size_t, maximumRemoteVisualLowFpsRoiWidth> sourceColumnOffsets{};
+        for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+        {
+            const std::uint64_t sourceX = (static_cast<std::uint64_t>(destinationX) * 2U + 1U) * phase1CanvasWidth /
+                (static_cast<std::uint64_t>(destinationWidth) * 2U);
+            sourceColumnOffsets[destinationX] = static_cast<std::size_t>(sourceX) * 4U;
+        }
+        std::uint32_t previousSourceY = phase1CanvasHeight;
+        for (std::uint32_t destinationY = 0; destinationY < destinationHeight; destinationY++)
+        {
+            const auto sourceY = static_cast<std::uint32_t>((static_cast<std::uint64_t>(destinationY) * 2U + 1U) * phase1CanvasHeight /
+                (static_cast<std::uint64_t>(destinationHeight) * 2U));
+            std::byte* const destinationRow = destination.data() + static_cast<std::size_t>(destinationY) * destinationRowBytes;
+            if (sourceY == previousSourceY)
+            {
+                std::copy_n(destinationRow - destinationRowBytes, destinationRowBytes, destinationRow);
+            }
+            else
+            {
+                const std::byte* const sourceRow = source.data() + static_cast<std::size_t>(sourceY) * sourceRowBytes;
+                if (destinationWidth == phase1CanvasWidth)
+                {
+                    std::copy_n(sourceRow, sourceRowBytes, destinationRow);
+                }
+                else
+                {
+                    for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+                    {
+                        std::copy_n(sourceRow + sourceColumnOffsets[destinationX], 4U,
+                            destinationRow + static_cast<std::size_t>(destinationX) * 4U);
+                    }
+                }
+            }
+            previousSourceY = sourceY;
+        }
+        return;
+    }
     for (std::size_t offset = 0; offset < destination.size(); offset += 4U)
     {
         destination[offset + 0U] = std::byte{0x80};
@@ -1128,7 +1171,7 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
 
 [[nodiscard]] pbprotocol::SessionDescriptor MakeSessionDescriptor(const pbprotocol::SessionId& sessionId,
     const std::uint64_t fileBytes, const std::uint64_t segmentCount, const std::uint64_t visualProfileId,
-    std::string fileNameUtf8)
+    std::string fileNameUtf8, const std::uint32_t segmentTargetOverride = 0)
 {
     pbprotocol::SessionDescriptor session;
     session.protocolVersion = pbprotocol::GetProtocolVersion();
@@ -1137,7 +1180,7 @@ void SetTransferSessionId(TransferDescription& description, const pbprotocol::Se
     session.segmentCount = segmentCount;
     session.digestAlgorithm = pbprotocol::DigestAlgorithm::Blake3_256;
     session.sessionVisualProfileId = visualProfileId;
-    session.sourceSegmentTargetBytes = GetSegmentTargetBytes(visualProfileId);
+    session.sourceSegmentTargetBytes = GetSegmentTargetBytes(visualProfileId, segmentTargetOverride);
     session.compressionPolicy = pbprotocol::CompressionPolicy::AutomaticZstandardLevel3RawFallback;
     session.fileNameUtf8 = std::move(fileNameUtf8);
     const auto fileNameStatus = pbprotocol::ValidateFileNameUtf8(session.fileNameUtf8);
@@ -1189,7 +1232,7 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
     Require(segmentCount <= policy.maxSegmentCount, "源文件 SegmentCount 超过 ReceiverResourcePolicy");
     TransferDescription description;
     description.session = MakeSessionDescriptor(sessionId, source.fileBytes, segmentCount,
-        visualProfileId, fileNameUtf8);
+        visualProfileId, fileNameUtf8, segmentTargetOverride);
     description.segments.reserve(static_cast<std::size_t>(segmentCount));
     const pbprotocol::SessionTag sessionTag = pbprotocol::DeriveSessionTag(description.session.sessionId);
     pbprotocol::Blake3Hasher wholeFileHasher;
@@ -1271,9 +1314,38 @@ class SenderFrameBuilder
         // budget, and the graduated flag that removes it from the sweep.
         std::uint64_t committedEquationsTotal = 0;
         std::uint64_t segmentPassCount = 0;
+        std::uint32_t completedPassesThisAdmission = 0;
         std::uint64_t graduationTarget = 0;
         bool graduated = false;
     };
+
+    struct UnifiedSpatialSlot
+    {
+        std::array<std::byte, pbmodulation::kUnifiedGrayFastInformationBytes> bytes{};
+        std::uint32_t serializedBytes = 0;
+        std::uint32_t payloadBytes = 0;
+        std::uint32_t outerBlockId = 0;
+    };
+
+    struct UnifiedSpatialRow
+    {
+        std::size_t stateIndex = 0;
+        SenderUnifiedScheduledFrame frame{};
+        std::array<UnifiedSpatialSlot, senderUnifiedMaximumCodewordSlotCount> slots{};
+    };
+
+    struct UnifiedSpatialBank
+    {
+        std::array<UnifiedSpatialRow, senderUnifiedActiveSegmentWindowSize> rows{};
+        std::uint32_t rowCount = 0;
+        std::uint32_t phase = 0;
+        std::uint32_t bankPhase = 0;
+        bool framePrepared = false;
+    };
+
+    // One fixed slot bank, not six raster buffers or additional FEC objects.
+    // This is separate from (and must not inflate) encoded-Segment telemetry.
+    static_assert(sizeof(UnifiedSpatialBank) <= 256U * 1024U);
 
 public:
     pbcore::StageDiagnostics* diagnostics = nullptr;
@@ -1285,17 +1357,27 @@ public:
         const std::uint32_t controlRepetitions, SegmentLoader segmentLoader = {},
         RepairIdStartProvider repairIdStartProvider = {}, RepairLeaseCallback repairLeaseCallback = {},
         const std::uint64_t initialCarouselPass = 0, const std::uint64_t initialSegmentOrdinal = 0,
-        const std::uint32_t logicalVisualFps = 0)
+        const std::uint32_t logicalVisualFps = 0, const bool grayFastSpatialInterleave = false,
+        const std::uint32_t initialAirtimePercent = 100)
         : profile_(profile), description_(description), data_(profile.dataBytes),
           pixels_(pbmodulation::kLocalDesktopFrameBgraBytes), segmentLoader_(std::move(segmentLoader)),
           repairIdStartProvider_(std::move(repairIdStartProvider)), repairLeaseCallback_(std::move(repairLeaseCallback)),
           nextRepairIds_(description.segments.size(), 0), currentSegmentOrdinal_(initialSegmentOrdinal),
-          carouselPass_(initialCarouselPass), controlRepetitions_(controlRepetitions), logicalVisualFps_(logicalVisualFps)
+          carouselPass_(initialCarouselPass), initialCarouselPass_(initialCarouselPass),
+          controlRepetitions_(controlRepetitions), logicalVisualFps_(logicalVisualFps), initialAirtimePercent_(initialAirtimePercent)
     {
         Require(profile_.codewords != 0 && controlRepetitions_ != 0,
             "Profile or Control repetition count is empty");
         Require(description_.segments.empty() ? currentSegmentOrdinal_ == 0 :
             currentSegmentOrdinal_ < description_.segments.size(), "initial Carousel Segment ordinal is out of bounds");
+        Require(!grayFastSpatialInterleave || profile_.profile == VisualProfile::UnifiedGrayFast,
+            "Spatial Segment interleaving requires the GrayFast profile");
+        Require(initialAirtimePercent_ >= 50 && initialAirtimePercent_ <= 100 &&
+            (initialAirtimePercent_ == 100 || grayFastSpatialInterleave), "Initial airtime experiment requires bounded spatial GrayFast tuning");
+        if (grayFastSpatialInterleave && !description_.segments.empty())
+        {
+            unifiedSpatialBank_ = std::make_unique<UnifiedSpatialBank>();
+        }
         if (IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty())
         {
             InitializeUnifiedSegmentWindow();
@@ -1354,9 +1436,7 @@ public:
         const auto bootstrap = MakeBootstrap(frameSequence);
         if (IsUnifiedVisualFamily(profile_.profile))
         {
-            SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
-            Require(static_cast<bool>(unifiedScheduler.PrepareFrameAt(logicalTickOrdinal, nowNanoseconds,
-                unifiedFrame_)), "Unified mixed-slot frame preparation failed");
+            PrepareUnifiedFrame(logicalTickOrdinal, nowNanoseconds);
             std::array<pbmodulation::UnifiedFrameSlotInput, senderUnifiedMaximumCodewordSlotCount> slots{};
             generatedPayloadBytesInFrame_ = 0;
             std::span<const std::byte> supplementalControlRecord{};
@@ -1368,11 +1448,7 @@ public:
                 if (scheduled.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
                 {
                     slot.active = true;
-                    slot.block = scheduled.assignment.controlPriority == pbmodulation::UnifiedControlPriority::SessionDescriptor ?
-                        std::span<const std::byte>(description_.sessionControl) :
-                        scheduled.assignment.controlPriority == pbmodulation::UnifiedControlPriority::FinalManifest ?
-                        std::span<const std::byte>(description_.manifestControl) :
-                        std::span<const std::byte>(description_.segments.at(currentSegmentOrdinal_).control);
+                    slot.block = GetControlBlockForSlot(static_cast<std::uint32_t>(slotIndex));
                     if (supplementalControlRecord.empty())
                     {
                         supplementalControlRecord = slot.block;
@@ -1494,6 +1570,11 @@ public:
 
     void Advance()
     {
+        if (unifiedSpatialBank_)
+        {
+            AdvanceSpatialUnifiedFrame();
+            return;
+        }
         if (IsUnifiedVisualFamily(profile_.profile))
         {
             SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
@@ -1638,6 +1719,8 @@ public:
     }
     [[nodiscard]] std::uint64_t GetCurrentSegmentOrdinal() const noexcept
     {
+        // A spatial frame uses the first Transport's Segment as its diagnostic
+        // representative, not as a claim that every slot has the same Segment.
         return currentSegmentOrdinal_;
     }
     [[nodiscard]] std::uint64_t GetCheckpointSegmentOrdinal() const noexcept
@@ -1670,6 +1753,15 @@ public:
     [[nodiscard]] std::uint32_t EncodeOuterPayloadForSlot(const std::uint32_t slot,
         const std::span<std::byte> output)
     {
+        if (unifiedSpatialBank_ && unifiedSpatialBank_->framePrepared)
+        {
+            const auto& stored = GetSpatialSlot(slot);
+            const auto parsed = pbprotocol::ParseTransportBlock(std::span(stored.bytes).first(stored.serializedBytes));
+            RequireResult(parsed, "Spatial cached Transport is invalid");
+            Require(parsed.Value().payload.size() <= output.size(), "Spatial payload output is too small");
+            std::copy(parsed.Value().payload.begin(), parsed.Value().payload.end(), output.begin());
+            return stored.payloadBytes;
+        }
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
         const UnifiedSegmentState* const unifiedState = IsUnifiedVisualFamily(profile_.profile) &&
             !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
@@ -1683,6 +1775,15 @@ public:
         const std::span<std::byte> output, std::uint32_t& payloadBytes)
     {
         const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::OuterGenerate);
+        if (unifiedSpatialBank_ && unifiedSpatialBank_->framePrepared)
+        {
+            const auto& stored = GetSpatialSlot(slot);
+            Require(stored.payloadBytes != 0 && stored.serializedBytes <= output.size(),
+                "Spatial Transport slot or output is invalid");
+            std::copy_n(stored.bytes.begin(), stored.serializedBytes, output.begin());
+            payloadBytes = stored.payloadBytes;
+            return stored.serializedBytes;
+        }
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
         // The storage array is sized for the largest carrier; this profile's
         // outer blocks never exceed its own frozen block size.
@@ -1719,9 +1820,37 @@ public:
     {
         Require(IsUnifiedVisualFamily(profile_.profile) && tick < 1000000,
             "Unified headless tick or profile is outside the test contract");
-        Require(static_cast<bool>(GetCurrentUnifiedScheduler().PrepareFrameAt(tick, tick * 1000000000ULL / 15ULL,
-            unifiedFrame_)), "Unified headless frame preparation failed");
+        Require(logicalVisualFps_ >= senderUnifiedMinimumLogicalFramesPerSecond && logicalVisualFps_ <= senderUnifiedMaximumLogicalFramesPerSecond,
+            "Unified headless clock FPS is outside the test contract");
+        PrepareUnifiedFrame(tick, tick * 1000000000ULL / logicalVisualFps_);
         return unifiedFrame_;
+    }
+    [[nodiscard]] std::span<const std::byte> GetControlBlockForSlot(const std::uint32_t slot) const
+    {
+        Require(slot < unifiedFrame_.slotCount && unifiedFrame_.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control,
+            "Unified Control slot is invalid");
+        if (unifiedSpatialBank_ && unifiedSpatialBank_->framePrepared)
+        {
+            const auto& stored = GetSpatialSlot(slot);
+            return std::span(stored.bytes).first(stored.serializedBytes);
+        }
+        const auto priority = unifiedFrame_.slots[slot].assignment.controlPriority;
+        return priority == pbmodulation::UnifiedControlPriority::SessionDescriptor ?
+            std::span<const std::byte>(description_.sessionControl) : priority == pbmodulation::UnifiedControlPriority::FinalManifest ?
+            std::span<const std::byte>(description_.manifestControl) : std::span<const std::byte>(description_.segments.at(currentSegmentOrdinal_).control);
+    }
+    [[nodiscard]] std::uint64_t GetSpatialBankStorageBytes() const noexcept
+    {
+        return unifiedSpatialBank_ ? sizeof(UnifiedSpatialBank) : 0;
+    }
+    [[nodiscard]] std::uint64_t GetWindowCommittedEquationCountForTest() const noexcept
+    {
+        std::uint64_t committed = 0;
+        for (const auto& state : unifiedSegmentStates_)
+        {
+            committed = pbprotocol::SaturatingAddUnsigned(committed, state.scheduler.GetSnapshot().committedEquationCount);
+        }
+        return committed;
     }
     [[nodiscard]] std::uint64_t GetPeakResidentEncodedSegmentBytes() const noexcept
     {
@@ -1729,6 +1858,147 @@ public:
     }
 
 private:
+    [[nodiscard]] const UnifiedSpatialSlot& GetSpatialSlot(const std::uint32_t slot) const
+    {
+        Require(unifiedSpatialBank_ && unifiedSpatialBank_->framePrepared, "Spatial frame is not prepared");
+        const auto& bank = *unifiedSpatialBank_;
+        std::uint32_t sourceRow = 0;
+        Require(SelectUnifiedSpatialSourceRow(bank.rowCount, bank.phase, bank.bankPhase, slot, sourceRow),
+            "Spatial source slot is out of bounds");
+        return bank.rows[sourceRow].slots[slot];
+    }
+
+    void PrepareUnifiedFrame(const std::uint64_t tick, const std::uint64_t nowNanoseconds)
+    {
+        if (!unifiedSpatialBank_)
+        {
+            Require(static_cast<bool>(GetCurrentUnifiedScheduler().PrepareFrameAt(tick, nowNanoseconds, unifiedFrame_)),
+                "Unified mixed-slot frame preparation failed");
+            return;
+        }
+        auto& bank = *unifiedSpatialBank_;
+        if (bank.framePrepared)
+        {
+            return;
+        }
+        if (bank.rowCount == 0)
+        {
+            for (std::size_t stateIndex = 0; stateIndex < unifiedSegmentStates_.size(); stateIndex++)
+            {
+                auto& state = unifiedSegmentStates_[stateIndex];
+                if (state.scheduler.IsComplete())
+                {
+                    continue;
+                }
+                Require(bank.rowCount < bank.rows.size(), "Spatial bank exceeds the active Segment bound");
+                auto& row = bank.rows[bank.rowCount];
+                row.stateIndex = stateIndex;
+                unifiedCurrentStateIndex_ = stateIndex;
+                SynchronizeCurrentUnifiedSegment();
+                Require(static_cast<bool>(state.scheduler.PrepareFrameAt(tick, nowNanoseconds, unifiedFrame_)),
+                    "Spatial source row preparation failed");
+                row.frame = unifiedFrame_;
+                Require(row.frame.slotCount == senderUnifiedMaximumCodewordSlotCount, "Spatial row has an incompatible carrier");
+                for (std::uint32_t slot = 0; slot < row.frame.slotCount; slot++)
+                {
+                    auto& stored = row.slots[slot];
+                    stored.payloadBytes = 0;
+                    stored.outerBlockId = 0;
+                    if (row.frame.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                    {
+                        const auto control = GetControlBlockForSlot(slot);
+                        Require(control.size() <= stored.bytes.size(), "Spatial Control exceeds its fixed storage");
+                        stored.serializedBytes = static_cast<std::uint32_t>(control.size());
+                        std::copy(control.begin(), control.end(), stored.bytes.begin());
+                    }
+                    else
+                    {
+                        stored.outerBlockId = CalculateOuterBlockId(slot);
+                        stored.serializedBytes = static_cast<std::uint32_t>(BuildTransportBlockForSlot(slot, stored.bytes, stored.payloadBytes));
+                    }
+                }
+                bank.rowCount++;
+            }
+            Require(bank.rowCount != 0, "Spatial bank has no unfinished source rows");
+            bank.phase = 0;
+            bank.bankPhase = static_cast<std::uint32_t>(unifiedSpatialBankOrdinal_ % bank.rowCount);
+        }
+        SenderUnifiedScheduledFrame composite{};
+        composite.logicalTickOrdinal = tick;
+        composite.slotCount = static_cast<std::uint32_t>(senderUnifiedMaximumCodewordSlotCount);
+        bool representativeSelected = false;
+        for (std::uint32_t slot = 0; slot < composite.slotCount; slot++)
+        {
+            std::uint32_t sourceRow = 0;
+            Require(SelectUnifiedSpatialSourceRow(bank.rowCount, bank.phase, bank.bankPhase, slot, sourceRow),
+                "Spatial permutation is out of bounds");
+            const auto& row = bank.rows[sourceRow];
+            const auto& scheduled = row.frame.slots[slot];
+            composite.slots[slot] = scheduled;
+            if (scheduled.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+            {
+                composite.controlSlotCount++;
+                composite.controlBurstSlotCount += slot < row.frame.controlBurstSlotCount ? 1U : 0U;
+            }
+            else
+            {
+                composite.transportSlotCount++;
+                composite.scheduledEquationCount += scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation ? 1U : 0U;
+                composite.paddingDuplicateSlotCount += scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::PaddingDuplicate ? 1U : 0U;
+                if (!representativeSelected)
+                {
+                    unifiedCurrentStateIndex_ = row.stateIndex;
+                    SynchronizeCurrentUnifiedSegment();
+                    representativeSelected = true;
+                }
+            }
+        }
+        Require(representativeSelected, "Spatial frame contains no Transport");
+        unifiedFrame_ = composite;
+        bank.framePrepared = true;
+    }
+
+    void AdvanceSpatialUnifiedFrame()
+    {
+        auto& bank = *unifiedSpatialBank_;
+        Require(bank.framePrepared && bank.rowCount != 0 && bank.phase < bank.rowCount,
+            "Spatial commit requires a prepared frame");
+        Require(cyclePosition_ != (std::numeric_limits<std::uint32_t>::max)(), "Spatial frame counter exhausted");
+        cyclePosition_++;
+        bank.framePrepared = false;
+        bank.phase++;
+        if (bank.phase != bank.rowCount)
+        {
+            return;
+        }
+        // Only a complete matrix proves that every source slot was submitted.
+        // Commit all rows before finalizing passes, and finalize all passes
+        // before any sliding erase/admission can invalidate bank state indices.
+        for (std::uint32_t rowIndex = 0; rowIndex < bank.rowCount; rowIndex++)
+        {
+            auto& state = unifiedSegmentStates_.at(bank.rows[rowIndex].stateIndex);
+            Require(static_cast<bool>(state.scheduler.CommitPreparedFrame()), "Spatial source row commit failed");
+        }
+        for (std::uint32_t rowIndex = 0; rowIndex < bank.rowCount; rowIndex++)
+        {
+            auto& state = unifiedSegmentStates_.at(bank.rows[rowIndex].stateIndex);
+            if (state.scheduler.IsComplete())
+            {
+                CompleteUnifiedSegmentPass(state);
+            }
+        }
+        Require(unifiedSpatialBankOrdinal_ != (std::numeric_limits<std::uint64_t>::max)(), "Spatial bank ordinal exhausted");
+        unifiedSpatialBankOrdinal_++;
+        bank.rowCount = 0;
+        bank.phase = 0;
+        SlideUnifiedSegmentWindow();
+        if (!unifiedSegmentStates_.empty() && SelectNextUnifiedSegment())
+        {
+            return;
+        }
+        AdvanceUnifiedSegmentWindow();
+    }
+
     [[nodiscard]] std::array<std::byte, pbprotocol::kBootstrapRecordBytes> MakeBootstrap(
         const std::uint64_t frameSequence) const
     {
@@ -1846,9 +2116,82 @@ private:
         {
             return kUnifiedLedgerUnseeded / 4;
         }
-        const std::uint64_t factor = blockCount * senderUnifiedGraduationFactorPercent;
-        return factor / 100 + (factor % 100 != 0 ? 1 : 0) +
-            carouselPass_ * (blockCount * senderUnifiedWrapTopUpPercent / 100 + 1);
+        Require(carouselPass_ >= initialCarouselPass_, "Unified Carousel pass regressed");
+        // GrayFast remote observations can stay near 8-10 Hz even while the
+        // sender runs at 30-60 Hz. Keep the initial repair airtime, rather than
+        // shortening it with configured FPS and stranding incomplete decoders.
+        // This uses only the sender's start configuration, never receiver feedback.
+        const std::uint64_t frameRateScale = profile_.profile == VisualProfile::UnifiedGrayFast ?
+            (std::max)(logicalVisualFps_, senderUnifiedSerialRepairFpsThreshold) : senderUnifiedSerialRepairFpsThreshold;
+        const std::uint64_t graduationFactor = (senderUnifiedGraduationFactorPercent * frameRateScale +
+            senderUnifiedSerialRepairFpsThreshold - 1ULL) / senderUnifiedSerialRepairFpsThreshold;
+        const auto factor = pbprotocol::CheckedMultiplyUint64(blockCount, graduationFactor);
+        const auto topUpFactor = pbprotocol::CheckedMultiplyUint64(blockCount, senderUnifiedWrapTopUpPercent);
+        RequireResult(factor, "Unified graduation base target overflow");
+        RequireResult(topUpFactor, "Unified graduation top-up factor overflow");
+        std::uint64_t baseTarget = factor.Value() / 100 + (factor.Value() % 100 != 0 ? 1 : 0);
+        if (profile_.profile == VisualProfile::UnifiedGrayFast && blockCount != 0)
+        {
+            // Equations in one raster are lost together. A fixed percentage
+            // only budgets the mean, so short Segments can accumulate as
+            // stragglers and exhaust the receiver's unchanged eight slots.
+            // Add a square-root frame-loss margin: it costs proportionally
+            // less for large Segments. This is bounded sender-side tuning,
+            // not an inferred receiver completion or a channel guarantee.
+            const auto groupedBlocks = pbprotocol::CheckedMultiplyUint64(blockCount, profile_.codewords - 1ULL);
+            RequireResult(groupedBlocks, "Unified frame-loss sample size overflow");
+            std::uint64_t lowerRoot = 1;
+            std::uint64_t upperRoot = groupedBlocks.Value();
+            while (lowerRoot < upperRoot)
+            {
+                const std::uint64_t middleRoot = lowerRoot + (upperRoot - lowerRoot) / 2;
+                const std::uint64_t quotient = groupedBlocks.Value() / middleRoot;
+                if (middleRoot < quotient || (middleRoot == quotient && groupedBlocks.Value() % middleRoot != 0))
+                {
+                    lowerRoot = middleRoot + 1;
+                }
+                else
+                {
+                    upperRoot = middleRoot;
+                }
+            }
+            // Spatial rows distribute a raster loss across the active window.
+            // Keep the base budget, but independently test a smaller additive
+            // margin; this still is not a receiver-completion guarantee.
+            const std::uint64_t marginFactor = unifiedSpatialBank_ ? 2ULL : 4ULL;
+            const auto marginNumerator = pbprotocol::CheckedMultiplyUint64(lowerRoot, marginFactor * frameRateScale);
+            RequireResult(marginNumerator, "Unified frame-loss margin overflow");
+            const std::uint64_t margin = marginNumerator.Value() / senderUnifiedSerialRepairFpsThreshold +
+                static_cast<std::uint64_t>(marginNumerator.Value() % senderUnifiedSerialRepairFpsThreshold != 0);
+            const auto paddedTarget = pbprotocol::CheckedAddUint64(baseTarget, margin);
+            const auto maximumInitialTarget = pbprotocol::CheckedMultiplyUint64(blockCount, 16ULL);
+            RequireResult(paddedTarget, "Unified frame-loss target overflow");
+            RequireResult(maximumInitialTarget, "Unified frame-loss target bound overflow");
+            baseTarget = (std::min)(paddedTarget.Value(), maximumInitialTarget.Value());
+        }
+        const std::uint64_t elapsedPasses = carouselPass_ - initialCarouselPass_;
+        // A repair-only receiver needs a full loss-budgeted visit before new
+        // windows consume its remaining decoder slots. Tiny repeated visits
+        // leave many partly recovered Segments competing for those slots.
+        // Spatial repair therefore retains the initial visit budget, with
+        // fresh IDs; this still neither observes nor guarantees completion.
+        const std::uint64_t fullRepairPasses = unifiedSpatialBank_ ? elapsedPasses : 0;
+        const std::uint64_t microRepairPasses = elapsedPasses - fullRepairPasses;
+        const auto microTopUp = pbprotocol::CheckedMultiplyUint64(microRepairPasses, topUpFactor.Value() / 100 + 1);
+        const auto fullTopUp = pbprotocol::CheckedMultiplyUint64(fullRepairPasses, baseTarget);
+        RequireResult(microTopUp, "Unified graduation micro repair top-up overflow");
+        RequireResult(fullTopUp, "Unified graduation full repair top-up overflow");
+        const auto topUp = pbprotocol::CheckedAddUint64(microTopUp.Value(), fullTopUp.Value());
+        RequireResult(topUp, "Unified graduation cumulative top-up overflow");
+        // Shorten only the initial visit in this explicit test candidate. A
+        // receiver missing it still gets the unchanged full repair visits.
+        // Never turn decoder completion or unused ID leases into this credit.
+        const auto initialNumerator = pbprotocol::CheckedMultiplyUint64(baseTarget, initialAirtimePercent_);
+        RequireResult(initialNumerator, "Unified initial airtime multiplication overflow");
+        const std::uint64_t initialTarget = initialNumerator.Value() / 100 + static_cast<std::uint64_t>(initialNumerator.Value() % 100 != 0);
+        const auto target = pbprotocol::CheckedAddUint64(initialTarget, topUp.Value());
+        RequireResult(target, "Unified graduation target overflow");
+        return target.Value();
     }
 
     [[nodiscard]] SenderCarouselSchedulerStatus CreateUnifiedSegmentScheduler(UnifiedSegmentState& state,
@@ -1912,17 +2255,9 @@ private:
             // count once and keep it across wrap re-admissions.
             unifiedPassLedger_[segmentOrdinal] = carouselPass_;
         }
-        state.segmentPassCount = unifiedPassLedger_.empty() ? 0 : unifiedPassLedger_[segmentOrdinal];
-        if (!unifiedCommittedLedger_.empty() &&
-            unifiedCommittedLedger_[segmentOrdinal] == kUnifiedLedgerUnseeded)
-        {
-            // First admission of this ordinal: a resumed Session seeds the
-            // cumulative count from the persisted repair-ID high-water
-            // (systematic range plus leased repairs), a fresh Session starts
-            // at zero.
-            unifiedCommittedLedger_[segmentOrdinal] = nextRepairIds_[segmentOrdinal] != 0 ?
-                nextRepairIds_[segmentOrdinal] : 0;
-        }
+        // ID leases prevent reuse; they do not prove an equation was shown.
+        // Only completed scheduler commits in this run earn airtime credit.
+        // Resume retains the repair-ID high-water independently of this ledger.
         state.committedEquationsTotal = unifiedCommittedLedger_.empty() ? 0 :
             unifiedCommittedLedger_[segmentOrdinal];
         if (!UnifiedGraduationEnabled() && !unifiedPassLedger_.empty())
@@ -1955,6 +2290,20 @@ private:
         unifiedFrame_ = {};
     }
 
+    [[nodiscard]] std::uint64_t GetUnifiedTargetWindowSize(const std::uint64_t firstOrdinal) const
+    {
+        Require(firstOrdinal <= description_.segments.size(), "Unified target window starts outside the descriptor table");
+        const std::uint64_t remaining = description_.segments.size() - firstOrdinal;
+        // Four steady rows reduce the all-completed-window wait and leave
+        // receiver slack. The initial last up-to-six rows share the recovery
+        // tail. Repair-only late join can retain four incomplete earlier rows;
+        // another five/six-row tail would exceed the unchanged eight-slot cap.
+        const std::uint64_t target = unifiedSpatialBank_ && UnifiedGraduationEnabled() &&
+            (remaining > senderUnifiedActiveSegmentWindowSize || carouselPass_ > initialCarouselPass_) ?
+            senderUnifiedSpatialSteadyWindowSize : senderUnifiedActiveSegmentWindowSize;
+        return (std::min)(remaining, target);
+    }
+
     void InitializeUnifiedSegmentWindow()
     {
         Require(IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty() &&
@@ -1964,18 +2313,13 @@ private:
         unifiedWindowStartSegmentOrdinal_ = currentSegmentOrdinal_;
         if (unifiedCommittedLedger_.size() != description_.segments.size())
         {
-            // Both ledgers resolve per ordinal at first admission: the pass
-            // ledger records the admission-time Carousel pass (a resumed
-            // Session never replays systematic equations; a barrier file's
-            // later windows keep the original admission-pass semantics), and
-            // the committed ledger seeds from the durable repair-ID
-            // high-water on resumed Sessions.
-            unifiedCommittedLedger_.assign(description_.segments.size(), kUnifiedLedgerUnseeded);
+            // No durable airtime receipt exists on the one-way channel. A
+            // restarted sender therefore starts a conservative, run-local
+            // airtime budget without converting unused ID leases into credit.
+            unifiedCommittedLedger_.assign(description_.segments.size(), 0);
             unifiedPassLedger_.assign(description_.segments.size(), kUnifiedLedgerUnseeded);
         }
-        const std::uint64_t remainingSegments = description_.segments.size() - currentSegmentOrdinal_;
-        const std::uint64_t activeSegments = (std::min)(remainingSegments,
-            static_cast<std::uint64_t>(senderUnifiedActiveSegmentWindowSize));
+        const std::uint64_t activeSegments = GetUnifiedTargetWindowSize(currentSegmentOrdinal_);
         unifiedSegmentStates_.reserve(static_cast<std::size_t>(activeSegments));
         for (std::uint64_t segmentOffset = 0; segmentOffset < activeSegments; segmentOffset++)
         {
@@ -2008,12 +2352,22 @@ private:
     void CompleteUnifiedSegmentPass(UnifiedSegmentState& state)
     {
         Require(state.scheduler.IsComplete(), "Unified Segment pass completion requires a complete scheduler");
-        state.committedEquationsTotal += state.scheduler.GetSnapshot().committedEquationCount;
+        const auto committedTotal = pbprotocol::CheckedAddUint64(state.committedEquationsTotal,
+            state.scheduler.GetSnapshot().committedEquationCount);
+        RequireResult(committedTotal, "Unified committed equation ledger overflow");
+        state.committedEquationsTotal = committedTotal.Value();
         if (!unifiedCommittedLedger_.empty())
         {
             unifiedCommittedLedger_[state.segmentOrdinal] = state.committedEquationsTotal;
         }
         FinalizeUnifiedSegmentRound(state);
+        Require(state.segmentPassCount != (std::numeric_limits<std::uint64_t>::max)(), "Unified Segment pass exhausted");
+        state.segmentPassCount++;
+        state.completedPassesThisAdmission++;
+        if (!unifiedPassLedger_.empty())
+        {
+            unifiedPassLedger_[state.segmentOrdinal] = state.segmentPassCount;
+        }
         if (!UnifiedGraduationEnabled())
         {
             // Small-file path: the round completes like the pre-graduation
@@ -2022,7 +2376,7 @@ private:
             return;
         }
         if (state.committedEquationsTotal >= state.graduationTarget ||
-            state.segmentPassCount >= senderUnifiedMaximumSegmentPasses)
+            state.completedPassesThisAdmission >= senderUnifiedMaximumSegmentPasses)
         {
             state.graduated = true;
             return;
@@ -2030,11 +2384,6 @@ private:
         // Under-served Segment: open the next local pass immediately instead
         // of waiting for a whole-Carousel wrap that re-visits every recovered
         // Segment. The repair lease extends from the finalized high-water.
-        state.segmentPassCount++;
-        if (!unifiedPassLedger_.empty())
-        {
-            unifiedPassLedger_[state.segmentOrdinal] = state.segmentPassCount;
-        }
         state.repairIdsFinalized = false;
         // Keep the window-constant phase count here too: the shrinking tail
         // window's live size would renumber phases against tail admissions
@@ -2060,7 +2409,11 @@ private:
         const std::uint64_t windowSize = unifiedSegmentStates_.size();
         Require(windowSize != 0, "Unified Segment selection requires a non-empty window");
         const std::uint64_t sweepOrdinal = cyclePosition_ / windowSize;
-        const std::uint64_t phaseEpoch = sweepOrdinal / senderUnifiedSweepPhaseHold;
+        // A long fixed phase can alias with periodic remote frame selection,
+        // starving the same short Segments again after each Carousel wrap.
+        // GrayFast rotates every sweep; no observed receiver state is used.
+        const std::uint32_t phaseHold = profile_.profile == VisualProfile::UnifiedGrayFast ? 1U : senderUnifiedSweepPhaseHold;
+        const std::uint64_t phaseEpoch = sweepOrdinal / phaseHold;
         const std::uint64_t positionInSweep = cyclePosition_ % windowSize;
         const std::size_t plannedIndex = static_cast<std::size_t>(
             (phaseEpoch * senderUnifiedSweepPhaseStep + positionInSweep) % windowSize);
@@ -2102,6 +2455,20 @@ private:
                     static_cast<std::uint32_t>(senderUnifiedActiveSegmentWindowSize)));
             }
         }
+        if (unifiedSpatialBank_ && !unifiedSegmentStates_.empty())
+        {
+            // All spatial rows have committed before this entry. Appending
+            // a tail row may reallocate the vector; no bank index/reference
+            // can remain live across this bounded admission step.
+            const std::uint64_t targetSize = GetUnifiedTargetWindowSize(unifiedWindowStartSegmentOrdinal_);
+            while (unifiedSegmentStates_.size() < targetSize)
+            {
+                const std::uint64_t nextOrdinal = unifiedWindowStartSegmentOrdinal_ + unifiedSegmentStates_.size();
+                unifiedSegmentStates_.push_back(BuildUnifiedSegmentState(nextOrdinal,
+                    static_cast<std::uint32_t>(unifiedSegmentStates_.size()),
+                    static_cast<std::uint32_t>(senderUnifiedActiveSegmentWindowSize)));
+            }
+        }
         if (!unifiedSegmentStates_.empty())
         {
             UpdateResidentSegmentHighWater();
@@ -2135,8 +2502,11 @@ private:
         {
             currentSegmentOrdinal_ = 0;
         }
-        Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
-        carouselPass_++;
+        if (currentSegmentOrdinal_ == 0)
+        {
+            Require(carouselPass_ != (std::numeric_limits<std::uint64_t>::max)(), "Carousel pass exhausted");
+            carouselPass_++;
+        }
         InitializeUnifiedSegmentWindow();
     }
 
@@ -2257,6 +2627,12 @@ private:
 
     [[nodiscard]] std::uint32_t CalculateOuterBlockId(const std::uint32_t slot) const
     {
+        if (unifiedSpatialBank_ && unifiedSpatialBank_->framePrepared)
+        {
+            const auto& stored = GetSpatialSlot(slot);
+            Require(stored.payloadBytes != 0, "Spatial Control slot has no OuterBlockId");
+            return stored.outerBlockId;
+        }
         if (description_.segments.empty() || GetCurrentKind() != FrameKind::Data || blockCount_ == 0)
         {
             return 0;
@@ -2349,23 +2725,25 @@ private:
     // wrap re-opens everything with the target raised by wrapTopUpPercent of K
     // so residual stragglers converge while recovered Segments re-graduate
     // after one minimal top-up pass.
-    // Graduation holds each Segment in the sender window until this much of
-    // K has been committed. The receiver typically decodes at 105-110%; the
-    // margin covers degraded-link erasure. 300% froze large-file progress
-    // for ~17 minutes per window (954MB field report): the sender pumped
-    // repair the receiver already had while the estimate sat still. 200%
-    // keeps 2x decode margin while halving the waste.
+    // This is a transmitted-equation budget, not a receiver-completion
+    // estimate. Whole-frame loss can still leave a Segment incomplete; every
+    // later wrap must provide fresh repair IDs within the same resource bounds.
     static constexpr std::uint64_t senderUnifiedGraduationFactorPercent = 200;
     static constexpr std::uint64_t senderUnifiedWrapTopUpPercent = 25;
     static constexpr std::uint64_t senderUnifiedMaximumSegmentPasses = 8;
+    static constexpr std::uint64_t senderUnifiedSpatialSteadyWindowSize = 4;
+    static_assert(senderUnifiedSpatialSteadyWindowSize < senderUnifiedActiveSegmentWindowSize);
     static constexpr std::uint64_t kUnifiedLedgerUnseeded = (std::numeric_limits<std::uint64_t>::max)();
     std::vector<UnifiedSegmentState> unifiedSegmentStates_;
+    std::unique_ptr<UnifiedSpatialBank> unifiedSpatialBank_;
+    std::uint64_t unifiedSpatialBankOrdinal_ = 0;
     std::vector<std::uint64_t> unifiedCommittedLedger_;
     std::vector<std::uint64_t> unifiedPassLedger_;
     std::size_t unifiedCurrentStateIndex_ = 0;
     std::uint64_t unifiedWindowStartSegmentOrdinal_ = 0;
     std::uint64_t currentSegmentOrdinal_ = 0;
     std::uint64_t carouselPass_ = 0;
+    const std::uint64_t initialCarouselPass_ = 0;
     std::uint32_t blockCount_ = 0;
     SenderCarouselScheduler roundScheduler_;
     SenderUnifiedCarouselScheduler unifiedScheduler_;
@@ -2383,6 +2761,7 @@ private:
     std::uint64_t peakResidentEncodedSegmentBytes_ = 0;
     const std::uint32_t controlRepetitions_;
     const std::uint32_t logicalVisualFps_;
+    const std::uint32_t initialAirtimePercent_;
 };
 
 [[nodiscard]] bool HasStablePresentationContract(const pbrenderd3d::DataWindowSnapshot& snapshot,
@@ -3363,11 +3742,12 @@ public:
         const bool deferCompletedState = false, const bool captureTelemetryAvailable = true,
         const bool collectResourceHighWater = false,
         LargeOutputConfirmationController* const largeOutputConfirmation = nullptr,
-        std::shared_ptr<RunMeasurementRecorder> measurement = {})
+        std::shared_ptr<RunMeasurementRecorder> measurement = {}, const bool budgetBoundActiveSegments = false)
         : receiver_(receiver), outputDirectory_(std::move(outputDirectory)), policy_(policy), snapshot_(snapshot),
           completion_(completion), runGeneration_(runGeneration), started_(started), visualProfile_(visualProfile),
           deferCompletedState_(deferCompletedState), captureTelemetryAvailable_(captureTelemetryAvailable),
-          collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation), measurement_(std::move(measurement))
+          collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation), measurement_(std::move(measurement)),
+          budgetBoundActiveSegments_(budgetBoundActiveSegments)
     {
         snapshot_.Update([this](DecoderSnapshot& value)
         {
@@ -3375,6 +3755,7 @@ public:
             {
                 value.outerActiveDecoderLimit = policy_.maxActiveOuterFecDecoders;
                 value.outerTotalDecoderByteLimit = policy_.maxTotalOuterFecDecoderBytes;
+                value.budgetBoundDecoderAdmission = budgetBoundActiveSegments_;
             }
         });
     }
@@ -3616,6 +3997,11 @@ public:
     [[nodiscard]] std::uint64_t GetPeakActiveOuterFecDecoderCount() const noexcept
     {
         return peakActiveOuterFecDecoderCount_;
+    }
+
+    [[nodiscard]] bool IsStoredSegmentForTesting(const std::size_t segmentOrdinal) const noexcept
+    {
+        return segmentOrdinal < storedSegments_.size() && storedSegments_[segmentOrdinal];
     }
 
     [[nodiscard]] std::uint64_t GetPeakReservedOuterFecDecoderBytes() const noexcept
@@ -4408,7 +4794,7 @@ private:
 
         DecoderResumeLoadedState loadedResume;
         const DecoderResumeStoreStatus resumeStatus = DecoderResumeStore::Open(outputDirectory_, sessionTag,
-            sessionControlRecord, policy_, resumeStore_, loadedResume);
+            sessionControlRecord, policy_, resumeStore_, loadedResume, budgetBoundActiveSegments_);
         Require(static_cast<bool>(resumeStatus), "Decoder resume journal open failed: " + resumeStatus.message);
 
         pbstorage::OutputFileConfig storageConfig;
@@ -5471,6 +5857,7 @@ private:
     LargeOutputConfirmationController* largeOutputConfirmation_ = nullptr;
     std::shared_ptr<RunMeasurementRecorder> measurement_;
     std::unique_ptr<pbstorage::OutputFile> storage_;
+    bool budgetBoundActiveSegments_ = false;
     std::unique_ptr<DecoderResumeStore> resumeStore_;
     std::optional<pbprotocol::SessionDescriptor> session_;
     std::optional<pbprotocol::SessionDescriptor> pendingSession_;
@@ -6432,12 +6819,17 @@ struct UnifiedStripingFixture
     TransferDescription description;
 };
 
-[[nodiscard]] UnifiedStripingFixture BuildUnifiedStripingFixture(const std::uint32_t segmentBytes)
+[[nodiscard]] UnifiedStripingFixture BuildUnifiedStripingFixture(const std::uint32_t segmentBytes,
+    const VisualProfile visualProfile = VisualProfile::UnifiedLc4,
+    const std::uint64_t segmentCount = senderUnifiedActiveSegmentWindowSize)
 {
-    constexpr std::uint64_t segmentCount = senderUnifiedActiveSegmentWindowSize;
+    Require(segmentCount >= 1 && segmentCount <= 96, "Unified striping fixture Segment count is outside its bounded contract");
     Require(segmentBytes >= 64U * 1024U && segmentBytes <= pbprotocol::kDefaultSourceSegmentTargetBytes,
         "Unified temporal-striping fixture Segment size is outside its bounded contract");
-    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedLc4);
+    const auto sourceBytes = pbprotocol::CheckedMultiplyUint64(segmentCount, segmentBytes);
+    RequireResult(sourceBytes, "Unified striping fixture size overflow");
+    Require(sourceBytes.Value() <= 100000000ULL, "Unified striping fixture exceeds the bounded 100 MB test size");
+    const ProfileBinding profile = GetProfileBinding(visualProfile);
     UnifiedStripingFixture fixture;
     fixture.source.resize(static_cast<std::size_t>(segmentCount) * segmentBytes);
     for (std::size_t index = 0; index < fixture.source.size(); index++)
@@ -6458,7 +6850,7 @@ struct UnifiedStripingFixture
         const std::size_t rawOffset = static_cast<std::size_t>(segmentOrdinal) * segmentBytes;
         fixture.description.segments.push_back(PrepareSegmentDescription(fixture.description.session, sessionTag,
             segmentOrdinal, rawOffset, std::span(fixture.source).subspan(rawOffset, segmentBytes), false, 3,
-            outerBlockBytes));
+            profile.blockBytes));
         Require(fixture.description.segments.back().descriptor.outerFecMode == pbprotocol::OuterFecMode::WirehairV2,
             "Unified temporal-striping probe requires Wirehair segments");
     }
@@ -6467,6 +6859,369 @@ struct UnifiedStripingFixture
         pbprotocol::DigestAlgorithm::Blake3_256};
     FinalizeTransferControls(fixture.description);
     return fixture;
+}
+
+void RunUnifiedGraduationProbe(const std::uint32_t segmentCount, const std::uint64_t initialCarouselPass,
+    const std::uint32_t unusedRepairLeaseIds, const std::uint32_t logicalVisualFps, UnifiedGraduationProbeSnapshot& result)
+{
+    Require(initialCarouselPass <= 50 && unusedRepairLeaseIds <= encoderDurableIdLeaseSize,
+        "Unified graduation probe exceeds its bounded resume configuration");
+    Require(logicalVisualFps >= 1 && logicalVisualFps <= 60, "Unified graduation probe FPS is out of bounds");
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedGrayFast);
+    UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(256U * 1024U, profile.profile, segmentCount);
+    result = {};
+    result.blockCounts.resize(segmentCount);
+    result.firstCarouselEquations.resize(segmentCount);
+    result.firstCarouselSystematicEquations.resize(segmentCount);
+    result.secondCarouselEquations.resize(segmentCount);
+    std::vector<std::set<std::uint32_t>> scheduledRepairIds(segmentCount);
+    SenderFrameBuilder builder(profile, fixture.description, 4, {},
+        [unusedRepairLeaseIds](const std::uint64_t, const std::uint32_t systematicBlockCount)
+        {
+            return systematicBlockCount + unusedRepairLeaseIds;
+        }, {}, initialCarouselPass, 0, logicalVisualFps);
+    while (builder.GetCarouselSnapshot().cycleCount - initialCarouselPass < 2)
+    {
+        Require(result.senderLogicalFrames < 10000, "Unified graduation probe exceeded its bounded frame budget");
+        const std::uint64_t relativePass = builder.GetCarouselSnapshot().cycleCount - initialCarouselPass;
+        const std::size_t segmentOrdinal = static_cast<std::size_t>(builder.GetCurrentSegmentOrdinal());
+        const std::uint32_t blockCount = builder.GetBlockCount();
+        result.blockCounts[segmentOrdinal] = blockCount;
+        const auto& frame = builder.PrepareHeadlessFrame(result.senderLogicalFrames);
+        for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
+        {
+            if (frame.slots[slot].transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+            {
+                continue;
+            }
+            const std::uint32_t outerBlockId = builder.GetOuterBlockIdForSlot(slot);
+            if (relativePass == 0)
+            {
+                result.firstCarouselEquations[segmentOrdinal]++;
+                result.firstCarouselSystematicEquations[segmentOrdinal] += static_cast<std::uint64_t>(outerBlockId < blockCount);
+            }
+            else
+            {
+                result.secondCarouselEquations[segmentOrdinal]++;
+            }
+            if (outerBlockId < blockCount)
+            {
+                result.laterSystematicEquations += static_cast<std::uint64_t>(initialCarouselPass != 0 || relativePass != 0);
+            }
+            else
+            {
+                result.repairIdsBelowLeaseStart += static_cast<std::uint64_t>(outerBlockId < blockCount + unusedRepairLeaseIds);
+                result.repeatedScheduledRepairIds += static_cast<std::uint64_t>(!scheduledRepairIds[segmentOrdinal].insert(outerBlockId).second);
+            }
+        }
+        builder.Advance();
+        result.senderLogicalFrames++;
+    }
+    result.completedCarouselPasses = builder.GetCarouselSnapshot().cycleCount - initialCarouselPass;
+    result.peakResidentEncodedSegmentCount = builder.GetPeakResidentEncodedSegmentCount();
+}
+
+void RunUnifiedHeadlessClockProbe(const std::uint32_t logicalVisualFps)
+{
+    Require(logicalVisualFps == 15 || logicalVisualFps == 30 || logicalVisualFps == 60, "Unified headless clock FPS is out of bounds");
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedGrayFast);
+    const UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(pbprotocol::kDefaultSourceSegmentTargetBytes, profile.profile, 1);
+    SenderFrameBuilder builder(profile, fixture.description, 4, {}, {}, {}, 0, 0, logicalVisualFps);
+    SenderUnifiedCarouselScheduler reference;
+    Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(
+        {builder.GetBlockCount(), 4, logicalVisualFps, true, 0, 0, 1, 0, profile.codewords}, reference)),
+        "Unified headless clock reference creation failed");
+    for (std::uint64_t tick = 0; tick < logicalVisualFps * (senderCarouselControlCadenceSeconds + 1ULL) && !reference.IsComplete(); tick++)
+    {
+        SenderUnifiedScheduledFrame expected;
+        Require(static_cast<bool>(reference.PrepareFrameAt(tick, tick * 1000000000ULL / logicalVisualFps, expected)),
+            "Unified headless clock reference preparation failed");
+        Require(builder.PrepareHeadlessFrame(tick) == expected,
+            "Unified headless clock disagrees with configured FPS wall-time cadence");
+        builder.Advance();
+        Require(static_cast<bool>(reference.CommitPreparedFrame()), "Unified headless clock reference commit failed");
+    }
+    Require(reference.GetSnapshot().committedFrameCount > 15ULL * senderCarouselControlCadenceSeconds,
+        "Unified headless clock probe did not cross the old fixed-clock deadline");
+}
+
+void VerifyUnifiedSpatialCommitAndLease(const ProfileBinding profile, const TransferDescription& description, const std::uint32_t initialAirtimePercent)
+{
+    std::vector<std::uint32_t> leaseEnds(description.segments.size(), 0);
+    std::vector<std::uint32_t> previousLeaseEnds(description.segments.size(), 0);
+    for (std::uint32_t restart = 0; restart < 2; restart++)
+    {
+        // A pass-1 restart uses repair equations, so an abandoned partial bank
+        // must skip the entire prior lease, not just its committed-row count.
+        SenderFrameBuilder builder(profile, description, 4, {},
+            [&](const std::uint64_t ordinal, const std::uint32_t blockCount)
+            {
+                return leaseEnds.at(ordinal) != 0 ? leaseEnds.at(ordinal) : blockCount + 65536U;
+            },
+            [&](const std::uint64_t ordinal, const std::uint64_t requiredExclusive)
+            {
+                Require(requiredExclusive > leaseEnds.at(ordinal) && requiredExclusive <= (std::numeric_limits<std::uint32_t>::max)(),
+                    "Spatial lease probe requires a growing bounded lease");
+                leaseEnds.at(ordinal) = static_cast<std::uint32_t>(requiredExclusive);
+            }, 1, 0, 30, true, initialAirtimePercent);
+        const std::uint32_t rowCount = builder.GetActiveSegmentWindowSize();
+        std::uint64_t expectedCommitted = 0;
+        for (std::uint32_t phase = 0; phase < rowCount; phase++)
+        {
+            const auto frame = builder.PrepareHeadlessFrame(phase);
+            Require(builder.GetWindowCommittedEquationCountForTest() == 0, "Spatial source rows received premature commit credit");
+            std::array<std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes>, senderUnifiedMaximumCodewordSlotCount> firstBytes{};
+            std::array<std::size_t, senderUnifiedMaximumCodewordSlotCount> firstLengths{};
+            for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
+            {
+                if (frame.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                {
+                    const auto control = builder.GetControlBlockForSlot(slot);
+                    firstLengths[slot] = control.size();
+                    std::copy(control.begin(), control.end(), firstBytes[slot].begin());
+                    continue;
+                }
+                std::uint32_t payloadBytes = 0;
+                firstLengths[slot] = builder.BuildTransportBlockForSlot(slot, firstBytes[slot], payloadBytes);
+                const auto parsed = pbprotocol::ParseTransportBlock(std::span(firstBytes[slot]).first(firstLengths[slot]));
+                RequireResult(parsed, "Spatial lease probe Transport parse failed");
+                const auto& header = parsed.Value().header;
+                Require(header.outerBlockId >= previousLeaseEnds.at(header.segmentOrdinal) &&
+                    header.outerBlockId < leaseEnds.at(header.segmentOrdinal), "Spatial restart reused an abandoned repair lease");
+            }
+            // Preparation alone, even at a later tick, cannot change a pending
+            // matrix column, mutate equation credit, or allocate fresh IDs.
+            Require(builder.PrepareHeadlessFrame(phase + 100U) == frame, "Spatial pending plan changed on retry");
+            for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
+            {
+                std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes> retryBytes{};
+                std::uint32_t payloadBytes = 0;
+                if (frame.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                {
+                    const auto control = builder.GetControlBlockForSlot(slot);
+                    Require(control.size() == firstLengths[slot] && std::equal(control.begin(), control.end(), firstBytes[slot].begin()),
+                        "Spatial Control bytes changed on retry");
+                }
+                else
+                {
+                    const auto retryLength = builder.BuildTransportBlockForSlot(slot, retryBytes, payloadBytes);
+                    Require(retryLength == firstLengths[slot] && std::equal(retryBytes.begin(), retryBytes.begin() + retryLength, firstBytes[slot].begin()),
+                        "Spatial Transport bytes changed on retry");
+                }
+            }
+            expectedCommitted += frame.scheduledEquationCount;
+            builder.Advance();
+            Require(builder.GetWindowCommittedEquationCountForTest() == (phase + 1U == rowCount ? expectedCommitted : 0),
+                "Spatial bank commit did not match submitted equations exactly");
+        }
+        // Abandon the next bank after one column (or after preparation for W=1).
+        static_cast<void>(builder.PrepareHeadlessFrame(rowCount));
+        if (rowCount > 1)
+        {
+            builder.Advance();
+        }
+        Require(builder.GetWindowCommittedEquationCountForTest() == expectedCommitted, "Partial spatial bank earned airtime credit");
+        previousLeaseEnds = leaseEnds;
+    }
+}
+
+void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, const UnifiedGraduationRecoveryProbeConfig& config,
+    UnifiedGraduationRecoveryProbeSnapshot& result)
+{
+    Require(config.maximumSenderLogicalFrames > 0 && config.maximumSenderLogicalFrames <= 200000 &&
+        config.firstObservedLogicalFrame < config.maximumSenderLogicalFrames,
+        "Unified recovery frame budget or late-join point is outside the test contract");
+    Require(config.initialAirtimePercent >= 50 && config.initialAirtimePercent <= 100 &&
+        (config.initialAirtimePercent == 100 || config.grayFastSpatialInterleave), "Unified recovery initial airtime is outside the test contract");
+    const std::uint32_t logicalVisualFps = config.logicalVisualFps;
+    Require(logicalVisualFps == 15 || logicalVisualFps == 30, "Unified graduation recovery FPS is out of bounds");
+    Require(config.erasureModel == UnifiedRecoveryErasureModel::None || config.erasureModel == UnifiedRecoveryErasureModel::PermutedThird ||
+        config.erasureModel == UnifiedRecoveryErasureModel::PeriodicThird || config.erasureModel == UnifiedRecoveryErasureModel::PeriodicQuarter ||
+        config.erasureModel == UnifiedRecoveryErasureModel::SparseBursty || config.erasureModel == UnifiedRecoveryErasureModel::PeriodicFifth ||
+        config.erasureModel == UnifiedRecoveryErasureModel::PeriodicTwoFifths || config.erasureModel == UnifiedRecoveryErasureModel::PeriodicHalf,
+        "Unified graduation recovery erasure model is invalid");
+    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedGrayFast);
+    UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(config.segmentBytes, profile.profile, config.segmentCount);
+    const auto& description = fixture.description;
+    const auto policy = config.budgetBoundDecoders ? MakeBudgetBoundUnifiedReceiverResourcePolicy() :
+        MakeReceiverResourcePolicyForVisualProfile(profile.profile);
+    auto receiverResult = pbreceiver::ReceiverIngress::Create(policy, profile.blockBytes);
+    RequireResult(receiverResult, "Unified graduation recovery receiver creation failed");
+    auto receiver = std::move(receiverResult).Value();
+    SnapshotStore<DecoderSnapshot> snapshot;
+    snapshot.Update([&](DecoderSnapshot& value)
+    {
+        value.state = DecoderState::WaitingForBootstrap;
+        value.runGeneration = 1;
+        value.visualProfile = profile.profile;
+        value.visualProfileId = profile.visualProfileId;
+        value.visualLayoutVersion = profile.layoutVersion;
+        value.codedDataBytesPerFrame = profile.dataBytes;
+        value.codewordsPerFrame = profile.codewords;
+    });
+    AuthoritativeCompletion completion;
+    ReceiverPipeline pipeline(receiver, outputDirectory, policy, snapshot, completion, 1,
+        std::chrono::steady_clock::now(), profile.profile, false, false, true, nullptr, {}, config.budgetBoundDecoders);
+    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, logicalVisualFps, config.grayFastSpatialInterleave, config.initialAirtimePercent);
+    result = {};
+    result.spatialBankStorageBytes = builder.GetSpatialBankStorageBytes();
+    if (config.collectSegmentTrace)
+    {
+        result.segmentTrace.resize(description.segments.size());
+        for (std::size_t ordinal = 0; ordinal < description.segments.size(); ordinal++)
+        {
+            const std::uint64_t encodedBytes = description.segments[ordinal].descriptor.encodedSize;
+            const std::uint64_t blockCount = encodedBytes / profile.blockBytes + static_cast<std::uint64_t>(encodedBytes % profile.blockBytes != 0);
+            Require(blockCount <= (std::numeric_limits<std::uint32_t>::max)(), "Recovery trace block count overflow");
+            result.segmentTrace[ordinal].blockCount = static_cast<std::uint32_t>(blockCount);
+        }
+    }
+    if (config.grayFastSpatialInterleave)
+    {
+        VerifyUnifiedSpatialCommitAndLease(profile, description, config.initialAirtimePercent);
+        result.spatialCommitAndLeaseVerified = true;
+    }
+    std::uint32_t erasureState = 0x91A3C5E7U;
+    std::uint64_t lastUsefulFrame = 0;
+    std::uint64_t previousUniqueSymbols = 0;
+    while (!pipeline.IsCompleted())
+    {
+        Require(result.senderLogicalFrames < config.maximumSenderLogicalFrames, "Unified graduation recovery exceeded its bounded frame budget");
+        const auto& frame = builder.PrepareHeadlessFrame(result.senderLogicalFrames);
+        // Deterministic erasure projection independent of sender/receiver
+        // state; no missing-symbol list or completion feedback changes airtime.
+        erasureState ^= erasureState << 13U;
+        erasureState ^= erasureState >> 17U;
+        erasureState ^= erasureState << 5U;
+        // A fixed-seed irregular projection adds finite-window variation and
+        // short complete outages. This is a stress model, not a captured trace.
+        const bool observed = config.erasureModel == UnifiedRecoveryErasureModel::None ||
+            (config.erasureModel == UnifiedRecoveryErasureModel::PeriodicHalf && result.senderLogicalFrames % 2U == 0) ||
+            (config.erasureModel == UnifiedRecoveryErasureModel::PeriodicThird && result.senderLogicalFrames % 3U == 0) ||
+            (config.erasureModel == UnifiedRecoveryErasureModel::PeriodicQuarter && result.senderLogicalFrames % 4U == 0) ||
+            (config.erasureModel == UnifiedRecoveryErasureModel::PeriodicFifth && result.senderLogicalFrames % 5U == 0) ||
+            (config.erasureModel == UnifiedRecoveryErasureModel::PeriodicTwoFifths && result.senderLogicalFrames % 5U < 2U) ||
+            (config.erasureModel == UnifiedRecoveryErasureModel::PermutedThird && (result.senderLogicalFrames * 109U + 17U) % 97U < 32U) ||
+            (config.erasureModel == UnifiedRecoveryErasureModel::SparseBursty && erasureState % 100U < 28U && result.senderLogicalFrames % 503U < 492U);
+        if (observed && result.senderLogicalFrames >= config.firstObservedLogicalFrame)
+        {
+            if (result.observedLogicalFrames == 0)
+            {
+                result.firstObservedCarouselPass = builder.GetCarouselSnapshot().cycleCount;
+            }
+            result.observedLogicalFrames++;
+            const auto timestamp100ns = static_cast<std::int64_t>(result.senderLogicalFrames * 10000000ULL / logicalVisualFps + 1U);
+            for (std::uint32_t slot = 0; slot < frame.slotCount && !pipeline.IsCompleted(); slot++)
+            {
+                const auto& scheduled = frame.slots[slot];
+                if (scheduled.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                {
+                    const auto bytes = builder.GetControlBlockForSlot(slot);
+                    static_cast<void>(pipeline.ProcessHeadlessControlRecord(bytes, timestamp100ns));
+                }
+                else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession)
+                {
+                    std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes> bytes{};
+                    std::uint32_t payloadBytes = 0;
+                    const auto serializedBytes = builder.BuildTransportBlockForSlot(slot, bytes, payloadBytes);
+                    Require(payloadBytes != 0 && serializedBytes <= bytes.size(), "Unified graduation recovery Transport shape is invalid");
+                    const auto before = config.collectSegmentTrace ? receiver.GetTelemetry() : pbreceiver::ReceiverResourceTelemetrySnapshot{};
+                    const auto processed = pipeline.ProcessHeadlessTransportBlock(std::span(bytes).first(serializedBytes),
+                        result.observedLogicalFrames, timestamp100ns);
+                    if (config.collectSegmentTrace)
+                    {
+                        const auto parsed = pbprotocol::ParseTransportBlock(std::span(bytes).first(serializedBytes));
+                        RequireResult(parsed, "Recovery trace Transport independent parse failed");
+                        const auto ordinal = parsed.Value().header.segmentOrdinal;
+                        Require(ordinal < result.segmentTrace.size(), "Recovery trace ordinal exceeds bounded fixture");
+                        auto& trace = result.segmentTrace[static_cast<std::size_t>(ordinal)];
+                        if (!trace.firstObservedFrame)
+                        {
+                            trace.firstObservedFrame = result.senderLogicalFrames;
+                        }
+                        if (!trace.lastObservedFrame || *trace.lastObservedFrame != result.senderLogicalFrames)
+                        {
+                            if (trace.lastObservedFrame && !trace.completedFrame)
+                            {
+                                trace.longestObservedFrameGap = (std::max)(trace.longestObservedFrameGap,
+                                    result.senderLogicalFrames - *trace.lastObservedFrame);
+                            }
+                            trace.lastObservedFrame = result.senderLogicalFrames;
+                            trace.observedDataFrames++;
+                        }
+                        if (processed.uniqueAdmission)
+                        {
+                            trace.uniqueAdmissionEvents++;
+                            if (!trace.firstUniqueFrame)
+                            {
+                                trace.firstUniqueFrame = result.senderLogicalFrames;
+                            }
+                            if (processed.dataDisposition == pbreceiver::ReceiverDataDisposition::CachedOrphan)
+                            {
+                                trace.orphanUniqueAdmissionEvents++;
+                            }
+                            else if (!trace.firstBoundUniqueFrame && processed.hasDataAdmission &&
+                                (processed.dataDisposition == pbreceiver::ReceiverDataDisposition::AcceptedNeedMore ||
+                                    processed.dataDisposition == pbreceiver::ReceiverDataDisposition::EncodedSegmentReady))
+                            {
+                                trace.firstBoundUniqueFrame = result.senderLogicalFrames;
+                            }
+                        }
+                        trace.alreadyCompletedBlocks += processed.outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::AlreadyCompleted;
+                        const auto after = receiver.GetTelemetry();
+                        trace.deferredBlocks += after.deferredResourceBusyCount - before.deferredResourceBusyCount;
+                        trace.resourceRejections += after.totalResourcePolicyRejectedCount - before.totalResourcePolicyRejectedCount;
+                        trace.orphanQuotaDrops += after.orphanDroppedByQuotaCount - before.orphanDroppedByQuotaCount;
+                    }
+                }
+            }
+        }
+        if (config.collectSegmentTrace)
+        {
+            for (std::size_t ordinal = 0; ordinal < result.segmentTrace.size(); ordinal++)
+            {
+                auto& trace = result.segmentTrace[ordinal];
+                if (!trace.completedFrame && pipeline.IsStoredSegmentForTesting(ordinal))
+                {
+                    trace.completedFrame = result.senderLogicalFrames;
+                }
+            }
+        }
+        result.decoder = snapshot.Get();
+        result.peakActiveDecoders = pipeline.GetPeakActiveOuterFecDecoderCount();
+        result.peakReservedDecoderBytes = pipeline.GetPeakReservedOuterFecDecoderBytes();
+        result.deferredResourceBusyCount = receiver.GetTelemetry().deferredResourceBusyCount;
+        result.completedCarouselPasses = builder.GetCarouselSnapshot().cycleCount;
+        const std::uint64_t uniqueSymbols = result.decoder.outerUniqueSymbols;
+        if (uniqueSymbols != previousUniqueSymbols)
+        {
+            lastUsefulFrame = result.senderLogicalFrames;
+            previousUniqueSymbols = uniqueSymbols;
+        }
+        result.longestNoUsefulEquationFrames = (std::max)(result.longestNoUsefulEquationFrames, result.senderLogicalFrames - lastUsefulFrame);
+        if (result.senderLogicalFrames >= config.firstObservedLogicalFrame)
+        {
+            const std::uint64_t drought = result.senderLogicalFrames - (std::max)(lastUsefulFrame, config.firstObservedLogicalFrame);
+            if (drought > result.longestAfterJoinNoUsefulEquationFrames)
+            {
+                result.longestAfterJoinNoUsefulEquationFrames = drought;
+                result.activeDecodersAtLongestDrought = result.decoder.outerActiveDecoderCount;
+                result.verifiedRawBytesAtLongestDrought = result.decoder.verifiedRawBytes;
+            }
+        }
+        builder.Advance();
+        result.senderLogicalFrames++;
+    }
+    result.decoder = snapshot.Get();
+    result.publishedPath = completion.outputPathWide;
+    result.expectedWholeFileDigest = description.manifest.wholeFileDigest.bytes;
+    result.completedCarouselPasses = builder.GetCarouselSnapshot().cycleCount;
+    result.peakActiveDecoders = pipeline.GetPeakActiveOuterFecDecoderCount();
+    result.peakReservedDecoderBytes = pipeline.GetPeakReservedOuterFecDecoderBytes();
+    result.deferredResourceBusyCount = receiver.GetTelemetry().deferredResourceBusyCount;
+    Require(completion.published && result.decoder.wholeFileDigestCheck == true &&
+        result.decoder.finalRenameSucceeded == true && result.decoder.finalReopenVerified == true &&
+        result.decoder.verifiedRawBytes == fixture.source.size(), "Unified graduation recovery did not safely publish and reopen");
 }
 
 void RunUnifiedTemporalStripingProbe(UnifiedTemporalStripingProbeSnapshot& result)
@@ -7083,6 +7838,73 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedFountainMidJoin(
     }
 }
 
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedGraduation(const std::uint32_t segmentCount,
+    const std::uint64_t initialCarouselPass, const std::uint32_t unusedRepairLeaseIds, const std::uint32_t logicalVisualFps,
+    UnifiedGraduationProbeSnapshot& output) noexcept
+{
+    output = {};
+    try
+    {
+        RunUnifiedGraduationProbe(segmentCount, initialCarouselPass, unusedRepairLeaseIds, logicalVisualFps, output);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified graduation probe failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(const std::wstring& outputDirectory,
+    const bool eraseTwoThirds, const std::uint32_t logicalVisualFps, UnifiedGraduationRecoveryProbeSnapshot& output,
+    const bool periodicErasure) noexcept
+{
+    UnifiedGraduationRecoveryProbeConfig config;
+    config.logicalVisualFps = logicalVisualFps;
+    config.erasureModel = !eraseTwoThirds ? UnifiedRecoveryErasureModel::None : periodicErasure ?
+        UnifiedRecoveryErasureModel::PeriodicThird : UnifiedRecoveryErasureModel::PermutedThird;
+    return ProbeUnifiedGraduationRecovery(outputDirectory, config, output);
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(const std::wstring& outputDirectory,
+    const UnifiedGraduationRecoveryProbeConfig& config, UnifiedGraduationRecoveryProbeSnapshot& output) noexcept
+{
+    output = {};
+    try
+    {
+        RunUnifiedGraduationRecoveryProbe(outputDirectory, config, output);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified graduation recovery failed with an unknown error");
+    }
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedHeadlessClock(const std::uint32_t logicalVisualFps) noexcept
+{
+    try
+    {
+        RunUnifiedHeadlessClockProbe(logicalVisualFps);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified headless clock probe failed with an unknown error");
+    }
+}
+
 RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedWindowTransition(const std::wstring& sourcePath,
     const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
     const std::span<const std::uint32_t> erasedBands, const std::uint32_t biasedPhase,
@@ -7215,7 +8037,7 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const st
 
 RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(const std::span<const std::byte> source,
     const std::uint32_t destinationWidth, const std::uint32_t destinationHeight,
-    std::vector<std::byte>& output) noexcept
+    std::vector<std::byte>& output, const bool fillScreen) noexcept
 {
     constexpr std::size_t expectedSourceBytes =
         static_cast<std::size_t>(phase1CanvasWidth) * phase1CanvasHeight * 4U;
@@ -7233,7 +8055,7 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(c
         const auto byteCount = pbprotocol::CheckedMultiplyUnsigned(pixelCount.Value(), std::size_t{4});
         RequireResult(byteCount, "RemoteVisual fullscreen composition probe byte count overflow");
         std::vector<std::byte> result(byteCount.Value());
-        ComposeRemoteVisualFullscreenBgra(source, destinationWidth, destinationHeight, result);
+        ComposeRemoteVisualFullscreenBgra(source, destinationWidth, destinationHeight, result, fillScreen);
         output = std::move(result);
         return {};
     }
@@ -8190,6 +9012,26 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("Compression level 必须位于当前支持范围 1..22");
     }
+    if (config.segmentTargetBytes != 0 &&
+        ((config.visualProfile != VisualProfile::UnifiedGray && config.visualProfile != VisualProfile::UnifiedGrayFast) ||
+            config.segmentTargetBytes < 1024U * 1024U || config.segmentTargetBytes > 15U * 1024U * 1024U))
+    {
+        return RuntimeStatus::Failure("Segment target override 仅允许灰阶实验 Profile，且必须位于 1..15 MiB");
+    }
+    if (config.grayFastSpatialInterleave && config.visualProfile != VisualProfile::UnifiedGrayFast)
+    {
+        return RuntimeStatus::Failure("Spatial Segment interleaving 仅允许显式 GrayFast 实验");
+    }
+    if (config.grayFastShortInitialAirtime && !config.grayFastSpatialInterleave)
+    {
+        return RuntimeStatus::Failure("Short initial airtime requires explicit spatial GrayFast experimental mode");
+    }
+    if (config.grayFastSpatialInterleave && config.measurement)
+    {
+        // Step1's submitted identity has one SegmentOrdinal. Do not silently
+        // certify a mixed-Segment frame as an ordinary single-Segment sample.
+        return RuntimeStatus::Failure("Spatial Segment interleaving 尚不支持正式 Step1 measurement");
+    }
     if (FindVisualProfileOption(config.visualProfile) == nullptr ||
         (!IsUnifiedVisualFamily(config.visualProfile) && !config.monitorClientOrigin))
     {
@@ -8317,6 +9159,11 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
 
 RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const bool testOnlyUnifiedReplay)
 {
+    if (config.budgetBoundDecoders && (config.visualProfile != VisualProfile::UnifiedGrayFast || config.measurement ||
+        config.diagnosticCaptureOnly || !config.replayInputPath.empty() || !config.replayOutputPath.empty()))
+    {
+        return RuntimeStatus::Failure("Budget-bound decoders require explicit live GrayFast experimental mode without formal measurement or Replay");
+    }
     if (!IsValidRunId(config.runId))
     {
         return RuntimeStatus::Failure("RunId 必须为空或 128-bit lowercase hex（32 个字符）");
@@ -8636,6 +9483,16 @@ pbprotocol::ReceiverResourcePolicy MakeUnifiedReceiverResourcePolicy() noexcept
     return policy;
 }
 
+pbprotocol::ReceiverResourcePolicy MakeBudgetBoundUnifiedReceiverResourcePolicy() noexcept
+{
+    auto policy = MakeUnifiedReceiverResourcePolicy();
+    // Actual concurrency is decided by the existing per-decoder reservations
+    // and shared byte budget. This finite metadata ceiling also bounds a stream
+    // of tiny DirectRepeat objects; it is not a promise to allocate this count.
+    policy.maxActiveOuterFecDecoders = policy.maxSegmentCount;
+    return policy;
+}
+
 DecoderConfig MakeUnifiedDecoderConfig(std::wstring outputDirectory, const pbscreenregion::ScreenCaptureRegion& region)
 {
     DecoderConfig config;
@@ -8796,6 +9653,8 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     initial.statusMessage = "Preparing source, descriptors, compression, and outer FEC";
     initial.remoteMetadata = config.remoteMetadata;
     initial.configuredLogicalVisualFps = config.logicalVisualFps;
+    initial.grayFastSpatialInterleave = config.grayFastSpatialInterleave;
+    initial.configuredInitialAirtimePercent = config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U;
     if (config.logicalVisualFps != 0)
     {
         initial.configuredLogicalDwellMilliseconds = 1000.0 / config.logicalVisualFps;
@@ -9071,7 +9930,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     value.sourceStabilityVerified = complete;
                     value.statusMessage = complete ? "预扫描及源文件一致性校验通过，正在准备持久 Session" : "正在预扫描源文件，尚未打开编码窗口";
                 });
-            });
+            }, config.segmentTargetBytes);
         TransferDescription description = std::move(preparation.description);
         if (config.measurement)
         {
@@ -9126,7 +9985,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 const EncoderSessionStoreStatus leaseStatus = sessionStore->EnsureRepairIdLease(
                     segmentOrdinal, requiredExclusive);
                 Require(static_cast<bool>(leaseStatus), "Encoder repair ID durable lease failed: " + leaseStatus.message);
-            }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), config.logicalVisualFps);
+            }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), config.logicalVisualFps, config.grayFastSpatialInterleave,
+            config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U);
         builder.diagnostics = config.diagnostics.get();
         const std::string runId = config.runId.empty() ? GenerateRunId() : config.runId;
         const CarouselSnapshot initialCarousel = builder.GetCarouselSnapshot();
@@ -9224,8 +10084,11 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         windowConfig.width = presentationWidth;
         windowConfig.height = presentationHeight;
         windowConfig.clientOrigin = config.monitorClientOrigin;
+        // GrayFast remote measurements favor presenting only newly submitted
+        // rasters over repainting the same texture at monitor refresh. This
+        // changes neither logical cadence nor frame/equation commit accounting.
         windowConfig.repeatActiveFrame = config.visualProfile == VisualProfile::RemoteVisualLowFps ||
-            IsUnifiedVisualFamily(config.visualProfile);
+            (IsUnifiedVisualFamily(config.visualProfile) && config.visualProfile != VisualProfile::UnifiedGrayFast);
         windowConfig.topmost = config.singleMonitorFullscreen.has_value();
         windowConfig.allowUnmappedHardwareAdapter = IsUnifiedVisualFamily(config.visualProfile) && config.singleMonitorFullscreen.has_value();
         std::unique_ptr<EncoderPresentation> window = presentationFactory_(windowConfig);
@@ -9433,7 +10296,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 {
                     const pbcore::DiagnosticScope composeTiming(config.diagnostics.get(), pbcore::DiagnosticStage::FullscreenCompose);
                     ComposeRemoteVisualFullscreenBgra(builder.GetBuiltPixels(), presentationWidth,
-                        presentationHeight, fullscreenPixels);
+                        presentationHeight, fullscreenPixels, IsUnifiedVisualFamily(config.visualProfile));
                 }
                 frameBuilt = true;
             }
@@ -10078,7 +10941,8 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 resourceSampler, stopRequested_);
             return;
         }
-        pbprotocol::ReceiverResourcePolicy policy = MakeReceiverResourcePolicyForVisualProfile(config.visualProfile);
+        pbprotocol::ReceiverResourcePolicy policy = config.budgetBoundDecoders ? MakeBudgetBoundUnifiedReceiverResourcePolicy() :
+            MakeReceiverResourcePolicyForVisualProfile(config.visualProfile);
         if (services_.outputConfirmationThresholdBytes)
         {
             policy.maxOutputPreallocationBytesWithoutPrompt = *services_.outputConfirmationThresholdBytes;
@@ -10087,7 +10951,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
         const auto pipelineOwner = std::make_unique<ReceiverPipeline>(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
-            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_, config.measurement);
+            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_, config.measurement, config.budgetBoundDecoders);
         auto& pipeline = *pipelineOwner;
         pipeline.diagnostics = config.diagnostics.get();
 

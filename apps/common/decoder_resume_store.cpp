@@ -507,33 +507,6 @@ template <typename Integer>
     });
 }
 
-[[nodiscard]] std::size_t CountActiveSegments(const std::vector<DecoderResumeAcceptedBlock>& blocks) noexcept
-{
-    // Sized by the receiver decoder limit (the larger of the decoupled pair)
-    // so a journal claiming strictly more active Segments than any legal
-    // policy can hold still produces an over-limit count and is rejected.
-    std::array<std::uint64_t, senderUnifiedReceiverActiveDecoderLimit> ordinals{};
-    std::size_t count = 0;
-    for (const DecoderResumeAcceptedBlock& block : blocks)
-    {
-        bool found = false;
-        for (std::size_t index = 0; index < count; index++)
-        {
-            found = found || ordinals[index] == block.segmentOrdinal;
-        }
-        if (!found)
-        {
-            if (count == ordinals.size())
-            {
-                return count + 1;
-            }
-            ordinals[count] = block.segmentOrdinal;
-            count++;
-        }
-    }
-    return count;
-}
-
 [[nodiscard]] std::optional<pbprotocol::SegmentDescriptor> FindBoundSegmentDescriptor(
     const std::vector<std::vector<std::byte>>& segmentControls,
     const pbprotocol::SessionDescriptor& session, const pbprotocol::ReceiverResourcePolicy& policy,
@@ -574,6 +547,11 @@ struct DecoderResumeStore::Implementation
     std::vector<pbprotocol::ResumeCompletedSegmentRecord> completedSegments;
     std::vector<DecoderResumeAcceptedBlock> activeBlocks;
     std::vector<DecoderResumeAcceptedBlock> pendingBlocks;
+    // One bit per already resource-validated descriptor ordinal, not per packet.
+    // The normal 65536-Segment ceiling needs only 8 KiB. Tracking transitions
+    // avoids re-scanning the entire accepted packet cache on every new block.
+    std::vector<bool> activeSegmentBitmap;
+    std::uint64_t activeSegmentCount = 0;
     std::optional<std::string> outputReservationFileNameUtf8;
     std::optional<pbprotocol::WholeFileDigest> publishIntent;
     std::uint64_t generation = 0;
@@ -582,6 +560,25 @@ struct DecoderResumeStore::Implementation
     bool resumed = false;
     bool hadTruncatedTail = false;
     bool terminalFailure = false;
+
+    void SetSegmentActive(const std::uint64_t ordinal, const bool active) noexcept
+    {
+        // Callers have validated ordinal against this Session before mutating
+        // blocks. Bitmap storage is allocated once, after Session validation.
+        const std::size_t index = static_cast<std::size_t>(ordinal);
+        if (activeSegmentBitmap[index] != active)
+        {
+            activeSegmentBitmap[index] = active;
+            if (active)
+            {
+                activeSegmentCount++;
+            }
+            else
+            {
+                activeSegmentCount--;
+            }
+        }
+    }
 };
 
 DecoderResumeStore::DecoderResumeStore(std::unique_ptr<Implementation> implementation) noexcept :
@@ -601,15 +598,20 @@ DecoderResumeStore::~DecoderResumeStore()
 DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& outputDirectory,
     const pbprotocol::SessionTag sessionTag, const std::span<const std::byte> sessionControlRecord,
     const pbprotocol::ReceiverResourcePolicy& resourcePolicy, std::unique_ptr<DecoderResumeStore>& output,
-    DecoderResumeLoadedState& loaded) noexcept
+    DecoderResumeLoadedState& loaded, const bool budgetBoundActiveSegments) noexcept
 {
     output.reset();
     loaded = {};
     try
     {
-        if (outputDirectory.empty() || sessionControlRecord.empty() || resourcePolicy.maxResumeBytes == 0 ||
-            resourcePolicy.maxActiveOuterFecDecoders == 0 ||
-            resourcePolicy.maxActiveOuterFecDecoders > senderUnifiedReceiverActiveDecoderLimit)
+        const auto defaultPolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
+        const std::uint64_t maximumActiveSegments = budgetBoundActiveSegments ?
+            (std::min)(resourcePolicy.maxSegmentCount, defaultPolicy.maxSegmentCount) : senderUnifiedReceiverActiveDecoderLimit;
+        if (outputDirectory.empty() || sessionControlRecord.empty() || !pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy) ||
+            resourcePolicy.maxActiveOuterFecDecoders > maximumActiveSegments ||
+            (budgetBoundActiveSegments && (resourcePolicy.maxTotalOuterFecDecoderBytes > defaultPolicy.maxTotalOuterFecDecoderBytes ||
+                resourcePolicy.maxOuterFecDecoderBytes > defaultPolicy.maxOuterFecDecoderBytes ||
+                resourcePolicy.maxResumeBytes > defaultPolicy.maxResumeBytes)))
         {
             return DecoderResumeStoreStatus::Failure("resume store configuration is invalid");
         }
@@ -630,6 +632,12 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
         implementation->sessionTag = sessionTag;
         implementation->session = parsedSession.Value();
         implementation->sessionControl.assign(sessionControlRecord.begin(), sessionControlRecord.end());
+        const auto segmentCountSize = pbprotocol::CheckedUint64ToSize(implementation->session.segmentCount);
+        if (!segmentCountSize)
+        {
+            return DecoderResumeStoreStatus::Failure("resume Segment bitmap size is invalid");
+        }
+        implementation->activeSegmentBitmap.assign(segmentCountSize.Value(), false);
 
         if (!std::filesystem::exists(implementation->path))
         {
@@ -794,6 +802,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                     }
                     if (existing == implementation->activeBlocks.end())
                     {
+                        implementation->SetSegmentActive(block.segmentOrdinal, true);
                         implementation->activeBlocks.push_back(std::move(block));
                     }
                 }
@@ -832,6 +841,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                     {
                         return block.segmentOrdinal == completed.segmentOrdinal;
                     });
+                    implementation->SetSegmentActive(completed.segmentOrdinal, false);
                 }
                 else if (type.Value() == outputReservationRecordType)
                 {
@@ -875,7 +885,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
                     }
                     implementation->publishIntent = publishIntent;
                 }
-                if (CountActiveSegments(implementation->activeBlocks) > resourcePolicy.maxActiveOuterFecDecoders)
+                if (implementation->activeSegmentCount > resourcePolicy.maxActiveOuterFecDecoders)
                 {
                     return DecoderResumeStoreStatus::Failure("resume journal exceeds the active Segment limit");
                 }
@@ -1081,15 +1091,16 @@ DecoderResumeStoreStatus DecoderResumeStore::RecordAcceptedBlock(const DecoderRe
         return *existing == block ? DecoderResumeStoreStatus{} :
             DecoderResumeStoreStatus::Failure("resume accepted block conflict");
     }
+    if (!implementation_->activeSegmentBitmap[static_cast<std::size_t>(block.segmentOrdinal)] &&
+        implementation_->activeSegmentCount >= implementation_->policy.maxActiveOuterFecDecoders)
+    {
+        return DecoderResumeStoreStatus::Failure("resume active Segment limit exceeded");
+    }
     try
     {
         implementation_->activeBlocks.push_back(block);
-        if (CountActiveSegments(implementation_->activeBlocks) > implementation_->policy.maxActiveOuterFecDecoders)
-        {
-            implementation_->activeBlocks.pop_back();
-            return DecoderResumeStoreStatus::Failure("resume active Segment limit exceeded");
-        }
         implementation_->pendingBlocks.push_back(block);
+        implementation_->SetSegmentActive(block.segmentOrdinal, true);
     }
     catch (const std::bad_alloc&)
     {
@@ -1196,6 +1207,7 @@ DecoderResumeStoreStatus DecoderResumeStore::RecordCompletedSegment(
     {
         return block.segmentOrdinal == completedRecord.segmentOrdinal;
     });
+    implementation_->SetSegmentActive(completedRecord.segmentOrdinal, false);
     return Compact();
 }
 

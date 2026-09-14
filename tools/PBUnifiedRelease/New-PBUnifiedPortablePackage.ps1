@@ -21,12 +21,22 @@ param(
 
     [switch]$CompactPackageName,
 
+    [switch]$VersionedPackageName,
+
+    [string[]]$ReleaseDocumentation = @(),
+
     [Parameter(Mandatory = $true)][string]$VcRuntimeDirectory,
     [Parameter(Mandatory = $true)][string]$VcNoticesDirectory
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($CompactPackageName -and $VersionedPackageName) { throw 'Choose only one package naming mode' }
+if ($ReleaseDocumentation.Count -gt 8) { throw 'Release documentation is limited to eight files' }
+foreach ($relativePath in $ReleaseDocumentation) {
+    if ($relativePath -cnotmatch '^docs/[A-Za-z0-9_.-]+\.md$') { throw "Invalid release documentation path: $relativePath" }
+}
 
 $normalizedExcludedPaths = @($ExcludedSourcePath | ForEach-Object { $_.Replace('\', '/') })
 if ($normalizedExcludedPaths.Count -ne 1 -or
@@ -416,6 +426,7 @@ foreach ($package in $vcpkgPackages)
 
 $applicationRoles = if ($Role -eq 'Both') { @('Encoder', 'Decoder') } else { @($Role) }
 $applicationSources = @{}
+$applicationVersions = @()
 foreach ($applicationRole in $applicationRoles)
 {
     $applicationName = "PixelBridge$applicationRole"
@@ -426,7 +437,14 @@ foreach ($applicationRole in $applicationRoles)
         throw "Release executable does not exist: $applicationExecutable"
     }
     $applicationSources[$applicationRole] = $applicationDirectory
+    $sourceIdentity = Get-ApplicationBuildIdentity -ExecutablePath $applicationExecutable -ExpectedApplicationName $applicationName -ExpectedGitCommit $headCommit
+    $applicationVersions += [string]$sourceIdentity.applicationVersion
 }
+$applicationVersions = @($applicationVersions | Sort-Object -Unique)
+if ($applicationVersions.Count -ne 1 -or $applicationVersions[0] -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+    throw 'Application release versions must be identical semantic version triplets'
+}
+$applicationVersion = $applicationVersions[0]
 
 $qtCoreCandidates = @($applicationRoles | ForEach-Object {
     Join-Path $applicationSources[$_] 'Qt6Core.dll'
@@ -533,7 +551,11 @@ $buildIdentity = [ordered]@{
 
 }
 $buildIdentityFingerprint = Get-TextSha256 -Text ($buildIdentity | ConvertTo-Json -Depth 16 -Compress)
-$packageName = if ($CompactPackageName)
+$packageName = if ($VersionedPackageName)
+{
+    if ($Role -eq 'Both') { "PixelBridge-v$applicationVersion-win64" } else { "PixelBridge-v$applicationVersion-$Role-win64" }
+}
+elseif ($CompactPackageName)
 {
     $compactRole = switch ($Role)
     {
@@ -608,6 +630,16 @@ try
 
     Write-NewUtf8File -Path (Join-Path $stagingDirectory 'unified-profile.json') -Content $compiledProfileJson
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs/UNIFIED_USER_GUIDE.md') -Destination (Join-Path $stagingDirectory 'USER_GUIDE.md')
+    foreach ($relativePath in $ReleaseDocumentation) {
+        $sourcePath = Join-Path $repositoryRoot $relativePath
+        $sourceItem = Get-Item -LiteralPath $sourcePath
+        $destinationPath = Join-Path $stagingDirectory $sourceItem.Name
+        if ($sourceItem.PSIsContainer -or ($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $sourceItem.Length -gt 2MB -or (Test-Path -LiteralPath $destinationPath)) {
+            throw "Invalid or conflicting release documentation: $relativePath"
+        }
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath
+    }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-PBUnifiedPortablePackage.ps1') -Destination $stagingDirectory
     $licenseDirectory = Join-Path $stagingDirectory 'licenses'
     $vcLicenseDirectory = Join-Path $licenseDirectory 'msvc'
@@ -645,7 +677,7 @@ try
     $spdxPackages = @([ordered]@{
         name = 'PixelBridge'
         SPDXID = 'SPDXRef-Package-PixelBridge'
-        versionInfo = '0.1.0'
+        versionInfo = $applicationVersion
         downloadLocation = 'NOASSERTION'
         filesAnalyzed = $false
         licenseConcluded = 'NOASSERTION'

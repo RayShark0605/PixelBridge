@@ -3,6 +3,9 @@
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
+#include "pbmodulation/unified_visual.h"
+#include "pbprotocol/bootstrap_control_codec.h"
+#include "pbprotocol/transport_block_codec.h"
 #include "pbrealcapturereplay/replay_v2.h"
 
 #include <catch2/catch_approx.hpp>
@@ -11,6 +14,8 @@
 #include <Windows.h>
 
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -308,6 +313,141 @@ TEST_CASE("remote-lf4 fullscreen composition centers an exact canvas inside non-
     REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(
         source, pbapp::phase1CanvasWidth * 2U + 1U, pbapp::phase1CanvasHeight, rejected));
     REQUIRE(rejected == std::vector<std::byte>{std::byte{0xA5}});
+}
+
+TEST_CASE("Unified fullscreen fill maps the complete raster to every physical pixel without an external matte",
+    "[application][unified][encoder][fullscreen][composition][fill]")
+{
+    constexpr std::uint32_t sourceWidth = pbapp::phase1CanvasWidth;
+    constexpr std::uint32_t sourceHeight = pbapp::phase1CanvasHeight;
+    std::vector<std::byte> source(static_cast<std::size_t>(sourceWidth) * sourceHeight * 4U);
+    for (std::uint32_t row = 0; row < sourceHeight; row++)
+    {
+        for (std::uint32_t column = 0; column < sourceWidth; column++)
+        {
+            const std::size_t offset = (static_cast<std::size_t>(row) * sourceWidth + column) * 4U;
+            source[offset] = static_cast<std::byte>(column & 255U);
+            source[offset + 1U] = static_cast<std::byte>(column >> 8U);
+            source[offset + 2U] = static_cast<std::byte>(row & 255U);
+            source[offset + 3U] = static_cast<std::byte>(128U + (row >> 8U));
+        }
+    }
+    const std::array dimensions{std::array{1920U, 1080U}, std::array{2560U, 1440U}, std::array{2560U, 1600U},
+        std::array{3840U, 2160U}, std::array{2561U, 1601U}, std::array{1920U, 2160U}};
+    for (const auto& size : dimensions)
+    {
+        CAPTURE(size[0], size[1]);
+        std::vector<std::byte> destination;
+        REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(source, size[0], size[1], destination, true));
+        REQUIRE(destination.size() == static_cast<std::size_t>(size[0]) * size[1] * 4U);
+        std::uint64_t mismatchedPixels = 0;
+        std::vector<bool> sourceCoverage(static_cast<std::size_t>(sourceWidth) * sourceHeight);
+        for (std::uint32_t row = 0; row < size[1]; row++)
+        {
+            // Independent floating-point center oracle. The tiny tolerance only
+            // restores exact-integer ties lost to floating-point division.
+            const auto sourceY = static_cast<std::uint32_t>(std::floor((row + 0.5) * sourceHeight / size[1] + 1.0e-10));
+            for (std::uint32_t column = 0; column < size[0]; column++)
+            {
+                const auto sourceX = static_cast<std::uint32_t>(std::floor((column + 0.5) * sourceWidth / size[0] + 1.0e-10));
+                const std::size_t sourceOffset = (static_cast<std::size_t>(sourceY) * sourceWidth + sourceX) * 4U;
+                const std::size_t destinationOffset = (static_cast<std::size_t>(row) * size[0] + column) * 4U;
+                if (!std::equal(source.begin() + sourceOffset, source.begin() + sourceOffset + 4U, destination.begin() + destinationOffset))
+                {
+                    mismatchedPixels++;
+                }
+                sourceCoverage[sourceOffset / 4U] = true;
+            }
+        }
+        REQUIRE(mismatchedPixels == 0);
+        REQUIRE(std::all_of(sourceCoverage.begin(), sourceCoverage.end(), [](const bool covered)
+        {
+            return covered;
+        }));
+        if (size[0] == sourceWidth && size[1] == sourceHeight)
+        {
+            REQUIRE(destination == source);
+        }
+    }
+    const std::array invalidDimensions{std::array{0U, 1080U}, std::array{1919U, 1080U}, std::array{1920U, 1079U},
+        std::array{3841U, 2160U}, std::array{3840U, 2161U}, std::array{UINT32_MAX, UINT32_MAX}};
+    for (const auto& size : invalidDimensions)
+    {
+        std::vector<std::byte> output{std::byte{0xA5}};
+        REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(source, size[0], size[1], output, true));
+        REQUIRE(output == std::vector<std::byte>{std::byte{0xA5}});
+    }
+    std::vector<std::byte> output{std::byte{0xA5}};
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(std::span(source).first(source.size() - 1U), 1920, 1080, output, true));
+    REQUIRE(output == std::vector<std::byte>{std::byte{0xA5}});
+}
+
+TEST_CASE("Unified full-screen filled encoded frames remain independently decodable at each supported screen shape",
+    "[application][unified][encoder][fullscreen][fill][decode]")
+{
+    const std::array dimensions{std::array{1920U, 1080U}, std::array{2560U, 1440U}, std::array{2560U, 1600U}, std::array{3840U, 2160U}};
+    for (const auto& profile : {pbmodulation::kUnifiedVisualProfile.productProfile,
+        pbprotocol::kGrayStatesExperimentalProfile, pbprotocol::kGrayFastExperimentalProfile})
+    {
+        const bool grayCarrier = profile.visualProfileId != pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId;
+        const std::uint32_t slotCount = grayCarrier ? pbmodulation::kUnifiedGrayFrameCodewordCount : pbmodulation::kUnifiedCodewordCount;
+        for (const std::uint64_t sequence : {64ULL, 79ULL})
+        {
+            pbprotocol::BootstrapRecord record;
+            record.protocolVersion = pbprotocol::GetProtocolVersion();
+            record.visualProfileId = profile.visualProfileId;
+            record.visualLayoutVersion = profile.visualLayoutVersion;
+            record.sessionTag.value = 0x1122334455667788ULL;
+            record.frameSequence = sequence;
+            std::array<std::byte, pbprotocol::kBootstrapRecordBytes> bootstrap{};
+            REQUIRE(pbprotocol::SerializeBootstrapRecord(record, bootstrap));
+            std::array<std::vector<std::byte>, pbmodulation::kUnifiedMaximumFrameSlotCount> blocks;
+            std::array<pbmodulation::UnifiedFrameSlotInput, pbmodulation::kUnifiedMaximumFrameSlotCount> inputs{};
+            for (std::uint32_t slot = 0; slot < slotCount; slot++)
+            {
+                std::array<std::byte, 48> payload{};
+                for (std::size_t index = 0; index < payload.size(); index++)
+                {
+                    payload[index] = static_cast<std::byte>((slot * 37U + index * 11U + sequence) & 255U);
+                }
+                const pbprotocol::TransportBlockHeader header{pbprotocol::kTransportBlockTypeData,
+                    pbprotocol::kTransportProtocolMinor, 0, record.sessionTag, 900U + slot, 1000U + slot,
+                    static_cast<std::uint16_t>(payload.size())};
+                blocks[slot].resize(pbprotocol::GetTransportSerializedSize(header));
+                REQUIRE(pbprotocol::SerializeTransportBlock(header, payload, blocks[slot]));
+                inputs[slot].assignment.codewordSlot = slot;
+                inputs[slot].assignment.kind = pbmodulation::UnifiedSlotKind::Transport;
+                inputs[slot].assignment.controlPriority = pbmodulation::UnifiedControlPriority::NotApplicable;
+                inputs[slot].active = true;
+                inputs[slot].block = blocks[slot];
+            }
+            std::vector<std::byte> canonical(pbmodulation::kUnifiedFrameBgraBytes);
+            REQUIRE(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, std::span(inputs).first(slotCount)}, canonical));
+            for (const auto& size : dimensions)
+            {
+                CAPTURE(profile.visualProfileId, sequence, size[0], size[1]);
+                std::vector<std::byte> pixels;
+                REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(canonical, size[0], size[1], pixels, true));
+                auto created = pbmodulation::UnifiedVisualCpuOracle::Create(pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
+                REQUIRE(created);
+                auto oracle = std::move(created).Value();
+                const pbmodulation::UnifiedExpectedFrameIdentity identity{true, record.sessionTag, true, sequence,
+                    profile.visualProfileId, profile.visualLayoutVersion};
+                const pbmodulation::LumaView view{pixels, size[0], size[1], static_cast<std::size_t>(size[0]) * 4U, pbmodulation::LumaPixelFormat::Bgra8};
+                const auto observation = oracle.DecodeMixedFrame(view, identity);
+                CHECK(observation.IsFrameAvailable());
+                CHECK(observation.acceptedBlocks == slotCount);
+                const auto accepted = oracle.GetAcceptedBlocks();
+                CHECK(accepted.size() == slotCount);
+                for (const auto& block : accepted)
+                {
+                    REQUIRE(block.codewordSlot < slotCount);
+                    REQUIRE(block.size == blocks[block.codewordSlot].size());
+                    REQUIRE(std::equal(blocks[block.codewordSlot].begin(), blocks[block.codewordSlot].end(), block.bytes.begin()));
+                }
+            }
+        }
+    }
 }
 
 TEST_CASE("Unified sender accepts only an exact bounded single-monitor fullscreen authority",

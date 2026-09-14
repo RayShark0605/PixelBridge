@@ -39,6 +39,7 @@ constexpr std::uint32_t maximumBroadcastSeconds = 7200;
 struct Options
 {
     std::wstring sourcePath;
+    std::filesystem::path sessionStateRoot;
     std::wstring reportPath;
     std::wstring journalPath;
     std::string runId;
@@ -55,6 +56,8 @@ struct Options
     bool logicalVisualFpsSpecified = false;
     bool controlRepetitionsSpecified = false;
     bool segmentTargetSpecified = false;
+    bool grayFastSpatialInterleave = false;
+    bool grayFastShortInitialAirtime = false;
     bool manualStop = false;
     bool manualStopSpecified = false;
     bool remoteChannel = false;
@@ -217,6 +220,20 @@ private:
                 return false;
             }
             options.sourcePath = value;
+        }
+        else if (option == L"--session-state-root")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || value[0] == L'\0' || !options.sessionStateRoot.empty())
+            {
+                return false;
+            }
+            const std::filesystem::path sessionStateRoot(value);
+            if (!sessionStateRoot.is_absolute())
+            {
+                return false;
+            }
+            options.sessionStateRoot = sessionStateRoot;
         }
         else if (option == L"--report")
         {
@@ -418,6 +435,22 @@ private:
             }
             options.segmentTargetSpecified = true;
         }
+        else if (option == L"--grayfast-spatial-interleave")
+        {
+            if (options.grayFastSpatialInterleave)
+            {
+                return false;
+            }
+            options.grayFastSpatialInterleave = true;
+        }
+        else if (option == L"--grayfast-short-initial-airtime")
+        {
+            if (options.grayFastShortInitialAirtime)
+            {
+                return false;
+            }
+            options.grayFastShortInitialAirtime = true;
+        }
         else if (option == L"--manual-stop")
         {
             if (options.manualStopSpecified)
@@ -441,7 +474,10 @@ private:
             return false;
         }
     }
-    if (options.sourcePath.empty() || (options.hasOrigin && options.singleMonitorFullscreenSpecified) ||
+    if ((!options.sessionStateRoot.empty() && !pbapp::IsUnifiedVisualFamily(options.profile)) ||
+        (options.grayFastSpatialInterleave && options.profile != pbapp::VisualProfile::UnifiedGrayFast) ||
+        (options.grayFastShortInitialAirtime && !options.grayFastSpatialInterleave) ||
+        options.sourcePath.empty() || (options.hasOrigin && options.singleMonitorFullscreenSpecified) ||
         (!pbapp::IsUnifiedVisualFamily(options.profile) && !options.hasOrigin && !options.singleMonitorFullscreenSpecified))
     {
         return false;
@@ -454,7 +490,8 @@ private:
         }
         if (options.logicalVisualFps < 1 || options.logicalVisualFps > 60 ||
             options.compressionLevel != 3 || options.controlRepetitions != 4 ||
-            options.segmentTargetSpecified ||
+            (options.segmentTargetSpecified && options.profile != pbapp::VisualProfile::UnifiedGray &&
+                options.profile != pbapp::VisualProfile::UnifiedGrayFast) ||
             (options.compressionSpecified && !options.compression))
         {
             return false;
@@ -605,6 +642,9 @@ void Usage()
                  "[--logical-fps 1..60; default=15] [--origin X Y | --single-monitor-fullscreen primary|DEVICE] "
                  "[--channel local|remote] [--remote-provider NAME | --remote-metadata PATH] "
                  "[--seconds 1..7200; default=30] "
+                 "[--grayfast-spatial-interleave; experimental GrayFast only] "
+                 "[--grayfast-short-initial-airtime; experimental spatial GrayFast only, slower under some losses] "
+                 "[--session-state-root ABSOLUTE_PATH; Unified family only, default unchanged] "
                  "[--report NEW_PATH]; automatic RAW/zstd level 3, Control repetitions=4\n"
                  "experimental opt-in: --profile unified-bands adds two supplemental control bands under the "
                  "PB-Experimental-BlankControl-1 identity (layout 11); same constraints as --profile unified, "
@@ -615,7 +655,7 @@ void Usage()
                  "experimental opt-in: --profile unified-gray-fast keeps the layout-12 gray raster but packs "
                  "the DVB-S2 Short Fast inner FEC (37/45) with 1629-byte Transport payloads under the "
                  "PB-Experimental-GrayFast-1 identity (layout 13); matching decoder required\n"
-                 "experimental opt-in: --segment-target-mb 1..15 overrides the per-Segment raw target "
+                 "gray experimental opt-in: --segment-target-mb 1..15 overrides the per-Segment raw target "
                  "(gray family default 15, product 8; certified product sessions reject the flag)\n"
                  "historical diagnostics: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
                  "--channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --compression off|on "
@@ -640,6 +680,7 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     pbapp::EncoderConfig config = pbapp::IsUnifiedVisualFamily(options.profile) ?
         pbapp::MakeUnifiedEncoderConfig(options.sourcePath, options.logicalVisualFps) : pbapp::EncoderConfig{};
     config.sourcePath = options.sourcePath;
+    config.sessionStateRoot = options.sessionStateRoot;
     config.compressionEnabled = options.compression;
     config.compressionLevel = options.compressionLevel;
     config.visualProfile = options.profile;
@@ -650,6 +691,8 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.logicalVisualFps = options.logicalVisualFps;
     config.controlRepetitions = options.controlRepetitions;
     config.segmentTargetBytes = options.segmentTargetMb != 0 ? options.segmentTargetMb * 1024U * 1024U : 0;
+    config.grayFastSpatialInterleave = options.grayFastSpatialInterleave;
+    config.grayFastShortInitialAirtime = options.grayFastShortInitialAirtime;
     config.runId = options.runId;
     if (options.remoteChannel)
     {

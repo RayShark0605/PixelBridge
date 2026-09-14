@@ -64,7 +64,8 @@ public:
     [[nodiscard]] static DecoderResumeStoreStatus Open(const std::filesystem::path& outputDirectory,
         pbprotocol::SessionTag sessionTag, std::span<const std::byte> sessionControlRecord,
         const pbprotocol::ReceiverResourcePolicy& resourcePolicy,
-        std::unique_ptr<DecoderResumeStore>& output, DecoderResumeLoadedState& loaded) noexcept;
+        std::unique_ptr<DecoderResumeStore>& output, DecoderResumeLoadedState& loaded,
+        bool budgetBoundActiveSegments = false) noexcept;
 
     DecoderResumeStore(const DecoderResumeStore&) = delete;
     DecoderResumeStore& operator=(const DecoderResumeStore&) = delete;

@@ -712,3 +712,579 @@ elease-v0.5\PixelBridge-v0.5.0-win64.zip`（52.9MB，sha256 7ac0eb87…）：Enc
 ### 20.2 954MB 大文件冻结修复（1407234）
 
 主人报告：954MB 灰阶高速 v4 @30Hz，进度到 75.9MB 后冻结（.resume 78.5MB 不增长，发送端持续广播）。根因：300% 毕业目标使每窗口批的 ~60% 时间用于发送接收端已有的修复方程（窗口 6 段在 Pass 0 ~110% K 就全部解码，发送端仍要补到 300% 才让段毕业滑动窗口）。修复三处：①毕业因子 300→200%（接收端实解 105-110%，200% 保留 2× 边际；每批冻结 13→6 分钟，吞吐 +50%）②15Hz 串行分支补上 repairBudgetOverride（原仅 >15Hz 生效，15Hz 重开走九次 K+20% 而非一次精确距离）③GUI 选灰阶高速时帧率自动推到 30Hz（现场验证口径）。164/164 回归绿；重打包 c521dd92。
+
+## 21. 2026-09-13 晚间原始断点勘误与继续排障（未完成）
+
+本节追加新证据，不改写 §20.2 当时的记录。当前任务是非本机长文件的最终恢复时间与稳定性；所有候选仍保持单向视觉 payload、8 个接收 decoder 上限、摘要/安全发布/reopen 和冲突拒绝。
+
+### 21.1 原始 `.resume` 否定“当前六段已全部解码”的解释
+
+用户提供原始断点后进行了只读、逐条长度/CRC32C/身份绑定与 equation ID 检查。输入 SHA-256 为 `cc58c42c233b25ab94518a78a100440323606c814b0271b3116964d5dc4f67b8`。
+
+- 原文件精确 1,000,667,445 B，64 个分段，15 MiB 分段目标，GrayFast/layout 13。
+- 48,943 条有效 journal 记录，其中 AcceptedBlock 48,883 条，**CompletedSegment 0 条**。
+- 活跃未完成分段为 24、25、26、27、28、29、30、32，**每段 unique blocks 均小于各自 K**；没有重复 AcceptedBlock 记录或同 ID 的冲突 fingerprint。
+- 有效 payload 为 `48,883 × 1,629 = 79,630,407 B = 75.941474 MiB`；journal 精确 `82,381,527 B = 78.565146 MiB`。两者与原 UI/断点大小一致。
+
+因此 §20.2 所称“接收端已完成，200% 保留 2× 解码边际”及据此推导的吞吐 +50% **不成立**：它把发送量当成接收量，也缺乏原始断点支持。原始日志/FPS 时序未提供，静态断点不能确定当时的唯一调用栈、运行版本或配额拒绝次数。
+
+### 21.2 已复现的代码缺陷与私有候选
+
+- `BuildUnifiedSegmentState` 将 repair-ID high-water / 未使用的 durable lease 当作实际发送预算；`CompleteUnifiedSegmentPass` 毕业提前返回导致 local pass 未推进、再入窗口重播 systematic。新建与 resumed pass 3/50 回归均覆盖；修复保持 repair ID 不回退、不复用。
+- 小文件的窗口前移错误增加全局 Carousel pass，7 段文件末段首次出现即 repair-only；修复只在全文件 wrap 时推进全局 pass。
+- 实验 `--segment-target-mb` 的 CLI 准入、准备入口和 SessionDescriptor 三处接线缺失；只补 gray/gray-fast 的 1..15 MiB 实验入口，稳定产品拒绝规则不变。
+- GrayFast 报告错误走 RunReport.2；补回既有 RunReport.3 遥测及单调运行时长，不伪造未启用/不完整的 measurement。
+
+私有候选 A 定向回归 29 cases / 9505 assertions、调度器 14 cases / 319160 assertions 通过。候选 B 加入按固定启动 FPS 保持首次分段 airtime 的实验（15fps=2K、30fps=4K、60fps=8K），定向回归 29 cases / 9877 assertions 通过。未改 wire、FEC、Golden 或接收资源上限。
+
+### 21.3 真实远控结果及残留失败
+
+远程 Encoder 经现有远控画面进入本机 DISPLAY2 的实际捕获。用户允许临时将远程 2560×1600 改为 1920×1080；原分辨率待本阶段结束恢复。未修改 Citrix/网络设置，无输入自动化。默认 Decoder CLI 的 `LocalDesktop` operator 标签存在与 Unified/旧 monitor 参数冲突的问题，不能用该标签代替物理链路证据；启动参数与限制记录在各 `launch.json`。
+
+| 运行 | 文件/分段 | 最终恢复时长 | 结果 |
+| --- | --- | ---: | --- |
+| 旧包基线 `nl0913-1080p100` | 100,000,000 B，7段，30fps | 568.485 s | 完整发布，独立重开 SHA-256 一致；旧报告 .2 |
+| A `nl0913-a13-f30` | 13 MiB，13段，30fps | 138.366 s | .3 摘要/发布/reopen 通过，但 4,881 次配额延期 |
+| A `nl0913-a13-f15-r2` | 同文件/分段，15fps | 72.583 s | 全部通过，配额延期 0 |
+| B `nl0913-b13-f30` | 同文件/分段，30fps | 70.805 s | 全部通过，配额延期 0 |
+| B `nl0913-b100-f30-s1` | 100,000,000 B，96段，30fps | **不纳入成功计时** | 17 MiB 已验证后仍再次积累8个未完成段；unique blocks 长时间不增、配额延期持续增加，诊断停止 |
+
+13 MiB 的约48.8%单样本时长下降只适用于该组对照。100MB 扩大验证说明按平均接收率增加 airtime 仍不足以解决长文件问题；正在检查周期抽帧与分段轮转的相关性，**不能宣称已经修好大文件停滞**。两个完整桌面测试文件尚未执行，任意分辨率适配亦未完成。
+
+完整证据、create-only 候选身份、命令和持续工作日志：`artifacts/nonlocal-stall-20260913-2111/WORK_LOG.md`；原始断点分析为同目录 `inspect_original_resume.py` 和 `original-954mb-resume-analysis.json`。这些私有现场产物不提交 Git，不是公开发布或认证矩阵。
+
+### 21.4 候选 C：周期混叠修复不等于长期停滞已修复
+
+GrayFast 的 Segment 轮转相位由每32个sweep变更改为每个sweep变更，未修改其它Profile或增加接收反馈。另修正报告Control占用率分母：取实际 `codewordsPerFrame`（GrayFast为18），缺失/计数溢出时保留null。
+
+- 周期每三帧仅观察一帧的13×256KiB回归，B超过20,000帧预算，C为511帧/171观察帧/pass0完成。C定向29 cases/9904 assertions、调度器正确路径重跑14 cases/319160 assertions通过。
+- `nl0913-c13-f30`：13MiB/13段完整恢复78.528s，比B的70.805s慢，不能宣称相位修改提高了该场景吞吐。
+- `nl0913-c100-f30-s1`：100,000,000B/96个1MiB段仍失败。220–480s观测区间内，verified停在31MiB、outerUnique停在24066，quota持续增加；全文件回绕后才恢复增长。停止时37MiB、outerUnique25290、quota67653、8个活跃未完成段。最终`published=false`、失败测量时长null；729.613s只是失败运行时长。
+- `nl0913-c100-f30-s6`：同一封存程序和100,000,000B前缀、同样30fps，仅改6MiB/16段。接收端运行时长486.108s，16段完整恢复、整文件digest/rename/reopen及独立SHA-256全部通过；quota0、peakActive6。SHA-256为`4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`。
+
+486.108s比旧包100MB样本568.485s减少约14.5%，但旧包/候选还存在代码和分段差异，不能拆出单一改动的净收益。该100MB文件超过当前Step1的64MiB测量范围，`receiverTimingEligible=false`、`unavailableReason=MeasurementSourceScopeExceeded`、正式elapsed/goodput均为null；运行时长仅作为工程对照，不冒充正式测量放行。发布/重开证明独立成立。没有扩大64MiB测量范围或其它资源限制。
+
+本轮现场已停止所有本次注册的Encoder/Decoder，通过`display-restore`并再次`display-info`确认远程恢复2560×1600@240Hz；焦点前后仍一致，无输入自动化。后续继续处理小段有限帧方差、早期修复机会和分辨率适配；完整Medium/Big尚未运行。
+
+### 21.5 合成测试时钟修正与不规则丢帧回归（继续验证中）
+
+只读审计发现`PrepareHeadlessFrame`固定按15fps生成虚拟时间；实屏生产路径使用真实steady clock，不受影响。新增独立scheduler对照必须跨过原固定时钟的10秒Control截止点，30/60fps旧实现均失败。修正测试助手改用配置FPS，保留逻辑tick边界和除数校验。
+
+新增64×256KiB（16MiB）不规则丢帧模型：固定种子、约28%帧可见并有短全擦除段，不读取Receiver状态来选择发送内容，也不冒充真实录屏。C需要18,257逻辑帧、82次wrap、20,321次配额延期；最长无新增有效方程1,598帧，违反该模型限定的30秒上限。
+
+正在验证只依赖发送配置与K的平方根帧损失余量。第一个系数候选将同一回归降低为4,827帧、6次wrap、quota0，但最长无新增方程仍有954帧，**该候选仍未通过900帧阈值**。没有放宽测试阈值或把quota0当作任务完成；后续版本必须继续定向回归和真实像素测试。
+
+### 21.6 候选 D：小段长序列通过，但尚非最快方案（2026-09-14）
+
+有界余量系数4通过同一SparseBursty回归：5,069逻辑帧、1,362观察帧、5次wrap、quota0、最长无新增有效方程206帧；900帧门不变。更强的15fps/每四帧观察一帧用例仍实际触发8个活跃decoder、85次配额延期及15次wrap，随后完成摘要/发布/reopen和独立BLAKE3验证。定向32 cases/9,936 assertions与调度器14 cases/319,160 assertions通过，四个受影响target构建通过。
+
+| 实际远控运行 | 文件/分段 | 接收端运行时长 | 终态 |
+| --- | --- | ---: | --- |
+| `nl0913-d32-f30-s1` | 32 MiB，32个1MiB段，30fps | 219.242 s | 完整digest/rename/reopen、独立SHA-256通过，quota0 |
+| `nl0913-d100-f30-s1` | 100,000,000 B，96个1MiB段，30fps | 652.217 s | 96段全部完成；digest/rename/reopen、独立SHA-256通过，quota0，peakActive6 |
+
+D100在此前B/C同尺寸小段压力样本出现长停滞的路径上完成了整文件验证，但652.217s比C的6MiB分段486.108s慢，不能宣称D小段是最快方案或已证明任意1GB文件不会停滞。D100超过Step1的64MiB范围，正式measurement elapsed/goodput保持null；D32虽receiverTimingEligible=true，也不能替代封存身份完整的正式现场认证。两个指定的完整Desktop文件仍未执行。
+
+两次D运行的前后foreground句柄均不同；编排没有发送输入或调用窗口激活API，但现有证据不能归因该变化，**不宣称焦点始终未变**。停止均只针对本次注册Encoder、WM_CLOSE且forced=false。阶段结束已用display-restore及display-info确认恢复远程2560×1600@240Hz，见私有证据`display-restored-after-d100.json`。
+
+### 21.7 原分辨率适配：先隔离数据解调失败，不放宽正确性门
+
+当前生产解调器的有界合成诊断：1920×1080原图及单次1.125倍双线性缩放均18/18码字字节一致；先4/3倍point放大再0.84375倍双线性缩小为0/18；将第一次改双线性仍0/18。两个失败样本Bootstrap和Base/Fine phase pilot均通过，错误集中于灰阶数据度量，不能再笼统归因于定位失败。离线合成不是实际远控性能证据。
+
+另一个完全隔离的诊断副本仅把私有最小几何尺度改为0.75；生产源码、封存包和FEC/CRC均未改。它读取此前保存的实际右屏像素（净尺度约0.851），几何通过后仍18/18内层FEC失败。单纯降低门槛不足以适配原分辨率；需要先验证采样/符号模型，再决定是否进入生产CPU/GPU实现。原始捕获、派生源码、构建脚本和逐plane误判统计分别保存在`scale075-diagnostic-only`与`double-resample-probe-01/02`，不提交真实像素或payload。
+
+### 21.8 原分辨率的逐位链路证据与 D 的较大分段对照
+
+仅在私有副本尝试前向采样模型：直接比较捕获像素与重采样后的候选符号，而非先锐化观察图。双线性模型配合合适的软度量尺度后，0.85倍单次缩小以及两种双重缩放的合成夹具均18/18字节一致。没有改变FEC迭代数、CRC、身份或freshness门；该模型尚未合入CPU/GPU生产路径。
+
+`nl0914-gray-pattern-native01`在原2560×1600远程模式执行45秒合成图案呈现，远程独立生成两个已知测试帧，经原生DataWindow和现有远控进入本机DISPLAY2。桥仅部署程序与收集日志；本机三份14,745,600B捕获由固定右屏矩形读取，预期位只用于**解码之后的离线评分**，不交给Decoder。原生1350次提交/无pending替换，结束后已退出；焦点采样前后625612094一致，模式未改变。此夹具没有文件Session，不是文件传输完成或goodput证明。
+
+对第一份实际捕获（sequence19），原采样路径在291,600个编码位中有28,635个非零度量符号错误（约9.82%）；前向双线性模型降到14,956个（约5.13%），但仍0/18通过FEC。电平位错误从1,375降到7，剩余问题主要在六个形状位。加入已知暗分隔环的完整像素支持仅小幅改善，尚不够发布。九个freshness区域均current，不能用局部过期擦除解释这些失败。导频拟合和已知夹具几何诊断均有独立记录，后者明确不是可直接用于生产的校准输入；不因合成测试通过而降低产品门槛。
+
+作为思路参考，继续查阅了基于符号模型与灰度似然的低分辨率条码工作，以及[相机条码解码的分辨率分析](https://epubs.siam.org/doi/10.1137/21M1449658)。其中一维UPC的解析条件不能外推为PixelBridge二维载体的分辨率保证；实际像素、纠错与完整文件验证仍是本项目依据。
+
+回到完整耗时主线，`nl0914-d100-f30-s6`保持D程序、30fps和同一100,000,000B文件，只把1MiB分段改为6MiB：532.801s，digest/rename/reopen及独立SHA-256全通过，quota0、peakActive6、峰值预留267,401,796B。比D/1MiB的652.217s短约18.3%，但仍比C/6MiB的486.108s慢约9.6%；这揭示稳健余量有真实吞吐成本，不能只报有利对照。正式measurement继续因64MiB范围为null。结束后已核对恢复2560×1600@240Hz，焦点采样前后一致。
+
+接下来已开始完整`TestMediumFile.bin`的D/30fps/15MiB运行（`nl0914-d-medium-f30-s15`），启动前重新核对其273,806,498B和SHA-256。不扩大Decoder现有3600秒CLI时限；完整Big的后续编排如超过一次时限，只能使用原生同目录resume并计入重启间隙，最多两段有界运行，不能把多进程结果伪装成一次正式测量。完整Medium结果与Big现场执行尚待后续条目确认。
+
+### 21.9 完整 TestMediumFile.bin 验证通过（2026-09-14 01:35；Big 尚未运行）
+
+运行 `nl0914-d-medium-f30-s15` 使用候选 D、30 fps、15 MiB 分段，远程 Encoder → 右屏实际捕获 → 本机 Decoder。完整原始文件为 **273,806,498 B**，没有以截断前缀代替命名文件。Receiver `Completed`/exit 0，恢复运行时长 **1,398,646 ms（23分18.646秒）**；harness 本地单调进程时间线为 1,398,781 ms，额外独立重读 SHA-256 后为 1,398,953 ms。wholeDigestVerified/renameSucceeded/finalReopenVerified/published 均为 true，本地完整 SHA-256 为 `28FD5EAD99BF7FE3526E38CD1A44364B3C02792323D01840F2F4BDC38EBC1BB0`，与事先冻结并在远程重新验证的完整源文件一致。
+
+操作性 raw goodput 为约 **195,765 B/s**，不是正式 Step1 `VerifiedRawGoodput` 认证样本；大文件 scope 导致正式 measurement 对应计时/吞吐仍为 null，未绕过。全过程 peak active=6，peak reserved decoder bytes=623,111,712，resource rejection/deferred/FEC failure/CRC failure 均为 0，UniqueVisualFPS=8.357589。前后台窗口标识前后均为 625612094。远程 Encoder PID 6784 在验证成功后由测试编排 WM_CLOSE 清理，forced=false；其现有实现把外部窗口关闭记录为 Failed/exit 1，不把这个发送端状态改写为 PASS，也不拿它代替接收端成功。原分辨率 2560x1600@240 已恢复，命令 `cmd-20260913T173230Z-b47d43`。
+
+证据根为 `artifacts/nonlocal-stall-20260913-2111/nl0914-d-medium-f30-s15/`，最终文件在其 `receiver/output/TestMediumFile.bin`，完整报告位于 `receiver/epoch-0/report.json`。这只证明本次完整 Medium 的稳定恢复，不证明 Big、任意链路或原分辨率已完成。接下来先做三个各45秒的隔离画面更新实验筛查新的非本机提速思路，再执行完整 Big；不修改协议/Profile/Golden、Citrix/网络或安全与资源门限。
+
+### 21.10 完整 TestBigFile.bin 与两个指定文件的已验证基线（2026-09-14 03:11）
+
+`nl0914-d-big-f30-s15` 以相同候选 D、30 fps、15 MiB 分段完成 **1,059,917,774 B** 的整个远程桌面 TestBigFile.bin。第一 Receiver 在保留的3600s时限正常停止（runtime=3,600,037ms），当时已验证42段/660,602,880B。测试编排没有改变源端广播调度，只在同一输出目录启动第二 Receiver；最终两份报告的 SessionId 均为 `d786c4fabe99d724e8a9102398a8281b`，SessionTag 均为 `e22d1aa278572ff5`。第二报告明确为 resumeLoaded=true、resumeVerificationSucceeded=true，原有完成段和缓存重新验证耗时897ms；第二进程 runtime=1,927,531ms，Completed/exit0。
+
+最终 wholeDigestVerified/renameSucceeded/finalReopenVerified/published 全true。完整独立SHA-256为 `20B000AFA567A66DD536B22946102A465575F77299A42FFC2FCC2116F9808E76`，与远程源文件一致；最终验证Encoded bytes=1,053,093,783，整文件BLAKE3为 `1d5c9d9c7aa1836d9d3953808667ec2b59981b372987e2327e53f1f573f6058b`。两个epoch的resource/deferred rejection、FEC/CRC failure均0、peak active均6，最高reserved decoder bytes=623,111,712。各自UniqueVisualFPS为8.191721与8.163131；不把它们跨epoch简单合并为一个正式样本。
+
+同一本机harness单调时钟的 **Big完整进程时间线为5,527,813ms（1小时32分7.813秒）**，包含两次Receiver运行及中间间隔；独立重新读取SHA-256后为5,528,485ms。该口径不含部署/远程预核对准备阶段，不是跨主机相减，也不是被大文件/Resume条件排除的Step1正式计时。两项完整文件采用一致的这个口径如下：
+
+| 指定文件 | 完整字节数 | 本机接收进程时间线 |
+| --- | ---: | ---: |
+| TestMediumFile.bin | 273,806,498 | 1,398,781ms |
+| TestBigFile.bin | 1,059,917,774 | 5,527,813ms |
+| 合计 | 1,333,724,272 | **6,926,594ms = 1小时55分26.594秒** |
+
+Big最终Encoder2852仅在Receiver独立验证完成后WM_CLOSE清理，forced=false，前台HWND前后均625612094。原2560x1600@240已恢复（`cmd-20260913T190940Z-cc5270`）。Big证据根为 `artifacts/nonlocal-stall-20260913-2111/nl0914-d-big-f30-s15/`，报告为 `receiver/epoch-{0,1}/report.json`，最终文件为 `receiver/output/TestBigFile.bin`。
+
+**本条目只建立当前候选D对这两个完整指定文件的一轮稳定基线，不宣布最快、不宣布任意非本机链路都无长尾，也不宣布原分辨率已适配。** 原分辨率/更低有效帧率仍是约束，后续优先小于100MB的定向提速实验。首轮合成图案缺少Session导致正式UnifiedTelemetry不可用的失败已保留；不放宽正式计时门，改用独立只读native像素结果观察器统计人工fixture的唯一CRC合法块。该观察器已单独编译，7类有界计数/冲突/畸形检查自测通过；第二次编排在观察器启动时被右屏识别检查拒绝，尚未启动远端图案，且已恢复原分辨率。代码审查发现独立观察器链接时遗漏了生产捕获层要求的PMv2 manifest，正在保留保护检查的前提下补齐并先做只读预检；不构成文件吞吐结论。
+
+
+### 21.11 小规模实屏路线筛选：部分更新尚无显著收益，继续分离捕获/呈现瓶颈
+
+三个45秒人工fixture `nl0914-bandwidth-{full-rotating,full-held,half-held}-03` 已实际结束并取回发送端日志。三者各提交1350帧、无pending替换，发送端用时约45秒；本机只从右屏原生捕获、原有GPU/FEC/CRC返回结果做只读计数，不向Receiver注入任何内容，不绕过Session接纳，也没有文件输出。数据如下：
+
+| 模式 | 实际像素唯一Bootstrap | 唯一CRC合法fixture块 | 身份帧率 |
+| --- | ---: | ---: | ---: |
+| 全量更新、正常映射相位轮换 | 378 | 6804 | 8.3955/s |
+| 全量更新、固定映射相位 | 386 | 6948 | 8.5663/s |
+| 九个数据槽交替更新、其余保留原块 | 388 | 6975 | 8.5980/s |
+
+所有payload冲突为0，最终输出目录为空；焦点句柄前后均为625612094；已恢复2560×1600@240Hz。三者只有约2%至3%的唯一有效块差异，**不足以支持生产代码改为部分更新或永久固定映射相位**。该实验不是文件吞吐测试，不能将计数乘payload大小称为VerifiedGoodput。完整身份、源端实际Present统计和结果在 `artifacts/nonlocal-stall-20260913-2111/bandwidth-diagnostic-comparison.json` 及对应运行目录。
+
+诊断工具失败也保留：首轮正式UnifiedTelemetry因没有Session而不可用；第二轮独立观察器遗漏PMv2 manifest，被生产捕获层拒绝；第三轮补齐同一生产manifest且保留精确非主DISPLAY2检查后，预检及7类计数/冲突/畸形自测通过，才得到上述真实像素结果。原失败文件和旧二进制未覆盖。
+
+进一步审查不能把约8.5Hz直接归咎于网络：完整Big的第二接收epoch中，21164个Bootstrap共消耗约21.47秒CPU，GPU解调约94.61秒，FEC后处理约307.99秒，整个epoch1927.531秒。新独立Bootstrap-only/WGC样本在不执行Data FEC时仍观察到378个唯一身份、约8.3945Hz，分析平均约1.92ms；但该样本源端发生1次pending替换，未通过预设的零替换比较门，标记为诊断观察、不是严格对照PASS。后续按独立样本继续比较DXGI Bootstrap-only、完整Decoder以及关闭重复Present的源端；不修改Citrix或网络设置，不提前宣布瓶颈归因或提速。
+
+外部资料只用于提出实验，不替代现场证据：[libcimbar原项目说明](https://github.com/sz3/libcimbar/blob/master/DETAILS.md)讨论空间交织、置信度/局部漂移与喷泉纠错；[Citrix官方HDX计数器说明](https://www.citrix.com/blogs/2024/07/08/introducing-new-hdx-graphics-performance-counters/)区分输入帧率、编码输出帧率与丢弃帧。这支持分层测量方法，不证明当前链路使用特定编码器，也不授权改变任何远控设置。
+
+
+### 21.12 捕获/呈现分离与候选E（100MB实屏运行中）
+
+`capture-separation-stage-02` 已结束，三个独立样本均通过源端1350提交/零pending替换检查，原分辨率恢复，焦点前后均为625612094。
+
+| 样本 | 唯一身份 | 唯一CRC合法块 | 身份帧率 | 重复Present次数 |
+| --- | ---: | ---: | ---: | ---: |
+| bootstrap-dxgi | 374 | 不测Data | 8.31368 | 7663 |
+| data-repeat | 384 | 6912 | 8.53652 | 7756 |
+| data-demand | 424 | 7632 | 9.41175 | 0 |
+
+Bootstrap-only/DXGI仍约8.31Hz；结合上一WGC诊断，不能指望仅优化FEC或切换捕获后端获得数量级提速。Demand Present的人工fixture唯一块增加10.4167%，仅支持选择候选，不是文件提速证明。
+
+候选E仅把GrayFast的`DataWindowConfig.repeatActiveFrame`设为false，其余Profile保留原策略；逻辑发送FPS、帧/方程提交、持久ID租约、光栅、Wirehair毕业预算及全部恢复/资源门不变。新回归先在D上以`1 == 0`失败，改动后连同原定向回归通过33例/10008断言，Scheduler原14例/319160断言通过；四个受影响构建目标通过。新例同时验证GrayFast、Gray、正式Unified的呈现策略隔离、失败重试像素/ID不变和实际Bootstrap连续序号。
+
+E已独立封存，`candidate-e-vs-d-runtime.diff`只有一个配置条件与解释注释；没有覆盖D包。`nl0914-e100-f30-s6`正在运行100000000字节、30fps、6MiB段的真实远控对照，完成前不宣布文件提速。下一步潜在的帧内多Segment交织只记录为隔离设计备选，未修改生产实现，也未降低毕业预算。
+
+
+### 21.13 候选E 100MB/6MiB段实屏完成：小幅整文件收益，冗余成为下一步重点
+
+`nl0914-e100-f30-s6` 已实际结束，100000000字节，30fps，16个6MiB目标段，Receiver `Completed`/exit0。Receiver单机单调运行时 **517754ms**，对比同参数D的532801ms，减少15047ms（2.8241%）。只是一轮已验证操作基线，不是最快或跨链路统计显著性结论。
+
+整文件摘要、rename、final reopen及独立重读SHA256均通过，SHA256 `4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`；本轮又使用独立Get-FileHash复核一致。资源/冲突拒绝与deferred均0，peak active6，peak reserved267401796字节，stale-result drop1（D同参数为0，未隐藏）；正式Step1仍因输入超64MiB而不具备计时资格，未伪造VerifiedGoodput。
+
+实际UniqueVisualFPS从D的8.363682644增至E的9.375355495，约增12.10%，但`outerAlreadyCompletedSymbols`由13216增至19888；两者真正唯一方程都为61400。源端报告E的successfulPresentCalls/sourceTextureReplacements均15875，D对应105912/15879。该证据支持“高频重复Present负担已消除，但更高有效帧率有相当部分被既定毕业预算中的已完成段冗余消耗”，不能据图案实验宣称文件提速10%。
+
+Encoder PID3108在Receiver验证成功后由WM_CLOSE停止、forced=false；其既有报告把外部窗口关闭归类Failed/exit1，不能将Sender报告改称PASS。原2560×1600@240Hz已由`cmd-20260913T195744Z-027c37`恢复，焦点前后625612094一致。证据：`candidate-e-six-mib-stage/restored.json`、运行`result.json`、`receiver/report.json`及远端`encoder-report.json`，均在当前artifact根。
+
+下一步帧内多Segment交织尚未落地：只有`PENDING_SPATIAL_SEGMENT_INTERLEAVE.md`和`spatial-segment-matrix-model.json`。纯槽位矩阵3297项覆盖检查通过；固定六段、每帧17数据槽、已知描述符的计数模型中，periodic-quarter段间方程差由2856缩至168，sparse/bursty由544缩至36。**这不是生产调度/Receiver/FEC/资源或整文件恢复证明**，暂不降低D/E冗余预算。
+
+
+### 21.14 候选F：显式帧内多Segment交织，保留E默认与原毕业预算
+
+本次在E之上加入默认关闭的 `EncoderConfig.grayFastSpatialInterleave` / `--grayfast-spatial-interleave`。只允许GrayFast；其它Profile及重复CLI选项拒绝。原编解码wire、Profile/Layout、FEC参数、FrameSequence连续租约、接收资源和D/E毕业预算不变，没有接收状态反馈给发送调度。
+
+审阅优先处理了三项风险：未提交列被提前计入方程预算；多段数据配错当前Segment控制记录；提交期间vector滑动使缓存的状态索引失效。实现为最多六个已激活段各准备一行、保留物理槽号的W×18槽矩阵，每个完整批次输出W个视觉帧。第q帧槽j来自 `(q+j+bankPhase)%W`，逐批旋转bankPhase。每个源槽恰好发出一次，全部W帧提交后才commit全部源行，然后完成pass，最后统一滑动窗口。新缓存固定 **186112字节**，编译期硬上限256KiB，无额外FEC实例，不把此缓存伪装成encoded-Segment字节统计。
+
+每个Transport仍独立携带自己的SegmentOrdinal/OuterBlockId和CRC；只是把多个独立Transport装入同一视觉帧，而非跨Segment改写方程。总体设计1.x的active-window/striped outer blocks和9.4独立Transport头保持适用。[RFC 6330第4.4.2节](https://www.rfc-editor.org/rfc/rfc6330.html#section-4.4.2)也区分块身份与符号身份，但其RaptorQ packet规则不能当成PixelBridge/Wirehair的wire认证；这里只作为审阅参考。正式Step1的submitted identity只有一个SegmentOrdinal，本候选显式拒绝同时启用该measurement，诊断中的current Segment仅是首个Transport代表值，不伪造单段帧的认证样本。
+
+定向验证：
+
+- 四个受影响构建目标通过；windeployqt仍有VCINSTALLDIR未设置的部署探测警告，构建未因此失败，封存包使用逐EXE和全文件hash身份。
+- 36例/10459断言通过；Scheduler 15例/325724断言通过。完整保留E的33例/10008断言和旧Scheduler 14例/319160断言。
+- 新矩阵测试穷举W=1..6所有phase/slot并覆盖0、7、越界phase/slot、UINT32_MAX；失败不写出sourceRow。
+- F测试独立验证完整矩阵前不计commit，完成后实际提交方程数恰好相等；重试不变字节/计划；半批次退出后repair-only重建跳过整个旧ID租约，未使用租约不能换算成发送信用。
+- 1/5/7段短窗及13段quarter、64段sparse/bursty全文件安全发布与独立重读BLAKE3通过；所有新用例quota/conflict为0。13段quarter为817帧/205可见/0wrap；64段sparse为4081帧/1111可见/0wrap/peak6/最长无新方程189帧。相同旧E/D路径仍为5069帧/1362可见/5wrap/peak7/最长206，测试未删除或改换丢帧投影。
+- 实际Encoder raster→CPU oracle/FEC/CRC→真实DecoderRuntime恢复6293504字节（六个压缩段+RAW尾段）与空文件；前者12帧实际包含多个Segment；whole digest/rename/reopen全部通过。Encoder在半批次停止后保持同Session恢复，FrameSequence跳过旧持久租约且后续逐帧连续；epoch拒绝重试像素/ID一致。此为本地1:1像素验证，不是远控吞吐。
+- 初轮测试失败保留：配置单测使用不存在源文件而触发已有源验证，改成真实Scratch文件；像素用例向已经Completed的Decoder排入下一结果后等待队列排空，测试终止判定补充Completed（最终状态、摘要、发布、reopen检查全部保留）。生产代码没有为这两项测试修改恢复门。
+
+**模型勘误：** §21.13引用的纯计数脚本serial sweep写成5，但当前源码 `senderUnifiedSweepPhaseStep=1`。旧文件不覆盖；`model_spatial_segment_interleave_v2.py`/`spatial-segment-matrix-model-v2.json`使用1，sparse serial差值应为612（不是544），spatial仍36；periodic差值不变。这仍不是生产性能证明。
+
+F包独立create-only封存：patch SHA256 `6cafe4a6c0688457190501c870dbf823a29f2ba0c8d0626873f337a5f4416ee4`，Encoder `052fb88dffa685326c3f90b840bb40172d518d5001c8000be785b88968e4a1ff`，Decoder `03487800a6bb4c7e738e67d05be1282862561bf91fb39b2bff570e4e79e06011`。生产C++在field期间冻结，文档记录另行追加。对照 `nl0914-f100-f30-s6` 已启动100000000字节、30fps、6MiB段的实际右屏远控，完成前不宣布整文件提速。`candidate-f-six-mib-stage`独立记录原显示模式、恢复意图及finally恢复；payload仍仅经过实际右屏捕获，bridge仅部署/控制/日志。
+
+
+### 21.15 候选F 100MB完成但未取得整文件提速，继续保留E默认
+
+`nl0914-f100-f30-s6` Receiver Completed/exit0，100000000字节，16段，单机receiver runtime **517942ms**；同参数E为517754ms。F多188ms（+0.03631%），此单次差异不能证明性能优势或退化，结论为**没有测出提速**。不能用§21.14本地sparse模型快19.49%来替代实际整文件结果。
+
+whole digest/rename/final reopen/published全部true，独立SHA256两次重读均为 `4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`，BLAKE3与E一致。最终输出目录仅有 `TestMedium-prefix-100000000.bin`，无遗留part/resume。运行Session `256daaef6b606a783e28e0ba052a4c06`，SessionTag十六进制 `332cc39ce67aadcb`；跨主机时间未相减，正式Step1仍为MeasurementSourceScopeExceeded，不声称formal VerifiedGoodput。
+
+| 指标 | E | F |
+|---|---:|---:|
+| receiver ms | 517754 | 517942 |
+| UniqueVisualFPS | 9.375355495 | 9.325291549 |
+| outerUniqueSymbols | 61400 | 61400 |
+| outerAlreadyCompletedSymbols | 19888 | 19490 |
+| outerOrphanAdmittedBlockCount | 0 | 66 |
+| outerPeakOrphanCachedBytes | 0 | 70047 |
+| peak active decoder | 6 | 6 |
+| peak reserved decoder bytes | 267401796 | 267401796 |
+| conflict/resource/deferred/orphan quota rejection | 0 | 0 |
+| result queue high water | 2 | 3 |
+| stale result drops | 1 | 1 |
+
+F少量Transport先于对应Segment控制到达，使用了原有有界orphan缓存，但未发生拒绝；这些开销没有隐藏。Sender observedSubmittedLogicalFps=29.97065988，successfulPresentCalls/sourceTextureReplacements=15886/15886，仍为demand Present；提交控制槽占比5.849996%（E5.848800%）。源端计数含最终20秒轮询后的停止间隔，不能与Receiver完成时点直接跨主机相减。
+
+进度日志显示F第一窗口六段在140秒轮询时均已完成，而E此时只完成两段、160秒才全部完成；但两者后续新窗口依然受固定毕业预算控制。这支持“接收更均衡，但补发时间仍支配总耗时”的解释，不是接收端再次卡死。
+
+本机Receiver PID54468已退出；远端Encoder PID2640在验证成功后通过WM_CLOSE停止、forced=false，沿用已有Failed/exit1关闭分类，不伪称Sender报告PASS。焦点前后625612094一致。`candidate-f-six-mib-stage/restored.json`确认恢复2560×1600@240Hz，命令 `cmd-20260913T205131Z-78a0ee`。证据比较见 `candidate-e-f-six-mib-comparison.json`；所有E/F包与旧失败记录保留。原始指定Medium/Big完整文件目前仍只有D的合计1h55m26.594s验证基线；没有重复大文件来粉饰这一轮没有提速的结果。
+
+下一项仅为待验证技术方向：在空间交织保持不变的独立候选中，减少**离散方程余量**，不降低4K量级基础预算（30fps）、不改8-pass上限、不增接收器资源或旁路反馈。先保留全部现有回归，再补13×6MiB（合计约82MB）的大K quarter/sparse/late-join压力，因为仅用256KiB小段不能代表大文件的相对余量；不通过则拒绝候选。未经这些验证不启动新field、不修改E默认、不宣称安全或提速。原分辨率适配仍未解决，未将1080临时测试条件推广为各种分辨率认证。
+
+
+### 21.16 大K门禁新增失败证据：F与G的补发等待，而非接收器卡死
+
+上一Goal轮分类为progress：完成F实现和实屏否定性结果。继续工作先保持F预算，只扩展受控测试，输入13×6MiB=81788928字节（小于100MB），覆盖periodic-quarter、固定sparse/bursty，以及第15000逻辑帧才加入的repair-only接收。原用例20000帧上限不变，仅新增late-join用例显式使用60000硬上限；保留全部资源/发布/摘要门。新增记录失败时的进度、最长无新方程期间活动codec数和已验证字节。动态Section使一个用例失败不会阻止独立late-join证据，不删除或弱化失败断言。
+
+| 候选/模型 | 完成帧 | 接收帧 | 完成时wrap | quota拒绝 | 加入后最长无新方程帧 | 该时活动codec |
+|---|---:|---:|---:|---:|---:|---:|
+| F / quarter | 13321 | 3331 | 0 | 0 | 623 | 0 |
+| F / sparse | 13286 | 3602 | 0 | 0 | **1268** | 0 |
+| F / late quarter | 38605 | 5902 | 34 | 1123 | 411 | 5 |
+| G / quarter | 12589 | 3148 | 0 | 0 | 255 | 0 |
+| G / sparse | 12532 | 3411 | 0 | 0 | **914** | 0 |
+| G / late quarter | 39025 | 6007 | 35 | 4937 | 351 | 5 |
+
+所有行的文件最终均完成whole digest/rename/reopen；但F/G sparse均未过新设的`<900`逻辑帧等待门，失败原样保留，不能改成1000让G通过。F/G最长间隔时已完成75497472字节、活动codec=0，确认这是已完成窗口仍在消耗发送预算的等待，与原954MB resume中8个未完成codec的停滞机制不同。以上为无光栅受控帧数，不是实际远控秒数。
+
+G仅将空间交织路径的额外根号项系数从4减为2，30fps的基础4K、wrap top-up、8-pass上限及接收资源限制不变；默认非交织E继续系数4。差异`candidate-g-budget-only.diff`；G没有封存/启动现场测试。因为G仍未过门槛，下一步没有继续把系数微调到恰好过线，而是单独研究窗口调度。
+
+晚加入仍明显更慢：firstObservedPass为F=3、G=4，需要多次MicroRepair循环，quota拒绝是受限接收器正常拒绝，不是资源上限被提高。总体设计11.2明确不足K的MicroRepair不能声称一轮late-join可恢复。本轮没有给这个已知限制贴上性能PASS标签，也未让source读取任何Receiver状态。
+
+证据：`candidate-f-large-k-baseline.log`、`candidate-f-large-k-baseline-02.log`、`candidate-g-focused-01.log`。F带新探针的完整source patch为`candidate-f-large-k-baseline-source.patch`，SHA256 `f235bf8dce3fe84621666460c2801fddb9478fe483b70df85ab50a64a1cf46d9`。
+
+### 21.17 候选H：四段常规窗口、最多六段尾窗，局部门禁通过后进行实屏组合比较
+
+H保留G的系数2与基础预算，仅对显式空间交织且大于12段的文件使用四段常规窗口，剩余不超过六段时允许在全部bank提交之后有界扩展尾窗。Sender上限仍6、Receiver上限仍8及1GiB，没有增加资源配额。默认E、最多12段的旧barrier路径、wire/Profile/FEC参数均不变。尾部vector扩容位于所有bank source-row commit及pass finalize之后，避免悬空索引。单变量代码差异见`candidate-h-window-only.diff`。
+
+同一大K测试结果：quarter 12349帧/3088接收/0wrap/0quota/最长247帧；sparse 11949帧/3263接收/0wrap/0quota/最长554帧，均peak5；late quarter第15000帧加入、firstObservedPass4，38481帧完成/5871接收/35wrap/4510quota/最长235帧，peak8。晚加入比F的完成帧数略少，但quota更多，不能单凭较短间隔说所有指标都改善。所有文件通过独立重读摘要和安全发布/reopen。
+
+全部受影响四目标构建通过（windeployqt仍有VCINSTALLDIR未设置警告），定向37例/10518断言、Scheduler15例/325724断言通过。原E准确预算/持久租约/源文件不变/实际像素/重试/恢复检查保留；新增大K失败没有通过改阈值消除。
+
+H独立封存：source patch SHA256 `cde19fabcb4e9d8a73285b685d1523f19a6af07b9f4aaba454a8288f603d32ce`；Encoder `660683560dce05b18b61803a9adfdfb3c9f51fc95c80f30511eab97afabb85f8`；Decoder `0cfface6aeac1b5671f86a50ce9f6672fd36df129c1263265399bc9417d370c0`。`nl0914-h100-f30-s6`正在实屏运行100000000字节/30fps/6MiB段。该现场比较相对F包含G余量与H窗口两个已分步检查的变化，是组合候选比较，不拆分宣称单项速度贡献。生产C++在field期间冻结。
+
+完整指定文件的H脚本仅准备、未启动：在H100结果未知时预设至少比E单次快3%（<=502221ms）且完整校验通过，才值得花时间重测Medium/Big。沿用验证过的v2同目录/同Session单次3600秒deadline恢复规则，resume checker AST与原版一致，26项离线证据边界检查通过；这不替代真正原生resume验证。原分辨率适配仍未解决，测试finally必须恢复原2560×1600@240Hz。
+
+
+### 21.18 H100实屏完成与干净Sender Session对照准备
+
+H的100000000字节/30fps/6MiB段实屏完成，ReceiverRuntime=493751ms，比E517754ms短24003ms（4.635985%）。完整digest/rename/reopen/published全部true，独立再次SHA256复读为4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb。UniqueVisualFPS=9.341408，与E/F相近；unique61400、alreadyCompleted15813（E19888、F19490）、peakActive4、peakReserved178267864B，resource/conflict/deferred/orphanQuota/stale均0，orphan缓存峰值8145B。这支持减少已完成段重复消费而非提高视频帧率的解释，但单次现场是组合候选证据，不作单变量因果声明。
+
+Encoder PID5732在接收完成后WM_CLOSE、forced=false；原有Failed/exit1关闭分类保留。前台625612094保持不变；restored.json验证原2560×1600@240，restore命令cmd-20260913T214450Z-bcf57a。comparison见candidate-e-f-h-six-mib-comparison.json。H100已达到预设>=3%收益门，值得复测完整指定文件，但此时H的Medium/Big仍未运行，不能套用100MB百分比。
+
+准备完整原文件时发现FindMatching按source identity及稳定build/compression/FEC身份寻找旧EncoderSessions；H不会因新exe哈希而自动隔离D的15MiB旧会话。若直接重用原Desktop文件，将存在从旧checkpoint开始的对照污染风险。没有删除/覆盖旧会话、没有复制修改原文件，也不通过桥传送payload。新增CLI --session-state-root ABSOLUTE_PATH仅把已有EncoderConfig.sessionStateRoot暴露给Unified家族测试；默认root和所有wire/预算/持久验证语义不变。重复/空/相对/缺值及历史profile参数拒绝。
+
+H-clean仅增加上述CLI隔离及测试，不调整H运行时算法。每个远程run在自己的package/encoder-session-state建create-only空目录，启动时显式传入；完成后以Sender报告preparation.resumed=false、源稳定检查、同SessionId/uint64Tag、相同原文件字节数和整文件摘要作为额外测量门。旧SourceIndex完全不碰。不是让Receiver反馈选择Sender方程或排程。新增原生双root各两次启动测试证明互相独立且旧resume历史保留（37断言）；14项无呈现CLI边界用例通过；整体38例10555断言、Scheduler15例325724断言通过。31项Sender证据边界检查通过，原生Receiver恢复检查不替代为脚本检查。
+
+
+### 21.19 完整Medium的H-clean实测通过，随后开始完整Big（2026-09-14清晨）
+
+H-clean独立封存source patch SHA256=4fa1256d082efcef5426761104ac70b25d084a51dfd951eb3188d6cc00b554ab；Encoder=36db97a586330e91522081b4abf36dee19fa9a658e58bba9f8972dedc06f750c，Decoder仍为H的0cfface6aeac1b5671f86a50ce9f6672fd36df129c1263265399bc9417d370c0。新增未暂存Python CLI回归源文件显式保存在additional-source-files并纳入seal，未误把它遗漏为可重放源码。CLI隔离之外H算法未变。
+
+nl0914-hclean-medium-f30-s15完整273806498字节完成，Receiver native1297465ms，harness本机时间线1297610ms=21分37.610秒。D同文件时间线1398781ms，因此整组改动累计减少101171ms（7.232798%）；D/E/F/H并非同轮统计重复，不能声称跨链路显著性或把收益仅归于窗口大小。18段全部验证，encoded273098926B。whole digest/rename/reopen/published及独立SHA256两次复读通过，SHA256为28fd5ead99bf7fe3526e38cd1a44364b3c02792323d01840f2f4bdc38ebc1bb0。Sender clean-start gate通过；SessionId=d2313893ff28e3710e65e077412da2a1，源预扫描与接收摘要一致，resumed=false。
+
+UniqueVisualFPS=9.315566，unique167658，alreadyCompleted36264，peakActive6，peakReserved560745322B；resource/conflict/deferred/orphanQuota0；orphan峰9774B，queue峰4、stale drops4。没有掩去有界drop。Receiver60412已退出；Encoder24480在验证后WM_CLOSE、forced=false；既有Failed/exit1关闭分类保留。焦点625612094相同，原2560×1600@240恢复命令cmd-20260913T222950Z-d11f7c。比较证据candidate-d-hclean-medium-comparison.json。
+
+完整Big随后在nl0914-hclean-big-f30-s15开始，原桌面TestBigFile.bin再次验证1059917774B及20B000AFA567A66DD536B22946102A465575F77299A42FFC2FCC2116F9808E76。独立create-only发送端状态根；沿用3600s/Receiver、最多一次正常deadline原生同目录恢复以及7200s Sender硬上限，原生资源/摘要门未改。H-clean生产源码和hclean-named-orchestration-frozen-01在运行中冻结；完成前没有新的两个指定文件合计耗时结论。
+
+### 21.20 原分辨率GrayStates隔离诊断取得码字恢复，尚非适配完成
+
+在Medium结束且原模式恢复后，nl0914-gray-robust-native01对远程2560×1600作45s独立图案呈现。只用已有GrayStates/layout12/1314B，不改产品wire、不改Citrix或网络。新固定测试Tag=92ba640ee1ac7035；sequence31/32使用各自不重叠OuterBlockId，payload仅用于人工合成诊断，绝不装作文件Session。
+
+本机右屏GDI实际捕获三份2560×1440/14745600B BGRA，只在本机分析；桥无图像/payload。三份都恰好捕获sequence32，所以它们不是三个独立映射相位。接受几何scaleX=0.850826741099、scaleY=0.851404962843。私有0.75尺度CPU基线3次均0/18；保留的forward-model-probe-03-gain4对象3次均18/18 FEC+CRC有效，且18个Transport逐字节匹配独立生成的预期；预期内容只在普通解码完成之后评分，未交给解码路径。forward符号非零符号位误差约0.085%至0.091%，baseline约1.76%至1.78%。这些数字不可直接与旧Fast的sequence19/20跨运行作单变量因果比较。
+
+源端1350提交、1350texture replacements、0pending replacements；统计只适用于重复两幅诊断图案，不是UniqueVisualFPS或文件吞吐认证。Presenter25392正常结束；焦点625612094保持，前后display-info均2560×1600@240。现有生产minimumScale、GPU解调和Profile合同均未更改。证据nl0914-gray-robust-native01/comparison.json、captures.json、analysis-*.json及gray-robust-original-resolution-prep/built-identity.json。
+
+下一适配门：多映射相位和同条件Fast/Gray对照；再验证真正Session/Descriptor/文件/恢复全链路和CPU/GPU一致性。不能因当前18/18就宣布原分辨率或其他各种分辨率完成。此诊断后优先回到完整Big主线，未继续占用右屏做支线试验。
+
+
+### 21.21 H-clean完整Big完成、两个指定文件合计缩短5.03%，并纠正资源监控遗漏
+
+2026-09-14 08:07左右，nl0914-hclean-big-f30-s15完整1059917774字节、68段完成。单一本机harness时间线5280672ms（包含3600秒CLI正常截止后的原生重启间隔）=1小时28分0.672秒，比D的5527813ms减少247141ms（4.470864%）。两个指定文件合计6578282ms=1小时49分38.282秒，相比D的6926594ms=1小时55分26.594秒，减少348312ms=5分48.312秒（5.028619%）。这是该右屏链路、30fps/15MiB段、临时1920×1080条件下的单轮操作性实测，不是正式Step1认证、统计重复或任意分辨率承诺；默认GUI仍未启用H的显式空间交织路径。
+
+Big epoch0正常Stopped/exit1，native3600058ms，44段692060160B完成；epoch1 Completed/exit0，native1680351ms，resumeLoaded=true、resumeVerificationSucceeded=true、重验801ms。同SessionId=e9ade731601c194d3d703efe766a785f、SessionTag=f77ba72e5404f935，与独立clean-start Sender证据一致。整文件digest、rename、final reopen、published全部true。独立SHA256再次复读为20b000afa567a66dd536b22946102a465575f77299a42ffc2fcc2116f9808e76；整文件BLAKE3为1d5c9d9c7aa1836d9d3953808667ec2b59981b372987e2327e53f1f573f6058b。Sender4152在成功后WM_CLOSE、forced=false，既有Failed/exit1关闭分类不伪称PASS；本机两个Receiver均退出。焦点625612094保持；cmd-20260914T000727Z-a9d87f确认恢复原2560×1600@240。
+
+**监控勘误：** 运行中所报FEC decoder quota/deferred=0属实，但不能扩写为“所有资源拒绝均为0”。epoch1最终outerResourceRejections=41，全部来自outerOrphanDroppedByQuotaCount=41；FEC codec quota/deferred、冲突、CRC/FEC失败仍为0。完整原生日志表明事件在epoch1约515至517秒、已验证817889280B附近：描述符之前到达的数据暂存从27块升至64块（104256B），两秒左右排空，随后继续完成。不是恢复启动时，也不是最后收尾；静态日志尚不能单独证明具体哪一条描述符先后关系，不能把此事件解释成原事故同一根因。原有64块/4MiB缓存及所有Receiver限制未放大。
+
+新增私有field_progress_v3.py完整提取orphan/resource/policy子计数，缺失、无效及未知字段不再按0处理；test_field_progress_v3.py的48项回归通过，包括实际Big日志41拒绝、损坏末行、64KiB有界tail、布尔/负数/非整数字段。仅更新后续观察工具，未改冻结H-clean harness或生产Receiver；未来run必须显式接入它。
+
+完整比较与恢复/清场证据：artifacts/nonlocal-stall-20260913-2111/candidate-d-hclean-named-files-comparison.json；事件时间线：nl0914-hclean-big-f30-s15/orphan-quota-timeline.json。现有H成绩封存保留，下一工作用≤100MB定向门检查晚加入短repair轮导致的长恢复与原分辨率多相位适配，不重复完整Big筛参数。目标仍为缩短非本机指定两个文件的最终正确发布总耗时，未宣布完成。
+
+
+### 21.22 晚加入原生门保留失败：I/J拒绝，K有改善但尚未达到新增等待门
+
+完整H-clean结束与原模式恢复之后，以同一13×6MiB=81788928B真实FEC/ReceiverPipeline/文件发布原生探针继续调度研究。不是栅格/远控吞吐实测。测试额外要求第15000帧晚加入后的等待<12000逻辑帧、全局wrap≤8；原有<3000帧无新方程等待门、<900帧receiver-first门、8个codec/1GiB及所有摘要/rename/reopen/独立复读均未放宽。H参照为总38481帧、晚加入后23481帧、35次wrap、4510次quota/deferred事件。
+
+| 候选 | 改动（只影响显式spatial的后续repair） | 总帧/加入后帧 | wrap | quota/deferred | 最长加入后无新方程 | 判定 |
+|---|---|---:|---:|---:|---:|---|
+| I | 每4轮一次所有段集中完整预算，其余micro | 40905/25905 | 8 | 235 | 7779 | 违反原等待门且变慢，拒绝 |
+| J | 每轮统一K预算 | 38285/23285 | 9 | 13844 | 1151 | 解码器积压增加，未达新等待门，拒绝 |
+| K | I的完整预算按SegmentOrdinal%4错开 | 35193/20193 | 6 | 587 | 1759 | 比H减少3288总帧，但未达<12000新门，尚不接纳 |
+
+三个候选的receiver-first quarter/sparse结果均保持H的12349/11949帧、0wrap/0quota，所有完整文件恢复门通过。这只证明初始路径未被这组补发变化改变，不证明远控提速。K的失败用例继续保留在当前工作树，未通过降门槛来把回归伪装成全绿；当前源码处于进一步调度实验阶段，不是可发布版本。已验证H-clean封存包完全未变，I/J/K均未部署现场。I/J完整源码、失败日志及K差异分别封存在同名native-gate目录；总表candidate-i-j-k-native-comparison.json。
+
+这些失败将下一步问题定位为：单纯增加补发量会在全文件重访延迟与未完成codec占用之间交换代价，不能只看wrap或quota单一指标。后续需要进一步改变访问顺序/公平性或建立更细的确定性进度证据，不能继续用完整大文件盲筛系数。原分辨率适配另用固定45秒、全部16映射相位的Fast/GrayStates匹配图案验证，仍不改生产Profile、minScale或GPU接受门。
+
+
+### 21.23 原分辨率全部16相位通过，并完成1MiB真实文件的私有CPU参考通路
+
+在远端2560×1600@240完全不变的条件下，nl0914-gray-matched-fast01与nl0914-gray-matched-gray01分别进行45秒/30fps/demand-Present图案呈现；两者均覆盖frameSequence64..79全部16个映射相位。各图案具独立固定SessionTag和不冲突的每sequence OuterBlockId，都是诊断图案，不伪装文件。右屏实际GDI捕获，本机Bootstrap辨识后仅保存每相位首个样本；远程桥只部署二进制和收集日志，不传任何像素/payload。每组16×18=288码字：私有0.75尺度普通判决均0/288；forward-resampled模板判决均288/288 FEC/CRC/独立字节一致。Fast总体非零符号位错误约1.7197%→0.09422%，GrayStates约1.7678%→0.08856%；两者实测scaleX约0.85083。每相位只有一次样本，不是大规模BER置信度或完整文件吞吐认证。
+
+随后nl0914-original-cpu-file01首次把该私有算法推进真实文件链路：封存H-clean远端Encoder发送原桌面Medium的1048576B前缀，原桌面源未改；本机专用程序仅捕获DISPLAY2 [2560,0,5120,1440]，ordinary CPU oracle执行Bootstrap/几何/新鲜度/FEC/CRC判定，再经既有DecoderRuntime/ReceiverIngress/persistence/publish。仅使用可替换OS/GPU边界的测试adapter，既有恢复与资源门未替换；该adapter的WGC/DXGI生命周期标签不是实际WGC或GPU性能证据，所有结果显式标记privateGdiCpuReferenceOnly=true、productWgcGpuPerformance=false。Receiver未收到预期文件字节、预期Session、控制记录或修复ID清单，独立预期摘要只在测试完成后的harness比对。
+
+Receiver Completed/exit0，native参考运行22423ms（包含等发送端启动，不用于替代生产GPU整文件成绩）；111次右屏捕获、45个可用帧、809个接纳码字。1段1048576B完整恢复，whole digest/rename/final reopen/published全部true；独立SHA256两次复读均为094b00edd68c24e87da63fa10e29301ef821858e5268390c6a83c9e944779adc。Sender clean preparation/resumed=false、源稳定检查通过，与Receiver同SessionId=8474994cf333be3f8055bfc9f8cfd339，SessionTag=10e229bdd76eede1，BLAKE3=a4ce30aaba0e7695075cf7e5989b659a7f7d3a420da7c31e1cbba28d9935e48f。新增完整progress-v3已真正接入此run，原生最终journal资源/延期/orphan/cache/conflict相关计数均0，而不是把缺失值当成0。
+
+本机Receiver44000已退出；远端Encoder8164在核验后按owned run停止。cleanup与重新list-runs证实无远端测试进程；焦点前后625612094，原分辨率前后均2560×1600@240。C++私有driver最终构建无warning，命令行无效入口验证拒绝且无输出目录创建。生产minimumScale、modulation源码、GPU shader和Profile目录仍未改；真实生产GPU后端适配、其他缩放比例与较大文件验证尚未完成。
+
+主要证据：gray-matched-original-resolution-prep/comparison.json、summary.json；nl0914-original-cpu-file01/result.json、independent-verification.json、receiver/report.json和本机原生journal.jsonl。私有源码original_resolution_cpu_receiver.cpp与build_original_resolution_cpu_receiver.cmd纳入run身份记录，payload路径完全可重放。下一步先把已证实的CPU数学模型移植到隔离GPU候选并做逐相位/边界/原画布回归，再考虑≤100MB实屏；不直接降低全Profile的scale门，也不把1MiB参考运行当作大文件提速完成。
+
+
+### 21.24 私有GPU数学模型移植通过128项相位检查，原分辨率1MiB真实WGC/GPU链路通过
+
+已将前述forward-resampling数学模型移至隔离HLSL的Gray分支，不改生产shader、wire、raster、FEC参数或捕获生命周期。初版FXC寄存器压力/loop警告失败保留；最终保持strictness与warnings-as-errors，使用物理坐标轴单调性去重及7个bit分区的流式最小距离，编译成功。291600组去重算术与1000组分区算术一致性检查通过。14个shader入口中13个字节不变，仅demodUnifiedBytecode改变（96492→44808B）；这些大小不作为吞吐指标。
+
+私有离线D3D11诊断执行hardware/WARP × Fast/GrayStates × 原画布/实际右屏已存像素 × 16相位，共128/128通过；每项18个Transport均经过普通GPU/FEC/CRC门且逐字节匹配独立预期与CPU输出，false-accepted=0，raw pixel readback=0。现有PB-owned纹理/完成query/retirement路径不变，资源上限83501664B。后续hardware shader样本约10.7–13.84ms，首次冷启动约500.75ms仍保留；离线核时间不是整文件吞吐，且本轮未声称浮点LLR逐bit一致或全Golden认证。
+
+随后nl0914-original-gpu-file01在远程2560×1600@240完全不变时，H-clean真实Encoder发送1048576B Medium前缀，本机真实PixelBridgeDecoder/WGC/GPU接收而非GDI测试adapter，Completed/exit0、native6617ms，整文件digest/rename/final reopen/published全部true。两次独立SHA256均094b00edd68c24e87da63fa10e29301ef821858e5268390c6a83c9e944779adc；与clean-start Sender同SessionId=a16fd8087e92b106af9950653556586c、SessionTag=5089691193372186171，BLAKE3=a4ce30aaba0e7695075cf7e5989b659a7f7d3a420da7c31e1cbba28d9935e48f。源稳定与准备均通过，resumed=false。资源/冲突/延期/orphanQuota均0；捕获67到达/64交付/3drop，队列峰1/stale1，全部保留。45个帧观察中的UniqueVisualFPS=13.6312只是短样本，不据此宣称100MB或指定完整文件提速。
+
+仅私有新包candidate-gpu-gray-private01被重链接：Encoder SHA256=36db97a586330e91522081b4abf36dee19fa9a658e58bba9f8972dedc06f750c（H-clean不变）；Decoder=076a31e251e80711aa5ebfc16dfbaa12f78ad34bc8f247d20db653ea8bb6970f，显式记录既有CLI/GUI对象、当前K common库Receiver不变与私有scalar/GPU对象的混合来源。原生receiverTimingEligible=true字段原样保留，但此私有混合来源包没有完整配对Step1认证，formalStep1Certification=false。全Profile共用的私有0.75尺度门还未完成生产Profile分域，不是GUI发布候选。K新等待门失败仍保留，远端只使用已封存H-clean发送算法。
+
+本机Receiver55556退出、远端Encoder7060在验证后WM_CLOSE/forced=false（既有Failed/exit1停止分类保留）；焦点625612094及原分辨率前后不变。证据gpu-forward-gray-private-01/phase-matrix-result.json、identity-built.json、shader-final.diff；nl0914-original-gpu-file01/receiver/report.json、result.json、independent-verification.json；gpu-original-file01-stage/no-display-change-verified.json。
+
+继续用原分辨率100000000B/6MiB段/30fps/H空间交织进行实际持续测试，run=nl0914-original-gpu100-f30-s6，启动时未改显示模式或任何网络/Citrix配置。编排脚本另存field_run_gpu_original_100.py，不改1MiB原脚本或H-clean冻结harness；完整v3观察器重新在create-only新根执行48项通过（原固定测试目录直接重跑因已存在而拒绝，原证据未覆盖）。最终发布前不报告本次整文件耗时或加速结论。
+
+
+### 21.25 原分辨率100MB真实WGC/GPU完成，定位到184秒重复等待；扩展缩放门尚未全部通过
+
+nl0914-original-gpu100-f30-s6已完成100000000B、16个6MiB目标段、30fps、H空间交织。原远端2560×1600@240始终未改变，本机native Receiver runtime=463633ms（7分43.633秒），Completed/exit0；whole digest/rename/final reopen/published全部true，独立SHA256两次复读均4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb。Sender clean preparation/resumed=false、源稳定通过；同SessionId=3f54a7943d8c5f9e10b1ea7d8fcb4ba7、SessionTag=15d8be9f72d17619，BLAKE3=32d85d4af2aca6c97e3a7104a47163701708dc554f24b47f900349afa1ea4afc。16段全部校验，0恢复重启，正式测量因MeasurementSourceScopeExceeded不可用，私有包仍不是正式Step1认证。
+
+与此前H/临时1920×1080的同一100MB、6MiB段、30fps空间交织493751ms相比，本次组合减少30118ms=6.099836%。不是单变量GPU因果试验（分辨率、私有解调及Sender独立状态根不同），也不是重复统计或两个完整指定文件的新版成绩。当前两个完整指定文件的最好已验证合计仍是H-clean的6578282ms，不从100MB外推Big。
+
+完整native结果：UniqueVisualFPS=13.493795、unique61400、identicalDuplicate15、alreadyCompleted43350、ready16；peakActive4、peakReserved178267864B，原8 codec/1GiB限制未变；全部resource/deferred/FEC-quota/orphanQuota/conflict=0。orphan接纳34、峰14661B。BaseLuma 133596次FEC评估、36次擦除失败、CRC/identity失败0；0整帧擦除。GPU总363930601×100ns、post-GPU FEC CPU总1351312493×100ns。capture到达9873、交付7452、drop2420，admission/readback/epochReset0，队列峰2、stale2，不能把这些有界丢弃隐去。原模式前后完全一致，焦点625612094相同；Receiver39888退出，Sender21944验证后WM_CLOSE/forced=false、既有Failed/exit1停止分类保留，stage最终list-runs=[]。
+
+**重复等待的直接证据：** 同一本机journal连续样本中，unique已达15452/30904/46356、verifiedRaw已达25/50/75MiB窗口位置且activeDecoder=0时，分别63133、59895、61122ms没有新方程；alreadyCompleted却分别增加14423、13813、13942。合计184150ms。该样本证明发送端在固定预算内继续向已恢复窗口发数据，而不是本次FEC资源锁死；持续时间来自同机journal采样，只用于诊断，不替代native主计时。原954MB静态resume具有8个未完成codec，与这里active=0不同，不可混为同一事故证据。下一调度工作必须针对这种已确认的浪费，同时保留慢链路/晚加入/有限active资源门，不用Receiver反馈提前跳段。
+
+隔离扩展缩放检查：gpu-forward-gray-transform-01使用同一64号帧，在Fast/GrayStates、8个0.75至1.25缩放、point/linear、整数/四分之一像素原点之间组成64项合成D3D11/CPU比较。49/64全部18码字且CPU精确一致，其余15项部分/0恢复，均没有独立错误接纳；因此不是任意分辨率适配完成。12个失败或邻近样本又与“旧GPU+仅0.75 locator放行”的独立基线比较；特别是1.125 point在两者均0/18，不能错误宣称这些失败全部是新GPU回归。
+
+再尝试单个已知相位pilot推断point/linear和固定X/Y偏移（162个有界假设，不读取预期Transport内容）的私有CPU参考：1.125 point从0→18个精确块，但0.85 point从9→0，0.75 fractional linear仍0。该候选forward-model-probe-05-pilot-fit明确NOT_ACCEPTED，未移植GPU/未现场部署；修正独立构建后再次复现18/0结果。其全局常偏移假设不能充分描述已观察到的几何尺度偏差；这只是下一诊断方向，尚未证明唯一机制。原100MB已验证GPU包保持不变，不把新失败覆盖成成功。
+
+证据：candidate-h1080-gpu-original-100-comparison.json；nl0914-original-gpu100-f30-s6/result.json、independent-verification.json、repeat-only-intervals.json、receiver/report.json；gpu-original-100-stage01；gpu-forward-gray-transform-01/matrix-result.json、baseline-differential；forward-model-probe-05-pilot-fit/standalone-build-reproduction.json。生产shader/调制/Profile尚未改，当前K调度新增晚加入等待测试仍失败、保留，不是可发布工作树。
+
+
+### 21.26 逐段准入证据：L 尾窗超过剩余名额；M 保留资源限制消除此链，但晚加入总等待仍未过门
+
+对 K 加入有界逐段跟踪后，13×6MiB、真实 Receiver/FEC/journal/publish（syntheticNoRaster）的三种既有样本仍逐帧得到 12349、11949、35193，说明跟踪没有改变调度结果。新增 firstBoundUniqueFrame 区分“保留为 orphan”和“已进入实际 FEC”；总 resource/orphan 拒绝计数也单独输出，不再把 FEC deferred 数冒充全部资源拒绝。
+
+L 将后续 spatial 修复访问改为每次使用完整初轮损耗预算，首轮不变。晚加入第15000帧时，0..3段保留至27504/27508，4..7段先完成，而20428开始的8..12五段尾窗超过剩余四个名额。第10段直到25004才真正进入FEC，最后37260完成。总后续等待22261帧、drought5555、FEC deferred226、全局orphan/resource4320，违反原drought<3000及新增postJoin<12000，拒绝部署。
+
+M 只把后续修复窗限制为最多四段（初轮尾窗仍保留原形状），相同晚加入样本总27505/postJoin12505，FEC deferred0、drought247；剩余496次orphan拒绝均在首次Session/descriptor建立之前。原receiver-first两样本仍12349/11949、资源拒绝0。M消除了L中“4个遗留+5个新段>8”的已证实链，但12505仍不满足新增<12000门，失败断言未放宽或跳过。失败前内部摘要/发布/重开已通过；该旧大K测试在失败断言之后的独立复读没有执行，不应声称该部分也通过。
+
+证据：candidate-l-full-repair-native/k-trace-result.json、L-rejected-summary.json；candidate-m-repair-window4-native/result.json、large.log、exit.json。M未现场部署。§21.25“当前K”是当时快照，由本条后续M/N状态取代；H-clean封存发送包和原分辨率GPU100MB包均未改变。
+
+### 21.27 用户批准预算约束动态名额：N 单变量恢复对照和真实内存准入边界通过，正式默认仍为8
+
+用户明确批准：取消实验候选固定8个名额，改为由现有1GiB等资源预算约束的有限动态名额，正式默认策略不变。不是无限内存，也不是给发送端增加ACK。先按源码精确估算后，实际用原 Wirehair backend 验证：6MiB/1629B块可创建24个实例，合计预留1069607184B，第25个被拒；15MiB可创建10个，预留1038519520B，第11个被拒。销毁一个后能在相同预算内重新分配，全部释放后计数与预留归零。这里是保守准入预算，不是进程working-set测量。
+
+实现仍使用原 OuterFecDecoderResourceManager 的每实例512MiB和合计1GiB检查，未修改估算公式。实验policy把计数兜底交给已有maxSegmentCount=65536；这是防止大量微小对象无界增长的有限元数据上限，不表示预分配或承诺同时创建65536个codec。正常 MakeUnifiedReceiverResourcePolicy/GUI默认仍8，orphan64块/4MiB、resume256MiB、其他协议/资源字段逐项与默认相等。
+
+审阅发现两处必须同步修复的兼容问题：DecoderResumeStore::Open会拒绝任何大于8的policy；CountActiveSegments使用固定8元素数组，即使只改外层名额也不能正确保存9个活动段。现在只有显式opt-in允许预算约束名额；计数改为经过Session资源验证后的每ordinal一bit（通常上限8KiB），按接纳/完成转换更新，避免每个包扫描全部活动缓存。journal版本、字节格式、CRC、冲突拒绝和完成语义不变。旧/默认模式重开大于8活动段的实验journal仍明确拒绝且原文件字节不变，不会静默抛弃第9段。
+
+同一未改动的M Sender，13×6MiB=81788928B，30逻辑fps，无视觉栅格但使用实际FEC/Receiver/存储和独立整文件复读，单变量对照：
+
+| 丢帧模型/加入位置 | 固定8个总帧数 | N预算约束总帧数 | 固定/N活动峰值 | 固定/N FEC deferred | 固定/N orphan拒绝 |
+|---|---:|---:|---:|---:|---:|
+| 保留每4帧中的1帧，join15000 | 27505 | 27505 | 8/8 | 0/0 | 496/496 |
+| 保留每5帧中的1帧，join0 | 37116 | 24481 | 8/13 | 7217/0 | 9836/0 |
+
+五分之一样本减少12635帧（34.041923%），实验峰值预留579370558B=552.530821MiB、全部resource/orphan拒绝0，drought7779降至3224。四分之一晚加入完全无收益且postJoin12505仍未达12000；证明名额策略只改善实际被名额限制的情况，并非通用吞吐倍增。四个运行均内部whole digest/publish/reopen通过，额外独立复读BLAKE3通过。同一输入摘要一致，发送调度代码片段哈希相同；没有Receiver反馈改变发送计划。
+
+首批N策略/默认门3项209断言通过；N真实分配边界、恢复journal、默认拒绝/损坏/缩小预算及完成后名额回收等定向9项2751断言通过；A/B恢复1项含四运行71断言通过。第一版仅有测试入口。后续显式CLI `--budget-bound-decoders` 正在接通：仅允许live GrayFast，禁止Replay/capture-only/正式测量混用，默认关闭，报告将明确标记budgetBoundDecoderAdmission。CLI及更新后的原生运行验证以其独立后续记录为准，不能把此处无像素结果升级为现场速度结论。
+
+证据根：candidate-n-budgeted-decoders-native，包含before/prepared/build身份、N-native源码快照、result.json、recovery.log、policy.log、reservation-journal.log及各exit记录；资源估算独立留在decoder-slot-budget-readonly-20260914.json。N尚未现场部署，两个完整指定文件的最好已验证合计仍为H-clean的1小时49分38.282秒；原分辨率适配、184.15秒重复窗口等待和原954MB事件唯一根因仍未全部解决。
+
+
+### 21.28 N显式CLI与原分辨率100MB实传完成：安全门通过，但当前四段窗口没有名额收益
+
+N的--budget-bound-decoders只允许live GrayFast，默认关闭；Replay/capture-only/正式measurement对象混用被拒。审阅发现CLI会自动挂测量记录器，导致实验配置虽解析成功却必然在Start被拒，已修正为实验模式不自动附着正式测量记录器；阶段资源计数仍独立输出，顶层budgetBoundDecoderAdmission始终可见。不是伪造正式测量资格。最终runtime/恢复状态/报告/安全回归13项2838断言通过；CLI九项检查通过，前后焦点一致。另一次新旧恢复组合回归有413断言、412通过、1失败，唯一失败仍是M的postJoin12505<12000，不放宽、不跳过。
+
+隔离新包candidate-n-gpu-private01保留原H-clean Encoder不变（SHA256 36db97a586330e91522081b4abf36dee19fa9a658e58bba9f8972dedc06f750c），以当前CLI/common及既有私有GPU/scalar对象重链Decoder（8bccf4c2f4bd27eaaf7a0888ce4531001351120d6036b7cb074c2eb37d9718dd），42项链接输入逐项保存身份。仍是混合来源私有包，全Profile私有0.75尺度门尚未分域，未认证任意分辨率或GUI发布。
+
+实际先运行nl0914-budget-gpu-smoke-f30：1MiB，6940ms，全部内部发布门及两次独立SHA256通过。随后nl0914-budget-gpu100-f30-s6完成100000000B、16个6MiB目标段、30fps、H空间交织，native464746ms=7分44.746秒。内部whole digest/rename/final reopen/published全部true，独立SHA256两次均4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb。Sender与Receiver同Session，源重新准备、resumed=false、稳定性通过；native进程exit0。这里没有正式measurement对象，因此不把缺失字段写作false或0，也不是Step1认证。
+
+原远端2560×1600@240前后不变，Decoder只捕获右侧DISPLAY2；焦点108596712前后相同。Receiver56088退出；远端Encoder21256经owned stop后收集证据，最终list-runs liveProcesses=[]。计数上限65536、总预留上限1073741824B；实际peakActive4、peakReserved178267864B，unique61400、alreadyCompleted43739、ready16、全部resource/deferred/orphanQuota/conflict0；队列峰3、stale1、GPU359513822×100ns、FEC CPU1380358418×100ns，未隐去有界丢弃。
+
+与旧原分辨率同一100MB私有包463633ms相比，本次多1113ms（+0.240061%），没有测出提速。两次峰值均只有4个codec，故不能将N的合成五分之一样本34.04%收益泛化到此链路。此现场比较还混有journal bitmap及记录器接线差异，不是count-only因果试验。新journal再次证明active=0、unique及verifiedRaw不变、alreadyCompleted持续增加的三个>=10秒区间，合计184480ms；它是同机诊断采样时间，不替代native整文件时间。
+
+下一步只针对已确认的首轮重复airtime做隔离小样本调度实验，保留后续完整修复预算与全部接收资源门，再评估是否现场部署。N未重测完整Medium/Big，当前最好完整合计仍为H-clean的6578282ms。证据：candidate-n-budgeted-decoders-cli/reachability-regression.log、recovery-regression.log、private-link-inputs.json；candidate-n-gpu-private01/build-identity.json；nl0914-budget-gpu100-f30-s6/receiver/report.json、independent-verification.json、repeat-only-intervals.json；budget-original-100-stage01；candidate-n-original-gpu-100-comparison.json。复核脚本verify_budget_original_100.py采用create-only，不能覆盖原证据重跑。
+
+
+### 21.29 O短首轮预算：真实100MB耗时下降29.46%，但四分之一接收率退化，不替换默认
+
+针对N现场再次确认的184.48秒重复窗口等待，O在显式spatial GrayFast实验内把每段初始访问累计airtime目标设为原值的65%，仍使用checked乘加与向上取整；后续每次修复访问保持M的完整损耗预算，不跟随65%缩减。仅>12段的graduation文件适用；小文件barrier路径不变。SenderFrameBuilder的paired native版本与CLI接线版本逐字节（归一化换行）一致，SHA256 ef6285b53b209c7c1a3a10c67cf8a8d8c062c49defc0efc58a81686778ff0917。没有Decoder反馈、未使用ID租约记功或wire/Profile改变。
+
+13×6MiB、同一N预算模式、真实FEC/Receiver/journal/publish并额外独立复读BLAKE3，八运行仅改初轮百分比：
+
+| 保留帧模型/加入位置 | 100%总帧数 | 65%总帧数 | 100%/65%最长无新方程帧 | 结论 |
+|---|---:|---:|---:|---|
+| 每5帧保留2帧，join0 | 10637 | 7917 | 1614/254 | 均首轮完成，减少25.57%，均资源拒绝0 |
+| 每4帧保留1帧，join0 | 12349 | 20173 | 247/2775 | 65%反而慢63.36%，不能替换默认 |
+| 每5帧保留1帧，join0 | 24481 | 20401 | 3224/1864 | 均第二轮内完成，减少16.67%，资源拒绝0 |
+| 每4帧保留1帧，join15000 | 27505 | 27645 | 247/259 | 无收益；首次Session建立前orphan拒绝496/1092，保留 |
+
+八运行137断言通过只是上述功能/指定较好链路性能门，不意味着所有模型都更快。额外用更严格的固定8名额验证压力：quarter/fifth分别20801/32696帧最终完整恢复，peak8、预留356535728B；FEC deferred5894/4712、resource7991/6373、drought3147/7779，不能隐藏这些等待或宣传名额瓶颈已全面消失。该34断言验证的是拒绝后有界最终恢复，不是无停顿性能认证。M旧postJoin12505<12000失败仍保留。
+
+正式默认未变；新增Encoder显式--grayfast-short-initial-airtime必须同时选择--grayfast-spatial-interleave，仅GrayFast、拒绝重复/携带值/不兼容profile及正式measurement。报告单独输出grayFastSpatialInterleave与configuredInitialAirtimePercent，不伪造Receiver进度；GUI没有自动启用。最终10项558断言覆盖原spatial路径、显式启动接线、报告与N模式；CLI九项解析检查通过。源码/测试定向构建通过，Qt部署VCINSTALLDIR警告原样保留。全局M性能失败与分辨率边界仍使工作树不是发布候选。
+
+O私有包candidate-o-gpu-private01仅替换Encoder及其当前构建依赖（Encoder SHA256 48b1d14b2af793a74805368fcc2c110d2ffe22054a08c88fbe31a5a5c1a8f46f），Decoder保持已验证N的8bccf4c2f4bd27eaaf7a0888ce4531001351120d6036b7cb074c2eb37d9718dd逐字节不变。实际nl0914-shortinit-gpu100-f30-s6在原远端2560×1600@240、真实DISPLAY2 WGC/GPU、30fps、16个6MiB目标段完成100000000B。native327833ms=5分27.833秒，相比N同样本464746ms减少136913ms=2分16.913秒（29.459748%）。两个Sender停止时都在Carousel pass0；M新增后续全修复分支未在此完成前执行。但仍是私有不同Sender构建的单次比较与native单变量证据互证，不是重复统计或正式Step1认证。
+
+内部whole digest/rename/final reopen/published全部true，独立SHA256两次均4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb，BLAKE3=32d85d4af2aca6c97e3a7104a47163701708dc554f24b47f900349afa1ea4afc；同SessionId=17fad8e2d59d190af7b10d5b738fd18d，SessionTag=47f32eada0acee3e。Sender fresh preparation/resumed=false/源稳定通过，报告确认为65%显式策略。资源/FEC deferred/orphanQuota/conflict全部0，peak4、178267864B；unique61400、alreadyCompleted12266（N43739）、ready16。重复等待区间同机采样合计48190ms（N184480ms），而UniqueVisualFPS仍13.522029，支持收益来自减少已完成段发送，而不是伪称捕获FPS提高。
+
+保留非零诊断：unifiedTelemetry BaseLuma 87480次FEC评估、21次擦除，CRC/identity失败0；不要用旧journal聚合fecFailures=0覆盖此逐lane真值。捕获到达5066/交付4889/drop176，队列峰2/stale2。GPU236367287×100ns、post-GPU FEC CPU829129833×100ns。Receiver20144退出，远端23404在验证后WM_CLOSE/forced=false（既有exit1分类保留），焦点625612094前后相同，原模式不变，最终liveProcesses=[]。
+
+当前进入完整指定文件检查点：新field_named_file_run_short_initial.py从H-clean另存，保持3600s单Receiver上限、Big仅一次正常deadline后的同目录原生resume、原有所有摘要/同Session/clean source门；不更改显示模式。进度观察改用已验证v3完整资源计数。额外Sender/resume/实验模式证据门31/21/20项通过。已启动nl0914-shortinit-medium-f30-s15，100MB改善不能直接外推273806498B Medium或1059917774B Big的结果。当前最好完整双文件合计仍为H-clean的6578282ms，待两个新完整文件真正发布后再更新。
+
+证据：candidate-o-initial-airtime-native/result.json与recovery.log；candidate-o-short-initial-cli/runtime-regression.log、resource-pressure.log、parse-checks、sender-builder-equivalence.json；candidate-o-gpu-private01/build-identity.json；nl0914-shortinit-gpu100-f30-s6/receiver/report.json、independent-verification.json、repeat-only-intervals.json；short-initial-original-100-stage01；candidate-o-original-gpu-100-comparison.json；candidate-o-named-*-contract.json。纯像素payload、摘要/发布/重开、资源边界及非本机目标全部保持。
+
+
+### 21.30 O完整Medium已验证14分20.828秒，开始完整Big；尚未更新双文件合计
+
+nl0914-shortinit-medium-f30-s15已经完成用户远程桌面上的完整TestMediumFile.bin，273806498B、18段、15MiB目标段、30fps。实际原远端2560×1600@240、右侧DISPLAY2 WGC/GPU，O Encoder与冻结N Decoder均不变。原生Receiver runtime860714ms；用于与之前H-clean同口径比较的本机harness进程时间线860828ms=14分20.828秒，独立外部校验完成时间线861000ms。H-clean旧同文件1297610ms，因此组合候选减少436782ms=7分16.782秒（33.660499%）。这是完整文件端到端比较；旧H使用临时1080p而O使用原分辨率私有GPU/N/短首轮组合，不作单因素归因或正式Step1认证。
+
+18段全部验证，单Receiver epoch、resumeLoaded=false，内部whole digest/rename/final reopen/published全部true；额外第二次独立SHA256为28fd5ead99bf7fe3526e38cd1a44364b3c02792323d01840f2f4bdc38ebc1bb0，BLAKE3=aed722a6c5be94f72210c3eff05d526001aca17a4386a6acd7a94da416a5bf25。同SessionId=46bfc2a4ebc10484e01c8d323c36d650、uint64 SessionTag=4094833142217342664；Sender clean source/resumed=false/稳定性通过；两端实验策略报告验证通过。stdout先打印的success=false/senderCleanStartVerified=null是等待远端收尾元数据的中间状态，最终result.json的success/senderCleanStartVerified/experimentalPolicyVerified均true，不能只看前一条stdout误判失败。
+
+资源/FEC延期/orphanQuota/conflict全部0；活动峰6、预留峰560745322B，仍低于原1GiB总预算，有限计数上限65536。unique167658、alreadyCompleted27227、ready18、identical63；BaseLuma 232308次FEC评估、69次擦除，CRC/identity失败0，队列峰4/stale2，非零项未省略。阶段GPU627296814×100ns、Poll/FEC区间2199090079×100ns（这些QPC区间不是独占CPU核时间，详见只读研究补记）。Receiver18524已退出；远端22492经WM_CLOSE/forced=false退出，原模式前后相同、焦点625612094相同，最终liveProcesses=[]。
+
+证据：nl0914-shortinit-medium-f30-s15/result.json、independent-verification.json、receiver/epoch-0/report.json、sender-clean-start-verification.json；nl0914-shortinit-medium-f30-s15-stage；candidate-hclean-o-medium-comparison.json。重放/复核入口verify_short_initial_named.py --case medium为create-only，原证据不可覆盖。
+
+只有在以上完整Medium成功后才启动nl0914-shortinit-big-f30-s15；使用同一封存包、原分辨率、完整1059917774B TestBigFile.bin、15MiB段和30fps。继续保留原3600s每Receiver上限，只有达到普通deadline且满足原同Session/native resume验证时才允许一次重开，不因错误或无进展退出而自动重试。Big尚未发布，O双文件合计未知；H-clean的6578282ms仍是完整同候选双文件历史基线，不把新Medium加旧Big拼成O成绩。
+
+
+### 21.31 O完整Big及同候选双文件已验证：合计1小时11分52.469秒，比H-clean缩短34.44%
+
+2026-09-14 14:22后完成独立复核。nl0914-shortinit-big-f30-s15使用与Medium相同的封存O包、原远程2560×1600@240、真实DISPLAY2 WGC/GPU、30fps、15MiB目标段，完整传输1059917774B TestBigFile.bin。单个Receiver epoch0/exit0/Completed，native3451505ms，同一本机harness进程时间线3451641ms=57分31.641秒，第二次外部读取前的首次独立校验时间线3452344ms。没有达到3600s限制，不需要重开或resume，也没有修改原deadline、自动重试失败运行或缩小输入。
+
+68段及1053093783B编码段字节完成；whole digest/rename/final reopen/published全部true。两次独立SHA256均20b000afa567a66dd536b22946102a465575f77299a42ffc2fcc2116f9808e76，BLAKE3=1d5c9d9c7aa1836d9d3953808667ec2b59981b372987e2327e53f1f573f6058b。Sender/Receiver的SessionId=fae434178ffe25d775da927471e0ffc7、SessionTag=12651947178526901568相同；Sender fresh preparation/resumed=false/源稳定、显式65%及N实验资源策略均通过。正式measurement没有附着，不冒充Step1认证。
+
+| 完整文件 | H-clean同机进程时间线 | O同机进程时间线 | 减少 |
+|---|---:|---:|---:|
+| Medium，273806498B | 1297610ms | 860828ms | 436782ms，33.6605% |
+| Big，1059917774B | 5280672ms | 3451641ms | 1829031ms，34.6363% |
+| 合计，1333724272B | 6578282ms | 4312469ms | 2265813ms，34.4438% |
+
+合计是同一O候选的两个完整文件，不拼接旧候选Big；由1小时49分38.282秒降到1小时11分52.469秒，省37分45.813秒。以这一本机文件完成计时计算的合计verified raw/encoded goodput分别309271.620/307525.158 B/s，但不是正式RunReport.3.measurement字段。H-clean为临时1080p，O为原分辨率、私有GPU、N和短首轮组合，并且运行时段不同，因此这是整组方案的观测改善，不是单因素随机A/B或任意链路保证。
+
+Big资源拒绝/deferred/orphanQuota/conflict全部0，peakActive4、peakReserved415407808B，1GiB及其它资源门未变。unique646505、alreadyCompleted128552、identical175、ready68；BaseLuma954576次FEC评估，339次擦除，CRC/identity失败0；UniqueVisualFPS13.309320，队列峰7/stale7。非零擦除和有界队列丢弃未隐藏；资源0不等于视觉通道从未停顿。GPU2539309502×100ns、Poll/FEC区间9888695661×100ns是各自QPC区间，不能当成独占CPU核耗时相加。两份文件实际codec峰值均未超过8，所以不能把本轮提速归功于放开固定名额。
+
+Receiver60612已退出，远端12928在发布核验后由本轮harness按原WM_CLOSE流程停止，forced=false；既有Encoder以exit1/Failed记录外部DataWindow关闭的分类保留，不改写成正常用户Stop。远程模式前后相同、最终liveProcesses=[]。Big本机前台句柄两端样本625612094→1046484746不同；本轮未执行焦点/鼠标/键盘操作，不能因此推断是谁切换，也不能宣称全程焦点不变。该事实完整保存在result及independent-verification中。
+
+正式默认仍不变。O在quarter接收率native模型中的退化、M晚加入12505<12000失败、私有GPU全局scale下限尚未按Profile收口及任意分辨率边界仍未解决，不能将本检查点当作发布候选或原954MB事故唯一根因证明。下一步只做≤100MB的隔离证据实验与定向回归；先封存当前最好完整结果，不在没有新机制证据时重跑整份Big或反复微调空口百分比。
+
+证据：nl0914-shortinit-big-f30-s15/result.json、independent-verification.json、receiver/epoch-0/report.json、sender-clean-start-verification.json；nl0914-shortinit-big-f30-s15-stage；candidate-hclean-o-big-comparison.json、candidate-hclean-o-named-files-comparison.json。verify_short_initial_named.py --case big和aggregate_short_initial_named.py均create-only且已运行；再次验证应使用新证据根，不能覆盖原记录。合计脚本首次因误假定EXE位于包顶层而在写结果前停止，随后改为读取build-identity.json内实际相对子目录并校验hash后通过，未改任何原运行结果。
+
+
+### 21.32 P源码化候选：离线定向通过，1MiB真实捕获启动失败；新增全屏适配需求待明确呈现边界
+
+P把已验证的私有灰阶forward-sampling CPU/GPU分支整合到正常CMake构建，并新增绑定CRC有效同帧Bootstrap及精确Profile/Layout的几何入口；原geometry-only入口及SC6/BlankControl的1.0下限不变。正式默认、wire/FEC、摘要/安全发布/重开、原1GiB等资源预算均未改变。定向结果为Gray 13例2181断言、SC6 CPU 18例495140断言、GPU Unified 8例2226断言、shader 1例71断言通过；正常产品库链接的独立原始像素矩阵128/128通过，但这些结果不代表真实CaptureDemodulator入口或任意缩放已通过。
+
+candidate-p-source01使用冻结O Encoder和正常构建Decoder e3adf7694c1efc4f15534caf722a2a7dece9f44e956179f63e00b7da24f5c838。nl0914-scoped-gray-smoke-f30的1MiB非本机验证在原2560×1600@240、实际DISPLAY2上停于WaitingForBootstrap；120065ms后按既有120秒无进展规则Stopped/exit1，1821次Bootstrap尝试、0成功、0恢复字节、未发布。WGC仍交付捕获帧，不能把它当成捕获源停止，也不能把离线通过升级成P现场成功。
+
+收尾后审查发现capture_demodulator.cpp::DecodeUnifiedBootstrap第230行仍使用geometry-only入口，漏接了已验证Bootstrap的灰阶专用尺度许可；这是源码确认的集成缺口，与现场Bootstrap全拒绝一致，仍需专门的Capture adapter回归和新现场样本证明修复。第1313行则处于BlankControl补充带分支，必须保留其原几何下限，不能盲目批量替换。当前测试未覆盖这个低尺度真实捕获入口，记录覆盖缺口，不修改测试门槛或全局放宽SC6来掩盖问题。
+
+Receiver已退出，远端Encoder22992由WM_CLOSE停止且forced=false，最终liveProcesses=[]；远程分辨率未改变，本机前台句柄首尾样本相等，但不由首尾样本推断全程焦点状态。未启动P的100MB样本，失败包与所有原始证据保留；后续必须用新包、新runId重建复测。O完整双文件4312469ms的已验证成绩保持，不受此次失败替代或拼接。
+
+用户随后提出1080p、2K、4K等远程分辨率都应完整内容铺满全屏，而不是1:1居中大面积灰边。现源码ComposeRemoteVisualFullscreenBgra确实填充灰色背景后居中复制1920×1080；当前远程2560×1600还是16:10，需明确无裁切铺满的横纵缩放行为，不能仅按16:9整数放大处理。先答复可行性与吞吐边界，尚未修改呈现合同。纯像素、无ACK、不改Citrix/网络/显示模式和安全门继续保持。
+
+证据：candidate-p-profile-scoped-gray/final-regression/directed-regression-result.json、offline-pixels/phase-matrix-result.json；candidate-p-source01/build-identity.json；nl0914-scoped-gray-smoke-f30/result.json、receiver/report.json、receiver/journal.jsonl；nl0914-scoped-gray-smoke-f30-stage；CHECKPOINT_20260914_P_SMOKE_FAILED_FULLSCREEN_QUESTION.json。原run_profile_scoped_gray_original.py --case smoke已执行且证据create-only；不得复用原tag覆盖失败样本。
+
+
+### 21.33 P2捕获入口已复现修复，正常源码包完成原分辨率1MiB及100MB；全屏铺满获用户确认
+
+P2先新增真实分阶段CaptureDemodulator测试，不直接向Demodulator注入已接受的Bootstrap。修复前正例在bootstrapStage.gpuWorkSubmitted断言失败，负例通过，原测试exe退出42（不是PowerShell外层展示的1）。随后仅把DecodeUnifiedBootstrap中的几何入口参数从observation.geometry改为经过同帧验证的observation，原BlankControl补充带路径不改。修复后2例1023断言通过；覆盖GrayStates/GrayFast独立0.85线性缩放及分数偏移、冷/热几何、两阶段GPU退休、18块逐字节，以及SC6/BlankControl低尺度、灰阶0.74、错误绑定和更严格调用方尺度拒绝，未放宽任何测试断言。测试专用变换器下界由750扩到700 permille仅用于生成应拒绝输入，不代表解码支持范围扩大。
+
+受影响定向回归：Gray 13例2181断言、SC6 CPU 18例495140断言、Capture/Unified GPU 19例139184断言、shader 1例71断言通过。原128项像素矩阵作为未改变的标量/直接GPU分支证据保留并标明来源，不把它冒充新增Capture入口覆盖。封存candidate-p2-source01：Encoder仍为O的48b1d14b2af793a74805368fcc2c110d2ffe22054a08c88fbe31a5a5c1a8f46f；正常CMake Decoder为c4b60245fdf04fdafa276bc251f1a273ee0a3d628b0284c3451a281fa442bb8d，无私有生产object替换。
+
+nl0914-capture-gray-smoke-f30在原2560×1600@240、实际DISPLAY2 WGC/GPU完成1048576B，native8488ms。随后nl0914-capture-gray100-f30-s6完成100000000B，native329033ms=5分29.033秒；相对O私有Decoder的327833ms增加1200ms（0.36604%），没有测出提速，价值是可正常重建的原分辨率基线。同冻结O Sender、30fps、6MiB段、显式65%首轮及预算约束名额，未同步修改呈现。两次均whole digest/rename/reopen/published以及两次外部SHA256通过。100MB同SessionId=d89c5e0be751993de12112501fc6b1f6，SessionTag=413165174501534701；SHA256=4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb，源稳定/fresh/resumed=false通过。
+
+100MB资源拒绝/deferred/orphanQuota/conflict全部0，活动峰4、预留178267864B；91764个FEC评估有27次擦除，CRC/identity失败0，未隐去。捕获几何实测scaleX=0.8508275819、scaleY=0.8514086674，仅支持该原分辨率链路，不是任意缩放认证。两次Receiver及注册Sender均已退出，WM_CLOSE/forced=false，远端显示模式不变、liveProcesses=[]。100MB前台句柄首尾不同，运行未执行输入或焦点操作，不能推断全程不变。P2未重测完整Medium/Big；O双文件4312469ms仍是最好完整成绩。
+
+封存脚本初次误断言红测exit1，在复制包前停止；核对实际exit42及原失败断言后修正，原红测文件未改写。相关差错单独登记，不伪装成测试通过。
+
+用户明确确认：16:10等屏幕允许横纵不同比例，但内容完整无裁切、不留外围灰边地铺满。Q因此开始独立改动Unified-family fullscreen的物理画布合成，保留canonical wire内容、旧LF4居中路径和所有资源/恢复门；不增加每帧字节、不改Citrix/网络/显示模式。已加入1080p、2K、2560×1600、4K及奇数尺寸的全像素映射/源像素覆盖测试，以及实际编码图案经生产合成后的独立解码测试；当前只是构建中，尚未宣称Q本地或远控通过。P2封存基线不再修改，后续Q仅先替换Encoder作隔离比较。
+
+证据：candidate-p2-capture-gate/red-test.log、green-test.log、final-regression、seal-preflight-correction.json；candidate-p2-source01/build-identity.json；nl0914-capture-gray-smoke-f30与nl0914-capture-gray100-f30-s6的result/report/independent-verification及stage收尾；candidate-o-p2-original-100-comparison.json；CHECKPOINT_20260914_P2_SOURCE_FIELD_PASS_Q_BUILD.json。Q设计与当前来源快照见candidate-q-fullscreen-fill/REVIEW_AND_PLAN.md。参考Microsoft官方D3D像素中心规则：https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules；仅用于选择可复现的呈现采样实现，不作为吞吐改善证据。
+
+
+### 21.34 Q无裁切全屏已通过本地及原分辨率100MB恢复，但30fps整文件耗时显著退化，继续保持目标而非宣称提速
+
+用户已确认横纵独立的完整铺满效果。Unified-family的单屏全屏生产路径现在将canonical 1920×1080图案按物理像素中心point映射到整个原显示尺寸；固定3840上限的列偏移表与重复目标行复用，不新增帧级heap或修改Display/Citrix/网络设置。旧LF4居中测试和普通非全屏路径保留。canonical字节/每帧容量、FEC、摘要/发布/重开以及所有资源/冲突门均不变。
+
+全像素坐标/颜色/源覆盖测试覆盖1920×1080、2560×1440、2560×1600、3840×2160、2561×1601、1920×2160；独立CPU解码覆盖SC6/GrayStates/GrayFast×4尺寸×2相位=24组，共3例1511断言通过。GPU真实分阶段Capture adapter再覆盖同样24组，并重跑P2正负入口；最终3例3734断言通过。首次GPU新测试误用库默认128MiB而非产品既有Unified 256MiB预算，在4K准入失败；对照改动前产品源码确认256MiB后使测试匹配产品，同时保留4K/128MiB拒绝和requiredBytes-1拒绝、失败输出不变的断言，未改生产预算。初次失败证据保留，不当作产品4K通过记录。
+
+封存candidate-q-fill01：正常构建Encoder SHA256=1106eacf45760c6c4c722f14ef78e60224e0a5af74b91b4fcf1d520e4bfb519d；Decoder保持P2 c4b60245fdf04fdafa276bc251f1a273ee0a3d628b0284c3451a281fa442bb8d逐字节不变。nl0914-fill-gray-smoke-f30实际1MiB native9386ms，全部最终门及第二次独立SHA通过。实测捕获尺度由0.850826×0.851406变为1.134363×1.261013；横纵倍率1.333248、1.481094与原远程2560×1600对1920×1080的铺满比例相符，面积约1.974666倍。它证明实际像素中的放大/非等比适配，不意味着每帧字节增加。
+
+随后nl0914-fill-gray100-f30-s6实际100000000B完成，native782615ms=13分2.615秒；P2同源/同冻结Decoder/同30fps/同6MiB段的旧1:1呈现为329033ms=5分29.033秒。因此Q慢453582ms（137.85304%），不是提速。两次都是同一主机上的完整原生接收计时，不作跨主机减法或统计显著性宣称。Q同SessionId=70b868e9ff967d04598e95d3f0f484a6，SessionTag=8926549075593541125；whole digest/rename/reopen/published、源fresh/稳定/resumed=false、两次外部SHA全部通过，SHA256=4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb。
+
+| 同100MB观察 | P2居中1:1 | Q完整铺满 |
+|---|---:|---:|
+| Sender observedSubmittedLogicalFps | 29.876792 | 29.217494 |
+| Receiver UniqueVisualFPS | 13.479116 | 7.495648 |
+| 峰活动codec | 4 | 16 |
+| 峰预留bytes | 178267864 | 708984560 |
+| 已完成段重复symbol | 12292 | 37277 |
+| Base FEC擦除/评估 | 27/91764 | 41/136404 |
+| 资源/deferred/orphanQuota/conflict | 0/0/0/0 | 0/0/0/0 |
+
+Q活动codec峰16实际超过原固定8，但仍在现有1GiB预算内。它避免名额拒绝，不等于保证短等待或长文件最佳速度。整帧视觉到达率下降，首轮不足并进入修复，再与既有重复空口窗口叠加；不能把它误判成解码器死锁。两次GPU每评估耗时约4.88/5.26ms，post-GPU Poll区间约16.68/14.72ms（非独占CPU），CPU均未显示翻倍开销。一次受控只读collect获取当前run的encoder-journal元数据，显示Sender仍约29.18fps；未传payload、像素/尺度给Decoder，也未改变活动Sender参数。这些证据把下一步重点放在呈现到实际捕获像素之间的视觉刷新/发送节奏，但尚不能唯一归因到Citrix某项机制或设置。
+
+Q100 Receiver42744已退出，远端14392由原WM_CLOSE流程退出且forced=false；原显示模式前后不变、最终liveProcesses=[]，前台句柄端点相等（不推断全程状态）。没有重测完整Medium/Big；O已验证完整合计4312469ms仍是历史最好，不能拿Q的成功恢复覆盖性能退化。
+
+继续保留用户要求的全屏目标，而不是退回中间小画布来掩盖退化。下一步先用25MB固定源/固定Q包的发送FPS差分，观察有效像素帧率与最终文件时间；不是改远控/网络设置，也不是在线ACK调度。已启动nl0914-fill-gray25-f15-s6，600秒普通截止、120秒无进展保护均保留；样本≤100MB且不在测量同时运行构建或重负载测试。
+
+证据：candidate-q-fullscreen-fill的before/REVIEW_AND_PLAN、composition-decode-initial、gpu-fullscreen初次失败、gpu-budget-test-correction、gpu-product-budget最终通过；candidate-q-fill01/build-identity.json；nl0914-fill-gray-smoke-f30与nl0914-fill-gray100-f30-s6的result/report/journal/independent-verification及stage；candidate-q-fullscreen-smoke-geometry-verification.json；candidate-p2-q-original-100-comparison.json、candidate-p2-q-100-stage-attribution.json；live-sender-journal/collection-note.json。Q100原运行与证据create-only，不覆盖重跑。
+
+
+### 21.35 Q全屏25MB固定源FPS差分：15与30都约7.5有效帧，未提升通道上限，不据此外推大文件
+
+全屏需求、原远程2560×1600@240、同一Q Encoder/P2 Decoder和6MiB目标段不变，仅改变Encoder配置FPS。nl0914-fill-gray25-f15-s6完整25000000B用125042ms=2分5.042秒，实际Sender14.990027fps、Receiver UniqueVisualFPS7.659856；nl0914-fill-gray25-f30-s6同文件用127357ms=2分7.357秒，Sender29.031900fps、Receiver7.493925。15fps短2315ms（1.817725%），单次小差异，不宣称统计显著收益；绝对有效帧率仍在约7.5，不能将它说成解决全屏的视觉刷新瓶颈。
+
+两次whole digest/rename/reopen/published、源fresh/稳定/resumed=false、同Session和两次独立SHA都通过；SHA256均f9fa18860c159080d860b654903f272846a5af5fa51ba303e39825ce4b53c3e4，BLAKE3均bb94edaaffea3132de5ae51d5878e2afc8720f7732aff82dc9597fd42fa5f360。活动峰均4、所有资源/deferred/orphanQuota/conflict为0；原预算不变。两次两端均已收尾，原模式不变、liveProcesses=[]。15fps前台端点相同，30fps端点不同；未执行焦点/鼠标/键盘操作，不归因也不宣称全程不变。
+
+这个25MB文件只有4段，不触发>12段的O首轮65%分支，因此不能直接否定或肯定100MB/大文件改15fps后的调度收益。结论只限于：降低配置FPS没有明显抬高当前全屏链路绝对可见帧率。下一步不盲扫其它FPS、不重新跑整份Big；先用已记录的真实接收率检查大文件首轮/修复空口分配，并评估保持完整全屏的更易通过视觉链路的重采样候选。任何新候选仍先走独立本地/捕获字节验证，再≤100MB实屏，不放宽摘要/资源/冲突门。
+
+证据：上述两个run的report/result/independent-verification以及stage收尾；candidate-q-fullscreen-cadence25-comparison.json；复跑入口run_fullscreen_cadence25.py --fps 15或30已经运行、原tag create-only，不应覆盖。当前没有活动实传；post-field-regression正在构建并复核最新工作树，封存Q/P2现场包不变。
+
+收尾补记：最新工作树Encoder/Decoder及受影响测试构建通过；应用4例1521断言、Capture/Unified GPU20例141919断言通过，见candidate-q-fullscreen-fill/post-field-regression。新重链接的Decoder并未替代封存P2参与上述现场比较，不能冒充其新二进制现场认证。所有现场和构建/测试句柄均已终止，最新桥list-runs确认无注册活动进程，保护报告hash未变。续做入口CHECKPOINT_20260914_Q_FULL_FIELD_COMPLETE_CADENCE25.json；整个目标仍未完成。
+
+
+### 21.36 R同有效帧率的大文件离线对照：主要差异是首轮预算，不是15/30发送FPS；全屏100MB单变量现场待结论
+
+Q的25MB只有4段，不能覆盖>12段graduation。R新增测试专用PeriodicHalf擦除枚举，放在原枚举末尾保留既有值；没有改动生产发送调度、wire、呈现、接收资源策略或正式默认。用真实headless Sender/FEC/ReceiverPipeline/journal/摘要发布重开处理13×6MiB=81788928B，并逐段跟踪及独立重读BLAKE3。30FPS每4帧取1、15FPS每2帧取1都只是7.5FPS的确定性合成投影，不是录屏重放或远控吞吐证明。
+
+| 合成投影配置 | 发送帧数 | modeledSenderMilliseconds | 已完成段重复symbol | 活动峰/预留B | 完整Carousel wrap |
+|---|---:|---:|---:|---:|---:|
+| 30FPS，首轮65% | 20173 | 672433 | 35306 | 13 / 579370558 | 1 |
+| 30FPS，首轮100% | 12349 | 411633 | 2126 | 5 / 222834830 | 0 |
+| 15FPS，首轮65% | 10117 | 674466 | 35310 | 13 / 579370558 | 1 |
+| 15FPS，首轮100% | 6199 | 413266 | 2144 | 5 / 222834830 | 0 |
+
+四组真实恢复/独立摘要均通过，resource/deferred/orphanQuota/conflict均0。等有效帧率下单纯减半发送FPS几乎无收益；取消65%使30FPS投影时间下降38.7845%，不是仅靠增加decoder名额。这是首轮不足、整圈等待及完成后重复空口共同放大耗时的窄路径证据，不抹去O在此前较高保留率现场的有效收益或其它late-join反例。新增定向恢复1例121断言、边界及原首轮配置5例51断言通过；现存M late-join性能失败未被修改/复跑成PASS。
+
+随后以原封存candidate-q-fill01的两个exe开始nl0914-fill-gray100-fullinitial-f30-s6：100000000B、原2560×1600@240、30fps、6MiB段、spatial和1GiB预算约束名额不变，仅不传--grayfast-short-initial-airtime，使预先配置的首轮100%。普通1200秒上限/120秒无进展保护保留，未增加反馈。当前只登记启动，最终成绩须等report、摘要、发布、重开及独立SHA。未同时运行构建、native/GPU测试或重负载任务，未修改远控/网络设置，也不碰左屏或输入焦点。
+
+证据：candidate-r-fullscreen-cadence-native的before/built快照、run_native.py、build/bounds/recovery日志和result.json；run_fullscreen_full_initial_100.py及field-wrapper-from-q.diff；独立现场run与stage。后续全屏重采样参考与未验证假设见该stage的RESEARCH_NEXT.md，尚未改变生产过滤算法。
+
+
+### 21.37 R全屏100MB最终通过：同封存二进制取消首轮65%后快32.79%；用户要求停止研究并交付v0.6
+
+nl0914-fill-gray100-fullinitial-f30-s6完整100000000B用525968ms=8分45.968秒；对照Q的782615ms，节省256647ms=4分16.647秒（32.793519%）。同Q Encoder 1106eacf...和P2 Decoder c4b60245...逐字节一致，仍原2560×1600@240、完整无裁切铺满、30fps、6MiB段、spatial和原1GiB预算约束名额；唯一发送调度变量是不传--grayfast-short-initial-airtime而使用首轮100%。候选总超时1200秒比旧1800秒更严格，120秒无进展保护不变，均不是主计时。
+
+同SessionId=3ba9237eb4fcd65c2ae6b44242bb11a7，SessionTag=16731198839444628556；源fresh/稳定、两端无resume复用、whole digest/安全发布/重开和两次外部SHA256均通过。SHA256=4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb，BLAKE3=32d85d4af2aca6c97e3a7104a47163701708dc554f24b47f900349afa1ea4afc。有效帧率7.495648→7.509483，Sender29.217494→29.186912，证明本次收益主要不是提高帧率；已完成段重复symbol37277→4784，峰活动16→4，峰预留708984560→178267864B，资源/deferred/orphanQuota/conflict全部0。相邻本机journal中至少10秒的“仅完成后重复、无新unique”区间合计288156→20971ms，是辅助归因而非替代最终计时。
+
+Receiver53556成功退出。远端3352由已采用的WM_CLOSE流程退出，forced=false，但Encoder报告state=Failed/exitCode=1，原因为DataWindow stopped without an explicit user stop request；这是包外编排关闭窗口的既有停止分类，不隐写成Encoder正常Stop。关闭前完成文件的权威证据是Receiver全部最终门。显示模式不变、桥liveProcesses=[]。前台句柄端点不同，未执行输入或焦点操作，不承诺全程前台相同。
+
+尚未重测R的完整Medium/Big；O旧居中呈现完整合计4312469ms保持历史最好，不归给R。R的525968ms仍比P2旧居中329033ms慢，因此全屏刷新瓶颈未解决。用户随后要求马上收尾、v0.6发布包、详细现状及续接prompt；已停止新研究/远控测试，并明确获准仅提交任务内改动、排除三个保护对象、不推送。v0.6新版本二进制与上述0.5源码候选不同，必须单独列出发布验收边界，不能把R实测改名为v0.6实测。
+
+证据：candidate-q-r-fullscreen-initial-100-comparison.json、candidate-q-r-fullscreen-100-journal-attribution.json；run及stage的最终report/result/independent-verification、显示/进程收尾；candidate-r-fullscreen-cadence-native的测试及post-field-build（均完成）；后续交付入口docs/SESSION_HANDOFF_20260914_V0.6.md与docs/NEXT_TASK_PROMPT_V0.6.md，发布实物/验收记录以artifacts/release-v0.6-20260914为准。

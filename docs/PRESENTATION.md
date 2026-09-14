@@ -1,5 +1,17 @@
 # D3D11 Data Window / PBPresentTiming
 
+## 2026-09-14 用户确认的全屏铺满更新（Q 候选，尚非发布认证）
+
+用户确认：在远程机不同分辨率/宽高比下，完整传输图案应铺满目标屏幕；16:10允许横纵独立缩放，不裁切、不留画布外灰边。这取代G22针对Unified-family全屏的1920×1080原尺寸居中行为；下方普通可缩放DataWindow及历史LF4的等比letterbox条款仍适用于各自旧路径，不应拿来否定新用户要求。
+
+当前实现保持1920×1080 canonical wire raster和原display-size合成缓冲：采用物理像素中心的最近点映射，把整个canonical图案独立映射到目标宽、高；复用重复目标行，固定上界列偏移表，不新增帧级heap/scratch。DataWindow仍接收与物理client同尺寸的完整BGRA帧，原无激活窗口、topology/epoch校验、point/无blend及swap-chain检查保留。定位、Bootstrap、校准、保护间隔仍属于有效协议图案，不将其删除。每帧payload容量未增加。
+
+本轮没有改显示模式、Citrix或网络设置；没有通过远程桥向Decoder提供像素/尺度或payload。Decoder从捕获到的同帧标记估算scaleX/scaleY并进行已有Profile、范围、CRC/FEC和资源检查。原SC6与BlankControl的1.0尺度下限不因灰阶适配而放宽。
+
+候选验证包括1080p、2560×1440、2560×1600、4K及奇数合成尺寸的全像素独立坐标/颜色/覆盖oracle，和SC6/GrayStates/GrayFast的24个CPU及24个实际分阶段GPU适配器图案样本。局部合成/离线通过不等于任意远控链路通过；原2560×1600的真实1MiB、100MB及完整文件边界只按会话findings与带身份报告登记。现有屏幕范围/资源上限仍在，未宣称任意更小、更大或旋转屏幕都已完成支持。
+
+实现依据：[Microsoft Direct3D rasterization rules](https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules) 的像素中心约定。这里选用显式整数中心映射是可复现的实现决策，不是非本机吞吐收益的证据。
+
 ## 范围与契约
 
 对应总体设计 §16.3、§21、§37 的呈现部分。本模块提供独立原生数据窗口、

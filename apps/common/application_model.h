@@ -302,6 +302,8 @@ struct EncoderSnapshot
     std::uint64_t transportPayloadCeilingBytesPerLogicalFrame = 0;
     std::optional<std::uint64_t> configuredTransportPayloadCeilingBytesPerSecond;
     std::uint32_t configuredLogicalVisualFps = 0;
+    bool grayFastSpatialInterleave = false;
+    std::uint32_t configuredInitialAirtimePercent = 100;
     std::optional<double> configuredLogicalDwellMilliseconds;
     std::optional<double> minimumObservedLogicalDwellMilliseconds;
     std::uint64_t logicalDwellViolationCount = 0;
@@ -557,6 +559,7 @@ struct DecoderSnapshot
     std::uint64_t outerFecQuotaExceededCount = 0;
     std::uint64_t outerActiveDecoderLimit = 0;
     std::uint64_t outerTotalDecoderByteLimit = 0;
+    bool budgetBoundDecoderAdmission = false;
     std::uint64_t outerActiveDecoderCount = 0;
     std::uint64_t outerPeakActiveDecoderCount = 0;
     std::uint64_t outerReservedDecoderBytes = 0;

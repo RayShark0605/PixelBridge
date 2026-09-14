@@ -412,10 +412,9 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
                 // duplicate admissions there (findings document section 11.7).
                 // The graduation repairBudgetOverride still applies: a Segment
                 // re-opened to reach its exact graduation distance must not
-                // cycle through nine minimal K+20% batches on large files
-                // (954MB at the GUI's default 15 Hz froze the receiver's
-                // progress for ~17 minutes per window while the sender pumped
-                // repair the receiver already had).
+                // overrun its bounded local airtime budget with repeated
+                // full passes. Sent equations are not proof of receiver
+                // completion: frame loss and decoder quotas remain relevant.
                 const SenderCarouselSchedulerStatus equationStatus = CalculateEquationCounts(
                     config.systematicBlockCount, config.wirehair, senderCarouselRepairPercentNumerator,
                     senderCarouselRepairPercentDenominator, senderCarouselMinimumRepairBlocks, 0,

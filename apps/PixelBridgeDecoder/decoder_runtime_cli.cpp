@@ -62,6 +62,7 @@ struct Options
     bool offlineReplay = false;
     bool diagnosticCaptureOnly = false;
     bool stageDiagnostics = false;
+    bool budgetBoundDecoders = false;
     std::wstring remoteProvider;
     std::wstring remoteMetadataPath;
     std::wstring protectedMonitorDeviceName;
@@ -294,6 +295,14 @@ struct Options
             }
             options.backendSpecified = true;
         }
+        else if (option == L"--budget-bound-decoders")
+        {
+            if (options.budgetBoundDecoders)
+            {
+                return false;
+            }
+            options.budgetBoundDecoders = true;
+        }
         else if (option == L"--profile")
         {
             const wchar_t* const value = nextArgument();
@@ -410,6 +419,11 @@ struct Options
     {
         return false;
     }
+    if (options.budgetBoundDecoders && (options.profile != pbapp::VisualProfile::UnifiedGrayFast ||
+        options.offlineReplay || options.diagnosticCaptureOnly || !options.replayOutputPath.empty()))
+    {
+        return false;
+    }
     if (options.offlineReplay)
     {
         if (options.outputDirectory.empty() || options.replayInputPath.empty() ||
@@ -509,6 +523,8 @@ struct Options
 
 void Usage()
 {
+    std::cerr << "product: PixelBridgeDecoder --headless-receive --output-dir DIR --profile unified|unified-gray|unified-gray-fast "
+                 "--roi LEFT TOP RIGHT BOTTOM [--budget-bound-decoders (GrayFast experiment only)]\n";
     std::cerr << "usage: PixelBridgeDecoder --headless-receive --output-dir DIR --backend wgc|dxgi "
                  "--profile direct|shape|remote|remote-lf4 --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..3600 "
                  "[--no-progress-seconds 1..min(timeout,600)] "
@@ -559,6 +575,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.replayOutputPath = options.replayOutputPath;
     config.replayInputPath = options.replayInputPath;
     config.diagnosticCaptureOnly = options.diagnosticCaptureOnly;
+    config.budgetBoundDecoders = options.budgetBoundDecoders;
     config.replayEvidenceVisualProfileId = options.replayEvidenceVisualProfileId;
     config.replayMaximumCaptureFrames = options.replayMaximumFrames;
     config.replayMaximumFileBytes = static_cast<std::uint64_t>(options.replayMaximumMebibytes) * 1024ULL * 1024ULL;
@@ -685,7 +702,12 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     // the unified RunReport.3 carry stageCounters (outer admission, per-stage
     // CPU totals) and captureFlow without enabling diagnostics or retaining
     // pixels. Evidence failure is sticky but never enters admission decisions.
-    config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
+    if (!options.budgetBoundDecoders)
+    {
+        config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
+    }
+    // The experimental admission policy must not acquire formal measurement
+    // eligibility merely by entering through the ordinary headless CLI.
     if (options.stageDiagnostics)
     {
         config.diagnostics = std::make_shared<pbcore::StageDiagnostics>();

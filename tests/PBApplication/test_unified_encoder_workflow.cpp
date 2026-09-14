@@ -1,9 +1,11 @@
 #include "local_desktop_runtime.h"
+#include "unified_decoder_test_support.h"
 #include "encoder_session_store.h"
 #include "sender_carousel_scheduler.h"
 #include "pbmodulation/unified_visual.h"
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/control_plane_receiver.h"
+#include "pbprotocol/descriptor_codec.h"
 #include "pbprotocol/transport_block_codec.h"
 #include "pbreceiver/receiver_ingress.h"
 #include "pbstorage/output_file.h"
@@ -11,14 +13,19 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <thread>
+#include <tuple>
+#include <utility>
 
 namespace
 {
@@ -323,6 +330,195 @@ TEST_CASE("Unified sender stripes eight active Segments while the matching recei
     }
 }
 
+TEST_CASE("GrayFast graduation counts committed equations rather than leased repair IDs",
+    "[application][grayfast-graduation][scheduler][resume]")
+{
+    for (const std::uint64_t initialCarouselPass : {0ULL, 3ULL, 50ULL})
+    {
+        for (const std::uint32_t logicalVisualFps : {15U, 30U, 60U})
+        {
+            INFO("Initial Carousel pass: " << initialCarouselPass << ", FPS: " << logicalVisualFps);
+            pbapp::UnifiedGraduationProbeSnapshot probe;
+            const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduation(13, initialCarouselPass,
+                initialCarouselPass == 0 ? 0U : static_cast<std::uint32_t>(pbapp::encoderDurableIdLeaseSize), logicalVisualFps, probe);
+            INFO(status.message);
+            REQUIRE(status);
+            REQUIRE(probe.completedCarouselPasses == 2);
+            REQUIRE(probe.blockCounts.size() == 13);
+            CHECK(probe.laterSystematicEquations == 0);
+            CHECK(probe.repeatedScheduledRepairIds == 0);
+            CHECK(probe.repairIdsBelowLeaseStart == 0);
+            CHECK(probe.peakResidentEncodedSegmentCount <= pbapp::senderUnifiedActiveSegmentWindowSize);
+            for (std::size_t segmentIndex = 0; segmentIndex < probe.blockCounts.size(); segmentIndex++)
+            {
+                INFO("Segment: " << segmentIndex);
+                const std::uint64_t blockCount = probe.blockCounts[segmentIndex];
+                REQUIRE(blockCount == 161);
+                // Independent tuning vector: ceil(sqrt(161 * 17)) = 53.
+                // The lease accounting assertions remain exact at every FPS.
+                const std::uint64_t expectedInitialEquations = logicalVisualFps == 15 ? 534ULL : logicalVisualFps == 30 ? 1068ULL : 2136ULL;
+                CHECK(probe.firstCarouselEquations[segmentIndex] == expectedInitialEquations);
+                CHECK(probe.firstCarouselSystematicEquations[segmentIndex] == (initialCarouselPass == 0 ? blockCount : 0));
+                CHECK(probe.secondCarouselEquations[segmentIndex] == blockCount / 4ULL + 1ULL);
+            }
+        }
+    }
+}
+
+TEST_CASE("GrayFast two-window initial Carousel visits every Segment before switching to repair-only",
+    "[application][grayfast-barrier][scheduler]")
+{
+    pbapp::UnifiedGraduationProbeSnapshot probe;
+    const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduation(7, 0, 0, 30, probe);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(probe.completedCarouselPasses == 2);
+    CHECK(probe.laterSystematicEquations == 0);
+    CHECK(probe.repeatedScheduledRepairIds == 0);
+    for (std::size_t segmentIndex = 0; segmentIndex < probe.blockCounts.size(); segmentIndex++)
+    {
+        INFO("Segment: " << segmentIndex);
+        const std::uint64_t blockCount = probe.blockCounts[segmentIndex];
+        REQUIRE(blockCount != 0);
+        CHECK(probe.firstCarouselSystematicEquations[segmentIndex] == blockCount);
+        CHECK(probe.firstCarouselEquations[segmentIndex] > blockCount);
+        CHECK(probe.secondCarouselEquations[segmentIndex] > 0);
+        CHECK(probe.secondCarouselEquations[segmentIndex] < blockCount);
+    }
+}
+
+TEST_CASE("GrayFast more-than-quota Segments recover after frame erasures through safe publication",
+    "[application][grayfast-recovery][receiver][publish]")
+{
+    Scratch scratch;
+    for (const auto& [eraseTwoThirds, logicalVisualFps, periodicErasure] : std::array{std::tuple{false, 15U, false},
+        std::tuple{true, 15U, false}, std::tuple{true, 30U, false}, std::tuple{true, 30U, true}})
+    {
+        INFO("Erase two thirds of frames: " << eraseTwoThirds << ", FPS: " << logicalVisualFps << ", periodic: " << periodicErasure);
+        const auto outputDirectory = scratch.Path() / ((eraseTwoThirds ? L"lossy-" : L"lossless-") +
+            std::to_wstring(logicalVisualFps) + (periodicErasure ? L"-periodic" : L"-permuted"));
+        REQUIRE(std::filesystem::create_directory(outputDirectory));
+        pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+        const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(outputDirectory.wstring(), eraseTwoThirds, logicalVisualFps, probe, periodicErasure);
+        INFO(status.message);
+        REQUIRE(status);
+        REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+        REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 256ULL * 1024ULL);
+        REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+        REQUIRE(probe.decoder.finalRenameSucceeded == true);
+        REQUIRE(probe.decoder.finalReopenVerified == true);
+        const auto policy = pbapp::MakeUnifiedReceiverResourcePolicy();
+        REQUIRE(probe.peakActiveDecoders <= policy.maxActiveOuterFecDecoders);
+        REQUIRE(probe.peakReservedDecoderBytes <= policy.maxTotalOuterFecDecoderBytes);
+        REQUIRE(probe.decoder.outerConflictRejections == 0);
+        if (eraseTwoThirds && logicalVisualFps == 15)
+        {
+            // The finite-window margin now absorbs this milder projection
+            // without quota rejection; a separate quarter-rate case below
+            // still exercises the actual saturated receiver and recovery.
+            REQUIRE(probe.deferredResourceBusyCount == 0);
+            REQUIRE(probe.observedLogicalFrames * 2 < probe.senderLogicalFrames);
+        }
+        else
+        {
+            REQUIRE(probe.deferredResourceBusyCount == 0);
+            REQUIRE(probe.completedCarouselPasses == 0);
+            REQUIRE((probe.observedLogicalFrames == probe.senderLogicalFrames) == !eraseTwoThirds);
+        }
+        REQUIRE(std::filesystem::file_size(probe.publishedPath) == probe.decoder.verifiedRawBytes);
+        std::ifstream file(probe.publishedPath, std::ios::binary);
+        REQUIRE(file);
+        std::vector<std::byte> reopenedBytes(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+        file.read(reinterpret_cast<char*>(reopenedBytes.data()), static_cast<std::streamsize>(reopenedBytes.size()));
+        REQUIRE(file.gcount() == static_cast<std::streamsize>(reopenedBytes.size()));
+        REQUIRE(pbprotocol::ComputeBlake3Digest(reopenedBytes) == probe.expectedWholeFileDigest);
+        std::cout << "{\"probe\":\"GrayFastGraduationRecovery\",\"syntheticNoRaster\":true,\"eraseTwoThirds\":"
+            << (eraseTwoThirds ? "true" : "false") << ",\"periodicErasure\":" << (periodicErasure ? "true" : "false")
+            << ",\"fps\":" << logicalVisualFps << ",\"senderFrames\":" << probe.senderLogicalFrames
+            << ",\"observedFrames\":" << probe.observedLogicalFrames << ",\"carouselPasses\":" << probe.completedCarouselPasses
+            << ",\"peakActiveDecoders\":" << probe.peakActiveDecoders << ",\"deferredResourceBusy\":" << probe.deferredResourceBusyCount
+            << ",\"publishedReopenedBytes\":" << probe.decoder.verifiedRawBytes << "}\n";
+    }
+}
+
+TEST_CASE("Unified headless probes use the configured wall clock rather than a fixed 15 FPS clock",
+    "[application][grayfast-clock][scheduler]")
+{
+    for (const std::uint32_t logicalVisualFps : {15U, 30U, 60U})
+    {
+        INFO("Configured FPS: " << logicalVisualFps);
+        const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedHeadlessClock(logicalVisualFps);
+        INFO(status.message);
+        CHECK(status);
+    }
+}
+
+TEST_CASE("GrayFast still recovers after actual receiver quota deferrals under stronger erasures",
+    "[application][grayfast-recovery][receiver][quota][publish]")
+{
+    Scratch scratch;
+    const pbapp::UnifiedGraduationRecoveryProbeConfig config{13, 256U * 1024U, 15, pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter};
+    pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+    const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe);
+    INFO(status.message);
+    REQUIRE(status);
+    const auto policy = pbapp::MakeUnifiedReceiverResourcePolicy();
+    REQUIRE(probe.peakActiveDecoders == policy.maxActiveOuterFecDecoders);
+    REQUIRE(probe.peakReservedDecoderBytes <= policy.maxTotalOuterFecDecoderBytes);
+    REQUIRE(probe.deferredResourceBusyCount > 0);
+    REQUIRE(probe.completedCarouselPasses > 0);
+    REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+    REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+    REQUIRE(probe.decoder.finalRenameSucceeded == true);
+    REQUIRE(probe.decoder.finalReopenVerified == true);
+    REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 256ULL * 1024ULL);
+    std::ifstream file(probe.publishedPath, std::ios::binary);
+    REQUIRE(file);
+    std::vector<std::byte> reopenedBytes(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+    file.read(reinterpret_cast<char*>(reopenedBytes.data()), static_cast<std::streamsize>(reopenedBytes.size()));
+    REQUIRE(file.gcount() == static_cast<std::streamsize>(reopenedBytes.size()));
+    REQUIRE(pbprotocol::ComputeBlake3Digest(reopenedBytes) == probe.expectedWholeFileDigest);
+    std::cout << "{\"probe\":\"GrayFastQuarterRateQuotaRecovery\",\"syntheticNoRaster\":true,\"senderFrames\":"
+        << probe.senderLogicalFrames << ",\"observedFrames\":" << probe.observedLogicalFrames
+        << ",\"carouselPasses\":" << probe.completedCarouselPasses << ",\"peakActiveDecoders\":" << probe.peakActiveDecoders
+        << ",\"deferredResourceBusy\":" << probe.deferredResourceBusyCount << "}\n";
+}
+
+TEST_CASE("GrayFast many small Segments do not wait a whole file rotation under irregular frame loss",
+    "[application][grayfast-sparse-recovery][receiver][publish]")
+{
+    Scratch scratch;
+    const pbapp::UnifiedGraduationRecoveryProbeConfig config{64, 256U * 1024U, 30, pbapp::UnifiedRecoveryErasureModel::SparseBursty};
+    pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+    const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe);
+    INFO(status.message);
+    std::cout << "{\"probe\":\"GrayFastSparseBurstyRecovery\",\"syntheticNoRaster\":true,\"senderFrames\":"
+        << probe.senderLogicalFrames << ",\"observedFrames\":" << probe.observedLogicalFrames
+        << ",\"carouselPasses\":" << probe.completedCarouselPasses << ",\"peakActiveDecoders\":" << probe.peakActiveDecoders
+        << ",\"deferredResourceBusy\":" << probe.deferredResourceBusyCount
+        << ",\"longestNoUsefulEquationFrames\":" << probe.longestNoUsefulEquationFrames << "}\n";
+    REQUIRE(status);
+    REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+    REQUIRE(probe.decoder.verifiedRawBytes == static_cast<std::uint64_t>(config.segmentCount) * config.segmentBytes);
+    REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+    REQUIRE(probe.decoder.finalRenameSucceeded == true);
+    REQUIRE(probe.decoder.finalReopenVerified == true);
+    const auto policy = pbapp::MakeUnifiedReceiverResourcePolicy();
+    REQUIRE(probe.peakActiveDecoders <= policy.maxActiveOuterFecDecoders);
+    REQUIRE(probe.peakReservedDecoderBytes <= policy.maxTotalOuterFecDecoderBytes);
+    REQUIRE(probe.decoder.outerConflictRejections == 0);
+    // At most a 30-second useful-equation drought in this bounded synthetic
+    // projection. This is not a promise about arbitrary remote outages.
+    REQUIRE(probe.longestNoUsefulEquationFrames <= 30ULL * config.logicalVisualFps);
+    REQUIRE(std::filesystem::file_size(probe.publishedPath) == probe.decoder.verifiedRawBytes);
+    std::ifstream file(probe.publishedPath, std::ios::binary);
+    REQUIRE(file);
+    std::vector<std::byte> reopenedBytes(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+    file.read(reinterpret_cast<char*>(reopenedBytes.data()), static_cast<std::streamsize>(reopenedBytes.size()));
+    REQUIRE(file.gcount() == static_cast<std::streamsize>(reopenedBytes.size()));
+    REQUIRE(pbprotocol::ComputeBlake3Digest(reopenedBytes) == probe.expectedWholeFileDigest);
+}
+
 TEST_CASE("Unified fountain mid-join recovers every Segment from pure incremental repair passes",
     "[application][g21][unified][fountain][mid-join]")
 {
@@ -467,6 +663,65 @@ TEST_CASE("Unified Encoder product policy is shared and rejects legacy tuning", 
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
 }
 
+TEST_CASE("GrayFast demand presentation preserves pending retries and sequential visual identities",
+    "[application][g15][runtime][pixels][grayfast-demand-present]")
+{
+    for (const auto profile : {pbapp::VisualProfile::UnifiedGrayFast, pbapp::VisualProfile::UnifiedGray, pbapp::VisualProfile::UnifiedLc4})
+    {
+        CAPTURE(static_cast<unsigned int>(profile));
+        Scratch scratch;
+        const auto source = scratch.Path() / L"presentation-source.bin";
+        const std::vector<std::byte> bytes(4096, std::byte{0x59});
+        WriteBytes(source, bytes);
+        auto state = std::make_shared<PresentationState>();
+        state->rejectFirst = true;
+        std::atomic<int> observedRepeatPolicy{-1};
+        pbapp::EncoderRuntime runtime([&](const pbrenderd3d::DataWindowConfig& window)
+        {
+            observedRepeatPolicy = window.repeatActiveFrame ? 1 : 0;
+            return std::make_unique<MockPresentation>(state);
+        });
+        auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+        config.visualProfile = profile;
+        config.sessionStateRoot = scratch.Path() / L"sessions";
+        REQUIRE(runtime.Start(config));
+        REQUIRE(WaitFor([&]()
+        {
+            const std::scoped_lock lock(state->mutex);
+            return state->attempts == 1;
+        }));
+        REQUIRE(observedRepeatPolicy.load() == (profile == pbapp::VisualProfile::UnifiedGrayFast ? 0 : 1));
+        const auto pending = runtime.GetSnapshot();
+        REQUIRE(pending.frameSequence == 0);
+        REQUIRE(pending.cycleCount == 0);
+        REQUIRE(pending.durableFrameSequenceLeaseEnd > 0);
+        {
+            const std::scoped_lock lock(state->mutex);
+            state->paused = false;
+        }
+        REQUIRE(WaitFor([&]() { return runtime.GetSnapshot().frameSequence == 2; }));
+        runtime.Stop();
+        const auto stopped = runtime.GetSnapshot();
+        REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+        REQUIRE(stopped.frameSequence == 2);
+        REQUIRE(stopped.sourceStable);
+        REQUIRE(state->retryIdentical);
+        REQUIRE(state->frames.size() == 2);
+        for (std::size_t index = 0; index < state->frames.size(); index++)
+        {
+            const auto& frame = state->frames[index];
+            REQUIRE(frame.sequence == index);
+            const pbmodulation::LumaView view{frame.pixels, 1920, 1080, 1920U * 4U, pbmodulation::LumaPixelFormat::Bgra8};
+            const auto bootstrap = pbmodulation::DecodeLocalDesktopFixedCanvasBootstrap(view,
+                {stopped.visualProfileId, stopped.visualLayoutVersion});
+            REQUIRE(bootstrap.IsAccepted());
+            const auto record = pbprotocol::ParseBootstrapRecord(bootstrap.canonical44);
+            REQUIRE(record);
+            REQUIRE(record.Value().frameSequence == index);
+        }
+    }
+}
+
 TEST_CASE("Unified runtime emits real mixed pixels after prescan and retries a pending frame without advancing IDs",
     "[application][g15][runtime][pixels]")
 {
@@ -602,6 +857,51 @@ TEST_CASE("Unified runtime retains and resumes Session leases then explicit dele
     }
 }
 
+TEST_CASE("Explicit Encoder state roots isolate fresh Sessions without deleting either resume history",
+    "[application][g15][runtime][resume][session-root-isolation]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"source.bin";
+    WriteBytes(source, {});
+    const std::array roots{scratch.Path() / L"first-state", scratch.Path() / L"second-state"};
+    std::array<pbapp::EncoderSnapshot, 2> previous;
+    for (std::size_t run = 0; run < 4; run++)
+    {
+        const std::size_t rootIndex = run % roots.size();
+        auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
+        config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+        config.sessionStateRoot = roots[rootIndex];
+        auto state = std::make_shared<PresentationState>();
+        state->maximumFrames = 1;
+        pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+        {
+            return std::make_unique<MockPresentation>(state);
+        });
+        REQUIRE(runtime.Start(config));
+        REQUIRE(WaitFor([&]() { return runtime.GetSnapshot().submittedFrames == 1; }));
+        runtime.Stop();
+        const auto stopped = runtime.GetSnapshot();
+        REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+        REQUIRE(stopped.preparationComplete);
+        REQUIRE(stopped.resumedSession == (run >= roots.size()));
+        REQUIRE(std::filesystem::is_directory(roots[rootIndex] / stopped.sessionIdHex));
+        if (run >= roots.size())
+        {
+            REQUIRE(stopped.sessionIdHex == previous[rootIndex].sessionIdHex);
+            REQUIRE(state->frames.front().sequence >= previous[rootIndex].durableFrameSequenceLeaseEnd);
+        }
+        else if (run == 1)
+        {
+            REQUIRE(stopped.sessionIdHex != previous[0].sessionIdHex);
+            REQUIRE(std::filesystem::is_directory(roots[0] / previous[0].sessionIdHex));
+        }
+        previous[rootIndex] = stopped;
+    }
+    REQUIRE(std::filesystem::file_size(source) == 0);
+    REQUIRE(std::filesystem::is_directory(roots[0] / previous[0].sessionIdHex));
+    REQUIRE(std::filesystem::is_directory(roots[1] / previous[1].sessionIdHex));
+}
+
 TEST_CASE("Unified prescan visits two fixed size Segments and reports automatic compression", "[application][g15][runtime][prescan]")
 {
     Scratch scratch;
@@ -639,6 +939,104 @@ TEST_CASE("Unified prescan visits two fixed size Segments and reports automatic 
     const auto output = scratch.Path() / L"output";
     REQUIRE(std::filesystem::create_directory(output));
     VerifyPublishedPixels(state->frames, bytes, output);
+}
+
+TEST_CASE("Gray segment target overrides are bounded and cannot change the certified product policy",
+    "[application][grayfast-segmentation][model]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"validation-only.bin";
+    WriteBytes(source, {});
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+    for (const auto profile : {pbapp::VisualProfile::UnifiedGray, pbapp::VisualProfile::UnifiedGrayFast})
+    {
+        config.visualProfile = profile;
+        for (const std::uint32_t target : {0U, 1024U * 1024U, 15U * 1024U * 1024U})
+        {
+            config.segmentTargetBytes = target;
+            const auto status = pbapp::ValidateEncoderConfig(config);
+            INFO(status.message);
+            CHECK(status);
+        }
+        for (const std::uint32_t target : {1U, 1024U * 1024U - 1U, 15U * 1024U * 1024U + 1U})
+        {
+            config.segmentTargetBytes = target;
+            CHECK_FALSE(pbapp::ValidateEncoderConfig(config));
+        }
+    }
+    config.visualProfile = pbapp::VisualProfile::UnifiedLc4;
+    config.segmentTargetBytes = 1024U * 1024U;
+    CHECK_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.segmentTargetBytes = 0;
+    CHECK(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("GrayFast segment override agrees with prepared descriptors and durable Session identity",
+    "[application][grayfast-segmentation][runtime][prescan][resume]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"source.bin";
+    const std::vector<std::byte> bytes(2U * 1024U * 1024U + 17U, std::byte{0x35});
+    WriteBytes(source, bytes);
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    std::string previousSessionId;
+    for (std::uint32_t run = 0; run < 3; run++)
+    {
+        config.segmentTargetBytes = (run == 2 ? 2U : 1U) * 1024U * 1024U;
+        const std::uint64_t expectedSegments = run == 2 ? 2U : 3U;
+        auto state = std::make_shared<PresentationState>();
+        state->maximumFrames = 1;
+        pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+        {
+            return std::make_unique<MockPresentation>(state);
+        });
+        REQUIRE(runtime.Start(config));
+        REQUIRE(WaitFor([&]()
+        {
+            const auto snapshot = runtime.GetSnapshot();
+            return snapshot.submittedFrames == 1 || snapshot.state == pbapp::EncoderState::Failed;
+        }));
+        runtime.Stop();
+        const auto stopped = runtime.GetSnapshot();
+        INFO(stopped.statusMessage);
+        REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+        REQUIRE(stopped.preparationComplete);
+        REQUIRE(stopped.segmentCount == expectedSegments);
+        REQUIRE(stopped.preparedSegmentCount == expectedSegments);
+        REQUIRE(stopped.preparedSourceBytes == bytes.size());
+        REQUIRE(stopped.resumedSession == (run == 1));
+        if (run != 0)
+        {
+            REQUIRE((stopped.sessionIdHex == previousSessionId) == (run == 1));
+        }
+        previousSessionId = stopped.sessionIdHex;
+        REQUIRE(state->frames.size() == 1);
+        auto oracleResult = pbmodulation::UnifiedVisualCpuOracle::Create(pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
+        REQUIRE(oracleResult);
+        auto oracle = std::move(oracleResult).Value();
+        pbmodulation::UnifiedExpectedFrameIdentity expected;
+        expected.visualProfileId = pbprotocol::kGrayFastExperimentalProfile.visualProfileId;
+        expected.visualLayoutVersion = pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion;
+        const pbmodulation::LumaView view{state->frames.front().pixels, 1920, 1080, 1920 * 4, pbmodulation::LumaPixelFormat::Bgra8};
+        const auto observation = oracle.DecodeMixedFrame(view, expected);
+        REQUIRE(observation.IsFrameAvailable());
+        auto controlsResult = pbprotocol::ControlPlaneReceiver::Create(pbprotocol::GetDefaultReceiverResourcePolicy());
+        REQUIRE(controlsResult);
+        auto controls = std::move(controlsResult).Value();
+        for (const auto& block : oracle.GetAcceptedBlocks())
+        {
+            if (block.kind == pbmodulation::UnifiedSlotKind::Control)
+            {
+                REQUIRE(controls.ReceiveControlRecord(std::span(block.bytes).first(block.size)));
+            }
+        }
+        const auto session = controls.GetSessionDescriptor(observation.bootstrapRecord.sessionTag);
+        REQUIRE(session);
+        REQUIRE(session.Value().sourceSegmentTargetBytes == config.segmentTargetBytes);
+        REQUIRE(session.Value().segmentCount == expectedSegments);
+    }
 }
 
 TEST_CASE("Unified source open failure creates neither Session nor presentation", "[application][g15][runtime][failure]")
@@ -892,4 +1290,710 @@ TEST_CASE("A corrupt Encoder end marker is rejected instead of authorizing a new
     REQUIRE_FALSE(found);
     REQUIRE_FALSE(pbapp::EncoderSessionStore::EndAndDelete(config.rootDirectory, firstSessionId));
     REQUIRE(std::filesystem::exists(directory / L"descriptors.bin"));
+}
+
+TEST_CASE("GrayFast spatial interleaving is opt-in and refuses other profiles", "[application][grayfast-spatial][model]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"validation.bin";
+    WriteBytes(source, {});
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+    REQUIRE_FALSE(config.grayFastSpatialInterleave);
+    config.grayFastSpatialInterleave = true;
+    for (const auto profile : {pbapp::VisualProfile::UnifiedLc4, pbapp::VisualProfile::UnifiedGray, pbapp::VisualProfile::RemoteVisualLowFps})
+    {
+        config.visualProfile = profile;
+        REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    }
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    const auto status = pbapp::ValidateEncoderConfig(config);
+    INFO(status.message);
+    REQUIRE(status);
+    config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("GrayFast spatial rows recover short windows and many-window erasures without widening receiver quotas",
+    "[application][grayfast-spatial][receiver][publish]")
+{
+    Scratch scratch;
+    for (const auto& [segmentCount, erasureModel] : std::array{
+        std::pair{1U, pbapp::UnifiedRecoveryErasureModel::None},
+        std::pair{5U, pbapp::UnifiedRecoveryErasureModel::None},
+        std::pair{7U, pbapp::UnifiedRecoveryErasureModel::PeriodicThird},
+        std::pair{13U, pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter},
+        std::pair{64U, pbapp::UnifiedRecoveryErasureModel::SparseBursty}})
+    {
+        CAPTURE(segmentCount, static_cast<unsigned int>(erasureModel));
+        const auto output = scratch.Path() / std::to_wstring(segmentCount);
+        REQUIRE(std::filesystem::create_directory(output));
+        pbapp::UnifiedGraduationRecoveryProbeConfig config;
+        config.segmentCount = segmentCount;
+        config.erasureModel = erasureModel;
+        config.grayFastSpatialInterleave = true;
+        pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+        const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+        INFO(status.message);
+        REQUIRE(status);
+        REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+        REQUIRE(probe.decoder.verifiedRawBytes == static_cast<std::uint64_t>(segmentCount) * config.segmentBytes);
+        REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+        REQUIRE(probe.decoder.finalRenameSucceeded == true);
+        REQUIRE(probe.decoder.finalReopenVerified == true);
+        REQUIRE(probe.decoder.outerConflictRejections == 0);
+        REQUIRE(probe.deferredResourceBusyCount == 0);
+        REQUIRE(probe.longestNoUsefulEquationFrames < 900);
+        REQUIRE(probe.peakActiveDecoders <= pbapp::senderUnifiedReceiverActiveDecoderLimit);
+        REQUIRE(probe.peakReservedDecoderBytes <= pbapp::MakeUnifiedReceiverResourcePolicy().maxTotalOuterFecDecoderBytes);
+        REQUIRE(probe.deferredResourceBusyCount == 0);
+        REQUIRE(probe.longestNoUsefulEquationFrames < 900);
+        REQUIRE(probe.spatialCommitAndLeaseVerified);
+        REQUIRE(probe.spatialBankStorageBytes > 0);
+        REQUIRE(probe.spatialBankStorageBytes <= 256U * 1024U);
+        std::ifstream file(probe.publishedPath, std::ios::binary);
+        REQUIRE(file);
+        std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+        file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.peek() == std::char_traits<char>::eof());
+        REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+        std::cout << "{\"probe\":\"GrayFastSpatialRecovery\",\"syntheticNoRaster\":true,\"segments\":" << segmentCount
+            << ",\"frames\":" << probe.senderLogicalFrames << ",\"observed\":" << probe.observedLogicalFrames
+            << ",\"wraps\":" << probe.completedCarouselPasses << ",\"peakActive\":" << probe.peakActiveDecoders
+            << ",\"quotaRejections\":" << probe.deferredResourceBusyCount << ",\"longestDrought\":" << probe.longestNoUsefulEquationFrames
+            << ",\"bankBytes\":" << probe.spatialBankStorageBytes << "}\n";
+    }
+}
+
+TEST_CASE("GrayFast spatial pixels preserve partial-bank restart and recover compressed raw and empty files",
+    "[application][grayfast-spatial][runtime][pixels][resume][publish]")
+{
+    for (const bool empty : {false, true})
+    {
+        CAPTURE(empty);
+        Scratch scratch;
+        const auto source = scratch.Path() / L"spatial-source.bin";
+        std::vector<std::byte> original(empty ? 0 : 6U * 1024U * 1024U + 2048U, std::byte{0x59});
+        std::uint32_t randomState = 0x713B58D1U;
+        if (!empty)
+        {
+            for (std::size_t index = 6U * 1024U * 1024U; index < original.size(); index++)
+            {
+                randomState ^= randomState << 13U;
+                randomState ^= randomState >> 17U;
+                randomState ^= randomState << 5U;
+                original[index] = static_cast<std::byte>(randomState & 0xFFU);
+            }
+        }
+        WriteBytes(source, original);
+        auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+        config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+        config.grayFastSpatialInterleave = true;
+        config.segmentTargetBytes = 1024U * 1024U;
+        config.sessionStateRoot = scratch.Path() / L"sessions";
+        pbapp::EncoderSnapshot previous;
+        std::shared_ptr<PresentationState> completedFrames;
+        for (std::uint32_t run = 0; run < 2; run++)
+        {
+            auto state = std::make_shared<PresentationState>();
+            state->rejectFirst = true;
+            state->maximumFrames = run == 0 ? 2 : empty ? 2 : 24;
+            pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig& window)
+            {
+                if (window.repeatActiveFrame)
+                {
+                    throw std::runtime_error("Spatial GrayFast unexpectedly enabled repeat Present");
+                }
+                return std::make_unique<MockPresentation>(state);
+            });
+            REQUIRE(runtime.Start(config));
+            REQUIRE(WaitFor([&]()
+            {
+                const std::scoped_lock lock(state->mutex);
+                return state->attempts == 1 || runtime.GetSnapshot().state == pbapp::EncoderState::Failed;
+            }));
+            REQUIRE(runtime.GetSnapshot().state != pbapp::EncoderState::Failed);
+            REQUIRE(runtime.GetSnapshot().submittedFrames == 0);
+            {
+                const std::scoped_lock lock(state->mutex);
+                state->paused = false;
+            }
+            REQUIRE(WaitFor([&]() { return runtime.GetSnapshot().submittedFrames == state->maximumFrames; }));
+            runtime.Stop();
+            const auto stopped = runtime.GetSnapshot();
+            INFO(stopped.errorDetail);
+            REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+            REQUIRE(stopped.sourceStable);
+            REQUIRE(state->retryIdentical);
+            REQUIRE(stopped.segmentCount == (empty ? 0 : 7));
+            REQUIRE(stopped.rawSegmentCount == (empty ? 0 : 1));
+            if (run != 0)
+            {
+                REQUIRE(stopped.resumedSession);
+                REQUIRE(stopped.sessionIdHex == previous.sessionIdHex);
+                REQUIRE(state->frames.front().sequence >= previous.durableFrameSequenceLeaseEnd);
+            }
+            for (std::size_t index = 1; index < state->frames.size(); index++)
+            {
+                REQUIRE(state->frames[index].sequence == state->frames[index - 1].sequence + 1);
+            }
+            previous = stopped;
+            completedFrames = state;
+        }
+        const auto outputDirectory = scratch.Path() / L"decoded";
+        REQUIRE(std::filesystem::create_directory(outputDirectory));
+        auto receiverState = std::make_shared<g16test::ReceiveState>();
+        pbapp::DecoderRuntime decoder(g16test::Services(receiverState));
+        auto decoderConfig = pbapp::MakeUnifiedDecoderConfig(outputDirectory.wstring(), g16test::Region());
+        decoderConfig.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+        REQUIRE(decoder.Start(decoderConfig));
+        auto oracleResult = pbmodulation::UnifiedVisualCpuOracle::Create(pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
+        REQUIRE(oracleResult);
+        auto oracle = std::move(oracleResult).Value();
+        pbmodulation::UnifiedExpectedFrameIdentity expected;
+        expected.visualProfileId = pbprotocol::kGrayFastExperimentalProfile.visualProfileId;
+        expected.visualLayoutVersion = pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion;
+        std::uint32_t mixedSegmentFrames = 0;
+        for (const auto& frame : completedFrames->frames)
+        {
+            const pbmodulation::LumaView view{frame.pixels, 1920U, 1080U, 1920U * 4U, pbmodulation::LumaPixelFormat::Bgra8};
+            const auto observation = oracle.DecodeMixedFrame(view, expected);
+            REQUIRE(observation.IsFrameAvailable());
+            REQUIRE(observation.bootstrapRecord.frameSequence == frame.sequence);
+            std::set<std::uint64_t> segmentsInFrame;
+            for (const auto& block : oracle.GetAcceptedBlocks())
+            {
+                if (block.kind == pbmodulation::UnifiedSlotKind::Transport)
+                {
+                    const auto parsed = pbprotocol::ParseTransportBlock(std::span(block.bytes).first(block.size));
+                    REQUIRE(parsed);
+                    segmentsInFrame.insert(parsed.Value().header.segmentOrdinal);
+                }
+            }
+            mixedSegmentFrames += segmentsInFrame.size() > 1 ? 1U : 0U;
+            pbdemodd3d11::CaptureDemodulatorResult result;
+            result.kind = pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame;
+            result.geometryStatus = pbdemodd3d11::CaptureDemodulatorGeometryStatus::ExactCanvas;
+            result.bootstrap = observation.bootstrap;
+            REQUIRE(pbprotocol::SerializeBootstrapRecord(observation.bootstrapRecord, result.bootstrapRecord));
+            result.demodulation.visualProfileId = observation.bootstrapRecord.visualProfileId;
+            result.demodulation.unifiedObservation = observation;
+            const auto blocks = oracle.GetAcceptedBlocks();
+            result.demodulation.acceptedUnifiedBlockCount = static_cast<std::uint32_t>(blocks.size());
+            std::copy(blocks.begin(), blocks.end(), result.demodulation.acceptedUnifiedBlocks.begin());
+            receiverState->Push(result);
+            REQUIRE(WaitFor([&]()
+            {
+                const std::scoped_lock lock(receiverState->mutex);
+                return receiverState->frames.empty() || decoder.GetSnapshot().state == pbapp::DecoderState::Completed || decoder.GetSnapshot().state == pbapp::DecoderState::Failed;
+            }));
+            if (decoder.GetSnapshot().state == pbapp::DecoderState::Completed || decoder.GetSnapshot().state == pbapp::DecoderState::Failed)
+            {
+                break;
+            }
+        }
+        REQUIRE(WaitFor([&]() { return decoder.GetSnapshot().state == pbapp::DecoderState::Completed || decoder.GetSnapshot().state == pbapp::DecoderState::Failed; }));
+        decoder.Stop();
+        const auto decoded = decoder.GetSnapshot();
+        INFO(decoded.errorDetail);
+        REQUIRE(decoded.state == pbapp::DecoderState::Completed);
+        REQUIRE(decoded.wholeFileDigestCheck == true);
+        REQUIRE(decoded.finalRenameSucceeded == true);
+        REQUIRE(decoded.finalReopenVerified == true);
+        REQUIRE(decoded.outerConflictRejections == 0);
+        REQUIRE(g16test::VerifyOutput(decoded, original));
+        REQUIRE((mixedSegmentFrames != 0) == !empty);
+        std::cout << "{\"probe\":\"GrayFastSpatialActualPixels\",\"empty\":" << empty
+            << ",\"mixedSegmentFrames\":" << mixedSegmentFrames << ",\"rawBytes\":" << decoded.verifiedRawBytes
+            << ",\"reopenVerified\":true}\n";
+    }
+}
+
+TEST_CASE("GrayFast spatial large-K files recover periodic bursty loss and repair-only late join",
+    "[application][grayfast-spatial-large][receiver][publish][late-join]")
+{
+    Scratch scratch;
+    for (const auto& [erasureModel, firstObservedFrame] : std::array{
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter, 0ULL},
+        std::pair{pbapp::UnifiedRecoveryErasureModel::SparseBursty, 0ULL},
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter, 15000ULL}})
+    {
+        DYNAMIC_SECTION("Loss model " << static_cast<unsigned int>(erasureModel) << " join frame " << firstObservedFrame)
+        {
+            CAPTURE(static_cast<unsigned int>(erasureModel), firstObservedFrame);
+            const auto output = scratch.Path() / (std::to_wstring(static_cast<unsigned int>(erasureModel)) + L"-" + std::to_wstring(firstObservedFrame));
+            REQUIRE(std::filesystem::create_directory(output));
+            pbapp::UnifiedGraduationRecoveryProbeConfig config;
+            config.segmentCount = 13;
+            config.segmentBytes = 6U * 1024U * 1024U;
+            config.grayFastSpatialInterleave = true;
+            config.erasureModel = erasureModel;
+            config.firstObservedLogicalFrame = firstObservedFrame;
+            config.maximumSenderLogicalFrames = firstObservedFrame == 0 ? 20000 : 60000;
+            config.collectSegmentTrace = true;
+            pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+            const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+            std::cout << "{\"probe\":\"GrayFastSpatialLargeK\",\"syntheticNoRaster\":true,\"lossModel\":" << static_cast<unsigned int>(erasureModel)
+                << ",\"joinFrame\":" << firstObservedFrame << ",\"firstObservedPass\":" << probe.firstObservedCarouselPass
+                << ",\"success\":" << static_cast<bool>(status) << ",\"frames\":" << probe.senderLogicalFrames
+                << ",\"observedFrames\":" << probe.observedLogicalFrames << ",\"wraps\":" << probe.completedCarouselPasses
+                << ",\"verifiedRawBytes\":" << probe.decoder.verifiedRawBytes << ",\"uniqueSymbols\":" << probe.decoder.outerUniqueSymbols
+                << ",\"peakActive\":" << probe.peakActiveDecoders << ",\"quotaRejections\":" << probe.deferredResourceBusyCount
+                << ",\"resourceRejections\":" << probe.decoder.outerResourceRejections
+                << ",\"orphanQuotaDrops\":" << probe.decoder.outerOrphanDroppedByQuotaCount
+                << ",\"afterJoinDrought\":" << probe.longestAfterJoinNoUsefulEquationFrames
+                << ",\"activeAtDrought\":" << probe.activeDecodersAtLongestDrought
+                << ",\"verifiedAtDrought\":" << probe.verifiedRawBytesAtLongestDrought << "}\n";
+            for (std::size_t ordinal = 0; ordinal < probe.segmentTrace.size(); ordinal++)
+            {
+                const auto& trace = probe.segmentTrace[ordinal];
+                const auto PrintFrame = [](const std::optional<std::uint64_t>& frame)
+                {
+                    if (frame)
+                    {
+                        std::cout << *frame;
+                    }
+                    else
+                    {
+                        std::cout << "null";
+                    }
+                };
+                std::cout << "{\"probe\":\"GrayFastSegmentTrace\",\"lossModel\":" << static_cast<unsigned int>(erasureModel)
+                    << ",\"joinFrame\":" << firstObservedFrame << ",\"segment\":" << ordinal << ",\"blockCount\":" << trace.blockCount
+                    << ",\"firstObservedFrame\":";
+                PrintFrame(trace.firstObservedFrame);
+                std::cout << ",\"firstUniqueFrame\":";
+                PrintFrame(trace.firstUniqueFrame);
+                std::cout << ",\"firstBoundUniqueFrame\":";
+                PrintFrame(trace.firstBoundUniqueFrame);
+                std::cout << ",\"completedFrame\":";
+                PrintFrame(trace.completedFrame);
+                std::cout << ",\"observedDataFrames\":" << trace.observedDataFrames << ",\"maximumObservedRevisitGap\":" << trace.longestObservedFrameGap
+                    << ",\"directUniqueEvents\":" << trace.uniqueAdmissionEvents << ",\"deferredBlocks\":" << trace.deferredBlocks
+                    << ",\"orphanUniqueEvents\":" << trace.orphanUniqueAdmissionEvents
+                    << ",\"resourceRejections\":" << trace.resourceRejections << ",\"orphanQuotaDrops\":" << trace.orphanQuotaDrops
+                    << ",\"alreadyCompletedBlocks\":" << trace.alreadyCompletedBlocks << "}\n";
+            }
+            INFO(status.message);
+            REQUIRE(status);
+            REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+            REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 6ULL * 1024ULL * 1024ULL);
+            REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+            REQUIRE(probe.decoder.finalRenameSucceeded == true);
+            REQUIRE(probe.decoder.finalReopenVerified == true);
+            REQUIRE(probe.decoder.outerConflictRejections == 0);
+            REQUIRE(probe.spatialCommitAndLeaseVerified);
+            REQUIRE(probe.peakActiveDecoders <= pbapp::senderUnifiedReceiverActiveDecoderLimit);
+            REQUIRE(probe.peakReservedDecoderBytes <= pbapp::MakeUnifiedReceiverResourcePolicy().maxTotalOuterFecDecoderBytes);
+            REQUIRE(probe.segmentTrace.size() == config.segmentCount);
+            for (const auto& trace : probe.segmentTrace)
+            {
+                REQUIRE(trace.blockCount > 0);
+                REQUIRE(trace.firstObservedFrame);
+                REQUIRE(trace.firstUniqueFrame);
+                REQUIRE(trace.completedFrame);
+                REQUIRE(*trace.firstObservedFrame <= *trace.firstUniqueFrame);
+                REQUIRE(*trace.firstUniqueFrame <= *trace.completedFrame);
+                REQUIRE(trace.uniqueAdmissionEvents > 0);
+            }
+            if (firstObservedFrame == 0)
+            {
+                REQUIRE(probe.deferredResourceBusyCount == 0);
+                REQUIRE(probe.decoder.outerResourceRejections == 0);
+                REQUIRE(probe.decoder.outerOrphanDroppedByQuotaCount == 0);
+                REQUIRE(probe.completedCarouselPasses == 0);
+                REQUIRE(probe.longestAfterJoinNoUsefulEquationFrames < 900);
+            }
+            else
+            {
+                REQUIRE(probe.firstObservedCarouselPass > 0);
+                REQUIRE(probe.longestAfterJoinNoUsefulEquationFrames < 3000);
+                // Bound the post-join wait as well as short progress droughts.
+                // The prior MicroRepair-only path needed 23481 frames here.
+                REQUIRE(probe.senderLogicalFrames - firstObservedFrame < 12000);
+                REQUIRE(probe.completedCarouselPasses <= 8);
+            }
+            std::ifstream file(probe.publishedPath, std::ios::binary);
+            REQUIRE(file);
+            std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+            file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+            REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+            REQUIRE(file.peek() == std::char_traits<char>::eof());
+            REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+        }
+    }
+}
+
+TEST_CASE("Experimental budget-bound decoder policy changes only the finite count ceiling",
+    "[application][budgeted-decoder-policy][quota]")
+{
+    const auto normal = pbapp::MakeUnifiedReceiverResourcePolicy();
+    auto experimental = pbapp::MakeBudgetBoundUnifiedReceiverResourcePolicy();
+    REQUIRE(normal.maxActiveOuterFecDecoders == 8);
+    REQUIRE(experimental.maxActiveOuterFecDecoders == normal.maxSegmentCount);
+    REQUIRE(experimental.maxActiveOuterFecDecoders > normal.maxActiveOuterFecDecoders);
+    REQUIRE(pbprotocol::ValidateReceiverResourcePolicy(experimental));
+    experimental.maxActiveOuterFecDecoders = normal.maxActiveOuterFecDecoders;
+    // Compare every policy field rather than a subset of the safety budgets.
+    REQUIRE(experimental.maxAcceptedFileBytes == normal.maxAcceptedFileBytes);
+    REQUIRE(experimental.maxSegmentCount == normal.maxSegmentCount);
+    REQUIRE(experimental.maxRawSegmentBytes == normal.maxRawSegmentBytes);
+    REQUIRE(experimental.maxEncodedSegmentBytes == normal.maxEncodedSegmentBytes);
+    REQUIRE(experimental.maxOuterBlockBytes == normal.maxOuterBlockBytes);
+    REQUIRE(experimental.maxDescriptorStateBytes == normal.maxDescriptorStateBytes);
+    REQUIRE(experimental.maxConcurrentSessions == normal.maxConcurrentSessions);
+    REQUIRE(experimental.maxTotalDescriptorStateBytes == normal.maxTotalDescriptorStateBytes);
+    REQUIRE(experimental.maxDirectRepeatBlockCount == normal.maxDirectRepeatBlockCount);
+    REQUIRE(experimental.maxOuterFecDecoderBytes == normal.maxOuterFecDecoderBytes);
+    REQUIRE(experimental.maxTotalOuterFecDecoderBytes == normal.maxTotalOuterFecDecoderBytes);
+    REQUIRE(experimental.maxControlRecordBytes == normal.maxControlRecordBytes);
+    REQUIRE(experimental.maxConcurrentControlReassemblies == normal.maxConcurrentControlReassemblies);
+    REQUIRE(experimental.maxControlReassemblyBytes == normal.maxControlReassemblyBytes);
+    REQUIRE(experimental.maxControlFragmentsPerRecord == normal.maxControlFragmentsPerRecord);
+    REQUIRE(experimental.maxControlReassemblyInactivityObservations == normal.maxControlReassemblyInactivityObservations);
+    REQUIRE(experimental.maxOrphanTransportBytes == normal.maxOrphanTransportBytes);
+    REQUIRE(experimental.maxOrphanTransportBlocks == normal.maxOrphanTransportBlocks);
+    REQUIRE(experimental.maxZstdWindowBytes == normal.maxZstdWindowBytes);
+    REQUIRE(experimental.maxResumeBytes == normal.maxResumeBytes);
+    REQUIRE(experimental.maxOutputPreallocationBytesWithoutPrompt == normal.maxOutputPreallocationBytesWithoutPrompt);
+}
+
+TEST_CASE("Short initial airtime is explicit spatial GrayFast tuning and not formal measurement",
+    "[application][grayfast-initial-airtime-bounds][model]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"validation.bin";
+    WriteBytes(source, {});
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+    REQUIRE_FALSE(config.grayFastShortInitialAirtime);
+    config.grayFastShortInitialAirtime = true;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.grayFastSpatialInterleave = true;
+    for (const auto profile : {pbapp::VisualProfile::UnifiedLc4, pbapp::VisualProfile::UnifiedGray, pbapp::VisualProfile::RemoteVisualLowFps})
+    {
+        config.visualProfile = profile;
+        REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    }
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+    config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("Initial airtime experiment rejects invalid bounds before creating recovery state",
+    "[application][grayfast-initial-airtime-bounds]")
+{
+    Scratch scratch;
+    for (const std::uint32_t percent : {0U, 49U, 101U, 0xffffffffU})
+    {
+        pbapp::UnifiedGraduationRecoveryProbeConfig config;
+        config.grayFastSpatialInterleave = true;
+        config.initialAirtimePercent = percent;
+        pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+        REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+        REQUIRE(std::filesystem::is_empty(scratch.Path()));
+    }
+    pbapp::UnifiedGraduationRecoveryProbeConfig config;
+    REQUIRE(config.initialAirtimePercent == 100);
+    config.initialAirtimePercent = 65;
+    pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+    REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
+}
+
+TEST_CASE("Short initial airtime reaches runtime startup with explicit snapshot identity",
+    "[application][grayfast-initial-airtime-bounds][runtime]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"startup.bin";
+    WriteBytes(source, {});
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    config.grayFastSpatialInterleave = true;
+    config.grayFastShortInitialAirtime = true;
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    auto state = std::make_shared<PresentationState>();
+    state->maximumFrames = 1;
+    pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+    {
+        return std::make_unique<MockPresentation>(state);
+    });
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]()
+    {
+        const auto snapshot = runtime.GetSnapshot();
+        return snapshot.submittedFrames == 1 || snapshot.state == pbapp::EncoderState::Failed;
+    }));
+    const auto started = runtime.GetSnapshot();
+    runtime.Stop();
+    REQUIRE(started.submittedFrames == 1);
+    REQUIRE(started.grayFastSpatialInterleave);
+    REQUIRE(started.configuredInitialAirtimePercent == 65);
+    REQUIRE(runtime.GetSnapshot().state == pbapp::EncoderState::Stopped);
+}
+
+TEST_CASE("Short initial visits still recover after a stricter eight-decoder resource ceiling",
+    "[application][grayfast-short-budget-pressure][receiver][publish]")
+{
+    Scratch scratch;
+    for (const auto erasureModel : {pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter, pbapp::UnifiedRecoveryErasureModel::PeriodicFifth})
+    {
+        const auto output = scratch.Path() / std::to_wstring(static_cast<unsigned int>(erasureModel));
+        REQUIRE(std::filesystem::create_directory(output));
+        pbapp::UnifiedGraduationRecoveryProbeConfig config;
+        config.segmentCount = 13;
+        config.segmentBytes = 6U * 1024U * 1024U;
+        config.grayFastSpatialInterleave = true;
+        config.erasureModel = erasureModel;
+        config.maximumSenderLogicalFrames = 60000;
+        config.initialAirtimePercent = 65;
+        pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+        const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+        std::cout << "{\"probe\":\"ShortInitialBudgetPressure\",\"syntheticNoRaster\":true,\"lossModel\":" << static_cast<unsigned int>(erasureModel)
+            << ",\"success\":" << static_cast<bool>(status) << ",\"frames\":" << probe.senderLogicalFrames
+            << ",\"wraps\":" << probe.completedCarouselPasses << ",\"peakActive\":" << probe.peakActiveDecoders
+            << ",\"peakReservedBytes\":" << probe.peakReservedDecoderBytes << ",\"fecDeferred\":" << probe.deferredResourceBusyCount
+            << ",\"resourceRejections\":" << probe.decoder.outerResourceRejections << ",\"drought\":" << probe.longestAfterJoinNoUsefulEquationFrames << "}\n";
+        INFO(status.message);
+        REQUIRE(status);
+        REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+        REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 6ULL * 1024ULL * 1024ULL);
+        REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+        REQUIRE(probe.decoder.finalRenameSucceeded == true);
+        REQUIRE(probe.decoder.finalReopenVerified == true);
+        REQUIRE(probe.decoder.outerConflictRejections == 0);
+        REQUIRE(probe.decoder.outerActiveDecoderLimit == 8);
+        REQUIRE(probe.peakActiveDecoders == 8);
+        REQUIRE(probe.decoder.outerResourceRejections > 0);
+        REQUIRE(probe.peakReservedDecoderBytes <= 1024ULL * 1024ULL * 1024ULL);
+        std::ifstream file(probe.publishedPath, std::ios::binary);
+        REQUIRE(file);
+        std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+        file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.peek() == std::char_traits<char>::eof());
+        REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+    }
+}
+
+TEST_CASE("Short initial airtime retains full repair recovery without receiver feedback",
+    "[application][grayfast-initial-airtime-recovery][receiver][publish]")
+{
+    Scratch scratch;
+    for (const auto& [erasureModel, firstObservedFrame] : std::array{
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicTwoFifths, 0ULL},
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter, 0ULL},
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicFifth, 0ULL},
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter, 15000ULL}})
+    {
+        DYNAMIC_SECTION("Loss " << static_cast<unsigned int>(erasureModel) << " join " << firstObservedFrame)
+        {
+            std::array<pbapp::UnifiedGraduationRecoveryProbeSnapshot, 2> probes;
+            for (std::size_t mode = 0; mode < probes.size(); mode++)
+            {
+                const auto output = scratch.Path() / (std::to_wstring(static_cast<unsigned int>(erasureModel)) + L"-" + std::to_wstring(firstObservedFrame) + L"-" + std::to_wstring(mode));
+                REQUIRE(std::filesystem::create_directory(output));
+                pbapp::UnifiedGraduationRecoveryProbeConfig config;
+                config.segmentCount = 13;
+                config.segmentBytes = 6U * 1024U * 1024U;
+                config.grayFastSpatialInterleave = true;
+                config.erasureModel = erasureModel;
+                config.firstObservedLogicalFrame = firstObservedFrame;
+                config.maximumSenderLogicalFrames = 60000;
+                config.collectSegmentTrace = true;
+                config.budgetBoundDecoders = true;
+                config.initialAirtimePercent = mode == 0 ? 100U : 65U;
+                auto& probe = probes[mode];
+                const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+                std::cout << "{\"probe\":\"InitialAirtimeRecovery\",\"syntheticNoRaster\":true,\"initialPercent\":" << config.initialAirtimePercent
+                    << ",\"lossModel\":" << static_cast<unsigned int>(erasureModel) << ",\"joinFrame\":" << firstObservedFrame
+                    << ",\"success\":" << static_cast<bool>(status) << ",\"frames\":" << probe.senderLogicalFrames
+                    << ",\"wraps\":" << probe.completedCarouselPasses << ",\"verifiedRawBytes\":" << probe.decoder.verifiedRawBytes
+                    << ",\"peakActive\":" << probe.peakActiveDecoders << ",\"peakReservedBytes\":" << probe.peakReservedDecoderBytes
+                    << ",\"fecDeferred\":" << probe.deferredResourceBusyCount << ",\"resourceRejections\":" << probe.decoder.outerResourceRejections
+                    << ",\"orphanQuotaDrops\":" << probe.decoder.outerOrphanDroppedByQuotaCount
+                    << ",\"drought\":" << probe.longestAfterJoinNoUsefulEquationFrames << "}\n";
+                INFO(status.message);
+                REQUIRE(status);
+                REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+                REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 6ULL * 1024ULL * 1024ULL);
+                REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+                REQUIRE(probe.decoder.finalRenameSucceeded == true);
+                REQUIRE(probe.decoder.finalReopenVerified == true);
+                REQUIRE(probe.decoder.outerConflictRejections == 0);
+                REQUIRE(probe.spatialCommitAndLeaseVerified);
+                REQUIRE(probe.peakActiveDecoders <= probe.decoder.outerActiveDecoderLimit);
+                REQUIRE(probe.peakReservedDecoderBytes <= 1024ULL * 1024ULL * 1024ULL);
+                std::ifstream file(probe.publishedPath, std::ios::binary);
+                REQUIRE(file);
+                std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+                file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+                REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+                REQUIRE(file.peek() == std::char_traits<char>::eof());
+                REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+            }
+            REQUIRE(probes[0].expectedWholeFileDigest == probes[1].expectedWholeFileDigest);
+            if (erasureModel == pbapp::UnifiedRecoveryErasureModel::PeriodicTwoFifths)
+            {
+                REQUIRE(probes[0].completedCarouselPasses == 0);
+                REQUIRE(probes[1].completedCarouselPasses == 0);
+                REQUIRE(probes[1].senderLogicalFrames * 100 < probes[0].senderLogicalFrames * 80);
+                REQUIRE(probes[1].decoder.outerResourceRejections == 0);
+                REQUIRE(probes[1].deferredResourceBusyCount == 0);
+            }
+        }
+    }
+}
+
+TEST_CASE("Useful-cadence probe rejects unsupported projection and rate before recovery state",
+    "[application][grayfast-fixed-useful-cadence-bounds]")
+{
+    Scratch scratch;
+    pbapp::UnifiedGraduationRecoveryProbeConfig config;
+    pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+    config.erasureModel = static_cast<pbapp::UnifiedRecoveryErasureModel>(255);
+    REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
+    config.erasureModel = pbapp::UnifiedRecoveryErasureModel::PeriodicHalf;
+    config.logicalVisualFps = 27;
+    REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
+}
+
+TEST_CASE("Large-file airtime is compared at equal synthetic useful-frame cadence",
+    "[application][grayfast-fixed-useful-cadence][receiver][publish]")
+{
+    Scratch scratch;
+    std::optional<std::array<std::byte, pbprotocol::kDigestBytes>> sharedDigest;
+    for (const std::uint32_t logicalFps : {30U, 15U})
+    {
+        for (const std::uint32_t initialPercent : {65U, 100U})
+        {
+            CAPTURE(logicalFps, initialPercent);
+            const auto output = scratch.Path() / (std::to_wstring(logicalFps) + L"-" + std::to_wstring(initialPercent));
+            REQUIRE(std::filesystem::create_directory(output));
+            pbapp::UnifiedGraduationRecoveryProbeConfig config;
+            config.segmentCount = 13;
+            config.segmentBytes = 6U * 1024U * 1024U;
+            config.logicalVisualFps = logicalFps;
+            config.erasureModel = logicalFps == 30 ? pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter : pbapp::UnifiedRecoveryErasureModel::PeriodicHalf;
+            config.grayFastSpatialInterleave = true;
+            config.maximumSenderLogicalFrames = 60000;
+            config.collectSegmentTrace = true;
+            config.budgetBoundDecoders = true;
+            config.initialAirtimePercent = initialPercent;
+            pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+            const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+            std::cout << "{\"probe\":\"FixedUsefulCadenceRecovery\",\"syntheticNoRaster\":true,\"logicalFps\":" << logicalFps
+                << ",\"initialPercent\":" << initialPercent << ",\"hypotheticalUsefulFps\":7.5,\"success\":" << static_cast<bool>(status)
+                << ",\"frames\":" << probe.senderLogicalFrames << ",\"observedFrames\":" << probe.observedLogicalFrames
+                << ",\"modeledSenderMilliseconds\":" << probe.senderLogicalFrames * 1000ULL / logicalFps
+                << ",\"wraps\":" << probe.completedCarouselPasses << ",\"verifiedRawBytes\":" << probe.decoder.verifiedRawBytes
+                << ",\"alreadyCompletedSymbols\":" << probe.decoder.outerAlreadyCompletedSymbols
+                << ",\"peakActive\":" << probe.peakActiveDecoders << ",\"peakReservedBytes\":" << probe.peakReservedDecoderBytes
+                << ",\"fecDeferred\":" << probe.deferredResourceBusyCount << ",\"resourceRejections\":" << probe.decoder.outerResourceRejections
+                << ",\"orphanQuotaDrops\":" << probe.decoder.outerOrphanDroppedByQuotaCount
+                << ",\"droughtFrames\":" << probe.longestAfterJoinNoUsefulEquationFrames << "}\n";
+            INFO(status.message);
+            REQUIRE(status);
+            REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+            REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 6ULL * 1024ULL * 1024ULL);
+            REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+            REQUIRE(probe.decoder.finalRenameSucceeded == true);
+            REQUIRE(probe.decoder.finalReopenVerified == true);
+            REQUIRE(probe.decoder.outerConflictRejections == 0);
+            REQUIRE(probe.spatialCommitAndLeaseVerified);
+            REQUIRE(probe.peakActiveDecoders <= probe.decoder.outerActiveDecoderLimit);
+            REQUIRE(probe.peakReservedDecoderBytes <= 1024ULL * 1024ULL * 1024ULL);
+            REQUIRE(probe.segmentTrace.size() == config.segmentCount);
+            for (std::size_t ordinal = 0; ordinal < probe.segmentTrace.size(); ordinal++)
+            {
+                const auto& trace = probe.segmentTrace[ordinal];
+                REQUIRE(trace.completedFrame);
+                std::cout << "{\"probe\":\"FixedUsefulCadenceSegment\",\"logicalFps\":" << logicalFps << ",\"initialPercent\":" << initialPercent
+                    << ",\"ordinal\":" << ordinal << ",\"completedFrame\":" << *trace.completedFrame
+                    << ",\"alreadyCompletedBlocks\":" << trace.alreadyCompletedBlocks << "}\n";
+            }
+            std::ifstream file(probe.publishedPath, std::ios::binary);
+            REQUIRE(file);
+            std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+            file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+            REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+            REQUIRE(file.peek() == std::char_traits<char>::eof());
+            REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+            if (sharedDigest)
+            {
+                REQUIRE(*sharedDigest == probe.expectedWholeFileDigest);
+            }
+            sharedDigest = probe.expectedWholeFileDigest;
+        }
+    }
+}
+
+TEST_CASE("Budget-bound decoder admission is compared with fixed eight on the identical spatial sender",
+    "[application][budgeted-decoder-recovery][receiver][publish]")
+{
+    Scratch scratch;
+    for (const auto& [erasureModel, firstObservedFrame] : std::array{
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter, 15000ULL},
+        std::pair{pbapp::UnifiedRecoveryErasureModel::PeriodicFifth, 0ULL}})
+    {
+        DYNAMIC_SECTION("Loss " << static_cast<unsigned int>(erasureModel) << " join " << firstObservedFrame)
+        {
+            std::array<pbapp::UnifiedGraduationRecoveryProbeSnapshot, 2> probes;
+            for (std::size_t mode = 0; mode < probes.size(); mode++)
+            {
+                const auto output = scratch.Path() / (std::to_wstring(static_cast<unsigned int>(erasureModel)) + L"-" + std::to_wstring(mode));
+                REQUIRE(std::filesystem::create_directory(output));
+                pbapp::UnifiedGraduationRecoveryProbeConfig config;
+                config.segmentCount = 13;
+                config.segmentBytes = 6U * 1024U * 1024U;
+                config.grayFastSpatialInterleave = true;
+                config.erasureModel = erasureModel;
+                config.firstObservedLogicalFrame = firstObservedFrame;
+                config.maximumSenderLogicalFrames = 60000;
+                config.collectSegmentTrace = true;
+                config.budgetBoundDecoders = mode != 0;
+                auto& probe = probes[mode];
+                const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+                std::cout << "{\"probe\":\"BudgetBoundDecoderRecovery\",\"syntheticNoRaster\":true,\"budgetBound\":" << config.budgetBoundDecoders
+                    << ",\"lossModel\":" << static_cast<unsigned int>(erasureModel) << ",\"joinFrame\":" << firstObservedFrame
+                    << ",\"success\":" << static_cast<bool>(status) << ",\"frames\":" << probe.senderLogicalFrames
+                    << ",\"wraps\":" << probe.completedCarouselPasses << ",\"verifiedRawBytes\":" << probe.decoder.verifiedRawBytes
+                    << ",\"uniqueSymbols\":" << probe.decoder.outerUniqueSymbols << ",\"peakActive\":" << probe.peakActiveDecoders
+                    << ",\"peakReservedBytes\":" << probe.peakReservedDecoderBytes << ",\"countLimit\":" << probe.decoder.outerActiveDecoderLimit
+                    << ",\"byteLimit\":" << probe.decoder.outerTotalDecoderByteLimit << ",\"fecDeferred\":" << probe.deferredResourceBusyCount
+                    << ",\"resourceRejections\":" << probe.decoder.outerResourceRejections
+                    << ",\"orphanQuotaDrops\":" << probe.decoder.outerOrphanDroppedByQuotaCount
+                    << ",\"drought\":" << probe.longestAfterJoinNoUsefulEquationFrames << "}\n";
+                INFO(status.message);
+                REQUIRE(status);
+                REQUIRE(probe.decoder.state == pbapp::DecoderState::Completed);
+                REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 6ULL * 1024ULL * 1024ULL);
+                REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+                REQUIRE(probe.decoder.finalRenameSucceeded == true);
+                REQUIRE(probe.decoder.finalReopenVerified == true);
+                REQUIRE(probe.decoder.outerConflictRejections == 0);
+                REQUIRE(probe.spatialCommitAndLeaseVerified);
+                REQUIRE(probe.decoder.budgetBoundDecoderAdmission == config.budgetBoundDecoders);
+                REQUIRE(probe.peakActiveDecoders <= probe.decoder.outerActiveDecoderLimit);
+                REQUIRE(probe.peakReservedDecoderBytes <= 1024ULL * 1024ULL * 1024ULL);
+                std::ifstream file(probe.publishedPath, std::ios::binary);
+                REQUIRE(file);
+                std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+                file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+                REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+                REQUIRE(file.peek() == std::char_traits<char>::eof());
+                REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+            }
+            REQUIRE(probes[1].expectedWholeFileDigest == probes[0].expectedWholeFileDigest);
+            REQUIRE(probes[1].senderLogicalFrames <= probes[0].senderLogicalFrames);
+            if (erasureModel == pbapp::UnifiedRecoveryErasureModel::PeriodicFifth)
+            {
+                REQUIRE(probes[1].peakActiveDecoders > 8);
+                REQUIRE(probes[1].deferredResourceBusyCount == 0);
+                REQUIRE(probes[1].senderLogicalFrames < probes[0].senderLogicalFrames);
+            }
+        }
+    }
 }

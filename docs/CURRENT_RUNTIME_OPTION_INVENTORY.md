@@ -13,6 +13,19 @@
 
 Status: implementation inventory for the first Windows GUI. This document records only options that are reachable through the current worktree's real public bindings, layered on pre-GUI baseline HEAD `80699813b595bcf6db64047b50d31056872e33e1`. The frozen annotated `phase1-gate-pass` tag object remains `fde56c4c4e7124e8ffe29a0dcb619f8236781ebb` and still peels to that same baseline commit. This is not a profile certification statement.
 
+## 2026-09-14 非本机私有实验接线补记（不改变正式默认）
+
+本节是后续实际构建/定向测试与私有现场样本的新增记录，不继承顶部2026-09-09“未构建”的整理口径；准确结果及限制见[非本机当前会话§21.27–§21.29](REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md)。旧GUI表仍是历史，未因新增CLI自动获得新控件或发布资格。
+
+| 显式入口 | 实际约束与报告 |
+|---|---|
+| Decoder `--budget-bound-decoders` | 仅live `unified-gray-fast`，默认关闭；拒绝capture-only、Replay输入/输出及正式measurement混用。活动名额由原1GiB总预留、512MiB每实例、256MiB resume等预算与有限segment计数共同约束，不再固定8；正式默认/GUI仍8。顶层及阶段计数输出`budgetBoundDecoderAdmission`，实验运行不挂正式measurement记录器。 |
+| Encoder `--grayfast-spatial-interleave` | 显式GrayFast多段帧内交织，默认关闭；不改变Transport/wire。正式measurement的单Segment帧身份尚不适用，明确拒绝混用。 |
+| Encoder `--grayfast-short-initial-airtime` | 必须同时指定上一个flag；仅将>12段graduation文件的首轮airtime设为当前完整预算65%，保留M后续完整修复访问。小文件barrier不变。报告`grayFastSpatialInterleave`和`configuredInitialAirtimePercent`；当前较好链路有样本收益，但四分之一保留帧模型退化，不是普适/默认策略。 |
+| Encoder `--session-state-root ABSOLUTE_PATH` | 可为Unified实验提供独立持久状态根，默认仍原用户目录；不是payload旁路。用于干净对照隔离旧Sender会话；仍须检查resumed/source stability与双方Session，不靠新exe哈希推断新会话。 |
+
+这些私有包的0.75尺度诊断与GPU重采样尚未完成生产Profile分域，也没有认证任意分辨率；两个完整指定文件的最终时间仍以实传独立验证为准。所有摘要、安全发布、重开、冲突拒绝及资源门均保留。
+
 ## Product boundary used by the GUI
 
 - Instant LocalDesktop only: the Encoder broadcasts visual frames until the user stops it; the Decoder converges independently.

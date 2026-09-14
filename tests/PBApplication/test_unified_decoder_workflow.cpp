@@ -88,6 +88,48 @@ TEST_CASE("G22 Unified accepts all supported sizes without confirmation and pres
     REQUIRE(historicalDecision.Value() == pbprotocol::OutputReservationDecision::RequiresUserConfirmation);
 }
 
+TEST_CASE("Budget-bound decoder runtime is explicit GrayFast only and leaves product defaults unchanged",
+    "[application][budgeted-decoder-runtime][policy]")
+{
+    Scratch scratch;
+    auto config = pbapp::MakeUnifiedDecoderConfig(scratch.Directory(L"out").wstring(), Region());
+    REQUIRE_FALSE(config.budgetBoundDecoders);
+    config.budgetBoundDecoders = true;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::UnifiedGray;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    REQUIRE(pbapp::ValidateDecoderConfig(config));
+    config.replayOutputPath = L"not-enabled.pbrv2";
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.replayOutputPath.clear();
+    config.replayInputPath = L"not-enabled.pbrv2";
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.replayInputPath.clear();
+    config.diagnosticCaptureOnly = true;
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.diagnosticCaptureOnly = false;
+    config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
+    REQUIRE_FALSE(pbapp::ValidateDecoderConfig(config));
+    config.measurement.reset();
+    for (const bool budgetBound : {false, true})
+    {
+        config.budgetBoundDecoders = budgetBound;
+        const auto state = std::make_shared<ReceiveState>();
+        pbapp::DecoderRuntime runtime(Services(state));
+        REQUIRE(runtime.Start(config));
+        REQUIRE(WaitFor([&runtime]
+        {
+            return runtime.GetSnapshot().outerActiveDecoderLimit != 0;
+        }));
+        const auto snapshot = runtime.GetSnapshot();
+        runtime.Stop();
+        REQUIRE(snapshot.budgetBoundDecoderAdmission == budgetBound);
+        REQUIRE(snapshot.outerActiveDecoderLimit == (budgetBound ? 65536 : 8));
+        REQUIRE(snapshot.outerTotalDecoderByteLimit == 1024ULL * 1024ULL * 1024ULL);
+    }
+}
+
 TEST_CASE("G16 Unified Decoder policy selects real automatic runtime and bounded physical ROI", "[application][g16][model]")
 {
     Scratch scratch;

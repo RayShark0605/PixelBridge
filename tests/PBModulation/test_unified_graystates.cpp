@@ -1,4 +1,5 @@
 #include "pbmodulation/unified_visual.h"
+#include "unified_gray_resampling_fixture.h"
 #include <fstream>
 #include <filesystem>
 #include <cstring>
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -855,4 +857,109 @@ TEST_CASE("Gray-state identity rejects the product color pair and vice versa", "
     std::vector<std::byte> other(kUnifiedFrameBgraBytes);
     REQUIRE(static_cast<bool>(EncodeUnifiedVisualFrame(fixture.bootstrap, fixture.coded, other)));
     REQUIRE(other == pixels);
+}
+
+TEST_CASE("Gray sub-unit geometry requires a valid exact Bootstrap pair and preserves stricter caller bounds",
+    "[unified][graystates][grayfast][geometry][profile-scoped]")
+{
+    const auto MakeBootstrap = [](const LocalDesktopBootstrapBinding& binding)
+    {
+        LocalDesktopObservation bootstrap;
+        bootstrap.erasure = LocalDesktopErasureReason::None;
+        bootstrap.geometry = {17, 31, 0.85, 0.85, 0};
+        const pbprotocol::BootstrapRecord record{pbprotocol::kBootstrapVersion, pbprotocol::GetProtocolVersion(),
+            binding.visualLayoutVersion, binding.visualProfileId, pbprotocol::SessionTag{0x12345678}, 19, 0, 0};
+        REQUIRE(pbprotocol::SerializeBootstrapRecord(record, bootstrap.canonical44));
+        return bootstrap;
+    };
+    const std::array grayBindings{
+        LocalDesktopBootstrapBinding{pbprotocol::kGrayStatesExperimentalProfile.visualProfileId, pbprotocol::kGrayStatesExperimentalProfile.visualLayoutVersion},
+        LocalDesktopBootstrapBinding{pbprotocol::kGrayFastExperimentalProfile.visualProfileId, pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion}};
+    const LocalDesktopGeometry sentinel{11, 13, 1.5, 1.5, 0};
+    for (const auto& binding : grayBindings)
+    {
+        CAPTURE(binding.visualProfileId, binding.visualLayoutVersion);
+        auto bootstrap = MakeBootstrap(binding);
+        LocalDesktopGeometry resolved = sentinel;
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(bootstrap.geometry, 2560, 1440, {}, resolved));
+        REQUIRE(resolved == sentinel);
+        REQUIRE(ResolveUnifiedVisualSamplingGeometry(bootstrap, 2560, 1440, {}, resolved));
+        REQUIRE(resolved == bootstrap.geometry);
+        const LocalDesktopGeometry lastAccepted = resolved;
+        for (const double scale : {0.74, 2.01, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+        {
+            auto invalid = bootstrap;
+            invalid.geometry.scaleX = scale;
+            REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(invalid, 2560, 1440, {}, resolved));
+            REQUIRE(resolved == lastAccepted);
+        }
+        UnifiedVisualDecodePolicy stricter;
+        stricter.locator.minimumScale = 1;
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(bootstrap, 2560, 1440, stricter, resolved));
+        stricter = {};
+        stricter.locator.maximumScale = 0.8;
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(bootstrap, 2560, 1440, stricter, resolved));
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(bootstrap, 0, 1440, {}, resolved));
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(bootstrap, 100, 1440, {}, resolved));
+        auto cropped = bootstrap;
+        cropped.geometry.originX = -1;
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(cropped, 2560, 1440, {}, resolved));
+        auto damaged = bootstrap;
+        damaged.canonical44[20] ^= std::byte{1};
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(damaged, 2560, 1440, {}, resolved));
+        damaged = bootstrap;
+        damaged.erasure = LocalDesktopErasureReason::InvalidGeometry;
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(damaged, 2560, 1440, {}, resolved));
+        REQUIRE(resolved == lastAccepted);
+        bootstrap.geometry.scaleX = 0.75;
+        bootstrap.geometry.scaleY = 0.75;
+        REQUIRE(ResolveUnifiedVisualSamplingGeometry(bootstrap, 2560, 1440, {}, resolved));
+    }
+    const std::array rejectedBindings{
+        LocalDesktopBootstrapBinding{pbprotocol::kUnifiedVisualProfileId, 10},
+        LocalDesktopBootstrapBinding{pbprotocol::kBlankControlExperimentalProfile.visualProfileId, pbprotocol::kBlankControlExperimentalProfile.visualLayoutVersion},
+        LocalDesktopBootstrapBinding{pbprotocol::kGrayFastExperimentalProfile.visualProfileId, 12},
+        LocalDesktopBootstrapBinding{pbprotocol::kGrayStatesExperimentalProfile.visualProfileId, 13},
+        LocalDesktopBootstrapBinding{0x1234567890ULL, 13}};
+    for (const auto& binding : rejectedBindings)
+    {
+        CAPTURE(binding.visualProfileId, binding.visualLayoutVersion);
+        const auto bootstrap = MakeBootstrap(binding);
+        LocalDesktopGeometry resolved = sentinel;
+        REQUIRE_FALSE(ResolveUnifiedVisualSamplingGeometry(bootstrap, 2560, 1440, {}, resolved));
+        REQUIRE(resolved == sentinel);
+    }
+}
+
+TEST_CASE("Gray forward sampling recovers exact mixed blocks after independent fractional downscaling",
+    "[unified][graystates][grayfast][channel][profile-scoped]")
+{
+    const auto Exercise = [](const auto& fixture)
+    {
+        std::vector<std::byte> canonical(kUnifiedFrameBgraBytes);
+        REQUIRE(EncodeUnifiedVisualFrame(fixture.bootstrap, fixture.coded, canonical));
+        const auto pixels = pbtest::MakeUnifiedGrayResampledFixture(canonical, 850, true, 250);
+        const auto parsed = pbprotocol::ParseBootstrapRecord(fixture.bootstrap);
+        REQUIRE(parsed);
+        const UnifiedExpectedFrameIdentity identity{true, parsed.Value().sessionTag, true, parsed.Value().frameSequence,
+            parsed.Value().visualProfileId, parsed.Value().visualLayoutVersion};
+        const LumaView view{pixels, 2560, 1440, 2560 * 4, LumaPixelFormat::Bgra8};
+        UnifiedVisualCpuOracle oracle = MakeOracle();
+        const auto observation = oracle.DecodeMixedFrame(view, identity);
+        REQUIRE(observation.IsFrameAvailable());
+        REQUIRE(observation.acceptedBlocks == kUnifiedGrayFrameCodewordCount);
+        const auto accepted = oracle.GetAcceptedBlocks();
+        REQUIRE(accepted.size() == fixture.expected.size());
+        for (std::size_t slot = 0; slot < accepted.size(); slot++)
+        {
+            REQUIRE(accepted[slot].size == fixture.expected[slot].size());
+            REQUIRE(std::equal(fixture.expected[slot].begin(), fixture.expected[slot].end(), accepted[slot].bytes.begin()));
+        }
+    };
+    for (const std::uint64_t sequence : {64ULL, 71ULL, 79ULL})
+    {
+        CAPTURE(sequence);
+        Exercise(BuildGrayFixture(sequence));
+        Exercise(BuildGrayFastFixture(sequence));
+    }
 }

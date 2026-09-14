@@ -668,98 +668,125 @@ void DemodUnifiedCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             }
             return;
         }
-        const uint baseModel = (uint)PhaseOutput[InterleavePhase & 7].w;
-        uint projected[25];
+        // Forward-resample each gray candidate symbol to
+        // the actual captured pixel grid. Duplicate physical observations
+        // contribute once, matching the independently verified scalar model.
+        float observedLuma[25];
+        float4 interpolationWeights[25];
+        uint4 sourceChips[25];
+        bool distinct[25];
         bool symbolModelValid = true;
         [loop]
         for (uint projectionChip = 0; projectionChip < 25; projectionChip++)
         {
-            projected[projectionChip] = ProjectLumaChip(uint2(binding.OriginX, binding.OriginY),
-                projectionChip, baseModel);
-            symbolModelValid = symbolModelValid && projected[projectionChip] < 25;
-        }
-        // Two distance tables: every mask scored against its LOW-level and its
-        // HIGH-level ladder expectation, each under two representation
-        // hypotheses - raw chip luma (exact at a 1:1 canvas) and the
-        // cross-sharpened kernel that deconvolves resampling blur (the same
-        // kernel the SC6 luma lanes use). The per-symbol minimum keeps the
-        // exact canvas at a near-zero true-symbol distance while resampled
-        // captures fall back to the sharpened fit; a per-tile foreground-mean
-        // level decision cannot survive resampling (the chip mixture crosses
-        // the level midpoint and flips every HIGH tile at full confidence).
-        float symbolDistances[64];
-        float highLevelDistances[64];
-        [unroll]
-        for (uint symbol = 0; symbol < 64; symbol++)
-        {
-            float lowDistance = 0.0;
-            float lowSharpened = 0.0;
-            float highDistance = 0.0;
-            float highSharpened = 0.0;
-            if (symbolModelValid)
+            const float2 tileOrigin = float2(binding.OriginX, binding.OriginY);
+            const float2 logicalChip = tileOrigin + float2(projectionChip % 5, projectionChip / 5);
+            const float2 origin = float2(OriginX, OriginY);
+            const float2 scale = float2(ScaleX, ScaleY);
+            const float2 captured = floor(origin + scale * (logicalChip + 0.5));
+            if (any(captured < 0.0) || captured.x >= (float)SourceWidth || captured.y >= (float)SourceHeight)
             {
-                const uint mask = GrayMasksBySymbol[symbol];
-                [loop]
-                for (uint chip = 0; chip < 25; chip++)
+                symbolModelValid = false;
+                break;
+            }
+            const uint2 pixel = (uint2)captured;
+            // Positive axis scales make equal rounded coordinates contiguous.
+            // A Cartesian observation is new iff both axes are new; this is
+            // exactly the scalar all-previous-pixels deduplication without a
+            // per-thread coordinate table or quadratic nested loop.
+            const float2 previousCaptured = floor(origin + scale * (logicalChip - 0.5));
+            distinct[projectionChip] = (projectionChip % 5 == 0 || captured.x != previousCaptured.x) &&
+                (projectionChip / 5 == 0 || captured.y != previousCaptured.y);
+            observedLuma[projectionChip] = Luma(RoiTexture.Load(int3(pixel, 0)).bgr * 255.0);
+            const float2 logical = (captured + 0.5 - origin) / scale - 0.5 - tileOrigin;
+            const float2 topLeft = floor(logical);
+            const float2 fraction = logical - topLeft;
+            interpolationWeights[projectionChip] = float4((1.0 - fraction.x) * (1.0 - fraction.y),
+                fraction.x * (1.0 - fraction.y), (1.0 - fraction.x) * fraction.y, fraction.x * fraction.y);
+            [unroll]
+            for (uint neighbor = 0; neighbor < 4; neighbor++)
+            {
+                const float2 source = topLeft + float2(neighbor % 2, neighbor / 2);
+                sourceChips[projectionChip][neighbor] = all(source >= 0.0) && all(source < 5.0) ?
+                    (uint)source.y * 5u + (uint)source.x : 25u;
+            }
+        }
+        if (!symbolModelValid)
+        {
+            TileSamplingFailures[tileOrdinal] = 1;
+            [unroll]
+            for (uint failedPlane = 0; failedPlane < 7; failedPlane++)
+            {
+                if (grayPlanes[failedPlane] < UnifiedGrayMetricCount)
                 {
-                    const bool foregroundChip = ((mask >> min(projected[chip], 24)) & 1) != 0;
-                    const float lowExpected = foregroundChip ? ladderLow : background;
-                    const float highExpected = foregroundChip ? ladderHigh : background;
-                    const float rawValue = Luma(samples[chip]);
-                    const float rawLow = rawValue - lowExpected;
-                    const float rawHigh = rawValue - highExpected;
-                    lowDistance += rawLow * rawLow;
-                    highDistance += rawHigh * rawHigh;
-                    const float sharpenedValue = lumaSamples[chip];
-                    const float sharpenedLow = sharpenedValue - lowExpected;
-                    const float sharpenedHigh = sharpenedValue - highExpected;
-                    lowSharpened += sharpenedLow * sharpenedLow;
-                    highSharpened += sharpenedHigh * sharpenedHigh;
+                    MetricOutput[grayPlanes[failedPlane]] = 0.0;
                 }
             }
-            symbolDistances[symbol] = min(lowDistance, lowSharpened);
-            highLevelDistances[symbol] = min(highDistance, highSharpened);
+            return;
         }
-        // Normalize by the tile's peak-luma contrast: a nine-chip mask flip
-        // then yields 9 x 2048 = 18432 at EITHER ladder level, the magnitude
-        // the frozen min-sum offset (2048) and message accumulation proved
-        // safe in the SC6 product path. The peak survives capture resampling
-        // gracefully, unlike a per-tile foreground mean.
-        const float tileContrast = peakLuma - background;
-        const float maskScale = tileContrast > 0.0 ? 2048.0 / (tileContrast * tileContrast) : 0.0;
+        // Reduce distances directly into the seven bit partitions. Keeping
+        // 128 per-symbol distances would exceed the existing 64-thread
+        // kernel's indexable-register recommendation on Shader Model 5.
+        float zeroDistances[7];
+        float oneDistances[7];
         [unroll]
-        for (uint plane = 0; plane < 7; plane++)
+        for (uint initialPlane = 0; initialPlane < 7; initialPlane++)
         {
-            float zeroDistance = 3.402823466e+38;
-            float oneDistance = 3.402823466e+38;
-            [unroll]
-            for (uint symbol = 0; symbol < 64; symbol++)
+            zeroDistances[initialPlane] = 3.402823466e+38;
+            oneDistances[initialPlane] = 3.402823466e+38;
+        }
+        [loop]
+        for (uint symbol = 0; symbol < 64; symbol++)
+        {
+            const uint mask = GrayMasksBySymbol[symbol];
+            float lowDistance = 0.0;
+            float highDistance = 0.0;
+            [loop]
+            for (uint chip = 0; chip < 25; chip++)
             {
-                if (plane == 6)
+                if (!distinct[chip])
                 {
-                    // The level bit compares the best HIGH-level symbol with
-                    // the best LOW-level symbol.
-                    zeroDistance = min(zeroDistance, symbolDistances[symbol]);
-                    oneDistance = min(oneDistance, highLevelDistances[symbol]);
+                    continue;
+                }
+                float foregroundWeight = 0.0;
+                [unroll]
+                for (uint neighbor = 0; neighbor < 4; neighbor++)
+                {
+                    foregroundWeight += ((mask >> sourceChips[chip][neighbor]) & 1u) != 0 ?
+                        interpolationWeights[chip][neighbor] : 0.0;
+                }
+                const float lowExpected = background + (ladderLow - background) * foregroundWeight;
+                const float highExpected = background + (ladderHigh - background) * foregroundWeight;
+                const float lowDifference = observedLuma[chip] - lowExpected;
+                const float highDifference = observedLuma[chip] - highExpected;
+                lowDistance += lowDifference * lowDifference;
+                highDistance += highDifference * highDifference;
+            }
+            zeroDistances[6] = min(zeroDistances[6], lowDistance);
+            oneDistances[6] = min(oneDistances[6], highDistance);
+            const float bestDistance = min(lowDistance, highDistance);
+            [unroll]
+            for (uint partitionPlane = 0; partitionPlane < 6; partitionPlane++)
+            {
+                if (((symbol >> partitionPlane) & 1u) != 0)
+                {
+                    oneDistances[partitionPlane] = min(oneDistances[partitionPlane], bestDistance);
                 }
                 else
                 {
-                    // Mask planes partition symbols by their best level
-                    // hypothesis.
-                    const float best = min(symbolDistances[symbol], highLevelDistances[symbol]);
-                    if (((symbol >> plane) & 1) != 0)
-                    {
-                        oneDistance = min(oneDistance, best);
-                    }
-                    else
-                    {
-                        zeroDistance = min(zeroDistance, best);
-                    }
+                    zeroDistances[partitionPlane] = min(zeroDistances[partitionPlane], bestDistance);
                 }
             }
-            if (grayPlanes[plane] < UnifiedGrayMetricCount)
+        }
+        // Match the scalar forward model before unchanged metric quantization.
+        const float tileContrast = peakLuma - background;
+        const float maskScale = tileContrast > 0.0 ? 8192.0 / (tileContrast * tileContrast) : 0.0;
+        [unroll]
+        for (uint outputPlane = 0; outputPlane < 7; outputPlane++)
+        {
+            if (grayPlanes[outputPlane] < UnifiedGrayMetricCount)
             {
-                MetricOutput[grayPlanes[plane]] = (oneDistance - zeroDistance) * maskScale;
+                MetricOutput[grayPlanes[outputPlane]] = (oneDistances[outputPlane] - zeroDistances[outputPlane]) * maskScale;
             }
         }
         return;

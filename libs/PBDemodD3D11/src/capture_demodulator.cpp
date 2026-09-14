@@ -227,7 +227,7 @@ pbmodulation::LocalDesktopObservation DecodeUnifiedBootstrap(const pbmodulation:
         {
             observation.erasure = pbmodulation::LocalDesktopErasureReason::UnsupportedRecord;
         }
-        else if (!pbmodulation::ResolveUnifiedVisualSamplingGeometry(observation.geometry,
+        else if (!pbmodulation::ResolveUnifiedVisualSamplingGeometry(observation,
             view.width, view.height, policy, samplingGeometry))
         {
             observation.erasure = pbmodulation::LocalDesktopErasureReason::InvalidGeometry;
