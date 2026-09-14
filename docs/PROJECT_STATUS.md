@@ -212,3 +212,6 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 6. **删除文档一律用 `git rm`** 并在 `DOC_HISTORY.md` 登记 blob SHA-1，保证逐字节可恢复；不建 `docs/archive/` 目录。
 
 - 2026-09-14：`fb6a849` 在紧凑 BGRA 提交路径使用一次有界 `memcpy`，保留 stride fallback。远端 25 MiB 新 tag `nl0914-t3-submit-point25` 全门通过，126,897 ms、UniqueVisualFPS 7.5280、Sender 29.503 fps；总时间与 126,906 ms 参考持平（-9 ms），仅证明提交侧余量改善，未改变远端唯一帧瓶颈，Medium/Big 不重跑。
+
+- 2026-09-15（O3b/T4收口）：当前receiver 18码字并行FEC已经存在，不重复实现。artifact-only发送端Fast microbench串行/3参与者池p50=1.063/0.3675ms，20736000B双路径输入逐字节一致，绝对收益不足以据此新增生产线程。新T4保留T2封存包、linear，单点配置30→22（由实测21.655向上取整）完成100MB529685ms，四门/独立SHA全过；比linear@30快19.84%，仍比point@30参考慢0.52%，不晋级、不重跑Medium/Big。见findings §21.47–21.49及 `SESSION_HANDOFF_20260915_THROUGHPUT.md`。
+- 勘误：此前T3 memcpy“已改善提交余量”的因果措辞撤回，单次±9ms总时差不构成性能证明；orphanAdmitted、capture drop、stale drop非零不能称“所有计数0”。GPU后CPU字段是Poll阶段而非纯FEC。完整目标仍未完成，历史双文件O总时间4312469ms不变。

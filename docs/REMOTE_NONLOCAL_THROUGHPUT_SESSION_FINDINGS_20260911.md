@@ -1395,3 +1395,47 @@ point组526930ms与R的525968ms（同配置、Q期二进制）相差+0.18%，同
 结果：`126,897 ms`，UniqueVisualFPS=`7.528021963578194`，Sender submitted FPS=`29.50310765850552`。同候选之前的 point 25 MiB 参考为 `126,906 ms` / `7.514192759443952` / `28.744385363199285`；总时间变化 `-9 ms`（远小于单次远端噪声），但 Sender 提交速率由 `28.744` 升至 `29.503`，说明紧凑拷贝优化改善了本机提交侧余量，尚未证明能缩短远端唯一帧捕获瓶颈。不能据此重跑 Medium/Big 或宣称总目标完成。
 
 定向验证：`PBRenderD3DTests.exe '*'` 407 assertions/24 cases 通过；`PBApplicationTests.exe 'sender*'` 8151 assertions/1 case 通过。未执行 full CTest、Medium/Big 远端重跑；point 仍为默认采样。
+
+### 21.47 O3b 当前实现核对、发送端本地窄基准及 T3 归因勘误
+
+用户再次明确授权 O3b 本地评估后，当前源码确认：接收端 `UnifiedVisualCpuOracle` 的并行 FEC 已在历史 §12 落地，并扩展至 GrayFast 的18个码字；每参与线程私有 Robust/Fast decoder，按槽合并结果，带逐槽 diagnostics 时保留串行路径。不能再把“新增接收端18码字并行”当作尚未实施的优化。此前把O3b重新提出为未实施项不准确，本文以当前源码为准。
+
+新 artifact-only 微基准 `nl0914-o3b-encode-bench01/` 链接当前正常 CMake 构建的 PBInnerFec/PBProtocol，测发送端编码而非接收解码。每帧18码字、Fast/Robust/Balanced三profile、每profile128个独立伪随机输入帧（前8帧warm-up、120帧计时），串行与2个持久worker+主线程的3参与者池逐帧交替先后顺序。全部6912个码字的串并输出逐字节相等，含两路径编码输入20,736,000B；没有修改生产池、wire、矩阵、摘要或资源门。
+
+| profile | serial p50 / p95 ms | pool3 p50 / p95 ms | serial / pool3 total ms |
+|---|---:|---:|---:|
+| Fast | 1.063 / 1.3194 | 0.3675 / 0.6672 | 131.115 / 49.3632 |
+| Robust | 1.1461 / 1.4282 | 0.417 / 0.6913 | 141.835 / 54.3802 |
+| Balanced | 1.0806 / 1.3681 | 0.387 / 0.6249 | 134.303 / 49.9183 |
+
+这是本机 CPU 微基准，不是远端 CPU、raster、Wirehair、完整文件或吞吐证据。Fast绝对收益约0.7ms/帧，不据此往生产热路径新增线程池。测试池未注入线程创建失败；它没有进入产品构建。完整源码、构建/库/结果hash见该目录 `identity.json`，可用新build/output位置复跑。
+
+**T3归因勘误**：§21.46 的25,000,000B是25 MB而非25 MiB；参考Sender准确值28.744385363199285。单次非随机A/B中runtime126906→126897ms、submitted FPS28.744→29.503，只能记录观测差异，不能证明 `memcpy` 导致了提交余量改善，更不能证明“唯一瓶颈已定位”。BaseLuma FEC failure=20而非所有层错误均0；被擦除的码字未越过CRC/identity/最终摘要门，outer冲突/资源/延期/orphan quota均0。T3包沿用T2部分source metadata未更新，原包不改写；补充的 `candidate-t3-submit-copy-provenance-correction.json` 和完整source patch给出fb6a849源码与837b5a69... Encoder的对应边界，内嵌commit仍是configure时25a08aa，不冒充新release。
+
+**下一窄假设（尚未完成）**：fast-linear配置30而实际submitted21.655，`CalculateUnifiedGraduationTarget`仍按配置fps线性扩大base和margin；同100MB outerAlreadyCompletedSymbols=24514，point参考仅4743，outerUniqueSymbols均约61400。按既有观测ceil(21.655)=22预注册单点配置，保留同一T2封存包、linear、6MiB、首轮100%、budget-bound及全门。新tag `nl0914-t4-linear-f22-100m`，唯一变量30→22，依据文件 `nl0914-t4-linear-f22-100m-preregistration.json`。不是FPS扫描，不改生产调度，结果必须看完整100MB发布/重开/独立SHA和native时间，不能从早期进度宣称胜出。
+
+### 21.48 T4 固定22fps的100MB结果：修复linear退化19.84%，但未超越point基线
+
+预注册单点 `nl0914-t4-linear-f22-100m` 已完成。与 `nl0914-t2-spatial-linear100` 同一封存T2 Encoder/Decoder、linear、6MiB、首轮100%、空间交织、预算约束接收；只将configured FPS从30变为22，没有中途观测反馈或调参。100,000,000B、16段（§21.41的“17段”以实际sender report的16段勘误）、receiver-first、新Session/无resume/源稳定、whole digest/safe rename/final reopen/published及第二次独立SHA全部通过。SessionId=`166c8ec92d4b59f588ed2e9a2bdff33d`，SessionTag=`510792035862112369`；SHA256=`4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`，BLAKE3=`32d85d4af2aca6c97e3a7104a47163701708dc554f24b47f900349afa1ea4afc`。
+
+| 指标 | T2 linear@30 | T4 linear@22 | 较早point@30参考（非严格配对） |
+|---|---:|---:|---:|
+| 完整native runtime ms | 660758 | 529685 | 526930 |
+| Sender实际submitted FPS | 21.655129 | 21.145716 | 29.230819 |
+| Receiver UniqueVisualFPS | 7.742468 | 7.754428 | 7.493378 |
+| outerUniqueSymbols | 61400 | 61400 | 61401 |
+| outerAlreadyCompletedSymbols | 24514 | 7349 | 4743 |
+| capture dropped / arrived | 585 / 7800 | 708 / 6627 | 1907 / 7623 |
+| staleResultDrops | 0 | 1 | 1 |
+
+T4较同T2 linear@30省131073ms（19.836763%），已完成段重复减少70.021212%；实际submitted与unique FPS基本接近原linear，但用更小配置预算消除了大部分无效发送，支持“配置预算/实际供帧失配”假设。配置FPS也影响其他调度节奏，未隔离每个机制；不是统计因果证明。T4仍比较早点采样参考慢2755ms（0.522840%），不宣布胜出，不晋级linear默认，不启动完整Medium/Big。
+
+T4资源拒绝、Outer冲突、deferred、orphan quota/conflict为0；**orphanAdmitted=33、capture dropped=708、staleResultDrops=1不是0**，保留所有原始计数。前台端点句柄1656821064→1205801604不同，未发出任何焦点/输入操作，不能声称全程前台不变。远端2560×1600@240前后mode完全相同，receiver exit0，owned sender经已有WM_CLOSE退出分类Failed/exit1保持原样；最终registered liveProcesses为空、本机双端无进程。
+
+归因字段补充：`postGpuFecCpuTimeTotal100ns`在`Demodulator::Poll`外层计时，包含readback结果整理、hard bits、FEC、accepted block复制等，并非纯FEC时间。T4均值15.639881ms/observation、processCpuEquivalentCores=0.408084，不能拿它宣称“CPU并行化后即可提高unique FPS”。完整机器可读对照 `nl0914-t4-fixed22-comparison.json`；新run含外层guard、同Session/全门与第二次SHA证据。
+
+### 21.49 面向完整指定文件的剩余门槛（条件容量推导，不是实测成绩）
+
+当前GrayFast每码字净Transport上限1629B、最多18槽，全部都当有效payload也仅29322B/unique frame（乐观忽略Control/repair等开销）。若有效帧率仍维持当前约7.8Hz，则乐观encoded goodput≤228711.6B/s；以历史完整两个文件的encoded bytes总计1326192709B估算，乐观总时间也要5798.54秒，未计安全发布/重开耗时。这是“同encoded bytes且帧率不提高”条件下的代数上界，**不证明链路帧率不可提高，不替代真实整文件计时**。
+
+要匹配历史O两个完整文件4312.469秒，即使18槽全有用也需至少10.487864Hz；若每帧留1个Control槽则需11.104798Hz。故仅本地编码节省0.7ms、修复linear过量预算，尚不足以证明总目标改善；后续需要对实际unique-frame有效载荷率有直接证据的方案。新的visual profile/layout/Golden方向需另行明确授权，不能把历史O4（已演进为GrayFast）再说成未实现。证据 `nl0914-o3b-conditional-capacity-bound.json`。完整Medium/Big未在本轮重测，历史O成绩不改名为T2/T3/T4成绩。
