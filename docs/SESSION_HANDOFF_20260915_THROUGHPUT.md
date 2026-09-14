@@ -124,3 +124,9 @@ artifact-only 研究找到一个可继续审查的 6×6 方案：3×3 二值 mac
 已在 artifact-only 范围内建立结构化 2×2 macrocell 候选的 canonical raster/mapping/Golden oracle：256 symbols、base-4 LSB-first row-major，mapping hash=`d74ad6e0aac3c1b5d63159bd0708932997ad364b99f95b17e12775d2773977c9`，Golden hash=`7ba1ca8e1e7c4c7052395d738b77e1b97b5e0ad645b08d4d4c3d0420f9639259`。整数 1:1 采样下 identity/radius1/radius2 以及 gain 0.5/0.75/1.25 的 affine 校准代理均 256/256 exact；tie 和 invalid pilot 全部 fail-closed。fractional phase、rescale、chroma siting、gamma、codec/4:2:0、WGC/Citrix 未覆盖。
 
 `structured-multicell-safety-gates.json` 的 15 项模型安全门全部通过，但候选仍未进入生产 catalog/wire。完成 field 前仍需新 profile 审查、采样/codec 代理、构建封存，并由主人授权全新 tag 的 ≤25 MB 远端摘要/安全发布/reopen 运行；Medium/Big 不因该授权自动启动。
+
+## 18. 生产接入前的高影响身份冻结门
+
+只读审计确认结构化四级 macrocell 不是局部常量替换：需要独立 layout 14 manifest/mapping、20-slot 缓冲与 FEC 维度、CPU/GPU metric parity、应用层 opt-in、package/run-report 和定向测试；正式 catalog/default 保持不变。现有 canonical oracle 与 15 项安全模型门只能证明候选 artifact 前置条件。
+
+在修改生产源码前必须冻结一个新的 profile ID，不能复用已有 GrayFast8 artifact identity（其语义假设不同）。同时必须完成 clipping/gamma/phase/codec、CPU/GPU parity、wire/catalog 和资源门；未完成前不运行远端。该 ID 是 wire 兼容性和证据身份的高影响选择，需主人明确确认。

@@ -1543,3 +1543,11 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 采样边界已显式记录：仅覆盖整数对齐 1:1 pixel centers；fractional phase、rescale、chroma siting、gamma、codec/4:2:0、WGC/Citrix 均未通过。产物 `structured-multicell-canonical-oracle.py/json`，状态仍 `ARTIFACT_ONLY_NOT_ACCEPTED`。
 
 另建 `structured_multicell_safety_gates.py/json`，15 项模型门全部通过：identity/layout 与 mapping hash、20-slot/残余资源上限、重复/冲突 payload、pilot separation、tie ambiguity、摘要→安全发布→reopen、摘要不匹配阻断和既有 final target 防覆盖。该结果是安全状态模型证据，不是远端视觉或完整文件证据；仍需新 profile wire/catalog 审查、fractional phase/codec 代理和 ≤25 MB field test。
+
+### 21.60 生产接入审计：候选不是局部常量替换，需冻结新身份后再做分层实现
+
+对现有生产路径的只读审计确认，结构化 2×2×3×3 四级 luma 候选不能仅通过新增 Profile 常量接入：当前 Encoder/Decoder、mapping、CPU/GPU metric、FEC 缓冲、静态数组与测试大量绑定 layout 10/12/13 的 5×5 glyph、7-plane/18-slot 灰载波。安全的最小路线需要独立 layout 14 manifest、独立 mapping/codebook、最大 20-slot/metric buffer、CPU/GPU parity、显式 pilot/校准合同及应用层 opt-in；正式 product catalog/default 必须继续保持不变。
+
+因此尚未修改生产源码，也未启动 field。现有 canonical oracle（mapping `d74ad6e0...3977c9`、Golden `7ba1ca8e...9639259`）和 15 项安全模型门全部通过，只能作为候选前置证据。生产接入前还必须冻结一个**全新、不可与现有 GrayFast8 artifact identity 复用的 profile ID**，并完成 wire/catalog、FEC、CPU/GPU、package/run-report 及定向测试；极值 luma `[0,255]` 的 clipping/gamma/phase/codec 仍是现场门。
+
+只读审计报告的关键边界：`apps/common/application_model*`、`local_desktop_runtime`、`PBDemodD3D11`、`unified_visual_mapping.h`、`unified_visual.h/cpp` 和相关测试均需独立分支改动；naive 分支会导致 18/20 slot 缓冲或 FEC 维度错配。该审计不构成实现完成或吞吐改善证据。
