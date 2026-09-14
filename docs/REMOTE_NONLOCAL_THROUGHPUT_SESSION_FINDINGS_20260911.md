@@ -1485,3 +1485,9 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 为避免把 mask repair 的局部通过误当作鲁棒性，另做了 239,260 个候选 mask 的确定性有界搜索：未观察到与现有非零 mask 保持最小 Hamming 距离 9 的替换，当前屏蔽候选的最小距离为 8。固定 36-cell 最近距离模型的 ±2/4/8/16 luma 扰动筛选仍为 256×8 trials 全部 exact，但不含 gamma、缩放/相位、blur、codec、4:2:0、WGC/Citrix 或真实 BER/FER。证据 `grayfast8-mask-search.json`、`grayfast8-maskrepair-noise-model.json`、`grayfast8-maskrepair-oracle.json` 和汇总 `grayfast8-study-summary-v2.json`。
 
 因此下一门仍是：先完成 artifact-only 的几何/采样/codec 代理鲁棒性与新的完整 Golden/安全门复核，再由主人单独授权 ≤25 MB 远端 field test；不启动 Medium/Big、不改生产默认或正式 catalog。
+
+### 21.53 mask-repair 几何/亮度代理暴露严重脆弱性，暂不请求 field test
+
+在仍保持 artifact-only 的授权范围内，对 mask-repair `0x13B0C15` 做了受界 256-symbol 代理筛选。无变换和 16-level 量化下为 256/256 exact，但简单 1-cell box blur 仅 53/256 exact（15 ambiguous，错误率 79.30%），2-cell blur 仅 17/256 exact（3 ambiguous，错误率 93.36%）；对比度压缩至 75% 时为 192/256，压缩至 50% 时为 96/256。该结果不是 Citrix/codec 实测，却足以证明“mask table 修复后即可进入 ≤25 MB 现场”没有证据支持；当前不请求、不启动 field test。
+
+产物 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-geometry-proxy.json`。下一步若继续，只能先改变视觉表达以获得对 blur/contrast/phase 的稳健性，并重新生成完整 mapping/Golden/安全门；不得把当前 mask-repair 的 exact round-trip 或 synthetic luma 扰动结果升级为远端吞吐改进。
