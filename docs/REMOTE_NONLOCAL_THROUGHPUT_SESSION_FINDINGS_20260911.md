@@ -1457,3 +1457,5 @@ T4资源拒绝、Outer冲突、deferred、orphan quota/conflict为0；**orphanAd
 若仅作条件代数估计，并假设 T4 的 `7.754428 Hz` unique visual rate、其余开销及新 plane 恢复质量均不变，则 100 MB 的 `529,685 ms` 可按 18/20 缩至约 `476,716.5 ms`；此数字不是现场结果，不得替代完整门。更小 tile 或额外 plane 会改变误码率、亮度/色度映射、缩放相位、pilot/locator 几何及资源预算，必须新建 canonical raster、mapping hash、Decoder oracle、Golden vectors，并先通过错误 identity/layout 混用、冲突 payload、资源耗尽和 ≤25 MB 的完整摘要/安全发布/reopen 验证，再考虑 ≤100 MB paired 对照；Big 不因本授权自动获得许可。
 
 机器可读产物：`artifacts/nonlocal-stall-20260913-2111/nl0915-profile-offline-grayfast8-01/`（`profile_spec.json`、`packing_benchmark.json`、`identity.json`、`NOTES.md`、`run-receipt.json`、可复跑 `profile_offline_model.py`）。本节只证明存在 +11.11% 的理论载荷空间，不证明视觉可恢复性或总传输时间改善；完整 Medium/Big 目标仍未完成。
+
+静态 admission 检查 `admission-check.json` 已复核：候选 identity 与 unified 产品及现有三个实验 identity 均不冲突，当前生产 catalog 仍只有一个正式 Profile，候选继续保持 fail-closed / not accepted。
