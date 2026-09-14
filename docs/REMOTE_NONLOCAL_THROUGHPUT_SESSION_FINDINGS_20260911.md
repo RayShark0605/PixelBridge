@@ -1505,3 +1505,11 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 另一个 6×6 的 2×2 宏单元四级亮度 8-bit 码本在无变换时仅 190/256 exact，contrast75 仅 16/256，contrast50 仅 1/256，不能作为低频替代。证据 `tile-geometry-capacity-blur.json`、`lowfreq_4level_results.json` 及同目录脚本；均为 artifact-only，不含 field/codec/吞吐证据。
 
 对 3×3 二值宏单元 + 偶校验候选的复核发现：原脚本把 1 个 affine-fit tie 同时计入 `exact=256`，这不符合 fail-closed 口径。已修正为 blur/contrast75/contrast50 各 `255/256 accepted`、`1 ambiguous`，随机扰动各 `255/2048` trials（错误率约 0.390625%）；因此该低频候选也未达到完整符号可接受门，不能进入 field test。
+
+### 21.55 结构化多-cell 候选：6×6/3×3 macrocell + 偶校验排除常量码字
+
+用户确认继续 artifact-only 结构化多-cell 研究。针对前一候选的 1 个 affine-fit tie，建立了 3×3 二值 macrocell（每格展开 2×2 像素）的 256-symbol 码本：从 9-bit 偶校验集合中排除全零常量 pattern，再加入确定性奇校验 pattern `1`，保持 256 个 symbol / 8 bit per tile。使用 blur-aware、逐 tile affine contrast 拟合的离线 proxy，候选在 identity、contrast75、contrast50 与固定随机亮度扰动 ±2/4/8/16/24 下均为 256/256 accepted、0 ambiguous。
+
+该结果相较前一 parity 候选消除了已知常量弱码字，但代价是：新 Decoder 语义需要逐 tile affine 拟合，替换 canonical codebook，并可能增加 CPU/GPU 工作量；当前未测真实缩放/相位、gamma、codec、4:2:0、WGC/Citrix、BER/FER、UniqueVisualFPS、摘要发布重开或完整文件时间。候选仍为 `ARTIFACT_ONLY_NOT_ACCEPTED`，不启动 field test；必须先完成资源预算、mapping/Golden、安全门和新的 ≤25 MB 授权。
+
+证据：`nl0915-profile-offline-grayfast8-01/multicell-codebook-repair.json` 与 `multicell_codebook_repair_fast.py`。artifact-only 安全/资源 gate 仍需与视觉 proxy 分开解释，不能把 256/256 synthetic 结果写成远端吞吐提升。
