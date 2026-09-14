@@ -1513,3 +1513,13 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 该结果相较前一 parity 候选消除了已知常量弱码字，但代价是：新 Decoder 语义需要逐 tile affine 拟合，替换 canonical codebook，并可能增加 CPU/GPU 工作量；当前未测真实缩放/相位、gamma、codec、4:2:0、WGC/Citrix、BER/FER、UniqueVisualFPS、摘要发布重开或完整文件时间。候选仍为 `ARTIFACT_ONLY_NOT_ACCEPTED`，不启动 field test；必须先完成资源预算、mapping/Golden、安全门和新的 ≤25 MB 授权。
 
 证据：`nl0915-profile-offline-grayfast8-01/multicell-codebook-repair.json` 与 `multicell_codebook_repair_fast.py`。artifact-only 安全/资源 gate 仍需与视觉 proxy 分开解释，不能把 256/256 synthetic 结果写成远端吞吐提升。
+
+### 21.56 结构化 2×2 多-cell 四级亮度候选：blur 代理可分、对比度未校准即失败
+
+在 §21.55 的 3×3 二值 macrocell 候选之外，继续进行 artifact-only 的低频视觉表达筛选。新候选保持 6×6 tile，将 tile 划分为 2×2 个 3×3 像素的均匀 macrocell；每个 macrocell 取四级 luma（候选梯度包括 `[0,85,170,255]`，并对 `[24,96,168,240]`、`[32,96,160,224]`、`[64,120,184,232]` 等受限梯度做同样筛选），因此每格 2 bit、每 tile 8 bit、256 symbols。离线 decoder 以每个 3×3 macrocell 的均值 luma 做最近平方距离判决。机器可读结果为 `nl0915-profile-offline-grayfast8-01/structured-multicell-screen.json`，状态明确为 `ARTIFACT_ONLY_NOT_ACCEPTED`。
+
+在与参考使用相同 box-blur 的理想化代理中，主梯度 `[0,85,170,255]` 的 256 个 symbol 在 blur radius 1 和 radius 2 均为 `256/256 exact`、`ambiguous=0`、`wrong=0`；对每个 macrocell 均值注入独立 ±1/2/4/8/16 的合成扰动时，5 组各 `4096/4096 exact`，无 ambiguous/wrong。这只能证明该宏单元统计量在“发送端与 decoder 共享同一 blur/尺度模型”的条件下有分离余量。
+
+关键失败边界是未做逐帧亮度/对比度校准：对主梯度施加固定 75% 对比度后仅 `52/256 exact`、`1 ambiguous`、`203 wrong`；固定 50% 对比度后仅 `15/256 exact`、`16 ambiguous`、`225 wrong`。较贴近当前中性灰阶的 `[64,120,184,232]` 梯度在同一代理下反而只有 `2/256 exact`（75%）和 `1/256 exact`（50%）。因此不能把 blur/noise 代理通过解读为 Citrix/codec/缩放环境中的可恢复性；必须先定义显式 pilot/校准合同、验证 gamma/clip/phase/codec 与资源预算，再重建 canonical raster、mapping hash、Golden vectors、Decoder oracle 和安全 gate。
+
+若理想地保留当前 Fast 单码字 Transport 上限 1,629 B、把有效槽从 18 提到 20，则代数单帧上限为 `32,580 B`，相对当前 `29,322 B` 为 `+11.111111%`；这只是 slot algebra，不扣除新 pilot、Control、repair、丢帧或重复发送，也没有任何远端 UniqueVisualFPS、BER/FER、摘要/安全发布/reopen 或完整文件计时证据。候选不改变生产 Profile/catalog/默认路径，未获 field-test 授权；不启动 ≤25 MB、100 MB、Medium 或 Big 远端运行。

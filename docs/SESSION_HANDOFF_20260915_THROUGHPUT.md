@@ -98,3 +98,11 @@ artifact-only 低频候选包括 3×3 二值宏单元偶校验码本与多种 ti
 ## 13. 结构化多-cell 码本候选
 
 artifact-only 研究找到一个可继续审查的 6×6 方案：3×3 二值 macrocell、每格 2×2 像素，使用 9-bit 偶校验码本排除全零常量 pattern，再加入奇校验 pattern 1，保持 256 symbols / 8 bits per tile。blur-aware affine proxy 在 identity/contrast75/contrast50 与 ±2/4/8/16/24 随机 luma 扰动下 256/256 accepted、0 ambiguous。该 decoder 语义和 codebook 均不同于当前生产 GrayFast，且可能增加每 tile 拟合成本；无真实远端、codec、缩放、BER/FER 或端到端证据。候选仍不允许 field test，需先做资源/映射/Golden/复杂度审查并取得单独 field 授权。
+
+## 14. 结构化 2×2 macrocell 四级 luma 候选（artifact-only，未获现场授权）
+
+最新离线筛选候选位于 `artifacts/nonlocal-stall-20260913-2111/nl0915-profile-offline-grayfast8-01/structured-multicell-screen.json`，状态 `ARTIFACT_ONLY_NOT_ACCEPTED`。几何为现有 6×6 tile 内的 2×2 个 3×3 均匀 macrocell；每格四级 luma（主梯度 `[0,85,170,255]`），即每格 2 bit、每 tile 8 bit、256 symbols。decoder 仅对每个 3×3 macrocell 的均值做最近平方距离判决。
+
+同 blur reference 的理想化代理结果：radius1/radius2 均 `256/256 exact`；固定 radius1 后，对每个 macrocell 均值注入 ±1、2、4、8、16 的独立合成噪声，各 `4096/4096 exact`。但是无逐帧对比度校准时，主梯度在 75% 对比度仅 `52/256 exact`（1 ambiguous、203 wrong），50% 仅 `15/256 exact`（16 ambiguous、225 wrong）；更贴近当前灰阶的 `[64,120,184,232]` 在该代理下为 75% `2/256 exact`、50% `1/256 exact`。这否定了“直接以四级 ladder 进入现场”的证据链，后续必须先完成 pilot/校准、gamma/clip/phase/codec proxy，以及新的 raster/mapping/Golden/Decoder/安全资源门。
+
+若不考虑上述恢复风险且理想保留 Fast 码字效率，20 槽的代数上限为 32,580 B/frame，相对当前 18 槽的 29,322 B/frame 为 +11.111111%；没有远端吞吐、完整摘要/发布/reopen 或 Medium/Big 证据。候选未改生产代码、默认 Profile 或 catalog；当前**没有新的 field-test 授权**，不得启动 ≤25 MB 或更大远端运行。
