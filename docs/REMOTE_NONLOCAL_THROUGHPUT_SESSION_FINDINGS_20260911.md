@@ -1503,3 +1503,5 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 简化 3×3/5×5 box-blur mask proxy 显示：6×6 仅 14/64 或 5/64 mask exact，7×7/8×8 更差；10×10 约 64/64（3×3）但 47/64（5×5），12×12 为 64/64 与 32/33，16×16 才在两种 proxy 下均 64/64。结论是单纯增大 tile 会显著牺牲单帧载荷，不能同时满足完整双文件加速目标；mask-repair 对该几何 proxy 无改善。
 
 另一个 6×6 的 2×2 宏单元四级亮度 8-bit 码本在无变换时仅 190/256 exact，contrast75 仅 16/256，contrast50 仅 1/256，不能作为低频替代。证据 `tile-geometry-capacity-blur.json`、`lowfreq_4level_results.json` 及同目录脚本；均为 artifact-only，不含 field/codec/吞吐证据。
+
+对 3×3 二值宏单元 + 偶校验候选的复核发现：原脚本把 1 个 affine-fit tie 同时计入 `exact=256`，这不符合 fail-closed 口径。已修正为 blur/contrast75/contrast50 各 `255/256 accepted`、`1 ambiguous`，随机扰动各 `255/2048` trials（错误率约 0.390625%）；因此该低频候选也未达到完整符号可接受门，不能进入 field test。
