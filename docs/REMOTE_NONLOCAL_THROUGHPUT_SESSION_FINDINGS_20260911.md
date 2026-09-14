@@ -1495,3 +1495,11 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 补充 level screen：在 16 组背景/前景亮度组合的 1-cell box-blur 代理中，最佳也仅 55/256 exact（background 8/192、foreground 32/224），仍有 15 个 ambiguous；简单调亮度 ladder 无法恢复完整 8-bit 鲁棒性。该结果进一步排除“只调亮度即可进入现场”的窄假设。证据 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-level-screen.json`，仍不含真实远端或 codec 行为。
 
 顺带对现有 `PB-ShapeChroma` 的 16 个平衡 4×4 luma 模板做静态 blur proxy：identity 为 16/16 exact，1-cell box blur 为 12/16 exact、4 ambiguous。该旧实验码本不能直接作为 GrayFast8 的低频替代；它支持“需要更大空间支持/新几何”的判断，但不提供当前产品或远端吞吐证据。产物 `nl0915-profile-offline-grayfast8-01/shape-chroma-blur-probe.json`。
+
+### 21.54 低频码本与 tile geometry 对照：单纯加大 tile 无法同时保留容量与 blur 抗性
+
+用户确认继续 artifact-only 低频码本／几何研究。以当前 1920×1080 Data region 活动占比模型，对 6×6、7×7、8×8、10×10、12×12、16×16 tile 做 8-plane/16200-bit Fast 容量估算。8-plane Transport 上限分别约为 32,580、24,435、17,919、11,403、8,145、3,258 B/frame；7×7 及以上几何已低于当前 GrayFast18 的 29,322 B/frame。模型未重建新的 Control/Pilot/Guard canonical map，不能当作布局容量认证。
+
+简化 3×3/5×5 box-blur mask proxy 显示：6×6 仅 14/64 或 5/64 mask exact，7×7/8×8 更差；10×10 约 64/64（3×3）但 47/64（5×5），12×12 为 64/64 与 32/33，16×16 才在两种 proxy 下均 64/64。结论是单纯增大 tile 会显著牺牲单帧载荷，不能同时满足完整双文件加速目标；mask-repair 对该几何 proxy 无改善。
+
+另一个 6×6 的 2×2 宏单元四级亮度 8-bit 码本在无变换时仅 190/256 exact，contrast75 仅 16/256，contrast50 仅 1/256，不能作为低频替代。证据 `tile-geometry-capacity-blur.json`、`lowfreq_4level_results.json` 及同目录脚本；均为 artifact-only，不含 field/codec/吞吐证据。
