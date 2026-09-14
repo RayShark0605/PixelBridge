@@ -106,3 +106,9 @@ artifact-only 研究找到一个可继续审查的 6×6 方案：3×3 二值 mac
 同 blur reference 的理想化代理结果：radius1/radius2 均 `256/256 exact`；固定 radius1 后，对每个 macrocell 均值注入 ±1、2、4、8、16 的独立合成噪声，各 `4096/4096 exact`。但是无逐帧对比度校准时，主梯度在 75% 对比度仅 `52/256 exact`（1 ambiguous、203 wrong），50% 仅 `15/256 exact`（16 ambiguous、225 wrong）；更贴近当前灰阶的 `[64,120,184,232]` 在该代理下为 75% `2/256 exact`、50% `1/256 exact`。这否定了“直接以四级 ladder 进入现场”的证据链，后续必须先完成 pilot/校准、gamma/clip/phase/codec proxy，以及新的 raster/mapping/Golden/Decoder/安全资源门。
 
 若不考虑上述恢复风险且理想保留 Fast 码字效率，20 槽的代数上限为 32,580 B/frame，相对当前 18 槽的 29,322 B/frame 为 +11.111111%；没有远端吞吐、完整摘要/发布/reopen 或 Medium/Big 证据。候选未改生产代码、默认 Profile 或 catalog；当前**没有新的 field-test 授权**，不得启动 ≤25 MB 或更大远端运行。
+
+## 15. 结构化多-cell 的 pilot/affine 校准代理（仅 artifact）
+
+为针对 §14 的对比度失败边界，新增 `structured_multicell_calibration_proxy.py` 与 `structured-multicell-calibration-proxy.json`。假设每帧两个已知 0/255 pilot macrocell，估计全局 gain+bias 后归一化数据 macrocell；在 contrast 1/0.75/0.5、offset 0/+12/-12 及 ±8 合成 macrocell 噪声下，9 组均 `256/256 exact`、无 ambiguous/wrong。该结果只支持理想 affine 模型下“校准可恢复”的窄假设，不覆盖 gamma/clip/缩放/codec/4:2:0/WGC/Citrix/BER/FER。
+
+若两个 pilot 占用 20 槽中的 2 槽，净有效槽仅 18，Transport 上限回到 `29,322 B/frame`，相对现有为 0%；将 pilot 放入现有 Control 或跨帧复用需要新的 wire/调度/资源合同，不能作为免费收益。候选继续 `ARTIFACT_ONLY_NOT_ACCEPTED`，没有 field-test 授权，不得启动 ≤25 MB、100 MB、Medium 或 Big。
