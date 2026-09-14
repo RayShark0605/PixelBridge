@@ -86,3 +86,7 @@ artifact-only mask-repair 屏蔽性试探把 index 32 替换为 `0x13B0C15`，�
 用户已确认继续 artifact-only。独立 mask-repair oracle 将现有 index 32 替换为 `0x13B0C15` 后，在完整 256-symbol 域 exact round-trip 通过，13 个 Golden vectors（含原碰撞边界）通过，`ambiguousCanonicalSymbols=[]`，状态 `ACCEPTED_OFFLINE_EXACT_MASK_REPAIR`；mapping hash=`f3b713926de2915bbd4d21818fd1afb6dd9043f04babd75524064e41356bfd02`。但最小 mask Hamming 距离为 8，field/codec/缩放鲁棒性仍未知。239,260 候选 mask 的有界搜索未观察到距离 9 替换；synthetic ±2/4/8/16 luma 扰动仅作为模型筛选。
 
 下一步仍是 artifact-only 几何/采样/codec proxy 与安全门复核。未经主人新的明确授权，不运行 ≤25 MB field test；Medium/Big 保持冻结。
+
+## 11. Mask-repair geometry proxy 结果
+
+mask-repair 在无变换下 256-symbol exact round-trip，但简单 1-cell box blur 仅 53/256 exact、2-cell blur 仅 17/256；对比度 75% 仅 192/256，50% 仅 96/256。该模型不是 Citrix/codec 实测，但已否定“直接进入 ≤25 MB field test”的证据链。当前不请求 field 授权、不启动远端；若继续必须重新设计对 blur/contrast/phase 稳健的视觉表达，再重复 mapping/Golden/安全门。
