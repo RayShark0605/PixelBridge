@@ -1461,3 +1461,5 @@ T4资源拒绝、Outer冲突、deferred、orphan quota/conflict为0；**orphanAd
 静态 admission 检查 `admission-check.json` 已复核：候选 identity 与 unified 产品及现有三个实验 identity 均不冲突，当前生产 catalog 仍只有一个正式 Profile，候选继续保持 fail-closed / not accepted。
 
 补充 representation-risk 静态证据：当前 GrayFast 实际 raster 由 6-bit glyph mask、bit-6 前景亮度二值选择和固定低亮度背景组成，源码循环上限仍为 7 个 plane。故“直接再追加第 8 个 bit”并不是现有路径的局部改动，必须引入新的正交像素可观测量或多级亮度/校准合同；证据 `nl0915-profile-offline-grayfast8-01/representation-risk.json`，仍未实现、未远端运行。
+
+GrayFast8 artifact-only gate 模型已通过 15 项：identity/layout 精确 admission、13/14 混用与未知 identity 拒绝、FEC/residual 资源边界、重复/冲突 payload、亮度 plane collapse、摘要→安全发布→reopen，以及既有 final target 防覆盖。输出 `nl0915-profile-offline-grayfast8-01/grayfast8-gate-tests.json`，其 `allPassed=true`；这些是模型级安全证据，不是远端视觉恢复或端到端吞吐证据。
