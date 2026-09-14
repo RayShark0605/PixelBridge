@@ -1473,3 +1473,5 @@ GrayFast8 artifact-only gate 模型已通过 16 项：identity/layout 精确 adm
 artifact-only 安全 gate 已通过 16 项，但需与上述 oracle 拒绝同时解释：安全状态机和摘要/发布/reopen 模型通过，不等于视觉表达已可恢复。当前不启动任何远端 25 MB/100 MB、Medium 或 Big；若要继续，必须先对 mask-repair 或另一种正交观测量建立新的完整 canonical raster、mapping hash、Golden vectors、抗亮度坍缩测试，并重新确认 field-test 授权。
 
 
+
+汇总索引 `nl0915-profile-offline-grayfast8-01/grayfast8-study-summary.json` 已把当前状态固定为：mapping 可逆、16 项安全 gate 全通过，但原始 8-plane raster 完整字节可逆性拒绝；mask-repair 仅屏蔽性通过，仍无 field evidence。
