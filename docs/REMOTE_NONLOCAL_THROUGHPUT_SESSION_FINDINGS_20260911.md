@@ -1345,3 +1345,21 @@ point组526930ms与R的525968ms（同配置、Q期二进制）相差+0.18%，同
 据§21.41"越快越好"趋势外推的point 60fps单变量测试（同包同配置，仅--fps 60，tag nl0914-fss-point-100m-f60-s6）。四门+同Session配对+源fresh/无resume+第二次独立SHA256=4111eb5a...全过，远端显示未变、无残留。结果914215ms，比30fps的526930ms慢73.498377%。关键观察：配置60fps但Sender实际提交仅29.664002fps——每帧FEC构建+合成+提交的固有成本把交付率封顶在约30fps，形成"时钟60Hz/交付~30fps"的抖动提交；接收有效帧率7.495233不变，每有效帧新信息从25.3KB再次坍缩到14.6KB，与慢Sender两组同签名。注意60fps同时改变发送端每帧预算分档与提交节奏，两者贡献未隔离（见comparison JSON caveats）。
 
 结论：15.6→29.2fps区间的单调改善不能外推到60；30fps point（526930ms，与R复现差+0.18%）仍是当前100MB已知最好配置。今晚七组100MB/25MB实验一致指向：信道有效帧率~7.5为内容率上限，吞吐差异几乎全部来自每有效帧新信息量，而它在Sender交付节奏变慢或抖动时坍缩。证据：candidate-s-fullscreen-sampling-point-fps-comparison.json及tag目录。
+
+### 21.43 fast-linear 中性灰阶合成窄验证：本地成本降至约9ms，但100MB仍不具备晋级价值
+
+在主人授权继续 O1 方向后，先复核当前 live HEAD `ea8fcba` 的调度实现：高于 15Hz 的 Unified later pass 已是 repair-only 增量喷泉预算，发送活动窗口已为 6，接收端并发上限仍为 8；因此没有重复落地同一 O1/O2 语义。为解决采样候选的已知前置瓶颈，仅对 `ComposeUnifiedFullscreenSampledBgra` 的中性灰阶线性路径做了可逆、非 wire 改动：保留四项 double 乘加及求值顺序，移除每像素 channel 循环、临时三通道数组和 `std::round` 库调用，以截断加半整数比较实现同一 half-away-from-zero 结果，alpha/上限钳位不变；彩色回退路径、默认 point 路径均未改动。提交 `e8c9c5b`。
+
+本地 `PBApplicationTests [sampling]` 40/40、全屏绑定 1578 断言、两阶段采样 1156 断言及 `PBUnifiedSenderSchedulerTests` 通过；中性 2560×1600 linear 合成由约18.2–18.6ms降至约9ms。已知 `PBApplicationTests` 全目标的 M late-join 12505<12000 失败保持原样，未删改。
+
+随后以新封存候选目录 `artifacts/nonlocal-stall-20260913-2111/candidate-t-compose-fast-release`，每次使用新 tag、Receiver-first、同配置（unified-gray-fast、30FPS、6MiB、首轮100%、budget-bound）完成三次右屏窄验证：
+
+| tag | bytes | sampling | receiverRuntimeMilliseconds | UniqueVisualFPS | 结果 |
+|---|---:|---|---:|---:|---|
+| `nl0914-fss-fast-point-25m-f30-s6` | 25,000,000 | point | 131349 | 约7.54 | 四门+独立SHA通过 |
+| `nl0914-fss-fast-linear-25m-f30-s6` | 25,000,000 | linear | 129796 | 约7.88 | 四门+独立SHA通过 |
+| `nl0914-fss-fast-linear-100m-f30-s6` | 100,000,000 | linear | 714137 | 约7.75 | 四门+独立SHA通过 |
+
+三次的 SHA256 分别与源元数据匹配（25MB=`f9fa18860c159080d860b654903f272846a5af5fa51ba303e39825ce4b53c3e4`；100MB=`4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`），wholeDigestVerified、renameSucceeded、finalReopenVerified、published 均为 true，资源拒绝/延期/孤儿/冲突均为 0，前台句柄前后相同且桥 `liveProcesses=[]`。25MB 成对结果 linear 仅快约1.18%，属于单次观察；100MB linear 比当前 point 526930ms 慢约35.4%，虽较旧 linear 752227ms 快约5.1%，仍不足以支撑长文件路线。故 `--fullscreen-sampling` 继续保持显式 opt-in、默认 point，不进入完整 Medium/Big 重测。
+
+证据目录：`candidate-t-compose-fast-20260914-2201/`（本地基线/源码快照与汇总）、`nl0914-fss-fast-point-25m-f30-s6/`、`nl0914-fss-fast-linear-25m-f30-s6/`、`nl0914-fss-fast-linear-100m-f30-s6/`。本节不把100MB窄样本升级为完整目标结论；完整 Medium/Big 仍只引用 §21.29–§21.31 的 O 组合实测。
