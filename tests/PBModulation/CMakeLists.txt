@@ -108,6 +108,13 @@ target_compile_definitions(PBUnifiedGrayStatesTests PRIVATE
     PB_UNIFIED_GRAYFAST_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-grayfast-cpu-oracle")
 set_tests_properties(PBUnifiedGrayStatesTests PROPERTIES LABELS "modulation;graystates;unified;fec" TIMEOUT 240)
 
+# Test-only two-stage presentation sampling comparison (point vs linear vs
+# area stage one, fractional remote-view rescale stage two). No production
+# filter or threshold is exercised or changed by this target.
+PbAddUnitTest(PBUnifiedTwoStageResampleTests test_unified_two_stage_resample.cpp)
+target_link_libraries(PBUnifiedTwoStageResampleTests PRIVATE PB::PBModulation PB::PBProtocol)
+set_tests_properties(PBUnifiedTwoStageResampleTests PROPERTIES LABELS "modulation;unified;graystates;grayfast;two-stage" TIMEOUT 600)
+
 if(TARGET PBDesktopLevelsBaseline)
     add_test(NAME PBDesktopLevelsCpuBaseline COMMAND PBDesktopLevelsBaseline --baseline)
     set_tests_properties(PBDesktopLevelsCpuBaseline PROPERTIES LABELS "desktop-levels;integration;baseline" TIMEOUT 120)

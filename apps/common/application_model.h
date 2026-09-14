@@ -47,6 +47,18 @@ enum class VisualProfile : std::uint8_t
     UnifiedGrayFast
 };
 
+// Explicit sender-side presentation sampling experiment for the Unified
+// single-monitor fullscreen composition. Point is the production default and
+// the byte-identical historical behavior; Linear and Area are opt-in test
+// candidates that only change locally composed fullscreen pixels. The wire
+// raster, profile contract, and every decode threshold stay unchanged.
+enum class FullscreenSamplingMode : std::uint8_t
+{
+    Point,
+    Linear,
+    Area
+};
+
 // Profiles that share the unified mixed-slot main-region machinery. Behavior
 // branches in the runtime key off this family instead of a single value so
 // the experimental bands variant rides the same encode/decode path.
@@ -303,6 +315,9 @@ struct EncoderSnapshot
     std::optional<std::uint64_t> configuredTransportPayloadCeilingBytesPerSecond;
     std::uint32_t configuredLogicalVisualFps = 0;
     bool grayFastSpatialInterleave = false;
+    // Reported sender-side presentation sampling mode; Point means the
+    // historical composition path was used unchanged.
+    FullscreenSamplingMode fullscreenSampling = FullscreenSamplingMode::Point;
     std::uint32_t configuredInitialAirtimePercent = 100;
     std::optional<double> configuredLogicalDwellMilliseconds;
     std::optional<double> minimumObservedLogicalDwellMilliseconds;

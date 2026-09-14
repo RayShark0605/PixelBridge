@@ -58,6 +58,8 @@ struct Options
     bool segmentTargetSpecified = false;
     bool grayFastSpatialInterleave = false;
     bool grayFastShortInitialAirtime = false;
+    bool fullscreenSamplingSpecified = false;
+    pbapp::FullscreenSamplingMode fullscreenSampling = pbapp::FullscreenSamplingMode::Point;
     bool manualStop = false;
     bool manualStopSpecified = false;
     bool remoteChannel = false;
@@ -451,6 +453,32 @@ private:
             }
             options.grayFastShortInitialAirtime = true;
         }
+        else if (option == L"--fullscreen-sampling")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || options.fullscreenSamplingSpecified)
+            {
+                return false;
+            }
+            const std::wstring_view sampling(value);
+            if (sampling == L"point")
+            {
+                options.fullscreenSampling = pbapp::FullscreenSamplingMode::Point;
+            }
+            else if (sampling == L"linear")
+            {
+                options.fullscreenSampling = pbapp::FullscreenSamplingMode::Linear;
+            }
+            else if (sampling == L"area")
+            {
+                options.fullscreenSampling = pbapp::FullscreenSamplingMode::Area;
+            }
+            else
+            {
+                return false;
+            }
+            options.fullscreenSamplingSpecified = true;
+        }
         else if (option == L"--manual-stop")
         {
             if (options.manualStopSpecified)
@@ -477,6 +505,10 @@ private:
     if ((!options.sessionStateRoot.empty() && !pbapp::IsUnifiedVisualFamily(options.profile)) ||
         (options.grayFastSpatialInterleave && options.profile != pbapp::VisualProfile::UnifiedGrayFast) ||
         (options.grayFastShortInitialAirtime && !options.grayFastSpatialInterleave) ||
+        (options.fullscreenSamplingSpecified &&
+            (!options.singleMonitorFullscreenSpecified ||
+                (options.profile != pbapp::VisualProfile::UnifiedGray &&
+                    options.profile != pbapp::VisualProfile::UnifiedGrayFast))) ||
         options.sourcePath.empty() || (options.hasOrigin && options.singleMonitorFullscreenSpecified) ||
         (!pbapp::IsUnifiedVisualFamily(options.profile) && !options.hasOrigin && !options.singleMonitorFullscreenSpecified))
     {
@@ -644,6 +676,8 @@ void Usage()
                  "[--seconds 1..7200; default=30] "
                  "[--grayfast-spatial-interleave; experimental GrayFast only] "
                  "[--grayfast-short-initial-airtime; experimental spatial GrayFast only, slower under some losses] "
+                 "[--fullscreen-sampling point|linear|area; experimental gray Unified single-monitor fullscreen "
+                 "only, default point] "
                  "[--session-state-root ABSOLUTE_PATH; Unified family only, default unchanged] "
                  "[--report NEW_PATH]; automatic RAW/zstd level 3, Control repetitions=4\n"
                  "experimental opt-in: --profile unified-bands adds two supplemental control bands under the "
@@ -693,6 +727,7 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.segmentTargetBytes = options.segmentTargetMb != 0 ? options.segmentTargetMb * 1024U * 1024U : 0;
     config.grayFastSpatialInterleave = options.grayFastSpatialInterleave;
     config.grayFastShortInitialAirtime = options.grayFastShortInitialAirtime;
+    config.fullscreenSampling = options.fullscreenSampling;
     config.runId = options.runId;
     if (options.remoteChannel)
     {

@@ -309,7 +309,7 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     REQUIRE(json.find("\"resourceRejectionReasons\":{\"protocolResourceLimitExceeded\":1,\"protocolResourceExhausted\":2,\"controlReassemblyQuotaExceeded\":3,\"outerFecOutOfMemory\":4,\"outerFecDecoderQuotaExceeded\":5,\"outerFecExtraInsufficient\":6}") != std::string::npos);
     REQUIRE(json.find("\"receiverResourcePolicyRejectedCount\":22,\"receiverControlRejectedByResourcePolicyCount\":23") != std::string::npos);
     REQUIRE(json.find("\"orphanCache\":{\"admittedBlocks\":24,\"droppedByQuota\":25,\"resourceExhausted\":26,\"conflictRejections\":27,\"currentBlocks\":28,\"currentBytes\":29,\"peakBytes\":30}") != std::string::npos);
-    REQUIRE(json.find("\"deferredResourceBusyCount\":6,\"outerFecQuotaExceededCount\":7,\"activeDecoderLimit\":8,\"totalDecoderByteLimit\":1073741824,\"activeDecoderCount\":3,\"peakActiveDecoderCount\":8,\"reservedDecoderBytes\":3000,\"peakReservedDecoderBytes\":8000}") != std::string::npos);
+    REQUIRE(json.find("\"deferredResourceBusyCount\":6,\"outerFecQuotaExceededCount\":7,\"activeDecoderLimit\":8,\"totalDecoderByteLimit\":1073741824,\"budgetBoundDecoderAdmission\":false,\"activeDecoderCount\":3,\"peakActiveDecoderCount\":8,\"reservedDecoderBytes\":3000,\"peakReservedDecoderBytes\":8000}") != std::string::npos);
     REQUIRE(json.find("\"remoteDuplicateRefinementAttempts\":8") != std::string::npos);
     REQUIRE(json.find("\"remoteDuplicateRefinementRecoveries\":1") != std::string::npos);
     REQUIRE(json.find("\"remoteMetricTelemetry\":{\"frames\":9,\"samples\":583200,\"zeroMagnitudeMetrics\":29160") != std::string::npos);

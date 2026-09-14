@@ -315,6 +315,8 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
             (static_cast<double>(snapshot.submittedLogicalFrames) * snapshot.codewordsPerFrame)) : std::nullopt);
     stream << ",\"occupancyBasis\":\"Control slots in successfully submitted complete logical rasters / (codewordsPerFrame * submittedLogicalFrames); repeated Presents excluded\"}"
         << ",\"grayFastSpatialInterleave\":" << snapshot.grayFastSpatialInterleave
+        << ",\"fullscreenSamplingMode\":\"" << (snapshot.fullscreenSampling == pbapp::FullscreenSamplingMode::Linear ? "linear" :
+            snapshot.fullscreenSampling == pbapp::FullscreenSamplingMode::Area ? "area" : "point") << "\""
         << ",\"configuredInitialAirtimePercent\":" << snapshot.configuredInitialAirtimePercent
         << ",\"configuredLogicalFps\":" << snapshot.configuredLogicalVisualFps << ",\"observedSubmittedLogicalFps\":";
     WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);

@@ -1288,3 +1288,60 @@ Receiver53556成功退出。远端3352由已采用的WM_CLOSE流程退出，forc
 尚未重测R的完整Medium/Big；O旧居中呈现完整合计4312469ms保持历史最好，不归给R。R的525968ms仍比P2旧居中329033ms慢，因此全屏刷新瓶颈未解决。用户随后要求马上收尾、v0.6发布包、详细现状及续接prompt；已停止新研究/远控测试，并明确获准仅提交任务内改动、排除三个保护对象、不推送。v0.6新版本二进制与上述0.5源码候选不同，必须单独列出发布验收边界，不能把R实测改名为v0.6实测。
 
 证据：candidate-q-r-fullscreen-initial-100-comparison.json、candidate-q-r-fullscreen-100-journal-attribution.json；run及stage的最终report/result/independent-verification、显示/进程收尾；candidate-r-fullscreen-cadence-native的测试及post-field-build（均完成）；后续交付入口docs/SESSION_HANDOFF_20260914_V0.6.md与docs/NEXT_TASK_PROMPT_V0.6.md，发布实物/验收记录以artifacts/release-v0.6-20260914为准。
+
+
+### 21.38 v0.6后test-only两阶段采样参考：point/linear/area全过几何硬门，area诊断幅值最优但受归一化混淆；未改生产
+
+新会话先核对live状态：HEAD 25a08aa与发布回执一致、工作树仅三个保护对象未跟踪、v0.6 ZIP/双EXE哈希现场复验一致、本机无PixelBridge进程。随后按交接建议实现两阶段链test-only对照：canonical 1920×1080 →（stage-1全屏合成 point=生产现行为 / linear=边缘钳位双线性 / area=精确盒重叠）→ 全屏栅格 →（stage-2远控视口独立X/Y permille尺度+分数原点双线性，黑外部）→ 2560×1440捕获ROI。全部为tests/内新增（unified_two_stage_resample_fixture.h、PBUnifiedTwoStageResampleTests、PBDemodD3D11 1例、PBApplication生产合成==point夹具绑定1例），无生产源码、呈现合同（UnifiedViewportFilter::Point）、阈值或wire变更。
+
+硬门全绿：CPU 4例1156断言（GrayFast+GrayStates×3模式×3配置，随机满载payload，live-like 851×851复合≈1.1347×1.2611、强各向异性937×742、恒等控制，全部精确恢复+几何拟合≤0.002）；真实Capture(WARP) 1例818断言（GrayFast×3模式×2序列，与CPU oracle同字节逐字节一致）；生产绑定1例6断言。回归：GrayStates 2181/13、App fullscreen 1538/6、Demod全量669758/32全绿。
+
+诊断（非门）：平均|软度量|稳定area>linear>point（live-like 30871/29827/29545），但GrayFast度量含8192/对比度²归一化，平滑光栅的低峰值对比度会机械抬高幅值，不能单独当鲁棒性证明。有界亮度噪声代理（±0..8 chroma中性）三模式均保18/18块；幅值衰减area最慢(-674)优于point(-696)与linear(-972)。min|metric|极值统计方差大、跨模式无稳定序，不作依据。
+
+边界：几何+合成噪声代理不等于codec实测或实屏吞吐；候选晋级需显式opt-in编码器合成开关（默认不变）、封存、≤25MB非本机与R首轮100%基线对照，模式选择（area/linear）与执行授权待用户决策。M late-join失败门及全部既有安全边界保留。证据：artifacts/nonlocal-stall-20260913-2111/candidate-s-two-stage-sampling-reference/（三stdout+NOTES）。
+
+
+### 21.39 显式opt-in编码器--fullscreen-sampling落地：限灰阶家族全屏、字节级对齐夹具、中性快速路径；18.2/28.8ms每帧成本待实屏判定
+
+用户批准继续后实现显式候选开关。`FullscreenSamplingMode{Point,Linear,Area}`进入EncoderConfig与CLI `--fullscreen-sampling point|linear|area`（默认Point=历史逐字节行为；缺值/重复/未知值/无--single-monitor-fullscreen/非灰阶家族均fail-closed拒绝）。新合成`ComposeUnifiedFullscreenSampledBgra`仅在被显式选中且Unified灰阶家族（UnifiedGray/UnifiedGrayFast）单屏全屏时进入；remote-lf4与产品SC6路径不经过该函数，`ComposeRemoteVisualFullscreenBgra`原字节不变。开关限定灰阶家族的原因：其canonical栅格逐像素中性（B==G==R，4:2:0位等价测试已证全帧恒等），合成可先做每帧中性校验（非中性即回退通用三通道路径，正确性不依赖假设），再用单通道计算+复制快速路径。
+
+验证：生产Linear/Area合成与两阶段夹具参考在随机BGRA（通用路径）与中性灰（快速路径）两类源、1920×1080/2560×1600/3840×2160三尺寸逐字节相等（28断言+3负例）；CLI回归10例（含unified彩色拒绝、无全屏拒绝、origin冲突拒绝）与旧initial-airtime 9例复跑全绿，前台不变；PBApplication [fullscreen] 7例1578断言、两阶段套件4例1156断言复跑不变。探针计时（含中性扫描与分配）：2560×1600每帧linear约18.2-18.6ms、area约28.7-28.8ms；30fps预算33.3ms下linear偏重、area很可能挤压节奏。不隐藏该成本：实屏由FullscreenCompose阶段诊断、logical dwell违例计数与Sender实际fps判定；若节奏破坏则候选回退15fps或后续优化，不在本轮放宽任何门。
+
+默认行为、wire、阈值、GUI零变化；未提交。候选实传（≤25MB、新tag、与R首轮100%同配置、point/area/linear三组单变量对照）待按桥规范执行。
+
+
+### 21.40 候选S全屏采样25MB实传A/B：linear最快-2.84%、area -2.11%，全部四门+同源双SHA通过；Sender节奏被合成成本压低但有效帧率反而略升
+
+用户批准后按桥规范执行三组25MB单变量对照（唯一变量fullscreenSamplingMode；其余与R同：unified-gray-fast、30fps、6MiB段、spatial、--budget-bound-decoders、首轮100%、远端2560×1600@240原模式、本地DISPLAY2 ROI、Receiver-first、新tag不复用）。候选包candidate-s-fullscreen-sampling：Encoder 91011d5b2a1ddd5daaa5d5fe5e319261303451d2e43c125e5362ab23fcdb8ec5（25a08aa+未提交diff，正常CMake Release，sourcePatchSha256=ea64e3e0ef20a72a62354499b3996114ab2d56be04af6aadd98d5d8e935d9574），Decoder=v0.6发布件151e46e5逐字节不变。guard包装run_fullscreen_sampling_25.py逐run做本地右屏物理ROI校验、远端display前后不变断言、list-runs无残留断言、封存哈希断言及最终验证（同Session、源fresh/无resume、四门、第二次独立SHA、sender报告fullscreenSamplingMode与配置一致）。
+
+| 采样模式 | 耗时ms | vs point | 接收有效帧率 | Sender提交fps |
+|---|---:|---:|---:|---:|
+| point（省略开关=历史路径） | 127312 | — | 7.494256 | 29.127889 |
+| area | 124627 | -2.108992% | 7.652540 | 16.291618 |
+| linear | 123695 | -2.841052% | 7.760921 | 18.415712 |
+
+三组SessionTag各异（9096108879800814361/10189233931644109573/8761994070720726350）、同源25000000B、第二次独立SHA256同为f9fa18860c159080d860b654903f272846a5af5fa51ba303e39825ce4b53c3e4，全部门通过、远端显示模式未变、无残留登记进程、端点前台相同。合成成本如§21.39预告压低了Sender提交fps至16-18，但接收端有效帧率反而从7.494升至7.653/7.761：与远控信道约7.5有效帧/秒内容上限模型一致，更平滑光栅经codec后每有效帧保真更好，降低发送重复并未损失（略增）吞吐。
+
+边界：每模式单样本、同晚链路，非统计或认证结论；25MB/4段不触发>12段graduation；linear与area相差0.75%在单样本噪声内；M late-join与任意分辨率/缩放认证缺口保留。未提交、未推送。证据：candidate-s-fullscreen-sampling-25m-comparison.json及三tag目录（各含result、receiver/report、remote-evidence、独立验证与-stage前置/收尾）。
+
+
+### 21.41 候选S 100MB反转定论：采样合成成本压低Sender节奏后大文件退化42.8%/66.6%，每有效帧新信息量单调坍缩；当前形态不可采用
+
+同晚紧接25MB A/B，以完全相同单变量设计升级到100000000B（17段，>12段graduation路径启用；每run仍≤100000000B频繁测试界；--seconds 1200）。三组全部通过四门、同Session配对、源fresh/无resume、第二次独立SHA256同为4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb，远端显示模式未变、无残留登记进程；point/linear端点前台句柄样本不同（与R相同的既有口径，未使用输入或焦点自动化）。
+
+| 采样模式 | 耗时ms | vs point | Sender提交fps | 接收有效帧率 | 估算每有效帧新字节 |
+|---|---:|---:|---:|---:|---:|
+| point（省略开关） | 526930 | — | 29.230819 | 7.493378 | 25326 |
+| linear | 752227 | -42.756533% | 18.531692 | 7.714769 | 17232 |
+| area | 878081 | -66.640920% | 15.557387 | 7.634859 | 14916 |
+
+point组526930ms与R的525968ms（同配置、Q期二进制）相差+0.18%，同晚信道与R期一致，基线可信。结论：25MB的-2.1%~-2.8%收益在17段下完全反转为大幅退化，且退化幅度与每帧合成成本（约18.2/28.8ms）单调对应；接收端有效帧率在三组都保持7.49-7.77，证明信道内容率上限与发送fps无关，但每有效帧承载的新信息从25.3KB坍缩到17.2/14.9KB——更慢的Sender节奏在graduation/多段交织下大幅提高信道采样帧中的重复/无效占比。机制级归因（graduation交互 vs codec过渡混叠）尚未从journal隔离，登记为后续工作。
+
+处置：--fullscreen-sampling保持显式opt-in、默认point、产品路径字节不变；当前双精度逐帧实现形态不满足30fps节奏，候选不晋级、不改默认。若继续该方向，前置条件是把合成压到约≤10ms/帧（定点化+向量化，以定点公式为新参考夹具重建字节级验证），或先做journal级novelty坍缩归因；任何重测仍以point为基线、新tag、≤100MB。证据：candidate-s-fullscreen-sampling-100m-comparison.json及三个100MB tag目录（各含result、receiver/report、remote-evidence、独立验证、-stage前置/收尾）与25MB同构六组数据。
+
+
+### 21.42 point 60fps证伪：Sender交付封顶约29.7fps时抖动提交使100MB退化73.5%；30fps point仍为已知最优
+
+据§21.41"越快越好"趋势外推的point 60fps单变量测试（同包同配置，仅--fps 60，tag nl0914-fss-point-100m-f60-s6）。四门+同Session配对+源fresh/无resume+第二次独立SHA256=4111eb5a...全过，远端显示未变、无残留。结果914215ms，比30fps的526930ms慢73.498377%。关键观察：配置60fps但Sender实际提交仅29.664002fps——每帧FEC构建+合成+提交的固有成本把交付率封顶在约30fps，形成"时钟60Hz/交付~30fps"的抖动提交；接收有效帧率7.495233不变，每有效帧新信息从25.3KB再次坍缩到14.6KB，与慢Sender两组同签名。注意60fps同时改变发送端每帧预算分档与提交节奏，两者贡献未隔离（见comparison JSON caveats）。
+
+结论：15.6→29.2fps区间的单调改善不能外推到60；30fps point（526930ms，与R复现差+0.18%）仍是当前100MB已知最好配置。今晚七组100MB/25MB实验一致指向：信道有效帧率~7.5为内容率上限，吞吐差异几乎全部来自每有效帧新信息量，而它在Sender交付节奏变慢或抖动时坍缩。证据：candidate-s-fullscreen-sampling-point-fps-comparison.json及tag目录。

@@ -398,6 +398,191 @@ void RequireResult(const ResultType& result, const std::string& message)
         MonitorSafetyStatus{MonitorSafetyError::TopologyChanged, {}};
 }
 
+// Experimental stage-one fullscreen composition for the Unified family.
+// Linear and Area reproduce the independently verified test fixtures
+// operation for operation (center-coordinate edge-clamped bilinear, exact
+// box-overlap area). The tap indices and weight factors are hoisted per
+// column/row with unchanged expression shapes and evaluation order, so the
+// composed bytes stay identical to the references while the per-pixel inner
+// loops avoid floor/clamp/division work. The default Point path never enters
+// this function.
+void ComposeUnifiedFullscreenSampledBgra(const std::span<const std::byte> source, const std::uint32_t destinationWidth,
+    const std::uint32_t destinationHeight, std::span<std::byte> destination, const FullscreenSamplingMode mode)
+{
+    Require(destinationWidth >= phase1CanvasWidth && destinationWidth <= maximumRemoteVisualLowFpsRoiWidth &&
+        destinationHeight >= phase1CanvasHeight && destinationHeight <= maximumRemoteVisualLowFpsRoiHeight &&
+        (mode == FullscreenSamplingMode::Linear || mode == FullscreenSamplingMode::Area),
+        "Unified sampled fullscreen composition is outside its bounded contract");
+    const std::size_t sourceRowBytes = static_cast<std::size_t>(phase1CanvasWidth) * 4U;
+    const std::size_t destinationRowBytes = static_cast<std::size_t>(destinationWidth) * 4U;
+    Require(source.size() == sourceRowBytes * phase1CanvasHeight &&
+        destination.size() == destinationRowBytes * destinationHeight,
+        "Unified sampled fullscreen raster size mismatch");
+    // The gray carriers' canonical raster is neutral (B==G==R per pixel) by
+    // construction; the switch is restricted to those profiles. Verify the
+    // invariant per frame and fall back to the general per-channel filter if
+    // it ever fails, so correctness never depends on the assumption while the
+    // neutral fast path computes one channel and replicates the rounded byte.
+    const auto IsNeutralGrayRaster = [](const std::span<const std::byte> pixels) noexcept
+    {
+        for (std::size_t offset = 0; offset + 3U < pixels.size(); offset += 4U)
+        {
+            if (pixels[offset] != pixels[offset + 1U] || pixels[offset] != pixels[offset + 2U])
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    const bool neutralRaster = IsNeutralGrayRaster(source);
+    const std::size_t channelCount = neutralRaster ? 1U : 3U;
+    if (mode == FullscreenSamplingMode::Linear)
+    {
+        struct LinearColumn
+        {
+            std::size_t leftOffset = 0;
+            std::size_t rightOffset = 0;
+            double fractionX = 0;
+            double oneMinusFractionX = 1;
+        };
+        std::array<LinearColumn, maximumRemoteVisualLowFpsRoiWidth> columns{};
+        for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+        {
+            const double logicalX = (destinationX + 0.5) * phase1CanvasWidth / destinationWidth - 0.5;
+            const int left = static_cast<int>(std::floor(logicalX));
+            const double fractionX = logicalX - left;
+            const int clampedLeft = std::clamp(left, 0, static_cast<int>(phase1CanvasWidth) - 1);
+            const int clampedRight = std::clamp(left + 1, 0, static_cast<int>(phase1CanvasWidth) - 1);
+            columns[destinationX].leftOffset = static_cast<std::size_t>(clampedLeft) * 4U;
+            columns[destinationX].rightOffset = static_cast<std::size_t>(clampedRight) * 4U;
+            columns[destinationX].fractionX = fractionX;
+            columns[destinationX].oneMinusFractionX = 1 - fractionX;
+        }
+        for (std::uint32_t destinationY = 0; destinationY < destinationHeight; destinationY++)
+        {
+            const double logicalY = (destinationY + 0.5) * phase1CanvasHeight / destinationHeight - 0.5;
+            const int top = static_cast<int>(std::floor(logicalY));
+            const double fractionY = logicalY - top;
+            const int clampedTop = std::clamp(top, 0, static_cast<int>(phase1CanvasHeight) - 1);
+            const int clampedBottom = std::clamp(top + 1, 0, static_cast<int>(phase1CanvasHeight) - 1);
+            const double oneMinusFractionY = 1 - fractionY;
+            const std::byte* const topRow = source.data() + static_cast<std::size_t>(clampedTop) * sourceRowBytes;
+            const std::byte* const bottomRow = source.data() + static_cast<std::size_t>(clampedBottom) * sourceRowBytes;
+            std::byte* const destinationRow = destination.data() +
+                static_cast<std::size_t>(destinationY) * destinationRowBytes;
+            for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+            {
+                const LinearColumn& column = columns[destinationX];
+                const std::size_t offset = static_cast<std::size_t>(destinationX) * 4U;
+                std::array<std::byte, 3> composed{};
+                for (std::size_t channel = 0; channel < channelCount; channel++)
+                {
+                    const double value = static_cast<double>(std::to_integer<unsigned int>(
+                            topRow[column.leftOffset + channel])) * column.oneMinusFractionX * oneMinusFractionY +
+                        static_cast<double>(std::to_integer<unsigned int>(
+                            topRow[column.rightOffset + channel])) * column.fractionX * oneMinusFractionY +
+                        static_cast<double>(std::to_integer<unsigned int>(
+                            bottomRow[column.leftOffset + channel])) * column.oneMinusFractionX * fractionY +
+                        static_cast<double>(std::to_integer<unsigned int>(
+                            bottomRow[column.rightOffset + channel])) * column.fractionX * fractionY;
+                    composed[channel] = static_cast<std::byte>(static_cast<unsigned int>(
+                        std::clamp(std::round(value), 0.0, 255.0)));
+                }
+                destinationRow[offset + 0] = composed[0];
+                destinationRow[offset + 1] = composed[neutralRaster ? 0 : 1];
+                destinationRow[offset + 2] = composed[neutralRaster ? 0 : 2];
+                destinationRow[offset + 3] = std::byte{255};
+            }
+        }
+        return;
+    }
+    struct AreaTap
+    {
+        std::size_t offset = 0;
+        double overlap = 0;
+    };
+    struct AreaAxis
+    {
+        // At most two in-range taps because the mapped cell never spans more
+        // than one source pixel on an upscaled axis.
+        std::array<AreaTap, 2> taps{};
+        std::uint32_t tapCount = 0;
+        double cellSpan = 1;
+    };
+    const auto BuildAxis = [](const std::uint32_t destinationCount, const std::uint32_t sourceCount,
+        std::array<AreaAxis, maximumRemoteVisualLowFpsRoiWidth>& axes)
+    {
+        for (std::uint32_t destinationIndex = 0; destinationIndex < destinationCount; destinationIndex++)
+        {
+            const double cellNear = destinationIndex * sourceCount / static_cast<double>(destinationCount);
+            const double cellFar = (destinationIndex + 1U) * sourceCount / static_cast<double>(destinationCount);
+            AreaAxis& axis = axes[destinationIndex];
+            axis.cellSpan = cellFar - cellNear;
+            for (int sourceIndex = static_cast<int>(std::floor(cellNear));
+                sourceIndex <= static_cast<int>(std::ceil(cellFar)) - 1; sourceIndex++)
+            {
+                if (sourceIndex < 0 || sourceIndex >= static_cast<int>(sourceCount) ||
+                    axis.tapCount >= axis.taps.size())
+                {
+                    continue;
+                }
+                const double overlap = std::min(cellFar, sourceIndex + 1.0) - std::max(cellNear, sourceIndex * 1.0);
+                if (overlap <= 0.0)
+                {
+                    continue;
+                }
+                axis.taps[axis.tapCount].offset = static_cast<std::size_t>(sourceIndex);
+                axis.taps[axis.tapCount].overlap = overlap;
+                axis.tapCount++;
+            }
+        }
+    };
+    std::array<AreaAxis, maximumRemoteVisualLowFpsRoiWidth> horizontalAxes{};
+    std::array<AreaAxis, maximumRemoteVisualLowFpsRoiWidth> verticalAxes{};
+    BuildAxis(destinationWidth, phase1CanvasWidth, horizontalAxes);
+    BuildAxis(destinationHeight, phase1CanvasHeight, verticalAxes);
+    for (std::uint32_t destinationY = 0; destinationY < destinationHeight; destinationY++)
+    {
+        const AreaAxis& vertical = verticalAxes[destinationY];
+        std::byte* const destinationRow = destination.data() +
+            static_cast<std::size_t>(destinationY) * destinationRowBytes;
+        for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+        {
+            const AreaAxis& horizontal = horizontalAxes[destinationX];
+            std::array<double, 3> weightedSum{};
+            // Row-major accumulation order matches the reference: vertical
+            // taps outer, horizontal taps inner, ascending source index.
+            for (std::uint32_t verticalTap = 0; verticalTap < vertical.tapCount; verticalTap++)
+            {
+                const std::byte* const sourceRow = source.data() +
+                    vertical.taps[verticalTap].offset * sourceRowBytes;
+                for (std::uint32_t horizontalTap = 0; horizontalTap < horizontal.tapCount; horizontalTap++)
+                {
+                    const double weight = horizontal.taps[horizontalTap].overlap * vertical.taps[verticalTap].overlap /
+                        (horizontal.cellSpan * vertical.cellSpan);
+                    const std::size_t sourceOffset = horizontal.taps[horizontalTap].offset * 4U;
+                    for (std::size_t channel = 0; channel < channelCount; channel++)
+                    {
+                        weightedSum[channel] += weight *
+                            std::to_integer<unsigned int>(sourceRow[sourceOffset + channel]);
+                    }
+                }
+            }
+            const std::size_t offset = static_cast<std::size_t>(destinationX) * 4U;
+            std::array<std::byte, 3> composed{};
+            for (std::size_t channel = 0; channel < channelCount; channel++)
+            {
+                composed[channel] = static_cast<std::byte>(static_cast<unsigned int>(
+                    std::clamp(std::round(weightedSum[channel]), 0.0, 255.0)));
+            }
+            destinationRow[offset + 0] = composed[0];
+            destinationRow[offset + 1] = composed[neutralRaster ? 0 : 1];
+            destinationRow[offset + 2] = composed[neutralRaster ? 0 : 2];
+            destinationRow[offset + 3] = std::byte{255};
+        }
+    }
+}
+
 void ComposeRemoteVisualFullscreenBgra(const std::span<const std::byte> source, const std::uint32_t destinationWidth,
     const std::uint32_t destinationHeight, std::span<std::byte> destination, const bool fillScreen)
 {
@@ -8069,6 +8254,41 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(c
     }
 }
 
+RuntimeStatus EncoderRuntimeTestAccess::ProbeUnifiedFullscreenSampledComposition(const std::span<const std::byte> source,
+    const std::uint32_t destinationWidth, const std::uint32_t destinationHeight,
+    const FullscreenSamplingMode samplingMode, std::vector<std::byte>& output) noexcept
+{
+    constexpr std::size_t expectedSourceBytes =
+        static_cast<std::size_t>(phase1CanvasWidth) * phase1CanvasHeight * 4U;
+    if (source.size() != expectedSourceBytes || destinationWidth < phase1CanvasWidth ||
+        destinationWidth > maximumRemoteVisualLowFpsRoiWidth || destinationHeight < phase1CanvasHeight ||
+        destinationHeight > maximumRemoteVisualLowFpsRoiHeight ||
+        (samplingMode != FullscreenSamplingMode::Linear && samplingMode != FullscreenSamplingMode::Area))
+    {
+        return RuntimeStatus::Failure("Unified sampled fullscreen composition probe input is outside its bounded contract");
+    }
+    try
+    {
+        const auto pixelCount = pbprotocol::CheckedMultiplyUnsigned(
+            static_cast<std::size_t>(destinationWidth), static_cast<std::size_t>(destinationHeight));
+        RequireResult(pixelCount, "Unified sampled fullscreen composition probe pixel count overflow");
+        const auto byteCount = pbprotocol::CheckedMultiplyUnsigned(pixelCount.Value(), std::size_t{4});
+        RequireResult(byteCount, "Unified sampled fullscreen composition probe byte count overflow");
+        std::vector<std::byte> result(byteCount.Value());
+        ComposeUnifiedFullscreenSampledBgra(source, destinationWidth, destinationHeight, result, samplingMode);
+        output = std::move(result);
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Unified sampled fullscreen composition probe failed with an unknown error");
+    }
+}
+
 RuntimeStatus EncoderRuntimeTestAccess::ProbeStreamingCarouselFile(const std::wstring& sourcePath,
     const std::filesystem::path& sessionStateRoot, const bool compressionEnabled, const int compressionLevel,
     const std::uint32_t logicalVisualFps, const std::uint32_t completedPasses,
@@ -9026,6 +9246,12 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("Short initial airtime requires explicit spatial GrayFast experimental mode");
     }
+    if (config.fullscreenSampling != FullscreenSamplingMode::Point &&
+        (!config.singleMonitorFullscreen ||
+            (config.visualProfile != VisualProfile::UnifiedGray && config.visualProfile != VisualProfile::UnifiedGrayFast)))
+    {
+        return RuntimeStatus::Failure("Fullscreen sampling 实验仅允许灰阶 Unified 家族 single-monitor fullscreen");
+    }
     if (config.grayFastSpatialInterleave && config.measurement)
     {
         // Step1's submitted identity has one SegmentOrdinal. Do not silently
@@ -9654,6 +9880,7 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     initial.remoteMetadata = config.remoteMetadata;
     initial.configuredLogicalVisualFps = config.logicalVisualFps;
     initial.grayFastSpatialInterleave = config.grayFastSpatialInterleave;
+    initial.fullscreenSampling = config.fullscreenSampling;
     initial.configuredInitialAirtimePercent = config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U;
     if (config.logicalVisualFps != 0)
     {
@@ -10295,8 +10522,17 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 if (config.singleMonitorFullscreen)
                 {
                     const pbcore::DiagnosticScope composeTiming(config.diagnostics.get(), pbcore::DiagnosticStage::FullscreenCompose);
-                    ComposeRemoteVisualFullscreenBgra(builder.GetBuiltPixels(), presentationWidth,
-                        presentationHeight, fullscreenPixels, IsUnifiedVisualFamily(config.visualProfile));
+                    if (IsUnifiedVisualFamily(config.visualProfile) &&
+                        config.fullscreenSampling != FullscreenSamplingMode::Point)
+                    {
+                        ComposeUnifiedFullscreenSampledBgra(builder.GetBuiltPixels(), presentationWidth,
+                            presentationHeight, fullscreenPixels, config.fullscreenSampling);
+                    }
+                    else
+                    {
+                        ComposeRemoteVisualFullscreenBgra(builder.GetBuiltPixels(), presentationWidth,
+                            presentationHeight, fullscreenPixels, IsUnifiedVisualFamily(config.visualProfile));
+                    }
                 }
                 frameBuilt = true;
             }

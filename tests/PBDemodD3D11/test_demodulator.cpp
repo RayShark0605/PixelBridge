@@ -1,6 +1,7 @@
 #include "../PBModulation/unified_point_downscale_fixture.h"
 #include "../PBModulation/unified_gray_resampling_fixture.h"
 #include "../PBModulation/unified_fullscreen_fixture.h"
+#include "../PBModulation/unified_two_stage_resample_fixture.h"
 #include "pbdemodd3d11/demodulator.h"
 #include "pbdemodd3d11/capture_demodulator.h"
 
@@ -3411,6 +3412,107 @@ TEST_CASE("Capture adapter recovers independently downscaled gray pixels through
         consumer->DomainInvalidated(domain);
         REQUIRE_FALSE(consumer->GetSnapshot().active);
     }
+}
+
+TEST_CASE("Capture adapter recovers two-stage resampled gray rasters identically to the CPU reference",
+    "[demod][d3d11][capture][unified][graystates][grayfast][warp][two-stage]")
+{
+    // Two-stage chain: canonical 1920x1080 -> 2560x1600 full-screen raster
+    // composed with point, linear or area stage-one sampling -> 851-permille
+    // fractional bilinear remote-view rescale into the 2560x1440 ROI. The
+    // live-like composite geometry is ~1.1347x1.2611, matching the field
+    // measurement scale. Byte parity with the CPU oracle on the identical
+    // pixel bytes is asserted per mode; the stage-one filters remain
+    // test-only references and change no production path or threshold.
+    auto environment = CreateWarpEnvironment();
+    pbdemodd3d11::CaptureDemodulatorConfig config;
+    config.visualProfileId = pbprotocol::kGrayFastExperimentalProfile.visualProfileId;
+    config.slotCount = 2;
+    config.resultQueueCapacity = 4;
+    config.maximumFrameAgeMilliseconds = 60000;
+    config.maximumRoiWidth = 2560;
+    config.maximumRoiHeight = 1440;
+    pbdemodd3d11::CaptureDemodulatorBudget budget;
+    REQUIRE(pbdemodd3d11::CalculateCaptureDemodulatorBudget(config, budget));
+    config.maximumResidentBytes = budget.totalBytes;
+    std::shared_ptr<pbdemodd3d11::CaptureDemodulator> consumer;
+    REQUIRE(pbdemodd3d11::CaptureDemodulator::Create(config, consumer));
+    const pbcapturenormalize::ScreenCaptureDomain domain{{std::byte{0x7D}}, 1};
+    REQUIRE(consumer->DomainStarted(domain, MakeCaptureEnvironment(environment.adapterLuid, 2560, 1440),
+        environment.device.Get()));
+    std::uint64_t observation = 0;
+    for (const std::uint64_t sequence : {64ULL, 79ULL})
+    {
+        const auto frameFixture = pbtest::BuildUnifiedRandomFullLoadFrame(pbprotocol::kGrayFastExperimentalProfile,
+            0x5EED0C0FBE11ULL + sequence, sequence);
+        for (const auto mode : {pbtest::UnifiedFullscreenSamplingMode::Point,
+            pbtest::UnifiedFullscreenSamplingMode::Linear, pbtest::UnifiedFullscreenSamplingMode::Area})
+        {
+            CAPTURE(sequence, static_cast<int>(mode));
+            const auto stageOne = pbtest::ComposeUnifiedFullscreenStage(frameFixture.canonical, 2560, 1600, mode);
+            const auto pixels = pbtest::MakeUnifiedRemoteViewResampleFixture(stageOne, 2560, 1600, 851, 851, 137, 861);
+            auto cpuOracle = pbmodulation::UnifiedVisualCpuOracle::Create(
+                pbmodulation::UnifiedVisualCpuOracle::RequiredBytes());
+            REQUIRE(cpuOracle);
+            auto oracle = std::move(cpuOracle).Value();
+            const pbmodulation::LumaView view{pixels, pbtest::kTwoStageCaptureWidth,
+                pbtest::kTwoStageCaptureHeight, static_cast<std::size_t>(pbtest::kTwoStageCaptureWidth) * 4U,
+                pbmodulation::LumaPixelFormat::Bgra8};
+            const pbmodulation::UnifiedExpectedFrameIdentity identity{true,
+                pbprotocol::SessionTag{frameFixture.sessionTagValue}, true, sequence,
+                pbprotocol::kGrayFastExperimentalProfile.visualProfileId,
+                pbprotocol::kGrayFastExperimentalProfile.visualLayoutVersion};
+            const auto cpuObservation = oracle.DecodeMixedFrame(view, identity);
+            REQUIRE(cpuObservation.IsFrameAvailable());
+            REQUIRE(cpuObservation.acceptedBlocks == frameFixture.slotCount);
+            const auto cpuAccepted = oracle.GetAcceptedBlocks();
+            const auto texture = UploadBgraTexture(environment.device.Get(), pixels, 2560, 1440, 2560 * 4);
+            observation++;
+            auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, observation);
+            frame.metadata.slotIndex = 0;
+            StampCurrent(frame);
+            REQUIRE(consumer->Submit(frame, environment.context.Get()));
+            WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
+            const auto bootstrapStage = consumer->CompleteStage(frame.metadata, texture.Get(),
+                environment.context.Get(), false);
+            REQUIRE(bootstrapStage.status);
+            REQUIRE(bootstrapStage.gpuWorkSubmitted);
+            WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
+            const auto dataStage = consumer->CompleteStage(frame.metadata, texture.Get(),
+                environment.context.Get(), false);
+            REQUIRE(dataStage.status);
+            REQUIRE_FALSE(dataStage.gpuWorkSubmitted);
+            auto result = std::make_unique<pbdemodd3d11::CaptureDemodulatorResult>();
+            REQUIRE(consumer->TakeResult(*result));
+            REQUIRE(result->kind == pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame);
+            REQUIRE(result->bootstrap.IsAccepted());
+            REQUIRE(result->bootstrap.canonical44 == frameFixture.bootstrap);
+            REQUIRE(result->bootstrap.geometry.scaleX == Catch::Approx(2560 * 0.851 / 1920.0).margin(0.002));
+            REQUIRE(result->bootstrap.geometry.scaleY == Catch::Approx(1600 * 0.851 / 1080.0).margin(0.002));
+            REQUIRE(result->demodulation.unifiedObservation.IsFrameAvailable());
+            REQUIRE(result->demodulation.acceptedUnifiedBlockCount == pbmodulation::kUnifiedGrayFrameCodewordCount);
+            for (std::uint32_t slot = 0; slot < result->demodulation.acceptedUnifiedBlockCount; slot++)
+            {
+                const auto& accepted = result->demodulation.acceptedUnifiedBlocks[slot];
+                REQUIRE(accepted.codewordSlot < frameFixture.slotCount);
+                REQUIRE(accepted.size == frameFixture.blocks[accepted.codewordSlot].size());
+                REQUIRE(std::equal(frameFixture.blocks[accepted.codewordSlot].begin(),
+                    frameFixture.blocks[accepted.codewordSlot].end(), accepted.bytes.begin()));
+                REQUIRE(cpuAccepted[accepted.codewordSlot].size == accepted.size);
+                REQUIRE(std::equal(accepted.bytes.begin(), accepted.bytes.end(),
+                    cpuAccepted[accepted.codewordSlot].bytes.begin()));
+            }
+            REQUIRE_FALSE(consumer->TakeResult(*result));
+            const auto snapshot = consumer->GetSnapshot();
+            REQUIRE(snapshot.pendingFrames == 0);
+            REQUIRE(snapshot.bootstrapAcceptedFrames == observation);
+            REQUIRE(snapshot.bootstrapRejectedFrames == 0);
+            REQUIRE(snapshot.resultQueueDrops == 0);
+        }
+    }
+    REQUIRE(consumer->GetSnapshot().bootstrapWindowedFastPathFrames > 0);
+    consumer->DomainInvalidated(domain);
+    REQUIRE_FALSE(consumer->GetSnapshot().active);
 }
 
 TEST_CASE("Capture adapter rejects subunit product pixels and invalid gray bindings before GPU submission",

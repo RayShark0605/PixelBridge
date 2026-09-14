@@ -1,5 +1,7 @@
 #include "local_desktop_runtime.h"
 #include "monitor_catalog.h"
+#include "../PBModulation/unified_fullscreen_fixture.h"
+#include "../PBModulation/unified_two_stage_resample_fixture.h"
 #include "pbmodulation/desktop_levels.h"
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
@@ -15,10 +17,12 @@
 
 #include <array>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <string>
 #include <vector>
@@ -380,6 +384,133 @@ TEST_CASE("Unified fullscreen fill maps the complete raster to every physical pi
     std::vector<std::byte> output{std::byte{0xA5}};
     REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(std::span(source).first(source.size() - 1U), 1920, 1080, output, true));
     REQUIRE(output == std::vector<std::byte>{std::byte{0xA5}});
+}
+
+TEST_CASE("Unified fullscreen fill equals the shared point fixture on random rasters",
+    "[application][unified][encoder][fullscreen][composition][fill][reference]")
+{
+    // Ties the production center-point composition (integer row reuse and
+    // column-offset lookup) to the shared test fixture that the two-stage
+    // sampling comparison uses as its stage-one Point reference. Random
+    // content keeps the equality independent of the structured gradient used
+    // by the whole-image oracle above.
+    constexpr std::uint32_t sourceWidth = pbapp::phase1CanvasWidth;
+    constexpr std::uint32_t sourceHeight = pbapp::phase1CanvasHeight;
+    std::vector<std::byte> source(static_cast<std::size_t>(sourceWidth) * sourceHeight * 4U);
+    std::uint64_t state = 0xD1CE7EEDBEEFCA11ULL;
+    const auto Next = [&state]
+    {
+        state += 0x9E3779B97F4A7C15ULL;
+        std::uint64_t mixed = state;
+        mixed = (mixed ^ (mixed >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        mixed = (mixed ^ (mixed >> 27U)) * 0x94D049BB133111EBULL;
+        return mixed ^ (mixed >> 31U);
+    };
+    for (std::size_t offset = 0; offset + 3U < source.size(); offset += 4U)
+    {
+        const std::uint64_t value = Next();
+        source[offset] = static_cast<std::byte>(value & 0xFFU);
+        source[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xFFU);
+        source[offset + 2U] = static_cast<std::byte>((value >> 16U) & 0xFFU);
+        source[offset + 3U] = std::byte{255};
+    }
+    for (const auto& size : {std::array{1920U, 1080U}, std::array{2560U, 1600U}, std::array{3840U, 2160U}})
+    {
+        CAPTURE(size[0], size[1]);
+        std::vector<std::byte> destination;
+        REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(source, size[0], size[1],
+            destination, true));
+        const auto reference = pbtest::MakeUnifiedFullscreenPointFixture(source, size[0], size[1]);
+        REQUIRE(destination == reference);
+    }
+}
+
+TEST_CASE("Unified experimental sampled fullscreen composition equals the shared linear and area references",
+    "[application][unified][encoder][fullscreen][composition][sampling][reference]")
+{
+    // The opt-in stage-one Linear/Area composition must stay byte-reproducible
+    // against the independently verified two-stage fixture references. Random
+    // BGRA content exercises the general per-channel filter; a neutral gray
+    // raster (B==G==R, the gray carriers' contract) exercises the replicated
+    // single-channel fast path. Point stays covered by the production tie
+    // above; the default path and every threshold remain unchanged.
+    constexpr std::uint32_t sourceWidth = pbapp::phase1CanvasWidth;
+    constexpr std::uint32_t sourceHeight = pbapp::phase1CanvasHeight;
+    std::vector<std::byte> source(static_cast<std::size_t>(sourceWidth) * sourceHeight * 4U);
+    std::vector<std::byte> neutralSource(static_cast<std::size_t>(sourceWidth) * sourceHeight * 4U);
+    std::uint64_t state = 0x5A37913D7E57F001ULL;
+    const auto Next = [&state]
+    {
+        state += 0x9E3779B97F4A7C15ULL;
+        std::uint64_t mixed = state;
+        mixed = (mixed ^ (mixed >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        mixed = (mixed ^ (mixed >> 27U)) * 0x94D049BB133111EBULL;
+        return mixed ^ (mixed >> 31U);
+    };
+    for (std::size_t offset = 0; offset + 3U < source.size(); offset += 4U)
+    {
+        const std::uint64_t value = Next();
+        source[offset] = static_cast<std::byte>(value & 0xFFU);
+        source[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xFFU);
+        source[offset + 2U] = static_cast<std::byte>((value >> 16U) & 0xFFU);
+        source[offset + 3U] = std::byte{255};
+        const std::byte gray = static_cast<std::byte>((value >> 24U) & 0xFFU);
+        neutralSource[offset] = gray;
+        neutralSource[offset + 1U] = gray;
+        neutralSource[offset + 2U] = gray;
+        neutralSource[offset + 3U] = std::byte{255};
+    }
+    const auto& sizeSet = std::array{std::array{1920U, 1080U}, std::array{2560U, 1600U}, std::array{3840U, 2160U}};
+    for (const auto& raster : {std::cref(source), std::cref(neutralSource)})
+    {
+        for (const auto& size : sizeSet)
+        {
+            for (const auto mode : {pbapp::FullscreenSamplingMode::Linear, pbapp::FullscreenSamplingMode::Area})
+            {
+                CAPTURE(raster.get() == neutralSource, size[0], size[1], static_cast<int>(mode));
+                std::vector<std::byte> destination;
+                REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeUnifiedFullscreenSampledComposition(
+                    raster.get(), size[0], size[1], mode, destination));
+                if (size[0] == sourceWidth && size[1] == sourceHeight)
+                {
+                    REQUIRE(destination == raster.get());
+                    continue;
+                }
+                const auto reference = mode == pbapp::FullscreenSamplingMode::Linear ?
+                    pbtest::MakeUnifiedFullscreenLinearFixture(raster.get(), size[0], size[1]) :
+                    pbtest::MakeUnifiedFullscreenAreaFixture(raster.get(), size[0], size[1]);
+                REQUIRE(destination == reference);
+            }
+        }
+    }
+    std::vector<std::byte> output{std::byte{0xA5}};
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeUnifiedFullscreenSampledComposition(source, 1919, 1080,
+        pbapp::FullscreenSamplingMode::Linear, output));
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeUnifiedFullscreenSampledComposition(source, 2560, 1600,
+        pbapp::FullscreenSamplingMode::Point, output));
+    REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeUnifiedFullscreenSampledComposition(
+        std::span(source).first(source.size() - 1U), 2560, 1600, pbapp::FullscreenSamplingMode::Area, output));
+    REQUIRE(output == std::vector<std::byte>{std::byte{0xA5}});
+    // Production-compose cost diagnostics for the 30 fps frame budget. The
+    // numbers never gate; the FullscreenCompose stage diagnostic remains the
+    // field-authoritative measurement.
+    for (const auto mode : {pbapp::FullscreenSamplingMode::Linear, pbapp::FullscreenSamplingMode::Area})
+    {
+        std::vector<std::byte> timed;
+        for (int round = 0; round < 6; round++)
+        {
+            const auto startedAt = std::chrono::steady_clock::now();
+            REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeUnifiedFullscreenSampledComposition(
+                neutralSource, 2560, 1600, mode, timed));
+            const double milliseconds = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - startedAt).count();
+            if (round >= 2)
+            {
+                std::cout << "[sampled-compose] mode=" << (mode == pbapp::FullscreenSamplingMode::Linear ?
+                    "linear" : "area") << " neutral 2560x1600 round " << round << ": " << milliseconds << " ms\n";
+            }
+        }
+    }
 }
 
 TEST_CASE("Unified full-screen filled encoded frames remain independently decodable at each supported screen shape",

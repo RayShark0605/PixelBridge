@@ -67,6 +67,10 @@ struct EncoderConfig
     // Opt-in initial-visit tuning for the measured faster remote channel.
     // Later full repair visits are unchanged; not a universal loss guarantee.
     bool grayFastShortInitialAirtime = false;
+    // Opt-in stage-one fullscreen composition filter. Only meaningful with
+    // singleMonitorFullscreen on the Unified family; the default Point path
+    // keeps the exact historical composition bytes.
+    FullscreenSamplingMode fullscreenSampling = FullscreenSamplingMode::Point;
 };
 
 struct DecoderConfig
@@ -259,6 +263,11 @@ public:
     [[nodiscard]] static RuntimeStatus ProbeRemoteVisualFullscreenComposition(std::span<const std::byte> source,
         std::uint32_t destinationWidth, std::uint32_t destinationHeight,
         std::vector<std::byte>& output, bool fillScreen = false) noexcept;
+    // Same bounded composition contract as above, restricted to the Unified
+    // fullscreen sizes, exposing the experimental stage-one sampling modes.
+    [[nodiscard]] static RuntimeStatus ProbeUnifiedFullscreenSampledComposition(std::span<const std::byte> source,
+        std::uint32_t destinationWidth, std::uint32_t destinationHeight,
+        pbapp::FullscreenSamplingMode samplingMode, std::vector<std::byte>& output) noexcept;
     // Opens the real source handle and exercises production pre-scan,
     // descriptor persistence, current/next encoded Segment buffering,
     // Carousel scheduling, durable ID leases, and restart recreation without

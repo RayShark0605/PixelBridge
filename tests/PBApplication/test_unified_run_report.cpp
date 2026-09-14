@@ -118,11 +118,14 @@ TEST_CASE("Gray fast sender reports explicit initial airtime without fabricating
     snapshot.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
     const auto normal = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
     REQUIRE_FALSE(normal["grayFastSpatialInterleave"].toBool());
+    REQUIRE(normal["fullscreenSamplingMode"].toString().toStdString() == "point");
     REQUIRE(normal["configuredInitialAirtimePercent"].toInt() == 100);
     snapshot.grayFastSpatialInterleave = true;
     snapshot.configuredInitialAirtimePercent = 65;
+    snapshot.fullscreenSampling = pbapp::FullscreenSamplingMode::Area;
     const auto experimental = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
     REQUIRE(experimental["grayFastSpatialInterleave"].toBool());
+    REQUIRE(experimental["fullscreenSamplingMode"].toString().toStdString() == "area");
     REQUIRE(experimental["configuredInitialAirtimePercent"].toInt() == 65);
     REQUIRE(experimental["receiverProgress"].isNull());
     REQUIRE(experimental["verifiedGoodput"].isNull());
