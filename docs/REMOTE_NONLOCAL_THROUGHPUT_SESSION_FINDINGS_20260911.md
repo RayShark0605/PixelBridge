@@ -1477,3 +1477,11 @@ artifact-only 安全 gate 已通过 16 项，但需与上述 oracle 拒绝同时
 汇总索引 `nl0915-profile-offline-grayfast8-01/grayfast8-study-summary.json` 已把当前状态固定为：mapping 可逆、16 项安全 gate 全通过，但原始 8-plane raster 完整字节可逆性拒绝；mask-repair 仅屏蔽性通过，仍无 field evidence。
 
 mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固定 36-cell tile、最近距离解码、均匀偏移与 ±2/4/8/16 随机 cell 扰动（256 symbols×8 trials）下，修复表 256/256 exact decode，ambiguous=0。该结果仅说明离线亮度间隔在简化模型下有余量；没有建模 gamma、缩放/相位、模糊、codec、4:2:0、WGC/Citrix 或真实 BER/FER，不能作为 field 或吞吐证据。产物 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-noise-model.json`。
+
+### 21.52 mask-repair oracle：artifact-only 完整可逆性恢复，但仍未达到 field-test 门
+
+用户确认继续后，将 mask index 32 替换为 `0x13B0C15` 的 mask-repair 作为独立 artifact 候选，重新生成 layout 14 raster oracle。该候选在 256-symbol 域 exact round-trip 通过，13 个包含原歧义边界值的 Golden vector 通过，`ambiguousCanonicalSymbols=[]`，`rasterOracleStatus=ACCEPTED_OFFLINE_EXACT_MASK_REPAIR`；mapping hash 仍为 `f3b713926de2915bbd4d21818fd1afb6dd9043f04babd75524064e41356bfd02`。这是对“完整字节可逆性”的离线修复，不是对远端视觉恢复的认证。
+
+为避免把 mask repair 的局部通过误当作鲁棒性，另做了 239,260 个候选 mask 的确定性有界搜索：未观察到与现有非零 mask 保持最小 Hamming 距离 9 的替换，当前屏蔽候选的最小距离为 8。固定 36-cell 最近距离模型的 ±2/4/8/16 luma 扰动筛选仍为 256×8 trials 全部 exact，但不含 gamma、缩放/相位、blur、codec、4:2:0、WGC/Citrix 或真实 BER/FER。证据 `grayfast8-mask-search.json`、`grayfast8-maskrepair-noise-model.json`、`grayfast8-maskrepair-oracle.json` 和汇总 `grayfast8-study-summary-v2.json`。
+
+因此下一门仍是：先完成 artifact-only 的几何/采样/codec 代理鲁棒性与新的完整 Golden/安全门复核，再由主人单独授权 ≤25 MB 远端 field test；不启动 Medium/Big、不改生产默认或正式 catalog。
