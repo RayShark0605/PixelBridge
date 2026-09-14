@@ -76,3 +76,7 @@ layout 14 artifact-only oracle 已建立。现有 64-mask + 两个亮度 bit 的
 
 artifact-only mask-repair 屏蔽性试探把 index 32 替换为 `0x13B0C15`，得到 256 符号 exact round-trip、64 个唯一 mask，但最小 Hamming 距离降为 8，必须重新定义完整 mapping/Golden/Decoder 并验证远端鲁棒性，不能接入现有 layout 13。证据位于 `artifacts/nonlocal-stall-20260913-2111/nl0915-profile-offline-grayfast8-01/`。在 mask-repair 或另一种正交表达未通过新的离线鲁棒门前，不得启动远端测试；Medium/Big 继续冻结。
 
+
+## 9. Mask-repair 屏蔽性筛选
+
+为消除 index 32 全零 glyph 导致的 4 个符号碰撞，artifact-only 屏蔽性候选将该 mask 替换为 `0x13B0C15`。256-symbol exact round-trip 和 64-mask uniqueness 通过，最小 mask Hamming 距离为 8；在固定 36-cell、最近距离解码及 ±2/4/8/16 synthetic luma 扰动下 256×8 trials 均 exact decode。以上均不是远端/codec/缩放/BER 证据，不能启动 field test。若要进入 ≤25 MB 视觉验证，需要用户另行确认 field-test 授权，并先冻结新 mapping hash/Golden/Decoder 与完整安全门。
