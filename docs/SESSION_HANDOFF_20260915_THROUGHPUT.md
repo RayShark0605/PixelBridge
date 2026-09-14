@@ -80,3 +80,9 @@ artifact-only mask-repair 屏蔽性试探把 index 32 替换为 `0x13B0C15`，�
 ## 9. Mask-repair 屏蔽性筛选
 
 为消除 index 32 全零 glyph 导致的 4 个符号碰撞，artifact-only 屏蔽性候选将该 mask 替换为 `0x13B0C15`。256-symbol exact round-trip 和 64-mask uniqueness 通过，最小 mask Hamming 距离为 8；在固定 36-cell、最近距离解码及 ±2/4/8/16 synthetic luma 扰动下 256×8 trials 均 exact decode。以上均不是远端/codec/缩放/BER 证据，不能启动 field test。若要进入 ≤25 MB 视觉验证，需要用户另行确认 field-test 授权，并先冻结新 mapping hash/Golden/Decoder 与完整安全门。
+
+## 10. Mask-repair oracle 更新
+
+用户已确认继续 artifact-only。独立 mask-repair oracle 将现有 index 32 替换为 `0x13B0C15` 后，在完整 256-symbol 域 exact round-trip 通过，13 个 Golden vectors（含原碰撞边界）通过，`ambiguousCanonicalSymbols=[]`，状态 `ACCEPTED_OFFLINE_EXACT_MASK_REPAIR`；mapping hash=`f3b713926de2915bbd4d21818fd1afb6dd9043f04babd75524064e41356bfd02`。但最小 mask Hamming 距离为 8，field/codec/缩放鲁棒性仍未知。239,260 候选 mask 的有界搜索未观察到距离 9 替换；synthetic ±2/4/8/16 luma 扰动仅作为模型筛选。
+
+下一步仍是 artifact-only 几何/采样/codec proxy 与安全门复核。未经主人新的明确授权，不运行 ≤25 MB field test；Medium/Big 保持冻结。
