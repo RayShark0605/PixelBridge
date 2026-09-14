@@ -1493,3 +1493,5 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 产物 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-geometry-proxy.json`。下一步若继续，只能先改变视觉表达以获得对 blur/contrast/phase 的稳健性，并重新生成完整 mapping/Golden/安全门；不得把当前 mask-repair 的 exact round-trip 或 synthetic luma 扰动结果升级为远端吞吐改进。
 
 补充 level screen：在 16 组背景/前景亮度组合的 1-cell box-blur 代理中，最佳也仅 55/256 exact（background 8/192、foreground 32/224），仍有 15 个 ambiguous；简单调亮度 ladder 无法恢复完整 8-bit 鲁棒性。该结果进一步排除“只调亮度即可进入现场”的窄假设。证据 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-level-screen.json`，仍不含真实远端或 codec 行为。
+
+顺带对现有 `PB-ShapeChroma` 的 16 个平衡 4×4 luma 模板做静态 blur proxy：identity 为 16/16 exact，1-cell box blur 为 12/16 exact、4 ambiguous。该旧实验码本不能直接作为 GrayFast8 的低频替代；它支持“需要更大空间支持/新几何”的判断，但不提供当前产品或远端吞吐证据。产物 `nl0915-profile-offline-grayfast8-01/shape-chroma-blur-probe.json`。
