@@ -1385,3 +1385,13 @@ point组526930ms与R的525968ms（同配置、Q期二进制）相差+0.18%，同
 三个 run 的 25MB SHA256 均为 `f9fa18860c159080d860b654903f272846a5af5fa51ba303e39825ce4b53c3e4`，100MB SHA256 为 `4111eb5acba90ea84b8e1cce370699d682ac1460e9f841069c7445cd89a134eb`；wholeDigestVerified、renameSucceeded、finalReopenVerified、published 和第二次独立 SHA 全部通过，资源拒绝/延期/孤儿/冲突均为0。25MB linear 相对同候选 point 快4.67%，但仍是单次小文件观察；100MB linear 相对已知 point 526930ms 慢25.3%，相对旧未优化 linear 752227ms 快12.2%，说明本地合成优化生效但采样模式在多段 graduation 下仍使发送节奏/每帧新信息不足，不能晋级或用于完整 Medium/Big。O1 授权已记录；当前30FPS later-pass repair-only 与发送窗口6已在 live scheduler 中，不再重复改写同一语义。
 
 证据目录：`nl0914-t2-spatial-point25/`、`nl0914-t2-spatial-linear25/`、`nl0914-t2-spatial-linear100/`、候选构建与源快照 `candidate-t2-compose-fast-release/`。完整目标文件仍保持 O 组合历史最好，不以本节100MB推演替代完整摘要/发布/重开实测。
+
+## 21.46 T3 紧凑 BGRA 提交拷贝窄验证（2026-09-14）
+
+为降低 Sender 在 `DataWindow::SubmitFrame` 持有 `stateMutex` 时的逐行拷贝开销，新增提交 `fb6a849`：当输入 `rowPitch == width*4`（生产全屏路径的紧凑 BGRA 不变量）时，使用一次有界 `memcpy`；非紧凑 stride 继续保留逐行 `copy_n`，不改变队列深度、pending-frame 替换、Present、显示模式或协议语义。构建后仅替换私有候选包 Encoder，Decoder 保持冻结字节不变。
+
+新的受保护远端证据 tag：`nl0914-t3-submit-point25`，路径为 `artifacts/nonlocal-stall-20260913-2111/nl0914-t3-submit-point25/`。参数为 receiver-first、`25,000,000` bytes、RAW、30 fps、6 MiB segment、`--grayfast-spatial-interleave`、`--budget-bound-decoders`、fullscreen sampling=point；远端显示/ROI 前后未变，foreground identity 未变，liveProcesses 为空。完整摘要、安全发布、final reopen、独立 SHA-256、资源/冲突/延期/配额计数均通过，`allFinalGates=true`。
+
+结果：`126,897 ms`，UniqueVisualFPS=`7.528021963578194`，Sender submitted FPS=`29.50310765850552`。同候选之前的 point 25 MiB 参考为 `126,906 ms` / `7.514192759443952` / `28.744385363199285`；总时间变化 `-9 ms`（远小于单次远端噪声），但 Sender 提交速率由 `28.744` 升至 `29.503`，说明紧凑拷贝优化改善了本机提交侧余量，尚未证明能缩短远端唯一帧捕获瓶颈。不能据此重跑 Medium/Big 或宣称总目标完成。
+
+定向验证：`PBRenderD3DTests.exe '*'` 407 assertions/24 cases 通过；`PBApplicationTests.exe 'sender*'` 8151 assertions/1 case 通过。未执行 full CTest、Medium/Big 远端重跑；point 仍为默认采样。

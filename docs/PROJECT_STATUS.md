@@ -210,3 +210,5 @@ PixelBridge 是 Windows x64 / C++20 项目，通过**可见桌面像素**做单�
 4. **失败与豁免必须保留。** 任何整理、重写或精简都不得抹掉失败门限、豁免范围与未认证边界。
 5. **新建或停用文档时同步更新** `docs/README.md` 索引与本文件第 8.1 节。
 6. **删除文档一律用 `git rm`** 并在 `DOC_HISTORY.md` 登记 blob SHA-1，保证逐字节可恢复；不建 `docs/archive/` 目录。
+
+- 2026-09-14：`fb6a849` 在紧凑 BGRA 提交路径使用一次有界 `memcpy`，保留 stride fallback。远端 25 MiB 新 tag `nl0914-t3-submit-point25` 全门通过，126,897 ms、UniqueVisualFPS 7.5280、Sender 29.503 fps；总时间与 126,906 ms 参考持平（-9 ms），仅证明提交侧余量改善，未改变远端唯一帧瓶颈，Medium/Big 不重跑。
