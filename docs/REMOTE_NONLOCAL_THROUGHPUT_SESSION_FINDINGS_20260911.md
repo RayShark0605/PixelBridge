@@ -1491,3 +1491,5 @@ mask-repair 屏蔽性候选又完成有界 synthetic luma 扰动筛选：在固�
 在仍保持 artifact-only 的授权范围内，对 mask-repair `0x13B0C15` 做了受界 256-symbol 代理筛选。无变换和 16-level 量化下为 256/256 exact，但简单 1-cell box blur 仅 53/256 exact（15 ambiguous，错误率 79.30%），2-cell blur 仅 17/256 exact（3 ambiguous，错误率 93.36%）；对比度压缩至 75% 时为 192/256，压缩至 50% 时为 96/256。该结果不是 Citrix/codec 实测，却足以证明“mask table 修复后即可进入 ≤25 MB 现场”没有证据支持；当前不请求、不启动 field test。
 
 产物 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-geometry-proxy.json`。下一步若继续，只能先改变视觉表达以获得对 blur/contrast/phase 的稳健性，并重新生成完整 mapping/Golden/安全门；不得把当前 mask-repair 的 exact round-trip 或 synthetic luma 扰动结果升级为远端吞吐改进。
+
+补充 level screen：在 16 组背景/前景亮度组合的 1-cell box-blur 代理中，最佳也仅 55/256 exact（background 8/192、foreground 32/224），仍有 15 个 ambiguous；简单调亮度 ladder 无法恢复完整 8-bit 鲁棒性。该结果进一步排除“只调亮度即可进入现场”的窄假设。证据 `nl0915-profile-offline-grayfast8-01/grayfast8-maskrepair-level-screen.json`，仍不含真实远端或 codec 行为。
