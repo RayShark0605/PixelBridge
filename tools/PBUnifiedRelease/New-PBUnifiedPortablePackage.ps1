@@ -531,8 +531,10 @@ if ($ProductRelease) {
         throw 'Unsafe/oversized Qt source manifest'
     }
     $qtSourceManifest = Get-Content -LiteralPath $qtSourceManifestPath -Raw | ConvertFrom-Json -AsHashtable
+    # The Windows DLL has a four-component PE version; the upstream source
+    # release has a three-component version. Preserve both exact identities.
     if ($qtSourceManifest.schema -cne 'PixelBridge.QtSourceBundle.1' -or $qtSourceManifest.module -cne 'qtbase' -or
-        $qtSourceManifest.version -cne $qtVersions[0] -or $qtVersions[0] -cne '6.10.1' -or
+        $qtSourceManifest.version -cne '6.10.1' -or $qtVersions[0] -cne '6.10.1.0' -or
         $qtSourceManifest.archive.path -cne 'qtbase-6.10.1-source.zip' -or
         $qtSourceManifest.fileCount -lt 1 -or $qtSourceManifest.fileCount -gt 65536) { throw 'Qt corresponding source identity mismatch' }
     $qtSourceArchivePath = Join-Path $qtSourceBundleRoot $qtSourceManifest.archive.path

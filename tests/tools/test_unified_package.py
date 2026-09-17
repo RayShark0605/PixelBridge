@@ -196,13 +196,19 @@ def main():
                 return json.dumps(document).encode()
             changed_product_file("product-qt-source-binding", "sources/qt-source-manifest.json", wrong_source,
                                  "Qt corresponding source binding is invalid")
+            def pe_version_as_source(data):
+                document = json.loads(data)
+                document["version"] = "6.10.1.0"
+                return json.dumps(document).encode()
+            changed_product_file("product-qt-source-not-pe-version", "sources/qt-source-manifest.json", pe_version_as_source,
+                                 "Qt corresponding source binding is invalid")
             changed_product_file("product-runtime-required", "Qt6Gui.dll", lambda data: None,
                                  "Required product runtime missing")
     finally:
         unchanged = original_inventory == {str(path.relative_to(original)): digest(path) for path in original.rglob("*") if path.is_file()}
         unchanged = unchanged and digest(args.archive) == archive_hash and digest(args.seal) == seal_hash
         summary = {"schema": "PixelBridge.UnifiedPackageNegativeTests.1", "tests": results,
-                   "passed": len(results) == (24 if product_release else 20) and all(item["passed"] for item in results), "originalArtifactsUnchanged": unchanged,
+                   "passed": len(results) == (25 if product_release else 20) and all(item["passed"] for item in results), "originalArtifactsUnchanged": unchanged,
                    "packagedExecutablesRun": False, "packageDirectory": str(original), "derivedDirectory": str(package)}
         (root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         if not unchanged:

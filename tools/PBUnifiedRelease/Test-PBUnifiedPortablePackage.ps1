@@ -578,7 +578,8 @@ foreach ($package in $vcpkgPackages)
 }
 
 if ($isProductRelease) {
-    if ($endpointRoles.Count -ne 1 -or $buildIdentity.qt.version -cne '6.10.1' -or
+    # Keep the exact Windows PE version distinct from the upstream source tag.
+    if ($endpointRoles.Count -ne 1 -or $buildIdentity.qt.version -cne '6.10.1.0' -or
         $sbomPackageMap['PixelBridge'].licenseConcluded -cne 'MIT' -or
         $sbomPackageMap['Qt'].licenseDeclared -cne 'LGPL-3.0-only') { throw 'Invalid product role or licensing baseline' }
     foreach ($path in @('LICENSE', 'README.md', 'USER_GUIDE.en.md', 'ACKNOWLEDGEMENTS.md', 'THIRD_PARTY_NOTICES.md',
@@ -605,7 +606,7 @@ if ($isProductRelease) {
     Require-UnsignedInteger -Value $qtSource.fileCount -Name 'Qt source fileCount'
     Require-UnsignedInteger -Value $qtSource.archive.size -Name 'Qt source archive size'
     $qtArchiveEntry = $manifestFileMap['sources/qtbase-6.10.1-source.zip']
-    if ($qtSource.schema -cne 'PixelBridge.QtSourceBundle.1' -or $qtSource.version -cne $buildIdentity.qt.version -or
+    if ($qtSource.schema -cne 'PixelBridge.QtSourceBundle.1' -or $qtSource.version -cne '6.10.1' -or
         $qtSource.module -cne 'qtbase' -or $qtSource.archive.path -cne 'qtbase-6.10.1-source.zip' -or
         $qtSource.archive.size -ne $qtArchiveEntry.size -or $qtSource.archive.sha256 -cne $qtArchiveEntry.sha256 -or
         $qtSource.fileCount -lt 1 -or $qtSource.fileCount -gt 65536 -or @($qtSource.files).Count -ne $qtSource.fileCount) {
