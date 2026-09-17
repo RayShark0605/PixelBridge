@@ -27,7 +27,7 @@ Standalone, CPU-only geometry regression fixtures. This directory is deliberatel
 ## Build in an explicitly new directory
 
 ```powershell
-& 'C:\Program Files\CMake\bin\cmake.exe' -S '<repo>\tools\PBUnifiedGeometryG1' -B '<new absolute build directory>' -G 'Visual Studio 17 2022' -A x64 -DPB_G1_REPO=<repo> -DPB_G1_BASE_BUILD=<repo>/build-remote-step2-20260908-run01 -DPB_G1_FFMPEG=<repo>/artifacts/remote-step2-20260908-run01/deps/installed/x64-windows
+& 'C:\Program Files\CMake\bin\cmake.exe' -S '<repo>\tools\PBUnifiedGeometryG1' -B '<new absolute build directory>' -G 'Visual Studio 17 2022' -A x64 -DPB_G1_REPO=<repo> -DPB_G1_BASE_BUILD=<repo>/build-remote-step2-20260908-run01 -DPB_G1_FFMPEG=<repo>/artifacts/remote-step2-20260908-run01/deps/installed/x64-windows -DPB_G1_PYTHON=<python>
 & 'C:\Program Files\CMake\bin\cmake.exe' --build '<new absolute build directory>' --config Release --target PBUnifiedGeometryG1 PBLocalDesktopBootstrapTests --parallel 2
 ```
 

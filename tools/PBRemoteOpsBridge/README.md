@@ -123,8 +123,8 @@ pbops.py [--root PATH] pull <cmdId> [--dest DIR]     # 把 artifacts 拉到本�
 pbops.py selftest                                    # 临时根上的端到端冒烟（自动起/停监听器）
 ```
 
-- `--root` / 环境变量 `PBOPS_ROOT` 覆盖默认的 `<ShareRoot>`（默认值只是本机侧便利，
-  不是协议假设）。
+- `--root` / 环境变量 `PBOPS_ROOT` 指定共享根；两者都未提供时拒绝执行（不内置任何
+  机器相关的默认路径）。
 - `drop` 是复制不是移动，源文件不动；`files/` 内同名文件已存在即拒绝（先 cleanup）。
 - 大文件经 SMB 的复制速度受网络限制；1 GiB 量级通常几十秒。
 
@@ -149,7 +149,7 @@ pbops.py selftest                                    # 临时根上的端到端�
    写死）→ 创建 Startup 快捷方式（pythonw 无窗口自启）→ 立即启动。
 3. 在控制端验证：
    ```text
-   pbops.py --root \\<HOST>\<SHARE>\pbops beat        # 或本机路径 <ShareRoot>
+   pbops.py --root <ShareRoot> beat        # UNC（如 \\<HOST>\<SHARE>\pbops）或本机盘符路径
    pbops.py --root <ShareRoot> run ping
    pbops.py --root <ShareRoot> run screenshot --param monitorIndex=0
    ```
@@ -161,7 +161,7 @@ pbops.py selftest                                    # 临时根上的端到端�
 **多机部署规则：一台远程机 = 一个独立共享根。** 桥可部署在任意多台远程机上（机制与
 具体机器无关），但**不要让两台监听器轮询同一个命令树**——取走命令虽是原子 rename、不会
 重复执行，但哪台机器抢到命令不确定，结果来源不可预测。新增机器：建新根
-（如 `<ShareRoot>-<机器>`，即远程 UNC `\\<HOST>\<SHARE>\pbops-<机器>`）、`pbops.py init`、把
+（如 `P:\pbops-<机器>`，即远程 UNC `\\<HOST>\<SHARE>\pbops-<机器>`）、`pbops.py init`、把
 `bootstrap\`+`listener\` 复制进新根、在新机器上以其根为参数运行安装器、控制端用
 `--root` 选择。当前部署实例登记在 `docs/REMOTE_OPS_BRIDGE.md` §2.1。
 
@@ -170,6 +170,7 @@ pbops.py selftest                                    # 临时根上的端到端�
 产品 CLI 契约见 `docs/CURRENT_RUNTIME_OPTION_INVENTORY.md`。典型一次实验：
 
 ```text
+# 前置：设 PBOPS_ROOT=<ShareRoot>，或为下列每条命令补 --root <ShareRoot>
 # 1) 控制端：投放实验包（封存 zip，含 PixelBridgeEncoder.exe 等）
 pbops.py drop PixelBridge-Gxx-Encoder.zip
 pbops.py run deploy --param runId=r20260910a --param file=PixelBridge-Gxx-Encoder.zip

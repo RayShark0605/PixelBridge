@@ -3,7 +3,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedCommit,
     [string]$SourceRoot = (Join-Path $PSScriptRoot '../..'),
-    [string]$VcpkgRoot = '<vcpkg-root>',
+    [string]$VcpkgRoot = $(if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { 'C:/vcpkg' }),
     [Parameter(Mandatory = $true)][string]$QtRoot,
     [Parameter(Mandatory = $true)][string]$CppcheckExecutable,
     [ValidateRange(1, 16)][int]$Parallel = 4

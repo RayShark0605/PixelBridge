@@ -16,7 +16,7 @@ The producer packages a clean committed Release build. The independent verifier 
 
 ```powershell
 python tools/PBUnifiedRelease/New-PBQtSourceBundle.py `
-  --qt-root <qt>/6.10.1/msvc2022_64 --output-directory artifacts/release/qt-source
+  --qt-root <qt-msvc-install>/6.10.1/msvc2022_64 --output-directory artifacts/release/qt-source
 ```
 
 This read-only helper takes the complete matching Qt Base source, licenses and build scripts plus the installed SDK configuration. It produces a create-only deterministic ZIP and SHA-256 source manifest. No download, source mutation or executable launch occurs. `--output-directory` must not exist. See the bilingual [Qt source instructions](../../docs/QT_SOURCE.md).

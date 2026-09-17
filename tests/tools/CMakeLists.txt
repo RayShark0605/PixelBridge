@@ -360,7 +360,7 @@ if(WIN32)
     find_program(PB_REMOTE_VISUAL_POWERSHELL NAMES pwsh REQUIRED)
     find_program(PB_REMOTE_VISUAL_EVIDENCE_PYTHON
         NAMES python.exe
-        PATHS "<python>"
+        PATHS "$ENV{PB_PYTHON_DIR}"
         NO_DEFAULT_PATH
         REQUIRED)
     add_test(NAME PBRemoteVisualDeploymentEvidenceContracts

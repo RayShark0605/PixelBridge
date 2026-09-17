@@ -7,7 +7,7 @@ param(
     [ValidateRange(30, 7200)]
     [int]$MaximumSeconds = 3600,
     [string]$BuildRoot = (Join-Path $PSScriptRoot '..\..\build-unified-release'),
-    [string]$Python = '<python>'
+    [string]$Python = 'python'
 )
 
 $ErrorActionPreference = 'Stop'

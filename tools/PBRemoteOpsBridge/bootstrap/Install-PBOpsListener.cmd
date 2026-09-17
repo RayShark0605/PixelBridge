@@ -1,13 +1,13 @@
 @echo off
 rem Install the PixelBridge remote operations listener (one-time, persistent machine).
 rem Usage: Install-PBOpsListener.cmd <ShareRoot> [WorkspaceDir]
-rem   ShareRoot    UNC or local path of the bridge share tree, e.g. \\<HOST>\<SHARE>\pbops
+rem   ShareRoot    UNC or local path of the bridge share tree, e.g. \\YOUR-HOST\YOUR-SHARE\pbops
 rem   WorkspaceDir optional local workspace (default %LOCALAPPDATA%\PixelBridgeOps)
 setlocal EnableExtensions
 
 if "%~1"=="" (
   echo Usage: %~nx0 ^<ShareRoot^> [WorkspaceDir]
-  echo Example: %~nx0 \\<HOST>\<SHARE>\pbops
+  echo Example: %~nx0 \\YOUR-HOST\YOUR-SHARE\pbops
   exit /b 2
 )
 

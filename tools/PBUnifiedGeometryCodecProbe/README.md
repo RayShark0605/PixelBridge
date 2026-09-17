@@ -92,6 +92,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Sealed attribution package verification failed
 ```powershell
 $build = '<repo>\build-geometry-codec-probe-rebuild-new01'
 if (Test-Path -LiteralPath $build) { throw 'Choose a new build directory' }
+# CMake 通过环境变量 PB_PYTHON_DIR 定位 Python（本工具不内置任何机器相关路径）
+$env:PB_PYTHON_DIR = '<python 所在目录>'
 & 'C:\Program Files\CMake\bin\cmake.exe' -S '<repo>\tools\PBUnifiedGeometryCodecProbe' -B $build `
   -G 'Visual Studio 17 2022' -A x64 `
   -DPB_GEOM_REPO=<repo> `

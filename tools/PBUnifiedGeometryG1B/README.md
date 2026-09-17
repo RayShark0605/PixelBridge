@@ -45,7 +45,7 @@ Before a new build, verify the source/library/recording identities recorded in t
 ```powershell
 $repo = '<repo>'
 $build = Join-Path $repo ('build-geometry-g1b-' + [Guid]::NewGuid().ToString('N'))
-& 'C:\Program Files\CMake\bin\cmake.exe' -S "$repo\tools\PBUnifiedGeometryG1B" -B $build -G 'Visual Studio 17 2022' -A x64 -DPB_G1B_REPO=<repo> -DPB_G1B_BASE_BUILD=<repo>/build-remote-step2-20260908-run01 -DPB_G1B_FFMPEG=<repo>/artifacts/remote-step2-20260908-run01/deps/installed/x64-windows
+& 'C:\Program Files\CMake\bin\cmake.exe' -S "$repo\tools\PBUnifiedGeometryG1B" -B $build -G 'Visual Studio 17 2022' -A x64 -DPB_G1B_REPO=<repo> -DPB_G1B_BASE_BUILD=<repo>/build-remote-step2-20260908-run01 -DPB_G1B_FFMPEG=<repo>/artifacts/remote-step2-20260908-run01/deps/installed/x64-windows -DPB_G1B_PYTHON=<python>
 if ($LASTEXITCODE -ne 0) { throw 'Configure failed; preserve evidence' }
 & 'C:\Program Files\CMake\bin\cmake.exe' --build $build --config Release --target PBUnifiedGeometryG1B --parallel 2
 if ($LASTEXITCODE -ne 0) { throw 'Build failed; preserve evidence' }

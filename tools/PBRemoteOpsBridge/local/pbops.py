@@ -1,7 +1,7 @@
 """PixelBridge remote operations local helper (runs on the controlling PC).
 
 Companion to listener/pbops_listener.py. All paths are configurable:
---root / PBOPS_ROOT override the default <SHARE-DRIVE>:\pbops convenience root.
+--root or PBOPS_ROOT selects the share root; there is no machine-specific default.
 
 This tool only moves orchestration data (commands, packages, scripts,
 logs, measurement metadata). It must never feed pixels or payload into
@@ -40,10 +40,6 @@ COMMAND_TYPES = (
 )
 
 HEARTBEAT_FRESH_SECONDS = 10.0
-
-
-def default_root():
-    return Path(os.environ.get("PBOPS_ROOT", "<ShareRoot>"))
 
 
 def atomic_write_bytes(path: Path, data: bytes, staging_dir: Path):
@@ -438,8 +434,8 @@ def cmd_selftest(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(description="PixelBridge remote operations local helper")
-    parser.add_argument("--root", default=str(default_root()),
-                        help="Bridge share root (default <ShareRoot>; override with PBOPS_ROOT)")
+    parser.add_argument("--root", default=os.environ.get("PBOPS_ROOT"),
+                        help="Bridge share root; defaults to PBOPS_ROOT when set (no hardcoded machine path)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", help="Create the share tree")
@@ -488,6 +484,8 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not args.root and args.command != "selftest":
+        parser.error("--root is required unless PBOPS_ROOT is set")
     return args.func(args)
 
 

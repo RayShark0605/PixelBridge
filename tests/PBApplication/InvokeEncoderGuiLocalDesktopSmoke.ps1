@@ -28,7 +28,7 @@ param(
     [string]$Compression = 'off',
     [ValidateRange(10, 300)]
     [int]$DecoderTimeoutSeconds = 60,
-    [string]$PythonExecutable = '<python>'
+    [string]$PythonExecutable = 'python'
 )
 
 Set-StrictMode -Version Latest

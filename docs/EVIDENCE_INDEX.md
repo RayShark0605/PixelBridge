@@ -113,7 +113,7 @@ G21 recovered the file but failed its raw-performance gate; its explicit single-
 | --- | --- |
 | 源码身份 | 提交 `da70009`/`4c977cc`/`619455d`/`1fbddb6`/`ee1b25d`（`ee1b25d` 为实机证据之后补录的身份修复链：`ResolveLocalDesktopBinding`、GPU `ParseBinding` 等实验对分支；`163/163` 非交互 CTest） |
 | 实机构建身份 | 远程 Encoder `gitCommit=619455d`（编码端报告）；本机 Decoder 同工作树构建（未含当时未提交的修复链） |
-| 证据根 | 本机会话目录 `<PBLine root>\`（`session-log.md` §13、`bands-smoke\run7`、`evidence\bands06-encoder\`、`evidence\bands03-local\`）；未封存为 artifacts |
+| 证据根 | 本机会话目录 `<PBLine-20260910 本地根>`（`session-log.md` §13、`bands-smoke\run7`、`evidence\bands06-encoder\`、`evidence\bands03-local\`）；未封存为 artifacts |
 | 链路 | SENDER-LAPTOP Encoder `--profile unified-bands` → UnknownThirdParty 远控查看器（letterbox scale≈1.2604/1.2611）→ RECEIVER-DESKTOP 产品 Decoder CLI `--profile unified-bands --roi 2560 0 5120 1440` |
 | 终态 | 1 MiB：`Completed`、exit 0、三方 SHA-256 `37f99176…` 一致（源 manifest=发送端 poststop=本地发布文件）、wire BLAKE3 `e338ad6d…` 双端一致、Bootstrap 118 接纳/0 拒、补充带 236 试/188 接纳（48 拒全为 AmbiguousCell）、801 传输块、9.14s |
 | 不得越界 | 冒烟单样本、正确性验证；**不构成吞吐、晋级、认证或产品合同变更结论**；实验身份仍未进 catalog |
@@ -262,7 +262,7 @@ G00-G22 的**逐项验收条款与实现史**位于已退役的 `UNIFIED_VISUAL_
 | 入库优化（用户批准默认行为） | 增量喷泉 repair（fps 分档：≤15 Hz K+20%、>15 Hz 20%→40%→80%→160% 翻倍）；发送窗口 8→6 + 接收配额解耦 8；锁定几何窗口化 Bootstrap（32.3→2.7 ms/帧）；15 码字并行 Qc-LDPC FEC（与串行逐位一致） |
 | 关键提交 | `d37d98f` → `7df05e2` → `55e4921`（revert 80% 封顶）→ `03a79a9`（并行 FEC + fps 感知） |
 | 现场单样本 | 30 Hz/50 MiB **196,212 B/s（2.07× 同日基线）**；15 Hz/100 MiB 77,593 B/s（+29%）；全部 `digestMatch=true`，模型预测误差 <0.1% |
-| 证据根 | `<PBLine root>\`（交错 A/B、空白带、GOP/码率机制）；`<PBLine root>\`（vb-/opt-/o2v-/o3v-/o4v-/o5v-/o6v- runs、evidence 日志、matrix/validate-index*.json） |
+| 证据根 | `<PBLine-20260910 本地根>`（交错 A/B、空白带、GOP/码率机制）；`<PBLine-20260911 本地根>`（vb-/opt-/o2v-/o3v-/o4v-/o5v-/o6v- runs、evidence 日志、matrix/validate-index*.json） |
 | 过程记录 | `docs/REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md` §1-§12（含三次现场事故处置与预算调参三轮教训） |
 | 不得越界 | **单样本现场工作口径**：不作认证吞吐、Gate 晋级或产品合同结论；每格单次采样系用户批准的实验口径；优化为经用户授权的默认行为变更，wire 格式/摘要/发布/冲突拒绝/资源限制零改动 |
 | 未竟 | O4 车道重分配（Chroma 5 槽→Luma，已授权，设计见 findings §12.2）；认证级多样本矩阵 |

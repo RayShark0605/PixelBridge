@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$SourceRoot = (Join-Path $PSScriptRoot '../..'),
-    [string]$VcpkgRoot = '<vcpkg-root>',
+    [string]$VcpkgRoot = $(if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { 'C:/vcpkg' }),
     [Parameter(Mandatory)][string]$QtRoot,
     [Parameter(Mandatory)][string]$PythonExecutable,
     [Parameter(Mandatory)][string]$CppcheckExecutable,
