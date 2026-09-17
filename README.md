@@ -19,6 +19,12 @@ PixelBridge 是一套 Windows 文件传输工具。它把文件编码成持续�
 
 > **特定条件下，平均接收速度可达约 279 KB/s。** 这是 PAM4 Wide 在真实非本机环境中完整接收大文件的留存实测成绩，包含最终文件校验，并非瞬时峰值。具体环境和计算口径见下方[传输速度](#传输速度应该怎样预期)。
 
+## 演示 Demo
+
+![PixelBridge 数据码面演示](docs/media/pixelbridge-demo.gif)
+
+这是发送端实际显示的数据码面：Encoder 将文件编码为持续变化的灰阶图案并循环显示，Decoder 从捕获到的屏幕像素中恢复并校验文件。动图录制自真实发送画面。
+
 ## 灵感来源与改进
 
 本项目受 [libcimbar](https://github.com/sz3/libcimbar) 启发。libcimbar 展示了通过屏幕上的动态彩色图案、由手机摄像头读取来传输文件的思路。PixelBridge 将这一视觉传输思路聚焦到 **Windows 非本机远控场景**，针对这一用途的主要改进是：

@@ -19,6 +19,12 @@ No shared directory, clipboard transfer, drive mapping, or remote-control file-t
 
 > **Under specific conditions, average reception speed can reach approximately 279 KB/s.** This is a retained result from a complete large-file transfer using PAM4 Wide over an actual non-local remote connection, including final file verification—not an instantaneous peak. See [transfer speed](#what-transfer-speed-should-i-expect) below for the environment and measurement convention.
 
+## Demo
+
+![PixelBridge data pattern demo](docs/media/pixelbridge-demo.gif)
+
+This is the data pattern actually shown by the sender: Encoder encodes the file into a continuously changing grayscale pattern and repeats it, while Decoder reconstructs and verifies the file from the captured screen pixels. The animation is recorded from a real sending session.
+
 ## Inspiration and improvements
 
 This project was inspired by [libcimbar](https://github.com/sz3/libcimbar), which demonstrates file transfer through animated colored patterns on a screen read by a smartphone camera. PixelBridge focuses that visual-transfer idea on **Windows non-local remote-desktop workflows**, with improvements tailored to this use case:
