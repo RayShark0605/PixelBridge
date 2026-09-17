@@ -2,12 +2,17 @@
 #include "encoder_application_controller.h"
 #include "encoder_monitor_catalog.h"
 #include "product_gui_helpers.h"
+#include "gui_visual_mode.h"
 #include "gui_native_smoke.h"
 #include "run_report.h"
 #include "step1_gui_evidence_qt.h"
 #include "pbcore/build_info.h"
 
 #include <QApplication>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QIcon>
+#include <QStandardPaths>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
@@ -25,6 +30,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -106,8 +112,7 @@ public:
         cacheEdit_->setText(settings_->value(QStringLiteral("g22/sessionRoot")).toString());
         const int savedFps = settings_->value(QStringLiteral("g22/logicalFps"), 15).toInt();
         fpsSpin_->setValue(savedFps >= 1 && savedFps <= 60 ? savedFps : 15);
-        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), 0).toInt();
-        carrierCombo_->setCurrentIndex(savedCarrier == 1 ? 1 : 0);
+        LoadCarrierPreference();
         connect(&controller_, &EncoderApplicationController::SnapshotChanged, this, &EncoderWindow::UpdateSnapshot);
         connect(&controller_, &EncoderApplicationController::TerminalStateReached, this, [this]()
         {
@@ -223,6 +228,16 @@ public:
             return false;
         }
         sourceEdit_->setText(sourcePath);
+        for (const int index : {2, 3})
+        {
+            carrierCombo_->setCurrentIndex(index);
+            StartTransmission();
+            if (controller_.GetSnapshot().runGeneration != 0 || !messageLabel_->text().contains(QStringLiteral("正式测量")))
+            {
+                return false;
+            }
+        }
+        carrierCombo_->setCurrentIndex(0);
         startButton_->click();
         if (!WaitFor(presentationCreated))
         {
@@ -235,6 +250,61 @@ public:
         const auto stopped = controller_.StopAndGetSnapshot();
         evidence_->Observe(stopped);
         return accepted && stopped.state == pbapp::EncoderState::Stopped;
+    }
+
+    [[nodiscard]] bool RunPam4ConfigurationSmoke(const QString& sourcePath, const QString& sessionRoot, bool& smallMonitor)
+    {
+        if (isVisible() || carrierCombo_->count() != 4 || carrierCombo_->currentIndex() != 0)
+        {
+            return false;
+        }
+        sourceEdit_->setText(sourcePath);
+        cacheEdit_->setText(sessionRoot);
+        fpsSpin_->setValue(25);
+        for (const int index : {2, 3})
+        {
+            carrierCombo_->setCurrentIndex(index);
+            // Validate the realized offscreen layout even when optional PNG
+            // export is disabled; SaveTabPreviews may return without rendering.
+            ensurePolished();
+            QCoreApplication::processEvents();
+            static_cast<void>(grab());
+            pbapp::EncoderConfig config;
+            if (!BuildTransmissionConfig(config).isEmpty() || !pbapp::ValidateEncoderConfig(config) ||
+                config.visualProfile != *pbapp::GetGuiVisualProfile(index) || config.logicalVisualFps != 25 ||
+                config.segmentTargetBytes != 7U * 1024U * 1024U || config.fullscreenRasterWidth != (index == 3 ? 2560U : 0U) ||
+                config.remoteMetadata.channelType != pbapp::ChannelType::RemoteVisual || config.remoteMetadata.remoteProvider != "Unspecified" ||
+                !pbgui::SaveTabPreviews(*this, *tabs_, index == 3 ? QStringLiteral("encoder-pam4-wide") : QStringLiteral("encoder-pam4")) ||
+                modeHintLabel_->height() < modeHintLabel_->heightForWidth(modeHintLabel_->width()))
+            {
+                return false;
+            }
+            SavePreferences();
+            carrierCombo_->setCurrentIndex(0);
+            LoadCarrierPreference();
+            if (carrierCombo_->currentIndex() != index || fpsSpin_->value() != 25)
+            {
+                return false;
+            }
+        }
+        smallMonitor = true;
+        startButton_->click();
+        if (controller_.GetSnapshot().runGeneration != 0 || !messageLabel_->text().contains(QStringLiteral("2560×1440")) ||
+            QFileInfo::exists(sessionRoot))
+        {
+            return false;
+        }
+        smallMonitor = false;
+        settings_->setValue(QStringLiteral("g22/carrier"), QStringLiteral("invalid"));
+        LoadCarrierPreference();
+        if (carrierCombo_->currentIndex() != 0 || !modeHintLabel_->text().contains(QStringLiteral("保存的模式无效")))
+        {
+            return false;
+        }
+        carrierCombo_->setCurrentIndex(3);
+        SavePreferences();
+        LoadCarrierPreference();
+        return carrierCombo_->currentIndex() == 3 && !isVisible() && !QApplication::activeModalWidget();
     }
 
     [[nodiscard]] int RunNativeSmoke(const pbgui::NativeSmokeOptions& options)
@@ -328,14 +398,20 @@ private:
         outer->setSpacing(16);
         QLabel* const heading = pbgui::TextLabel(QStringLiteral("文件传输"));
         heading->setStyleSheet(QStringLiteral("font-size:24px;font-weight:600;"));
-        outer->addWidget(heading);
+        QHBoxLayout* const branding = new QHBoxLayout();
+        QLabel* const logo = new QLabel();
+        logo->setObjectName(QStringLiteral("applicationLogo"));
+        logo->setPixmap(QPixmap(QStringLiteral(":/branding/logo.png")).scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        logo->setFixedSize(48, 48);
+        branding->addWidget(logo);
+        branding->addWidget(heading, 1);
+        outer->addLayout(branding);
         tabs_ = new QTabWidget();
         tabs_->setObjectName(QStringLiteral("encoderTabs"));
         QWidget* const mainPage = new QWidget();
         QVBoxLayout* const mainLayout = new QVBoxLayout(mainPage);
         mainLayout->setContentsMargins(20, 22, 20, 20);
-        mainLayout->setSpacing(16);
-        mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("选择一个文件，在当前屏幕持续传输。")));
+        mainLayout->setSpacing(12);
         mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("源文件")));
         QHBoxLayout* const fileRow = new QHBoxLayout();
         sourceEdit_ = new QLineEdit();
@@ -348,9 +424,11 @@ private:
         mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("传输模式")));
         carrierCombo_ = new QComboBox();
         carrierCombo_->setObjectName(QStringLiteral("carrierMode"));
-        carrierCombo_->addItem(QStringLiteral("标准（PB-Unified-SC6-V3）"));
-        carrierCombo_->addItem(QStringLiteral("灰阶高速 v4（实验，远控链路推荐）"));
-        carrierCombo_->setToolTip(QStringLiteral("编码端与接收端必须选择同一模式。标准模式即产品 SC6-V3 会话；灰阶高速 v4 为实验灰阶载体（更大单帧容量）。"));
+        carrierCombo_->addItem(QStringLiteral("标准"));
+        carrierCombo_->addItem(QStringLiteral("灰阶高速"));
+        carrierCombo_->addItem(QStringLiteral("PAM4"));
+        carrierCombo_->addItem(QStringLiteral("PAM4 Wide"));
+        carrierCombo_->setToolTip(QStringLiteral("编码端与接收端必须选择同一模式。尺寸指发送端物理桌面，不是本机 Decoder 分辨率；模式选择不修改显示设置。"));
         connect(carrierCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](const int index)
         {
             // Gray-fast field results are at 30 Hz; the 15 Hz default triggers
@@ -362,8 +440,15 @@ private:
             {
                 fpsSpin_->setValue(30);
             }
+            carrierPreferencesWarning_.clear();
+            UpdateVisualModeHint();
+            UpdateSnapshot();
         });
         mainLayout->addWidget(carrierCombo_);
+        modeHintLabel_ = pbgui::TextLabel();
+        modeHintLabel_->setObjectName(QStringLiteral("visualModeHint"));
+        modeHintLabel_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+        mainLayout->addWidget(modeHintLabel_);
         QHBoxLayout* const rateRow = new QHBoxLayout();
         rateRow->addWidget(pbgui::TextLabel(QStringLiteral("刷新帧率")));
         fpsSpin_ = new QSpinBox();
@@ -410,6 +495,13 @@ private:
         toolsRow->addWidget(exportButton_);
         toolsRow->addStretch();
         advancedLayout->addLayout(toolsRow);
+        QPushButton* const logsButton = new QPushButton(QStringLiteral("打开日志目录"));
+        logsButton->setObjectName(QStringLiteral("openLogs"));
+        connect(logsButton, &QPushButton::clicked, this, [this]()
+        {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(controller_.LogDirectory()));
+        });
+        advancedLayout->addWidget(logsButton);
         details_ = new QPlainTextEdit();
         details_->setObjectName(QStringLiteral("encoderDiagnostics"));
         details_->setReadOnly(true);
@@ -453,6 +545,26 @@ private:
         settings_->sync();
     }
 
+    void LoadCarrierPreference()
+    {
+        bool converted = false;
+        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), 0).toString().toInt(&converted);
+        const bool valid = converted && pbapp::GetGuiVisualProfile(savedCarrier).has_value();
+        carrierCombo_->setCurrentIndex(valid ? savedCarrier : 0);
+        carrierPreferencesWarning_ = valid ? QString() : QStringLiteral("保存的模式无效，已恢复标准模式；请确认后再开始。\n");
+        UpdateVisualModeHint();
+    }
+
+    void UpdateVisualModeHint()
+    {
+        const auto profile = pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex());
+        const bool pam4 = profile && pbapp::IsExperimentalPam4Family(*profile);
+        modeHintLabel_->setText(carrierPreferencesWarning_ + (pam4 ?
+            QStringLiteral("双端必须选择同名模式；固定码面居中，允许静态边缘。\n分段 7 MiB，建议 25 Hz（不会覆盖当前刷新率）；不同链路不保证相同速度。") :
+            QStringLiteral("双端必须选择同一模式；切换模式需要重新开始会话。")) +
+            (pam4 && evidence_ ? QStringLiteral("\n此模式不支持正式测量入口。") : QString()));
+    }
+
     void UpdateActions()
     {
         const auto snapshot = controller_.GetSnapshot();
@@ -465,11 +577,36 @@ private:
         cacheEdit_->setEnabled(editable);
         cacheBrowse_->setEnabled(editable);
         const QFileInfo source(sourceEdit_->text());
+        const auto profile = pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex());
         startButton_->setEnabled(editable && source.isFile() && source.isReadable() && source.size() >= 0 &&
-            static_cast<std::uint64_t>(source.size()) <= pbapp::maximumInstantFileBytes);
+            static_cast<std::uint64_t>(source.size()) <= pbapp::maximumInstantFileBytes && profile &&
+            (!evidence_ || !pbapp::IsExperimentalPam4Family(*profile)));
         escapeShortcut_->setEnabled(active && !closePending_ && snapshot.state != pbapp::EncoderState::Stopping);
         deleteButton_->setEnabled(editable && !snapshot.sessionIdHex.empty() && !snapshot.sessionDeleted);
         exportButton_->setEnabled(!active && !closePending_ && snapshot.runGeneration != 0);
+    }
+
+    [[nodiscard]] QString BuildTransmissionConfig(pbapp::EncoderConfig& config)
+    {
+        const auto profile = pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex());
+        if (!profile)
+        {
+            return QStringLiteral("传输模式无效，请重新选择。");
+        }
+        if (evidence_ && pbapp::IsExperimentalPam4Family(*profile))
+        {
+            return QStringLiteral("PAM4 模式不支持正式测量入口，请使用普通启动方式或明确选择标准模式。");
+        }
+        config = pbapp::MakeUnifiedEncoderConfig(sourceEdit_->text().toStdWString(), static_cast<std::uint32_t>(fpsSpin_->value()));
+        config.visualProfile = *profile;
+        config.sessionStateRoot = cacheEdit_->text().toStdWString();
+        const QString targetError = configureTarget_(config, *this);
+        if (!targetError.isEmpty())
+        {
+            return targetError;
+        }
+        const auto status = pbapp::ApplyGuiEncoderVisualMode(config, carrierCombo_->currentIndex(), evidence_ != nullptr);
+        return status ? QString() : pbgui::FromUtf8(status.message);
     }
 
     void StartTransmission()
@@ -478,14 +615,11 @@ private:
         {
             return;
         }
-        auto config = pbapp::MakeUnifiedEncoderConfig(sourceEdit_->text().toStdWString(), static_cast<std::uint32_t>(fpsSpin_->value()));
-        config.visualProfile = carrierCombo_->currentIndex() == 1 ?
-            pbapp::VisualProfile::UnifiedGrayFast : pbapp::VisualProfile::UnifiedLc4;
-        config.sessionStateRoot = cacheEdit_->text().toStdWString();
-        const QString targetError = configureTarget_(config, *this);
-        if (!targetError.isEmpty())
+        pbapp::EncoderConfig config;
+        const QString configurationError = BuildTransmissionConfig(config);
+        if (!configurationError.isEmpty())
         {
-            messageLabel_->setText(targetError);
+            messageLabel_->setText(configurationError);
             return;
         }
         if (evidence_)
@@ -580,9 +714,11 @@ private:
             message = snapshot.sessionDeleted ? QStringLiteral("会话索引已删除，源文件未改动。") : QStringLiteral("恢复状态已保留，可以重新开始。");
         }
         messageLabel_->setText(message);
-        details_->setPlainText(QStringLiteral("PB-Unified-SC6-V3 · layout 10 · 1920 × 1080 BGRA8 SDR\n"
-            "全屏：规范画布 1:1 居中；外围为中性背景，不拉伸数据\n"
-            "固定：8 MB 分段 / 自动 RAW-zstd(level 3) / Robust LDPC / DirectRepeat-Wirehair V2\n"
+        const auto selectedProfile = pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex());
+        const auto shownProfile = snapshot.runGeneration == 0 ? selectedProfile.value_or(pbapp::VisualProfile::UnifiedLc4) : snapshot.visualProfile;
+        details_->setPlainText(controller_.LogStatusText() + QStringLiteral("\n\n") + QStringLiteral("%1\n").arg(QString::fromUtf8(pbapp::GetVisualProfileName(shownProfile))) + QStringLiteral(
+            "呈现尺寸、分段与纠错参数以所选模式及本次运行记录为准；不同模式不是同一会话\n"
+            "自动 RAW-zstd(level 3) / DirectRepeat-Wirehair V2；持续单向发送，无接收反馈\n"
             "文件上限：500 GB（1024 进位）；传输期间源文件保持只读锁定\n\n") + (snapshot.runGeneration == 0 ?
                 QStringLiteral("尚未开始传输。运行详情将在建立会话后显示。") : pbgui::FromUtf8(pbapp::BuildEncoderDiagnostics(snapshot))));
         UpdateActions();
@@ -599,6 +735,8 @@ private:
     QLineEdit* cacheEdit_ = nullptr;
     QSpinBox* fpsSpin_ = nullptr;
     QComboBox* carrierCombo_ = nullptr;
+    QLabel* modeHintLabel_ = nullptr;
+    QString carrierPreferencesWarning_;
     QPushButton* browseButton_ = nullptr;
     QPushButton* cacheBrowse_ = nullptr;
     QPushButton* startButton_ = nullptr;
@@ -668,6 +806,7 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         std::cerr << "G22 Encoder GUI smoke: missing offscreen platform; no window started\n";
         return 2;
     }
+    QStandardPaths::setTestModeEnabled(smoke);
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     int guiArgumentCount = 1;
     char applicationName[] = "PixelBridgeEncoder";
@@ -680,6 +819,12 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
     }
     QCoreApplication::setOrganizationName(QStringLiteral("PixelBridge"));
     QCoreApplication::setApplicationName(QStringLiteral("PixelBridgeEncoder"));
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/branding/logo.png")));
+    if (QApplication::windowIcon().isNull())
+    {
+        std::cerr << "Application branding resource unavailable\n";
+        return 2;
+    }
     if (smoke)
     {
         QTemporaryDir scratch;
@@ -730,6 +875,26 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
             {
                 return created.load();
             }, confirmDeletion) && targetConfigured;
+        bool smallMonitor = false;
+        const TargetConfigurator configurePam4 = [&](pbapp::EncoderConfig& config, QWidget&)
+        {
+            pbapp::MonitorInfo monitor;
+            monitor.monitor = reinterpret_cast<HMONITOR>(std::uintptr_t{1});
+            monitor.deviceName = L"Offscreen GUI configuration only";
+            monitor.physicalRect = smallMonitor || config.visualProfile == pbapp::VisualProfile::ExperimentalPam4 ?
+                RECT{0, 0, 1920, 1080} : RECT{0, 0, 2560, 1600};
+            monitor.workRect = monitor.physicalRect;
+            monitor.dpiX = 120;
+            monitor.dpiY = 120;
+            monitor.refreshRate = 60;
+            monitor.rotation = DXGI_MODE_ROTATION_IDENTITY;
+            config.singleMonitorFullscreen = monitor;
+            config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
+            config.remoteMetadata.experimentMonitorIdentity = "Offscreen GUI configuration only";
+            return QString();
+        };
+        EncoderWindow pam4Window(presentationFactory, scratch.filePath(QStringLiteral("pam4-settings.ini")), configurePam4);
+        const bool pam4Passed = pam4Window.RunPam4ConfigurationSmoke(sourcePath, scratch.filePath(QStringLiteral("pam4-sessions")), smallMonitor);
         created = false;
         QString evidenceError;
         const auto smokeEvidence = pbgui::Step1GuiEvidence::Create(scratch.filePath(QStringLiteral("measurement")), QStringLiteral("Encoder"), evidenceError);
@@ -742,9 +907,9 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         const bool passed = measuredWindow.RunMeasurementStartSmoke(sourcePath, [&]()
         {
             return created.load();
-        }) && legacyPassed;
+        }) && legacyPassed && pam4Passed;
         std::cout << "G22 Encoder GUI smoke: " << (passed ? "PASS" : "FAIL")
-            << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete/measurement-Start-RunId; no desktop pixels\n";
+            << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete/measurement-Start-RunId/PAM4-config-fit-preferences-measurement-reject; no desktop pixels\n";
         return passed ? 0 : 1;
     }
     if (nativeSmoke)

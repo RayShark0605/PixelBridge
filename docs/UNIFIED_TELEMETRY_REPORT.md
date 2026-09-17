@@ -1,5 +1,23 @@
 # G17 — Unified 遥测与报告合同
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
+## 2026-09-17 Stage44：捕获权限的附加报告字段
+
+新Decoder报告在实际PAM4/Unified的RunReport.3分支及旧报告分支统一附加`singleMonitorCapture`和`monitorSafety`对象；无wire或major-schema改变，已有指标含义不变。较早报告缺少新对象应视为未提供该证据，而非推断单屏权限已校验或物理屏幕数量。
+
+| 字段 | 含义 |
+|---|---|
+| `singleMonitorCapture.enabled` | 是否显式选择单一目标捕获权限，不表示机器只有一块物理屏幕 |
+| `preflightPassed` | 启动前曾核对成功；运行中失败不会抹除这一历史事实 |
+| `revalidationCount` | 成功核对次数，包含启动检查 |
+| `status` | Pending/PASS/FAIL/RunFailed/NotSelected；PASS仅表示最近目标检查成功，FAIL表示目标或枚举失败，RunFailed为其它运行错误，不是文件或现场Gate通过 |
+| `monitorSafety` | 单屏权限下preflightPassed=false、count=0、status=NotApplicableSingleMonitorCapture；旧双屏路径继续记录原实际复核值 |
+
+整文件有效性仍以digest、safe publish和finalReopenVerified为准；不从以上权限字段推导吞吐、无停滞、双端1080P或真实单显示器现场资格。新失败分支和两模式像素文件回归见本轮日志§4.80。
+
+
 **状态（2026-09-04）：G17 实现与指定最小验证已完成。**
 
 第 6 节的 Bootstrap-only / 首次完整数据接收缓存身份问题曾因超出只读观测范围而停止实施；用户明确批准后已完成最小修复与定向回归，原失败场景及 8 秒 deadline 保留。用户要求本次任务在 G17 完成并独立提交后结束，不继续 G18。

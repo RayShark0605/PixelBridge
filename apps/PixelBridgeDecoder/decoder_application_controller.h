@@ -2,6 +2,7 @@
 
 #include "application_model.h"
 #include "local_desktop_runtime.h"
+#include "operational_log_qt.h"
 
 #include <QObject>
 #include <QTimer>
@@ -20,6 +21,9 @@ public:
     [[nodiscard]] pbapp::DecoderSnapshot GetSnapshot() const;
     [[nodiscard]] pbapp::DecoderSnapshot StopAndGetSnapshot();
     [[nodiscard]] bool IsActive() const;
+    [[nodiscard]] QString LogStatusText() const;
+    [[nodiscard]] QString LogDirectory() const;
+    [[nodiscard]] pbapp::DecoderActivity GetActivity() const;
     [[nodiscard]] bool SetStatusRefreshMilliseconds(int milliseconds);
     [[nodiscard]] int GetStatusRefreshMilliseconds() const;
 
@@ -32,6 +36,7 @@ private slots:
 
 private:
     pbapp::DecoderRuntime runtime_;
+    pbgui::OperationalLog log_{QStringLiteral("Decoder")};
     QTimer pollTimer_;
     pbapp::DecoderSnapshot lastSnapshot_;
 };

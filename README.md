@@ -1,407 +1,164 @@
 # PixelBridge
 
-Windows x64 / C++20：通过可见桌面/视频像素进行的高性能单向文件传输。
+**简体中文** | [English](README.en.md)
 
-> **G22 本地 GUI 候选已交付，尚未公开发布。** G00..G21 已完成；G21最终状态为`PASS_WITH_SINGLE_RUN_USER_WAIVER`。G22已重新实现双端 GUI、GUI-only 启动/CLI 重定向、无文件大小确认，并通过新 GUI 的右屏1 MB实际恢复；最终独立包和新解压实际像素验收已通过，冻结身份为`3a840a2`，见[G22 交付与证据索引](docs/EVIDENCE_INDEX.md)。当前唯一产品 Profile 是 `PB-Unified-SC6-V3`（layout 10）。以下大文件/远控性能证据仍严格属于旧冻结候选6e90643，不能冒充新版GUI构建的性能结果。同候选右屏15 Hz LocalDesktop 64 MiB、500 MiB、1 GiB阶梯和Base-only证据已通过；最终Windows远程桌面现场完成精确1 GiB的128/128、whole digest、安全发布、final reopen及外部双摘要。该远控运行原始性能为8,626.511 B/unique、低于16 KiB且Receiver Gate exit1；用户在完整披露后只对此Run/Session明确豁免。不得把限定通过改写成未豁免性能PASS，未来16 KiB门继续有效。
->
-> **G22 之后的非本机吞吐研究线已于 2026-09-09 由用户停止（非技术阻塞）。** 该线的目标是远程桌面像素链路下的迟加入吞吐。
-> **未确立任何确认的非本机提速。** 已入库的改进只在 CPU 侧：Bootstrap 全图扫描游标（两组固定像素对照中位 −12.2% 与 −9.6%）、
-> QC-LDPC 每行最小值归一化（阶段均值 1.8984→1.4471 ms，约 −23.8%）；这些是 CPU 数据，不是远控吞吐百分比。
-> 恢复入口见[项目现状与续做入口](docs/PROJECT_STATUS.md)，Step 状态、归因数字与全部失败记录见[证据索引](docs/EVIDENCE_INDEX.md)，原文取回方式见[文档整理与历史恢复记录](docs/DOC_HISTORY.md)。
+<p>
+  <img src="apps/PixelBridgeEncoder/resources/logo.png" width="88" alt="PixelBridge Encoder">
+  <img src="apps/PixelBridgeDecoder/resources/logo.png" width="88" alt="PixelBridge Decoder">
+</p>
 
-快速入口：
+### 看得见远程桌面，就多一种带回文件的方式
 
-- [项目现状与续做入口](docs/PROJECT_STATUS.md)
-- [G22 GUI 与本地交付验收](docs/UNIFIED_G22_GUI_RELEASE.md)
-- [新版 Encoder / Decoder 使用指南](docs/UNIFIED_USER_GUIDE.md)
-- [Goal/目标模式统一实施路线](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)
-- [证据索引与引用限制](docs/EVIDENCE_INDEX.md)
-- [文档整理与历史取回记录](docs/DOC_HISTORY.md)
-- [最终技术路线与总体设计](docs/PixelBridge_最终技术路线与总体设计.md)
-- [docs 文档索引与规范清单](docs/README.md)
-- [当前过渡 runtime 选项清单](docs/CURRENT_RUNTIME_OPTION_INVENTORY.md)
-- [贡献指南](CONTRIBUTING.md)
-- [工程协作与代码规则](AGENTS.md)
+PixelBridge 是一套 Windows 文件传输工具。它把文件编码成持续变化的画面，在另一台电脑上从远控窗口的**实际屏幕像素**中恢复文件。
 
-## 目录
+不需要两端共享目录，不依赖剪贴板、磁盘映射或远控软件的文件传输功能。发送端只负责显示画面，接收端只负责看画面、恢复并验证文件。
 
-| 路径 | 用途 |
-| --- | --- |
-| `apps/PixelBridgeEncoder`、`apps/PixelBridgeDecoder` | Qt Widgets 产品入口、内部诊断 CLI adapter 和应用 controller |
-| `apps/common` | Qt-free application runtime/model/report、Encoder Session persistence、Decoder resume journal |
-| `libs/PBCore`、`libs/PBProtocol`、`libs/PBCompression`、`libs/PBOuterFec`、`libs/PBReceiver`、`libs/PBStorage` | 核心静态库（禁止依赖 Qt）；PBStorage 负责 `.part`、random verified writes、WholeFileDigest 与 safe publish |
-| `libs/PBModulation`、`libs/PBInnerFec`、`libs/PBInterleave`、`libs/PBDemodD3D11` | Unified CPU 视觉参考、QC-LDPC、交织和 D3D11 Compute 解调 |
-| `libs/PBPresentTiming`、`libs/PBRenderD3D` | 有界 DXGI observation 计时与独立原生 D3D11 数据窗口；不依赖 Qt |
-| `libs/PBScreenRegion`、`libs/PBScreenCaptureWgc`、`libs/PBScreenCaptureDxgi`、`libs/PBCaptureNormalize` | 物理像素选区、WGC/DXGI、CaptureEpoch 与 GPU 退休保护的 ROI texture ring；不依赖 Qt |
-| `tools`、`fuzz`、`benchmarks` | 独立可选子图；protocol/compression/Outer FEC fuzz 与 protocol/Outer FEC benchmark 均有真实 target |
-| `tests` | Catch2 v3 单元测试（CTest） |
-| `tests/UnifiedRemoteGate` | G21受保护实屏Gate、本机supervisor、远控复验脚本及无屏幕进程夹具；见该目录README |
-| `docs` | 当前路线、总体设计、模块说明、历史 Gate/证据；入口见 [`docs/README.md`](docs/README.md) |
-| `artifacts/g21-delivery-2026-09-07` | 本机忽略的统一交付目录：冻结复验ZIP、hash manifest、证据索引；不提交payload或二进制 |
-| `third_party` | vcpkg overlay、固定第三方基线与许可说明，不保存 installed binaries |
+> **PixelBridge v1.0** 提供 Encoder 与 Decoder 两个独立程序，支持标准、灰阶高速、PAM4 与 PAM4 Wide 四种传输模式，以及断点恢复、完整性校验和双端诊断日志。
 
-## 当前开发状态
+> **面向大文件的分段流式设计。** 不需要将整个文件一次装入内存，可扩展到更大的文件规模；**v1.0 当前单文件上限为 500 GiB**，实际传输还需满足磁盘空间和接收资源预算要求。500 GiB 是产品准入上限，不代表已经完成这一大小的实测。
 
-### 已建立的基础（历史起点 `1445f9b`）
+> **特定条件下，平均接收速度可达约 279 KB/s。** 这是 PAM4 Wide 在真实非本机环境中完整接收大文件的留存实测成绩，包含最终文件校验，并非瞬时峰值。具体环境和计算口径见下方[传输速度](#传输速度应该怎样预期)。
 
-- Protocol 1.0 Descriptor Schema 1：显式 little-endian、schema/header/total length、内层 CRC、Session Visual Profile、UTF-8 basename、Segment/Manifest 绑定；
-- 旧 37-byte provisional SessionDescriptor 保留为确定拒绝 fixture，返回 `UnsupportedDescriptorSchema`；
-- 8 MiB Segment 流式预扫描，whole/raw/encoded BLAKE3，zstd level 3 无收益回退 RAW；
-- Sender current/next 双 Segment 缓冲、Carousel systematic+repair 和 4,096-ID durable lease；
-- `.part` random verified writes、最多 4 个活动 Outer decoder、`DeferredResourceBusy`；
-- append-only decoder resume journal、completed Segment 重验、whole-file digest、安全发布与 final reopen；
-- 支持 0-byte 协议/存储基础，默认资源 policy 上限为 500 GiB。
+## 灵感来源与改进
 
-该基础在提交前只执行了 `PBProtocolTests`、`PBStorageTests`、`PBReceiverTests`、`PBApplicationTests` 的一次定向 Release 检查（4/4 PASS）。它不是 full CTest、ASan、Qt/native、20 GiB 或远程链路证据。
+本项目受 [libcimbar](https://github.com/sz3/libcimbar) 启发。libcimbar 展示了通过屏幕上的动态彩色图案、由手机摄像头读取来传输文件的思路。PixelBridge 将这一视觉传输思路聚焦到 **Windows 非本机远控场景**，针对这一用途的主要改进是：
 
-### 当前仍未关闭
+- **更直接的远控接收：** 直接捕获远控窗口实际显示的屏幕像素，不需要手机或摄像头，适合把远程电脑中的文件带回本地。
+- **针对视频压缩的画面编码：** 提供灰阶高速、PAM4 与 PAM4 Wide 等路线，减少对彩色数据通道的依赖，并以最终正确文件的接收速度为优化目标。
+- **面向大文件的完整工作流：** 将分段流式处理、有限内存预算、断点恢复、整文件校验、双端图形界面与诊断日志整合在一起，方便长时间接收和异常排查。
 
-- `PB-Unified-SC6-V3` layout 10 已实现 6×6 分隔单元、9/1/5 Base/Fine/Chroma codewords、region-local placement、codeword-local sequence permutation、mixed Control/Transport、独立 CPU Golden 和三种 D3D11 backend accepted-byte parity；这些仍只是离线/本机证据；
-- 产品尺度现为 1.0x..2.0x；低于 1.0x 呈现 neutral matte 并暂停，不以跨单元采样换取名义上的 0.75x；
-- 6e90643的本机三档、外部双摘要、Base-only证明和16 KiB/unique硬门已有独立证据；最终真实远控1 GiB功能恢复与双摘要已通过，原始8,626.511 B/unique性能门失败由用户只对该Run/Session单次豁免，32 KiB/unique工程目标未达到；
-- G22 双端GUI、独立包、SBOM/notices、用户文档和新解压包右屏1 MB路径已通过，状态为`PASS_LOCAL_CANDIDATE`。项目自身 LICENSE、签名与公开分发仍需维护者单独决定，本地候选不冒充公开发行。
-- G22 之后的非本机吞吐优化线已由用户于 2026-09-09 停止：Step1/Step2 仍为 PREPARED/PARTIAL，Step3 为 PARTIAL 且 codec NOT_RECOVERED，Step4 整体 IN_PROGRESS，Step5 只有未晋级结论（layout 11 CPU 参考验证通过、空白带固定 codec 两组 NOT_RECOVERED），Step6–10 未启动；没有确认的非本机吞吐收益，也未晋级任何默认值。
+这些优势针对远控与大文件接收需求；两者的典型使用场景不同，不把不同环境的速度数字当作直接性能对比。
 
-完整状态、依赖顺序、每步最小测试和最终验收见 [`docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md)。历史 Phase-0 实现说明原文已删除，可按 [`docs/DOC_HISTORY.md`](docs/DOC_HISTORY.md) 登记的 blob 取回，且不得作为当前正式 Descriptor 规范引用。
+## 适合什么场景？
 
-## Target 与依赖边界
+- 能使用远程桌面查看文件，但没有合适的文件传输入口。
+- 远程桌面、虚拟桌面（VDI）等工作流中，希望通过已有可见画面将文件带回本地。
+- 文件比较大，希望接收过程可恢复、可诊断，并能确认恢复结果是否正确。
+- 接收端只有一块屏幕：先开始接收，再让远控码面覆盖所选屏幕即可；不需要给 Decoder 窗口预留一块区域。
 
-- `PBCore`、`PBProtocol` 是显式静态库，不受父工程 `BUILD_SHARED_LIBS` 影响。
-- `PBCompression` 是显式静态库；外部消费者只链接 `PB::PBCompression`
-  即可获得 PBProtocol 与 zstd 的完整静态链接闭包。
-- `PBOuterFec` 是显式静态库；外部消费者只链接 `PB::PBOuterFec` 即可获得
-  PBProtocol 与固定 Wirehair 静态库的完整链接闭包。公共头不暴露 Wirehair
-  原生头或 host-native profile struct。
-- `PBReceiver` 是显式静态库；外部消费者只链接 `PB::PBReceiver` 即可获得
-  PBProtocol、PBCompression 与 PBOuterFec 的完整静态链接闭包。生产 decoder factory
-  只接受由 Control admission 签发的 `BoundSegmentDescriptor`；普通
-  `SegmentDescriptor` 的创建 seam 仅位于未安装的 test/benchmark 私有头中。
-- `PBProtocol` 不依赖 `PBCore`；消费者只获得所链接 target 的公共头和链接闭包。
-- `PBPresentTiming` 与 Windows-only `PBRenderD3D` 是显式静态库，公共接口不暴露 Qt、HWND 或 DXGI 类型；独立链接及 no-Qt Gate 同样覆盖它们。
-- `PB::CompilerSettings` 仅供 PixelBridge 自有 target 私有使用，`/WX` 等策略不传播给外部消费者。
-- Qt 只允许由应用以 `PRIVATE` 方式链接；`libs/` 下的核心库和公共头禁止依赖 Qt。
-- PBOuterFec/PBFEC、协议与 CPU reference 模块保持平台无关。
-- WGC、DXGI、Capture Normalize、D3D11 Demod 和 CUDA Demod 分别建立 target，不把平台 backend 塞入公共核心库。
-- CUDA 选项只与真实 CUDA target 同时引入，默认关闭；显式启用后缺失依赖必须配置失败，不允许静默 fallback。
+PixelBridge 不是远控软件，不建立远程桌面连接，也不修改远控软件或网络设置。它不是摄像头扫码工具。如果可以直接复制文件，普通文件传输通常更快、更方便。
 
-CMake 在配置期审计核心 target 的 Qt 依赖、公共 `src/` 路径和公共编译选项泄漏。未来模块必须继续满足这些门禁。
+## 两个程序，各做一件事
 
-## Windows Qt GUI（G22 Unified）
-
-双击两个 EXE 即只打开 GUI，不附带控制台窗口；无参数入口不再是 Phase 1.5 的实验控件。
-
-- **Encoder**：单文件、1..60 Hz（默认15）、开始；当前屏幕全屏、1920×1080规范画布1:1居中，
-  从准备到停止锁定刷新率，持续广播直至 Encoder 持有焦点时按 Esc。
-- **Decoder**：保存目录、明确选择显示器及整屏/框选 ROI、开始/停止；仅显示百分比、KB/s、剩余时间文本。
-  断点保留；whole digest、安全发布、最终重开复验通过后自动停止并保留100%，不弹窗、不自动开目录。
-- 两端均有真实高级选项 Tab；保留500 GB上限（1024进位）、空文件支持、任何支持大小无需确认。
-  文件/磁盘/摘要安全检查不会因此关闭。
-
-详见 [用户指南](docs/UNIFIED_USER_GUIDE.md)、[GUI/证据工作记录](docs/UNIFIED_G22_GUI_RELEASE.md)、
-[独立包生成和只读验证](tools/PBUnifiedRelease/README.md)。Qt 仅负责 presentation/controller；协议、FEC、
-像素生成、D3D/WGC/DXGI、恢复与存储仍在 Qt-free runtime/core，Decoder 没有非像素 payload 通道。
-
-原 CLI 诊断保留。PowerShell 对 GUI EXE 的裸调用不保证等待，使用真实管道或 `Start-Process -Wait`：
-
-```powershell
-& .\build-unified-release\apps\PixelBridgeEncoder\Release\PixelBridgeEncoder.exe --version | Out-Host
-$LASTEXITCODE
-& .\build-unified-release\apps\PixelBridgeDecoder\Release\PixelBridgeDecoder.exe --build-identity | ConvertFrom-Json
-```
-
-`--gui-smoke` 是带真实 runtime/storage 的 offscreen 定向夹具，不证明 native capture。
-`--gui-native-smoke` 是明确指定实验/保护屏、create-only目录和5..180秒期限的原生诊断；期限不影响正常GUI。
-历史 `--headless-broadcast` / `--headless-receive` / `--data-window` 等仅是开发者入口，不应替代新版日常流程。
-下面独立组件说明保留历史诊断背景，不代表当前 GUI 主页面仍暴露旧实验选项。
-
-## 独立 D3D11 Data Window
-
-`PixelBridgeEncoder --data-window --frames 120 --telemetry NEW_FILE.jsonl`
-运行现有 BGRA reference raster 的呈现诊断，不是完整文件发送器。默认使用
-flip-discard、双缓冲、frame-latency waitable object、MaximumFrameLatency 1、
-`Present(1, 0)`、无 tearing/MSAA/alpha/filtering，以及 1920×1080 physical client。
-窗口与 immediate context 由专用 owner thread 持有，Qt 不参与数据像素合成。
-
-`--frames` 限制成功的 **CPU 帧提交**，不保证所有提交都到达显示器。遥测分别报告
-`PresentCallFPS`、基于 DXGI/Present ID/FrameSequence 关联的 `PresentedVisualFPS`
-及明确命名的观测下界；statistics 不可用或有关联缺口时，不拿调用数补齐视觉 FPS。
-本功能是 **Certified candidate 基础设施**，不是 Capture round-trip 或 LocalDesktop 认证。
-
-API、指标公式、异常恢复、真实显示/模式恢复 Gate 和限制见
-[`docs/PRESENTATION.md`](docs/PRESENTATION.md)。默认测试不会弹出数据窗口或切换显示模式；
-显式开启 `PB_BUILD_PRESENTATION_GATE=ON` 才运行真实显示 Gate，模式测试由独立监督进程恢复设置。
-
-## 物理像素区域选择
-
-`PixelBridgeDecoder --select-region` 启动覆盖虚拟桌面的原生拖选 overlay，只有整个 ROI
-位于一个显示器内才接受。返回有符号 physical-pixel RECT、HMONITOR、effective DPI 和
-DXGI rotation；跨屏／空隙选区不裁剪、不吸附，允许重选。Escape 或右键取消。
-该显式历史 CLI 不依赖 Qt，也不把 logical coordinates 当作 WGC/DXGI 坐标；无参数现在打开 G22 GUI。
-这不是屏幕捕获或 LocalDesktop 认证。
-
-接口及生命周期契约见 [`docs/SCREEN_REGION.md`](docs/SCREEN_REGION.md)。
-默认模型测试不显示 overlay；`PB_BUILD_SCREEN_REGION_GATE=ON` 显式启用真实桌面测试，
-会移动并恢复鼠标，不修改 DPI、分辨率、旋转或显示器布局。
-
-## WGC 屏幕捕获与 GPU lease 退休
-
-`PB::PBScreenCaptureWgc` 复用 `ScreenCaptureRegion`，使用 `CreateForMonitor` /
-`CreateFreeThreaded` 捕获单显示器。callback 仅获取 frame lease、验证 metadata 并进入
-有界队列；专用 D3D owner copy/crop 到自有 ROI ring，fence/event-query 确认 source 不再被
-GPU 使用后才 Close frame，consumer 工作另有退休标记。积压丢旧帧，尺寸/环境变化先 drain
-再 recreate 并递增 CaptureEpoch，错误/超时不提前归还 lease。
-
-cursor、Borderless 和 MinUpdateInterval 按真实 interface/权限探测；不把优化 setter 成功
-当作实际 FPS 或无边框保证。默认 BGRA，HDR 需显式使用 FP16；不静默做色调映射。
-Phase 1.5 GUI application runtime 已将该 backend/normalization 边界接到现有 D3D11 demod、
-ReceiverIngress 与 PBStorage；这仍不自动构成 Certified Profile 或任意硬件/RemoteVisual
-性能认证。API、资源边界、验证命令与限制见
-[`docs/PBScreenCaptureWgc.md`](docs/PBScreenCaptureWgc.md)。
-真实桌面测试由 `PB_BUILD_WGC_GATE=ON` 显式启用；默认测试仅模型/COM mock/WARP，
-不弹出捕获窗口或改动显示设置。
-
-## Source Segment 压缩
-
-`PBCompression` 将每个 Source Segment 独立编码为一个标准 zstd frame，
-frame 带 32-bit checksum。压缩等级、encoder window 和线程策略只属于本地
-Encoder tuning，不写入 PixelBridge wire descriptor，也不构成协议版本。若
-`compressed bytes + framing margin >= raw bytes`，则该 Segment 使用 RAW；若
-zstd frame 明确触及本地 encoded-segment budget，只有当 raw payload 本身仍在
-该 budget 内时才允许 RAW fallback。其他 zstd、状态或 allocation 错误不会被
-静默降级。
-
-Decoder 同时执行三类本地边界：`EncodedSize/maxInputBytes`、
-`RawSize/maxOutputBytes` 和 zstd frame window。streaming decoder 只暂存最多
-18 bytes 的 frame header，已消费的 compressed input 不会累计保存；
-`Finish()` 要求输入字节数严格等于 Descriptor `EncodedSize`、恰好完成一个
-frame（包括 final block/checksum），且输出严格等于 Descriptor `RawSize`。
-
-以 `SegmentDescriptor` 调用 canonical `DecompressSegment()` 前，调用方必须先用
-同一份 `ReceiverResourcePolicy` 执行
-`ValidateSegmentDescriptor(descriptor, sessionDescriptor, resourcePolicy)`；随后用
-`MakeDecompressionLimits(resourcePolicy)` 构造本地解压边界。该
-前置条件保证任何 zstd context 或输出 allocation 创建前，Descriptor 的 raw 和
-encoded 配额已经验证。
-
-## Outer FEC / DirectRepeat / Wirehair V2
-
-`ChooseOuterFecMode()` 在 Wirehair 硬维度之外应用显式效率 gate：Phase-0
-保守默认值令压缩后的 `K = ceil(EncodedSize / OuterBlockBytes)` 为 `0..2` 时选择
-`DirectRepeat`，`3..64000` 选择 `WirehairV2`。Certified Profile 可以用 benchmark
-结果显式传入另一个已冻结的 `OuterFecModeSelectionPolicy` 阈值，但必须在 Descriptor 冻结前
-决定，禁止 Wirehair 创建失败后 silent fallback。大于 `64000` 仍要求上层拆分
-Segment 或调整 block size。0-byte 的 block count 为 0；空文件路径不创建
-`SegmentDescriptor`，也不发送 Data Block。
-
-DirectRepeat 的 `OuterBlockId` 是从 0 开始的 ordinal。每个 block 携带真实
-`PayloadBytes`，固定 `OuterBlockBytes` payload 区的 short tail 必须使用 canonical
-zero padding。Decoder 支持乱序和相同 block 的幂等重复；同一 ordinal 的不同有效
-payload 返回终止性的 `OuterBlockConflict`。仅当全部 ordinal 收齐且重组结果通过
-BLAKE3 `EncodedDigest` 后，`Recover()` 才会返回 exact Encoded Segment bytes。
-当前 provisional Transport 的 `PayloadBytes` 为 `uint16`，所以所有入口都强制
-`1 <= OuterBlockBytes <= 65535`，custom receiver policy 也不能放宽这一 wire 上限。
-`DirectRepeatDecoder::Create()` 还必须接收 Control admission 签发的
-`BoundSegmentDescriptor` 和当前固定 Visual Profile 派生的 expected
-`OuterBlockBytes`，并在任何 reservation/allocation 前与 Descriptor 精确比对；
-`WirehairV2Decoder::Create()` 同样要求该 capability 和 expected block size。
-
-`PBOuterFec` 只使用 Wirehair V2 canonical serialized-profile API。初次创建默认
-显式选择 `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`（不使用 `CURRENT`），保存上游
-原样返回的 32-byte descriptor；`OuterBlockId` 原值就是 Wirehair `blockId`，其中
-`0..K-1` 为 systematic，`K..` 为 repair。
-
-`WirehairV2Encoder::Recreate()` 先验证 `EncodedSize`、`OuterBlockBytes`、
-`2 <= K <= 64000` 与 BLAKE3 `EncodedDigest`，随后直接使用 saved descriptor 与
-exact Encoded Segment bytes 调用 `wirehair_v2_encoder_create_profile()`；Carousel
-路径不会调用 profile-ID selector，也不会用新 profile、seed 或 attempt 替换保存状态。
-saved descriptor 是否为该 Segment 首次绑定的 exact 32 bytes，必须由上层 descriptor
-conflict state 保证，不能靠 profile ID 或重新选择来“认证”。
-
-Decoder 将 `NeedMore` 作为正常增量状态；`ExtraInsufficient`、OOM、unsupported、
-bad seed、invalid input 与未知 codec 结果均显式 fail closed。accepted block-ID
-冲突检测使用 BLAKE3-128 fingerprint、独立的 per-decoder OS-CSPRNG hash salt 和
-固定 64-probe 上限；该 wrapper table 不复制 Wirehair 的私有 bucket placement，
-两者是独立防线。实现不假设一个 decoder 能无限接收新的 repair IDs；
-`ExtraInsufficient` 后必须销毁该实例并由上层用完整新 repair window 重建。
-Wirehair backend 的 `recover` 成功不是发布条件：wrapper 还会对 exact recovered
-bytes 验证 descriptor 的 BLAKE3 `EncodedDigest`，不匹配时终止 decoder。
-`ReceiverIngress::DecompressSegment()` 在解压前再次验证 encoded digest，并在返回
-raw bytes 前验证 `RawDigest`。
-
-`DirectRepeatDecoder::Create()` 与 `WirehairV2Decoder::Create()` 必须接收同一个
-receiver-wide `OuterFecDecoderResourceManager`；旧名称
-`WirehairV2DecoderResourceManager` 是源码兼容别名。manager 在任何 DirectRepeat
-encoded buffer/bitmap、Wirehair wrapper 大分配或 codec 创建前，原子执行
-active-decoder、per-decoder admission charge 与 aggregate charge 三重配额，并以
-RAII 在创建失败、move、析构和并发 shutdown 路径精确回收。默认
-`ReceiverResourcePolicy` 为最多 64 个 DirectRepeat ordinal、4 个 active Outer FEC
-decoder、每个 512 MiB charge、aggregate 1 GiB；这些是本地保守 admission 值，
-不进入 wire，也不是精确 RSS 计量。policy 是非 aggregate 类型，调用方应从
-`GetDefaultReceiverResourcePolicy()` 开始按字段收紧，避免新增 quota 被旧 positional
-initializer 静默置零。
-同一 receiver 必须只建立并共享一个 manager；`Create()`/计数查询可并发调用，但
-manager 的 move/析构必须在停止新 admission 后由 owner 排序，已存在 decoder 的并发
-析构仍由共享 reservation state 安全回收。
-
-Profile ID 只选择方程兼容性，不认证发送者。canonical descriptor、CRC、
-`EncodedDigest` 以及任何 in-band whole-file digest 也不能单独提供发送者认证；
-recovered bytes 仍必须经过设计书要求的 Segment、解压与 whole-file 验证流程。
-
-## 获取源码与 GitHub 发布状态
-
-源码 checkout 后无需保存仓库内 build artifact；所有构建均建议使用独立的 `build-*` 目录。项目当前没有配置仓库 URL，也没有选择项目自身 LICENSE；首次推送前请按 [`docs/DOC_HISTORY.md`](docs/DOC_HISTORY.md) 登记的 `GITHUB_PUBLISH_CHECKLIST.md` blob 取回后核对可见性、许可、分支、受管文件、凭据和 remote。
-
-当前仓库的二进制 Golden/最小 fuzz corpus 体积较小，不需要 Git LFS。Replay、MP4、安装包、PDB、20 GiB fixture、`.part` 和现场证据不得直接提交到源码历史。
-
-## 构建（MSVC x64）
-
-依赖：Visual Studio 2022（C++ 工作负载）、CMake >= 3.24、vcpkg（本机 `<vcpkg-root>`），
-以及 Qt Widgets。当前验证 Qt 6.10.1 与 Qt 5.14.2；正式构建通过 `PB_QT_ROOT` 指向
-包含 `lib/cmake/Qt6` 或 `lib/cmake/Qt5` 的 Qt host prefix。
-
-```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake `
-  -DPB_QT_ROOT=<qt>6.10.1/6.10.1/msvc2022_64
-cmake --build build --config Release --parallel
-ctest --test-dir build --build-config Release --output-on-failure
-```
-
-默认顶层构建启用应用和 PixelBridge 测试。Catch2 位于 vcpkg manifest 的非默认 `tests` feature；仅当 PixelBridge 是顶层工程且 `BUILD_TESTING=ON`、`PB_BUILD_TESTS=ON` 时，CMake 才会在加载 vcpkg toolchain 前启用该 feature。
-
-### Production / Core-only
-
-只构建核心库，不配置应用、工具、fuzz、benchmark，也不安装 Catch2：
-
-```powershell
-cmake -S . -B build-core -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake `
-  -DBUILD_TESTING=OFF `
-  -DPB_BUILD_TESTS=OFF `
-  -DPB_BUILD_APPS=OFF
-cmake --build build-core --config Release --parallel
-```
-
-### Tests-only
-
-```powershell
-cmake -S . -B build-tests -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake `
-  -DPB_BUILD_APPS=OFF `
-  -DBUILD_TESTING=ON `
-  -DPB_BUILD_TESTS=ON
-cmake --build build-tests --config Release --parallel
-ctest --test-dir build-tests --build-config Release --output-on-failure
-```
-
-### 作为子工程使用
-
-通过 `add_subdirectory()` 引入时，`PB_BUILD_APPS` 和 `PB_BUILD_TESTS` 默认均为 `OFF`。父工程可以保持自己的 `BUILD_TESTING=ON`，PixelBridge 不会因此查找 Catch2 或创建自身测试 target。若父工程显式启用 `PB_BUILD_TESTS=ON`，还必须启用全局 `BUILD_TESTING`、在顶层建立 CTest 测试树，并提供可发现的 Catch2 v3。
-
-### 可选子图
-
-下列选项默认关闭。fuzz 与 benchmark 选项会创建下表列出的真实可执行 target；`tools/` 仍不会创建假 target：
-
-| 选项 | 默认值 | 子图 |
+| 程序 | 放在哪台电脑 | 做什么 |
 | --- | --- | --- |
-| `PB_BUILD_APPS` | 顶层 `ON`，作为子工程时 `OFF` | `apps/` |
-| `PB_QT_ROOT` | 空（由 CMake 常规搜索）；构建 Windows apps 时必须可发现 Qt | Qt 5/6 host prefix |
-| `PB_BUILD_TOOLS` | `OFF` | `tools/` |
-| `PB_BUILD_FUZZERS` | `OFF` | `fuzz/`：`PBProtocolDescriptorResourceFuzz`、`PBProtocolBootstrapControlFuzz`、`PBProtocolBootstrapControlStructuredSelfTest`、`PBProtocolOrphanResourceFuzz`、`PBCompressionZstdBoundaryFuzz`、`PBOuterFecWirehairV2Fuzz`、`PBOuterFecDirectRepeatFuzz` |
-| `PB_BUILD_BENCHMARKS` | `OFF` | `benchmarks/`：`PBProtocolDescriptorStateBenchmark`、`PBOuterFecWirehairV2Benchmark`、`PBOuterFecDirectRepeatBenchmark` |
-| `PB_BUILD_PRESENTATION_GATE` | `OFF` | Windows-only：真实 GPU/HWND/双屏/受监督模式切换；要求两个 tests 开关均开启 |
-| `PB_BUILD_SCREEN_REGION_GATE` | `OFF` | Windows-only：真实 overlay／物理鼠标拖选／Decoder；恢复鼠标，不修改显示设置；要求两个 tests 开关均开启 |
-| `BUILD_TESTING` | 顶层 `ON`，子工程由父工程管理 | 全局 CTest 开关 |
-| `PB_BUILD_TESTS` | 顶层 `ON`，作为子工程时 `OFF` | PixelBridge 的 `tests/`；顶层同时控制 vcpkg `tests` feature |
+| **PixelBridgeEncoder** | 文件所在的远程电脑 | 选择文件，将文件循环显示为数据画面 |
+| **PixelBridgeDecoder** | 需要得到文件的电脑 | 选择接收屏幕或区域，捕获画面并保存恢复后的文件 |
 
-fuzz 与 benchmark 共用核心库，但 fuzz 构建会对 `PBProtocol`、
-`PBCompression` 和 `PBOuterFec` 静态库本身启用 AddressSanitizer，而不是只插桩 driver，
-因此两者必须使用不同 build directory。Clang target 使用 libFuzzer +
-ASan/UBSan；MSVC target 使用确定性 mutation runner + ASan。fuzz 配置与运行示例：
+两端不交换接收进度和确认消息。**请以 Decoder 的“已完成”为准，再手动停止 Encoder。** 发送端运行多久或显示多少轮，都不代表文件已经收好。
 
-```powershell
-cmake -S . -B build-fuzz-msvc -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake `
-  -DBUILD_TESTING=ON `
-  -DPB_BUILD_TESTS=OFF `
-  -DPB_BUILD_APPS=OFF `
-  -DPB_BUILD_TOOLS=OFF `
-  -DPB_BUILD_FUZZERS=ON `
-  -DPB_BUILD_BENCHMARKS=OFF
-cmake --build build-fuzz-msvc --config RelWithDebInfo --parallel
-ctest --test-dir build-fuzz-msvc --build-config RelWithDebInfo `
-  --output-on-failure -L fuzz
+## 最短使用流程
 
-# MSVC deterministic mutation runners can also be invoked directly.
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolDescriptorResourceFuzz.exe `
-  2000 13464654573299691533
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe `
-  2000 5783258900934164481
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlStructuredSelfTest.exe `
-  --self-test
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolOrphanResourceFuzz.exe `
-  2000 7263948150273648113
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
-  2000 13856851484949778996
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBOuterFecWirehairV2Fuzz.exe `
-  1000 6289371488644456784
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBOuterFecDirectRepeatFuzz.exe `
-  2000 4923072552113298010
+1. 在两台电脑上分别启动对应程序，双端选择**同一种传输模式**。
+2. 在 Decoder 选择保存目录、接收屏幕和“整屏”或区域。
+3. **先点击 Decoder 的“开始接收”。**
+4. 在远程电脑的 Encoder 选择文件，再开始发送。保持完整数据码面可见，避免浮动面板、其它窗口和鼠标指针挡住码面。
+5. 等 Decoder 显示“已完成”，再停止 Encoder。
 
-# Replay one pinned PBCompression corpus input.
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBCompressionZstdBoundaryFuzz.exe `
-  --input .\fuzz\corpus\compression-zstd\wide-window.bin
+**接收大文件时，“已接收大小”可能暂时不上涨。** 如果界面显示正在补齐分段、校验、写盘或等待轮播，这是接收流程中的正常等待，**不要暂停**。如果界面明确提示捕获中断、没有有效进展或错误，则按提示检查，而不是把所有停滞都当作正常。
 
-# Replay the canonical PB-Bootstrap-1 corpus input.
-.\build-fuzz-msvc\fuzz\RelWithDebInfo\PBProtocolBootstrapControlFuzz.exe `
-  --input .\fuzz\corpus\bootstrap-control\valid-bootstrap.bin
+完整操作、断点恢复及注意事项见 [使用指南](docs/UNIFIED_USER_GUIDE.md)。
+
+## 分辨率与模式怎么选？
+
+**1080P 屏幕的非本机远控传输，建议优先选择 PAM4，双端选择一致；发送频率可先从 25 Hz 开始。** 程序仍保留“标准”作为初始默认选项，推荐使用 PAM4 时需要主动选择。
+
+### 标准、灰阶高速和 PAM4 有什么不同？
+
+这不是同一种模式的三个“画质档位”，而是三种不同的画面编码方式：
+
+| 模式 | 如何用画面携带数据 | 使用建议与取舍 |
+| --- | --- | --- |
+| **标准** | 细小图案的**形状与颜色**共同携带数据 | 原有默认模式，保留兼容性。可继续使用已经验证稳定的配置；远控压缩可能损伤颜色通道，因此不是 1080P 远控传输的首选推荐。 |
+| **灰阶高速** | 用灰阶图案的**形状与亮度**携带数据，不依赖彩色数据通道 | 保留较高的单帧载荷，但仍依赖细小图案的清晰度。适合沿用已有稳定配置，或在 PAM4 效果不理想时作为对比备选。 |
+| **PAM4** | 用**黑、深灰、浅灰、白**四级亮度的规则灰阶块携带数据 | **1080P 非本机场景的优先建议。** 数据单元为均匀灰阶块，减少对细碎图案和颜色细节的依赖，侧重提高经过远控视频压缩后仍能正确接收的有效数据比例。 |
+
+**“灰阶高速”不代表在所有远控环境中都比 PAM4 更快。** 单帧放入更多数据，如果经过视频压缩后丢失更多，总接收时间反而可能更长。以上是基于当前实现与已有实测的使用建议，不是三种模式在所有环境下的速度排名；如果 PAM4 接收效果不理想，可在相同环境下用同一个小文件手动对比灰阶高速，以完整文件的完成时间为准。三种模式都保留最终文件完整性校验，不以降低校验要求换速度。
+
+### PAM4 Wide 与分辨率
+
+**PAM4 Wide 是 PAM4 的大码面版本，不是更适合 1080P 的“高档位”。** 它沿用四级灰阶思路，利用更大的显示面积携带更多数据：
+
+| 模式 | 固定发送码面 | 适合的发送端桌面 |
+| --- | --- | --- |
+| PAM4 | 1920×1080 | 1080P，也可在更大桌面上居中显示 |
+| PAM4 Wide | 2560×1440 | 能完整容纳码面的 1440P / 1600P 等桌面 |
+
+这里说的是**文件所在电脑的实际物理桌面**，不是 Decoder 窗口的大小。**1080P 发送端选择 PAM4，不选择 Wide；不能把 Wide 强行缩小到 1080P。** 标准与灰阶高速也使用 1920×1080 基础码面。接收端可以整屏或区域接收，但远控内部缩放、画质和实际传来的像素会影响结果，不能仅凭显示器分辨率保证速度。25 Hz 是起步建议，不是所有环境的最优值；提高发送频率不一定更快。
+
+当前 PAM4 家族 GUI 的发送屏幕还要求未旋转，且不超过 3840×2160；可用尺寸有明确上下限，不表示任意分辨率均已适配。
+
+界面支持单屏接收；目前缺少只有一块物理显示器的独立电脑验收，不能把“双屏电脑上选一块屏”的测试等同于这一认证。详见 [支持与验证范围](docs/PROJECT_STATUS.md)。
+
+## 大内存电脑可以帮上什么忙？
+
+Decoder 的高级选项可对灰阶高速、PAM4 和 PAM4 Wide 开启**按内存预算接收**，设置活动解码器总预算和单实例上限，也可使用本机建议值。
+
+这能减少“活动名额已满，先等其它分段完成”的情况，但不是内存越满越快。需要给操作系统、远控程序、捕获和断点数据留下空间；发生换页反而可能变慢。具体说明见 [内存预算](docs/DECODER_MEMORY_BUDGET.md)。
+
+## 传输速度应该怎样预期？
+
+速度取决于**整条远控画面链路**，没有一个适用于所有电脑、网络和远控软件的固定数值。
+
+已有非本机实测的**平均完整文件接收速度**如下：
+
+| 模式与发送端分辨率 | 平均接收速度 | 测试范围 |
+| --- | ---: | --- |
+| **PAM4 Wide · 2560×1600** | **约 279 KB/s** | 完整大文件，约 1.12 GiB |
+| **PAM4 · 1920×1080** | **约 190 KB/s** | 91 MiB 小文件；不是大文件速度保证 |
+
+两项记录均来自 ToDesk 专业版、高清画质、25 Hz 发送，本地接收屏幕为 2560×1440。**KB/s 与 Decoder 界面采用同一口径：1 KB = 1024 字节。** 平均值按原始文件大小除以接收端完整运行时间计算，包含启动等待、修复、写盘、整文件校验和最终复验，不是瞬时峰值或理论带宽。
+
+这些是特定环境下的留存测试记录，不是本次发布构建的重新测速，也不是两种模式在相同分辨率、相同文件下的横向对比。**不能把 Wide 的约 279 KB/s 当成 1080P PAM4 的速度承诺**，也不保证任意远控链路都能达到表中数值或全程进度连续增长。版本、原始数值与验证信息见 [证据与限制](docs/EVIDENCE_INDEX.md#readme-speed-reference)。
+
+## 遇到问题时
+
+两端正常 GUI / 传输 CLI 会自动保存低频诊断日志。界面“高级选项”中可**打开日志目录**，也可手动导出最终报告。
+
+- 默认位置：`%LOCALAPPDATA%\PixelBridge\Logs\Encoder` 或 `Decoder`。
+- 日志记录发送、捕获、解码、资源等待和最终校验状态；不保存屏幕截图或文件内容。
+- 最终报告可能含文件名、本地路径、会话标识和环境信息。分享前请检查需要隐去的个人信息。
+
+详见 [日志与故障定位](docs/DIAGNOSTICS.md)。
+
+---
+
+## 它是怎样工作的？
+
+```text
+远程文件 → 分段与压缩 → 纠删/纠错编码 → 可见数据画面
+                                          ↓ 既有远控画面链路
+本地文件 ← 完整性校验 ← 分段恢复 ← 捕获到的屏幕像素
 ```
 
-benchmark 配置示例：
+- **纯视觉、单向。** Decoder 的文件内容只来自它实际捕获的像素，没有后台文件传送通道，也没有反向 ACK。
+- **为不稳定画面设计。** 循环发送与纠删码允许丢失部分画面后继续收集修复数据，不要求每帧都到达。
+- **分段、有限资源、可恢复。** 不需要一次把整文件放进内存；已验证分段写盘，保留可复核的断点状态。
+- **正确性优先。** 传输 CRC、分段摘要和整文件 BLAKE3 分层检查；未通过整文件验证和安全发布、最终重开复验，不算完成。
 
-```powershell
-cmake -S . -B build-bench -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake `
-  -DBUILD_TESTING=OFF `
-  -DPB_BUILD_TESTS=OFF `
-  -DPB_BUILD_APPS=OFF `
-  -DPB_BUILD_TOOLS=ON `
-  -DPB_BUILD_FUZZERS=OFF `
-  -DPB_BUILD_BENCHMARKS=ON
-cmake --build build-bench --config Release --parallel
-.\build-bench\benchmarks\Release\PBOuterFecWirehairV2Benchmark.exe 5
-.\build-bench\benchmarks\Release\PBOuterFecDirectRepeatBenchmark.exe 100
-```
+### 主要技术难点
 
-若在同一个 build directory 中同时启用两个选项，CMake 会以
-`mutually exclusive` 诊断拒绝配置。core-only 依赖隔离由标准 CTest
-fixture 独立验证；`tools/` 仍只是扩展入口，不创建假 target。
+1. **远控传的是视频，不是原始像素。** 色度抽样、有损压缩、缩放、重复帧和局部更新会改变数据码面；新路线采用独立身份的四级灰阶 PAM4，并保留可见定位、时序与校准区域。
+2. **发送得快不代表收得快。** 更高发送频率、更大的码面可能增加视频编码压力，导致有效新数据反而减少。
+3. **没有反馈，就无法只补最后缺的那一段。** 接收尾部可能等待下一轮合适的修复块，这是总完成时间的重要组成。
+4. **更多活动解码器有代价。** 并行保留更多分段有助于接纳数据，同时增加内存、持久化和整理成本；必须保持资源有界与崩溃恢复正确。
 
-输出 target 依赖图：
+完整参数、协议不变量、捕获生命周期、持久化和实测边界见 [技术路线与总体设计](docs/PixelBridge_最终技术路线与总体设计.md)。
 
-```powershell
-cmake -S . -B build --graphviz=target-dependency-graph.dot
-Move-Item target-dependency-graph.dot build\ -Force
-```
+## 构建与开发
 
-Ninja 替代（单配置）：
+Windows x64、C++20、MSVC、Qt Widgets、CMake 和 vcpkg。构建方法、定向测试以及贡献规范见 [开发指南](CONTRIBUTING.md)，文档总入口见 [docs](docs/README.md)。
 
-```powershell
-cmake -S . -B build-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake
-```
+仓库中的诊断工具和 PBBridge 只用于开发编排与取证，不是产品的额外文件通道。离线 MP4、摄像头接收、任意缩放/HDR 以及跨平台接收不属于本次已交付能力声明。
 
-## 告警策略
+## License
 
-所有 PixelBridge 自有目标私有使用 `/utf-8 /W4 /permissive- /EHsc /Zc:__cplusplus /Zc:preprocessor`，默认附加 `/WX`（可用 `-DPB_TREAT_WARNINGS_AS_ERRORS=OFF` 关闭）。这些选项不属于库的公共消费接口。
-自有头文件使用引号包含，第三方头文件（如 Catch2）使用尖括号包含，并通过 `/external:anglebrackets /external:W0` 豁免第三方头文件的告警。
+v1.0 的交付内容、验证范围及已知历史性能限制见 [发布说明](docs/RELEASE_V1.0.md)。
 
-## 第三方依赖
+本项目采用 **[MIT License](LICENSE)**，允许在保留版权和许可声明的前提下使用、修改及再分发，包括商业用途。软件按许可证原文“按原样”提供。
 
-依赖由 vcpkg manifest `vcpkg.json` 管理。BLAKE3 1.8.5 是 `PBProtocol` 的
-生产依赖；zstd 1.5.7 是 `PBCompression` 的生产依赖；Wirehair 2.0.0 是
-`PBOuterFec` 的生产依赖，并通过仓库 overlay 固定到 commit
-`067ca7cdb66aed424ec23f97557429bf791c6f0c`。Catch2 仅存在于
-非默认 `tests` feature，版本下限为 3.15.0。端口注册表基线由 manifest 的
-`builtin-baseline` 固定，安装产物位于各构建目录的 `vcpkg_installed/`，不入库。
-Wirehair 的源码 SHA-512、license、关闭的实验/工具选项和 canonical 文档记录见
-[`third_party/WIREHAIR_BASELINE.md`](third_party/WIREHAIR_BASELINE.md)。
+Qt 等第三方组件仍遵守各自许可证；正式包附带许可原文、依赖清单和 Qt 对应源码。详见 [第三方组件与许可](THIRD_PARTY_NOTICES.md)。
+
+## 致谢
+
+特别感谢 **GPT-5.6 Sol、GPT-6 Astra、GLM-5.3、Qwen 3.8 Flash Next** 及其背后的研发团队，为本项目探索与开发提供的帮助和启发！同时感谢 libcimbar、各开源依赖的贡献者，以及参与实测与反馈的使用者。完整说明见 [致谢](ACKNOWLEDGEMENTS.md)。

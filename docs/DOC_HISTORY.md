@@ -192,12 +192,42 @@ git log --follow --oneline -- docs/UNIFIED_REMOTE_GATE.md
 
 **遗留待用户确认：** 仓库根 `display_probe.obj`（366,491 B）被 `*.obj` 规则忽略、不属于本轮文档整理范围，未删除。
 
-## 5. 后续文档维护规则
+## 5. 后续文档维护规则（2026-09-17 修订）
 
-1. **双登记。** 新建文档必须同时登记到 `docs/README.md` 的索引与 `docs/PROJECT_STATUS.md` 第 8.1 节的文档地图，否则视为未交付。
-2. **删除只用 `git rm` + 本文件登记。** 删除时在本文件第 3 节追加一行：路径、blob SHA-1、blob 字节、原状态与删除理由。不建 `docs/archive/` 目录。
+1. **双语索引。** 新建当前文档必须登记到 `docs/README.md` / `README.en.md` 的对应索引，并同步中英文内容；项目现状不再复制一份文档地图。
+2. **可逆删除并登记。** 删除前保存实际工作副本的字节数、SHA-256 与备份；已纳管文件另记 HEAD blob。发布审批前只改工作树，不以 `git rm` 提前暂存；获准提交时再显式纳入删除。不建重复的 `docs/archive/` 目录。
 3. **职责分离。** 现状只写在 `PROJECT_STATUS.md`；证据身份、包哈希、终态与不得抹掉的事实只写在 `EVIDENCE_INDEX.md`；本文件只登记文档的去向与恢复方式，不重述结论数值。
 4. **冻结证据只追加勘误。** 已归档 Gate 的当时的结论、数值、失败门限、豁免范围不得被改写、精简或"优化掉"。
-5. **保护文件。** `docs/PHASE1_GATE_REPORT.md` 永不 `git add`、不提交、不修改、不移动、不删除，始终保持唯一未跟踪状态。
+5. **保护文件。** `docs/PHASE1_GATE_REPORT.md`、`docs/V3_GRAY_STAGE_C_HANDOFF.md` 保持未跟踪且不修改、不移动、不删除；本次整理亦不修改 `AGENTS.md` 或 `.zcode/`。
 6. **Git 纪律。** 所有暂存用显式路径，禁止 `git add -A` / `git add .`；非 amend、不 reset、不 rebase、不重写历史；提交前后执行 `git diff --cached --check` 与 `git diff HEAD^ HEAD --check`。
 7. **取回方式。** 需要历史文档时先取回内容到临时位置阅读；只有在决定让它重新成为规范文档时才放回 `docs/`，并同时更新索引与本文件。
+
+
+
+## 2026-09-17 当前文档重整 / Current documentation consolidation
+
+维护者要求以当前技术路线与中英入口取代滚动交接、过时 prompt 和重复阶段日志。本次只删除下面九份旧文档；构建产物、原始实验 artifacts 和受保护报告没有清理。没有暂存、提交或改 Git 历史；正式发布整理仍待 README 确认。
+
+Nine superseded handoff/release/stage documents were retired. Current semantics, constraints and material evidence are consolidated in architecture/status/evidence. Original artifacts and protected local reports remain. No staging, commit or history rewrite was performed; formal release cleanup still awaits README approval.
+
+删除前所有 60 份项目 Markdown 原文已逐字节备份为本地 `artifacts/v1-closeout-20260917/documents-before.zip`；路径/字节数/SHA-256 在同目录 `documents-before.json`。它是本地可逆备份，不是公开下载。HEAD blob 可由 `git cat-file blob <id>` 取回提交时版本；有 dirty 增量或原来未纳管的文档以 ZIP 中的 SHA-256 对应原文为准，不能把 HEAD 当作最新工作副本。
+
+All 60 original project Markdown documents were backed up byte-for-byte locally. HEAD blobs recover the committed edition, while the backup SHA-256 identifies the pre-cleanup working copy, including untracked/dirty documents.
+
+| Retired path | Working-copy bytes | Working-copy SHA-256 | HEAD blob (if tracked) |
+| --- | ---: | --- | --- |
+| `docs/NEXT_TASK_PROMPT_V0.6.md` | 4867 | `d699e26acc59184e4df90de42a0f5cb6a87ffc5cfecff6f69616ddfde6040fbd` | `b5ffe83053a2a01a0170ec77e16b818313163ad7` |
+| `docs/SESSION_HANDOFF_20260914_V0.6.md` | 14190 | `ab3547a3b6cb0abea3770c1f82fcf129e826dc8dfe1b5204421f7ccf3da3e8fd` | `abba96b7ac479613a351958f1a9d71bba41c0a90` |
+| `docs/SESSION_HANDOFF_20260915_THROUGHPUT.md` | 17103 | `b4ba6ae3658376b2d0ae5a42d499e20319cc36e688ba0c35eae3bf21e31d3c4c` | `fb686862a57e6d65427cf23035ed54c8a1e7f74e` |
+| `docs/RELEASE_V0.6.md` | 4050 | `16344ee6c44c2d299403c2442f46ce5d757d183cf2162f007a3f96dca400627c` | `a18b73fff9c2ed6d9a2d5ae1f9c05f2d6654e111` |
+| `docs/UNIFIED_G22_GUI_RELEASE.md` | 29465 | `e2fd9f6208313f94f650badcf89b0216a3d9fed3c94b33d6fc953191a7ca63c4` | `134f16e9fc42fcc6ceceed960c1cf923fc66b632` |
+| `docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` | 147904 | `e17b6da803724028d1e2c9e86b0ae3dfab4aaf6a0eda1b3cd2717b05b4ea3e6b` | `c449d67696f380f7540eb0598d8e8f3d561e2115` |
+| `docs/REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md` | 224999 | `9c8bb3d3e6ebe5231788d0227d2394cc722e18f126ea4b6805adc18b53629caf` | `2bcca525c51045c4eae32df9f3599729f3836029` |
+| `docs/NONLOCAL_OPTIMIZATION_20260915.md` | 361023 | `841c9e1bc12668b6cd8c8dd06791d2bc689d3f87fec4cde96a2020d22cabdd3b` | `untracked` |
+| `docs/NONLOCAL_STABILIZATION_DELIVERY.md` | 15947 | `ad798cb7898800978f718a8bb99345839dab1b723e3afb527718d5c1b4428e58` | `untracked` |
+
+### 重写的总体设计 / Rewritten architecture
+
+原 `docs/PixelBridge_最终技术路线与总体设计.md` 工作副本为 187,102 B，SHA-256 `b80e690a110985366138d07ac5b77ce45a14f1fea85e80b3a103e95e17fbba38`，保存在上述 ZIP；HEAD blob 为 `c1cb9639ddf0801cc382c4f0ef971201cf3b2955`。旧模块参考中的“设计 §16/§21/§39”等指向该历史版，不能当作新 12 节架构的编号。文件名保持不变，AGENTS 的规范入口仍然有效。
+
+The previous architecture is preserved in the byte-exact working-copy backup and its committed blob above. Legacy design section numbers refer to that historical edition, not the current 12-section architecture. The canonical filename remains unchanged, preserving the AGENTS entry point.

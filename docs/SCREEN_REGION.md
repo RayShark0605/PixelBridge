@@ -1,6 +1,9 @@
 # PBScreenRegion：物理像素区域选择
 
-对应总体设计 §21、§38.4 DPI/display matrix、§40.1。Windows-only 静态库
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
+对应当前总体设计 §8 的物理坐标与显示身份规则。Windows-only 静态库
 `PB::PBScreenRegion`，不依赖 Qt，不创建 capture/D3D device，不传递文件 payload。
 只证明选区满足 **单显示器准入条件**，不代表 LocalDesktop 或 Capture 性能认证。
 

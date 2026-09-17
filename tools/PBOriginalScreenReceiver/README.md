@@ -1,5 +1,8 @@
 # PBOriginalScreenReceiver
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 ## 2026-09-09 有界对照增量
 
 新增显式 `--comparison-run NEW_SHORT_ROOT DEVICE SECONDS`（5..900秒），与Sender共用 `<repo>\tools\PBExperimentalVisualSender\run_contract.h` 的严格时长解析；旧 `--run` 仍5..60秒。只改变工具宿主的运行窗口，不改原DecoderRuntime/Receiver/GPU/捕获算法、资源策略、摘要、发布、reopen或冲突拒绝。外层使用同目录的独立 `comparison_process_runner.py::invoke_comparison`，固定预算加30秒cleanup（最大930秒）；到达窗口未恢复就记录失败，不延长或自动重启，不反向停止Sender。

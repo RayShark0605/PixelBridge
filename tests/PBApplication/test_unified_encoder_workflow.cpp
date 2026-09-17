@@ -11,6 +11,7 @@
 #include "pbstorage/output_file.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1701,6 +1702,64 @@ TEST_CASE("Initial airtime experiment rejects invalid bounds before creating rec
     REQUIRE(std::filesystem::is_empty(scratch.Path()));
 }
 
+TEST_CASE("Extended visits are explicit spatial GrayFast tuning and exclude confounded or formal modes",
+    "[application][grayfast-extended-visits][model]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"validation.bin";
+    WriteBytes(source, {});
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+    REQUIRE_FALSE(config.grayFastExtendedVisitBudget);
+    config.grayFastExtendedVisitBudget = true;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.grayFastSpatialInterleave = true;
+    for (const auto profile : {pbapp::VisualProfile::UnifiedLc4, pbapp::VisualProfile::UnifiedGray, pbapp::VisualProfile::RemoteVisualLowFps})
+    {
+        config.visualProfile = profile;
+        REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    }
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+    config.grayFastShortInitialAirtime = true;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.grayFastShortInitialAirtime = false;
+    config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("Extended visit configuration reaches runtime without changing the initial-percent identity",
+    "[application][grayfast-extended-visits][runtime]")
+{
+    const bool extended = GENERATE(false, true);
+    Scratch scratch;
+    const auto source = scratch.Path() / L"startup.bin";
+    WriteBytes(source, {});
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30);
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    config.grayFastSpatialInterleave = true;
+    config.grayFastExtendedVisitBudget = extended;
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    auto state = std::make_shared<PresentationState>();
+    state->maximumFrames = 1;
+    pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+    {
+        return std::make_unique<MockPresentation>(state);
+    });
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]()
+    {
+        const auto snapshot = runtime.GetSnapshot();
+        return snapshot.submittedFrames == 1 || snapshot.state == pbapp::EncoderState::Failed;
+    }));
+    const auto started = runtime.GetSnapshot();
+    runtime.Stop();
+    REQUIRE(started.submittedFrames == 1);
+    REQUIRE(started.grayFastSpatialInterleave);
+    REQUIRE(started.configuredInitialAirtimePercent == 100);
+    REQUIRE(started.configuredVisitBudgetPercent == (extended ? 150U : 100U));
+    REQUIRE(runtime.GetSnapshot().state == pbapp::EncoderState::Stopped);
+}
+
 TEST_CASE("Short initial airtime reaches runtime startup with explicit snapshot identity",
     "[application][grayfast-initial-airtime-bounds][runtime]")
 {
@@ -1995,5 +2054,240 @@ TEST_CASE("Budget-bound decoder admission is compared with fixed eight on the id
                 REQUIRE(probes[1].senderLogicalFrames < probes[0].senderLogicalFrames);
             }
         }
+    }
+}
+
+TEST_CASE("Residual Transport erasure rejects invalid percentages before recovery state",
+    "[application][grayfast-residual-loss-bounds]")
+{
+    Scratch scratch;
+    pbapp::UnifiedGraduationRecoveryProbeConfig config;
+    pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+    for (const std::uint32_t percent : {76U, 100U, (std::numeric_limits<std::uint32_t>::max)()})
+    {
+        config.transportSlotErasurePercent = percent;
+        REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+        REQUIRE(std::filesystem::is_empty(scratch.Path()));
+    }
+}
+
+TEST_CASE("Modeled visit budget rejects invalid or confounded tuning before recovery state",
+    "[application][grayfast-visit-budget-bounds]")
+{
+    Scratch scratch;
+    pbapp::UnifiedGraduationRecoveryProbeConfig config;
+    config.grayFastSpatialInterleave = true;
+    pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+    REQUIRE(config.modeledVisitBudgetPercent == 100);
+    for (const std::uint32_t percent : {0U, 99U, 201U, (std::numeric_limits<std::uint32_t>::max)()})
+    {
+        config.modeledVisitBudgetPercent = percent;
+        REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+        REQUIRE(std::filesystem::is_empty(scratch.Path()));
+    }
+    config.modeledVisitBudgetPercent = 150;
+    config.grayFastSpatialInterleave = false;
+    REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
+    config.grayFastSpatialInterleave = true;
+    config.initialAirtimePercent = 65;
+    REQUIRE_FALSE(pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe));
+    REQUIRE(std::filesystem::is_empty(scratch.Path()));
+}
+
+TEST_CASE("Modeled visit budget preserves bounded recovery and lease semantics at both limits",
+    "[application][grayfast-visit-budget][receiver][publish]")
+{
+    const std::uint32_t budgetPercent = GENERATE(100U, 200U);
+    Scratch scratch;
+    pbapp::UnifiedGraduationRecoveryProbeConfig config;
+    config.segmentCount = 13;
+    config.segmentBytes = 128U * 1024U;
+    config.grayFastSpatialInterleave = true;
+    config.erasureModel = pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter;
+    config.transportSlotErasurePercent = 25;
+    config.modeledVisitBudgetPercent = budgetPercent;
+    config.firstObservedLogicalFrame = 400;
+    pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+    const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(scratch.Path().wstring(), config, probe);
+    INFO(status.message);
+    REQUIRE(status);
+    REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 128ULL * 1024ULL);
+    REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+    REQUIRE(probe.decoder.finalRenameSucceeded == true);
+    REQUIRE(probe.decoder.finalReopenVerified == true);
+    REQUIRE(probe.decoder.outerConflictRejections == 0);
+    REQUIRE(probe.spatialCommitAndLeaseVerified);
+    REQUIRE(probe.peakActiveDecoders <= probe.decoder.outerActiveDecoderLimit);
+    std::ifstream file(probe.publishedPath, std::ios::binary);
+    REQUIRE(file);
+    std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+    file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+    REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+    REQUIRE(file.peek() == std::char_traits<char>::eof());
+    REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+}
+
+TEST_CASE("Residual Transport erasure is reproducible and preserves independent final verification",
+    "[application][grayfast-residual-loss][receiver][publish]")
+{
+    Scratch scratch;
+    std::array<pbapp::UnifiedGraduationRecoveryProbeSnapshot, 3> probes;
+    for (std::size_t index = 0; index < probes.size(); index++)
+    {
+        const auto output = scratch.Path() / std::to_wstring(index);
+        REQUIRE(std::filesystem::create_directory(output));
+        pbapp::UnifiedGraduationRecoveryProbeConfig config;
+        config.segmentCount = 2;
+        config.segmentBytes = 128U * 1024U;
+        config.erasureModel = pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter;
+        config.transportSlotErasurePercent = index == 0 ? 0U : 25U;
+        auto& probe = probes[index];
+        const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+        INFO(status.message);
+        REQUIRE(status);
+        REQUIRE(probe.decoder.verifiedRawBytes == 2ULL * 128ULL * 1024ULL);
+        REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+        REQUIRE(probe.decoder.finalRenameSucceeded == true);
+        REQUIRE(probe.decoder.finalReopenVerified == true);
+        REQUIRE(probe.decoder.outerConflictRejections == 0);
+        REQUIRE(probe.modeledTransportSlotCandidates > 0);
+        REQUIRE(probe.modeledTransportSlotCandidates <= probe.observedLogicalFrames * 18U);
+        REQUIRE(probe.modeledTransportSlotsErased < probe.modeledTransportSlotCandidates);
+        REQUIRE((probe.modeledTransportSlotsErased == 0) == (config.transportSlotErasurePercent == 0));
+        std::ifstream file(probe.publishedPath, std::ios::binary);
+        REQUIRE(file);
+        std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+        file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.peek() == std::char_traits<char>::eof());
+        REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+    }
+    REQUIRE(probes[0].expectedWholeFileDigest == probes[1].expectedWholeFileDigest);
+    REQUIRE(probes[1].expectedWholeFileDigest == probes[2].expectedWholeFileDigest);
+    REQUIRE(probes[1].senderLogicalFrames == probes[2].senderLogicalFrames);
+    REQUIRE(probes[1].modeledTransportSlotCandidates == probes[2].modeledTransportSlotCandidates);
+    REQUIRE(probes[1].modeledTransportSlotsErased == probes[2].modeledTransportSlotsErased);
+}
+
+// Explicit opt-in: four 78 MiB clean recoveries. This compares a fixed sender
+// budget, not adaptation to the receiver or an estimate of the ToDesk channel.
+TEST_CASE("Longer spatial visits are compared against identical two-stage loss models",
+    "[application][.nonlocal-visit-budget-stress][receiver][publish]")
+{
+    const std::uint32_t transportErasurePercent = GENERATE(0U, 25U);
+    Scratch scratch;
+    for (const std::uint32_t budgetPercent : {100U, 150U})
+    {
+        const auto output = scratch.Path() / std::to_wstring(budgetPercent);
+        REQUIRE(std::filesystem::create_directory(output));
+        pbapp::UnifiedGraduationRecoveryProbeConfig config;
+        config.segmentCount = 13;
+        config.segmentBytes = 6U * 1024U * 1024U;
+        config.erasureModel = pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter;
+        config.grayFastSpatialInterleave = true;
+        config.transportSlotErasurePercent = transportErasurePercent;
+        config.modeledVisitBudgetPercent = budgetPercent;
+        config.maximumSenderLogicalFrames = 60000;
+        config.collectSegmentTrace = true;
+        pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+        const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+        std::cout << "{\"probe\":\"VisitBudgetRecovery\",\"syntheticNoRaster\":true,\"transportErasurePercent\":" << transportErasurePercent
+            << ",\"visitBudgetPercent\":" << budgetPercent << ",\"success\":" << static_cast<bool>(status)
+            << ",\"senderFrames\":" << probe.senderLogicalFrames << ",\"observedFrames\":" << probe.observedLogicalFrames
+            << ",\"candidateTransportSlots\":" << probe.modeledTransportSlotCandidates << ",\"erasedTransportSlots\":" << probe.modeledTransportSlotsErased
+            << ",\"wraps\":" << probe.completedCarouselPasses << ",\"verifiedRawBytes\":" << probe.decoder.verifiedRawBytes
+            << ",\"alreadyCompletedSymbols\":" << probe.decoder.outerAlreadyCompletedSymbols << ",\"peakActive\":" << probe.peakActiveDecoders
+            << ",\"peakReservedBytes\":" << probe.peakReservedDecoderBytes << ",\"fecDeferred\":" << probe.deferredResourceBusyCount
+            << ",\"resourceRejections\":" << probe.decoder.outerResourceRejections << ",\"orphanQuotaDrops\":" << probe.decoder.outerOrphanDroppedByQuotaCount
+            << ",\"droughtFrames\":" << probe.longestAfterJoinNoUsefulEquationFrames << "}\n";
+        INFO(status.message);
+        REQUIRE(status);
+        REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 6ULL * 1024ULL * 1024ULL);
+        REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+        REQUIRE(probe.decoder.finalRenameSucceeded == true);
+        REQUIRE(probe.decoder.finalReopenVerified == true);
+        REQUIRE(probe.decoder.outerConflictRejections == 0);
+        REQUIRE(probe.spatialCommitAndLeaseVerified);
+        REQUIRE(probe.peakActiveDecoders <= probe.decoder.outerActiveDecoderLimit);
+        REQUIRE(probe.peakReservedDecoderBytes <= 1024ULL * 1024ULL * 1024ULL);
+        REQUIRE(probe.segmentTrace.size() == config.segmentCount);
+        for (std::size_t ordinal = 0; ordinal < probe.segmentTrace.size(); ordinal++)
+        {
+            const auto& trace = probe.segmentTrace[ordinal];
+            REQUIRE(trace.completedFrame);
+            std::cout << "{\"probe\":\"VisitBudgetSegment\",\"transportErasurePercent\":" << transportErasurePercent
+                << ",\"visitBudgetPercent\":" << budgetPercent << ",\"ordinal\":" << ordinal << ",\"completedFrame\":" << *trace.completedFrame
+                << ",\"uniqueAdmissionEvents\":" << trace.uniqueAdmissionEvents << ",\"deferredBlocks\":" << trace.deferredBlocks
+                << ",\"alreadyCompletedBlocks\":" << trace.alreadyCompletedBlocks << "}\n";
+        }
+        std::ifstream file(probe.publishedPath, std::ios::binary);
+        REQUIRE(file);
+        std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+        file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.peek() == std::char_traits<char>::eof());
+        REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
+    }
+}
+
+// Explicit opt-in: four 78 MiB clean recoveries, not part of ordinary CTest.
+TEST_CASE("Whole-frame and residual Transport losses are separated in a large-file stress projection",
+    "[application][.nonlocal-two-stage-loss-stress][receiver][publish]")
+{
+    const bool spatial = GENERATE(false, true);
+    Scratch scratch;
+    for (const std::uint32_t percent : {0U, 25U})
+    {
+        const auto output = scratch.Path() / std::to_wstring(percent);
+        REQUIRE(std::filesystem::create_directory(output));
+        pbapp::UnifiedGraduationRecoveryProbeConfig config;
+        config.segmentCount = 13;
+        config.segmentBytes = 6U * 1024U * 1024U;
+        config.erasureModel = pbapp::UnifiedRecoveryErasureModel::PeriodicQuarter;
+        config.grayFastSpatialInterleave = spatial;
+        config.transportSlotErasurePercent = percent;
+        config.maximumSenderLogicalFrames = 60000;
+        config.collectSegmentTrace = true;
+        pbapp::UnifiedGraduationRecoveryProbeSnapshot probe;
+        const auto status = pbapp::ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(output.wstring(), config, probe);
+        std::cout << "{\"probe\":\"TwoStageLossRecovery\",\"syntheticNoRaster\":true,\"transportErasurePercent\":" << percent
+            << ",\"spatial\":" << (spatial ? "true" : "false")
+            << ",\"success\":" << static_cast<bool>(status) << ",\"senderFrames\":" << probe.senderLogicalFrames
+            << ",\"observedFrames\":" << probe.observedLogicalFrames << ",\"candidateTransportSlots\":" << probe.modeledTransportSlotCandidates
+            << ",\"erasedTransportSlots\":" << probe.modeledTransportSlotsErased << ",\"wraps\":" << probe.completedCarouselPasses
+            << ",\"verifiedRawBytes\":" << probe.decoder.verifiedRawBytes << ",\"alreadyCompletedSymbols\":" << probe.decoder.outerAlreadyCompletedSymbols
+            << ",\"peakActive\":" << probe.peakActiveDecoders << ",\"peakReservedBytes\":" << probe.peakReservedDecoderBytes
+            << ",\"fecDeferred\":" << probe.deferredResourceBusyCount << ",\"resourceRejections\":" << probe.decoder.outerResourceRejections
+            << ",\"orphanQuotaDrops\":" << probe.decoder.outerOrphanDroppedByQuotaCount
+            << ",\"droughtFrames\":" << probe.longestAfterJoinNoUsefulEquationFrames << "}\n";
+        INFO(status.message);
+        REQUIRE(status);
+        REQUIRE(probe.decoder.verifiedRawBytes == 13ULL * 6ULL * 1024ULL * 1024ULL);
+        REQUIRE(probe.decoder.wholeFileDigestCheck == true);
+        REQUIRE(probe.decoder.finalRenameSucceeded == true);
+        REQUIRE(probe.decoder.finalReopenVerified == true);
+        REQUIRE(probe.decoder.outerConflictRejections == 0);
+        REQUIRE(probe.spatialCommitAndLeaseVerified == spatial);
+        REQUIRE(probe.peakActiveDecoders <= probe.decoder.outerActiveDecoderLimit);
+        REQUIRE(probe.peakReservedDecoderBytes <= 1024ULL * 1024ULL * 1024ULL);
+        REQUIRE(probe.segmentTrace.size() == config.segmentCount);
+        for (std::size_t ordinal = 0; ordinal < probe.segmentTrace.size(); ordinal++)
+        {
+            const auto& trace = probe.segmentTrace[ordinal];
+            REQUIRE(trace.completedFrame);
+            std::cout << "{\"probe\":\"TwoStageLossSegment\",\"transportErasurePercent\":" << percent
+                << ",\"spatial\":" << (spatial ? "true" : "false")
+                << ",\"ordinal\":" << ordinal << ",\"completedFrame\":" << *trace.completedFrame
+                << ",\"uniqueAdmissionEvents\":" << trace.uniqueAdmissionEvents << ",\"deferredBlocks\":" << trace.deferredBlocks
+                << ",\"alreadyCompletedBlocks\":" << trace.alreadyCompletedBlocks << "}\n";
+        }
+        std::ifstream file(probe.publishedPath, std::ios::binary);
+        REQUIRE(file);
+        std::vector<std::byte> reopened(static_cast<std::size_t>(probe.decoder.verifiedRawBytes));
+        file.read(reinterpret_cast<char*>(reopened.data()), static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.gcount() == static_cast<std::streamsize>(reopened.size()));
+        REQUIRE(file.peek() == std::char_traits<char>::eof());
+        REQUIRE(pbprotocol::ComputeBlake3Digest(reopened) == probe.expectedWholeFileDigest);
     }
 }

@@ -13,6 +13,11 @@
 #include "process_fault_test_hook.h"
 #endif
 
+#ifdef PB_RESUME_BATCH_TESTS
+#include "decoder_resume_io_test_hook.h"
+#include "decoder_resume_snapshot_test_hook.h"
+#endif
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -36,6 +41,8 @@ inline constexpr std::size_t journalHeaderFixedBytes = 24;
 inline constexpr std::size_t journalRecordHeaderBytes = 32;
 inline constexpr std::size_t journalRecordMinimumBytes = journalRecordHeaderBytes + 4;
 inline constexpr std::uint64_t journalCompactionThresholdBytes = 16ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t journalLargeSnapshotThresholdBytes = 64ULL * 1024ULL * 1024ULL;
+inline constexpr std::size_t journalAppendBatchBytes = 64ULL * 1024ULL;
 inline constexpr std::uint16_t segmentControlRecordType = 1;
 inline constexpr std::uint16_t manifestControlRecordType = 2;
 inline constexpr std::uint16_t acceptedBlockRecordType = 3;
@@ -129,6 +136,70 @@ template <typename Integer>
     return std::string(operation) + " failed; win32=" + std::to_string(error);
 }
 
+[[nodiscard]] BOOL SeekJournalAppend(const HANDLE file, const LARGE_INTEGER offset) noexcept
+{
+#ifdef PB_RESUME_BATCH_TESTS
+    return test::SeekJournalAppend(file, offset);
+#else
+    return SetFilePointerEx(file, offset, nullptr, FILE_BEGIN);
+#endif
+}
+
+[[nodiscard]] BOOL WriteJournalAppend(const HANDLE file, const std::span<const std::byte> bytes, DWORD& writtenBytes) noexcept
+{
+#ifdef PB_RESUME_BATCH_TESTS
+    return test::WriteJournalAppend(file, bytes, writtenBytes);
+#else
+    return WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &writtenBytes, nullptr);
+#endif
+}
+
+[[nodiscard]] BOOL FlushJournalAppend(const HANDLE file) noexcept
+{
+#ifdef PB_RESUME_BATCH_TESTS
+    return test::FlushJournalAppend(file);
+#else
+    return FlushFileBuffers(file);
+#endif
+}
+
+[[nodiscard]] BOOL WriteJournalSnapshot(const HANDLE file, const void* bytes, const DWORD requestedBytes, DWORD& writtenBytes) noexcept
+{
+#ifdef PB_RESUME_BATCH_TESTS
+    return test::snapshot::WriteSnapshot(file, bytes, requestedBytes, &writtenBytes);
+#else
+    return WriteFile(file, bytes, requestedBytes, &writtenBytes, nullptr);
+#endif
+}
+
+[[nodiscard]] BOOL FlushJournalSnapshot(const HANDLE file) noexcept
+{
+#ifdef PB_RESUME_BATCH_TESTS
+    return test::snapshot::FlushSnapshot(file);
+#else
+    return FlushFileBuffers(file);
+#endif
+}
+
+[[nodiscard]] BOOL ReplaceJournalSnapshot(const wchar_t* source, const wchar_t* destination, const DWORD flags) noexcept
+{
+#ifdef PB_RESUME_BATCH_TESTS
+    return test::snapshot::ReplaceSnapshot(source, destination, flags);
+#else
+    return MoveFileExW(source, destination, flags);
+#endif
+}
+
+[[nodiscard]] HANDLE ReopenJournalSnapshot(const wchar_t* path) noexcept
+{
+#ifdef PB_RESUME_BATCH_TESTS
+    return test::snapshot::ReopenSnapshot(path);
+#else
+    return CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+#endif
+}
+
 [[nodiscard]] std::wstring SessionTagText(const pbprotocol::SessionTag sessionTag)
 {
     wchar_t text[17]{};
@@ -207,7 +278,7 @@ template <typename Integer>
         const DWORD requested = static_cast<DWORD>((std::min)(bytes.size() - offset,
             static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
         DWORD writtenBytes = 0;
-        if (WriteFile(file, bytes.data() + offset, requested, &writtenBytes, nullptr) == FALSE ||
+        if (WriteJournalSnapshot(file, bytes.data() + offset, requested, writtenBytes) == FALSE ||
             writtenBytes != requested)
         {
             const DWORD error = GetLastError();
@@ -217,7 +288,7 @@ template <typename Integer>
         }
         offset += writtenBytes;
     }
-    if (FlushFileBuffers(file) == FALSE)
+    if (FlushJournalSnapshot(file) == FALSE)
     {
         const DWORD error = GetLastError();
         CloseHandle(file);
@@ -235,7 +306,7 @@ template <typename Integer>
     // rebuild the document, delete the durable target, or advance generation.
     const auto replacement = detail::RetryAtomicReplace([&]() noexcept
     {
-        return MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
+        return ReplaceJournalSnapshot(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
             ERROR_SUCCESS : GetLastError();
     }, []() noexcept { return GetTickCount64(); }, [](const DWORD milliseconds) noexcept { Sleep(milliseconds); });
     if (replacement.error != ERROR_SUCCESS)
@@ -560,6 +631,252 @@ struct DecoderResumeStore::Implementation
     bool resumed = false;
     bool hadTruncatedTail = false;
     bool terminalFailure = false;
+    bool coalesceLargeSnapshots = false;
+
+    [[nodiscard]] bool PlanCompactDocument(std::uint64_t& documentBytes, std::uint64_t& recordCount) const noexcept
+    {
+        const auto headerBytes = pbprotocol::CheckedAddUint64(journalHeaderFixedBytes + 4, sessionControl.size());
+        if (!headerBytes || headerBytes.Value() > policy.maxResumeBytes)
+        {
+            return false;
+        }
+        documentBytes = headerBytes.Value();
+        recordCount = 0;
+        const auto IncludeRecord = [&](const std::uint64_t payloadBytes)
+        {
+            const auto recordBytes = pbprotocol::CheckedAddUint64(journalRecordMinimumBytes, payloadBytes);
+            const auto nextBytes = recordBytes ? pbprotocol::CheckedAddUint64(documentBytes, recordBytes.Value()) : recordBytes;
+            const auto nextCount = pbprotocol::CheckedAddUint64(recordCount, 1);
+            if (!recordBytes || recordBytes.Value() > UINT32_MAX || !nextBytes || !nextCount ||
+                nextBytes.Value() > policy.maxResumeBytes || nextBytes.Value() > std::vector<std::byte>{}.max_size() ||
+                nextBytes.Value() > static_cast<std::uint64_t>((std::numeric_limits<LONGLONG>::max)()))
+            {
+                return false;
+            }
+            documentBytes = nextBytes.Value();
+            recordCount = nextCount.Value();
+            return true;
+        };
+        if (outputReservationFileNameUtf8 && !IncludeRecord(outputReservationFileNameUtf8->size()))
+        {
+            return false;
+        }
+        for (const auto& control : segmentControls)
+        {
+            if (!IncludeRecord(control.size()))
+            {
+                return false;
+            }
+        }
+        if (!manifestControl.empty() && !IncludeRecord(manifestControl.size()))
+        {
+            return false;
+        }
+        for (std::size_t index = 0; index < completedSegments.size(); index++)
+        {
+            if (!IncludeRecord(72))
+            {
+                return false;
+            }
+        }
+        for (const auto& block : activeBlocks)
+        {
+            const auto payloadBytes = pbprotocol::CheckedAddUint64(20, block.paddedPayload.size());
+            if (!payloadBytes || !IncludeRecord(payloadBytes.Value()))
+            {
+                return false;
+            }
+        }
+        return !publishIntent || IncludeRecord(publishIntent->bytes.size());
+    }
+
+    // Completed markers are already durable. Delay reclaiming only bounded
+    // low-value disk garbage, never the memory retirement or completion commit.
+    [[nodiscard]] bool CanDeferCompaction() const noexcept
+    {
+        if (!coalesceLargeSnapshots || !pendingBlocks.empty() || activeBlocks.empty())
+        {
+            return false;
+        }
+        std::uint64_t liveBytes = 0;
+        std::uint64_t recordCount = 0;
+        if (!PlanCompactDocument(liveBytes, recordCount) || liveBytes <= journalLargeSnapshotThresholdBytes || liveBytes > fileBytes)
+        {
+            return false;
+        }
+        const std::uint64_t obsoleteBytes = fileBytes - liveBytes;
+        if (obsoleteBytes == 0)
+        {
+            return true;
+        }
+        const std::uint64_t quarterFileBytes = fileBytes / 4 + (fileBytes % 4 != 0 ? 1 : 0);
+        const bool nearQuota = fileBytes >= policy.maxResumeBytes - policy.maxResumeBytes / 4;
+        return !nearQuota && (obsoleteBytes < journalCompactionThresholdBytes || obsoleteBytes < quarterFileBytes);
+    }
+
+    [[nodiscard]] bool CanAppendPendingWithinQuota() const noexcept
+    {
+        if (!pbprotocol::CheckedAddUint64(generation, pendingBlocks.size()))
+        {
+            return false;
+        }
+        std::uint64_t nextBytes = fileBytes;
+        for (const auto& block : pendingBlocks)
+        {
+            const auto recordBytes = pbprotocol::CheckedAddUint64(journalRecordMinimumBytes + 20, block.paddedPayload.size());
+            const auto sum = recordBytes ? pbprotocol::CheckedAddUint64(nextBytes, recordBytes.Value()) : recordBytes;
+            if (!recordBytes || recordBytes.Value() > UINT32_MAX || !sum || sum.Value() > policy.maxResumeBytes ||
+                sum.Value() > static_cast<std::uint64_t>((std::numeric_limits<LONGLONG>::max)()))
+            {
+                return false;
+            }
+            nextBytes = sum.Value();
+        }
+        return true;
+    }
+
+    [[nodiscard]] DecoderResumeStoreStatus AppendRecords(const std::span<const std::byte> records,
+        const std::uint64_t recordCount, const bool flush) noexcept
+    {
+        const auto nextGeneration = pbprotocol::CheckedAddUint64(generation, recordCount);
+        const auto nextFileBytes = pbprotocol::CheckedAddUint64(fileBytes, records.size());
+        if (file == INVALID_HANDLE_VALUE || terminalFailure || recordCount == 0 ||
+            recordCount > records.size() / journalRecordMinimumBytes || !nextGeneration || !nextFileBytes ||
+            nextFileBytes.Value() > policy.maxResumeBytes ||
+            nextFileBytes.Value() > static_cast<std::uint64_t>((std::numeric_limits<LONGLONG>::max)()) ||
+            records.size() > (std::numeric_limits<DWORD>::max)())
+        {
+            return DecoderResumeStoreStatus::Failure("resume append state, size or generation is invalid");
+        }
+        LARGE_INTEGER end{};
+        end.QuadPart = static_cast<LONGLONG>(fileBytes);
+        if (SeekJournalAppend(file, end) == FALSE)
+        {
+            terminalFailure = true;
+            return DecoderResumeStoreStatus::Failure(NativeFailure("resume append seek", GetLastError()));
+        }
+        DWORD writtenBytes = 0;
+        if (WriteJournalAppend(file, records, writtenBytes) == FALSE)
+        {
+            terminalFailure = true;
+            return DecoderResumeStoreStatus::Failure(NativeFailure("resume append write", GetLastError()));
+        }
+        if (writtenBytes != records.size())
+        {
+            terminalFailure = true;
+            return DecoderResumeStoreStatus::Failure("resume append write was incomplete");
+        }
+        if (flush && FlushJournalAppend(file) == FALSE)
+        {
+            terminalFailure = true;
+            return DecoderResumeStoreStatus::Failure(NativeFailure("resume append flush", GetLastError()));
+        }
+        generation = nextGeneration.Value();
+        fileBytes = nextFileBytes.Value();
+#ifdef PB_PROCESS_FAULT_TESTS
+        test::ObserveJournalFileBytes(fileBytes);
+#endif
+        return {};
+    }
+
+    [[nodiscard]] DecoderResumeStoreStatus AppendPendingBlocks() noexcept
+    {
+        if (pendingBlocks.empty())
+        {
+            return {};
+        }
+        // Check the entire checkpoint before allocating/issuing any append.
+        // Otherwise a later quota error could leave a prefix appended while
+        // the pending list still describes the original, uncommitted batch.
+        const auto finalGeneration = pbprotocol::CheckedAddUint64(generation, pendingBlocks.size());
+        if (!finalGeneration)
+        {
+            return DecoderResumeStoreStatus::Failure("resume checkpoint generation exhausted");
+        }
+        std::uint64_t finalFileBytes = fileBytes;
+        for (const auto& block : pendingBlocks)
+        {
+            const auto recordBytes = pbprotocol::CheckedAddUint64(journalRecordMinimumBytes + 20, block.paddedPayload.size());
+            const auto nextFileBytes = recordBytes ? pbprotocol::CheckedAddUint64(finalFileBytes, recordBytes.Value()) : recordBytes;
+            if (!recordBytes || recordBytes.Value() > UINT32_MAX || !nextFileBytes ||
+                nextFileBytes.Value() > policy.maxResumeBytes ||
+                nextFileBytes.Value() > static_cast<std::uint64_t>((std::numeric_limits<LONGLONG>::max)()))
+            {
+                return DecoderResumeStoreStatus::Failure("resume journal maxResumeBytes exceeded");
+            }
+            finalFileBytes = nextFileBytes.Value();
+        }
+        try
+        {
+            std::vector<std::byte> batch;
+            batch.reserve(static_cast<std::size_t>((std::min)(finalFileBytes - fileBytes,
+                static_cast<std::uint64_t>(journalAppendBatchBytes))));
+            std::vector<std::byte> payload;
+            std::vector<std::byte> record;
+            std::uint64_t batchRecordCount = 0;
+            auto AppendBatch = [&]() -> DecoderResumeStoreStatus
+            {
+                if (batch.empty())
+                {
+                    return {};
+                }
+                const auto status = AppendRecords(batch, batchRecordCount, false);
+                if (status)
+                {
+                    batch.clear();
+                    batchRecordCount = 0;
+                }
+                return status;
+            };
+            for (const auto& block : pendingBlocks)
+            {
+#ifdef PB_RESUME_BATCH_TESTS
+                test::BeforeJournalBatchSerialize();
+#endif
+                DecoderResumeStoreStatus status = BuildAcceptedBlockPayload(block, payload);
+                const auto queuedGeneration = pbprotocol::CheckedAddUint64(generation, batchRecordCount);
+                const auto nextGeneration = queuedGeneration ? pbprotocol::CheckedAddUint64(queuedGeneration.Value(), 1) : queuedGeneration;
+                if (!status || !nextGeneration)
+                {
+                    return status ? DecoderResumeStoreStatus::Failure("resume checkpoint generation exhausted") : status;
+                }
+                status = BuildRecord(acceptedBlockRecordType, nextGeneration.Value(), payload, record);
+                if (!status)
+                {
+                    return status;
+                }
+                if (record.size() > journalAppendBatchBytes - batch.size())
+                {
+                    status = AppendBatch();
+                    if (!status)
+                    {
+                        return status;
+                    }
+                }
+                // A maximum-size valid transport record can exceed 64 KiB by
+                // its journal envelope. Keep that single record valid; never
+                // grow the batching buffer beyond its fixed bound.
+                if (record.size() > journalAppendBatchBytes)
+                {
+                    status = AppendRecords(record, 1, false);
+                    if (!status)
+                    {
+                        return status;
+                    }
+                }
+                else
+                {
+                    batch.insert(batch.end(), record.begin(), record.end());
+                    batchRecordCount++;
+                }
+            }
+            return AppendBatch();
+        }
+        catch (const std::bad_alloc&)
+        {
+            return DecoderResumeStoreStatus::Failure("resume checkpoint batch allocation failed");
+        }
+    }
 
     void SetSegmentActive(const std::uint64_t ordinal, const bool active) noexcept
     {
@@ -598,7 +915,7 @@ DecoderResumeStore::~DecoderResumeStore()
 DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& outputDirectory,
     const pbprotocol::SessionTag sessionTag, const std::span<const std::byte> sessionControlRecord,
     const pbprotocol::ReceiverResourcePolicy& resourcePolicy, std::unique_ptr<DecoderResumeStore>& output,
-    DecoderResumeLoadedState& loaded, const bool budgetBoundActiveSegments) noexcept
+    DecoderResumeLoadedState& loaded, const bool budgetBoundActiveSegments, const DecoderMemoryBudget* const memoryBudget) noexcept
 {
     output.reset();
     loaded = {};
@@ -607,9 +924,20 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
         const auto defaultPolicy = pbprotocol::GetDefaultReceiverResourcePolicy();
         const std::uint64_t maximumActiveSegments = budgetBoundActiveSegments ?
             (std::min)(resourcePolicy.maxSegmentCount, defaultPolicy.maxSegmentCount) : senderUnifiedReceiverActiveDecoderLimit;
+        if (memoryBudget != nullptr)
+        {
+            auto expectedPolicy = resourcePolicy;
+            if (!budgetBoundActiveSegments || ApplyDecoderMemoryBudget(*memoryBudget, expectedPolicy) != DecoderMemoryBudgetError::None ||
+                expectedPolicy.maxOuterFecDecoderBytes != resourcePolicy.maxOuterFecDecoderBytes ||
+                expectedPolicy.maxTotalOuterFecDecoderBytes != resourcePolicy.maxTotalOuterFecDecoderBytes ||
+                expectedPolicy.maxResumeBytes != resourcePolicy.maxResumeBytes)
+            {
+                return DecoderResumeStoreStatus::Failure("resume store custom memory policy is inconsistent");
+            }
+        }
         if (outputDirectory.empty() || sessionControlRecord.empty() || !pbprotocol::ValidateReceiverResourcePolicy(resourcePolicy) ||
             resourcePolicy.maxActiveOuterFecDecoders > maximumActiveSegments ||
-            (budgetBoundActiveSegments && (resourcePolicy.maxTotalOuterFecDecoderBytes > defaultPolicy.maxTotalOuterFecDecoderBytes ||
+            (budgetBoundActiveSegments && memoryBudget == nullptr && (resourcePolicy.maxTotalOuterFecDecoderBytes > defaultPolicy.maxTotalOuterFecDecoderBytes ||
                 resourcePolicy.maxOuterFecDecoderBytes > defaultPolicy.maxOuterFecDecoderBytes ||
                 resourcePolicy.maxResumeBytes > defaultPolicy.maxResumeBytes)))
         {
@@ -629,6 +957,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
         auto implementation = std::make_unique<Implementation>();
         implementation->path = outputDirectory / (L"PixelBridge-" + SessionTagText(sessionTag) + L".resume");
         implementation->policy = resourcePolicy;
+        implementation->coalesceLargeSnapshots = budgetBoundActiveSegments && memoryBudget != nullptr;
         implementation->sessionTag = sessionTag;
         implementation->session = parsedSession.Value();
         implementation->sessionControl.assign(sessionControlRecord.begin(), sessionControlRecord.end());
@@ -1119,21 +1448,24 @@ DecoderResumeStoreStatus DecoderResumeStore::Checkpoint() noexcept
     {
         return DecoderResumeStoreStatus::Failure("resume store is unavailable");
     }
-    for (const DecoderResumeAcceptedBlock& block : implementation_->pendingBlocks)
+    // Reclaim obsolete records without appending a prefix that cannot fit.
+    // A full snapshot also contains every pending block and clears pending
+    // only after the replacement is durable and successfully reopened.
+    if (implementation_->coalesceLargeSnapshots && !implementation_->pendingBlocks.empty() && !implementation_->CanAppendPendingWithinQuota())
     {
-        std::vector<std::byte> payload;
-        DecoderResumeStoreStatus status = BuildAcceptedBlockPayload(block, payload);
-        if (!status)
-        {
-            return status;
-        }
-        status = AppendRecord(acceptedBlockRecordType, payload, false);
-        if (!status)
-        {
-            return status;
-        }
+        return Compact();
     }
-    if (!implementation_->pendingBlocks.empty() && FlushFileBuffers(implementation_->file) == FALSE)
+    const std::uint64_t initialFileBytes = implementation_->fileBytes;
+    const DecoderResumeStoreStatus appendStatus = implementation_->AppendPendingBlocks();
+    if (!appendStatus)
+    {
+        if (implementation_->fileBytes != initialFileBytes)
+        {
+            implementation_->terminalFailure = true;
+        }
+        return appendStatus;
+    }
+    if (!implementation_->pendingBlocks.empty() && FlushJournalAppend(implementation_->file) == FALSE)
     {
         implementation_->terminalFailure = true;
         return DecoderResumeStoreStatus::Failure(NativeFailure("resume checkpoint flush", GetLastError()));
@@ -1145,7 +1477,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Checkpoint() noexcept
         return DecoderResumeStoreStatus::Failure("resume compaction growth baseline exceeds journal size");
     }
     const std::uint64_t appendedBytes = implementation_->fileBytes - implementation_->compactionBaseBytes;
-    return appendedBytes >= journalCompactionThresholdBytes ? Compact() : DecoderResumeStoreStatus{};
+    return appendedBytes >= journalCompactionThresholdBytes && !implementation_->CanDeferCompaction() ? Compact() : DecoderResumeStoreStatus{};
 }
 
 DecoderResumeStoreStatus DecoderResumeStore::RecordCompletedSegment(
@@ -1208,7 +1540,7 @@ DecoderResumeStoreStatus DecoderResumeStore::RecordCompletedSegment(
         return block.segmentOrdinal == completedRecord.segmentOrdinal;
     });
     implementation_->SetSegmentActive(completedRecord.segmentOrdinal, false);
-    return Compact();
+    return implementation_->CanDeferCompaction() ? DecoderResumeStoreStatus{} : Compact();
 }
 
 DecoderResumeStoreStatus DecoderResumeStore::RecordPublishIntent(
@@ -1278,37 +1610,48 @@ DecoderResumeStoreStatus DecoderResumeStore::AppendRecord(const std::uint16_t re
     }
     std::vector<std::byte> record;
     DecoderResumeStoreStatus status = BuildRecord(recordType, implementation_->generation + 1, payload, record);
-    const auto newFileBytes = pbprotocol::CheckedAddUint64(implementation_->fileBytes, record.size());
-    if (!status || !newFileBytes || newFileBytes.Value() > implementation_->policy.maxResumeBytes)
+    if (!status)
     {
-        return status ? DecoderResumeStoreStatus::Failure("resume journal maxResumeBytes exceeded") : status;
+        return status;
     }
-    LARGE_INTEGER end{};
-    end.QuadPart = static_cast<LONGLONG>(implementation_->fileBytes);
-    if (SetFilePointerEx(implementation_->file, end, nullptr, FILE_BEGIN) == FALSE)
+    auto newFileBytes = pbprotocol::CheckedAddUint64(implementation_->fileBytes, record.size());
+    if ((!newFileBytes || newFileBytes.Value() > implementation_->policy.maxResumeBytes) && implementation_->coalesceLargeSnapshots)
     {
-        implementation_->terminalFailure = true;
-        return DecoderResumeStoreStatus::Failure(NativeFailure("resume append seek", GetLastError()));
+        std::uint64_t snapshotBytes = 0;
+        std::uint64_t snapshotRecords = 0;
+        if (!implementation_->PlanCompactDocument(snapshotBytes, snapshotRecords))
+        {
+            return DecoderResumeStoreStatus::Failure("resume journal maxResumeBytes exceeded");
+        }
+        const auto finalBytes = pbprotocol::CheckedAddUint64(snapshotBytes, record.size());
+        const auto compactGeneration = pbprotocol::CheckedAddUint64(implementation_->generation, snapshotRecords);
+        const auto finalGeneration = compactGeneration ? pbprotocol::CheckedAddUint64(compactGeneration.Value(), 1) : compactGeneration;
+        if (!finalBytes || finalBytes.Value() > implementation_->policy.maxResumeBytes || !finalGeneration)
+        {
+            return DecoderResumeStoreStatus::Failure("resume append after compaction would exceed quota or generation");
+        }
+        status = Compact();
+        if (!status)
+        {
+            return status;
+        }
+        status = BuildRecord(recordType, implementation_->generation + 1, payload, record);
+        if (!status)
+        {
+            return status;
+        }
+        newFileBytes = pbprotocol::CheckedAddUint64(implementation_->fileBytes, record.size());
     }
-    DWORD writtenBytes = 0;
-    if (record.size() > (std::numeric_limits<DWORD>::max)() ||
-        WriteFile(implementation_->file, record.data(), static_cast<DWORD>(record.size()), &writtenBytes, nullptr) == FALSE ||
-        writtenBytes != record.size() || (flush && FlushFileBuffers(implementation_->file) == FALSE))
+    if (!newFileBytes || newFileBytes.Value() > implementation_->policy.maxResumeBytes)
     {
-        implementation_->terminalFailure = true;
-        return DecoderResumeStoreStatus::Failure(NativeFailure("resume append write/flush", GetLastError()));
+        return DecoderResumeStoreStatus::Failure("resume journal maxResumeBytes exceeded");
     }
-    implementation_->generation++;
-    implementation_->fileBytes = newFileBytes.Value();
-#ifdef PB_PROCESS_FAULT_TESTS
-    test::ObserveJournalFileBytes(implementation_->fileBytes);
-#endif
-    return {};
+    return implementation_->AppendRecords(record, 1, flush);
 }
 
 DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
 {
-    if (!implementation_ || implementation_->terminalFailure || !implementation_->pendingBlocks.empty())
+    if (!implementation_ || implementation_->terminalFailure || (!implementation_->pendingBlocks.empty() && !implementation_->coalesceLargeSnapshots))
     {
         return DecoderResumeStoreStatus::Failure("resume compaction state is invalid");
     }
@@ -1319,6 +1662,23 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
     {
         return status;
     }
+    std::uint64_t documentBytes = 0;
+    std::uint64_t recordCount = 0;
+    if (!implementation_->PlanCompactDocument(documentBytes, recordCount) ||
+        !pbprotocol::CheckedAddUint64(implementation_->generation, recordCount))
+    {
+        return DecoderResumeStoreStatus::Failure("resume compact snapshot exceeds quota or generation");
+    }
+    try
+    {
+        document.reserve(static_cast<std::size_t>(documentBytes));
+    }
+    catch (const std::bad_alloc&)
+    {
+        return DecoderResumeStoreStatus::Failure("resume compact document reservation failed");
+    }
+    std::vector<std::byte> record;
+    std::vector<std::byte> payloadBuffer;
     std::uint64_t generation = implementation_->generation;
     auto AppendCompactRecord = [&](const std::uint16_t type, const std::span<const std::byte> payload)
         -> DecoderResumeStoreStatus
@@ -1327,7 +1687,6 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
         {
             return DecoderResumeStoreStatus::Failure("resume compact generation exhausted");
         }
-        std::vector<std::byte> record;
         DecoderResumeStoreStatus recordStatus = BuildRecord(type, generation + 1, payload, record);
         const auto newSize = pbprotocol::CheckedAddUint64(document.size(), record.size());
         if (!recordStatus || !newSize || newSize.Value() > implementation_->policy.maxResumeBytes)
@@ -1374,18 +1733,16 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
     }
     for (const pbprotocol::ResumeCompletedSegmentRecord& completed : implementation_->completedSegments)
     {
-        std::vector<std::byte> payload;
-        status = BuildCompletedPayload(completed, payload);
-        if (!status || !(status = AppendCompactRecord(completedSegmentRecordType, payload)))
+        status = BuildCompletedPayload(completed, payloadBuffer);
+        if (!status || !(status = AppendCompactRecord(completedSegmentRecordType, payloadBuffer)))
         {
             return status;
         }
     }
     for (const DecoderResumeAcceptedBlock& block : implementation_->activeBlocks)
     {
-        std::vector<std::byte> payload;
-        status = BuildAcceptedBlockPayload(block, payload);
-        if (!status || !(status = AppendCompactRecord(acceptedBlockRecordType, payload)))
+        status = BuildAcceptedBlockPayload(block, payloadBuffer);
+        if (!status || !(status = AppendCompactRecord(acceptedBlockRecordType, payloadBuffer)))
         {
             return status;
         }
@@ -1397,6 +1754,10 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
         {
             return status;
         }
+    }
+    if (document.size() != documentBytes)
+    {
+        return DecoderResumeStoreStatus::Failure("resume compact calculated size mismatch");
     }
     if (implementation_->file != INVALID_HANDLE_VALUE)
     {
@@ -1413,8 +1774,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
         implementation_->terminalFailure = true;
         return status;
     }
-    implementation_->file = CreateFileW(implementation_->path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    implementation_->file = ReopenJournalSnapshot(implementation_->path.c_str());
     if (implementation_->file == INVALID_HANDLE_VALUE)
     {
         implementation_->terminalFailure = true;
@@ -1423,6 +1783,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
     implementation_->generation = generation;
     implementation_->fileBytes = document.size();
     implementation_->compactionBaseBytes = implementation_->fileBytes;
+    implementation_->pendingBlocks.clear();
 #ifdef PB_PROCESS_FAULT_TESTS
     test::ObserveJournalFileBytes(implementation_->fileBytes);
 #endif

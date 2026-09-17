@@ -25,6 +25,11 @@ target_sources(PBModulation
         src/remote_visual_low_fps.cpp
         src/unified_visual_profile.cpp
         src/unified_visual.cpp
+        src/unified_reserved_raster.h
+        src/experimental_pam4.cpp
+        src/experimental_pam4_mapping.h
+        src/experimental_pam4_wide.cpp
+        src/experimental_pam4_wide_mapping.h
         src/visual_temporal.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -43,6 +48,8 @@ target_sources(PBModulation
             include/pbmodulation/unified_visual_profile.h
             include/pbmodulation/unified_visual_mapping.h
             include/pbmodulation/unified_visual.h
+            include/pbmodulation/experimental_pam4.h
+            include/pbmodulation/experimental_pam4_wide.h
             include/pbmodulation/supplemental_band.h
             include/pbmodulation/visual_temporal.h)
 
@@ -68,6 +75,7 @@ target_link_libraries(PBModulation
 # libpng headers are third-party: keep them out of the strict warning policy
 # (angle-bracket include + /external exemption), mirroring the test targets.
 if(MSVC)
+    set_source_files_properties(src/experimental_pam4.cpp src/experimental_pam4_wide.cpp PROPERTIES COMPILE_OPTIONS "/fp:precise")
     target_compile_options(PBModulation
         PRIVATE
             /external:anglebrackets

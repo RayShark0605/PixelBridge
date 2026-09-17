@@ -1,4 +1,5 @@
 #include "pbmodulation/unified_visual.h"
+#include "unified_reserved_raster.h"
 
 #include "local_desktop_internal.h"
 #include "pbinnerfec/qc_ldpc_codec.h"
@@ -1811,6 +1812,13 @@ bool BuildUnifiedFreshnessBits(const std::span<const std::byte> canonicalRecord,
 {
     return freshnessRegion < kUnifiedFreshnessRegionCount && output.size() == kLocalDesktopTimingBits &&
         detail::BuildTimingBits(canonicalRecord, freshnessRegion, output);
+}
+
+void detail::RenderUnifiedReservedPilots(const std::span<std::byte> pixels, const bool grayStates,
+    const std::uint64_t frameSequence) noexcept
+{
+    RenderCalibrationPilots(pixels, grayStates);
+    RenderPhasePilots(pixels, frameSequence);
 }
 
 UnifiedDataTile GetUnifiedDataTile(std::uint32_t tileOrdinal) noexcept

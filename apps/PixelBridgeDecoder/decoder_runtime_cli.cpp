@@ -1,4 +1,5 @@
 #include "local_desktop_runtime.h"
+#include "operational_log_qt.h"
 #include "run_report.h"
 #include "diagnostic_file.h"
 #include "evidence_journal.h"
@@ -31,11 +32,13 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace
 {
 
-constexpr std::uint32_t kMaximumReceiveTimeoutSeconds = 3600;
+constexpr std::uint32_t kMaximumReceiveTimeoutSeconds = 7200;
+constexpr std::uint32_t kMaximumReplayTimeoutSeconds = 3600;
 constexpr std::uint32_t kMaximumNoProgressSeconds = 600;
 
 struct Options
@@ -63,12 +66,17 @@ struct Options
     bool diagnosticCaptureOnly = false;
     bool stageDiagnostics = false;
     bool budgetBoundDecoders = false;
+    std::optional<std::uint32_t> decoderMemoryMib;
+    std::optional<std::uint32_t> decoderInstanceMemoryMib;
+    std::optional<pbapp::DecoderMemoryBudget> memoryBudget;
     std::wstring remoteProvider;
     std::wstring remoteMetadataPath;
     std::wstring protectedMonitorDeviceName;
     std::wstring experimentMonitorDeviceName;
     bool protectedMonitorSpecified = false;
     bool experimentMonitorSpecified = false;
+    std::wstring singleMonitorCaptureDeviceName;
+    bool singleMonitorCaptureSpecified = false;
 };
 
 [[nodiscard]] bool ParseSigned(const std::wstring_view text, LONG& output) noexcept
@@ -303,6 +311,18 @@ struct Options
             }
             options.budgetBoundDecoders = true;
         }
+        else if (option == L"--decoder-memory-mib" || option == L"--decoder-instance-memory-mib")
+        {
+            auto& destination = option == L"--decoder-memory-mib" ? options.decoderMemoryMib : options.decoderInstanceMemoryMib;
+            const wchar_t* const value = nextArgument();
+            std::uint32_t mebibytes = 0;
+            if (destination || value == nullptr || !ParseUnsigned(value, mebibytes) || mebibytes == 0 ||
+                mebibytes > pbapp::maximumDecoderMemoryBudgetBytes / pbapp::decoderMemoryMebibyte)
+            {
+                return false;
+            }
+            destination = mebibytes;
+        }
         else if (option == L"--profile")
         {
             const wchar_t* const value = nextArgument();
@@ -374,6 +394,16 @@ struct Options
             options.experimentMonitorDeviceName = value;
             options.experimentMonitorSpecified = true;
         }
+        else if (option == L"--single-monitor-capture")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || *value == L'\0' || options.singleMonitorCaptureSpecified)
+            {
+                return false;
+            }
+            options.singleMonitorCaptureDeviceName = value;
+            options.singleMonitorCaptureSpecified = true;
+        }
         else if (option == L"--roi")
         {
             const wchar_t* const left = nextArgument();
@@ -411,7 +441,12 @@ struct Options
             return false;
         }
     }
-    if (!options.channelSpecified && pbapp::IsRemoteVisualProfile(options.profile))
+    const bool pam4 = pbapp::IsExperimentalPam4Family(options.profile);
+    if (options.singleMonitorCaptureSpecified && (!pam4 || options.protectedMonitorSpecified || options.experimentMonitorSpecified))
+    {
+        return false;
+    }
+    if (!options.channelSpecified && (pbapp::IsRemoteVisualProfile(options.profile) || pam4))
     {
         options.remoteChannel = true;
     }
@@ -419,7 +454,30 @@ struct Options
     {
         return false;
     }
-    if (options.budgetBoundDecoders && (options.profile != pbapp::VisualProfile::UnifiedGrayFast ||
+    // A longer live receive must not expand the recording or Replay evidence contract.
+    const bool usesReplay = options.offlineReplay || options.diagnosticCaptureOnly || !options.replayOutputPath.empty();
+    if (usesReplay && options.timeoutSeconds > kMaximumReplayTimeoutSeconds)
+    {
+        return false;
+    }
+    if (options.decoderMemoryMib || options.decoderInstanceMemoryMib)
+    {
+        pbapp::DecoderMemoryBudget budget;
+        budget.totalDecoderBytes = options.decoderMemoryMib.value_or(1024U) * pbapp::decoderMemoryMebibyte;
+        budget.perDecoderBytes = options.decoderInstanceMemoryMib.value_or(512U) * pbapp::decoderMemoryMebibyte;
+        if (!options.budgetBoundDecoders || pbapp::ValidateDecoderMemoryBudget(budget) != pbapp::DecoderMemoryBudgetError::None)
+        {
+            return false;
+        }
+        options.memoryBudget = budget;
+    }
+    if (pam4 && (!options.remoteChannel || options.offlineReplay || options.diagnosticCaptureOnly || !options.replayOutputPath.empty() ||
+        options.replayEvidenceVisualProfileId || options.replayMaximumFramesPerSecond != 0 ||
+        (options.backendSpecified && options.backend != pbapp::CaptureBackend::Auto)))
+    {
+        return false;
+    }
+    if (options.budgetBoundDecoders && ((options.profile != pbapp::VisualProfile::UnifiedGrayFast && !pam4) ||
         options.offlineReplay || options.diagnosticCaptureOnly || !options.replayOutputPath.empty()))
     {
         return false;
@@ -430,7 +488,7 @@ struct Options
             !options.replayOutputPath.empty() || options.hasRoi || !options.remoteChannel ||
             pbapp::FindVisualProfileOption(options.profile) == nullptr ||
             (options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
-            !options.protectedMonitorDeviceName.empty() || !options.experimentMonitorDeviceName.empty() ||
+            !options.protectedMonitorDeviceName.empty() || !options.experimentMonitorDeviceName.empty() || options.singleMonitorCaptureSpecified ||
             options.diagnosticCaptureOnly || options.replayEvidenceVisualProfileId || options.replayMaximumFramesPerSecond != 0)
         {
             return false;
@@ -445,8 +503,8 @@ struct Options
     if (options.outputDirectory.empty() || !options.replayInputPath.empty() || !options.hasRoi ||
         (options.profile == pbapp::VisualProfile::RemoteVisualLowFps && !options.remoteChannel) ||
         (options.remoteChannel && ((options.remoteProvider.empty() && options.remoteMetadataPath.empty()) ||
-            options.protectedMonitorDeviceName.empty() ||
-            options.experimentMonitorDeviceName.empty())) ||
+            (!options.singleMonitorCaptureSpecified && (options.protectedMonitorDeviceName.empty() ||
+                options.experimentMonitorDeviceName.empty())))) ||
         (!options.remoteChannel && !options.remoteMetadataPath.empty()) ||
         (!options.replayOutputPath.empty() && !productionReplay && !captureOnlyReplay) ||
         (options.diagnosticCaptureOnly && !captureOnlyReplay) ||
@@ -524,14 +582,25 @@ struct Options
 void Usage()
 {
     std::cerr << "product: PixelBridgeDecoder --headless-receive --output-dir DIR --profile unified|unified-gray|unified-gray-fast "
-                 "--roi LEFT TOP RIGHT BOTTOM [--budget-bound-decoders (GrayFast experiment only)]\n";
+                 "--roi LEFT TOP RIGHT BOTTOM [--budget-bound-decoders (GrayFast/PAM4 experiment only)]\n"
+                 "  [--decoder-memory-mib N] [--decoder-instance-memory-mib N]: require --budget-bound-decoders; "
+                 "defaults 1024/512 MiB, instance <= total; bounded resume allowance follows total; host memory checked at Start\n";
+    std::cerr << "experimental opt-in: --profile experimental-pam4 --output-dir DIR --roi LEFT TOP RIGHT BOTTOM "
+                 "(--single-monitor-capture DEVICE OR --protected-monitor DEVICE --experiment-monitor DEVICE) "
+                 "with remote provider/metadata; Auto capture only, "
+                 "bounded 1440..3840 x 810..2160 ROI, CPU reference readback, no Replay or formal measurement\n";
+    std::cerr << "experimental opt-in: --profile experimental-pam4-wide selects independent layout 16 with twenty slots; "
+                 "same explicit capture-authority and remote Auto-capture requirements; matching Wide sender required\n"
+                 "  --single-monitor-capture accepts the whole selected screen or a contained ROI; no second display is required. "
+                 "Do not combine it with --protected-monitor or --experiment-monitor. The selected display must remain visible and unchanged.\n";
     std::cerr << "usage: PixelBridgeDecoder --headless-receive --output-dir DIR --backend wgc|dxgi "
-                 "--profile direct|shape|remote|remote-lf4 --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..3600 "
+                 "--profile direct|shape|remote|remote-lf4 --channel local|remote [--remote-provider NAME] [--remote-metadata PATH] --roi LEFT TOP RIGHT BOTTOM --timeout 1..7200 "
                  "[--no-progress-seconds 1..min(timeout,600)] "
                  "[--protected-monitor DEVICE --experiment-monitor DEVICE] "
                  "[--replay-output NEW_PATH --replay-frames 1..2048 --replay-max-mib 16..16384 "
                  "[--replay-sample-fps 1..60] [--diagnostic-capture-only --replay-evidence-profile direct|shape|lf4]] "
                  "[--run-id 32_LOWERCASE_HEX] [--journal NEW_PATH] [--report NEW_PATH] [--stage-diagnostics]\n";
+    std::cerr << "       timeout defaults to 120 seconds; --replay-output and --diagnostic-capture-only remain limited to 3600 seconds\n";
     std::cerr << "       PixelBridgeDecoder --headless-replay --replay-input PATH --output-dir DIR "
                  "[--remote-provider NAME] [--remote-metadata PATH] [--profile direct|shape|remote|remote-lf4] [--timeout 1..3600] "
                  "[--no-progress-seconds 1..min(timeout,600)] "
@@ -565,7 +634,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     // The unified family fixes Auto capture (the runtime selects WGC internally
     // and rejects any explicit legacy backend). Only an unspecified backend may
     // take that product default; an explicit --backend keeps failing closed.
-    if (!options.backendSpecified && pbapp::IsUnifiedVisualFamily(options.profile))
+    if (!options.backendSpecified && (pbapp::IsUnifiedVisualFamily(options.profile) || pbapp::IsExperimentalPam4Family(options.profile)))
     {
         config.captureBackend = pbapp::CaptureBackend::Auto;
     }
@@ -576,6 +645,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.replayInputPath = options.replayInputPath;
     config.diagnosticCaptureOnly = options.diagnosticCaptureOnly;
     config.budgetBoundDecoders = options.budgetBoundDecoders;
+    config.memoryBudget = options.memoryBudget;
     config.replayEvidenceVisualProfileId = options.replayEvidenceVisualProfileId;
     config.replayMaximumCaptureFrames = options.replayMaximumFrames;
     config.replayMaximumFileBytes = static_cast<std::uint64_t>(options.replayMaximumMebibytes) * 1024ULL * 1024ULL;
@@ -616,7 +686,9 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         config.remoteMetadata.estimatedScaleY = static_cast<double>(roiHeight) / pbapp::phase1CanvasHeight;
         config.remoteMetadata.letterboxStatus = "Unknown";
         config.remoteMetadata.cropStatus = "Unknown";
-        config.remoteMetadata.geometryStatus = options.diagnosticCaptureOnly ?
+        const bool pam4Geometry = pbapp::IsExperimentalPam4Family(options.profile) &&
+            roiWidth >= 1440 && roiWidth <= 3840 && roiHeight >= 810 && roiHeight <= 2160 && region.rotation == DXGI_MODE_ROTATION_IDENTITY;
+        config.remoteMetadata.geometryStatus = pam4Geometry ? "BoundedPam4ROI; pixel locator and calibration are authoritative" : options.diagnosticCaptureOnly ?
             strictGeometry ? "DiagnosticCaptureOnlyStrictROI; no demod/decode/publish" :
                 "DiagnosticOnlyIncompatibleROI; no resampling/decode/publish" :
             lowFpsGeometry ? "BoundedRemoteLf4ROI; continuous locator is authoritative" :
@@ -650,6 +722,46 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
             config.remoteMetadata.geometryStatus =
                 "Sealed Replay v2 records are validated before the selected production profile consumes their ROI";
             config.remoteMetadata.geometryProvenance = pbapp::MetadataProvenance::PixelBridgeObserved;
+        }
+        else if (options.singleMonitorCaptureSpecified)
+        {
+            std::vector<pbapp::MonitorInfo> monitors;
+            const auto catalog = pbapp::EnumerateMonitors(monitors);
+            if (!catalog)
+            {
+                std::cerr << "single-monitor capture catalog is unavailable\n";
+                return 2;
+            }
+            const auto MatchesTarget = [&](const pbapp::MonitorInfo& monitor)
+            {
+                return monitor.deviceName == options.singleMonitorCaptureDeviceName;
+            };
+            if (std::count_if(monitors.begin(), monitors.end(), MatchesTarget) != 1)
+            {
+                std::cerr << "single-monitor capture target must resolve to exactly one display device\n";
+                return 2;
+            }
+            const auto& target = *std::find_if(monitors.begin(), monitors.end(), MatchesTarget);
+            config.singleMonitorCapture = target;
+            try
+            {
+                const std::string identity = WideToUtf8(target.deviceName);
+                if (!config.remoteMetadata.protectedMonitorIdentity.empty() ||
+                    (!config.remoteMetadata.experimentMonitorIdentity.empty() && config.remoteMetadata.experimentMonitorIdentity != identity))
+                {
+                    std::cerr << "single-monitor capture identity conflicts with RemoteVisual metadata preset\n";
+                    return 2;
+                }
+                config.remoteMetadata.experimentMonitorIdentity = identity;
+            }
+            catch (const std::exception& exception)
+            {
+                std::cerr << "single-monitor capture identity conversion failed: " << exception.what() << '\n';
+                return 2;
+            }
+            config.remoteMetadata.computerADisplayResolution = std::to_string(static_cast<std::int64_t>(target.physicalRect.right) - target.physicalRect.left) +
+                "x" + std::to_string(static_cast<std::int64_t>(target.physicalRect.bottom) - target.physicalRect.top);
+            config.remoteMetadata.computerARefreshRate = target.refreshRate;
         }
         else
         {
@@ -702,7 +814,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     // the unified RunReport.3 carry stageCounters (outer admission, per-stage
     // CPU totals) and captureFlow without enabling diagnostics or retaining
     // pixels. Evidence failure is sticky but never enters admission decisions.
-    if (!options.budgetBoundDecoders)
+    if (!options.budgetBoundDecoders && !pbapp::IsExperimentalPam4Family(options.profile))
     {
         config.measurement = std::make_shared<pbapp::RunMeasurementRecorder>();
     }
@@ -712,9 +824,13 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     {
         config.diagnostics = std::make_shared<pbcore::StageDiagnostics>();
     }
+    pbgui::OperationalLog operationalLog(QStringLiteral("Decoder"));
+    operationalLog.Begin();
     const pbapp::RuntimeStatus started = runtime.Start(config);
     if (!started)
     {
+        operationalLog.StartRejected(QString::fromStdString(started.message));
+        std::cerr << operationalLog.StatusText().toStdString() << '\n';
         std::cerr << started.message << '\n';
         return 2;
     }
@@ -731,6 +847,7 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     for (;;)
     {
         const pbapp::DecoderSnapshot snapshot = runtime.GetSnapshot();
+        operationalLog.Observe(snapshot);
         const auto elapsedCount = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - commandStarted).count();
         const std::uint64_t elapsedMilliseconds = elapsedCount < 0 ? 0 : static_cast<std::uint64_t>(elapsedCount);
@@ -800,6 +917,8 @@ int RunDecoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     {
         pbapp::ApplyJournalSnapshot(journalSnapshot, snapshot);
     }
+    operationalLog.Observe(snapshot, true);
+    std::cerr << operationalLog.StatusText().toStdString() << '\n';
     const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
     const pbapp::RunReportContext context{"PixelBridgeDecoder", buildInfo.version, PB_GIT_COMMIT, UtcNow()};
     const std::string report = pbapp::BuildDecoderRunReportJson(context, snapshot);

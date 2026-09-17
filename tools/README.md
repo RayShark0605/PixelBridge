@@ -1,9 +1,18 @@
-# PixelBridge Phase-0 command-line tooling
+# PixelBridge 开发与诊断工具 / Development and diagnostics tools
 
-本目录包含 Qt-free 的协议/帧检查和确定性向量生成工具。它们复用现有
-`PBProtocol`、`PBInnerFec`、`PBModulation` parser/codec，不创建第二套生产协议
-架构。Transport/interleave 仍为 Phase-0 tooling/reference，详见
-`docs/GOLDEN_VECTOR_HARNESS.md`。
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../docs/README.md) / [English documentation](../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
+本目录包括协议/帧检查、确定性向量生成、现场测量、PBBridge 编排和发布辅助脚本；并非全部是最终用户需要运行的程序。当前双端产品入口在 `apps/`。
+
+This tree contains protocol/frame inspection, Golden generation, field measurement, bridge orchestration, and release helpers. End users normally run the two applications under `apps/`, not these research tools.
+
+- [PBBridge 编排 / orchestration](PBRemoteOpsBridge/README.md)：部署和日志，不传 payload、像素或接收 ACK。
+- [Release helper](PBUnifiedRelease/README.md)：既有脚本合同，正式 v1.0 包仍须单独审批/验证。
+- [Golden harness](../docs/GOLDEN_VECTOR_HARNESS.md)：参考与确定性向量。
+- `branding/Build-Icons.ps1`：由原始 PNG 生成双端 ICO。
+
+下方保留 Phase-0 Qt-free 协议/帧检查工具合同；复用 `PBProtocol`、`PBInnerFec`、`PBModulation`，不创建第二套生产协议架构。这些参考组合不代表当前 GUI 模式的全部数据通路。
 
 ## PBProtocolDump
 

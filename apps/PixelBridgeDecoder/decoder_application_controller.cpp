@@ -26,11 +26,20 @@ DecoderApplicationController::~DecoderApplicationController()
 {
     pollTimer_.stop();
     runtime_.Stop();
+    log_.Observe(runtime_.GetSnapshot(), true);
 }
 
 QString DecoderApplicationController::Start(const pbapp::DecoderConfig& config)
 {
+    if (!IsActive())
+    {
+        log_.Begin();
+    }
     const pbapp::RuntimeStatus status = runtime_.Start(config);
+    if (!status && !IsActive())
+    {
+        log_.StartRejected(QString::fromStdString(status.message));
+    }
     PollSnapshot();
     return status ? QString() : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
 }
@@ -63,6 +72,7 @@ pbapp::DecoderSnapshot DecoderApplicationController::GetSnapshot() const
 pbapp::DecoderSnapshot DecoderApplicationController::StopAndGetSnapshot()
 {
     runtime_.Stop();
+    log_.Observe(runtime_.GetSnapshot(), true);
     return runtime_.GetSnapshot();
 }
 
@@ -88,7 +98,15 @@ int DecoderApplicationController::GetStatusRefreshMilliseconds() const
 
 void DecoderApplicationController::PollSnapshot()
 {
-    const pbapp::DecoderSnapshot current = runtime_.GetSnapshot();
+    pbapp::DecoderSnapshot current = runtime_.GetSnapshot();
+    if (IsTerminal(current.state) && (current.runGeneration != lastSnapshot_.runGeneration || !IsTerminal(lastSnapshot_.state)))
+    {
+        // A published snapshot can precede capture cleanup. Seal diagnostics
+        // only after the worker is joined, preserving post-publish warnings.
+        runtime_.Stop();
+        current = runtime_.GetSnapshot();
+    }
+    log_.Observe(current, IsTerminal(current.state));
     const bool changed = current.runGeneration != lastSnapshot_.runGeneration || current.state != lastSnapshot_.state ||
         current.largeOutputConfirmationRequestId != lastSnapshot_.largeOutputConfirmationRequestId ||
         current.largeOutputConfirmationState != lastSnapshot_.largeOutputConfirmationState ||
@@ -100,7 +118,7 @@ void DecoderApplicationController::PollSnapshot()
         current.statusMessage != lastSnapshot_.statusMessage || current.errorDetail != lastSnapshot_.errorDetail;
     const bool becameTerminal = IsTerminal(current.state) && !IsTerminal(lastSnapshot_.state);
     lastSnapshot_ = current;
-    if (changed)
+    if (changed || pbapp::IsDecoderStateActive(current.state))
     {
         emit SnapshotChanged();
     }
@@ -108,4 +126,19 @@ void DecoderApplicationController::PollSnapshot()
     {
         emit TerminalStateReached();
     }
+}
+
+QString DecoderApplicationController::LogStatusText() const
+{
+    return log_.StatusText();
+}
+
+QString DecoderApplicationController::LogDirectory() const
+{
+    return log_.Directory();
+}
+
+pbapp::DecoderActivity DecoderApplicationController::GetActivity() const
+{
+    return log_.GetDecoderActivity();
 }

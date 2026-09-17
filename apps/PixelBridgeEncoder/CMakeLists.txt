@@ -8,6 +8,10 @@ target_link_libraries(PixelBridgeEncoder
         PB::PBProtocol)
 
 if(WIN32)
+    configure_file(resources/application.rc.in "${CMAKE_CURRENT_BINARY_DIR}/application.rc" @ONLY)
+    set_target_properties(PixelBridgeEncoder PROPERTIES AUTORCC ON)
+    target_sources(PixelBridgeEncoder PRIVATE resources/branding.qrc "${CMAKE_CURRENT_BINARY_DIR}/application.rc"
+        "${PROJECT_SOURCE_DIR}/apps/common/operational_log_qt.cpp")
     target_sources(PixelBridgeEncoder PRIVATE presentation_cli.cpp encoder_runtime_cli.cpp encoder_application_controller.cpp
         "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp"
         encoder_application_controller.h encoder_gui.cpp encoder_gui.h

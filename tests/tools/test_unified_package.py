@@ -7,6 +7,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,6 +41,7 @@ def main():
     archive_hash = digest(args.archive)
     seal_hash = digest(args.seal)
     results = []
+    product_release = manifest["buildIdentity"]["releaseScope"] == "LocalProductRelease"
 
     def run(name, expected_error=None, archive=None, seal=None):
         command = [args.powershell, "-NoProfile", "-File", str(verifier), "-PackageDirectory", str(package)]
@@ -48,7 +50,8 @@ def main():
         if archive:
             command += ["-ArchivePath", str(archive)]
         started = time.monotonic()
-        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         (root / (name + ".stdout.log")).write_text(result.stdout, encoding="utf-8")
         (root / (name + ".stderr.log")).write_text(result.stderr, encoding="utf-8")
         passed = result.returncode == 0 if expected_error is None else result.returncode != 0 and expected_error in result.stderr
@@ -68,6 +71,32 @@ def main():
             manifest_path.write_text(json.dumps(altered, ensure_ascii=False), encoding="utf-8")
             run(name, error)
         finally:
+            manifest_path.write_bytes(baseline)
+
+    def changed_product_file(name, relative, change, error):
+        target_path = package / relative
+        original_bytes = target_path.read_bytes()
+        altered = copy.deepcopy(manifest)
+        try:
+            changed = change(original_bytes)
+            if changed is None:
+                target_path.unlink()
+                altered["files"] = [entry for entry in altered["files"] if entry["path"] != relative]
+            else:
+                target_path.write_bytes(changed)
+                for entry in altered["files"]:
+                    if entry["path"] == relative:
+                        entry.update(size=len(changed), sha256=hashlib.sha256(changed).hexdigest())
+            # Preserve the producer's canonical path order. Rebind the payload
+            # inventory so the semantic product checks, not byte tamper, decide.
+            altered["packageFileCount"] = len(altered["files"])
+            altered["packagePayloadBytes"] = sum(entry["size"] for entry in altered["files"])
+            canonical = "".join(f"{e['path']}\0{e['size']}\0{e['sha256']}\n" for e in altered["files"])
+            altered["packagePayloadFingerprintSha256"] = hashlib.sha256(canonical.encode()).hexdigest()
+            manifest_path.write_text(json.dumps(altered, ensure_ascii=False), encoding="utf-8")
+            run(name, error)
+        finally:
+            target_path.write_bytes(original_bytes)
             manifest_path.write_bytes(baseline)
 
     try:
@@ -118,7 +147,8 @@ def main():
         junction_script = root / "make-owned-junction.ps1"
         junction_script.write_text("param($Link, $Target)\n$ErrorActionPreference='Stop'\nNew-Item -ItemType Junction -Path $Link -Target $Target | Out-Null\n", encoding="utf-8")
         create_junction = subprocess.run([args.powershell, "-NoProfile", "-File", str(junction_script), str(junction), str(junction_target)],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         if create_junction.returncode != 0:
             raise AssertionError("Could not create owned junction fixture: " + create_junction.stderr)
         try:
@@ -151,11 +181,28 @@ def main():
             run(case, "declares a reparse point or symbolic link" if case == "zip-symbolic-link" else
                 "invalid, duplicate, or unmanifested entry", archive=derived, seal=seal)
         run("restored-copy-full-seal-zip", archive=args.archive, seal=args.seal)
+        if product_release:
+            changed_product_file("product-license-source-binding", "LICENSE", lambda data: data + b"\nchanged\n",
+                                 "Product license is not bound")
+            def wrong_license(data):
+                document = json.loads(data)
+                document["packages"][0]["licenseDeclared"] = "Apache-2.0"
+                return json.dumps(document).encode()
+            changed_product_file("product-spdx-license-binding", "SBOM.spdx.json", wrong_license,
+                                 "project license does not match")
+            def wrong_source(data):
+                document = json.loads(data)
+                document["version"] = "6.10.0"
+                return json.dumps(document).encode()
+            changed_product_file("product-qt-source-binding", "sources/qt-source-manifest.json", wrong_source,
+                                 "Qt corresponding source binding is invalid")
+            changed_product_file("product-runtime-required", "Qt6Gui.dll", lambda data: None,
+                                 "Required product runtime missing")
     finally:
         unchanged = original_inventory == {str(path.relative_to(original)): digest(path) for path in original.rglob("*") if path.is_file()}
         unchanged = unchanged and digest(args.archive) == archive_hash and digest(args.seal) == seal_hash
         summary = {"schema": "PixelBridge.UnifiedPackageNegativeTests.1", "tests": results,
-                   "passed": len(results) == 20 and all(item["passed"] for item in results), "originalArtifactsUnchanged": unchanged,
+                   "passed": len(results) == (24 if product_release else 20) and all(item["passed"] for item in results), "originalArtifactsUnchanged": unchanged,
                    "packagedExecutablesRun": False, "packageDirectory": str(original), "derivedDirectory": str(package)}
         (root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         if not unchanged:

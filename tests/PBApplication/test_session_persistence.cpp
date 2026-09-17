@@ -1021,14 +1021,16 @@ TEST_CASE("Unified resume journal retains the full Segment window and rejects on
     REQUIRE_FALSE(store);
 }
 
-TEST_CASE("Budget-bound real Wirehair allocations stop at the unchanged one GiB reservation limit",
+TEST_CASE("Budget-bound real Wirehair allocations stop at their configured reservation limit",
     "[application][budgeted-decoder-reservations][quota]")
 {
-    for (const auto& [segmentMiB, expectedCount] : std::array{std::pair{6ULL, 24ULL}, std::pair{15ULL, 10ULL}})
+    for (const auto& [segmentMiB, expectedCount, totalMiB] : std::array{std::array{6ULL, 24ULL, 1024ULL},
+        std::array{15ULL, 10ULL, 1024ULL}, std::array{6ULL, 48ULL, 2048ULL}})
     {
         CAPTURE(segmentMiB, expectedCount);
         ResumeFixture fixture;
         fixture.policy = pbapp::MakeBudgetBoundUnifiedReceiverResourcePolicy();
+        REQUIRE(pbapp::ApplyDecoderMemoryBudget({totalMiB * pbapp::decoderMemoryMebibyte, 512 * pbapp::decoderMemoryMebibyte}, fixture.policy) == pbapp::DecoderMemoryBudgetError::None);
         const auto message = MakeBytes(segmentMiB * 1024ULL * 1024ULL);
         constexpr std::uint32_t blockBytes = 1629;
         const auto encoder = pbouterfec::WirehairV2Encoder::Create(message, blockBytes);
@@ -1206,6 +1208,94 @@ TEST_CASE("Budget-bound resume opt-in retains nine segments without weakening co
     CorruptLastByte(journalPath);
     const auto corruptedJournal = ReadAllBytes(journalPath);
     REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true));
+    REQUIRE_FALSE(store);
+    REQUIRE(ReadAllBytes(journalPath) == corruptedJournal);
+}
+
+TEST_CASE("Custom memory resume policy is explicitly bound and lower-budget reopening preserves the journal",
+    "[application][decoder-memory][decoder][resume][journal][quota]")
+{
+    ScratchDirectory scratch(L"decoder-resume-custom-memory");
+    ResumeFixture fixture;
+    fixture.policy = pbapp::MakeBudgetBoundUnifiedReceiverResourcePolicy();
+    const pbapp::DecoderMemoryBudget budget{4096 * pbapp::decoderMemoryMebibyte, 1024 * pbapp::decoderMemoryMebibyte};
+    REQUIRE(pbapp::ApplyDecoderMemoryBudget(budget, fixture.policy) == pbapp::DecoderMemoryBudgetError::None);
+    fixture.rawBytes = MakeBytes(2 * pbapp::decoderMemoryMebibyte);
+    constexpr std::uint32_t blockBytes = 1629;
+    auto encoder = pbouterfec::WirehairV2Encoder::Create(fixture.rawBytes, blockBytes);
+    REQUIRE(encoder);
+    fixture.session.originalFileSize = fixture.rawBytes.size();
+    fixture.segment.rawSize = fixture.rawBytes.size();
+    fixture.segment.encodedSize = fixture.rawBytes.size();
+    fixture.segment.outerBlockBytes = blockBytes;
+    fixture.segment.outerFecMode = pbprotocol::OuterFecMode::WirehairV2;
+    fixture.segment.wirehairV2SerializedProfile = encoder.Value().GetSerializedProfile();
+    const auto digest = pbprotocol::ComputeBlake3Digest(fixture.rawBytes);
+    fixture.segment.rawDigest = pbprotocol::RawDigest{digest};
+    fixture.segment.encodedDigest = pbprotocol::EncodedDigest{digest};
+    const auto sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    const auto sessionSize = pbprotocol::GetSerializedSize(fixture.session);
+    const auto segmentSize = pbprotocol::GetSerializedSize(fixture.segment);
+    REQUIRE(sessionSize);
+    REQUIRE(segmentSize);
+    std::vector<std::byte> sessionPayload(sessionSize.Value());
+    std::vector<std::byte> segmentPayload(segmentSize.Value());
+    REQUIRE(pbprotocol::SerializeSessionDescriptor(fixture.session, fixture.policy, sessionPayload));
+    REQUIRE(pbprotocol::SerializeSegmentDescriptor(fixture.segment, fixture.session, fixture.policy, segmentPayload));
+    fixture.sessionControl = WrapControl(pbprotocol::ControlRecordType::SessionDescriptor, 1, sessionTag, sessionPayload);
+    fixture.segmentControl = WrapControl(pbprotocol::ControlRecordType::SegmentDescriptor, 2, sessionTag, segmentPayload);
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+    pbapp::DecoderResumeLoadedState loaded;
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true));
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, false, &budget));
+    for (unsigned int field = 0; field < 3; field++)
+    {
+        auto mismatch = fixture.policy;
+        switch (field)
+        {
+        case 0: mismatch.maxTotalOuterFecDecoderBytes--; break;
+        case 1: mismatch.maxOuterFecDecoderBytes--; break;
+        default: mismatch.maxResumeBytes--; break;
+        }
+        REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, mismatch, store, loaded, true, &budget));
+        REQUIRE_FALSE(store);
+        REQUIRE(std::filesystem::is_empty(scratch.GetPath()));
+    }
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true, &budget));
+    REQUIRE(store->RecordSegmentControl(fixture.segmentControl));
+    pbapp::DecoderResumeAcceptedBlock block;
+    block.segmentOrdinal = 0;
+    block.paddedPayload.resize(blockBytes);
+    for (std::uint32_t blockId = 0; blockId < 700; blockId++)
+    {
+        block.outerBlockId = blockId;
+        const auto encoded = encoder.Value().EncodeBlock(blockId, block.paddedPayload);
+        REQUIRE(encoded);
+        block.declaredPayloadBytes = static_cast<std::uint16_t>(encoded.Value());
+        REQUIRE(store->RecordAcceptedBlock(block));
+    }
+    REQUIRE(store->Checkpoint());
+    REQUIRE(store->GetFileBytes() > pbapp::decoderMemoryMebibyte);
+    const auto journalPath = store->GetPath();
+    store.reset();
+    const auto originalJournal = ReadAllBytes(journalPath);
+    const pbapp::DecoderMemoryBudget smaller{4 * pbapp::decoderMemoryMebibyte, pbapp::decoderMemoryMebibyte};
+    auto smallerPolicy = fixture.policy;
+    REQUIRE(pbapp::ApplyDecoderMemoryBudget(smaller, smallerPolicy) == pbapp::DecoderMemoryBudgetError::None);
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, smallerPolicy, store, loaded, true, &smaller));
+    REQUIRE_FALSE(store);
+    REQUIRE(ReadAllBytes(journalPath) == originalJournal);
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true, &budget));
+    REQUIRE(loaded.resumed);
+    REQUIRE(loaded.activeBlocks.size() == 700);
+    auto conflict = loaded.activeBlocks.back();
+    conflict.paddedPayload[0] ^= std::byte{1};
+    REQUIRE_FALSE(store->RecordAcceptedBlock(conflict));
+    REQUIRE(store->GetActiveBlockCount() == 700);
+    store.reset();
+    CorruptLastByte(journalPath);
+    const auto corruptedJournal = ReadAllBytes(journalPath);
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded, true, &budget));
     REQUIRE_FALSE(store);
     REQUIRE(ReadAllBytes(journalPath) == corruptedJournal);
 }

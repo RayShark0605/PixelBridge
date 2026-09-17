@@ -417,8 +417,10 @@ TEST_CASE("Run evidence journal is exclusive cadence-bounded and records termina
     pbapp::RunJournalLimits limits;
     limits.samplingIntervalMilliseconds = 1000;
     limits.maximumDurationMilliseconds = 5000;
-    limits.maximumBytes = 4096;
-    limits.maximumRecordBytes = 1024;
+    // Additive operational counters no longer fit the old 1 KiB fixture.
+    // Explicit small-cap rejection is exercised below; production stays 64 KiB.
+    limits.maximumBytes = 16384;
+    limits.maximumRecordBytes = 4096;
     std::unique_ptr<pbapp::RunEvidenceJournal> journal;
     auto status = pbapp::RunEvidenceJournal::Create(path, limits, journal);
     REQUIRE(status.enabled);
@@ -429,6 +431,14 @@ TEST_CASE("Run evidence journal is exclusive cadence-bounded and records termina
     snapshot.runId = "0123456789abcdef0123456789abcdef";
     snapshot.state = pbapp::EncoderState::Broadcasting;
     const std::string record = pbapp::BuildEncoderJournalRecord(1000, snapshot);
+    REQUIRE(record.size() <= limits.maximumRecordBytes);
+    auto smallLimits = limits;
+    smallLimits.maximumRecordBytes = 1024;
+    std::unique_ptr<pbapp::RunEvidenceJournal> tooSmall;
+    REQUIRE(pbapp::RunEvidenceJournal::Create(scratch.Path() / L"too-small.ndjson", smallLimits, tooSmall).valid);
+    REQUIRE(record.size() > smallLimits.maximumRecordBytes);
+    REQUIRE_FALSE(tooSmall->AppendSample(0, record).valid);
+    REQUIRE(tooSmall->Finish().samples == 0);
     status = journal->AppendSample(0, record);
     REQUIRE(status.samples == 1);
     status = journal->AppendSample(999, record);

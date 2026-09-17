@@ -23,6 +23,10 @@ param(
 
     [switch]$VersionedPackageName,
 
+    [switch]$ProductRelease,
+
+    [string]$QtSourceBundleDirectory,
+
     [string[]]$ReleaseDocumentation = @(),
 
     [Parameter(Mandatory = $true)][string]$VcRuntimeDirectory,
@@ -33,6 +37,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if ($CompactPackageName -and $VersionedPackageName) { throw 'Choose only one package naming mode' }
+if ($ProductRelease -and ($Role -eq 'Both' -or -not $VersionedPackageName -or [string]::IsNullOrWhiteSpace($QtSourceBundleDirectory))) {
+    throw 'Product release requires a single role, VersionedPackageName and QtSourceBundleDirectory'
+}
 if ($ReleaseDocumentation.Count -gt 8) { throw 'Release documentation is limited to eight files' }
 foreach ($relativePath in $ReleaseDocumentation) {
     if ($relativePath -cnotmatch '^docs/[A-Za-z0-9_.-]+\.md$') { throw "Invalid release documentation path: $relativePath" }
@@ -245,7 +252,8 @@ function Copy-ApplicationDirectory
 {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string]$Destination
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$ApplicationName
     )
     $reparsePoint = Get-ChildItem -LiteralPath $Source -Force -Recurse | Where-Object {
         ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
@@ -258,8 +266,22 @@ function Copy-ApplicationDirectory
     {
         [void](New-Item -ItemType Directory -Path $Destination)
     }
-    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse
+    if ($ProductRelease) {
+        # Windows 10/11 provides ICU and D3DCompiler_47. Do not redistribute OS
+        # shims or Qt's unrelated PDF/SVG/network plugins and shader toolchain.
+        foreach ($relative in @("$ApplicationName.exe", 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+            'blake3.dll', 'zstd.dll', 'platforms/qwindows.dll', 'platforms/qoffscreen.dll', 'styles/qmodernwindowsstyle.dll')) {
+            $inputPath = Join-Path $Source $relative
+            if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { throw "Required product runtime missing: $relative" }
+            $targetPath = Join-Path $Destination $relative
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($targetPath))
+            Copy-Item -LiteralPath $inputPath -Destination $targetPath
+        }
+        Write-NewUtf8File -Path (Join-Path $Destination 'qt.conf') -Content "[Paths]`nPrefix=.`nPlugins=.`n"
+    } else {
+        Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse
+        }
     }
 }
 
@@ -280,7 +302,10 @@ if (-not (Test-Path -LiteralPath $resolvedOutputRoot -PathType Container))
 }
 
 $cachePath = Join-Path $resolvedBuild 'CMakeCache.txt'
-$vcpkgStatusPath = Join-Path $resolvedBuild 'vcpkg_installed\vcpkg\status'
+$vcpkgInstalledRoot = Get-CacheValue -CachePath $cachePath -Name 'VCPKG_INSTALLED_DIR'
+if ([string]::IsNullOrWhiteSpace($vcpkgInstalledRoot)) { $vcpkgInstalledRoot = Join-Path $resolvedBuild 'vcpkg_installed' }
+$vcpkgInstalledRoot = [IO.Path]::GetFullPath($vcpkgInstalledRoot)
+$vcpkgStatusPath = Join-Path $vcpkgInstalledRoot 'vcpkg/status'
 if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf) -or
     -not (Test-Path -LiteralPath $vcpkgStatusPath -PathType Leaf))
 {
@@ -417,7 +442,7 @@ foreach ($requiredPackage in $requiredRuntimePackages)
 }
 foreach ($package in $vcpkgPackages)
 {
-    $copyrightPath = Join-Path $resolvedBuild "vcpkg_installed\x64-windows\share\$($package.name)\copyright"
+    $copyrightPath = Join-Path $vcpkgInstalledRoot "x64-windows/share/$($package.name)/copyright"
     if (-not (Test-Path -LiteralPath $copyrightPath -PathType Leaf))
     {
         throw "Installed vcpkg package copyright is absent: $copyrightPath"
@@ -463,6 +488,26 @@ $qtVersions = @($qtCoreCandidates | ForEach-Object {
 if ($qtCoreHashes.Count -ne 1 -or $qtVersions.Count -ne 1 -or [string]::IsNullOrWhiteSpace($qtVersions[0]))
 {
     throw 'Encoder/Decoder deployed Qt6Core identities are inconsistent'
+}
+
+if ($ProductRelease) {
+    $qtSourceBundleRoot = [IO.Path]::GetFullPath($QtSourceBundleDirectory)
+    $qtSourceManifestPath = Join-Path $qtSourceBundleRoot 'qt-source-manifest.json'
+    $qtSourceManifestItem = Get-Item -LiteralPath $qtSourceManifestPath
+    if ($qtSourceManifestItem.Length -gt 16MB -or ($qtSourceManifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Unsafe/oversized Qt source manifest'
+    }
+    $qtSourceManifest = Get-Content -LiteralPath $qtSourceManifestPath -Raw | ConvertFrom-Json -AsHashtable
+    if ($qtSourceManifest.schema -cne 'PixelBridge.QtSourceBundle.1' -or $qtSourceManifest.module -cne 'qtbase' -or
+        $qtSourceManifest.version -cne $qtVersions[0] -or $qtVersions[0] -cne '6.10.1' -or
+        $qtSourceManifest.archive.path -cne 'qtbase-6.10.1-source.zip' -or
+        $qtSourceManifest.fileCount -lt 1 -or $qtSourceManifest.fileCount -gt 65536) { throw 'Qt corresponding source identity mismatch' }
+    $qtSourceArchivePath = Join-Path $qtSourceBundleRoot $qtSourceManifest.archive.path
+    $qtSourceArchiveItem = Get-Item -LiteralPath $qtSourceArchivePath
+    if (($qtSourceArchiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $qtSourceArchiveItem.Length -gt 1GB -or $qtSourceArchiveItem.Length -ne $qtSourceManifest.archive.size -or
+        (Get-FileSha256 -Path $qtSourceArchivePath) -cne $qtSourceManifest.archive.sha256) { throw 'Qt corresponding source archive mismatch' }
+    $qtBaseSourceRoot = Join-Path (Split-Path -Parent $qtRoot) 'Src/qtbase'
 }
 
 $profileTexts = @($applicationRoles | ForEach-Object {
@@ -547,7 +592,7 @@ $buildIdentity = [ordered]@{
         redistributableContextSha256 = Get-FileSha256 -Path (Join-Path $vcNoticesRoot 'Redist.txt')
         thirdPartyNoticesSha256 = Get-FileSha256 -Path (Join-Path $vcNoticesRoot 'ThirdPartyNotices.txt')
     }
-    releaseScope = 'LocalCandidateNotPubliclyPublished'
+    releaseScope = if ($ProductRelease) { 'LocalProductRelease' } else { 'LocalCandidateNotPubliclyPublished' }
 
 }
 $buildIdentityFingerprint = Get-TextSha256 -Text ($buildIdentity | ConvertTo-Json -Depth 16 -Compress)
@@ -592,7 +637,7 @@ try
     {
         $applicationName = "PixelBridge$applicationRole"
         $destination = if ($Role -eq 'Both') { Join-Path $stagingDirectory $applicationRole } else { $stagingDirectory }
-        Copy-ApplicationDirectory -Source $applicationSources[$applicationRole] -Destination $destination
+        Copy-ApplicationDirectory -Source $applicationSources[$applicationRole] -Destination $destination -ApplicationName $applicationName
         foreach ($file in $vcFiles) {
             $target = Join-Path $destination $file.Name
             if (Test-Path -LiteralPath $target) {
@@ -629,7 +674,39 @@ try
     }
 
     Write-NewUtf8File -Path (Join-Path $stagingDirectory 'unified-profile.json') -Content $compiledProfileJson
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs/UNIFIED_USER_GUIDE.md') -Destination (Join-Path $stagingDirectory 'USER_GUIDE.md')
+    if ($ProductRelease) {
+        $guideName = $Role.ToUpperInvariant() + '_GUIDE'
+        $chineseGuide = [IO.File]::ReadAllText((Join-Path $repositoryRoot "docs/$guideName.md")).Replace("$guideName.en.md", 'USER_GUIDE.en.md')
+        $englishGuide = [IO.File]::ReadAllText((Join-Path $repositoryRoot "docs/$guideName.en.md")).Replace("$guideName.md", 'USER_GUIDE.md')
+        Write-NewUtf8File -Path (Join-Path $stagingDirectory 'USER_GUIDE.md') -Content $chineseGuide
+        Write-NewUtf8File -Path (Join-Path $stagingDirectory 'USER_GUIDE.en.md') -Content $englishGuide
+        foreach ($name in @('LICENSE', 'ACKNOWLEDGEMENTS.md', 'THIRD_PARTY_NOTICES.md')) {
+            Copy-Item -LiteralPath (Join-Path $repositoryRoot $name) -Destination $stagingDirectory
+        }
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs/QT_SOURCE.md') -Destination $stagingDirectory
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs/RELEASE_V1.0.md') -Destination $stagingDirectory
+        Write-NewUtf8File -Path (Join-Path $stagingDirectory 'README.md') -Content @"
+# PixelBridge $applicationVersion $Role
+
+[简体中文操作说明](USER_GUIDE.md) | [English instructions](USER_GUIDE.en.md)
+
+**先启动 Decoder 接收，再启动 Encoder 发送。大文件接收大小短时不涨可能是正常恢复等待，请勿暂停；明确错误或持续无有效数据请检查日志。**
+
+**Start Decoder before Encoder. Brief received-size plateaus during large-file recovery can be normal: do not pause. Investigate explicit errors or persistent lack of useful data using the logs.**
+
+解压完整目录并运行 PixelBridge$Role.exe。Extract the entire folder, then run PixelBridge$Role.exe.
+
+[Release notes](RELEASE_V1.0.md) · [MIT License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Acknowledgements](ACKNOWLEDGEMENTS.md) · [Qt corresponding source](QT_SOURCE.md)
+
+This is an unsigned local release. SHA-256 manifests establish integrity, not publisher authentication. No network activation or payload side channel is used. Sources and licenses need not be extracted again to run the application; retain them when redistributing.
+"@
+        $sourceDestination = Join-Path $stagingDirectory 'sources'
+        [void][IO.Directory]::CreateDirectory($sourceDestination)
+        Copy-Item -LiteralPath $qtSourceArchivePath -Destination $sourceDestination
+        Copy-Item -LiteralPath $qtSourceManifestPath -Destination $sourceDestination
+    } else {
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs/UNIFIED_USER_GUIDE.md') -Destination (Join-Path $stagingDirectory 'USER_GUIDE.md')
+    }
     foreach ($relativePath in $ReleaseDocumentation) {
         $sourcePath = Join-Path $repositoryRoot $relativePath
         $sourceItem = Get-Item -LiteralPath $sourcePath
@@ -654,16 +731,20 @@ try
     Copy-Item -LiteralPath (Join-Path $qtLicenseRoot 'LICENSE') -Destination (Join-Path $qtPackageLicenseDirectory 'LICENSE.txt')
     Copy-Item -LiteralPath (Join-Path $qtLicenseRoot 'Copyright.txt') -Destination (Join-Path $qtPackageLicenseDirectory 'Copyright.txt')
     Copy-Item -LiteralPath $qtLicenseInfoPath -Destination (Join-Path $qtPackageLicenseDirectory 'licenseInfo.txt')
+    if ($ProductRelease) {
+        Copy-Item -LiteralPath (Join-Path $qtBaseSourceRoot 'LICENSES') -Destination $qtPackageLicenseDirectory -Recurse
+        Copy-Item -LiteralPath (Join-Path $qtRoot 'sbom/qtbase-6.10.1.spdx.json') -Destination $qtPackageLicenseDirectory
+    }
     foreach ($package in $vcpkgPackages)
     {
-        $copyrightPath = Join-Path $resolvedBuild "vcpkg_installed\x64-windows\share\$($package.name)\copyright"
+        $copyrightPath = Join-Path $vcpkgInstalledRoot "x64-windows/share/$($package.name)/copyright"
         Copy-Item -LiteralPath $copyrightPath -Destination (Join-Path $vcpkgPackageLicenseDirectory "$($package.name).txt")
     }
 
     $noticeLines = [Collections.Generic.List[string]]::new()
     $noticeLines.Add('PixelBridge THIRD_PARTY_NOTICES')
     $noticeLines.Add("Generated for package $packageName")
-    $noticeLines.Add('Local candidate only; PixelBridge license is NOASSERTION and no public distribution decision is implied.')
+    $noticeLines.Add($(if ($ProductRelease) { 'PixelBridge: MIT; see LICENSE. Third-party components retain their own licenses; see THIRD_PARTY_NOTICES.md.' } else { 'Local candidate only; this legacy inventory makes no project licensing assertion.' }))
     $noticeLines.Add('The vcpkg SBOM inventory includes every installed build-baseline package, not only runtime-linked DLLs.')
     $noticeLines.Add("Microsoft Visual C++ Runtime $vcVersion : licenses/msvc/Redist.txt, ThirdPartyNotices.txt")
     $noticeLines.Add("Qt $($qtVersions[0]): licenses/qt/LICENSE.txt, Copyright.txt, licenseInfo.txt")
@@ -680,9 +761,9 @@ try
         versionInfo = $applicationVersion
         downloadLocation = 'NOASSERTION'
         filesAnalyzed = $false
-        licenseConcluded = 'NOASSERTION'
-        licenseDeclared = 'NOASSERTION'
-        copyrightText = 'NOASSERTION'
+        licenseConcluded = if ($ProductRelease) { 'MIT' } else { 'NOASSERTION' }
+        licenseDeclared = if ($ProductRelease) { 'MIT' } else { 'NOASSERTION' }
+        copyrightText = if ($ProductRelease) { 'Copyright (c) 2026 PixelBridge contributors' } else { 'NOASSERTION' }
     })
     $spdxPackages += [ordered]@{
         name = 'Qt'
@@ -691,7 +772,7 @@ try
         downloadLocation = 'https://www.qt.io/'
         filesAnalyzed = $false
         licenseConcluded = 'NOASSERTION'
-        licenseDeclared = 'NOASSERTION'
+        licenseDeclared = if ($ProductRelease) { 'LGPL-3.0-only' } else { 'NOASSERTION' }
         copyrightText = 'See licenses/qt/ in this package'
     }
     $spdxPackages += [ordered]@{

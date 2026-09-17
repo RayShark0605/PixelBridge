@@ -1,5 +1,7 @@
 #pragma once
 
+#include "decoder_memory_budget.h"
+
 #include "pbprotocol/resume_state.h"
 
 #include <cstddef>
@@ -56,7 +58,8 @@ struct DecoderResumeLoadedState
 
 // Receiver-local append journal. New accepted blocks are batched and flushed
 // at explicit checkpoints; completed records are flushed only after .part data
-// and then compacted atomically. The final incomplete record is the only
+// before memory retirement. Budget-bound large journals may defer only the
+// atomic garbage reclamation. The final incomplete record is the only
 // tolerated corruption shape.
 class DecoderResumeStore
 {
@@ -65,7 +68,7 @@ public:
         pbprotocol::SessionTag sessionTag, std::span<const std::byte> sessionControlRecord,
         const pbprotocol::ReceiverResourcePolicy& resourcePolicy,
         std::unique_ptr<DecoderResumeStore>& output, DecoderResumeLoadedState& loaded,
-        bool budgetBoundActiveSegments = false) noexcept;
+        bool budgetBoundActiveSegments = false, const DecoderMemoryBudget* memoryBudget = nullptr) noexcept;
 
     DecoderResumeStore(const DecoderResumeStore&) = delete;
     DecoderResumeStore& operator=(const DecoderResumeStore&) = delete;

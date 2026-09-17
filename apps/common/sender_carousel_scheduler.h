@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mixed_visual_capacity.h"
+
 #include "pbmodulation/unified_visual_mapping.h"
 #include "pbmodulation/unified_visual_profile.h"
 
@@ -239,7 +241,8 @@ enum class SenderUnifiedTransportSlotDisposition : std::uint8_t
     NotTransport,
     ScheduledEquation,
     PaddingDuplicate,
-    InactiveZeroByteSession
+    InactiveZeroByteSession,
+    InactiveControlPrelude
 };
 
 struct SenderUnifiedScheduledSlot
@@ -268,9 +271,9 @@ struct SenderUnifiedScheduledFrame
     std::uint32_t inactiveTransportSlotCount = 0;
     // Active slot count for this carrier: product SC6 keeps 15, the gray v3
     // frame carries 18. The slots array is sized for the largest carrier, so
-    // only GetActiveSlots() (or slotCount-bounded loops) may iterate it.
+    // including the independent twenty-slot carrier; only GetActiveSlots() (or slotCount-bounded loops) may iterate it.
     std::uint32_t slotCount = static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount);
-    std::array<SenderUnifiedScheduledSlot, senderUnifiedMaximumCodewordSlotCount> slots;
+    std::array<SenderUnifiedScheduledSlot, maximumMixedFrameSlotCount> slots;
 
     [[nodiscard]] std::span<const SenderUnifiedScheduledSlot> GetActiveSlots() const noexcept
     {
@@ -294,6 +297,13 @@ struct SenderUnifiedScheduledFrame
     sourceRow = (phase + physicalSlot + bankPhase) % rowCount;
     return true;
 }
+
+enum class SenderMixedSlotLayout : std::uint8_t
+{
+    Unified,
+    ExperimentalPam4,
+    ExperimentalPam4Wide
+};
 
 struct SenderUnifiedCarouselSchedulerConfig
 {
@@ -321,6 +331,9 @@ struct SenderUnifiedCarouselSchedulerConfig
     // frame count; the gray v3 carrier passes its eighteen-codeword count.
     // Any other value is rejected at Create.
     std::uint32_t frameCodewordSlots = 0;
+    // Explicit layout policy; a count of eleven alone cannot opt in. PAM4
+    // always has one Control slot and sends Data only with a Segment prelude.
+    SenderMixedSlotLayout slotLayout = SenderMixedSlotLayout::Unified;
 };
 
 struct SenderUnifiedCarouselSnapshot

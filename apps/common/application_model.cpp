@@ -29,6 +29,13 @@ constexpr VisualProfileOption unifiedGrayProfileOption{
 constexpr VisualProfileOption unifiedGrayFastProfileOption{
     VisualProfile::UnifiedGrayFast, "unified-gray-fast", "PB-Experimental-GrayFast-1", false, 15, 4};
 
+// Independent opt-in experiments; not legacy low-FPS or Unified carriers.
+// GUI selectors remain separate from the certified product catalog.
+constexpr VisualProfileOption experimentalPam4ProfileOption{
+    VisualProfile::ExperimentalPam4, "experimental-pam4", "PB-Experimental-Pam4-1", false, 15, 4};
+constexpr VisualProfileOption experimentalPam4WideProfileOption{
+    VisualProfile::ExperimentalPam4Wide, "experimental-pam4-wide", "PB-Experimental-Pam4-Wide-1", false, 15, 4};
+
 // Historical diagnostic selectors remain unchanged until their respective
 // product GUI migrations. The Encoder product binds Unified explicitly.
 constexpr std::array<VisualProfileOption, 4> visualProfileOptions{{
@@ -724,6 +731,10 @@ const char* GetDecoderStateName(const DecoderState state) noexcept
 
 const char* GetVisualProfileName(const VisualProfile profile) noexcept
 {
+    if (profile == VisualProfile::ExperimentalPam4)
+    {
+        return "PB-Experimental-Pam4-1";
+    }
     const VisualProfileOption* const option = FindVisualProfileOption(profile);
     return option == nullptr ? "Unknown" : option->displayName.data();
 }
@@ -763,6 +774,14 @@ const VisualProfileOption* FindVisualProfileOption(const VisualProfile profile) 
     {
         return &unifiedGrayFastProfileOption;
     }
+    if (profile == VisualProfile::ExperimentalPam4Wide)
+    {
+        return &experimentalPam4WideProfileOption;
+    }
+    if (profile == VisualProfile::ExperimentalPam4)
+    {
+        return &experimentalPam4ProfileOption;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [profile](const VisualProfileOption& value) { return value.profile == profile; });
     return option == visualProfileOptions.end() ? nullptr : &*option;
@@ -786,6 +805,14 @@ std::optional<VisualProfile> ParseVisualProfileToken(const std::string_view toke
     {
         return unifiedGrayFastProfileOption.profile;
     }
+    if (token == experimentalPam4ProfileOption.cliToken)
+    {
+        return experimentalPam4ProfileOption.profile;
+    }
+    if (token == experimentalPam4WideProfileOption.cliToken)
+    {
+        return experimentalPam4WideProfileOption.profile;
+    }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return value.cliToken == token; });
     return option == visualProfileOptions.end() ? std::nullopt : std::optional(option->profile);
@@ -808,6 +835,14 @@ std::optional<VisualProfile> ParseVisualProfileToken(const std::wstring_view tok
     if (EqualsAsciiToken(token, unifiedGrayFastProfileOption.cliToken))
     {
         return unifiedGrayFastProfileOption.profile;
+    }
+    if (EqualsAsciiToken(token, experimentalPam4ProfileOption.cliToken))
+    {
+        return experimentalPam4ProfileOption.profile;
+    }
+    if (EqualsAsciiToken(token, experimentalPam4WideProfileOption.cliToken))
+    {
+        return experimentalPam4WideProfileOption.profile;
     }
     const auto option = std::find_if(visualProfileOptions.begin(), visualProfileOptions.end(),
         [token](const VisualProfileOption& value) { return EqualsAsciiToken(token, value.cliToken); });

@@ -1,5 +1,8 @@
 # PBRemoteOpsBridge — 基于 SMB 共享目录的远程实验命令桥
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 > **操作入口文档：** 面向接手者的机制/用法/排查指南在
 > [`docs/REMOTE_OPS_BRIDGE.md`](../../docs/REMOTE_OPS_BRIDGE.md)；本文件是 wire 协议与
 > 部署细节的权威定义。两处冲突时以本文件与实现为准。

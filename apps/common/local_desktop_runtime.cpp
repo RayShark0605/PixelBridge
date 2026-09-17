@@ -21,6 +21,8 @@
 #include "pbmodulation/remote_visual_low_fps.h"
 #include "pbmodulation/shape_chroma.h"
 #include "pbmodulation/unified_visual.h"
+#include "pbmodulation/experimental_pam4.h"
+#include "pbmodulation/experimental_pam4_wide.h"
 #include "pbmodulation/supplemental_band.h"
 #include "pbouterfec/direct_repeat.h"
 #include "pbouterfec/wirehair_v2.h"
@@ -88,7 +90,9 @@ inline constexpr std::uint32_t outerBlockBytes = 1314;
 inline constexpr std::uint32_t maximumOuterBlockBytes = 1629;
 [[nodiscard]] constexpr std::uint32_t GetOuterBlockBytesForProfileId(const std::uint64_t visualProfileId)
 {
-    return visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId ?
+    return visualProfileId == pbprotocol::kGrayFastExperimentalProfile.visualProfileId ||
+        visualProfileId == pbprotocol::kPam4ExperimentalProfile.visualProfileId ||
+        visualProfileId == pbprotocol::kPam4WideExperimentalProfile.visualProfileId ?
         maximumOuterBlockBytes : outerBlockBytes;
 }
 inline constexpr std::size_t informationBytes = 1350;
@@ -104,6 +108,7 @@ inline constexpr std::string_view encoderBroadcastingStatus =
 inline constexpr std::uint64_t timeUnitsPerSecond100ns = 10000000ULL;
 inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
 inline constexpr std::uint32_t grayFastShortInitialAirtimePercent = 65;
+inline constexpr std::uint32_t grayFastExtendedVisitBudgetPercent = 150;
 inline constexpr std::uint32_t captureDemodulatorSlotCount = 4;
 inline constexpr std::uint32_t captureResultQueueCapacity = 128;
 // The demodulator's fixed reservation is sized for the largest carrier
@@ -399,6 +404,42 @@ void RequireResult(const ResultType& result, const std::string& message)
         MonitorSafetyStatus{MonitorSafetyError::TopologyChanged, {}};
 }
 
+[[nodiscard]] MonitorSafetyStatus RevalidateSingleMonitorCapture(const MonitorInfo& expected,
+    const DecoderRuntimeServices& services) noexcept
+{
+    try
+    {
+        if (!services.enumerateMonitors)
+        {
+            return {MonitorSafetyError::CatalogFailure, {MonitorCatalogError::MetadataUnavailable, 0}};
+        }
+        std::vector<MonitorInfo> monitors;
+        const MonitorCatalogStatus catalog = services.enumerateMonitors(monitors);
+        if (!catalog)
+        {
+            return {MonitorSafetyError::CatalogFailure, catalog};
+        }
+        const MonitorInfo* current = nullptr;
+        for (const auto& monitor : monitors)
+        {
+            if (monitor.deviceName == expected.deviceName)
+            {
+                if (current != nullptr)
+                {
+                    return {MonitorSafetyError::TopologyChanged, {}};
+                }
+                current = &monitor;
+            }
+        }
+        return current != nullptr && current->dxgiOutputIdentityAvailable && SameMonitorIdentity(expected, *current) ?
+            MonitorSafetyStatus{} : MonitorSafetyStatus{MonitorSafetyError::TopologyChanged, {}};
+    }
+    catch (...)
+    {
+        return {MonitorSafetyError::CatalogFailure, {MonitorCatalogError::NativeFailure, 0}};
+    }
+}
+
 // Experimental stage-one fullscreen composition for the Unified family.
 // Linear and Area reproduce the independently verified test fixtures
 // operation for operation (center-coordinate edge-clamped bilinear, exact
@@ -605,7 +646,7 @@ void ComposeUnifiedFullscreenSampledBgra(const std::span<const std::byte> source
 }
 
 void ComposeRemoteVisualFullscreenBgra(const std::span<const std::byte> source, const std::uint32_t destinationWidth,
-    const std::uint32_t destinationHeight, std::span<std::byte> destination, const bool fillScreen)
+    const std::uint32_t destinationHeight, std::span<std::byte> destination, const bool fillScreen, const std::uint32_t rasterWidth = 0)
 {
     Require(destinationWidth >= phase1CanvasWidth && destinationWidth <= maximumRemoteVisualLowFpsRoiWidth &&
         destinationHeight >= phase1CanvasHeight && destinationHeight <= maximumRemoteVisualLowFpsRoiHeight,
@@ -616,38 +657,53 @@ void ComposeRemoteVisualFullscreenBgra(const std::span<const std::byte> source, 
     const std::size_t expectedDestinationBytes = destinationRowBytes * destinationHeight;
     Require(source.size() == expectedSourceBytes && destination.size() == expectedDestinationBytes,
         "remote-lf4 fullscreen raster size mismatch");
+    Require(rasterWidth == 0 || (fillScreen && rasterWidth >= phase1CanvasWidth && rasterWidth <= destinationWidth &&
+        rasterWidth % 16U == 0 && rasterWidth / 16U * 9U <= destinationHeight), "centered raster viewport is outside the fullscreen canvas");
     if (fillScreen)
     {
+        const std::uint32_t viewportWidth = rasterWidth == 0 ? destinationWidth : rasterWidth;
+        const std::uint32_t viewportHeight = rasterWidth == 0 ? destinationHeight : rasterWidth / 16U * 9U;
+        const std::uint32_t viewportLeft = (destinationWidth - viewportWidth) / 2U;
+        const std::uint32_t viewportTop = (destinationHeight - viewportHeight) / 2U;
+        const std::size_t viewportRowBytes = static_cast<std::size_t>(viewportWidth) * 4U;
+        if (rasterWidth != 0)
+        {
+            for (std::size_t offset = 0; offset < destination.size(); offset += 4U)
+            {
+                destination[offset] = destination[offset + 1] = destination[offset + 2] = std::byte{0x80};
+                destination[offset + 3] = std::byte{0xFF};
+            }
+        }
         // Map physical pixel centers independently on both axes. The dimension
         // checks above bound every product; no interpolation changes the wire
         // raster's colors, and no frame-sized scratch or hot-path heap is added.
         std::array<std::size_t, maximumRemoteVisualLowFpsRoiWidth> sourceColumnOffsets{};
-        for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+        for (std::uint32_t destinationX = 0; destinationX < viewportWidth; destinationX++)
         {
             const std::uint64_t sourceX = (static_cast<std::uint64_t>(destinationX) * 2U + 1U) * phase1CanvasWidth /
-                (static_cast<std::uint64_t>(destinationWidth) * 2U);
+                (static_cast<std::uint64_t>(viewportWidth) * 2U);
             sourceColumnOffsets[destinationX] = static_cast<std::size_t>(sourceX) * 4U;
         }
         std::uint32_t previousSourceY = phase1CanvasHeight;
-        for (std::uint32_t destinationY = 0; destinationY < destinationHeight; destinationY++)
+        for (std::uint32_t destinationY = 0; destinationY < viewportHeight; destinationY++)
         {
             const auto sourceY = static_cast<std::uint32_t>((static_cast<std::uint64_t>(destinationY) * 2U + 1U) * phase1CanvasHeight /
-                (static_cast<std::uint64_t>(destinationHeight) * 2U));
-            std::byte* const destinationRow = destination.data() + static_cast<std::size_t>(destinationY) * destinationRowBytes;
+                (static_cast<std::uint64_t>(viewportHeight) * 2U));
+            std::byte* const destinationRow = destination.data() + static_cast<std::size_t>(viewportTop + destinationY) * destinationRowBytes + static_cast<std::size_t>(viewportLeft) * 4U;
             if (sourceY == previousSourceY)
             {
-                std::copy_n(destinationRow - destinationRowBytes, destinationRowBytes, destinationRow);
+                std::copy_n(destinationRow - destinationRowBytes, viewportRowBytes, destinationRow);
             }
             else
             {
                 const std::byte* const sourceRow = source.data() + static_cast<std::size_t>(sourceY) * sourceRowBytes;
-                if (destinationWidth == phase1CanvasWidth)
+                if (viewportWidth == phase1CanvasWidth)
                 {
                     std::copy_n(sourceRow, sourceRowBytes, destinationRow);
                 }
                 else
                 {
-                    for (std::uint32_t destinationX = 0; destinationX < destinationWidth; destinationX++)
+                    for (std::uint32_t destinationX = 0; destinationX < viewportWidth; destinationX++)
                     {
                         std::copy_n(sourceRow + sourceColumnOffsets[destinationX], 4U,
                             destinationRow + static_cast<std::size_t>(destinationX) * 4U);
@@ -1115,7 +1171,8 @@ struct ProfileBinding
     std::uint32_t dataBytes = 0;
     std::uint32_t codewords = 0;
     // Outer FEC block / Transport payload bytes and per-slot inner-FEC
-    // information bytes for this identity (gray-fast: 1629/1665).
+    // maximum information bytes for this identity (gray-fast: 1629/1665).
+    // PAM4 has a separate 1350-byte Control slot, not eleven uniform Fast slots.
     std::uint32_t blockBytes = outerBlockBytes;
     std::uint32_t slotInformationBytes = static_cast<std::uint32_t>(informationBytes);
 };
@@ -1161,6 +1218,18 @@ struct ProfileBinding
             static_cast<std::uint32_t>(pbmodulation::kUnifiedGrayFrameCodewordCount),
             maximumOuterBlockBytes, pbmodulation::kUnifiedGrayFastInformationBytes};
     }
+    if (profile == VisualProfile::ExperimentalPam4Wide)
+    {
+        return {profile, pbprotocol::kPam4WideExperimentalProfile.visualProfileId, pbprotocol::kPam4WideExperimentalProfile.visualLayoutVersion,
+            static_cast<std::uint32_t>(pbmodulation::kExperimentalPam4WideCodedFrameBytes), pbmodulation::kExperimentalPam4WideCodewordCount,
+            pbmodulation::kExperimentalPam4WideTransportPayloadBytes, pbmodulation::kExperimentalPam4WideDataInformationBytes};
+    }
+    if (profile == VisualProfile::ExperimentalPam4)
+    {
+        return {profile, pbprotocol::kPam4ExperimentalProfile.visualProfileId, pbprotocol::kPam4ExperimentalProfile.visualLayoutVersion,
+            static_cast<std::uint32_t>(pbmodulation::kExperimentalPam4CodedFrameBytes), pbmodulation::kExperimentalPam4CodewordCount,
+            pbmodulation::kExperimentalPam4TransportPayloadBytes, pbmodulation::kExperimentalPam4DataInformationBytes};
+    }
     if (profile == VisualProfile::ShapeChroma)
     {
         return {profile, pbmodulation::kShapeChromaProfileId, pbmodulation::kShapeChromaLayoutVersion,
@@ -1186,7 +1255,7 @@ struct ProfileBinding
 [[nodiscard]] pbprotocol::ReceiverResourcePolicy MakeReceiverResourcePolicyForVisualProfile(
     const VisualProfile profile) noexcept
 {
-    return IsUnifiedVisualFamily(profile) ? MakeUnifiedReceiverResourcePolicy() : pbprotocol::GetDefaultReceiverResourcePolicy();
+    return UsesMixedSlotCarousel(profile) ? MakeUnifiedReceiverResourcePolicy() : pbprotocol::GetDefaultReceiverResourcePolicy();
 }
 
 struct TransferDescription
@@ -1564,13 +1633,13 @@ public:
         RepairIdStartProvider repairIdStartProvider = {}, RepairLeaseCallback repairLeaseCallback = {},
         const std::uint64_t initialCarouselPass = 0, const std::uint64_t initialSegmentOrdinal = 0,
         const std::uint32_t logicalVisualFps = 0, const bool grayFastSpatialInterleave = false,
-        const std::uint32_t initialAirtimePercent = 100)
+        const std::uint32_t initialAirtimePercent = 100, const std::uint32_t visitBudgetPercent = 100)
         : profile_(profile), description_(description), data_(profile.dataBytes),
           pixels_(pbmodulation::kLocalDesktopFrameBgraBytes), segmentLoader_(std::move(segmentLoader)),
           repairIdStartProvider_(std::move(repairIdStartProvider)), repairLeaseCallback_(std::move(repairLeaseCallback)),
           nextRepairIds_(description.segments.size(), 0), currentSegmentOrdinal_(initialSegmentOrdinal),
           carouselPass_(initialCarouselPass), initialCarouselPass_(initialCarouselPass),
-          controlRepetitions_(controlRepetitions), logicalVisualFps_(logicalVisualFps), initialAirtimePercent_(initialAirtimePercent)
+          controlRepetitions_(controlRepetitions), logicalVisualFps_(logicalVisualFps), initialAirtimePercent_(initialAirtimePercent), visitBudgetPercent_(visitBudgetPercent)
     {
         Require(profile_.codewords != 0 && controlRepetitions_ != 0,
             "Profile or Control repetition count is empty");
@@ -1580,11 +1649,14 @@ public:
             "Spatial Segment interleaving requires the GrayFast profile");
         Require(initialAirtimePercent_ >= 50 && initialAirtimePercent_ <= 100 &&
             (initialAirtimePercent_ == 100 || grayFastSpatialInterleave), "Initial airtime experiment requires bounded spatial GrayFast tuning");
+        Require(visitBudgetPercent_ >= 100 && visitBudgetPercent_ <= 200 &&
+            (visitBudgetPercent_ == 100 || (grayFastSpatialInterleave && initialAirtimePercent_ == 100)),
+            "Visit budget requires bounded spatial GrayFast tuning without a shortened initial visit");
         if (grayFastSpatialInterleave && !description_.segments.empty())
         {
             unifiedSpatialBank_ = std::make_unique<UnifiedSpatialBank>();
         }
-        if (IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty())
+        if (UsesMixedSlotCarousel(profile_.profile) && !description_.segments.empty())
         {
             InitializeUnifiedSegmentWindow();
         }
@@ -1603,7 +1675,7 @@ public:
 
     [[nodiscard]] FrameKind GetCurrentKind() const
     {
-        if (IsUnifiedVisualFamily(profile_.profile))
+        if (UsesMixedSlotCarousel(profile_.profile))
         {
             return FrameKind::Data;
         }
@@ -1640,10 +1712,10 @@ public:
     {
         const FrameKind kind = GetCurrentKind();
         const auto bootstrap = MakeBootstrap(frameSequence);
-        if (IsUnifiedVisualFamily(profile_.profile))
+        if (UsesMixedSlotCarousel(profile_.profile))
         {
             PrepareUnifiedFrame(logicalTickOrdinal, nowNanoseconds);
-            std::array<pbmodulation::UnifiedFrameSlotInput, senderUnifiedMaximumCodewordSlotCount> slots{};
+            std::array<pbmodulation::UnifiedFrameSlotInput, maximumMixedFrameSlotCount> slots{};
             generatedPayloadBytesInFrame_ = 0;
             std::span<const std::byte> supplementalControlRecord{};
             for (std::size_t slotIndex = 0; slotIndex < unifiedFrame_.slotCount; slotIndex++)
@@ -1660,7 +1732,8 @@ public:
                         supplementalControlRecord = slot.block;
                     }
                 }
-                else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession)
+                else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession &&
+                    scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveControlPrelude)
                 {
                     std::uint32_t payloadBytes = 0;
                     const std::size_t serializedBytes = BuildTransportBlockForSlot(
@@ -1679,20 +1752,27 @@ public:
                 slots.data(), unifiedFrame_.slotCount);
             if (diagnostics == nullptr)
             {
-                RequireResult(pbmodulation::EncodeUnifiedVisualFrame({bootstrap, plannedSlots}, pixels_),
+                RequireResult(profile_.profile == VisualProfile::ExperimentalPam4Wide ?
+                    pbmodulation::EncodeExperimentalPam4WideFrame({bootstrap, plannedSlots}, pixels_) : profile_.profile == VisualProfile::ExperimentalPam4 ?
+                    pbmodulation::EncodeExperimentalPam4Frame({bootstrap, plannedSlots}, pixels_) :
+                    pbmodulation::EncodeUnifiedVisualFrame({bootstrap, plannedSlots}, pixels_),
                     "Unified mixed-slot canonical raster generation failed");
             }
             else
             {
-                std::array<std::byte, pbmodulation::kUnifiedMaximumCodedFrameBytes> codedFrame{};
+                std::array<std::byte, maximumMixedCodedFrameBytes> codedFrame{};
                 {
                     const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::InnerPackEncode);
-                    RequireResult(pbmodulation::PackUnifiedVisualFrame({bootstrap, plannedSlots},
-                        std::span<std::byte>(codedFrame.data(), codedFrameBytes)), "Unified packing failed");
+                    RequireResult(profile_.profile == VisualProfile::ExperimentalPam4Wide ?
+                        pbmodulation::PackExperimentalPam4WideFrame({bootstrap, plannedSlots}, std::span<std::byte>(codedFrame.data(), codedFrameBytes)) : profile_.profile == VisualProfile::ExperimentalPam4 ?
+                        pbmodulation::PackExperimentalPam4Frame({bootstrap, plannedSlots}, std::span<std::byte>(codedFrame.data(), codedFrameBytes)) :
+                        pbmodulation::PackUnifiedVisualFrame({bootstrap, plannedSlots}, std::span<std::byte>(codedFrame.data(), codedFrameBytes)), "Unified packing failed");
                 }
                 const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::Raster);
-                RequireResult(pbmodulation::EncodeUnifiedVisualFrame(bootstrap,
-                    std::span<const std::byte>(codedFrame.data(), codedFrameBytes), pixels_), "Unified raster failed");
+                RequireResult(profile_.profile == VisualProfile::ExperimentalPam4Wide ?
+                    pbmodulation::EncodeExperimentalPam4WideFrame(bootstrap, std::span<const std::byte>(codedFrame.data(), codedFrameBytes), pixels_) : profile_.profile == VisualProfile::ExperimentalPam4 ?
+                    pbmodulation::EncodeExperimentalPam4Frame(bootstrap, std::span<const std::byte>(codedFrame.data(), codedFrameBytes), pixels_) :
+                    pbmodulation::EncodeUnifiedVisualFrame(bootstrap, std::span<const std::byte>(codedFrame.data(), codedFrameBytes), pixels_), "Unified raster failed");
             }
             if (profile_.profile == VisualProfile::UnifiedBands)
             {
@@ -1781,7 +1861,7 @@ public:
             AdvanceSpatialUnifiedFrame();
             return;
         }
-        if (IsUnifiedVisualFamily(profile_.profile))
+        if (UsesMixedSlotCarousel(profile_.profile))
         {
             SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
             Require(static_cast<bool>(unifiedScheduler.CommitPreparedFrame()), "Unified frame commit failed");
@@ -1875,7 +1955,7 @@ public:
 
     [[nodiscard]] CarouselSnapshot GetCarouselSnapshot() const noexcept
     {
-        const std::uint32_t position = IsUnifiedVisualFamily(profile_.profile) || description_.segments.empty() ? cyclePosition_ :
+        const std::uint32_t position = UsesMixedSlotCarousel(profile_.profile) || description_.segments.empty() ? cyclePosition_ :
             static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
         return {carouselPass_, position, cycleFrameCount_};
     }
@@ -1885,7 +1965,7 @@ public:
     }
     [[nodiscard]] std::uint32_t GetCurrentOuterBlockId() const
     {
-        if (IsUnifiedVisualFamily(profile_.profile))
+        if (UsesMixedSlotCarousel(profile_.profile))
         {
             for (const SenderUnifiedScheduledSlot& slot : unifiedFrame_.GetActiveSlots())
             {
@@ -1909,7 +1989,7 @@ public:
     }
     [[nodiscard]] std::uint32_t GetControlSlotsInFrame() const noexcept
     {
-        return IsUnifiedVisualFamily(profile_.profile) ? static_cast<std::uint32_t>(std::ranges::count_if(
+        return UsesMixedSlotCarousel(profile_.profile) ? static_cast<std::uint32_t>(std::ranges::count_if(
             unifiedFrame_.GetActiveSlots(), [](const SenderUnifiedScheduledSlot& slot)
             {
                 return slot.assignment.kind == pbmodulation::UnifiedSlotKind::Control;
@@ -1931,12 +2011,12 @@ public:
     }
     [[nodiscard]] std::uint64_t GetCheckpointSegmentOrdinal() const noexcept
     {
-        return IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty() ?
+        return UsesMixedSlotCarousel(profile_.profile) && !description_.segments.empty() ?
             unifiedWindowStartSegmentOrdinal_ : currentSegmentOrdinal_;
     }
     [[nodiscard]] std::uint32_t GetActiveSegmentWindowSize() const noexcept
     {
-        return IsUnifiedVisualFamily(profile_.profile) ?
+        return UsesMixedSlotCarousel(profile_.profile) ?
             static_cast<std::uint32_t>(unifiedSegmentStates_.size()) :
             static_cast<std::uint32_t>(!description_.segments.empty());
     }
@@ -1969,7 +2049,7 @@ public:
             return stored.payloadBytes;
         }
         const std::uint32_t blockId = CalculateOuterBlockId(slot);
-        const UnifiedSegmentState* const unifiedState = IsUnifiedVisualFamily(profile_.profile) &&
+        const UnifiedSegmentState* const unifiedState = UsesMixedSlotCarousel(profile_.profile) &&
             !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
         const auto encoded = unifiedState ? (unifiedState->wirehair ?
             unifiedState->wirehair->EncodeBlock(blockId, output) : unifiedState->directRepeat->EncodeBlock(blockId, output)) :
@@ -1995,7 +2075,7 @@ public:
         // outer blocks never exceed its own frozen block size.
         const std::span<std::byte> outerPayload(outerPayload_.data(), profile_.blockBytes);
         std::fill(outerPayload.begin(), outerPayload.end(), std::byte{0});
-        const UnifiedSegmentState* const unifiedState = IsUnifiedVisualFamily(profile_.profile) &&
+        const UnifiedSegmentState* const unifiedState = UsesMixedSlotCarousel(profile_.profile) &&
             !description_.segments.empty() ? &GetCurrentUnifiedSegmentState() : nullptr;
         const auto encoded = unifiedState ? (unifiedState->wirehair ?
             unifiedState->wirehair->EncodeBlock(blockId, outerPayload) :
@@ -2024,7 +2104,7 @@ public:
     }
     [[nodiscard]] const SenderUnifiedScheduledFrame& PrepareHeadlessFrame(const std::uint64_t tick)
     {
-        Require(IsUnifiedVisualFamily(profile_.profile) && tick < 1000000,
+        Require(UsesMixedSlotCarousel(profile_.profile) && tick < 1000000,
             "Unified headless tick or profile is outside the test contract");
         Require(logicalVisualFps_ >= senderUnifiedMinimumLogicalFramesPerSecond && logicalVisualFps_ <= senderUnifiedMaximumLogicalFramesPerSecond,
             "Unified headless clock FPS is outside the test contract");
@@ -2274,7 +2354,7 @@ private:
             static_cast<std::uint32_t>(!nextEncodedBytes_.empty());
         std::uint64_t residentBytes = static_cast<std::uint64_t>(currentEncodedBytes_.size()) +
             static_cast<std::uint64_t>(nextEncodedBytes_.size());
-        if (IsUnifiedVisualFamily(profile_.profile))
+        if (UsesMixedSlotCarousel(profile_.profile))
         {
             residentCount = static_cast<std::uint32_t>(unifiedSegmentStates_.size());
             residentBytes = 0;
@@ -2373,7 +2453,16 @@ private:
             const auto maximumInitialTarget = pbprotocol::CheckedMultiplyUint64(blockCount, 16ULL);
             RequireResult(paddedTarget, "Unified frame-loss target overflow");
             RequireResult(maximumInitialTarget, "Unified frame-loss target bound overflow");
+            // Fixed sender configuration, never channel or receiver feedback.
+            // Preserve both the normal calculation and the existing 16K cap.
             baseTarget = (std::min)(paddedTarget.Value(), maximumInitialTarget.Value());
+            if (visitBudgetPercent_ != 100)
+            {
+                const auto visitNumerator = pbprotocol::CheckedMultiplyUint64(paddedTarget.Value(), visitBudgetPercent_);
+                RequireResult(visitNumerator, "Unified extended visit budget overflow");
+                const std::uint64_t visitTarget = visitNumerator.Value() / 100 + static_cast<std::uint64_t>(visitNumerator.Value() % 100 != 0);
+                baseTarget = (std::min)(visitTarget, maximumInitialTarget.Value());
+            }
         }
         const std::uint64_t elapsedPasses = carouselPass_ - initialCarouselPass_;
         // A repair-only receiver needs a full loss-budgeted visit before new
@@ -2418,7 +2507,8 @@ private:
         return SenderUnifiedCarouselScheduler::Create(
             {state.blockCount, controlRepetitions_, logicalVisualFps_, static_cast<bool>(state.wirehair),
                 state.segmentPassCount, periodicControlPhaseIndex, periodicControlPhaseCount, overrideBudget,
-                profile_.codewords},
+                profile_.codewords, profile_.profile == VisualProfile::ExperimentalPam4Wide ? SenderMixedSlotLayout::ExperimentalPam4Wide :
+                profile_.profile == VisualProfile::ExperimentalPam4 ? SenderMixedSlotLayout::ExperimentalPam4 : SenderMixedSlotLayout::Unified},
             state.scheduler);
     }
 
@@ -2512,7 +2602,7 @@ private:
 
     void InitializeUnifiedSegmentWindow()
     {
-        Require(IsUnifiedVisualFamily(profile_.profile) && !description_.segments.empty() &&
+        Require(UsesMixedSlotCarousel(profile_.profile) && !description_.segments.empty() &&
             currentSegmentOrdinal_ < description_.segments.size(), "Unified Segment window cannot be initialized");
         unifiedSegmentStates_.clear();
         unifiedCurrentStateIndex_ = 0;
@@ -2617,8 +2707,11 @@ private:
         const std::uint64_t sweepOrdinal = cyclePosition_ / windowSize;
         // A long fixed phase can alias with periodic remote frame selection,
         // starving the same short Segments again after each Carousel wrap.
-        // GrayFast rotates every sweep; no observed receiver state is used.
-        const std::uint32_t phaseHold = profile_.profile == VisualProfile::UnifiedGrayFast ? 1U : senderUnifiedSweepPhaseHold;
+        // The explicit PAM4 experiment also rotates every sweep: a 32-sweep
+        // hold can strand one parity of Segments under remote frame decimation.
+        // Airtime, repair budgets and receiver resources are unchanged.
+        const std::uint32_t phaseHold = (profile_.profile == VisualProfile::UnifiedGrayFast ||
+            IsExperimentalPam4Family(profile_.profile)) ? 1U : senderUnifiedSweepPhaseHold;
         const std::uint64_t phaseEpoch = sweepOrdinal / phaseHold;
         const std::uint64_t positionInSweep = cyclePosition_ % windowSize;
         const std::size_t plannedIndex = static_cast<std::size_t>(
@@ -2740,13 +2833,13 @@ private:
         if (description_.segments.empty())
         {
             cycleFrameCount_ = controlFrames;
-            if (IsUnifiedVisualFamily(profile_.profile))
+            if (UsesMixedSlotCarousel(profile_.profile))
             {
                 InitializeUnifiedScheduler();
             }
             return;
         }
-        Require(!IsUnifiedVisualFamily(profile_.profile),
+        Require(!UsesMixedSlotCarousel(profile_.profile),
             "nonempty Unified Sessions must use the bounded Segment window");
         const pbprotocol::SegmentDescriptor& descriptor =
             description_.segments[currentSegmentOrdinal_].descriptor;
@@ -2814,6 +2907,8 @@ private:
         unifiedConfig.wirehair = static_cast<bool>(wirehair_);
         unifiedConfig.carouselPass = carouselPass_;
         unifiedConfig.frameCodewordSlots = profile_.codewords;
+        unifiedConfig.slotLayout = profile_.profile == VisualProfile::ExperimentalPam4Wide ? SenderMixedSlotLayout::ExperimentalPam4Wide :
+                profile_.profile == VisualProfile::ExperimentalPam4 ? SenderMixedSlotLayout::ExperimentalPam4 : SenderMixedSlotLayout::Unified;
         Require(static_cast<bool>(SenderUnifiedCarouselScheduler::Create(unifiedConfig, unifiedScheduler_)),
             "Unified Carousel scheduler creation failed");
         unifiedFrame_ = {};
@@ -2844,7 +2939,7 @@ private:
             return 0;
         }
         Require(slot < profile_.codewords, "physical Data slot is out of bounds");
-        if (IsUnifiedVisualFamily(profile_.profile))
+        if (UsesMixedSlotCarousel(profile_.profile))
         {
             const UnifiedSegmentState& state = GetCurrentUnifiedSegmentState();
             const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slot];
@@ -2954,7 +3049,7 @@ private:
     SenderCarouselScheduler roundScheduler_;
     SenderUnifiedCarouselScheduler unifiedScheduler_;
     SenderUnifiedScheduledFrame unifiedFrame_;
-    std::array<std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes>, senderUnifiedMaximumCodewordSlotCount> unifiedTransport_{};
+    std::array<std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes>, maximumMixedFrameSlotCount> unifiedTransport_{};
     // Reused 608x64 raster scratch for the supplemental band overlay; the
     // builder is single-threaded by contract, so one buffer serves both bands.
     std::array<std::byte, pbmodulation::kSupplementalBandPatchBytes> supplementalBandPatch_{};
@@ -2968,6 +3063,7 @@ private:
     const std::uint32_t controlRepetitions_;
     const std::uint32_t logicalVisualFps_;
     const std::uint32_t initialAirtimePercent_;
+    const std::uint32_t visitBudgetPercent_;
 };
 
 [[nodiscard]] bool HasStablePresentationContract(const pbrenderd3d::DataWindowSnapshot& snapshot,
@@ -3560,24 +3656,25 @@ private:
     // A live Unified slot remains occupied through Bootstrap and CPU FEC on the
     // same owner. Bound that non-replaceable backlog before copying another ROI;
     // the inbox still selects the newest frame and admission still requires 250 ms.
-    return IsUnifiedVisualFamily(visualProfile) && !offlineReplay ? 2 : captureDemodulatorSlotCount;
+    return (IsUnifiedVisualFamily(visualProfile) || IsExperimentalPam4Family(visualProfile)) && !offlineReplay ? 2 : captureDemodulatorSlotCount;
 }
 
 [[nodiscard]] pbcapturenormalize::CaptureNormalizeConfig MakeCaptureConfig(const DecoderConfig& config)
 {
     pbcapturenormalize::CaptureNormalizeConfig captureConfig;
+    const bool boundedStagedCapture = IsUnifiedVisualFamily(config.visualProfile) || IsExperimentalPam4Family(config.visualProfile);
     captureConfig.capture.region = config.region;
     captureConfig.capture.initialCaptureEpoch = 1;
     captureConfig.capture.queuedFrameLimit = captureQueuedFrameLimit;
     captureConfig.capture.roiTextureCount = GetCaptureDemodulatorSlotCount(config.visualProfile, false);
-    captureConfig.capture.maximumInFlightFrames = IsUnifiedVisualFamily(config.visualProfile) ? 1 : 0;
-    captureConfig.capture.maximumCaptureBytes = IsUnifiedVisualFamily(config.visualProfile) ?
+    captureConfig.capture.maximumInFlightFrames = boundedStagedCapture ? 1 : 0;
+    captureConfig.capture.maximumCaptureBytes = boundedStagedCapture ?
         maximumUnifiedCaptureResidentBytes : config.visualProfile == VisualProfile::RemoteVisualLowFps ?
         config.replayOutputPath.empty() ? maximumRemoteVisualLowFpsCaptureResidentBytes :
             maximumRemoteVisualLowFpsReplayCaptureResidentBytes : maximumCaptureResidentBytes;
     // Keep the existing cap for DXGI's advertised worst-case source format too:
     // BGRA output slots plus matching R16G16B16A16 scratch slots at the ROI bound.
-    captureConfig.capture.maximumRoiBytes = IsUnifiedVisualFamily(config.visualProfile) ?
+    captureConfig.capture.maximumRoiBytes = boundedStagedCapture ?
         384ULL * mebibyte : maximumRoiResidentBytes;
     captureConfig.capture.gpuTimeoutMilliseconds = 3000;
     captureConfig.capture.maximumDeviceRecoveries = 1;
@@ -3599,7 +3696,7 @@ private:
     // without misclassifying compute time as capture staleness.
     demodConfig.maximumFrameAgeMilliseconds = offlineReplay ? 60000 : 250;
     demodConfig.resultQueueCapacity = captureResultQueueCapacity;
-    if (IsUnifiedVisualFamily(config.visualProfile))
+    if (IsUnifiedVisualFamily(config.visualProfile) || IsExperimentalPam4Family(config.visualProfile))
     {
         demodConfig.maximumResidentBytes = maximumUnifiedDemodulatorResidentBytes;
     }
@@ -3615,7 +3712,7 @@ private:
     {
         demodConfig.maximumResidentBytes = maximumDemodulatorResidentBytes;
     }
-    if (!offlineReplay && (config.visualProfile == VisualProfile::RemoteVisualLowFps || IsUnifiedVisualFamily(config.visualProfile)))
+    if (!offlineReplay && (config.visualProfile == VisualProfile::RemoteVisualLowFps || IsUnifiedVisualFamily(config.visualProfile) || IsExperimentalPam4Family(config.visualProfile)))
     {
         demodConfig.maximumRoiWidth = static_cast<std::uint32_t>(
             static_cast<std::int64_t>(config.region.physicalRect.right) - config.region.physicalRect.left);
@@ -3948,12 +4045,13 @@ public:
         const bool deferCompletedState = false, const bool captureTelemetryAvailable = true,
         const bool collectResourceHighWater = false,
         LargeOutputConfirmationController* const largeOutputConfirmation = nullptr,
-        std::shared_ptr<RunMeasurementRecorder> measurement = {}, const bool budgetBoundActiveSegments = false)
+        std::shared_ptr<RunMeasurementRecorder> measurement = {}, const bool budgetBoundActiveSegments = false,
+        const std::optional<DecoderMemoryBudget> memoryBudget = std::nullopt)
         : receiver_(receiver), outputDirectory_(std::move(outputDirectory)), policy_(policy), snapshot_(snapshot),
           completion_(completion), runGeneration_(runGeneration), started_(started), visualProfile_(visualProfile),
           deferCompletedState_(deferCompletedState), captureTelemetryAvailable_(captureTelemetryAvailable),
           collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation), measurement_(std::move(measurement)),
-          budgetBoundActiveSegments_(budgetBoundActiveSegments)
+          budgetBoundActiveSegments_(budgetBoundActiveSegments), memoryBudget_(memoryBudget)
     {
         snapshot_.Update([this](DecoderSnapshot& value)
         {
@@ -3961,7 +4059,10 @@ public:
             {
                 value.outerActiveDecoderLimit = policy_.maxActiveOuterFecDecoders;
                 value.outerTotalDecoderByteLimit = policy_.maxTotalOuterFecDecoderBytes;
+                value.outerPerDecoderByteLimit = policy_.maxOuterFecDecoderBytes;
+                value.receiverResumeByteLimit = policy_.maxResumeBytes;
                 value.budgetBoundDecoderAdmission = budgetBoundActiveSegments_;
+                value.customDecoderMemoryBudget = memoryBudget_.has_value();
             }
         });
     }
@@ -4012,7 +4113,7 @@ public:
             return {};
         }
         RecordCaptureTelemetry(result);
-        if (!IsUnifiedVisualFamily(visualProfile_))
+        if (!UsesMixedSlotCarousel(visualProfile_))
         {
             RecordRemoteMetricTelemetry(result);
         }
@@ -4058,13 +4159,13 @@ public:
             UpdateTelemetrySnapshot();
             return {};
         }
-        if (IsUnifiedVisualFamily(visualProfile_))
+        if (UsesMixedSlotCarousel(visualProfile_))
         {
             if (measurement_)
             {
                 measurement_->RecordBootstrap(bootstrap, result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
             }
-            const ReceiverProcessResult processed = ProcessUnifiedFrame(result, bootstrap, identityDisposition, decisions);
+            const ReceiverProcessResult processed = ProcessMixedSlotFrame(result, bootstrap, identityDisposition, decisions);
             UpdateVisualSnapshot();
             UpdateTelemetrySnapshot();
             return processed;
@@ -4452,11 +4553,13 @@ public:
     }
 
 private:
-    [[nodiscard]] ReceiverProcessResult ProcessUnifiedFrame(const pbdemodd3d11::CaptureDemodulatorResult& result,
+    [[nodiscard]] ReceiverProcessResult ProcessMixedSlotFrame(const pbdemodd3d11::CaptureDemodulatorResult& result,
         const pbprotocol::BootstrapRecord& bootstrap, const VisualIdentityDisposition identityDisposition, ReceiverDecisionTrace* const decisions)
     {
         SetReceiverFrameReason(decisions, ReceiverFrameReason::Processed);
         const auto& demodulation = result.demodulation;
+        const bool pam4Wide = visualProfile_ == VisualProfile::ExperimentalPam4Wide;
+        const bool pam4 = IsExperimentalPam4Family(visualProfile_);
         const ProfileBinding activeProfile = GetProfileBinding(visualProfile_);
         Require(bootstrap.visualProfileId == activeProfile.visualProfileId &&
             bootstrap.visualLayoutVersion == activeProfile.layoutVersion,
@@ -4477,14 +4580,17 @@ private:
         if (identityDisposition == VisualIdentityDisposition::Reordered)
         {
             SetReceiverFrameReason(decisions, ReceiverFrameReason::Reordered);
-            unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::ReorderedIdentity, &bootstrap,
-                result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
+            if (!pam4)
+            {
+                unifiedTelemetry_.InvalidateFrameCoverage(pbtelemetry::UnifiedCoverageFailureReason::ReorderedIdentity, &bootstrap,
+                    result.metadata.domain.captureEpoch, result.metadata.timestamp.monotonic100ns);
+            }
             return {};
         }
         if (result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::TelemetryOnly)
         {
             SetReceiverFrameReason(decisions, ReceiverFrameReason::TelemetryOnly);
-            if (session_ || pendingSession_)
+            if (!pam4 && (session_ || pendingSession_))
             {
                 const auto status = unifiedTelemetry_.BindSession(bootstrap.sessionTag.value);
                 if (!status || !unifiedTelemetry_.RecordUnavailableFrame(bootstrap,
@@ -4496,26 +4602,75 @@ private:
             }
             return {};
         }
-        Require(result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame &&
-            demodulation.visualProfileId == bootstrap.visualProfileId &&
-            demodulation.metadata.domain == result.metadata.domain &&
-            demodulation.metadata.captureObservation == result.metadata.captureObservation &&
-            demodulation.metadata.sourceGeneration == result.metadata.sourceGeneration &&
-            demodulation.metadata.slotGeneration == result.metadata.slotGeneration &&
-            demodulation.metadata.slotIndex == result.metadata.slotIndex &&
-            demodulation.unifiedObservation.bootstrapRecord == bootstrap,
-            "Unified same-frame demodulation identity mismatch");
-        Require(demodulation.acceptedUnifiedBlockCount <= demodulation.acceptedUnifiedBlocks.size(),
-            "Unified accepted-block count exceeds the fixed slot capacity");
+        if (pam4)
+        {
+            const auto ValidatePam4Handoff = [&](const auto& observation, const auto& blocks, const std::uint32_t blockCount,
+                const pbdemodd3d11::CaptureDemodulatorResultKind expectedKind)
+            {
+                Require(result.kind == expectedKind && observation.bootstrapRecord == bootstrap &&
+                    observation.bootstrap.canonical44 == result.bootstrapRecord && result.bootstrap.canonical44 == result.bootstrapRecord &&
+                    observation.frameSlotCount == activeProfile.codewords && blocks.size() == activeProfile.codewords &&
+                    blockCount <= blocks.size() && blockCount == observation.acceptedBlocks &&
+                    result.admittedSupplementalBandCount == 0 && result.demodulation.acceptedUnifiedBlockCount == 0 &&
+                    (pam4Wide ? result.pam4BlockCount == 0 : result.pam4WideBlockCount == 0),
+                    "PAM4 same-frame handoff or capacity mismatch");
+                snapshot_.Update([&](DecoderSnapshot& value)
+                {
+                    if (value.runGeneration != runGeneration_)
+                    {
+                        return;
+                    }
+                    pbprotocol::SaturatingIncrementUnsigned(value.pam4FrameObservations);
+                    if (observation.IsFrameAvailable())
+                    {
+                        pbprotocol::SaturatingIncrementUnsigned(value.pam4AvailableObservations);
+                        value.pam4EvaluatedSlots = pbprotocol::SaturatingAddUnsigned(value.pam4EvaluatedSlots, static_cast<std::uint64_t>(activeProfile.codewords));
+                        value.pam4AcceptedControlSlots = pbprotocol::SaturatingAddUnsigned(value.pam4AcceptedControlSlots, static_cast<std::uint64_t>(observation.acceptedControlRecords));
+                        value.pam4AcceptedTransportSlots = pbprotocol::SaturatingAddUnsigned(value.pam4AcceptedTransportSlots, static_cast<std::uint64_t>(observation.acceptedTransportBlocks));
+                    }
+                    else
+                    {
+                        pbprotocol::SaturatingIncrementUnsigned(value.pam4ErasedObservations);
+                    }
+                });
+            };
+            if (pam4Wide)
+            {
+                ValidatePam4Handoff(result.pam4WideObservation, result.pam4WideBlocks, result.pam4WideBlockCount,
+                    pbdemodd3d11::CaptureDemodulatorResultKind::ExperimentalPam4WideFrame);
+            }
+            else
+            {
+                ValidatePam4Handoff(result.pam4Observation, result.pam4Blocks, result.pam4BlockCount,
+                    pbdemodd3d11::CaptureDemodulatorResultKind::ExperimentalPam4Frame);
+            }
+        }
+        else
+        {
+            Require(result.kind == pbdemodd3d11::CaptureDemodulatorResultKind::UnifiedFrame &&
+                demodulation.visualProfileId == bootstrap.visualProfileId &&
+                demodulation.metadata.domain == result.metadata.domain &&
+                demodulation.metadata.captureObservation == result.metadata.captureObservation &&
+                demodulation.metadata.sourceGeneration == result.metadata.sourceGeneration &&
+                demodulation.metadata.slotGeneration == result.metadata.slotGeneration &&
+                demodulation.metadata.slotIndex == result.metadata.slotIndex &&
+                demodulation.unifiedObservation.bootstrapRecord == bootstrap,
+                "Unified same-frame demodulation identity mismatch");
+            Require(demodulation.acceptedUnifiedBlockCount <= demodulation.acceptedUnifiedBlocks.size(),
+                "Unified accepted-block count exceeds the fixed slot capacity");
+        }
+        const auto acceptedBlocks = pam4Wide ? std::span(result.pam4WideBlocks).first(result.pam4WideBlockCount) : pam4 ? std::span(result.pam4Blocks).first(result.pam4BlockCount) :
+            std::span(demodulation.acceptedUnifiedBlocks).first(demodulation.acceptedUnifiedBlockCount);
+        const bool frameAvailable = pam4Wide ? result.pam4WideObservation.IsFrameAvailable() : pam4 ? result.pam4Observation.IsFrameAvailable() : demodulation.unifiedObservation.IsFrameAvailable();
         const bool telemetrySessionKnown = session_.has_value() || pendingSession_.has_value();
-        if (telemetrySessionKnown)
+        if (!pam4 && telemetrySessionKnown)
         {
             RecordUnifiedObservation(result);
         }
-        if (!demodulation.unifiedObservation.IsFrameAvailable())
+        if (!frameAvailable)
         {
             SetReceiverFrameReason(decisions, ReceiverFrameReason::FrameErased);
-            Require(demodulation.acceptedUnifiedBlockCount == 0, "erased Unified frame emitted accepted bytes");
+            Require(acceptedBlocks.empty(), "erased Unified frame emitted accepted bytes");
             return {};
         }
         // Bootstrap-only/erased observations can advance the cadence tracker
@@ -4538,22 +4693,22 @@ private:
             return {}; // An older duplicate does not displace the single retained frame.
         }
         Require(*unifiedFrameIdentity_ == bootstrap, "conflicting same-sequence Unified Bootstrap");
-        std::array<bool, pbmodulation::kUnifiedMaximumFrameSlotCount> seenSlots{};
+        std::array<bool, maximumMixedFrameSlotCount> seenSlots{};
         std::uint32_t controlSlots = 0;
         // Validate the whole compact handoff before any Receiver mutation. The
         // cache holds only one frame, never pixels or an unbounded frame history.
-        for (std::uint32_t index = 0; index < demodulation.acceptedUnifiedBlockCount; index++)
+        for (std::uint32_t index = 0; index < acceptedBlocks.size(); index++)
         {
-            const auto& block = demodulation.acceptedUnifiedBlocks[index];
-            Require(block.codewordSlot < seenSlots.size() && !seenSlots[block.codewordSlot] &&
+            const auto& block = acceptedBlocks[index];
+            Require(block.codewordSlot < activeProfile.codewords && !seenSlots[block.codewordSlot] &&
                 block.size != 0 && block.size <= block.bytes.size(), "invalid or repeated Unified slot");
             seenSlots[block.codewordSlot] = true;
             const auto bytes = std::span(block.bytes).first(block.size);
             if (block.kind == pbmodulation::UnifiedSlotKind::Control)
             {
                 const auto& region = pbmodulation::kUnifiedVisualProfile.mixedSlots.controlRegion;
-                Require(block.codewordSlot >= region.firstCodewordSlot &&
-                    block.codewordSlot - region.firstCodewordSlot < region.codewordSlotCount,
+                Require(pam4 ? block.codewordSlot == 0 : (block.codewordSlot >= region.firstCodewordSlot &&
+                    block.codewordSlot - region.firstCodewordSlot < region.codewordSlotCount),
                     "Unified Control outside Base Luma control region");
                 const auto control = pbprotocol::ParseControlRecord(bytes);
                 RequireResult(control, "Unified Control independent parse failed");
@@ -4573,7 +4728,7 @@ private:
             }
             else
             {
-                Require(block.kind == pbmodulation::UnifiedSlotKind::Transport, "unknown Unified carrier kind");
+                Require(block.kind == pbmodulation::UnifiedSlotKind::Transport && (!pam4 || block.codewordSlot != 0), "unknown Unified carrier kind");
                 const auto transport = pbprotocol::ParseTransportBlock(bytes);
                 RequireResult(transport, "Unified Transport independent parse failed");
                 Require(transport.Value().header.sessionTag == bootstrap.sessionTag, "Unified Transport identity mismatch");
@@ -4603,7 +4758,7 @@ private:
                 controlSlots++;
             }
         }
-        Require(controlSlots <= pbmodulation::GetUnifiedMaximumControlSlots(), "Unified control-slot budget exceeded");
+        Require(controlSlots <= (pam4 ? 1U : pbmodulation::GetUnifiedMaximumControlSlots()), "Unified control-slot budget exceeded");
         if (decisions)
         {
             for (std::size_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
@@ -4622,7 +4777,7 @@ private:
         // even if a backend returned the compact accepted array in another order.
         for (std::uint32_t pass = 0; pass < 3; pass++)
         {
-            if (pass == 1 && !telemetrySessionKnown && (session_ || pendingSession_))
+            if (!pam4 && pass == 1 && !telemetrySessionKnown && (session_ || pendingSession_))
             {
                 RecordUnifiedObservation(result);
             }
@@ -5000,7 +5155,7 @@ private:
 
         DecoderResumeLoadedState loadedResume;
         const DecoderResumeStoreStatus resumeStatus = DecoderResumeStore::Open(outputDirectory_, sessionTag,
-            sessionControlRecord, policy_, resumeStore_, loadedResume, budgetBoundActiveSegments_);
+            sessionControlRecord, policy_, resumeStore_, loadedResume, budgetBoundActiveSegments_, memoryBudget_ ? &*memoryBudget_ : nullptr);
         Require(static_cast<bool>(resumeStatus), "Decoder resume journal open failed: " + resumeStatus.message);
 
         pbstorage::OutputFileConfig storageConfig;
@@ -5476,6 +5631,10 @@ private:
         }
         if (resumeStore_ && std::chrono::steady_clock::now() >= nextResumeCheckpoint_)
         {
+            snapshot_.Update([](DecoderSnapshot& value)
+            {
+                value.activeRecoveryOperation = "CheckpointResume";
+            });
             const DecoderResumeStoreStatus resumeStatus = resumeStore_->Checkpoint();
             Require(static_cast<bool>(resumeStatus), "periodic Decoder resume checkpoint failed: " + resumeStatus.message);
             nextResumeCheckpoint_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -5483,6 +5642,7 @@ private:
             {
                 if (value.runGeneration == runGeneration_)
                 {
+                    value.activeRecoveryOperation.clear();
                     value.resumeStateGeneration = resumeStore_->GetGeneration();
                     value.resumeStateBytes = resumeStore_->GetFileBytes();
                 }
@@ -5694,6 +5854,7 @@ private:
             if (value.runGeneration == runGeneration_)
             {
                 value.state = DecoderState::Verifying;
+                value.activeRecoveryOperation = "VerifySegment";
                 value.statusMessage = "Verifying EncodedDigest, bounded decompression, and RawDigest";
             }
         });
@@ -5711,6 +5872,10 @@ private:
             descriptor.rawSize == verifiedSegment.GetRawBytes().size() && encodedBytes == descriptor.encodedSize,
             "verified Segment does not match the bounded output reservation");
         Require(static_cast<bool>(resumeStore_), "verified Segment has no active resume journal");
+        snapshot_.Update([](DecoderSnapshot& value)
+        {
+            value.activeRecoveryOperation = "WriteSegmentAndCheckpoint";
+        });
         const DecoderResumeStoreStatus activeCheckpointStatus = resumeStore_->Checkpoint();
         Require(static_cast<bool>(activeCheckpointStatus),
             "completed Segment accepted-block checkpoint failed: " + activeCheckpointStatus.message);
@@ -5763,6 +5928,10 @@ private:
         Require(progress_.ObserveVerifiedRawBytes(totalVerifiedRawBytes_, ElapsedMilliseconds(started_)),
             "verified raw-byte progress update failed");
         ApplyProgress();
+        snapshot_.Update([](DecoderSnapshot& value)
+        {
+            value.activeRecoveryOperation.clear();
+        });
         TryPublish(timestamp100ns);
     }
 
@@ -5788,6 +5957,7 @@ private:
             if (value.runGeneration == runGeneration_)
             {
                 value.state = DecoderState::Publishing;
+                value.activeRecoveryOperation = "VerifyAndPublishFile";
                 value.statusMessage = "WholeFileDigest verification and same-directory final publish";
             }
         });
@@ -5933,8 +6103,8 @@ private:
             {
                 return;
             }
-            value.uniqueVisualFps = IsUnifiedVisualFamily(visualProfile_) ?
-                unifiedTelemetry_.GetSnapshot().uniqueVisualFps : visual.framesPerSecond;
+            value.uniqueVisualFps = IsExperimentalPam4Family(visualProfile_) ? std::nullopt :
+                IsUnifiedVisualFamily(visualProfile_) ? unifiedTelemetry_.GetSnapshot().uniqueVisualFps : visual.framesPerSecond;
             value.admittedFrameSequenceFps = visual.framesPerSecond;
             value.duplicateFrameSequences = visual.duplicateFrames;
             value.reorderedFrameSequences = visual.reorderedFrames;
@@ -6064,6 +6234,7 @@ private:
     std::shared_ptr<RunMeasurementRecorder> measurement_;
     std::unique_ptr<pbstorage::OutputFile> storage_;
     bool budgetBoundActiveSegments_ = false;
+    std::optional<DecoderMemoryBudget> memoryBudget_;
     std::unique_ptr<DecoderResumeStore> resumeStore_;
     std::optional<pbprotocol::SessionDescriptor> session_;
     std::optional<pbprotocol::SessionDescriptor> pendingSession_;
@@ -6084,8 +6255,8 @@ private:
     std::uint64_t totalVerifiedRawBytes_ = 0;
     std::uint64_t completedSegmentCount_ = 0;
     std::optional<pbprotocol::BootstrapRecord> unifiedFrameIdentity_;
-    std::array<std::optional<pbmodulation::UnifiedAcceptedBlock>, pbmodulation::kUnifiedMaximumFrameSlotCount> unifiedFrameBlocks_;
-    std::array<bool, pbmodulation::kUnifiedMaximumFrameSlotCount> unifiedFrameAdmitted_{};
+    std::array<std::optional<pbmodulation::UnifiedAcceptedBlock>, maximumMixedFrameSlotCount> unifiedFrameBlocks_;
+    std::array<bool, maximumMixedFrameSlotCount> unifiedFrameAdmitted_{};
     std::uint64_t pendingDroppedFrames_ = 0;
     std::uint64_t lastCaptureDroppedFrames_ = 0;
     std::uint64_t lastResultQueueDrops_ = 0;
@@ -6284,6 +6455,19 @@ void RunReplayProductionDemod(
     Require(static_cast<bool>(cancelled.status), "Offline Replay over-stage cancellation failed: " +
         DescribeCaptureStatus(cancelled.status));
     throw RuntimeFailure("Offline Replay production demodulator exceeded the two-stage completion contract");
+}
+
+void ApplyPam4CaptureSnapshot(const pbdemodd3d11::CaptureDemodulatorSnapshot& demod, DecoderSnapshot& snapshot)
+{
+    if (!IsExperimentalPam4Family(snapshot.visualProfile))
+    {
+        return;
+    }
+    snapshot.pam4CpuReference = demod.pam4CpuReference;
+    snapshot.pam4DecodedObservations = demod.pam4DecodedObservations;
+    snapshot.pam4FrameErasures = demod.pam4FrameErasures;
+    snapshot.pam4ReadbackDecodeWallTotal100ns = demod.pam4ReadbackDecodeWallTotal100ns;
+    snapshot.pam4ReadbackDecodeWallHighWater100ns = demod.pam4ReadbackDecodeWallHighWater100ns;
 }
 
 void ApplyOfflineDemodSnapshot(const pbdemodd3d11::CaptureDemodulatorSnapshot& demod,
@@ -7151,7 +7335,8 @@ void RunUnifiedHeadlessClockProbe(const std::uint32_t logicalVisualFps)
         "Unified headless clock probe did not cross the old fixed-clock deadline");
 }
 
-void VerifyUnifiedSpatialCommitAndLease(const ProfileBinding profile, const TransferDescription& description, const std::uint32_t initialAirtimePercent)
+void VerifyUnifiedSpatialCommitAndLease(const ProfileBinding profile, const TransferDescription& description, const std::uint32_t initialAirtimePercent,
+    const std::uint32_t modeledVisitBudgetPercent)
 {
     std::vector<std::uint32_t> leaseEnds(description.segments.size(), 0);
     std::vector<std::uint32_t> previousLeaseEnds(description.segments.size(), 0);
@@ -7169,7 +7354,7 @@ void VerifyUnifiedSpatialCommitAndLease(const ProfileBinding profile, const Tran
                 Require(requiredExclusive > leaseEnds.at(ordinal) && requiredExclusive <= (std::numeric_limits<std::uint32_t>::max)(),
                     "Spatial lease probe requires a growing bounded lease");
                 leaseEnds.at(ordinal) = static_cast<std::uint32_t>(requiredExclusive);
-            }, 1, 0, 30, true, initialAirtimePercent);
+            }, 1, 0, 30, true, initialAirtimePercent, modeledVisitBudgetPercent);
         const std::uint32_t rowCount = builder.GetActiveSegmentWindowSize();
         std::uint64_t expectedCommitted = 0;
         for (std::uint32_t phase = 0; phase < rowCount; phase++)
@@ -7239,6 +7424,10 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
         "Unified recovery frame budget or late-join point is outside the test contract");
     Require(config.initialAirtimePercent >= 50 && config.initialAirtimePercent <= 100 &&
         (config.initialAirtimePercent == 100 || config.grayFastSpatialInterleave), "Unified recovery initial airtime is outside the test contract");
+    Require(config.transportSlotErasurePercent <= 75, "Unified recovery residual Transport erasure is outside the test contract");
+    Require(config.modeledVisitBudgetPercent >= 100 && config.modeledVisitBudgetPercent <= 200 &&
+        (config.modeledVisitBudgetPercent == 100 || (config.grayFastSpatialInterleave && config.initialAirtimePercent == 100)),
+        "Unified recovery modeled visit budget is outside the test contract");
     const std::uint32_t logicalVisualFps = config.logicalVisualFps;
     Require(logicalVisualFps == 15 || logicalVisualFps == 30, "Unified graduation recovery FPS is out of bounds");
     Require(config.erasureModel == UnifiedRecoveryErasureModel::None || config.erasureModel == UnifiedRecoveryErasureModel::PermutedThird ||
@@ -7268,7 +7457,8 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
     AuthoritativeCompletion completion;
     ReceiverPipeline pipeline(receiver, outputDirectory, policy, snapshot, completion, 1,
         std::chrono::steady_clock::now(), profile.profile, false, false, true, nullptr, {}, config.budgetBoundDecoders);
-    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, logicalVisualFps, config.grayFastSpatialInterleave, config.initialAirtimePercent);
+    SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, logicalVisualFps, config.grayFastSpatialInterleave, config.initialAirtimePercent,
+        config.modeledVisitBudgetPercent);
     result = {};
     result.spatialBankStorageBytes = builder.GetSpatialBankStorageBytes();
     if (config.collectSegmentTrace)
@@ -7284,7 +7474,7 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
     }
     if (config.grayFastSpatialInterleave)
     {
-        VerifyUnifiedSpatialCommitAndLease(profile, description, config.initialAirtimePercent);
+        VerifyUnifiedSpatialCommitAndLease(profile, description, config.initialAirtimePercent, config.modeledVisitBudgetPercent);
         result.spatialCommitAndLeaseVerified = true;
     }
     std::uint32_t erasureState = 0x91A3C5E7U;
@@ -7327,6 +7517,24 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
                 }
                 else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession)
                 {
+                    // At most 200000 frames * 18 slots. The mask depends only
+                    // on the logical frame and physical slot, not receiver
+                    // progress, packet contents, admission or sender policy.
+                    result.modeledTransportSlotCandidates++;
+                    if (config.transportSlotErasurePercent != 0)
+                    {
+                        // Intentional uint32 modulo arithmetic for a fixed
+                        // synthetic mask; not protocol arithmetic or a CSPRNG.
+                        std::uint32_t slotErasureState = static_cast<std::uint32_t>(result.senderLogicalFrames) * 0x9E3779B9U ^ slot * 0x85EBCA6BU ^ 0x6F831D29U;
+                        slotErasureState ^= slotErasureState << 13U;
+                        slotErasureState ^= slotErasureState >> 17U;
+                        slotErasureState ^= slotErasureState << 5U;
+                        if (slotErasureState % 100U < config.transportSlotErasurePercent)
+                        {
+                            result.modeledTransportSlotsErased++;
+                            continue;
+                        }
+                    }
                     std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes> bytes{};
                     std::uint32_t payloadBytes = 0;
                     const auto serializedBytes = builder.BuildTransportBlockForSlot(slot, bytes, payloadBytes);
@@ -8064,6 +8272,45 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedGraduation(const std::ui
     }
 }
 
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeMixedSlotTemporalOrder(const VisualProfile visualProfile,
+    MixedSlotTemporalOrderProbeSnapshot& output) noexcept
+{
+    output = {};
+    if (!IsExperimentalPam4Family(visualProfile) && visualProfile != VisualProfile::UnifiedGrayFast && visualProfile != VisualProfile::UnifiedLc4)
+    {
+        return RuntimeStatus::Failure("Temporal-order probe requires an explicitly supported mixed-slot profile");
+    }
+    try
+    {
+        const ProfileBinding profile = GetProfileBinding(visualProfile);
+        const UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(1024U * 1024U, visualProfile, 6);
+        SenderFrameBuilder builder(profile, fixture.description, 4, {}, {}, {}, 0, 0, 30);
+        MixedSlotTemporalOrderProbeSnapshot result;
+        for (std::size_t frameIndex = 0; frameIndex < result.segmentOrdinals.size(); frameIndex++)
+        {
+            result.segmentOrdinals[frameIndex] = builder.GetCurrentSegmentOrdinal();
+            const auto& frame = builder.PrepareHeadlessFrame(frameIndex);
+            for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
+            {
+                result.scheduledEquations[frameIndex] += static_cast<std::uint32_t>(
+                    frame.slots[slot].transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation);
+            }
+            builder.Advance();
+        }
+        result.peakSenderSegments = builder.GetPeakResidentEncodedSegmentCount();
+        output = result;
+        return {};
+    }
+    catch (const std::exception& exception)
+    {
+        return RuntimeStatus::Failure(exception.what());
+    }
+    catch (...)
+    {
+        return RuntimeStatus::Failure("Mixed-slot temporal-order probe failed with an unknown error");
+    }
+}
+
 RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedGraduationRecovery(const std::wstring& outputDirectory,
     const bool eraseTwoThirds, const std::uint32_t logicalVisualFps, UnifiedGraduationRecoveryProbeSnapshot& output,
     const bool periodicErasure) noexcept
@@ -8243,7 +8490,7 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualLowFpsCarousel(const st
 
 RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(const std::span<const std::byte> source,
     const std::uint32_t destinationWidth, const std::uint32_t destinationHeight,
-    std::vector<std::byte>& output, const bool fillScreen) noexcept
+    std::vector<std::byte>& output, const bool fillScreen, const std::uint32_t rasterWidth) noexcept
 {
     constexpr std::size_t expectedSourceBytes =
         static_cast<std::size_t>(phase1CanvasWidth) * phase1CanvasHeight * 4U;
@@ -8261,7 +8508,7 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(c
         const auto byteCount = pbprotocol::CheckedMultiplyUnsigned(pixelCount.Value(), std::size_t{4});
         RequireResult(byteCount, "RemoteVisual fullscreen composition probe byte count overflow");
         std::vector<std::byte> result(byteCount.Value());
-        ComposeRemoteVisualFullscreenBgra(source, destinationWidth, destinationHeight, result, fillScreen);
+        ComposeRemoteVisualFullscreenBgra(source, destinationWidth, destinationHeight, result, fillScreen, rasterWidth);
         output = std::move(result);
         return {};
     }
@@ -8596,6 +8843,8 @@ RuntimeStatus EncoderRuntimeTestAccess::ProbeStreamingCarouselFile(const std::ws
         return RuntimeStatus::Failure("Streaming Carousel probe failed with an unknown error");
     }
 }
+
+#include "experimental_pam4_file_probe.inc"
 
 RuntimeStatus ApplicationRuntimeTestAccess::ProbeHeadlessMultiSegmentFile(const std::wstring& sourcePath,
     const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
@@ -9233,6 +9482,13 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReplay(const std:
 
 RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
 {
+    const bool pam4 = IsExperimentalPam4Family(config.visualProfile);
+    if (pam4 && (!config.singleMonitorFullscreen || config.remoteMetadata.channelType != ChannelType::RemoteVisual ||
+        config.measurement || config.fullscreenNativeSize || config.fullscreenSampling != FullscreenSamplingMode::Point ||
+        config.fullscreenRasterWidth != (config.visualProfile == VisualProfile::ExperimentalPam4Wide ? pbmodulation::kExperimentalPam4WidePresentationWidth : 0)))
+    {
+        return RuntimeStatus::Failure("Experimental PAM4 requires explicit remote fullscreen authority and its fixed point raster (PAM4 native; Wide 2560x1440); no formal measurement or incompatible presentation overrides");
+    }
     if (!IsValidRunId(config.runId))
     {
         return RuntimeStatus::Failure("RunId 必须为空或 128-bit lowercase hex（32 个字符）");
@@ -9254,10 +9510,10 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
         return RuntimeStatus::Failure("Compression level 必须位于当前支持范围 1..22");
     }
     if (config.segmentTargetBytes != 0 &&
-        ((config.visualProfile != VisualProfile::UnifiedGray && config.visualProfile != VisualProfile::UnifiedGrayFast) ||
-            config.segmentTargetBytes < 1024U * 1024U || config.segmentTargetBytes > 15U * 1024U * 1024U))
+        ((config.visualProfile != VisualProfile::UnifiedGray && config.visualProfile != VisualProfile::UnifiedGrayFast && !pam4) ||
+            config.segmentTargetBytes < 1024U * 1024U || config.segmentTargetBytes > (pam4 ? 8U : 15U) * 1024U * 1024U))
     {
-        return RuntimeStatus::Failure("Segment target override 仅允许灰阶实验 Profile，且必须位于 1..15 MiB");
+        return RuntimeStatus::Failure("Segment target override requires Gray 1..15 MiB or explicit PAM4 1..8 MiB");
     }
     if (config.grayFastSpatialInterleave && config.visualProfile != VisualProfile::UnifiedGrayFast)
     {
@@ -9267,11 +9523,34 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("Short initial airtime requires explicit spatial GrayFast experimental mode");
     }
+    if (config.grayFastExtendedVisitBudget && (!config.grayFastSpatialInterleave || config.grayFastShortInitialAirtime))
+    {
+        return RuntimeStatus::Failure("Extended visit budget requires spatial GrayFast without shortened initial airtime");
+    }
     if (config.fullscreenSampling != FullscreenSamplingMode::Point &&
         (!config.singleMonitorFullscreen ||
             (config.visualProfile != VisualProfile::UnifiedGray && config.visualProfile != VisualProfile::UnifiedGrayFast)))
     {
         return RuntimeStatus::Failure("Fullscreen sampling 实验仅允许灰阶 Unified 家族 single-monitor fullscreen");
+    }
+    if (config.fullscreenNativeSize && (!config.singleMonitorFullscreen || config.fullscreenSampling != FullscreenSamplingMode::Point ||
+        (config.visualProfile != VisualProfile::UnifiedGray && config.visualProfile != VisualProfile::UnifiedGrayFast)))
+    {
+        return RuntimeStatus::Failure("Native-size fullscreen 实验仅允许灰阶 Unified 家族 single-monitor fullscreen 和 point sampling");
+    }
+    if (config.fullscreenRasterWidth != 0)
+    {
+        std::uint32_t monitorWidth = 0;
+        std::uint32_t monitorHeight = 0;
+        if (!config.singleMonitorFullscreen || config.fullscreenNativeSize || config.fullscreenSampling != FullscreenSamplingMode::Point ||
+            (config.visualProfile != VisualProfile::UnifiedGray && config.visualProfile != VisualProfile::UnifiedGrayFast &&
+                config.visualProfile != VisualProfile::ExperimentalPam4Wide) ||
+            config.fullscreenRasterWidth < phase1CanvasWidth || config.fullscreenRasterWidth > maximumRemoteVisualLowFpsRoiWidth ||
+            config.fullscreenRasterWidth % 16U != 0 || !TryGetMonitorDimensions(*config.singleMonitorFullscreen, monitorWidth, monitorHeight) ||
+            config.fullscreenRasterWidth > monitorWidth || config.fullscreenRasterWidth / 16U * 9U > monitorHeight)
+        {
+            return RuntimeStatus::Failure("Centered raster width requires Gray-family point fullscreen, 1920..3840 in steps of 16, fitting the selected monitor");
+        }
     }
     if (config.grayFastSpatialInterleave && config.measurement)
     {
@@ -9289,7 +9568,7 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("Logical Visual FPS 必须为 0 或 1..240，Control repetitions 必须为 1..64");
     }
-    if (IsUnifiedVisualFamily(config.visualProfile) &&
+    if ((IsUnifiedVisualFamily(config.visualProfile) || pam4) &&
         (config.logicalVisualFps < 1 || config.logicalVisualFps > 60 || !config.compressionEnabled ||
             config.compressionLevel != 3 || config.controlRepetitions != 4 || config.monitorSafety))
     {
@@ -9300,7 +9579,7 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
     {
         return RuntimeStatus::Failure("历史 RemoteVisual Profile 的 Logical Visual FPS 必须为 1..5；统一 Profile 将独立使用 1..60");
     }
-    if (!IsUnifiedVisualFamily(config.visualProfile) &&
+    if (!IsUnifiedVisualFamily(config.visualProfile) && !pam4 &&
         config.visualProfile != VisualProfile::RemoteVisualLowFps && config.singleMonitorFullscreen)
     {
         return RuntimeStatus::Failure("single-monitor fullscreen 仅允许 Unified 或 remote-lf4 profile");
@@ -9406,10 +9685,30 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
 
 RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const bool testOnlyUnifiedReplay)
 {
-    if (config.budgetBoundDecoders && (config.visualProfile != VisualProfile::UnifiedGrayFast || config.measurement ||
+    if (config.memoryBudget)
+    {
+        const auto memoryStatus = ValidateDecoderMemoryBudget(*config.memoryBudget);
+        if (!config.budgetBoundDecoders || memoryStatus != DecoderMemoryBudgetError::None)
+        {
+            return RuntimeStatus::Failure(!config.budgetBoundDecoders ? "自定义内存预算需要显式按预算接收模式" : DescribeDecoderMemoryBudgetError(memoryStatus));
+        }
+    }
+    const bool pam4 = IsExperimentalPam4Family(config.visualProfile);
+    if (config.singleMonitorCapture && (!pam4 || config.monitorSafety))
+    {
+        return RuntimeStatus::Failure("Single-monitor capture requires explicit live PAM4 mode and excludes protected/experiment monitor authority");
+    }
+    if (pam4 && (config.captureBackend != CaptureBackend::Auto || (!config.monitorSafety && !config.singleMonitorCapture) ||
+        config.remoteMetadata.channelType != ChannelType::RemoteVisual || config.measurement || config.diagnosticCaptureOnly ||
+        !config.replayInputPath.empty() || !config.replayOutputPath.empty() || config.replayEvidenceVisualProfileId ||
+        config.replayMaximumCaptureFramesPerSecond != 0 || testOnlyUnifiedReplay))
+    {
+        return RuntimeStatus::Failure("Experimental PAM4 requires explicit single-monitor capture or protected/experiment monitors, remote Auto capture and no formal measurement or Replay");
+    }
+    if (config.budgetBoundDecoders && ((config.visualProfile != VisualProfile::UnifiedGrayFast && !pam4) || config.measurement ||
         config.diagnosticCaptureOnly || !config.replayInputPath.empty() || !config.replayOutputPath.empty()))
     {
-        return RuntimeStatus::Failure("Budget-bound decoders require explicit live GrayFast experimental mode without formal measurement or Replay");
+        return RuntimeStatus::Failure("Budget-bound decoders require explicit live GrayFast or PAM4 experimental mode without formal measurement or Replay");
     }
     if (!IsValidRunId(config.runId))
     {
@@ -9515,7 +9814,7 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
     if ((config.captureBackend != CaptureBackend::Auto && config.captureBackend != CaptureBackend::Wgc && config.captureBackend != CaptureBackend::Dxgi) ||
         (config.visualProfile != VisualProfile::DirectLevels2x2 && config.visualProfile != VisualProfile::ShapeChroma &&
          config.visualProfile != VisualProfile::RemoteVisualResilient &&
-         config.visualProfile != VisualProfile::RemoteVisualLowFps && !IsUnifiedVisualFamily(config.visualProfile)))
+         config.visualProfile != VisualProfile::RemoteVisualLowFps && !IsUnifiedVisualFamily(config.visualProfile) && !pam4))
     {
         return RuntimeStatus::Failure("Capture backend 或 Visual Profile 不在当前 Runtime Option Inventory 中");
     }
@@ -9543,8 +9842,9 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
     const bool unifiedGeometry = IsUnifiedVisualFamily(config.visualProfile) &&
         width >= phase1CanvasWidth * 3 / 4 && width <= phase1CanvasWidth * 2 &&
         height >= phase1CanvasHeight * 3 / 4 && height <= phase1CanvasHeight * 2;
-    if ((IsUnifiedVisualFamily(config.visualProfile) && !unifiedGeometry) ||
-        (!strictGeometry && !lowFpsGeometry && !unifiedGeometry && !diagnosticCaptureOnlyAllowed))
+    const bool pam4Geometry = pam4 && width >= 1440 && width <= 3840 && height >= 810 && height <= 2160;
+    if ((IsUnifiedVisualFamily(config.visualProfile) && !unifiedGeometry) || (pam4 && !pam4Geometry) ||
+        (!strictGeometry && !lowFpsGeometry && !unifiedGeometry && !pam4Geometry && !diagnosticCaptureOnlyAllowed))
     {
         return RuntimeStatus::Failure(
             "Geometry incompatible: Unified ROI requires 1440..3840 x 810..2160 physical pixels; legacy LF4 requires 0.5x..2.0x");
@@ -9559,7 +9859,29 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
     {
         return RuntimeStatus::Failure("remote-lf4 profile 必须显式使用 RemoteVisual channel");
     }
-    if (config.remoteMetadata.channelType == ChannelType::RemoteVisual)
+    if (config.singleMonitorCapture)
+    {
+        const MonitorInfo& target = *config.singleMonitorCapture;
+        if (target.deviceName.empty() || !target.dxgiOutputIdentityAvailable || target.monitor != config.region.monitor ||
+            EqualRect(&target.physicalRect, &monitorRect) == FALSE || target.dpiX != config.region.dpiX ||
+            target.dpiY != config.region.dpiY || target.rotation != config.region.rotation)
+        {
+            return RuntimeStatus::Failure("Single-monitor capture target must exactly match the selected ROI monitor identity and physical geometry");
+        }
+        try
+        {
+            if (!config.remoteMetadata.protectedMonitorIdentity.empty() ||
+                config.remoteMetadata.experimentMonitorIdentity != Utf8FromWide(target.deviceName))
+            {
+                return RuntimeStatus::Failure("Single-monitor capture metadata must name only its selected target, without a protected monitor");
+            }
+        }
+        catch (const std::exception&)
+        {
+            return RuntimeStatus::Failure("Single-monitor capture identity is not valid UTF-16");
+        }
+    }
+    else if (config.remoteMetadata.channelType == ChannelType::RemoteVisual)
     {
         if (!config.monitorSafety)
         {
@@ -9575,7 +9897,7 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
             return RuntimeStatus::Failure(std::string("Geometry incompatible with current experimental profile: ") +
                 GetMonitorSafetyErrorName(monitorSafety.code));
         }
-        if (config.visualProfile == VisualProfile::RemoteVisualLowFps)
+        if (config.visualProfile == VisualProfile::RemoteVisualLowFps || pam4)
         {
             try
             {
@@ -9667,6 +9989,23 @@ RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const b
 RuntimeStatus ValidateDecoderConfig(const DecoderConfig& config)
 {
     return ValidateDecoderConfigInternal(config, false);
+}
+
+RuntimeStatus ApplicationRuntimeTestAccess::ProbeExperimentalPam4CaptureConfig(const DecoderConfig& config,
+    pbcapturenormalize::CaptureNormalizeConfig& captureConfig, pbdemodd3d11::CaptureDemodulatorConfig& demodConfig)
+{
+    if (!IsExperimentalPam4Family(config.visualProfile))
+    {
+        return RuntimeStatus::Failure("PAM4 configuration probe rejects other profiles");
+    }
+    const auto status = ValidateDecoderConfig(config);
+    if (!status)
+    {
+        return status;
+    }
+    captureConfig = MakeCaptureConfig(config);
+    demodConfig = MakeCaptureDemodulatorConfig(config, GetProfileBinding(config.visualProfile), false);
+    return {};
 }
 
 RuntimeStatus AuditUnifiedSource(const std::wstring& sourcePath, std::string& ledgerJson) noexcept
@@ -9902,7 +10241,10 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     initial.configuredLogicalVisualFps = config.logicalVisualFps;
     initial.grayFastSpatialInterleave = config.grayFastSpatialInterleave;
     initial.fullscreenSampling = config.fullscreenSampling;
+    initial.fullscreenNativeSize = config.fullscreenNativeSize;
+    initial.fullscreenRasterWidth = config.fullscreenRasterWidth;
     initial.configuredInitialAirtimePercent = config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U;
+    initial.configuredVisitBudgetPercent = config.grayFastExtendedVisitBudget ? grayFastExtendedVisitBudgetPercent : 100U;
     if (config.logicalVisualFps != 0)
     {
         initial.configuredLogicalDwellMilliseconds = 1000.0 / config.logicalVisualFps;
@@ -10234,13 +10576,19 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     segmentOrdinal, requiredExclusive);
                 Require(static_cast<bool>(leaseStatus), "Encoder repair ID durable lease failed: " + leaseStatus.message);
             }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), config.logicalVisualFps, config.grayFastSpatialInterleave,
-            config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U);
+            config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U,
+            config.grayFastExtendedVisitBudget ? grayFastExtendedVisitBudgetPercent : 100U);
         builder.diagnostics = config.diagnostics.get();
         const std::string runId = config.runId.empty() ? GenerateRunId() : config.runId;
         const CarouselSnapshot initialCarousel = builder.GetCarouselSnapshot();
         const auto rawVisualBits = pbprotocol::CheckedMultiplyUint64(profile.dataBytes, 8);
-        const auto informationBytesPerFrame = pbprotocol::CheckedMultiplyUint64(profile.codewords, profile.slotInformationBytes);
-        const auto transportPayloadCeiling = pbprotocol::CheckedMultiplyUint64(profile.codewords, profile.blockBytes);
+        const auto informationBytesPerFrame = IsExperimentalPam4Family(profile.profile) ?
+            pbprotocol::ProtocolResult<std::uint64_t>::Success(pbmodulation::kExperimentalPam4ControlInformationBytes +
+                (profile.codewords - 1ULL) * pbmodulation::kExperimentalPam4DataInformationBytes) :
+            pbprotocol::CheckedMultiplyUint64(profile.codewords, profile.slotInformationBytes);
+        const auto transportPayloadCeiling = IsExperimentalPam4Family(profile.profile) ?
+            pbprotocol::ProtocolResult<std::uint64_t>::Success((profile.codewords - 1ULL) * profile.blockBytes) :
+            pbprotocol::CheckedMultiplyUint64(profile.codewords, profile.blockBytes);
         RequireResult(rawVisualBits, "profile raw visual capacity overflow");
         RequireResult(informationBytesPerFrame, "profile Inner-FEC information capacity overflow");
         RequireResult(transportPayloadCeiling, "profile Transport payload ceiling overflow");
@@ -10338,7 +10686,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         windowConfig.repeatActiveFrame = config.visualProfile == VisualProfile::RemoteVisualLowFps ||
             (IsUnifiedVisualFamily(config.visualProfile) && config.visualProfile != VisualProfile::UnifiedGrayFast);
         windowConfig.topmost = config.singleMonitorFullscreen.has_value();
-        windowConfig.allowUnmappedHardwareAdapter = IsUnifiedVisualFamily(config.visualProfile) && config.singleMonitorFullscreen.has_value();
+        windowConfig.allowUnmappedHardwareAdapter = (IsUnifiedVisualFamily(config.visualProfile) || IsExperimentalPam4Family(config.visualProfile)) && config.singleMonitorFullscreen.has_value();
         std::unique_ptr<EncoderPresentation> window = presentationFactory_(windowConfig);
         Require(window != nullptr, "Encoder presentation factory returned no window owner");
         std::uint64_t frameSequence = sessionStore->GetFrameSequenceStart();
@@ -10552,7 +10900,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     else
                     {
                         ComposeRemoteVisualFullscreenBgra(builder.GetBuiltPixels(), presentationWidth,
-                            presentationHeight, fullscreenPixels, IsUnifiedVisualFamily(config.visualProfile));
+                            presentationHeight, fullscreenPixels, (IsUnifiedVisualFamily(config.visualProfile) || config.visualProfile == VisualProfile::ExperimentalPam4Wide) && !config.fullscreenNativeSize, config.fullscreenRasterWidth);
                     }
                 }
                 frameBuilt = true;
@@ -10651,7 +10999,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                             return;
                         }
                         value.broadcastRuntimeMilliseconds = broadcastMilliseconds;
-                        if (IsUnifiedVisualFamily(profile.profile))
+                        if (UsesMixedSlotCarousel(profile.profile))
                         {
                             const auto controlSlots = pbprotocol::CheckedAddUint64(value.submittedControlSlots, submittedControlSlots);
                             const auto logicalFrames = pbprotocol::CheckedAddUint64(value.submittedLogicalFrames, 1);
@@ -10886,6 +11234,16 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
     {
         worker_.join();
     }
+    DecoderMemoryHostSnapshot memoryHost;
+    if (config.memoryBudget)
+    {
+        memoryHost = QueryDecoderMemoryHostSnapshot();
+        const auto memoryStatus = ValidateDecoderMemoryAgainstHost(*config.memoryBudget, memoryHost);
+        if (memoryStatus != DecoderMemoryBudgetError::None)
+        {
+            return RuntimeStatus::Failure(DescribeDecoderMemoryBudgetError(memoryStatus));
+        }
+    }
     if (nextRunGeneration_ == 0)
     {
         return RuntimeStatus::Failure("run generation exhausted");
@@ -10905,6 +11263,12 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
     initial.requestedBackend = config.captureBackend;
     initial.visualProfile = config.visualProfile;
     initial.remoteMetadata = config.remoteMetadata;
+    initial.customDecoderMemoryBudget = config.memoryBudget.has_value();
+    initial.memoryHostSnapshotAvailable = memoryHost.available;
+    initial.memoryHostTotalPhysicalBytes = memoryHost.totalPhysicalBytes;
+    initial.memoryHostAvailablePhysicalBytes = memoryHost.availablePhysicalBytes;
+    initial.memoryHostAvailableCommitBytes = memoryHost.availableCommitBytes;
+    initial.memoryPlanningBytes = config.memoryBudget ? CalculateDecoderMemoryPlanningBytes(*config.memoryBudget) : 0;
     const bool offlineReplay = !config.replayInputPath.empty();
     if (offlineReplay)
     {
@@ -10941,9 +11305,12 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
             "Recording RemoteVisual ROI in bounded replay capture-only mode; Bootstrap/demod/FEC/Receiver/publish disabled" :
             "Waiting for same-profile Bootstrap pixels";
         initial.monitorSafetyPreflightPassed = false;
-        initial.monitorSafetyStatus = (config.remoteMetadata.channelType == ChannelType::RemoteVisual ||
+        initial.monitorSafetyStatus = config.singleMonitorCapture ? "NotApplicableSingleMonitorCapture" :
+            (config.remoteMetadata.channelType == ChannelType::RemoteVisual ||
             testOnlyUnifiedReplay) ?
             "Pending" : "NotRequired";
+        initial.singleMonitorCaptureEnabled = config.singleMonitorCapture.has_value();
+        initial.singleMonitorCaptureStatus = config.singleMonitorCapture ? "Pending" : "NotSelected";
     }
     initial.replayEnabled = offlineReplay || !config.replayOutputPath.empty();
     initial.replayDiagnosticOnly = initial.replayEnabled;
@@ -11123,6 +11490,29 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
     {
         const auto started = std::chrono::steady_clock::now();
         ProcessResourceSampler resourceSampler;
+        const auto RevalidateCaptureTarget = [&](const bool preflight)
+        {
+            const MonitorSafetyStatus status = RevalidateSingleMonitorCapture(*config.singleMonitorCapture, services_);
+            snapshot_.Update([&](DecoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration)
+                {
+                    value.singleMonitorCaptureStatus = status ? "PASS" : "FAIL";
+                    if (status)
+                    {
+                        value.singleMonitorCapturePreflightPassed = value.singleMonitorCapturePreflightPassed || preflight;
+                        value.singleMonitorCaptureRevalidationCount++;
+                    }
+                }
+            });
+            Require(static_cast<bool>(status), std::string(preflight ?
+                "single-monitor capture target changed before startup: " : "single-monitor capture target changed during run: ") +
+                GetMonitorSafetyErrorName(status.code));
+        };
+        if (config.singleMonitorCapture)
+        {
+            RevalidateCaptureTarget(true);
+        }
         if (config.replayInputPath.empty() && config.monitorSafety)
         {
             const MonitorSafetyStatus monitorSafety = RevalidateMonitorSafetySelection(*config.monitorSafety);
@@ -11200,6 +11590,11 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         }
         pbprotocol::ReceiverResourcePolicy policy = config.budgetBoundDecoders ? MakeBudgetBoundUnifiedReceiverResourcePolicy() :
             MakeReceiverResourcePolicyForVisualProfile(config.visualProfile);
+        if (config.memoryBudget)
+        {
+            const auto memoryStatus = ApplyDecoderMemoryBudget(*config.memoryBudget, policy);
+            Require(memoryStatus == DecoderMemoryBudgetError::None, DescribeDecoderMemoryBudgetError(memoryStatus));
+        }
         if (services_.outputConfirmationThresholdBytes)
         {
             policy.maxOutputPreallocationBytesWithoutPrompt = *services_.outputConfirmationThresholdBytes;
@@ -11208,7 +11603,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
         const auto pipelineOwner = std::make_unique<ReceiverPipeline>(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
-            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_, config.measurement, config.budgetBoundDecoders);
+            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_, config.measurement, config.budgetBoundDecoders, config.memoryBudget);
         auto& pipeline = *pipelineOwner;
         pipeline.diagnostics = config.diagnostics.get();
 
@@ -11365,6 +11760,11 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 });
                 nextMonitorSafetyCheck = now + std::chrono::seconds(1);
             }
+            if (config.singleMonitorCapture && now >= nextMonitorSafetyCheck)
+            {
+                RevalidateCaptureTarget(false);
+                nextMonitorSafetyCheck = now + std::chrono::seconds(1);
+            }
             resourceSampler.Sample(ElapsedMilliseconds(started));
             snapshot_.Update([&](DecoderSnapshot& value)
             {
@@ -11456,6 +11856,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 }
                 capture.ApplyBinding(value);
                 ApplyCaptureComponentSnapshot(captureSnapshot, value);
+                ApplyPam4CaptureSnapshot(demodSnapshot, value);
                 value.bootstrapAcceptedFrames = demodSnapshot.bootstrapAcceptedFrames;
                 value.bootstrapRejectedFrames = demodSnapshot.bootstrapRejectedFrames;
                 value.supplementalBandDecodeAttempts = demodSnapshot.supplementalBandDecodeAttempts;
@@ -11569,6 +11970,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 return;
             }
             ApplyCaptureComponentSnapshot(stoppedCapture, value);
+            ApplyPam4CaptureSnapshot(stoppedDemod, value);
             value.demodPendingHighWater = stoppedDemod.pendingHighWater;
             value.resultQueueHighWater = stoppedDemod.resultQueueHighWater;
             value.staleResultDrops = stoppedDemod.staleResultDrops;
@@ -11584,8 +11986,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         });
         Require(stoppedCapture.shutdownComplete && !stoppedCapture.deferredCleanup &&
             stoppedCapture.liveFrameLeases == 0 && stoppedCapture.busyRoiTextures == 0 &&
-            stoppedDemod.demodulator.shutdown && stoppedDemod.pendingFrames == 0 &&
-            stoppedDemod.queuedResults == 0,
+            pbdemodd3d11::AreCaptureDemodulatorResourcesRetired(stoppedDemod),
             "capture/demod shutdown did not retire all bounded resources");
         measurementGuard.succeeded = pipeline.IsCompleted();
         if (!pipeline.IsCompleted())
@@ -11650,6 +12051,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 {
                     value.monitorSafetyStatus = "FAIL";
                 }
+                if (config.singleMonitorCapture && value.singleMonitorCaptureStatus != "FAIL")
+                {
+                    value.singleMonitorCaptureStatus = "RunFailed";
+                }
                 if (!value.actualBackend && value.captureBackendAttempts == 0)
                 {
                     value.backendReason = config.replayInputPath.empty() ?
@@ -11703,6 +12108,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                     if (config.monitorSafety)
                     {
                         value.monitorSafetyStatus = "FAIL";
+                    }
+                    if (config.singleMonitorCapture && value.singleMonitorCaptureStatus != "FAIL")
+                    {
+                        value.singleMonitorCaptureStatus = "RunFailed";
                     }
                 }
             });

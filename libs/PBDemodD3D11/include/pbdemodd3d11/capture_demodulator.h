@@ -5,6 +5,8 @@
 #include "pbmodulation/reference_visual_profile.h"
 #include "pbmodulation/supplemental_band.h"
 #include "pbmodulation/visual_temporal.h"
+#include "pbmodulation/experimental_pam4.h"
+#include "pbmodulation/experimental_pam4_wide.h"
 #include "pbprotocol/bootstrap_control_codec.h"
 
 #include <array>
@@ -22,7 +24,8 @@ inline constexpr std::size_t localDesktopErasureCount =
 
 enum class CaptureDemodulatorResultKind : std::uint8_t
 {
-    Transport = 0, ControlRecord = 1, ControlFragment = 2, TelemetryOnly = 3, UnifiedFrame = 4
+    Transport = 0, ControlRecord = 1, ControlFragment = 2, TelemetryOnly = 3, UnifiedFrame = 4,
+    ExperimentalPam4Frame = 5, ExperimentalPam4WideFrame = 6
 };
 
 enum class CaptureDemodulatorGeometryStatus : std::uint8_t
@@ -63,6 +66,15 @@ struct CaptureDemodulatorResult
     CaptureDemodulatorGeometryStatus geometryStatus = CaptureDemodulatorGeometryStatus::NotApplicable;
     CaptureDemodulatorTemporalDisposition temporalDisposition = CaptureDemodulatorTemporalDisposition::NotApplicable;
     DemodFrameResult demodulation;
+    // Independent CPU-reference handoff. Never masquerades as a 15/18-slot
+    // GPU UnifiedFrame or supplies metrics for nonexistent Fine/Chroma lanes.
+    pbmodulation::ExperimentalPam4Observation pam4Observation;
+    std::array<pbmodulation::UnifiedAcceptedBlock, pbmodulation::kExperimentalPam4CodewordCount> pam4Blocks{};
+    std::uint32_t pam4BlockCount = 0;
+    // Independent layout16 handoff; no truncation or alias through Unified18.
+    pbmodulation::ExperimentalPam4WideObservation pam4WideObservation;
+    std::array<pbmodulation::UnifiedAcceptedBlock, pbmodulation::kExperimentalPam4WideCodewordCount> pam4WideBlocks{};
+    std::uint32_t pam4WideBlockCount = 0;
     // Indices into demodulation.acceptedTransportBlocks that are newly admitted
     // by the bounded LF4 temporal gate. Non-Unified strict profiles expose
     // every accepted Transport block here. Unified accepted blocks remain in
@@ -175,7 +187,18 @@ struct CaptureDemodulatorSnapshot
     std::uint32_t queuedResults = 0;
     std::uint32_t resultQueueHighWater = 0;
     std::uint64_t acceptedUnifiedBlocks = 0;
+    // Explicit experimental GPU-owned-ROI -> staging -> CPU reference path.
+    // No GPU metric/FEC stage or CPU->GPU upload occurs in this path.
+    bool pam4CpuReference = false;
+    std::uint64_t pam4DecodedObservations = 0;
+    std::uint64_t pam4FrameErasures = 0;
+    std::uint64_t pam4ReadbackDecodeWallTotal100ns = 0;
+    std::uint64_t pam4ReadbackDecodeWallHighWater100ns = 0;
 };
+
+// Consumer-domain retirement, not destruction of reusable owned buffers.
+// CPU-only PAM4 has no GPU Demodulator whose shutdown bit could be queried.
+[[nodiscard]] bool AreCaptureDemodulatorResourcesRetired(const CaptureDemodulatorSnapshot& snapshot) noexcept;
 
 // Calculates every fixed allocation before capture pool/ring creation. Failure
 // leaves output unchanged.
@@ -191,6 +214,10 @@ struct CaptureDemodulatorSnapshot
 // frame without protocol payload, while Transport carries only blocks that
 // passed QC-LDPC, canonical framing/CRC, and Bootstrap SessionTag validation;
 // UnifiedFrame exposes the corresponding mixed Control/Transport result.
+// ExperimentalPam4Frame instead finishes after the first staging retirement:
+// one bounded CPU reference consumes mapped pixels, copies eleven-slot results,
+// and Unmaps before returning. Its explicit readback/CPU counters and Reset on
+// domain changes do not claim a GPU demodulator or Unified lane statistics.
 class CaptureDemodulator final : public pbcapturenormalize::ScreenCaptureConsumer
 {
 public:

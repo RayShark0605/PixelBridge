@@ -11,6 +11,7 @@ target_sources(PBProtocol
         src/control_fragment_codec.cpp
         src/control_plane_receiver.cpp
         src/crc32c.cpp
+        src/crc32c_internal.h
         src/descriptor_binding.cpp
         src/descriptor_codec.cpp
         src/orphan_transport_block_cache.cpp

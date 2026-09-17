@@ -1,5 +1,8 @@
 # G21 真实远控 15 Hz / 1 GiB 手动循环 Sender + 6 小时 Receiver 单次复验
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 本入口按用户 2026-09-07 的明确决定，复用已经通过本机右屏 64 MiB、500 MiB、1 GiB 阶梯的冻结产品候选
 `6e9064319a51bedcd403d74d47dd45c067928013`，跳过新的远控 smoke/64 MiB，直接执行一次 1 GiB。
 这不会改变 PB-Unified-SC6-V3/layout 10、FEC、产品 admission、摘要、coverage、真实资源拒绝门或

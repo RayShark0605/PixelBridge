@@ -1,136 +1,86 @@
-# PixelBridge Phase 1.5 Current Runtime Option Inventory
-> **2026-09-09 文档记账更新：** 本清单在用户停止 G22 之后的非本机吞吐目标后做过一次状态整理。下面新增的 2026-09 条目是从当前源码与 CMake 声明直接核对得到的（`apps/*/main.cpp`、`apps/*/encoder_gui.cpp`、`apps/*/decoder_gui.cpp`、`apps/common/CMakeLists.txt`、`tools/CMakeLists.txt`）；本轮**未构建、未运行任何二进制或测试**，因此只说明「代码里存在该入口及其声明边界」，不说明其现场行为已验证。更早的表项仍是历史记录，不因本次整理而获得新的证据身份。
+# 当前运行时选项 / Current runtime options
 
-> **2026-09-07 G22 更新：** 双端 GUI 已重新实现为主页面/高级 Tab。Encoder 在当前主窗口所在屏幕全屏循环，运行期锁定 FPS，Esc 仅本窗口焦点有效；Decoder 明确选择显示器后整屏/限定该屏框选，进度为百分比/KB/s/ETA 文本，停止保留断点、完成不弹窗。GUI 的 KB/MB/GB 均按 1024 进位。Unified 生产接收在现有 500 GiB 上限内取消所有按文件大小触发的确认，仍保留资源/磁盘/路径/不覆盖/摘要/安全发布检查。以下 G15/G16 及更旧界面描述是历史记录；双击只打开GUI、CLI/重定向保留；最终独立包与新解压右屏1 MB恢复已通过，状态为PASS_LOCAL_CANDIDATE，见 [G22 交付与证据索引](EVIDENCE_INDEX.md)。阶段与失败见 [工作记录](UNIFIED_G22_GUI_RELEASE.md)。
+[中文使用指南](UNIFIED_USER_GUIDE.md) · [English user guide](USER_GUIDE.en.md)
 
-> **2026-09-04 G16 更新：** Decoder 产品 GUI 已固定 Unified/Auto，移除 FPS/Profile/backend/Replay 实验控件，真实 mixed-result 接线复用既有 Receiver、确认门、journal 与 Storage。旧 Decoder CLI 默认及显式诊断入口没有在本次迁移。下文旧表不再描述当前产品 GUI；当前入口、边界和证据见 [G22 GUI 发布与交互合同](UNIFIED_G22_GUI_RELEASE.md)。逐 lane telemetry/report 留待 G17，真实 selector/capture/实屏认证尚未运行。
+本表按当前 adapter 中的 option literal 核对，只列名字，不把研究选项推广成产品能力。CLI 的组合约束以 parser、Validate*Config 与帮助为准；未知/重复/冲突参数不得静默回退。
 
-> **2026-09-04 G15 更新：** Encoder 产品 GUI/默认 CLI 已改为 Unified、1..60 Hz（默认 15）、自动 RAW/zstd 与简化广播工作流，普通 Stop 保留 Session，显式确认后才删除。下文旧 Encoder 选项表仅为历史记录，不再描述当前产品界面；真实绑定与非显示证据见 [G22 GUI 发布与交互合同](UNIFIED_G22_GUI_RELEASE.md)。Decoder GUI 收敛仍是 G16，最终实屏认证尚未完成。
+The names below are audited against current adapters. Presence is not product certification or permission to combine every option. Parser/config validation remains authoritative. GUI users should use the user guide.
 
-> **2026-09-03 状态说明：本文件现为过渡/历史实现清单。** 下面的表格主要记录统一产品路线冻结前、截至 `bb5f0b1` 附近可到达的 Phase 1.5 GUI/CLI 与 RemoteVisual 实验入口。提交 `1445f9b` 已加入 Protocol 1.0 Descriptor Schema 1、流式多 Segment sender、durable ID lease、random-access `.part` 和 decoder resume journal 基础，因此本文关于 provisional descriptor、单 Segment 和“无协议状态恢复”的部分不再描述最新核心能力；但产品 GUI 仍未完成统一 Profile、自动 backend、1..60 Hz 与简化页面收敛。
->
-> 当前产品合同、真实完成状态和后续执行顺序以 [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) 为准。当前唯一产品 Profile 已是 `PB-Unified-SC6-V3`/layout 10；下面内容只用于定位旧选项及复用入口，不得据此声称最终远程/发布门已经完成。
 
-Status: implementation inventory for the first Windows GUI. This document records only options that are reachable through the current worktree's real public bindings, layered on pre-GUI baseline HEAD `80699813b595bcf6db64047b50d31056872e33e1`. The frozen annotated `phase1-gate-pass` tag object remains `fde56c4c4e7124e8ffe29a0dcb619f8236781ebb` and still peels to that same baseline commit. This is not a profile certification statement.
+## Encoder
 
-## 2026-09-14 非本机私有实验接线补记（不改变正式默认）
+Source: `apps/PixelBridgeEncoder/encoder_runtime_cli.cpp`
 
-本节是后续实际构建/定向测试与私有现场样本的新增记录，不继承顶部2026-09-09“未构建”的整理口径；准确结果及限制见[非本机当前会话§21.27–§21.29](REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md)。旧GUI表仍是历史，未因新增CLI自动获得新控件或发布资格。
+- `--channel`
+- `--compression`
+- `--compression-level`
+- `--control-repetitions`
+- `--experiment-monitor`
+- `--fullscreen-native-size`
+- `--fullscreen-raster-width`
+- `--fullscreen-sampling`
+- `--grayfast-extended-visits`
+- `--grayfast-short-initial-airtime`
+- `--grayfast-spatial-interleave`
+- `--journal`
+- `--logical-fps`
+- `--loop`
+- `--manual-stop`
+- `--origin`
+- `--profile`
+- `--protected-monitor`
+- `--remote-metadata`
+- `--remote-provider`
+- `--report`
+- `--run-id`
+- `--seconds`
+- `--segment-target-mb`
+- `--session-state-root`
+- `--single-monitor-fullscreen`
+- `--source`
 
-| 显式入口 | 实际约束与报告 |
-|---|---|
-| Decoder `--budget-bound-decoders` | 仅live `unified-gray-fast`，默认关闭；拒绝capture-only、Replay输入/输出及正式measurement混用。活动名额由原1GiB总预留、512MiB每实例、256MiB resume等预算与有限segment计数共同约束，不再固定8；正式默认/GUI仍8。顶层及阶段计数输出`budgetBoundDecoderAdmission`，实验运行不挂正式measurement记录器。 |
-| Encoder `--grayfast-spatial-interleave` | 显式GrayFast多段帧内交织，默认关闭；不改变Transport/wire。正式measurement的单Segment帧身份尚不适用，明确拒绝混用。 |
-| Encoder `--grayfast-short-initial-airtime` | 必须同时指定上一个flag；仅将>12段graduation文件的首轮airtime设为当前完整预算65%，保留M后续完整修复访问。小文件barrier不变。报告`grayFastSpatialInterleave`和`configuredInitialAirtimePercent`；当前较好链路有样本收益，但四分之一保留帧模型退化，不是普适/默认策略。 |
-| Encoder `--session-state-root ABSOLUTE_PATH` | 可为Unified实验提供独立持久状态根，默认仍原用户目录；不是payload旁路。用于干净对照隔离旧Sender会话；仍须检查resumed/source stability与双方Session，不靠新exe哈希推断新会话。 |
 
-这些私有包的0.75尺度诊断与GPU重采样尚未完成生产Profile分域，也没有认证任意分辨率；两个完整指定文件的最终时间仍以实传独立验证为准。所有摘要、安全发布、重开、冲突拒绝及资源门均保留。
+## Decoder
 
-## Product boundary used by the GUI
+Source: `apps/PixelBridgeDecoder/decoder_runtime_cli.cpp`
 
-- Instant LocalDesktop only: the Encoder broadcasts visual frames until the user stops it; the Decoder converges independently.
-- One Segment per Session, with a source size of 1 byte through 8 MiB. The current production multi-Segment scheduler does not exist, so larger and empty files are rejected rather than truncated or silently rerouted.
-- The Encoder Data Window remains a fixed 1920 x 1080 physical-pixel canvas. Direct, Shape and the legacy `remote` Decoder remain strict 1:1; explicit `remote-lf4` accepts a single-monitor physical ROI from 960x540 through 3840x2160 (0.5x..2.0x on each axis) and lets the captured-pixel locator determine continuous geometry. Multi-monitor ROI and silent resampling remain rejected.
-- The wire currently does not carry the original file name or Visual Profile. The Decoder therefore requires the user to select the same profile and publishes a safe generated name, `PixelBridge-<SessionTag>.bin`.
-- The current descriptor wire is Phase-0 provisional. The GUI does not change it and does not add GUI metadata to protocol records.
+- `--backend`
+- `--budget-bound-decoders`
+- `--channel`
+- `--decoder-instance-memory-mib`
+- `--decoder-memory-mib`
+- `--diagnostic-capture-only`
+- `--experiment-monitor`
+- `--headless-replay`
+- `--journal`
+- `--no-progress-seconds`
+- `--output-dir`
+- `--profile`
+- `--protected-monitor`
+- `--remote-metadata`
+- `--remote-provider`
+- `--replay-evidence-profile`
+- `--replay-frames`
+- `--replay-input`
+- `--replay-max-mib`
+- `--replay-output`
+- `--replay-sample-fps`
+- `--report`
+- `--roi`
+- `--run-id`
+- `--single-monitor-capture`
+- `--stage-diagnostics`
+- `--timeout`
 
-## Encoder options with real bindings
 
-| UI option | Availability | Public binding | Runtime effect and constraints |
-| --- | --- | --- | --- |
-| Source file | Enabled | application controller opens the source with Win32 bounded file I/O; protocol descriptors use `pbprotocol::SessionDescriptor`, `SegmentDescriptor`, and `FinalManifest` | The controller holds the source handle for the Session, verifies identity/size/last-write stability periodically and at stop, and rejects files outside 1 byte..8 MiB. |
-| Segment compression | Enabled, default off | off: `pbcompression::EncodedSegment` with `CompressionCodec::Raw`; on: `pbcompression::CompressSegment` | On uses the existing zstd frame and RAW fallback rule. Off is byte-identical RAW. No new wire codec is introduced. |
-| Compression level | Advanced, enabled only when compression is on | `pbcompression::CompressionSettings::compressionLevel` | Range 1..22 for the pinned zstd baseline. It is local preparation tuning and is not a wire field. |
-| Visual Profile: Direct-Level 2x2 | Enabled, Experimental | `pbmodulation::kDesktopLevels2ProfileId`, `EncodeDesktopLevelsFrame` | Current Phase-1 physical file Gate path. Fixed 1920 x 1080, strict 1:1 physical pixels. |
-| Visual Profile: Shape+Chroma | Enabled, Experimental | `pbmodulation::kShapeChromaProfileId`, `EncodeShapeChromaFrame` | Current experimental A/B Gate path. Not a Certified Profile. |
-| Visual Profile: RemoteVisual Resilient 8x8 Luma | Enabled, Experimental | `pbmodulation::kRemoteVisualProfileId`, `EncodeRemoteVisualFrame` | Current one-bit/tile production experiment. It remains strict 1920×1080/1:1 on the D3D11 receive path and is not the new LF4 profile. |
-| Visual Profile: PB-RemoteVisual-LF4-X1 | Enabled only by explicit selection, Experimental | `pbmodulation::kRemoteVisualLowFpsProfileId`, layout 7, `EncodeRemoteVisualLowFpsFrame`; CLI token `remote-lf4` | Four unchanged Robust QC-LDPC codewords per complete logical frame, 8100 coded bytes, 4x4 Walsh tiles, continuous geometry and freshness soft erasure. It is a distinct wire identity; the old `remote` token is unchanged. |
-| Outer FEC | Read-only automatic | `pbouterfec::ChooseOuterFecMode`, `DirectRepeatEncoder`, `WirehairV2Encoder` | DirectRepeat is selected for the existing tiny-segment threshold; Wirehair V2 is selected otherwise. The UI cannot construct an illegal override. |
-| Inner FEC | Read-only | `pbinnerfec::kInnerFecProfileIdRobust`, `EncodeQcLdpcCodeword` | Fixed robust DVB-S2 Short QC-LDPC profile. No override is exposed. |
-| Target monitor | Enabled | `pbrenderd3d::DataWindowConfig::clientOrigin` after application-layer Win32 monitor enumeration | Selects the existing D3D11 Data Window. A fixed 1920 x 1080 client canvas is centered in the monitor work area when it fits, otherwise centered in the physical monitor; Qt never paints the payload. |
-| ProtectedMonitor | Enabled and mandatory only for LF4 | explicit `MonitorSafetySelection` built from two currently enumerated monitor identities | LF4 refuses the same/overlapping monitor, a canvas outside `ExperimentMonitor`, identity rotation changes, metadata identity conflict, or topology drift. No monitor is selected automatically and no external window is moved. |
-| Logical Visual FPS / stable dwell | Advanced | application scheduler | Local profiles allow 0 (presentation-driven) or 1..240. Both RemoteVisual profiles require 1..5, default to 2 (500 ms), and reject 0 or >5. LF4 additionally keeps one immutable active source and repeats display Presents without creating logical data. |
-| Frame hold / Present candidate | No arbitrary override | `PBRenderD3D::DataWindowConfig::repeatActiveFrame` is automatically true only for LF4 | Default false preserves all old profile behavior. LF4 repeats the same complete active source on display permits and invalidates it at an epoch change; repeated Presents never advance FrameSequence/Carousel/OuterBlockId. |
+## GUI 与自动诊断 / GUI and automatic diagnostics
 
-## Decoder options with real bindings
+四个面向用户的模式：标准 / 灰阶高速 / PAM4 / PAM4 Wide。内部 CLI token `experimental-pam4` 与 `experimental-pam4-wide` 保留兼容，不显示为产品模式标签。不同 Profile 不在同一 Session 中切换。
 
-| UI option | Availability | Public binding | Runtime effect and constraints |
-| --- | --- | --- | --- |
-| Output directory | Enabled | `PBStorage` bounded `.part` reservation and same-directory write-through final publish | UI never assembles or renames the file. Existing targets and `.part` files are not overwritten. |
-| Capture backend: WGC | Enabled | `pbscreencapturewgc::WgcCapture::CreateNormalized` | Explicit backend; no silent fallback. Requested and actual values remain WGC. |
-| Capture backend: DXGI Desktop Duplication | Enabled | `pbscreencapturedxgi::DxgiCapture::Create` | Explicit backend; no silent fallback. Requested and actual values remain DXGI. |
-| Capture backend: Auto | Not exposed | none | No public, proven WGC-to-DXGI policy currently exists. |
-| ROI selector | Enabled | `pbscreenregion::SelectScreenCaptureRegion` | Native PMv2 selector returns a physical-pixel rectangle on one monitor. |
-| Use entire monitor | Enabled after an ROI/monitor is known | `pbscreenregion::ResolveScreenCaptureRegion` with `monitorPhysicalRect` | Direct/Shape/legacy `remote` still require exactly 1920x1080. LF4 accepts the entire monitor only when both physical axes remain within 0.5x..2.0x and rotation is identity. |
-| Clear/reselect ROI | Enabled | controller-local preference plus the two Region APIs above | Clearing stops admission; it does not create a default or scaled ROI. |
-| Visual Profile | Enabled, Experimental; includes explicit LF4 | `pbdemodd3d11::CaptureDemodulatorConfig::visualProfileId`; CLI token `remote-lf4` | Must match the Encoder because the provisional wire does not bind the profile. LF4 does not reinterpret `remote`, and mismatch is an erasure/failure rather than auto-detection. |
-| ProtectedMonitor / ExperimentMonitor | Mandatory for every live RemoteVisual run | `ResolveMonitorSafetySelection`, `ValidateMonitorSafetyTarget`, periodic `RevalidateMonitorSafetySelection` | The selected ROI must stay wholly on `ExperimentMonitor` and outside `ProtectedMonitor`; preset identities must match exact current devices. Topology/rotation/DPI/refresh/adapter identity drift fails the run closed. No global input or remote-window automation is used. |
-| Capture age/queue/ring budgets | Read-only current defaults | `CaptureNormalizeConfig`, `CaptureDemodulatorConfig` | Fixed bounded production values are shown in Advanced telemetry; arbitrary overrides are not exposed. LF4 raises only the explicitly checked capture-resident ceiling needed by a 2x ROI; the PB-owned ROI ring and result queues remain bounded. |
-| PBTelemetry | Read-only live/report output | `pbtelemetry::TelemetryAccumulator` fed by bounded `CaptureDemodulatorResult` events | Capture/Bootstrap are recorded for accepted and erasure frames; FEC is FrameSequence-deduplicated; VerifiedEncodedGoodput is added only after WholeFileDigest and final publish. PreFecBER and UniqueVisualFPS remain unavailable when their required truth/pixel-digest coverage is absent. |
-| FrameSequence cadence | Read-only diagnostic | application `VisualIdentityTracker` | Reports admitted FrameSequence FPS plus duplicate/reordered/gap/skipped counters. It is intentionally not named or used as pixel `UniqueVisualFPS`. |
-| Resume | Not exposed | receiver core has resume primitives, but the current GUI product path has no authoritative end-to-end resume/storage binding | QSettings never stores protocol or decoder state. |
+Product-facing mode labels have no experiment badges. Frozen CLI names retain compatibility. Standard remains the default; parameters do not weaken finite budgets or final verification.
 
-## Local preferences and run metadata
-
-The following are application-only and have no protocol or acceptance effect:
-
-- window geometry, last input/output directory, compression checkbox, selected explicit backend, selected target/protected monitor device names, and Advanced expansion through `QSettings`; the Visual Profile is deliberately not persisted;
-- `ChannelType`, remote provider version/mode, target/observed FPS, chroma mode, remote resolution/window scale, network note, observed bandwidth, and latency;
-- `RunId` used to correlate independently exported Encoder and Decoder JSON reports.
-
-## Experimental opt-in CLI profiles (2026-09-11)
-
-Real public CLI bindings added by commits `da70009`…`ee1b25d`. They are reachable only through an explicit token, never through the GUI, defaults, the product profile catalog, or Golden Vectors; `PB-Unified-SC6-V3` remains the only product contract.
-
-| Binding | Runtime effect and boundary |
-| --- | --- |
-| `PixelBridgeEncoder --headless-broadcast ... --profile unified-bands --single-monitor-fullscreen primary` | Renders the unified layout-10 main region byte-identically and overlays two 608×64 supplemental bands at {1056,16}/{256,1000} carrying full-length RS(255,223) codewords that mirror the current frame's control-slot records. Same Session/capacity semantics as `unified-lc4`; skipped-band frames leave the band area as neutral matte. |
-| `PixelBridgeDecoder --headless-receive ... --profile unified-bands --roi W H` | Runs the unified capture pipeline bound to the experimental identity (`0x504242414E443031`, layout 11). Auto capture is fixed unless `--backend` is explicit. After Bootstrap acceptance the demodulator decodes both bands from staging pixels before Unmap (fail-closed: ambiguous-cell, RS, identity and CRC rejections are counted, never admitted); decoded band records feed ingress before the frame's main-region blocks. Accepts letterboxed/scaled ROIs through the same unified locator; strict 1:1 is not required. |
-| GUI exposure | None. `VisualProfile::UnifiedBands` exists in the application model and CLI parsing only; the GUI profile list, defaults and Golden Vectors are unchanged. |
-
-They never change CRC, FEC, digest, descriptor, or final-publish acceptance.
-
-## Evidence-only headless bindings
-
-The following are real public CLI/tool bindings, but are intentionally not GUI product options:
-
-| Binding | Runtime effect and boundary |
-| --- | --- |
-| `PixelBridgeDecoder --headless-receive ... --replay-output NEW_PATH --diagnostic-capture-only --replay-evidence-profile direct\|shape\|lf4` | Records a bounded selected-ROI Replay v2 through the explicitly selected WGC/DXGI backend. The evidence-profile option itself only writes the raster identity into the capture-only descriptor and is rejected outside legacy `remote` capture-only mode; Bootstrap/demod/FEC/Receiver/publish remain disabled. This is distinct from selecting public `--profile remote-lf4`, which runs the production Decoder and may optionally fan out Replay diagnostics. Output, journal and report are create-only. |
-| `PixelBridgeDecoder --headless-receive ... --profile direct\|shape\|remote\|remote-lf4 --replay-output NEW_PATH --replay-sample-fps 1..60` | Adds a sampled, bounded Replay fan-out to any current production RemoteVisual pixel/Receiver profile. Sampling never throttles or replaces primary capture/demod admission. Offline Replay preserves each profile's production geometry: Direct/Shape/legacy `remote` remain exact 1920×1080/1:1, while LF4 retains its locator and 0.5x..2.0x domain. Replay success additionally requires valid evidence, footer finalization, nonzero written frames and a fixed 2-second post-publish tail; queue/frame/file/resident-memory budgets are preflighted together. Diagnostic capture-only remains a separate non-Receiver contract and is not generalized by this binding. |
-| `PixelBridgeEncoder --headless-broadcast ... --manual-stop` | Requires an attached interactive Windows console. Enter or Q requests graceful stop; `--seconds` remains the hard maximum. Formal Step 20 accepts exit 0 only after actual manual input, a `Stopped` report, and a finished journal, so Decoder completion is not smuggled back to the sender through IPC. |
-| `PixelBridgeDecoder --headless-receive\|--headless-replay ... --no-progress-seconds N` | Stops a bounded run when descriptor transition, temporally admitted Transport blocks and verified raw bytes all remain unchanged for N seconds. It is a fail-closed execution bound, not Receiver feedback or a relaxed acceptance rule. |
-| `PBRemoteVisualEvidencePresenter describe\|present --profile direct\|shape\|lf4` | Step-02 evidence presenter. It renders one deterministic valid Bootstrap/Transport raster in the existing PMv2 1920×1080 `DataWindow`, verifies exact single-monitor geometry before reporting `READY`, and repeatedly presents the same immutable texture at no more than 5 Hz. It has no file-transfer lifecycle and does not expose LF4 in GUI/CLI product selection. |
-| `PBRemoteVisualReplayInspector --input PATH [--output NEW_PATH]` | Bounded receiver-only Replay v2 semantic inspector. It consumes the complete file with `ReplayV2Reader`, then applies the existing Bootstrap/profile reference decoder/QC-LDPC/padding/Transport CRC/Session identity chain and emits a sealed deterministic per-frame JSON classification. With no sender truth it reports false-accepted codewords as unavailable and never claims Outer/WholeFileDigest/final publish. |
-| `PBPresentationGate --lf4-encoder-warp\|--lf4-encoder-hardware NEW_EVIDENCE_ROOT` | Step-09 right-monitor/no-activate native Gate. It binds Step-08 Golden Bootstrap/coded bytes, proves CPU raster BLAKE3 equals immutable GPU-source diagnostic readback, and requires a complete source-to-back-buffer copy on every repeated Present. GPU source readback is not screen capture. |
-| `PBPresentationGate --lf4-production-encoder NEW_EVIDENCE_ROOT` | Starts the public production LF4 `EncoderRuntime` at 5 Hz with a create-only 1-byte source and explicit Protected/Experiment monitor identities; proves right-monitor containment, periodic safety revalidation, unchanged foreground PID, two complete Carousel cycles, continuation after a test-local marker that is never passed into the runtime, correct dwell/repeat telemetry, and bounded shutdown. It cannot be used as a Decoder or file-transfer completion claim. |
-| `PBRemoteVisualLf4DynamicPresenter broadcast ... --protected-monitor DEVICE --experiment-monitor DEVICE` | Duration-bounded evidence harness over the same public production `EncoderRuntime`. It requires exact dual-monitor safety authority and periodic revalidation; it is not an alternate encoder and cannot claim Receiver completion. |
-| `New/Test-PBRemoteVisualPortablePackage.ps1`, `New/Test-PBRemoteVisualSourceSet.ps1`, `Get-PBRemoteVisualEnvironment.ps1`, `New/Test-PBRemoteVisualDeploymentManifest.ps1` | Step-18 create-only deployment-evidence chain. It packages both product roles together, records build/dependency/SBOM/license and exact file identities, creates/verifies CSPRNG source fixtures, performs a read-only packaged-Decoder environment probe, and binds one package/source/metadata/two endpoint snapshots to one RunId. These tools carry no file payload between Encoder and Decoder and are not acceptance inputs to Receiver/WholeFileDigest. |
-| `Capture/New/Test-PBRemoteVisual*UiEvidence.ps1`, `New-PBRemoteVisualPilotPlan.ps1`, `Invoke-PBRemoteVisualPilotEncoder/Decoder.ps1`, `Test-PBRemoteVisualPilotEvidence.ps1` | Step-20 manual field-gate tooling. It captures only the explicit ExperimentMonitor without input/focus/display mutation, binds visible provider UI to the deployment RunId, freezes 1/2/5 Hz windows and Replay resources, preserves an interactive sender stop, performs live+offline Receiver runs, and independently verifies reports/journals/external hashes. Tool success is evidence workflow; only an actual A/B remote-pixel run can close Step 20. |
-| `New-PBRemoteVisualStep21MatrixSpec.ps1`, `New-PBRemoteVisualStep21HardwareScope.ps1`, `New-PBRemoteVisualStep21RunLedger.ps1`, `New-PBRemoteVisualStep21EndpointScope.ps1`, `Test-PBRemoteVisualFieldFailureEvidence.ps1`, `Test-PBRemoteVisualStep21Matrix.ps1` | Step-21 manual matrix tooling. It precommits the canonical exact 41-cell provider-generic schedule; for the explicitly authorized two-by-2560x1440 Computer A topology it can additionally seal a mechanically derived 31-included/10-excluded hardware scope before any run. The create-only RunLedger then emits a 31-row pending JSON/CSV schedule with target geometry and copyable Decoder ROI arguments, while keeping RunIds null and explicitly refusing to treat the LF4 search ROI as observed scale. EndpointScope binds that ledger to a real two-by-1920x1080 Computer B readiness catalog and explicit Protected/Experiment roles, including legal negative desktop origins, but keeps live catalog revalidation and provider UI evidence pending for every run. It turns a production live+offline Replay failure into one evidence-supported geometry/signal/temporal/metric/scheduler record without publishing output, and requires exactly one sealed success-or-failure run per full-spec or scoped included cell. The final CSV keeps one row and denominator per RunId and only compares Direct/Shape/LF4 in a shared mode/WGC/FPS/1:1 cohort. A hardware-scoped PASS retains the ten untested 1.5x exclusions; it never certifies a profile or substitutes tool fixtures for field evidence. |
-| `PixelBridgeEncoder\|PixelBridgeDecoder --measurement-build-identity` | Read-only export of one JSON object holding the Step1 measurement build identity, including `baseCommit` and `sourceFingerprintSha256`; only present when the binary was built with `PB_ENABLE_QT_GUI`. `baseCommit` is captured from `git rev-parse HEAD` at CMake configure time and `sourceFingerprintSha256` comes from the cache entry `PB_STEP1_SOURCE_FINGERPRINT` (default `unsealed`), so a newer HEAD only appears after a fresh configure and build. It changes no Profile, FEC, CRC, digest or publish-acceptance rule. |
-| `PixelBridgeEncoder\|PixelBridgeDecoder --gui-measurement --evidence-root NEW_PATH` | Observation-only: starts the normal product GUI and additionally opens a bounded `pbgui::Step1GuiEvidence` sink so a Step1 field run can be recorded while the operator uses the GUI. The argument count must be exactly 4 and the second token must be `--evidence-root`, otherwise the process exits with code 2. Limits match the Step1 runner: 1800 s, 64 MiB evidence, 64 MiB source, 8 segments, 131072 submitted records. Never changes protocol semantics or file verification. |
-
-### 2026-09 remote-throughput experiment tools
-
-- `tools/` 目录下 2026-09 的实验工具大多是独立 `project()`，不进入主构建：`PBExperimentalVisualSender`、
-  `PBOriginalScreenReceiver`、`PBReceiverDecisionProbe`、`PBRemoteControlPhase`、`PBRemoteThroughputStep1`、
-  `PBRemoteThroughputStep3A`、`PBRemoteThroughputStep3B`、`PBUnifiedGeometryCodecProbe`、`PBUnifiedGeometryG1`、
-  `PBUnifiedGeometryG1B`。
-- 经 `tools/CMakeLists.txt` 接入主构建的只有：`PBDisplayDiagnostics`、`PBStep1SourceAudit`
-  （源文件为 `tools/PBRemoteThroughputStep1/source_audit.cpp`，需存在 `PBApplication` 目标）、`PBVectorGen`、
-  `PBProtocolDump*`、`PBFrameInspector*`、`PBDesktopLevelsBaseline`、`PBRemoteVisual*`，以及由 option
-  `PB_BUILD_UNIFIED_RECORDING_REPLAY`（默认 **OFF**）控制的 `PBUnifiedRecordingReplay`。
-- 这些入口只做观测、审计或离线重放，属于证据工具；它们不得成为 Encoder 与 Decoder 之间的第二条 payload 通道
-  （单向像素信道不变量仍然成立）。
-
-## Hidden future capabilities
-
-- Offline MP4/NVENC generation and playback are hidden; Phase 4 is not implemented.
-- `PBRealCaptureReplay` remains an existing bounded library/Gate artifact. The evidence-only headless capture and inspector bindings above are now real, but this first GUI still has no live record/replay controller binding; no replay button or fake setting is exposed.
-- Direct-Level 4x4 is hidden from the file-transfer GUI. A physical-layer candidate exists, but it is not in the Phase-1 full-file Gate matrix.
-- Multi-Segment files and arbitrary-size files are hidden/rejected.
-- Receiver-to-Sender feedback, sender-side receiver progress, transfer-completion ETA, and automatic sender completion do not exist.
-- Certified Profile labels are not shown. All four selectable profiles, including LF4, remain explicitly Experimental.
-- Automatic capture-backend fallback, arbitrary resize/resampling outside LF4's bounded continuous-locator domain, tunable RemoteVisual policy thresholds, adaptive profile switching, and protocol-state persistence are not available. LF4's 0.5x..2.0x domain is now a production GPU capability but is not a provider/field certification claim.
-- Application-generated Control records must fit the current fixed Control window. A completed fragmented Control record is rejected fail-closed because this product path has no separate application binding for it.
+- Encoder: source, persistent cache, mode, 1–60 Hz, start/stop; no peer-completion inference.
+- Decoder: output, mode, target monitor/whole screen/ROI, refresh 100–2000 ms, finite memory budgets, normal stop/resume, verified output opening.
+- Automatic logs: no enabling flag needed for normal application runs. Explicit `--journal`/`--report` remain independent create-only evidence. [Diagnostics](DIAGNOSTICS.en.md)
+- `--single-monitor-capture` is distinct from legacy protected/experiment dual-monitor safety authority; no forged second display.
+- Current PAM4 GUI chooses 7 MiB segments; CLI defaults/overrides must be read separately. Wide's physical 2560×1440 presentation is not optional.

@@ -9,6 +9,10 @@ target_link_libraries(PixelBridgeDecoder
         PB::PBReceiver)
 
 if(WIN32)
+    configure_file(resources/application.rc.in "${CMAKE_CURRENT_BINARY_DIR}/application.rc" @ONLY)
+    set_target_properties(PixelBridgeDecoder PROPERTIES AUTORCC ON)
+    target_sources(PixelBridgeDecoder PRIVATE resources/branding.qrc "${CMAKE_CURRENT_BINARY_DIR}/application.rc"
+        "${PROJECT_SOURCE_DIR}/apps/common/operational_log_qt.cpp")
     target_sources(PixelBridgeDecoder PRIVATE screen_region_cli.cpp
         "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp"
         capture_bootstrap_cli.cpp bootstrap_diagnostic.cpp capture_bootstrap_telemetry.cpp

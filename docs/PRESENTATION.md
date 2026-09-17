@@ -1,5 +1,14 @@
 # D3D11 Data Window / PBPresentTiming
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
+## PAM4 / PAM4 Wide 的静态边缘（当前实现）
+
+以速度与稳定性优先，全屏窗口内允许静态边缘：PAM4 采用 native 1920×1080 居中码面；PAM4 Wide 固定 point 映射到 2560×1440 后居中。不得悄悄拉伸到任意尺寸，也不改写旧 Unified/GrayFast 的呈现路径。Decoder 从捕获像素自行定位，PBBridge 不传几何真值或 payload。静态边缘减少变化面积的收益仍需按实际远控环境测量，不是无条件更快的结论。见 [PAM4 合同](EXPERIMENTAL_PAM4_PROFILE.md)、[Wide 合同](EXPERIMENTAL_PAM4_WIDE_PROFILE.md) 与 [现场证据](EVIDENCE_INDEX.md)。
+
+The current PAM4 raster is native 1920×1080; Wide uses its fixed point-mapped 2560×1440 representation. Both may be centered within a fullscreen window with static borders. Neither changes the legacy presentation contract or provides geometry/payload through PBBridge. Throughput remains environment-dependent.
+
 ## 2026-09-14 用户确认的全屏铺满更新（Q 候选，尚非发布认证）
 
 用户确认：在远程机不同分辨率/宽高比下，完整传输图案应铺满目标屏幕；16:10允许横纵独立缩放，不裁切、不留画布外灰边。这取代G22针对Unified-family全屏的1920×1080原尺寸居中行为；下方普通可缩放DataWindow及历史LF4的等比letterbox条款仍适用于各自旧路径，不应拿来否定新用户要求。
@@ -14,7 +23,7 @@
 
 ## 范围与契约
 
-对应总体设计 §16.3、§21、§37 的呈现部分。本模块提供独立原生数据窗口、
+对应当前总体设计 §8 的呈现生命周期；下表保留原生窗口的基础配置，与上方各模式的全屏合成入口区别解释。本模块提供独立原生数据窗口、
 有界计时状态机和 Encoder 呈现验证入口。G13 在不改变 canonical raster、Bootstrap、
 Visual Profile、Transport/FEC、Golden pins 或 Decoder 文件恢复语义的前提下加入可缩放
 presentation。**Headless/WARP 通过不等于完整 LocalDesktop 物理链路认证。**

@@ -1049,7 +1049,8 @@ LocalDesktopObservation EvaluateGeometry(LumaReader& reader, const std::array<co
         observation.erasure = reader.Error() == Erasure::None ? Erasure::InvalidGeometry : reader.Error();
         return observation;
     }
-    if (binding == detail::LocalDesktopBinding::UnifiedVisual)
+    if (binding == detail::LocalDesktopBinding::UnifiedVisual || binding == detail::LocalDesktopBinding::ExperimentalPam4 ||
+        binding == detail::LocalDesktopBinding::ExperimentalPam4Wide)
     {
         RefinePointCanvasCoverage(reader, markers, policy, geometry);
         if (reader.Error() != Erasure::None)
@@ -1144,6 +1145,18 @@ int DiagnosticDepth(const LocalDesktopObservation& observation) noexcept
 bool ResolveLocalDesktopBinding(const LocalDesktopBootstrapBinding& binding,
     detail::LocalDesktopBinding& output) noexcept
 {
+    if (binding == LocalDesktopBootstrapBinding{pbprotocol::kPam4WideExperimentalProfile.visualProfileId,
+        pbprotocol::kPam4WideExperimentalProfile.visualLayoutVersion})
+    {
+        output = detail::LocalDesktopBinding::ExperimentalPam4Wide;
+        return true;
+    }
+    if (binding == LocalDesktopBootstrapBinding{pbprotocol::kPam4ExperimentalProfile.visualProfileId,
+        pbprotocol::kPam4ExperimentalProfile.visualLayoutVersion})
+    {
+        output = detail::LocalDesktopBinding::ExperimentalPam4;
+        return true;
+    }
     if (binding == LocalDesktopBootstrapBinding{kLocalDesktopVisualProfileId, kLocalDesktopLayoutVersion})
     {
         output = detail::LocalDesktopBinding::BootstrapOnly;

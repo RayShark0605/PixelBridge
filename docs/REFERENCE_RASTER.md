@@ -1,14 +1,15 @@
 # PixelBridge Phase-0 CPU 参考 raster/demod（PB-ReferenceRaster-1）
 
-本文档记录 `libs/PBModulation` 实现的 Phase-0 确定性参考调制/解调（设计文档
-§16、§17.4、§38.2）的冻结参考 profile、字节级契约、Golden Vector 与第三方
-版本基线（设计 §39.1 Phase-0 记录要求）。
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
+本文档记录 `libs/PBModulation` 的 Phase-0 确定性参考调制/解调、字节级契约、Golden Vector 与第三方版本基线。文中“设计 §…”均指当时的总体设计章节，不是当前重写文档的章节号；原文取回见 [文档历史](DOC_HISTORY.md)。
+
+References to design section numbers in this legacy raster specification refer to the archived design, not the current architecture's numbering. The byte-level reference and Golden fixtures remain unchanged.
 
 ## 1. 状态与定位
 
-- **状态：Phase-0 参考候选（`PB-ReferenceRaster-1`），不是 certified
-  profile。** 认证冻结 Gate（设计 §34.6）在后续阶段执行；本文档中的几何与
-  星座参数在冻结前只作为参考实现与 Golden Vector 的锚点。
+- **定位：Phase-0 参考实现（`PB-ReferenceRaster-1`），不是当前 GUI 产品模式。** 几何与星座参数作为独立参考实现与 Golden Vector 的锚点，不将历史认证计划继续描述为当前待办。
 - 纯 CPU、无 GPU/Qt、无网络；不追求性能（设计 §3：先简单参考实现）。
 - 全部整数运算；所有尺寸/偏移/容量算术使用 checked arithmetic；任何歧义、
   越界、冲突、算术溢出 fail-closed（设计 §3/§4.3：任一错误 → 整帧按 erasure

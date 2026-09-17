@@ -2,6 +2,7 @@
 
 #include "application_model.h"
 #include "local_desktop_runtime.h"
+#include "operational_log_qt.h"
 
 #include <QObject>
 #include <QTimer>
@@ -21,6 +22,8 @@ public:
     [[nodiscard]] pbapp::EncoderSnapshot GetSnapshot() const;
     [[nodiscard]] pbapp::EncoderSnapshot StopAndGetSnapshot();
     [[nodiscard]] bool IsActive() const;
+    [[nodiscard]] QString LogStatusText() const;
+    [[nodiscard]] QString LogDirectory() const;
 
 signals:
     void SnapshotChanged();
@@ -31,6 +34,7 @@ private slots:
 
 private:
     pbapp::EncoderRuntime runtime_;
+    pbgui::OperationalLog log_{QStringLiteral("Encoder")};
     QTimer pollTimer_;
     pbapp::EncoderSnapshot lastSnapshot_;
 };

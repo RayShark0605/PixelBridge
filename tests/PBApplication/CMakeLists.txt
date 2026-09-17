@@ -4,8 +4,49 @@ endif()
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core)
 
+PbAddUnitTest(PBOperationalLoggingTests test_operational_logging.cpp
+    "${PROJECT_SOURCE_DIR}/apps/common/operational_log_qt.cpp")
+target_link_libraries(PBOperationalLoggingTests PRIVATE PB::PBApplication Qt${QT_VERSION_MAJOR}::Core)
+target_compile_definitions(PBOperationalLoggingTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE "PB_GIT_COMMIT=\"test\"")
+set_tests_properties(PBOperationalLoggingTests PROPERTIES LABELS "logging;activity;gui-model" TIMEOUT 60)
+
+PbAddUnitTest(PBDecoderSingleMonitorTests test_decoder_single_monitor.cpp)
+target_link_libraries(PBDecoderSingleMonitorTests PRIVATE PB::PBApplication Qt${QT_VERSION_MAJOR}::Core)
+target_compile_definitions(PBDecoderSingleMonitorTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+    "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
+set_tests_properties(PBDecoderSingleMonitorTests PROPERTIES LABELS "single-monitor;capture;nonlocal;pixels" TIMEOUT 120)
+
+PbAddUnitTest(PBGuiVisualModeTests test_gui_visual_mode.cpp)
+target_link_libraries(PBGuiVisualModeTests PRIVATE PB::PBApplication)
+target_compile_definitions(PBGuiVisualModeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+set_tests_properties(PBGuiVisualModeTests PROPERTIES LABELS "gui-mode;configuration;nonlocal" TIMEOUT 30)
+
+PbAddUnitTest(PBExperimentalPam4WideApplicationTests test_experimental_pam4_wide_workflow.cpp)
+target_link_libraries(PBExperimentalPam4WideApplicationTests PRIVATE PB::PBApplication)
+target_compile_definitions(PBExperimentalPam4WideApplicationTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+    "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
+set_tests_properties(PBExperimentalPam4WideApplicationTests PROPERTIES LABELS "pam4-wide;experimental;application;pixels;file" TIMEOUT 120)
+
+PbAddUnitTest(PBExperimentalPam4ApplicationTests test_experimental_pam4_workflow.cpp)
+target_link_libraries(PBExperimentalPam4ApplicationTests PRIVATE PB::PBApplication)
+target_compile_definitions(PBExperimentalPam4ApplicationTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+    "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
+set_tests_properties(PBExperimentalPam4ApplicationTests PROPERTIES LABELS "pam4;experimental;application;pixels;file" TIMEOUT 120)
+
+# Compile only the resume store again with private native-I/O injection hooks.
+# No test hook or policy-selection input enters PBApplication/product binaries.
+PbAddUnitTest(PBDecoderResumeBatchTests test_decoder_resume_batch.cpp
+    decoder_resume_coalesced_test_cases.inc decoder_resume_snapshot_test_hook.h
+    "${PROJECT_SOURCE_DIR}/apps/common/decoder_resume_store.cpp")
+target_link_libraries(PBDecoderResumeBatchTests PRIVATE PB::PBApplication)
+target_include_directories(PBDecoderResumeBatchTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(PBDecoderResumeBatchTests PRIVATE PB_RESUME_BATCH_TESTS=1 WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+    "PB_TEST_SCRATCH_ROOT=L\"${CMAKE_CURRENT_BINARY_DIR}\"")
+set_tests_properties(PBDecoderResumeBatchTests PROPERTIES LABELS "resume;journal;batch;fault" TIMEOUT 120)
+
 PbAddUnitTest(PBApplicationTests
     test_application_model.cpp
+    test_decoder_memory_budget.cpp
     test_encoder_monitor_catalog.cpp
     test_unified_encoder_workflow.cpp
     test_unified_decoder_workflow.cpp

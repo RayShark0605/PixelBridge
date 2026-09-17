@@ -15,7 +15,7 @@
 namespace pbmodulation::detail
 {
 
-enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, RemoteVisual, RemoteVisualLowFps, UnifiedVisual };
+enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, RemoteVisual, RemoteVisualLowFps, UnifiedVisual, ExperimentalPam4, ExperimentalPam4Wide };
 
 [[nodiscard]] inline bool MatchesLocalDesktopBinding(const std::uint64_t profileId, const std::uint8_t layout, const LocalDesktopBinding binding) noexcept
 {
@@ -27,6 +27,10 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, Remo
     case LocalDesktopBinding::RemoteVisual: return profileId == kRemoteVisualProfileId && layout == kRemoteVisualLayoutVersion;
     case LocalDesktopBinding::RemoteVisualLowFps:
         return profileId == kRemoteVisualLowFpsProfileId && layout == kRemoteVisualLowFpsLayoutVersion;
+    case LocalDesktopBinding::ExperimentalPam4:
+        return profileId == pbprotocol::kPam4ExperimentalProfile.visualProfileId && layout == pbprotocol::kPam4ExperimentalProfile.visualLayoutVersion;
+    case LocalDesktopBinding::ExperimentalPam4Wide:
+        return profileId == pbprotocol::kPam4WideExperimentalProfile.visualProfileId && layout == pbprotocol::kPam4WideExperimentalProfile.visualLayoutVersion;
     case LocalDesktopBinding::UnifiedVisual:
         // The experimental blank-control identity (layout 11) and the
         // gray-state identity (layout 12) use the same scaffold geometry;
@@ -49,6 +53,8 @@ enum class LocalDesktopBinding { BootstrapOnly, DesktopLevels, ShapeChroma, Remo
     case LocalDesktopBinding::RemoteVisual: return kRemoteVisualLayoutVersion;
     case LocalDesktopBinding::RemoteVisualLowFps: return kRemoteVisualLowFpsLayoutVersion;
     case LocalDesktopBinding::UnifiedVisual: return kUnifiedVisualProfile.productProfile.visualLayoutVersion;
+    case LocalDesktopBinding::ExperimentalPam4: return pbprotocol::kPam4ExperimentalProfile.visualLayoutVersion;
+    case LocalDesktopBinding::ExperimentalPam4Wide: return pbprotocol::kPam4WideExperimentalProfile.visualLayoutVersion;
     }
     return 0;
 }

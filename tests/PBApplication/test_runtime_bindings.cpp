@@ -268,6 +268,165 @@ TEST_CASE("remote-lf4 single-monitor fullscreen requires explicit exact bounded 
     REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
 }
 
+TEST_CASE("Gray native-size fullscreen is explicit and rejects incompatible composition settings",
+    "[application][validation][unified][encoder][fullscreen][native-size]")
+{
+    ScratchDirectory scratch(L"encoder-gray-native-size");
+    const auto source = scratch.Path() / L"source.bin";
+    std::ofstream(source, std::ios::binary).put('x');
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30, pbrenderd3d::PhysicalPoint{0, 0});
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "UnknownRemoteLink";
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.singleMonitorFullscreen = MakeMonitor(1, L"\\\\.\\DISPLAY1", {0, 0, 2560, 1600}, true);
+    REQUIRE_FALSE(config.fullscreenNativeSize);
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+    config.fullscreenNativeSize = true;
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::UnifiedGray;
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::UnifiedLc4;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    for (const auto sampling : {pbapp::FullscreenSamplingMode::Linear, pbapp::FullscreenSamplingMode::Area})
+    {
+        config.fullscreenSampling = sampling;
+        REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    }
+    config.fullscreenSampling = pbapp::FullscreenSamplingMode::Point;
+    config.singleMonitorFullscreen.reset();
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("Native-size fullscreen preserves every canonical pixel and keeps all margins neutral",
+    "[application][unified][encoder][fullscreen][composition][native-size]")
+{
+    constexpr std::uint32_t sourceWidth = pbapp::phase1CanvasWidth;
+    constexpr std::uint32_t sourceHeight = pbapp::phase1CanvasHeight;
+    std::vector<std::byte> source(static_cast<std::size_t>(sourceWidth) * sourceHeight * 4U);
+    std::uint32_t randomState = 0x50424E31U;
+    for (auto& value : source)
+    {
+        randomState ^= randomState << 13U;
+        randomState ^= randomState >> 17U;
+        randomState ^= randomState << 5U;
+        value = static_cast<std::byte>(randomState & 255U);
+    }
+    for (const auto& dimensions : {std::array{1920U, 1080U}, std::array{1921U, 1081U},
+        std::array{2560U, 1440U}, std::array{2560U, 1600U}, std::array{3840U, 2160U}})
+    {
+        CAPTURE(dimensions[0], dimensions[1]);
+        std::vector<std::byte> composed;
+        REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(source,
+            dimensions[0], dimensions[1], composed, false));
+        REQUIRE(composed.size() == static_cast<std::size_t>(dimensions[0]) * dimensions[1] * 4U);
+        const std::uint32_t left = (dimensions[0] - sourceWidth) / 2U;
+        const std::uint32_t top = (dimensions[1] - sourceHeight) / 2U;
+        std::uint64_t mismatchedBytes = 0;
+        for (std::uint32_t y = 0; y < dimensions[1]; y++)
+        {
+            for (std::uint32_t x = 0; x < dimensions[0]; x++)
+            {
+                const bool inside = x >= left && x < left + sourceWidth && y >= top && y < top + sourceHeight;
+                for (std::uint32_t channel = 0; channel < 4; channel++)
+                {
+                    const std::byte expected = inside ? source[(static_cast<std::size_t>(y - top) * sourceWidth + x - left) * 4U + channel] :
+                        channel == 3 ? std::byte{0xFF} : std::byte{0x80};
+                    mismatchedBytes += static_cast<std::uint64_t>(composed[(static_cast<std::size_t>(y) * dimensions[0] + x) * 4U + channel] != expected);
+                }
+            }
+        }
+        REQUIRE(mismatchedBytes == 0);
+    }
+}
+
+TEST_CASE("Centered gray viewport validates physical bounds before presentation", "[application][fullscreen][validation][raster-width]")
+{
+    ScratchDirectory scratch(L"encoder-gray-viewport");
+    const auto source = scratch.Path() / L"source.bin";
+    std::ofstream(source, std::ios::binary).put('x');
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 30, pbrenderd3d::PhysicalPoint{0, 0});
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    config.remoteMetadata.channelType = pbapp::ChannelType::RemoteVisual;
+    config.remoteMetadata.remoteProvider = "UnknownRemoteLink";
+    config.remoteMetadata.experimentMonitorIdentity = R"(\\.\DISPLAY1)";
+    config.singleMonitorFullscreen = MakeMonitor(1, L"\\\\.\\DISPLAY1", {0, 0, 2560, 1600}, true);
+    REQUIRE(config.fullscreenRasterWidth == 0);
+    for (const auto width : {1920U, 2304U, 2560U})
+    {
+        config.fullscreenRasterWidth = width;
+        REQUIRE(pbapp::ValidateEncoderConfig(config));
+    }
+    for (const auto width : {16U, 1904U, 2305U, 2576U, 3840U, 0xFFFFFFFFU})
+    {
+        config.fullscreenRasterWidth = width;
+        REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    }
+    config.fullscreenRasterWidth = 2304;
+    config.singleMonitorFullscreen->physicalRect = {0, 0, 2560, 1200};
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.singleMonitorFullscreen->physicalRect = {0, 0, 2560, 1600};
+    config.fullscreenNativeSize = true;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.fullscreenNativeSize = false;
+    config.fullscreenSampling = pbapp::FullscreenSamplingMode::Linear;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.fullscreenSampling = pbapp::FullscreenSamplingMode::Point;
+    config.visualProfile = pbapp::VisualProfile::UnifiedLc4;
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+    config.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    config.singleMonitorFullscreen.reset();
+    REQUIRE_FALSE(pbapp::ValidateEncoderConfig(config));
+}
+
+TEST_CASE("Centered viewport keeps exact point projection and neutral odd margins", "[application][fullscreen][composition][raster-width]")
+{
+    constexpr std::uint32_t sourceWidth = pbapp::phase1CanvasWidth;
+    constexpr std::uint32_t sourceHeight = pbapp::phase1CanvasHeight;
+    std::vector<std::byte> source(static_cast<std::size_t>(sourceWidth) * sourceHeight * 4U);
+    for (std::size_t offset = 0; offset < source.size(); offset++)
+    {
+        source[offset] = static_cast<std::byte>((offset * 31U + offset / 7919U) & 255U);
+    }
+    for (const auto dimensions : {std::array{1920U, 1080U, 1920U}, std::array{2560U, 1600U, 1920U},
+        std::array{2561U, 1601U, 2304U}, std::array{3840U, 2160U, 3840U}})
+    {
+        CAPTURE(dimensions);
+        std::vector<std::byte> composed;
+        REQUIRE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(source, dimensions[0], dimensions[1], composed, true, dimensions[2]));
+        const std::uint32_t viewportHeight = dimensions[2] / 16U * 9U;
+        const std::uint32_t left = (dimensions[0] - dimensions[2]) / 2U;
+        const std::uint32_t top = (dimensions[1] - viewportHeight) / 2U;
+        std::uint64_t mismatches = 0;
+        for (std::uint32_t y = 0; y < dimensions[1]; y++)
+        {
+            for (std::uint32_t x = 0; x < dimensions[0]; x++)
+            {
+                const bool inside = x >= left && x < left + dimensions[2] && y >= top && y < top + viewportHeight;
+                for (std::uint32_t channel = 0; channel < 4; channel++)
+                {
+                    std::byte expected = channel == 3 ? std::byte{0xFF} : std::byte{0x80};
+                    if (inside)
+                    {
+                        const auto sourceX = static_cast<std::uint32_t>((static_cast<double>(x - left) + 0.5) * sourceWidth / dimensions[2]);
+                        const auto sourceY = static_cast<std::uint32_t>((static_cast<double>(y - top) + 0.5) * sourceHeight / viewportHeight);
+                        expected = source[(static_cast<std::size_t>(sourceY) * sourceWidth + sourceX) * 4U + channel];
+                    }
+                    mismatches += composed[(static_cast<std::size_t>(y) * dimensions[0] + x) * 4U + channel] != expected;
+                }
+            }
+        }
+        REQUIRE(mismatches == 0);
+    }
+    for (const auto width : {16U, 2305U, 2576U, 0xFFFFFFFFU})
+    {
+        std::vector<std::byte> unchanged{std::byte{0x42}};
+        REQUIRE_FALSE(pbapp::EncoderRuntimeTestAccess::ProbeRemoteVisualFullscreenComposition(source, 2560, 1600, unchanged, true, width));
+        REQUIRE(unchanged == std::vector<std::byte>{std::byte{0x42}});
+    }
+}
+
 TEST_CASE("remote-lf4 fullscreen composition centers an exact canvas inside non-16:9 surfaces",
     "[application][remote-lf4][encoder][single-monitor][fullscreen][composition]")
 {

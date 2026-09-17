@@ -132,6 +132,50 @@ TEST_CASE("Gray fast sender reports explicit initial airtime without fabricating
     REQUIRE_FALSE(experimental.contains("measurement"));
 }
 
+TEST_CASE("Extended visit reporting preserves the default and does not claim receiver success",
+    "[application][report][grayfast-extended-visits]")
+{
+    pbapp::EncoderSnapshot snapshot;
+    snapshot.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    const auto normal = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
+    REQUIRE(normal["configuredVisitBudgetPercent"].toInt() == 100);
+    snapshot.grayFastSpatialInterleave = true;
+    snapshot.configuredVisitBudgetPercent = 150;
+    const auto experimental = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
+    REQUIRE(experimental["configuredVisitBudgetPercent"].toInt() == 150);
+    REQUIRE(experimental["configuredInitialAirtimePercent"].toInt() == 100);
+    REQUIRE(experimental["receiverProgress"].isNull());
+    REQUIRE(experimental["verifiedGoodput"].isNull());
+    REQUIRE_FALSE(experimental.contains("measurement"));
+}
+
+TEST_CASE("Native-size fullscreen reporting is opt-in and carries no receiver success claim",
+    "[application][report][encoder][fullscreen][native-size]")
+{
+    pbapp::EncoderSnapshot snapshot;
+    snapshot.visualProfile = pbapp::VisualProfile::UnifiedGrayFast;
+    snapshot.singleMonitorFullscreen = true;
+    const auto normal = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
+    REQUIRE(normal.contains("fullscreenNativeSize"));
+    REQUIRE_FALSE(normal["fullscreenNativeSize"].toBool());
+    REQUIRE(normal["fullscreenRasterWidth"].toInt(-1) == 0);
+    snapshot.fullscreenNativeSize = true;
+    const auto centered = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
+    REQUIRE(centered["fullscreenNativeSize"].toBool());
+    REQUIRE(centered["fullscreenSamplingMode"].toString().toStdString() == "point");
+    REQUIRE_FALSE(centered["grayFastSpatialInterleave"].toBool());
+    REQUIRE(centered["configuredInitialAirtimePercent"].toInt() == 100);
+    REQUIRE(centered["receiverProgress"].isNull());
+    REQUIRE(centered["verifiedGoodput"].isNull());
+    snapshot.fullscreenNativeSize = false;
+    snapshot.fullscreenRasterWidth = 2304;
+    const auto viewport = Json(pbapp::BuildEncoderRunReportJson(context, snapshot));
+    REQUIRE_FALSE(viewport["fullscreenNativeSize"].toBool());
+    REQUIRE(viewport["fullscreenRasterWidth"].toInt() == 2304);
+    REQUIRE(viewport["receiverProgress"].isNull());
+    REQUIRE(viewport["verifiedGoodput"].isNull());
+}
+
 TEST_CASE("Gray fast reports retain Unified measurement and publication evidence", "[application][report][grayfast-report]")
 {
     pbapp::EncoderSnapshot encoder;

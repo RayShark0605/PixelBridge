@@ -1,5 +1,8 @@
 # 工具专用实验发送入口：色度中和与有界保持
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 ## 2026-09-09 独立有界对照增量
 
 新增 `--comparison-run original|neutral SOURCE NEW_SHORT_ROOT DEVICE SECONDS`，显式允许5..900秒；旧 `--run color|neutral` 仍仅5..60秒。时长只接受无前导零的ASCII十进制，不自动延长。`original` 使用空 `EncoderPresentationFactory`，直接进入当前冻结原runtime的native呈现，不加变换或保持；**不是历史现场A版**。`neutral`仍是既有中和加保持，两项一起作为冻结候选，不冒充单变量色度对照。当前已冻结runtime保留其原有控制相位实现，工具没有改调度。

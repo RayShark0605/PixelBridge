@@ -1,4 +1,8 @@
 if(WIN32)
+    enable_language(RC)
+endif()
+
+if(WIN32)
     set(PB_QT_ROOT "" CACHE PATH "Qt host prefix containing lib/cmake/Qt5 or Qt6")
     if(PB_QT_ROOT)
         list(PREPEND CMAKE_PREFIX_PATH "${PB_QT_ROOT}")

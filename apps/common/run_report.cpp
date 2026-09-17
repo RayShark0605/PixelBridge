@@ -315,13 +315,29 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
             (static_cast<double>(snapshot.submittedLogicalFrames) * snapshot.codewordsPerFrame)) : std::nullopt);
     stream << ",\"occupancyBasis\":\"Control slots in successfully submitted complete logical rasters / (codewordsPerFrame * submittedLogicalFrames); repeated Presents excluded\"}"
         << ",\"grayFastSpatialInterleave\":" << snapshot.grayFastSpatialInterleave
+        << ",\"fullscreenNativeSize\":" << snapshot.fullscreenNativeSize
+        << ",\"fullscreenRasterWidth\":" << snapshot.fullscreenRasterWidth
         << ",\"fullscreenSamplingMode\":\"" << (snapshot.fullscreenSampling == pbapp::FullscreenSamplingMode::Linear ? "linear" :
             snapshot.fullscreenSampling == pbapp::FullscreenSamplingMode::Area ? "area" : "point") << "\""
         << ",\"configuredInitialAirtimePercent\":" << snapshot.configuredInitialAirtimePercent
+        << ",\"configuredVisitBudgetPercent\":" << snapshot.configuredVisitBudgetPercent
         << ",\"configuredLogicalFps\":" << snapshot.configuredLogicalVisualFps << ",\"observedSubmittedLogicalFps\":";
     WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);
     stream << ",\"sourceWholeFileDigest\":";
     WriteEscaped(stream, snapshot.wholeFileDigestHex);
+    if (IsExperimentalPam4Family(snapshot.visualProfile))
+    {
+        const bool wide = snapshot.visualProfile == VisualProfile::ExperimentalPam4Wide;
+        stream << (wide ? ",\"experimentalPam4Wide\":" : ",\"experimentalPam4\":")
+            << "{\"controlSlots\":1,\"transportSlots\":" << (wide ? 19 : 10)
+            << ",\"nativeCenteredRaster\":" << !wide
+            << ",\"informationBytesPerFrame\":" << snapshot.innerFecInformationBytesPerLogicalFrame
+            << ",\"transportPayloadCeilingBytesPerFrame\":" << snapshot.transportPayloadCeilingBytesPerLogicalFrame
+            << ",\"innerFec\":\"Robust Control; Fast Transport\",\"performanceCertified\":false}"
+            << ",\"dataWindow\":{\"left\":" << snapshot.dataWindowLeft << ",\"top\":" << snapshot.dataWindowTop
+            << ",\"width\":" << snapshot.dataWindowWidth << ",\"height\":" << snapshot.dataWindowHeight
+            << ",\"singleMonitorFullscreen\":" << snapshot.singleMonitorFullscreen << '}';
+    }
     stream << ",\"presentation\":{\"epoch\":" << snapshot.presentationEpoch << ",\"adapter\":";
     if (snapshot.presentationAdapter)
     {
@@ -353,13 +369,39 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
     return stream.str();
 }
 
+void WriteDecoderCaptureAuthority(std::ostream& stream, const DecoderSnapshot& snapshot)
+{
+    stream << ",\"monitorSafety\":{\"preflightPassed\":" << snapshot.monitorSafetyPreflightPassed
+           << ",\"revalidationCount\":" << snapshot.monitorSafetyRevalidationCount
+           << ",\"status\":";
+    WriteEscaped(stream, snapshot.monitorSafetyStatus);
+    stream << '}';
+    stream << ",\"singleMonitorCapture\":{\"enabled\":" << snapshot.singleMonitorCaptureEnabled
+           << ",\"preflightPassed\":" << snapshot.singleMonitorCapturePreflightPassed
+           << ",\"revalidationCount\":" << snapshot.singleMonitorCaptureRevalidationCount
+           << ",\"status\":";
+    WriteEscaped(stream, snapshot.singleMonitorCaptureStatus);
+    stream << '}';
+}
+
 std::string BuildUnifiedDecoderReport(const RunReportContext& context, const DecoderSnapshot& snapshot)
 {
     std::ostringstream stream;
     stream.imbue(std::locale::classic());
     stream << std::boolalpha << std::setprecision(17) << '{';
     WriteContext(stream, context, true);
+    WriteDecoderCaptureAuthority(stream, snapshot);
     stream << ",\"budgetBoundDecoderAdmission\":" << snapshot.budgetBoundDecoderAdmission;
+    stream << ",\"decoderMemory\":{\"customBudget\":" << snapshot.customDecoderMemoryBudget
+        << ",\"totalDecoderBytes\":" << snapshot.outerTotalDecoderByteLimit
+        << ",\"perDecoderBytes\":" << snapshot.outerPerDecoderByteLimit
+        << ",\"resumeBytes\":" << snapshot.receiverResumeByteLimit
+        << ",\"planningBytes\":" << snapshot.memoryPlanningBytes
+        << ",\"hostSnapshotAvailable\":" << snapshot.memoryHostSnapshotAvailable
+        << ",\"hostTotalPhysicalBytesAtStart\":" << snapshot.memoryHostTotalPhysicalBytes
+        << ",\"hostAvailablePhysicalBytesAtStart\":" << snapshot.memoryHostAvailablePhysicalBytes
+        << ",\"hostAvailableCommitBytesAtStart\":" << snapshot.memoryHostAvailableCommitBytes
+        << ",\"boundary\":\"FEC admission charge and start-time planning; not measured RSS or a process-wide hard cap\"}";
     stream << ",\"role\":\"Decoder\",\"state\":";
     WriteEscaped(stream, GetDecoderStateName(snapshot.state));
     WriteUnifiedIdentity(stream, snapshot.visualProfile, snapshot.visualProfileId,
@@ -419,9 +461,38 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     stream << ",\"finalPath\":";
     WriteEscaped(stream, snapshot.outputPath);
     stream << "},\"unifiedTelemetry\":";
-    pbtelemetry::WriteUnifiedTelemetryJson(stream, snapshot.unifiedTelemetry);
+    const bool pam4 = IsExperimentalPam4Family(snapshot.visualProfile);
+    if (pam4)
+    {
+        stream << "null";
+    }
+    else
+    {
+        pbtelemetry::WriteUnifiedTelemetryJson(stream, snapshot.unifiedTelemetry);
+    }
+    if (IsExperimentalPam4Family(snapshot.visualProfile))
+    {
+        const bool wide = snapshot.visualProfile == VisualProfile::ExperimentalPam4Wide;
+        stream << (wide ? ",\"experimentalPam4Wide\":" : ",\"experimentalPam4\":")
+            << "{\"slotsPerAvailableObservation\":" << (wide ? 20 : 11) << ",\"frameObservations\":" << snapshot.pam4FrameObservations
+            << ",\"availableObservations\":" << snapshot.pam4AvailableObservations << ",\"erasedObservations\":" << snapshot.pam4ErasedObservations
+            << ",\"evaluatedSlots\":" << snapshot.pam4EvaluatedSlots << ",\"acceptedControlSlots\":" << snapshot.pam4AcceptedControlSlots
+            << ",\"acceptedTransportSlots\":" << snapshot.pam4AcceptedTransportSlots
+            << ",\"basis\":\"Bootstrap-accepted observations include duplicates; not Unified lane metrics or certified UniqueVisualFPS\""
+            << ",\"cpuReadback\":{\"active\":" << snapshot.pam4CpuReference << ",\"decodedObservations\":" << snapshot.pam4DecodedObservations
+            << ",\"frameErasures\":" << snapshot.pam4FrameErasures << ",\"wallTotal100ns\":" << snapshot.pam4ReadbackDecodeWallTotal100ns
+            << ",\"wallHighWater100ns\":" << snapshot.pam4ReadbackDecodeWallHighWater100ns
+            << ",\"basis\":\"Mapped ROI CPU reference decode; includes rejected/duplicate observations; not GPU time or throughput\"}"
+            << ",\"frameIdentity\":{\"admittedFrameSequenceFps\":";
+        WriteOptionalNumber(stream, snapshot.admittedFrameSequenceFps);
+        stream << ",\"duplicates\":" << snapshot.duplicateFrameSequences << ",\"reordered\":" << snapshot.reorderedFrameSequences
+            << ",\"gapEvents\":" << snapshot.frameSequenceGapEvents << ",\"skippedSequences\":" << snapshot.skippedFrameSequences
+            << ",\"temporallyAdmittedTransportBlocks\":" << snapshot.temporallyAdmittedTransportBlocks
+            << ",\"basis\":\"Admitted Bootstrap identities; gaps include loss, durable ID leases and restarts; not certified UniqueVisualFPS\"}}";
+    }
     const bool resumed = snapshot.resumeStateLoaded || snapshot.outputRecoveredAfterPublish;
-    const auto metric = !snapshot.verifiedEncodedSegmentBytes && snapshot.finalPublishSucceeded && !resumed ?
+    const auto metric = pam4 ? pbtelemetry::PublishedFrameMetric{std::nullopt, "ExperimentalPam4FrameCoverageNotCertified"} :
+        !snapshot.verifiedEncodedSegmentBytes && snapshot.finalPublishSucceeded && !resumed ?
         pbtelemetry::PublishedFrameMetric{std::nullopt, "EncodedByteCoverageUnavailable"} :
         pbtelemetry::EvaluatePublishedFrameMetric(snapshot.unifiedTelemetry,
         snapshot.verifiedEncodedSegmentBytes.value_or(0), snapshot.wholeFileDigestCheck.value_or(false),
@@ -431,7 +502,9 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     WriteOptionalNumber(stream, metric.bytesPerUniqueFrame);
     stream << ",\"publishedFrameMetric\":{\"numeratorEncodedBytes\":";
     WriteOptionalNumber(stream, snapshot.verifiedEncodedSegmentBytes);
-    stream << ",\"denominatorObservedUniqueFrames\":" << snapshot.unifiedTelemetry.uniqueFrames << ",\"unavailableReason\":";
+    stream << ",\"denominatorObservedUniqueFrames\":";
+    WriteOptionalNumber(stream, pam4 ? std::nullopt : std::optional<std::uint64_t>(snapshot.unifiedTelemetry.uniqueFrames));
+    stream << ",\"unavailableReason\":";
     WriteEscaped(stream, metric.unavailableReason);
     stream << ",\"gate\":\"WholeFileDigest+safe publish+final reopen+complete current-run frame coverage\"}"
         << ",\"preFecBerEstimate\":null,\"preFecBerUnavailableReason\":\"No independent sender truth\""
@@ -447,7 +520,7 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     {
         stream << ",\"diagnostics\":" << pbcore::BuildStageDiagnosticsJson(snapshot.diagnostics->GetSnapshot());
     }
-    if (snapshot.diagnostics || snapshot.measurement || snapshot.budgetBoundDecoderAdmission)
+    if (snapshot.diagnostics || snapshot.measurement || snapshot.budgetBoundDecoderAdmission || pam4)
     {
         stream << ",\"stageCounters\":{\"authority\":\"ProductionDecoderSnapshot\""
             << ",\"outerUniqueSymbols\":" << snapshot.outerUniqueSymbols
@@ -466,6 +539,9 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
             << ",\"outerPeakReservedDecoderBytes\":" << snapshot.outerPeakReservedDecoderBytes
             << ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit
             << ",\"outerTotalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit
+            << ",\"outerPerDecoderByteLimit\":" << snapshot.outerPerDecoderByteLimit
+            << ",\"receiverResumeByteLimit\":" << snapshot.receiverResumeByteLimit
+            << ",\"customDecoderMemoryBudget\":" << snapshot.customDecoderMemoryBudget
             << ",\"budgetBoundDecoderAdmission\":" << snapshot.budgetBoundDecoderAdmission
             << ",\"bootstrapAcceptedFrames\":" << snapshot.bootstrapAcceptedFrames
             << ",\"bootstrapRejectedFrames\":" << snapshot.bootstrapRejectedFrames
@@ -479,9 +555,12 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
             << ",\"staleResultDrops\":" << snapshot.staleResultDrops
             << '}';
     }
-    if (snapshot.measurement)
+    if (snapshot.measurement || pam4)
     {
         WriteMeasurementCaptureFlow(stream, snapshot);
+    }
+    if (snapshot.measurement)
+    {
         stream << ",\"measurement\":" << BuildRunMeasurementJson(*snapshot.measurement,
             snapshot.descriptorKnown ? std::optional<std::uint64_t>(snapshot.originalFileBytes) : std::nullopt,
             snapshot.verifiedEncodedSegmentBytes, snapshot.state == DecoderState::Completed && snapshot.errorDetail.empty() &&
@@ -509,7 +588,8 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     // The gray-state experimental identity shares the unified RunReport.3
     // schema (per-lane FEC telemetry is exactly what its field A/B needs).
     if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
-        snapshot.visualProfile == VisualProfile::UnifiedGray || snapshot.visualProfile == VisualProfile::UnifiedGrayFast)
+        snapshot.visualProfile == VisualProfile::UnifiedGray || snapshot.visualProfile == VisualProfile::UnifiedGrayFast ||
+        IsExperimentalPam4Family(snapshot.visualProfile))
     {
         return BuildUnifiedEncoderReport(context, snapshot);
     }
@@ -636,7 +716,8 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
 {
     // Same unified RunReport.3 routing as the encoder side.
     if (snapshot.visualProfile == VisualProfile::UnifiedLc4 ||
-        snapshot.visualProfile == VisualProfile::UnifiedGray || snapshot.visualProfile == VisualProfile::UnifiedGrayFast)
+        snapshot.visualProfile == VisualProfile::UnifiedGray || snapshot.visualProfile == VisualProfile::UnifiedGrayFast ||
+        IsExperimentalPam4Family(snapshot.visualProfile))
     {
         return BuildUnifiedDecoderReport(context, snapshot);
     }
@@ -942,11 +1023,7 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
            << ",\"invalidReason\":";
     WriteEscaped(stream, snapshot.evidenceInvalidReason);
     stream << '}';
-    stream << ",\"monitorSafety\":{\"preflightPassed\":" << snapshot.monitorSafetyPreflightPassed
-           << ",\"revalidationCount\":" << snapshot.monitorSafetyRevalidationCount
-           << ",\"status\":";
-    WriteEscaped(stream, snapshot.monitorSafetyStatus);
-    stream << '}';
+    WriteDecoderCaptureAuthority(stream, snapshot);
     stream << ",\"replay\":{\"enabled\":" << snapshot.replayEnabled
            << ",\"diagnosticOnly\":" << snapshot.replayDiagnosticOnly
            << ",\"captureOnly\":" << snapshot.replayCaptureOnly

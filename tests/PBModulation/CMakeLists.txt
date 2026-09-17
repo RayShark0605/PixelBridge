@@ -108,6 +108,14 @@ target_compile_definitions(PBUnifiedGrayStatesTests PRIVATE
     PB_UNIFIED_GRAYFAST_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden/unified-grayfast-cpu-oracle")
 set_tests_properties(PBUnifiedGrayStatesTests PROPERTIES LABELS "modulation;graystates;unified;fec" TIMEOUT 240)
 
+PbAddUnitTest(PBExperimentalPam4Tests test_experimental_pam4.cpp)
+target_link_libraries(PBExperimentalPam4Tests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
+set_tests_properties(PBExperimentalPam4Tests PROPERTIES LABELS "modulation;pam4;experimental;fec;control" TIMEOUT 120)
+
+PbAddUnitTest(PBExperimentalPam4WideTests test_experimental_pam4_wide.cpp)
+target_link_libraries(PBExperimentalPam4WideTests PRIVATE PB::PBModulation PB::PBProtocol PB::PBInnerFec)
+set_tests_properties(PBExperimentalPam4WideTests PROPERTIES LABELS "modulation;pam4-wide;experimental;fec;control" TIMEOUT 180)
+
 # Test-only two-stage presentation sampling comparison (point vs linear vs
 # area stage one, fractional remote-view rescale stage two). No production
 # filter or threshold is exercised or changed by this target.

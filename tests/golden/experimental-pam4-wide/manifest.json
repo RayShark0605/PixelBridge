@@ -1,0 +1,447 @@
+{
+  "schema": "PixelBridge.ExperimentalPam4Wide.Profile.1",
+  "name": "PB-Experimental-Pam4-Wide-1",
+  "visualProfileId": "0x504250414D345731",
+  "visualLayoutVersion": 16,
+  "status": "experimental-core-only-not-runtime-certified",
+  "productCatalogAdmission": false,
+  "automaticProfileSelection": false,
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "format": "BGRA8_UNORM_SDR",
+    "alpha": 255,
+    "background": 128
+  },
+  "regions": [
+    {
+      "kind": 0,
+      "pilotContent": 0,
+      "x": 16,
+      "y": 16,
+      "width": 64,
+      "height": 64
+    },
+    {
+      "kind": 0,
+      "pilotContent": 0,
+      "x": 1840,
+      "y": 16,
+      "width": 64,
+      "height": 64
+    },
+    {
+      "kind": 0,
+      "pilotContent": 0,
+      "x": 16,
+      "y": 1000,
+      "width": 64,
+      "height": 64
+    },
+    {
+      "kind": 0,
+      "pilotContent": 0,
+      "x": 1840,
+      "y": 1000,
+      "width": 64,
+      "height": 64
+    },
+    {
+      "kind": 1,
+      "pilotContent": 0,
+      "x": 96,
+      "y": 16,
+      "width": 608,
+      "height": 64
+    },
+    {
+      "kind": 2,
+      "pilotContent": 0,
+      "x": 1216,
+      "y": 1000,
+      "width": 608,
+      "height": 64
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 96,
+      "y": 160,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 896,
+      "y": 160,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 1696,
+      "y": 160,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 96,
+      "y": 476,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 896,
+      "y": 476,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 1696,
+      "y": 476,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 96,
+      "y": 792,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 896,
+      "y": 792,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 32,
+      "x": 1696,
+      "y": 792,
+      "width": 128,
+      "height": 128
+    },
+    {
+      "kind": 3,
+      "pilotContent": 15,
+      "x": 736,
+      "y": 16,
+      "width": 128,
+      "height": 64
+    },
+    {
+      "kind": 3,
+      "pilotContent": 15,
+      "x": 1696,
+      "y": 16,
+      "width": 128,
+      "height": 64
+    },
+    {
+      "kind": 3,
+      "pilotContent": 15,
+      "x": 96,
+      "y": 1000,
+      "width": 128,
+      "height": 64
+    },
+    {
+      "kind": 3,
+      "pilotContent": 15,
+      "x": 1056,
+      "y": 1000,
+      "width": 128,
+      "height": 64
+    },
+    {
+      "kind": 3,
+      "pilotContent": 16,
+      "x": 896,
+      "y": 16,
+      "width": 128,
+      "height": 64
+    },
+    {
+      "kind": 3,
+      "pilotContent": 16,
+      "x": 896,
+      "y": 1000,
+      "width": 128,
+      "height": 64
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 96,
+      "y": 96,
+      "width": 1728,
+      "height": 60
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 224,
+      "y": 160,
+      "width": 672,
+      "height": 126
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 1024,
+      "y": 160,
+      "width": 672,
+      "height": 126
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 96,
+      "y": 288,
+      "width": 1728,
+      "height": 186
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 224,
+      "y": 476,
+      "width": 672,
+      "height": 126
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 1024,
+      "y": 476,
+      "width": 672,
+      "height": 126
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 96,
+      "y": 604,
+      "width": 1728,
+      "height": 186
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 224,
+      "y": 792,
+      "width": 672,
+      "height": 126
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 1024,
+      "y": 792,
+      "width": 672,
+      "height": 126
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 96,
+      "y": 920,
+      "width": 1728,
+      "height": 60
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 6,
+      "y": 96,
+      "width": 84,
+      "height": 888
+    },
+    {
+      "kind": 4,
+      "pilotContent": 0,
+      "x": 1830,
+      "y": 96,
+      "width": 84,
+      "height": 888
+    }
+  ],
+  "cell": {
+    "width": 3,
+    "height": 3,
+    "alignment": "global origin 0,0; whole cells inside Data only",
+    "order": "global row-major",
+    "count": 165192,
+    "levelsByTwoBitLabel": [
+      0,
+      85,
+      170,
+      255
+    ],
+    "bitOrder": "LSB-first"
+  },
+  "packing": {
+    "codewords": 20,
+    "codewordBits": 16200,
+    "codewordBytes": 2025,
+    "controlSlots": [
+      0
+    ],
+    "transportSlots": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19
+    ],
+    "controlInnerFecProfileId": "0x36BC661265E826C3",
+    "controlInformationBytes": 1350,
+    "transportInnerFecProfileId": "0x24B794EB5A445D58",
+    "transportInformationBytes": 1665,
+    "transportOverheadBytes": 36,
+    "maximumTransportPayloadBytesPerFrame": 30951,
+    "controlAlwaysActive": true,
+    "inactiveTransport": "all-zero information, not admitted as Transport"
+  },
+  "placement": {
+    "source": "libs/PBModulation/src/experimental_pam4_wide_mapping.h",
+    "normativeTableNotRuntimePrng": true,
+    "readOnlyBytes": 1956768,
+    "cellSitesLe32Sha256": "0acdedd881cf37b255ef7765ea9a5913aaa1fa54155dbd814bc0c2ffaed7e8d3",
+    "logicalBitPositionsLe32Sha256": "55ff14d0cd71246fd5ccf98935df3b865c7a0e10346e90685f660b594479703a",
+    "cellSitesLe32Blake3": "59004dfa5c61f2d2e3fec74649557717a34f22d9c59c07c87a99ae4d44d698d0",
+    "logicalBitPositionsLe32Blake3": "2a89e25e47fc5848c5c606962debfc51d80ace9ed9c5b464b0a28daf6a6f30fd",
+    "unusedBits": 6384,
+    "unusedBitValue": 0,
+    "partialDataCellLuma": 128,
+    "frameSequencePermutation": false
+  },
+  "bootstrap": {
+    "wire": "PB-Bootstrap-1",
+    "bytes": 44,
+    "fec": "existing shortened RS(255,223) 76 bytes",
+    "copies": 2,
+    "allTimingPatchesRequired": true,
+    "timingPatches": 9,
+    "exactPairRequired": true,
+    "oldUnifiedTimingErasureException": false
+  },
+  "calibration": {
+    "coarseLevels": [
+      8,
+      64,
+      160,
+      232
+    ],
+    "heldOutFineLevels": [
+      56,
+      112,
+      168,
+      248
+    ],
+    "heldOutNeutral": 128,
+    "spatialDeviationMaximum": 8,
+    "heldOutResidualMaximum": 8,
+    "coarseGapMinimum": 16,
+    "centroidGapMinimum": 16,
+    "contrastMinimum": 96,
+    "endpointFit": "bounded linear extrapolation from coarse levels; visible held-out gates"
+  },
+  "sampling": {
+    "point": "logical3px cell center (3*column+1.5,3*row+1.5), half-pixel captured transform, bilinear",
+    "formats": [
+      "Gray8",
+      "Bgra8"
+    ],
+    "bgraLuma": "(722*B+7152*G+2126*R)/10000",
+    "metric": "max-log squared-distance difference / (1.5*median(adjacent visible PAM4 centroid gaps))^2; positive means bit0",
+    "quantization": "clip +/-32767; ties-to-even; scale16384",
+    "geometryPolicyBounds": [
+      0.5,
+      2.0
+    ],
+    "boundsAreNotCertification": true,
+    "cachedGeometry": "previous accepted pixels only, reset on erasure/explicit capture discontinuity",
+    "phaseCheckerRegions": "rendered unchanged, not used as shape-sharpening or data phase admission gate for PAM4"
+  },
+  "referenceFecOptions": {
+    "maximumIterations": 12,
+    "syndromeCheckInterval": 1,
+    "offset": 2048,
+    "scaleNumerator": 1,
+    "scaleDenominator": 1,
+    "implementationTuningNotWire": true
+  },
+  "goldenFixture": {
+    "sequence": 3267,
+    "sessionIdBytesFormula": "(index*13+17) for index0..15",
+    "fileBytes": 1000000,
+    "filename": "payload.bin",
+    "segmentCount": 1,
+    "controlSequence": 7,
+    "transportBytes": "1629-slot%5; byte=(index*29+slot*71+sequence*13)&255",
+    "rasterBlake3": "221562b0fc98ebd1b32eaf5edd10a62e804fb3aeaa690be47590392268204937",
+    "codedFrameBlake3": "709468210ebebca35477678e6599c03051660cf1060aa498cb12c4f60ba626df"
+  },
+  "validationBoundary": {
+    "typedControl": true,
+    "outerFecFileRestore": false,
+    "gpuParity": false,
+    "nativeCapture": false,
+    "ToDeskField": false,
+    "mainFileHourGoal": false
+  },
+  "presentation": {
+    "requiredRasterWidth": 2560,
+    "requiredRasterHeight": 1440,
+    "physicalCellWidth": 4,
+    "physicalCellHeight": 4,
+    "sampling": "pixel-center point; sourceX=floor((2*x+1)*1920/(2*2560)); sourceY=floor((2*y+1)*1080/(2*1440))",
+    "placement": "centered, static neutral128 matte; desktop dimensions unchanged",
+    "arbitraryNative3pxPresentationAllowed": false,
+    "arbitraryInterpolationAllowed": false,
+    "applicationEntryImplemented": false
+  },
+  "goldenIndependentProof": {
+    "recordSerialization": "Python explicit LE, CRC32C, BLAKE3 SessionTag",
+    "fec": "old sealed native fixed Robust/Fast matrices, separate from new core encoder",
+    "raster": "Python Bootstrap RS, identity-bound freshness and full Data map; unchanged markers/calibration/phase from old sealed reference",
+    "sourceSequences": [
+      3267,
+      3268,
+      3284,
+      3326,
+      3507
+    ],
+    "pixelComponentMismatches": 0,
+    "provenance": "artifacts/nonlocal-optimization-20260915-audit01/stage29-golden-proof01/result.json",
+    "proofSha256": "76c3b97e65b65ac9d6e94df2a4b871347694a30fa14bbc842e2760d7fe78745c"
+  }
+}

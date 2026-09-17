@@ -1,5 +1,8 @@
 # Unified G21 tools
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 本目录保存可审查的工具源码；构建、运行输出和原始 evidence 不写回源码目录。
 当前产品合同和权威结果分别见 `docs/UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 与
 `docs/UNIFIED_G21_EXECUTION_HANDOFF_2026-09-06.md` 第 0 节最新增量。

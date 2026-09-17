@@ -1,8 +1,11 @@
 # PBScreenCaptureWgc：有界 WGC lease 与异步 ROI 退休
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 ## 范围与依赖
 
-本模块实现总体设计 §1.11、§21、§22.1–22.6、§23 的 WGC capture 基础设施。
+本模块实现当前总体设计 §8 的 WGC capture 基础设施。
 复用 PBScreenRegion 的 ScreenCaptureRegion 和 PBProtocol 的 checked arithmetic；
 独立静态 target PB::PBScreenCaptureWgc，不依赖 Qt，不新增第二套区域选择器、
 渲染器或空壳 Capture Normalize 框架。不修改协议、Golden Vectors、FEC、文件恢复规则。

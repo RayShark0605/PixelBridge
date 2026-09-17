@@ -1,12 +1,86 @@
-# PixelBridge 证据索引
+# PixelBridge 证据索引 / Evidence index
 
-> **文档性质：** 本文件是项目**唯一入口级证据索引**，回答三个问题：某个结论的证据在哪个路径、身份哈希是多少、当时的终态字段写了什么。本文件**只做索引与身份登记**，不重述实验过程、不新增任何结论。
->
-> **哈希复核时点：** 2026-09-09，本机 `Get-FileHash -Algorithm SHA256` 重新计算。标注 ✅ 的条目为本轮独立重算并与封存清单一致；未标注的是封存清单内记录值（未在本轮逐一重算）。
->
-> **本轮整理边界：** `docs/` 清理属**纯文档与 Git 记账**。整理过程中**未执行任何构建、单元测试、集成测试、实屏、远程桌面/Citrix 或大文件现场流程**，未修改任何源码字节、协议常量、Visual Profile、Golden Vector 或封存证据。因此本文件与同批提交**不构成任何新的验证、晋级或性能结论**。
->
-> **入口关系：** 现状叙述见 [`PROJECT_STATUS.md`](PROJECT_STATUS.md)；被删文档的去处与逐字节取回见 [`DOC_HISTORY.md`](DOC_HISTORY.md)。
+[当前状态](PROJECT_STATUS.md) · [Current status](PROJECT_STATUS.en.md)
+
+## 当前可引用结果 / Current retained results
+
+以下是留存证据的索引，不是本次日志/UI源码的重新测速。原始大文件、运行日志和私有包不进入源码仓库；本地 artifact 路径只供维护者复核，公开读者不能假定下载可用。
+
+These are retained results, not fresh throughput measurements of the new logging/UI source. Private payloads, runtime logs and packages are not part of the source repository. Artifact paths are local audit pointers, not public download promises.
+
+本地证据根 / local evidence root: `artifacts/nonlocal-optimization-20260915-audit01/`.
+
+<a id="readme-speed-reference"></a>
+
+### README 平均速度口径 / README average-speed reference
+
+README 的 KB/s 与 Decoder 界面一致，使用 1 KB = 1024 B；不是十进制 kB/s。以源文件原始字节数除以 `receiverRuntimeMilliseconds / 1000` 再除以 1024，包含整个接收运行直到最终复验的时间，不去掉等待或尾部，不使用瞬时采样峰值。
+
+README uses the Decoder UI convention of 1 KB = 1024 B, not decimal kB/s. Divide original source bytes by `receiverRuntimeMilliseconds / 1000`, then by 1024. This includes the complete receiver run through final verification, without removing waits or the transfer tail or substituting a sampled peak.
+
+| Source record | Source bytes | Receiver runtime | Average KB/s | README rounding and scope |
+| --- | ---: | ---: | ---: | --- |
+| `pam4-stage35-wide-main-25hz01/result.json` + `remote-source-metadata.json` | 1,206,113,941 | 4,227,996 ms | 278.582488 | **279 KB/s**, PAM4 Wide, remote2560×1600 / local2560×1440, complete large file |
+| `pam4-stage39-1080-new-pam401/result.json` + `remote-source-metadata.json` | 95,420,416 | 490,320 ms | 190.047316 | **190 KB/s**, PAM4, remote1920×1080 / local2560×1440, 91 MiB small file |
+
+两项均为 ToDesk 专业版、高清、25 Hz 的留存非本机记录；最终 `wholeDigestVerified`、`published`、`finalReopenVerified` 与独立 SHA-256 比对通过。两项不是相同分辨率/文件的模式 A/B，更不能把 Wide 的速度套到 PAM4 或把 91 MiB 结果外推为大文件保证。
+
+Both retained non-local runs used ToDesk Professional, HD quality, and 25 Hz. Both passed `wholeDigestVerified`, `published`, `finalReopenVerified`, and independent SHA-256 comparison. They are not a same-resolution, same-file mode A/B test: Wide throughput does not establish PAM4 throughput, and the 91 MiB result does not guarantee large-file speed.
+
+Stage35 的 `build-identity.json` 记录源码 fingerprint 为 `447f2468fdbf741eb3898127ea137d0e70806148b54f675e42ec12ceb0706127`；该 run 的最终 SHA-256 见下方原始结果表。两个 run 目录均保留 `build-identity.json` 与 `launch.json`，分别核对构建身份和启动参数。
+
+Stage35 `build-identity.json` records source fingerprint `447f2468fdbf741eb3898127ea137d0e70806148b54f675e42ec12ceb0706127`; its final SHA-256 appears in the original-results table below. Both run directories retain `build-identity.json` and `launch.json` for build identities and launch arguments.
+
+Stage39 补充身份可从 `stage39-resolution-audit02/summary.json` 的 `1080-candidate` 核对：13 段，最终 SHA-256 `066e380daaac099534a9173f45919ad87efd7b08ec593d78b4c70539ec727232`；`packageIdentitySha256=51f4774b672845f338fdc29d1f61b9093cb80ecdd3efa64c8fcb2fb3aa85d136` 是该审计的包身份摘要字段，不应误称整个 ZIP 的哈希；该批源码 fingerprint 为 `82c8156b21b28b5cbfbec2c4a59a72c10191832fe0095a3ffc260d7a08d959a8`。这不是本次日志/UI收尾构建的重新测速。
+
+For Stage39, `stage39-resolution-audit02/summary.json`, case `1080-candidate`, records 13 segments, final SHA-256 `066e380daaac099534a9173f45919ad87efd7b08ec593d78b4c70539ec727232`, package-identity digest `51f4774b672845f338fdc29d1f61b9093cb80ecdd3efa64c8fcb2fb3aa85d136` (the audit field, not a claim about the ZIP hash), and source fingerprint `82c8156b21b28b5cbfbec2c4a59a72c10191832fe0095a3ffc260d7a08d959a8`. It is not a fresh throughput test of the logging/UI closeout build.
+
+### 原始结果与限制 / Original results and boundaries
+
+| Evidence | Outcome | Boundary |
+| --- | --- | --- |
+| `pam4-stage35-wide-main-25hz01/result.json` + `remote-source-metadata.json` | 1,206,113,941 B; 4,227,996 ms; 165 segments; digest/publish/reopen and independent SHA pass | Earlier Wide candidate, remote2560×1600/local2560×1440, ToDesk 25 Hz; not fresh v1.0 throughput |
+| Same main SHA-256 | `14d5255cc7a79969bb6a4106b7b5c6cb314c8b16656040decabe07922d4eec6d` | Original file unchanged; final output independently matched |
+| Same run plateau | 217.439 s joint no-new-equation/no-verified interval | One-hour and stall-free goals unmet |
+| `stage49-delivery-audit01/summary.json` / Stage47 | PAM4, remote1920×1080, selected local2560×1440, 1 MiB, 10,173 ms | Correct receiver output; external early WM_CLOSE sender exit1 retained, not clean sender stop |
+| Same audit / Stage48 | Wide, remote2560×1600, selected local2560×1440, 1 MiB, 7,519 ms | Correct output; sender natural deadline exit0; source display restored |
+| Stage46 private package | SHA-256 `746e67527bc111c9320e964b1e299540b6868a4920f05af476bbbc0956bcfd35` | Old private candidate, not the upcoming formal v1.0 package |
+| Stage45 source used by Stage46 | `318443a8c557a0c4356f93c84426c4c0da99f78653d4883ead16a439d99f8752` | 861 files; not current edited source |
+| Actual single-physical-monitor host | Not available / not qualified | Selected-screen capability is retained, but dual-monitor-host tests do not certify separate hardware |
+
+Stage35 的前台窗口首尾不同由用户确认是正常切换应用，可忽略该单项差异；原始记录不改写。不同机器上 Citrix 的约100分钟用户实测不是同环境速度基线，不直接计算本轮提升比例。
+
+The user confirmed the Stage35 foreground difference came from normal app switching; the raw record stays unchanged. The separate Citrix ~100-minute observation used another receiving computer and is not a paired baseline for current ToDesk results.
+
+## 本次收尾 / This closeout
+
+`artifacts/v1-closeout-20260917/` 保存修改前文档 ZIP/SHA、source manifests、构建/失败/修复记录、日志/活动原因定向测试及离屏预览。最终有效检查由该目录的最终审阅记录标识，不能挑选失败轮中的局部 PASS 作为整体完成。
+
+This new root retains original docs, source/build identities, failed and repaired checks, targeted logging/activity tests, and offscreen previews. The final review record identifies the authoritative checks; partial passes from failed iterations are not whole-task success. No new main.rar or physical-screen throughput test is implied.
+
+## 必须保留的历史失败 / Historical failures that must remain visible
+
+### 灰阶中途加入性能门 / Gray Fast late-join performance gate
+
+`artifacts/v1-release-20260917/build01/` 的完整非交互 CTest 为 **172/173**，不是全绿。唯一失败为 `PBApplicationTests` 中 `[grayfast-spatial-large]` 的 `PeriodicQuarter`、`firstObservedLogicalFrame=15000` 分支：加入后 **12,505** 帧完成，要求 `< 12,000`。完整文件 81,788,928 B，digest/publish/reopen 通过。
+
+该问题在 `25a08aa:docs/SESSION_HANDOFF_20260914_V0.6.md` 已明确登记为未关闭；`latejoin-repro01/` 用 2026-09-15 留存二进制和新 v1.0 初次构建分别重现相同完成帧数。不是本次 License/版本/打包引入的回退。保留失败与门槛，不降阈值、不排除该测试、不借其它通过项声称整体全绿。源码未为该历史性能项进行新调度优化。
+
+The full non-interactive release suite passes **172/173** entries. Its single failure is the historical Gray Fast spatial late-join performance gate: 12,505 post-join frames versus `< 12,000`, with correct final-file recovery. The old and new binaries reproduce the same result; the v0.6 handoff already documented it. No threshold relaxation, test exclusion, or new scheduler tuning was used to manufacture a pass.
+
+Reproduce with `PBApplicationTests.exe "[grayfast-spatial-large]"`; retained evidence includes commands, logs and binary identities. This is a synthetic no-raster test, not a real remote transfer measurement.
+
+### 其它历史门 / Other historical gates
+
+G21 的原始远控 1 GiB 文件恢复正确，但 raw performance 为 8,626.511 B/unique，低于 16 KiB gate，Receiver exit1。仅该 run 获用户明确豁免，结果 `PASS_WITH_SINGLE_RUN_USER_WAIVER`；不重写阈值，也不把豁免推广到未来运行。
+
+G21 recovered the file but failed its raw-performance gate; its explicit single-run waiver neither changes the gate nor certifies later runs. G22 local-candidate and subsequent historical results are detailed below. These historical sections are not a current product roadmap.
+
+---
+
+# 历史索引 / Historical reference (recorded 2026-09-09)
+
+下列日期、哈希核对和“本轮”描述仅指该历史批次。Historical dates and verification claims below apply only to that batch.
 
 ## 1. 三层身份与引用规范
 
@@ -46,7 +120,7 @@
 
 ## 3. Gate 证据索引（G00-G22）
 
-G00-G22 的**逐项验收条款与实现史**保留在 [`UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md`](UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md) §5（G00 起于该文件第 289 行，G22 起于第 922 行）。本索引只登记**有独立证据根或独立终态字段**的 Gate；其余 Gate 不在此重述，避免复制两份可能漂移的状态。
+G00-G22 的**逐项验收条款与实现史**位于已退役的 `UNIFIED_VISUAL_LARGE_FILE_IMPLEMENTATION_ROADMAP.md` 原 §5。请按 [文档历史](DOC_HISTORY.md) 中对应 blob / 工作副本备份恢复原文；不要在重写后的总体设计里使用旧行号或章节号。本索引只登记**有独立证据根或独立终态字段**的 Gate；其余 Gate 不在此重述，避免复制两份可能漂移的状态。
 
 | Gate | 记录所在 | 关键事实 | 不得越界 |
 | --- | --- | --- | --- |
@@ -116,7 +190,7 @@ G00-G22 的**逐项验收条款与实现史**保留在 [`UNIFIED_VISUAL_LARGE_FI
 | `.../Encoder/PixelBridgeEncoder.exe` | `2c8f797df8397016a733124e642eb4bc72a28430110908f14546f50cde5c6e34` |
 | `.../Decoder/PixelBridgeDecoder.exe` | `a011b8b6759a9fd446e1d42265ee77dfd2218ceba314b2e41d1f733c65e3043d` |
 
-构建号 `3a840a2`；终态 `PASS_LOCAL_CANDIDATE`；GUI 交互合同见 [`UNIFIED_G22_GUI_RELEASE.md`](UNIFIED_G22_GUI_RELEASE.md)。
+构建号 `3a840a2`；终态 `PASS_LOCAL_CANDIDATE`；当时的 GUI 交互合同在已退役的 `UNIFIED_G22_GUI_RELEASE.md`，可按 [文档历史](DOC_HISTORY.md) 恢复；当前操作见新版用户指南。
 
 ### 5.2 Encoder 无 DXGI-output 兼容候选（`artifacts/g22-encoder-compat-20260907/SHA256SUMS.txt`）
 

@@ -44,7 +44,11 @@ enum class VisualProfile : std::uint8_t
     // identical seven-plane raster, DVB-S2 Short Fast inner FEC (37/45) and a
     // 1629-byte Transport payload per slot. CLI opt-in only; never the
     // default and never exposed by the product GUI.
-    UnifiedGrayFast
+    UnifiedGrayFast,
+    // Independent eleven-slot PAM4 experiment. Never a Unified lane alias.
+    ExperimentalPam4,
+    // Independent twenty-slot profile with fixed 2560x1440 point presentation.
+    ExperimentalPam4Wide
 };
 
 // Explicit sender-side presentation sampling experiment for the Unified
@@ -66,6 +70,18 @@ enum class FullscreenSamplingMode : std::uint8_t
 {
     return profile == VisualProfile::UnifiedLc4 || profile == VisualProfile::UnifiedBands ||
         profile == VisualProfile::UnifiedGray || profile == VisualProfile::UnifiedGrayFast;
+}
+
+[[nodiscard]] constexpr bool IsExperimentalPam4Family(const VisualProfile profile) noexcept
+{
+    return profile == VisualProfile::ExperimentalPam4 || profile == VisualProfile::ExperimentalPam4Wide;
+}
+
+// Reuses the bounded Segment carousel, not the Unified raster, FEC, telemetry
+// or product admission. PAM4 selects its own fixed one-Control-slot policy.
+[[nodiscard]] constexpr bool UsesMixedSlotCarousel(const VisualProfile profile) noexcept
+{
+    return IsUnifiedVisualFamily(profile) || IsExperimentalPam4Family(profile);
 }
 
 struct VisualProfileOption
@@ -318,7 +334,10 @@ struct EncoderSnapshot
     // Reported sender-side presentation sampling mode; Point means the
     // historical composition path was used unchanged.
     FullscreenSamplingMode fullscreenSampling = FullscreenSamplingMode::Point;
+    bool fullscreenNativeSize = false;
+    std::uint32_t fullscreenRasterWidth = 0;
     std::uint32_t configuredInitialAirtimePercent = 100;
+    std::uint32_t configuredVisitBudgetPercent = 100;
     std::optional<double> configuredLogicalDwellMilliseconds;
     std::optional<double> minimumObservedLogicalDwellMilliseconds;
     std::uint64_t logicalDwellViolationCount = 0;
@@ -407,6 +426,9 @@ struct DecoderSnapshot
     bool descriptorKnown = false;
     std::string originalFileNameUtf8;
     std::uint64_t verifiedSegmentCount = 0;
+    // Current synchronous recovery work; state Verifying alone can outlive a
+    // segment write and must not be used as proof that disk/CPU work is active.
+    std::string activeRecoveryOperation;
     std::optional<std::uint64_t> verifiedEncodedSegmentBytes;
     std::optional<std::uint64_t> resumeVerificationMilliseconds;
     std::optional<bool> resumeVerificationSucceeded;
@@ -414,6 +436,20 @@ struct DecoderSnapshot
     std::optional<bool> finalRenameSucceeded;
     std::optional<bool> finalReopenVerified;
     pbtelemetry::UnifiedTelemetrySnapshot unifiedTelemetry;
+    // Bootstrap-accepted PAM4 observations include duplicate captures, not Unique
+    // Visual FPS, Unified lane metrics or a certified completion denominator.
+    std::uint64_t pam4FrameObservations = 0;
+    std::uint64_t pam4AvailableObservations = 0;
+    std::uint64_t pam4ErasedObservations = 0;
+    std::uint64_t pam4EvaluatedSlots = 0;
+    std::uint64_t pam4AcceptedControlSlots = 0;
+    std::uint64_t pam4AcceptedTransportSlots = 0;
+    // Whole mapped-ROI CPU reference cost, separate from Bootstrap-only and GPU counters.
+    bool pam4CpuReference = false;
+    std::uint64_t pam4DecodedObservations = 0;
+    std::uint64_t pam4FrameErasures = 0;
+    std::uint64_t pam4ReadbackDecodeWallTotal100ns = 0;
+    std::uint64_t pam4ReadbackDecodeWallHighWater100ns = 0;
     std::string geometryStatus = "WaitingForBootstrap";
     std::uint64_t originalFileBytes = 0;
     LargeOutputConfirmationState largeOutputConfirmationState = LargeOutputConfirmationState::NotRequired;
@@ -574,7 +610,15 @@ struct DecoderSnapshot
     std::uint64_t outerFecQuotaExceededCount = 0;
     std::uint64_t outerActiveDecoderLimit = 0;
     std::uint64_t outerTotalDecoderByteLimit = 0;
+    std::uint64_t outerPerDecoderByteLimit = 0;
+    std::uint64_t receiverResumeByteLimit = 0;
     bool budgetBoundDecoderAdmission = false;
+    bool customDecoderMemoryBudget = false;
+    bool memoryHostSnapshotAvailable = false;
+    std::uint64_t memoryHostTotalPhysicalBytes = 0;
+    std::uint64_t memoryHostAvailablePhysicalBytes = 0;
+    std::uint64_t memoryHostAvailableCommitBytes = 0;
+    std::uint64_t memoryPlanningBytes = 0;
     std::uint64_t outerActiveDecoderCount = 0;
     std::uint64_t outerPeakActiveDecoderCount = 0;
     std::uint64_t outerReservedDecoderBytes = 0;
@@ -604,6 +648,11 @@ struct DecoderSnapshot
     bool monitorSafetyPreflightPassed = false;
     std::uint64_t monitorSafetyRevalidationCount = 0;
     std::string monitorSafetyStatus;
+    // Selected-screen capture is not a pass of the dual-monitor field gate.
+    bool singleMonitorCaptureEnabled = false;
+    bool singleMonitorCapturePreflightPassed = false;
+    std::uint64_t singleMonitorCaptureRevalidationCount = 0;
+    std::string singleMonitorCaptureStatus;
     bool replayEnabled = false;
     bool replayDiagnosticOnly = false;
     bool replayCaptureOnly = false;

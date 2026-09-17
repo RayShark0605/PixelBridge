@@ -112,8 +112,24 @@ CaptureStatus ValidateDeviceAdapter(ID3D11Device* const device, const LUID& expe
         CaptureStatus::Failure(CaptureError::InvalidFrame, CaptureStage::Adapter);
 }
 
+bool IsPam4Visual(const std::uint64_t visualProfileId) noexcept
+{
+    return visualProfileId == pbprotocol::kPam4ExperimentalProfile.visualProfileId ||
+        visualProfileId == pbprotocol::kPam4WideExperimentalProfile.visualProfileId;
+}
+
 bool ResolveBinding(const std::uint64_t visualProfileId, pbmodulation::LocalDesktopBootstrapBinding& output) noexcept
 {
+    if (visualProfileId == pbprotocol::kPam4WideExperimentalProfile.visualProfileId)
+    {
+        output = {visualProfileId, pbprotocol::kPam4WideExperimentalProfile.visualLayoutVersion};
+        return true;
+    }
+    if (visualProfileId == pbprotocol::kPam4ExperimentalProfile.visualProfileId)
+    {
+        output = {visualProfileId, pbprotocol::kPam4ExperimentalProfile.visualLayoutVersion};
+        return true;
+    }
     if (visualProfileId == pbmodulation::kUnifiedVisualProfile.productProfile.visualProfileId)
     {
         output = {visualProfileId, pbmodulation::kUnifiedVisualProfile.productProfile.visualLayoutVersion};
@@ -176,7 +192,7 @@ bool IsUnifiedVisual(const std::uint64_t visualProfileId) noexcept
 
 bool IsStagedVisual(const std::uint64_t visualProfileId) noexcept
 {
-    return IsRemoteVisualLowFps(visualProfileId) || IsUnifiedVisual(visualProfileId);
+    return IsRemoteVisualLowFps(visualProfileId) || IsUnifiedVisual(visualProfileId) || IsPam4Visual(visualProfileId);
 }
 
 pbmodulation::LocalDesktopObservation DecodeRemoteVisualLowFpsBootstrap(const pbmodulation::LumaView& view,
@@ -740,6 +756,9 @@ struct CaptureDemodulator::Implementation
     std::optional<pbmodulation::LocalDesktopGeometry> bootstrapGeometryHint;
     mutable std::mutex demodulatorMutex;
     std::unique_ptr<Demodulator> demodulator;
+    pbmodulation::ExperimentalPam4CpuDecoder pam4Decoder;
+    pbmodulation::ExperimentalPam4WideCpuDecoder pam4WideDecoder;
+    std::unique_ptr<CaptureDemodulatorResult> pam4Result;
     std::vector<std::byte> referenceScratch;
     std::vector<std::byte> supplementalBandScratch;
     std::array<std::byte, pbmodulation::kReferenceBootstrapRecordBytes> referenceBootstrap{};
@@ -759,7 +778,8 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
     pbmodulation::LocalDesktopBootstrapBinding binding;
     const bool remoteVisualLowFps = IsRemoteVisualLowFps(config.visualProfileId);
     const bool unifiedVisual = IsUnifiedVisual(config.visualProfileId);
-    const bool stagedVisual = remoteVisualLowFps || unifiedVisual;
+    const bool pam4 = IsPam4Visual(config.visualProfileId);
+    const bool stagedVisual = remoteVisualLowFps || unifiedVisual || pam4;
     const pbmodulation::LocalDesktopGeometry policyProbe{0, 0, 1, 1, 0};
     if (!ResolveBinding(config.visualProfileId, binding) || config.slotCount < 2 ||
         config.slotCount > maximumDemodulatorSlots || config.maximumFrameAgeMilliseconds == 0 ||
@@ -771,6 +791,7 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
         (remoteVisualLowFps && pbmodulation::ValidateRemoteVisualLowFpsGeometry(policyProbe, config.remoteVisualLowFpsPolicy) ==
             pbmodulation::RemoteVisualLowFpsErasure::InvalidPolicy) ||
         (unifiedVisual && !pbmodulation::ValidateUnifiedVisualDecodePolicy(config.unifiedVisualPolicy)) ||
+        (pam4 && config.evaluationMode != pbdesktoplevels::EvaluationMode::Transport) ||
         (config.evaluationMode != pbdesktoplevels::EvaluationMode::DiagnosticTruth &&
          config.evaluationMode != pbdesktoplevels::EvaluationMode::Transport))
     {
@@ -781,10 +802,18 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
     demodConfig.maximumResidentBytes = config.maximumResidentBytes;
     demodConfig.evaluationMode = config.evaluationMode;
     CaptureDemodulatorBudget budget;
-    const auto demodStatus = CalculateDemodulatorResidentBytes(demodConfig, budget.demodulatorBytes);
-    if (!demodStatus)
+    if (pam4)
     {
-        return FromDemodStatus(demodStatus, CaptureStage::Configuration);
+        budget.demodulatorBytes = config.visualProfileId == pbprotocol::kPam4WideExperimentalProfile.visualProfileId ?
+            pbmodulation::ExperimentalPam4WideCpuDecoder::RequiredBytes() : pbmodulation::ExperimentalPam4CpuDecoder::RequiredBytes();
+    }
+    else
+    {
+        const auto demodStatus = CalculateDemodulatorResidentBytes(demodConfig, budget.demodulatorBytes);
+        if (!demodStatus)
+        {
+            return FromDemodStatus(demodStatus, CaptureStage::Configuration);
+        }
     }
     const auto maximumPixels = stagedVisual ? pbprotocol::CheckedMultiplyUint64(config.maximumRoiWidth, config.maximumRoiHeight) :
         pbprotocol::ProtocolResult<std::uint64_t>::Success(static_cast<std::uint64_t>(canvasWidth) * canvasHeight);
@@ -793,7 +822,7 @@ CaptureStatus CalculateCaptureDemodulatorBudget(const CaptureDemodulatorConfig& 
     const auto queue = pbprotocol::CheckedMultiplyUint64(sizeof(CaptureDemodulatorResult), config.resultQueueCapacity);
     const auto first = staging && queue ? pbprotocol::CheckedAddUint64(budget.demodulatorBytes, staging.Value()) :
         pbprotocol::ProtocolResult<std::uint64_t>::Failure(pbprotocol::ProtocolErrorCode::LengthOverflow, 0);
-    const std::uint64_t referenceScratchBytes = stagedVisual ? 0 : canvasBytes;
+    const std::uint64_t referenceScratchBytes = pam4 ? sizeof(CaptureDemodulatorResult) : stagedVisual ? 0 : canvasBytes;
     const std::uint64_t supplementalBandScratchBytes = config.visualProfileId == pbprotocol::kBlankControlExperimentalProfile.visualProfileId ?
         pbmodulation::kSupplementalBandPatchBytes : 0;
     const auto second = first ? pbprotocol::CheckedAddUint64(first.Value(), referenceScratchBytes) : first;
@@ -842,6 +871,30 @@ CaptureStatus CaptureDemodulator::Create(const CaptureDemodulatorConfig& config,
     try
     {
         auto implementation = std::make_unique<Implementation>(config, budget, binding, frequency.QuadPart);
+        if (config.visualProfileId == pbprotocol::kPam4WideExperimentalProfile.visualProfileId)
+        {
+            auto decoder = pbmodulation::ExperimentalPam4WideCpuDecoder::Create(budget.demodulatorBytes);
+            if (!decoder)
+            {
+                return CaptureStatus::Failure(decoder.Error().code == pbmodulation::ModulationErrorCode::MemoryAllocationFailure ?
+                    CaptureError::ResourceLimit : CaptureError::NativeFailure, CaptureStage::Configuration);
+            }
+            implementation->pam4WideDecoder = std::move(decoder).Value();
+            implementation->pam4Result = std::make_unique<CaptureDemodulatorResult>();
+            implementation->snapshot.pam4CpuReference = true;
+        }
+        else if (config.visualProfileId == pbprotocol::kPam4ExperimentalProfile.visualProfileId)
+        {
+            auto decoder = pbmodulation::ExperimentalPam4CpuDecoder::Create(budget.demodulatorBytes);
+            if (!decoder)
+            {
+                return CaptureStatus::Failure(decoder.Error().code == pbmodulation::ModulationErrorCode::MemoryAllocationFailure ?
+                    CaptureError::ResourceLimit : CaptureError::NativeFailure, CaptureStage::Configuration);
+            }
+            implementation->pam4Decoder = std::move(decoder).Value();
+            implementation->pam4Result = std::make_unique<CaptureDemodulatorResult>();
+            implementation->snapshot.pam4CpuReference = true;
+        }
         auto candidate = std::shared_ptr<CaptureDemodulator>(new CaptureDemodulator(std::move(implementation)));
         output = std::move(candidate);
         return {};
@@ -951,11 +1004,14 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     demodConfig.diagnostics = state.config.diagnostics;
     demodConfig.offlinePixelsOnly = state.config.offlinePixelsOnly;
     std::unique_ptr<Demodulator> demodulator;
-    const auto demodStatus = Demodulator::Create(device, demodConfig, demodulator);
-    if (!demodStatus)
+    if (!IsPam4Visual(state.config.visualProfileId))
     {
-        state.SetDemodStatus(demodStatus);
-        return FromDemodStatus(demodStatus, CaptureStage::Recreate);
+        const auto demodStatus = Demodulator::Create(device, demodConfig, demodulator);
+        if (!demodStatus)
+        {
+            state.SetDemodStatus(demodStatus);
+            return FromDemodStatus(demodStatus, CaptureStage::Recreate);
+        }
     }
     std::array<ComPtr<ID3D11Texture2D>, maximumDemodulatorSlots> staging;
     D3D11_TEXTURE2D_DESC description{};
@@ -972,7 +1028,10 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
         const HRESULT result = device->CreateTexture2D(&description, nullptr, &staging[index]);
         if (FAILED(result))
         {
-            static_cast<void>(demodulator->Shutdown(context.Get()));
+            if (demodulator)
+            {
+                static_cast<void>(demodulator->Shutdown(context.Get()));
+            }
             return CaptureStatus::Failure(CaptureError::NativeFailure, CaptureStage::Surface, result);
         }
     }
@@ -991,6 +1050,8 @@ CaptureStatus CaptureDemodulator::DomainStarted(const ScreenCaptureDomain& domai
     state.temporalIdentity.ResetBaseline();
     state.temporalFrame = {};
     state.bootstrapGeometryHint.reset();
+    state.pam4Decoder.Reset();
+    state.pam4WideDecoder.Reset();
     state.active = true;
     {
         const std::lock_guard lock(state.mutex);
@@ -1014,6 +1075,8 @@ void CaptureDemodulator::DomainInvalidated(const ScreenCaptureDomain& domain) no
     state.active = false;
     state.temporalFrame = {};
     state.bootstrapGeometryHint.reset();
+    state.pam4Decoder.Reset();
+    state.pam4WideDecoder.Reset();
     DemodStatus demodStatus;
     bool invalidated = false;
     {
@@ -1162,7 +1225,9 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
     };
     const bool remoteVisualLowFps = IsRemoteVisualLowFps(state.config.visualProfileId);
     const bool unifiedVisual = IsUnifiedVisual(state.config.visualProfileId);
-    const bool stagedVisual = remoteVisualLowFps || unifiedVisual;
+    const bool pam4Wide = state.config.visualProfileId == pbprotocol::kPam4WideExperimentalProfile.visualProfileId;
+    const bool pam4 = IsPam4Visual(state.config.visualProfileId);
+    const bool stagedVisual = remoteVisualLowFps || unifiedVisual || pam4;
     if (stagedVisual && pending.hasDemodulation)
     {
         const std::lock_guard lock(state.mutex);
@@ -1229,6 +1294,10 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
         const HRESULT mapResult = context->Map(state.bootstrapStaging[metadata.slotIndex].Get(), 0, D3D11_MAP_READ, 0, &mapped);
         if (FAILED(mapResult) || mapped.pData == nullptr || mapped.RowPitch < state.roiWidth * 4)
         {
+            if (SUCCEEDED(mapResult))
+            {
+                context->Unmap(state.bootstrapStaging[metadata.slotIndex].Get(), 0);
+            }
             const auto retired = RetireExternally();
             state.SetDemodStatus(retired);
             state.FinishPending(metadata.slotIndex);
@@ -1254,6 +1323,74 @@ CaptureStatus CaptureDemodulator::CompleteInternal(const ScreenCaptureFrameMetad
             static_cast<std::size_t>(mappedBytesResult.Value()));
         const pbmodulation::LumaView view{mappedPixels, state.roiWidth, state.roiHeight, mapped.RowPitch,
             pbmodulation::LumaPixelFormat::Bgra8};
+        if (pam4)
+        {
+            // The ring has proved CopyResource completion. Decode solely from
+            // this mapped PB-owned staging surface and copy the bounded handoff
+            // before Unmap; no borrowed pixels or lease leave this callback.
+            auto& result = *state.pam4Result;
+            result = {};
+            result.kind = pam4Wide ? CaptureDemodulatorResultKind::ExperimentalPam4WideFrame : CaptureDemodulatorResultKind::ExperimentalPam4Frame;
+            result.metadata = metadata;
+            bool frameAvailable = false;
+            std::uint32_t acceptedTransportBlocks = 0;
+            const auto DecodePam4 = [&](auto& decoder, auto& observation, auto& acceptedBlocks, std::uint32_t& blockCount)
+            {
+                observation = decoder.Decode(view);
+                result.bootstrap = observation.bootstrap;
+                frameAvailable = observation.IsFrameAvailable();
+                acceptedTransportBlocks = observation.acceptedTransportBlocks;
+                const auto blocks = decoder.GetAcceptedBlocks();
+                blockCount = static_cast<std::uint32_t>(blocks.size());
+                std::copy(blocks.begin(), blocks.end(), acceptedBlocks.begin());
+            };
+            if (pam4Wide)
+            {
+                DecodePam4(state.pam4WideDecoder, result.pam4WideObservation, result.pam4WideBlocks, result.pam4WideBlockCount);
+            }
+            else
+            {
+                DecodePam4(state.pam4Decoder, result.pam4Observation, result.pam4Blocks, result.pam4BlockCount);
+            }
+            result.bootstrapRecord = result.bootstrap.canonical44;
+            result.geometryStatus = state.RecordGeometry(result.bootstrap);
+            context->Unmap(state.bootstrapStaging[metadata.slotIndex].Get(), 0);
+            const bool decodeEndValid = QueryPerformanceCounter(&bootstrapEnd) != FALSE;
+            const auto elapsed = bootstrapStartValid && decodeEndValid ? QpcElapsed100ns(bootstrapStart, bootstrapEnd, state.qpcFrequency) : std::nullopt;
+            {
+                const std::lock_guard lock(state.mutex);
+                pbprotocol::SaturatingIncrementUnsigned(state.snapshot.bootstrapMapCalls);
+                state.snapshot.bootstrapReadbackBytes = pbprotocol::SaturatingAddUnsigned(state.snapshot.bootstrapReadbackBytes,
+                    static_cast<std::uint64_t>(state.roiWidth) * state.roiHeight * 4);
+                pbprotocol::SaturatingIncrementUnsigned(state.snapshot.pam4DecodedObservations);
+                pbprotocol::SaturatingIncrementUnsigned(state.snapshot.completedFrames);
+                if (result.bootstrap.IsAccepted())
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(state.snapshot.bootstrapAcceptedFrames);
+                }
+                else
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(state.snapshot.bootstrapRejectedFrames);
+                }
+                if (!frameAvailable)
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(state.snapshot.pam4FrameErasures);
+                }
+                state.snapshot.acceptedTransportBlocks = pbprotocol::SaturatingAddUnsigned(state.snapshot.acceptedTransportBlocks,
+                    static_cast<std::uint64_t>(acceptedTransportBlocks));
+                if (elapsed)
+                {
+                    state.snapshot.pam4ReadbackDecodeWallTotal100ns = pbprotocol::SaturatingAddUnsigned(state.snapshot.pam4ReadbackDecodeWallTotal100ns, *elapsed);
+                    state.snapshot.pam4ReadbackDecodeWallHighWater100ns = std::max(state.snapshot.pam4ReadbackDecodeWallHighWater100ns, *elapsed);
+                }
+                else
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(state.snapshot.cpuTimingUnavailable);
+                }
+            }
+            state.FinishPendingWithResult(metadata.slotIndex, result);
+            return {};
+        }
         pbmodulation::LocalDesktopGeometry acceptedBootstrapGeometry{};
         const pbmodulation::LocalDesktopGeometry* bootstrapHint = unifiedVisual && state.bootstrapGeometryHint ?
             &*state.bootstrapGeometryHint : nullptr;
@@ -1750,6 +1887,18 @@ CaptureDemodulatorSnapshot CaptureDemodulator::GetSnapshot() const noexcept
     auto& state = *implementation_;
     const std::lock_guard lock(state.mutex);
     return state.snapshot;
+}
+
+bool AreCaptureDemodulatorResourcesRetired(const CaptureDemodulatorSnapshot& snapshot) noexcept
+{
+    if (snapshot.active || snapshot.pendingFrames != 0 || snapshot.queuedResults != 0)
+    {
+        return false;
+    }
+    // PAM4 consumes staging pixels only after capture's GPU completion marker.
+    // Domain invalidation plus drained pending/results is its retirement proof;
+    // leave the absent GPU demodulator's telemetry untouched.
+    return snapshot.pam4CpuReference ? snapshot.domainStarts != 0 : snapshot.demodulator.shutdown;
 }
 
 } // namespace pbdemodd3d11

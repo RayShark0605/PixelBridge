@@ -341,6 +341,31 @@ std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"activeFrame\":" << (snapshot.activeFrame ? "true" : "false") <<
         ",\"activeFrameSequence\":" << snapshot.activeFrameSequence << ",\"processCpuAveragePercent\":";
     WriteOptionalFinite(stream, snapshot.processCpuAveragePercent);
+    stream << ",\"visualProfile\":";
+    WriteEscaped(stream, GetVisualProfileName(snapshot.visualProfile));
+    stream << ",\"sessionIdHex\":";
+    WriteEscaped(stream, snapshot.sessionIdHex);
+    stream << ",\"statusMessage\":";
+    WriteEscaped(stream, snapshot.statusMessage);
+    stream << ",\"errorDetail\":";
+    WriteEscaped(stream, snapshot.errorDetail);
+    stream << ",\"configuredLogicalVisualFps\":" << snapshot.configuredLogicalVisualFps;
+    stream << ",\"preparedSourceBytes\":" << snapshot.preparedSourceBytes;
+    stream << ",\"sourceBytes\":" << snapshot.sourceBytes;
+    stream << ",\"preparedSegmentCount\":" << snapshot.preparedSegmentCount;
+    stream << ",\"preparationMilliseconds\":" << snapshot.preparationMilliseconds;
+    stream << ",\"segmentCount\":" << snapshot.segmentCount;
+    stream << ",\"currentSegmentOrdinal\":" << snapshot.currentSegmentOrdinal;
+    stream << ",\"currentOuterBlockId\":" << snapshot.currentOuterBlockId;
+    stream << ",\"submittedLogicalFrames\":" << snapshot.submittedLogicalFrames;
+    stream << ",\"submittedFrames\":" << snapshot.submittedFrames;
+    stream << ",\"successfulPresentCalls\":" << snapshot.successfulPresentCalls;
+    stream << ",\"replacedPendingFrames\":" << snapshot.replacedPendingFrames;
+    stream << ",\"dataWindowWidth\":" << snapshot.dataWindowWidth;
+    stream << ",\"dataWindowHeight\":" << snapshot.dataWindowHeight;
+    stream << ",\"fullscreenRasterWidth\":" << snapshot.fullscreenRasterWidth;
+    stream << ",\"configuredInitialAirtimePercent\":" << snapshot.configuredInitialAirtimePercent;
+    stream << ",\"configuredVisitBudgetPercent\":" << snapshot.configuredVisitBudgetPercent;
     stream << '}';
     return stream.str();
 }
@@ -408,6 +433,10 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"outerFecQuotaExceededCount\":" << snapshot.outerFecQuotaExceededCount <<
         ",\"outerActiveDecoderLimit\":" << snapshot.outerActiveDecoderLimit <<
         ",\"outerTotalDecoderByteLimit\":" << snapshot.outerTotalDecoderByteLimit <<
+        ",\"outerPerDecoderByteLimit\":" << snapshot.outerPerDecoderByteLimit <<
+        ",\"receiverResumeByteLimit\":" << snapshot.receiverResumeByteLimit <<
+        ",\"customDecoderMemoryBudget\":" << (snapshot.customDecoderMemoryBudget ? "true" : "false") <<
+        ",\"budgetBoundDecoderAdmission\":" << (snapshot.budgetBoundDecoderAdmission ? "true" : "false") <<
         ",\"outerActiveDecoderCount\":" << snapshot.outerActiveDecoderCount <<
         ",\"outerPeakActiveDecoderCount\":" << snapshot.outerPeakActiveDecoderCount <<
         ",\"outerReservedDecoderBytes\":" << snapshot.outerReservedDecoderBytes <<
@@ -438,6 +467,48 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"finalPublishPass\":" << (snapshot.finalPublishSucceeded ? "true" : "false") <<
         ",\"processCpuAveragePercent\":";
     WriteOptionalFinite(stream, snapshot.processCpuAveragePercent);
+    stream << ",\"visualProfile\":";
+    WriteEscaped(stream, GetVisualProfileName(snapshot.visualProfile));
+    stream << ",\"sessionIdHex\":";
+    WriteEscaped(stream, snapshot.sessionIdHex);
+    stream << ",\"statusMessage\":";
+    WriteEscaped(stream, snapshot.statusMessage);
+    stream << ",\"errorDetail\":";
+    WriteEscaped(stream, snapshot.errorDetail);
+    stream << ",\"activeRecoveryOperation\":";
+    WriteEscaped(stream, snapshot.activeRecoveryOperation);
+    stream << ",\"backendReason\":";
+    WriteEscaped(stream, snapshot.backendReason);
+    stream << ",\"estimatedReceivedRawBytes\":" << snapshot.estimatedReceivedRawBytes;
+    stream << ",\"verifiedSegmentCount\":" << snapshot.verifiedSegmentCount;
+    stream << ",\"segmentCount\":" << snapshot.segmentCount;
+    stream << ",\"currentSegmentOrdinal\":" << snapshot.currentSegmentOrdinal;
+    stream << ",\"resumeStateBytes\":" << snapshot.resumeStateBytes;
+    stream << ",\"resumeStateGeneration\":" << snapshot.resumeStateGeneration;
+    stream << ",\"recoveryRuntimeMilliseconds\":" << snapshot.recoveryRuntimeMilliseconds;
+    stream << ",\"pam4FrameObservations\":" << snapshot.pam4FrameObservations;
+    stream << ",\"pam4AvailableObservations\":" << snapshot.pam4AvailableObservations;
+    stream << ",\"pam4ErasedObservations\":" << snapshot.pam4ErasedObservations;
+    stream << ",\"pam4EvaluatedSlots\":" << snapshot.pam4EvaluatedSlots;
+    stream << ",\"pam4AcceptedControlSlots\":" << snapshot.pam4AcceptedControlSlots;
+    stream << ",\"pam4AcceptedTransportSlots\":" << snapshot.pam4AcceptedTransportSlots;
+    stream << ",\"pam4DecodedObservations\":" << snapshot.pam4DecodedObservations;
+    stream << ",\"pam4FrameErasures\":" << snapshot.pam4FrameErasures;
+    stream << ",\"pam4ReadbackDecodeWallTotal100ns\":" << snapshot.pam4ReadbackDecodeWallTotal100ns;
+    stream << ",\"pam4ReadbackDecodeWallHighWater100ns\":" << snapshot.pam4ReadbackDecodeWallHighWater100ns;
+    stream << ",\"bootstrapCpuTimeTotal100ns\":" << snapshot.bootstrapCpuTimeTotal100ns;
+    stream << ",\"postGpuFecCpuTimeTotal100ns\":" << snapshot.postGpuFecCpuTimeTotal100ns;
+    stream << ",\"demodGpuTimeTotal100ns\":" << snapshot.demodGpuTimeTotal100ns;
+    stream << ",\"roiGpuTimeTotal100ns\":" << snapshot.roiGpuTimeTotal100ns;
+    stream << ",\"roiWidth\":" << snapshot.roiWidth;
+    stream << ",\"roiHeight\":" << snapshot.roiHeight;
+    stream << ",\"dpiX\":" << snapshot.dpiX;
+    stream << ",\"dpiY\":" << snapshot.dpiY;
+    stream << ",\"captureStallActive\":" << (snapshot.captureStallActive ? "true" : "false");
+    stream << ",\"visualStallActive\":" << (snapshot.visualStallActive ? "true" : "false");
+    stream << ",\"pam4CpuReference\":" << (snapshot.pam4CpuReference ? "true" : "false");
+    stream << ",\"singleMonitorCaptureEnabled\":" << (snapshot.singleMonitorCaptureEnabled ? "true" : "false");
+    stream << ",\"finalReopenVerified\":" << (!snapshot.finalReopenVerified ? "null" : *snapshot.finalReopenVerified ? "true" : "false");
     stream << '}';
     return stream.str();
 }

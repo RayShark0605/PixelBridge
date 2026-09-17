@@ -301,7 +301,9 @@ foreach ($name in @('headCommit', 'headTree', 'phase1GatePassTagObject', 'phase1
     }
 }
 Require-Hash -Value $buildIdentity.testedSourceFingerprintSha256 -Name 'testedSourceFingerprintSha256'
-if ($buildIdentity.configuration -cne 'Release' -or $buildIdentity.releaseScope -cne 'LocalCandidateNotPubliclyPublished' -or
+$isProductRelease = $buildIdentity.releaseScope -ceq 'LocalProductRelease'
+if ($buildIdentity.configuration -cne 'Release' -or
+    $buildIdentity.releaseScope -cnotin @('LocalCandidateNotPubliclyPublished', 'LocalProductRelease') -or
     $buildIdentity.unifiedProfile.token -cne 'unified' -or $buildIdentity.unifiedProfile.name -cne 'PB-Unified-SC6-V3' -or
     $buildIdentity.unifiedProfile.visualProfileId -ne 5783278666223141683 -or $buildIdentity.unifiedProfile.layoutVersion -ne 10 -or
     $buildIdentity.unifiedProfile.manifestPath -cne 'unified-profile.json' -or
@@ -560,10 +562,11 @@ if (-not $sbomPackageMap.ContainsKey('PixelBridge') -or -not $sbomPackageMap.Con
 {
     throw 'SPDX SBOM is missing the PixelBridge/Qt package identity'
 }
+$expectedProjectLicense = if ($isProductRelease) { 'MIT' } else { 'NOASSERTION' }
 if (-not $sbomPackageMap.ContainsKey('Microsoft Visual C++ Runtime') -or
     $sbomPackageMap['Microsoft Visual C++ Runtime'].versionInfo -cne $buildIdentity.vcRuntime.version -or
-    $sbomPackageMap['PixelBridge'].licenseDeclared -cne 'NOASSERTION') {
-    throw 'SPDX SBOM is missing VC runtime identity or invents a project license'
+    $sbomPackageMap['PixelBridge'].licenseDeclared -cne $expectedProjectLicense) {
+    throw 'SPDX SBOM VC runtime/project license does not match the release scope'
 }
 foreach ($package in $vcpkgPackages)
 {
@@ -571,6 +574,42 @@ foreach ($package in $vcpkgPackages)
         $sbomPackageMap[[string]$package.name].versionInfo -cne $package.version)
     {
         throw "SPDX SBOM is missing the exact vcpkg package identity: $($package.name)"
+    }
+}
+
+if ($isProductRelease) {
+    if ($endpointRoles.Count -ne 1 -or $buildIdentity.qt.version -cne '6.10.1' -or
+        $sbomPackageMap['PixelBridge'].licenseConcluded -cne 'MIT' -or
+        $sbomPackageMap['Qt'].licenseDeclared -cne 'LGPL-3.0-only') { throw 'Invalid product role or licensing baseline' }
+    foreach ($path in @('LICENSE', 'README.md', 'USER_GUIDE.en.md', 'ACKNOWLEDGEMENTS.md', 'THIRD_PARTY_NOTICES.md',
+        'RELEASE_V1.0.md', 'QT_SOURCE.md', 'qt.conf', 'sources/qt-source-manifest.json', 'sources/qtbase-6.10.1-source.zip',
+        'licenses/qt/LICENSES/LGPL-3.0-only.txt', 'licenses/qt/LICENSES/GPL-3.0-only.txt', 'licenses/qt/qtbase-6.10.1.spdx.json')) {
+        if (-not $manifestFileMap.ContainsKey($path)) { throw "Required product release file missing: $path" }
+    }
+    $sourceLicense = @($sourceFiles | Where-Object { $_.path -ceq 'LICENSE' })
+    if ($sourceLicense.Count -ne 1 -or $sourceLicense[0].sha256 -cne $manifestFileMap['LICENSE'].sha256) {
+        throw 'Product license is not bound to the committed source inventory'
+    }
+    $runtimePaths = @("PixelBridge$($endpointRoles[0]).exe", 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+        'blake3.dll', 'zstd.dll', 'platforms/qwindows.dll', 'platforms/qoffscreen.dll', 'styles/qmodernwindowsstyle.dll') +
+        @($buildIdentity.vcRuntime.files.path)
+    foreach ($path in $runtimePaths) {
+        if (-not $manifestFileMap.ContainsKey($path)) { throw "Required product runtime missing: $path" }
+    }
+    foreach ($path in $manifestFileMap.Keys) {
+        if ([IO.Path]::GetExtension($path) -iin @('.dll', '.exe') -and $path -cnotin $runtimePaths) {
+            throw "Unapproved product runtime component: $path"
+        }
+    }
+    $qtSource = Read-BoundedJson -Path (Join-Path $resolvedPackage 'sources/qt-source-manifest.json') -MaximumBytes 16MB
+    Require-UnsignedInteger -Value $qtSource.fileCount -Name 'Qt source fileCount'
+    Require-UnsignedInteger -Value $qtSource.archive.size -Name 'Qt source archive size'
+    $qtArchiveEntry = $manifestFileMap['sources/qtbase-6.10.1-source.zip']
+    if ($qtSource.schema -cne 'PixelBridge.QtSourceBundle.1' -or $qtSource.version -cne $buildIdentity.qt.version -or
+        $qtSource.module -cne 'qtbase' -or $qtSource.archive.path -cne 'qtbase-6.10.1-source.zip' -or
+        $qtSource.archive.size -ne $qtArchiveEntry.size -or $qtSource.archive.sha256 -cne $qtArchiveEntry.sha256 -or
+        $qtSource.fileCount -lt 1 -or $qtSource.fileCount -gt 65536 -or @($qtSource.files).Count -ne $qtSource.fileCount) {
+        throw 'Qt corresponding source binding is invalid'
     }
 }
 

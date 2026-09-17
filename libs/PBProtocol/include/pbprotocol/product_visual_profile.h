@@ -114,4 +114,27 @@ static_assert(kGrayFastExperimentalProfile.visualProfileId != kGrayStatesExperim
 static_assert(kGrayFastExperimentalProfile.visualProfileId != kBlankControlExperimentalProfile.visualProfileId);
 static_assert(kGrayFastExperimentalProfile.visualProfileId != kUnifiedVisualProfileId);
 
+// Explicit experimental opt-in only. Layout 15 uses four-pixel PAM4 cells,
+// one fixed Robust Control codeword and ten Fast Transport codewords. It is
+// neither the layout-13 gray carrier nor the earlier unregistered layout-14
+// macrocell research. No product catalog or default admits this identity.
+inline constexpr ProductVisualProfile kPam4ExperimentalProfile{
+    "PB-Experimental-Pam4-1",
+    0x504250414D343031ULL,
+    15};
+static_assert(!IsProductSessionVisualProfileId(kPam4ExperimentalProfile.visualProfileId));
+static_assert(kPam4ExperimentalProfile.visualProfileId != kGrayFastExperimentalProfile.visualProfileId);
+
+// Independent opt-in core identity. Layout 16 retains the canonical1920x1080
+// reserved geometry, with logical3px PAM4 cells and twenty codewords. Its
+// explicit2560x1440 center-point presentation yields physical4px cells.
+// It is not layout15, an automatic resolution option, or a product default.
+inline constexpr ProductVisualProfile kPam4WideExperimentalProfile{
+    "PB-Experimental-Pam4-Wide-1",
+    0x504250414D345731ULL,
+    16};
+static_assert(!IsProductSessionVisualProfileId(kPam4WideExperimentalProfile.visualProfileId));
+static_assert(kPam4WideExperimentalProfile.visualProfileId != kPam4ExperimentalProfile.visualProfileId);
+static_assert(kPam4WideExperimentalProfile.visualProfileId != kGrayFastExperimentalProfile.visualProfileId);
+
 } // namespace pbprotocol

@@ -1,4 +1,4 @@
-"""Non-presenting, create-only regression for the explicit fullscreen sampling switch.
+"""Non-presenting, create-only regression for fullscreen and airtime experiments.
 
 Accepted parses stop at missing operator metadata before source lookup, monitor
 resolution, or GUI startup. The default (no flag) production behavior and every
@@ -22,7 +22,44 @@ def main():
     output.mkdir(exist_ok=False, parents=True)
     fullscreen = '--single-monitor-fullscreen'
     sampling = '--fullscreen-sampling'
+    native = '--fullscreen-native-size'
+    width = '--fullscreen-raster-width'
+    extended = '--grayfast-extended-visits'
+    spatial = '--grayfast-spatial-interleave'
+    short = '--grayfast-short-initial-airtime'
     cases = [
+        ('visits-default', 'unified-gray-fast', [fullscreen, 'primary', spatial], True),
+        ('visits-extended', 'unified-gray-fast', [fullscreen, 'primary', spatial, extended], True),
+        ('visits-no-spatial', 'unified-gray-fast', [fullscreen, 'primary', extended], False),
+        ('visits-wrong-gray', 'unified-gray', [fullscreen, 'primary', spatial, extended], False),
+        ('visits-wrong-product', 'unified', [fullscreen, 'primary', spatial, extended], False),
+        ('visits-duplicate', 'unified-gray-fast', [fullscreen, 'primary', spatial, extended, extended], False),
+        ('visits-value', 'unified-gray-fast', [fullscreen, 'primary', spatial, extended, '150'], False),
+        ('visits-short-conflict', 'unified-gray-fast', [fullscreen, 'primary', spatial, short, extended], False),
+        ('visits-short-reverse', 'unified-gray-fast', [fullscreen, 'primary', spatial, extended, short], False),
+        ('viewport-fast', 'unified-gray-fast', [fullscreen, 'primary', width, '2304'], True),
+        ('viewport-gray', 'unified-gray', [fullscreen, 'primary', width, '1920'], True),
+        ('viewport-max', 'unified-gray-fast', [fullscreen, 'primary', width, '3840'], True),
+        ('viewport-zero', 'unified-gray-fast', [fullscreen, 'primary', width, '0'], False),
+        ('viewport-small', 'unified-gray-fast', [fullscreen, 'primary', width, '1904'], False),
+        ('viewport-large', 'unified-gray-fast', [fullscreen, 'primary', width, '3856'], False),
+        ('viewport-overflow', 'unified-gray-fast', [fullscreen, 'primary', width, '4294967296'], False),
+        ('viewport-step', 'unified-gray-fast', [fullscreen, 'primary', width, '2305'], False),
+        ('viewport-missing', 'unified-gray-fast', [fullscreen, 'primary', width], False),
+        ('viewport-negative', 'unified-gray-fast', [fullscreen, 'primary', width, '-2304'], False),
+        ('viewport-duplicate', 'unified-gray-fast', [fullscreen, 'primary', width, '2304', width, '2304'], False),
+        ('viewport-native', 'unified-gray-fast', [fullscreen, 'primary', width, '2304', native], False),
+        ('viewport-filter', 'unified-gray-fast', [fullscreen, 'primary', width, '2304', sampling, 'linear'], False),
+        ('viewport-color', 'unified', [fullscreen, 'primary', width, '2304'], False),
+        ('viewport-no-fullscreen', 'unified-gray-fast', [width, '2304'], False),
+        ('native-gray-fast', 'unified-gray-fast', [fullscreen, 'primary', native], True),
+        ('native-gray', 'unified-gray', [fullscreen, 'primary', native], True),
+        ('native-explicit-point', 'unified-gray-fast', [fullscreen, 'primary', native, sampling, 'point'], True),
+        ('native-color-rejected', 'unified', [fullscreen, 'primary', native], False),
+        ('native-without-fullscreen', 'unified-gray-fast', [native], False),
+        ('native-filter-rejected', 'unified-gray-fast', [fullscreen, 'primary', native, sampling, 'linear'], False),
+        ('native-filter-reversed', 'unified-gray-fast', [fullscreen, 'primary', sampling, 'area', native], False),
+        ('native-duplicate', 'unified-gray-fast', [fullscreen, 'primary', native, native], False),
         ('area-unified-gray-fast', 'unified-gray-fast', [fullscreen, 'primary', sampling, 'area'], True),
         ('linear-unified-gray', 'unified-gray', [fullscreen, 'primary', sampling, 'linear'], True),
         ('point-unified-gray-fast', 'unified-gray-fast', [fullscreen, 'primary', sampling, 'point'], True),

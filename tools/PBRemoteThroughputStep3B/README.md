@@ -1,5 +1,8 @@
 # Step3-B：固定有状态码流与多帧恢复对照
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 ## 范围与实际结论
 
 本工具仅为 `SyntheticOfflineDiagnostic`，不注册到产品 CMake，不给产品 Decoder 增加文件／媒体输入，不修改 SC6-V3/layout 10、几何准入、FEC、CRC、冲突拒绝、资源策略或文件发布规则。

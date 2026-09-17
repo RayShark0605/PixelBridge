@@ -1,4 +1,5 @@
 #include "sender_carousel_scheduler.h"
+#include "pbmodulation/experimental_pam4.h"
 
 #include "pbmodulation/unified_visual.h"
 #include "pbprotocol/checked_integer.h"
@@ -389,9 +390,14 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::Create(
         config.periodicControlPhaseCount > senderUnifiedActiveSegmentWindowSize ||
         config.periodicControlPhaseIndex >= config.periodicControlPhaseCount ||
         (config.wirehair && config.systematicBlockCount < 2) ||
-        (config.frameCodewordSlots != 0 &&
-            config.frameCodewordSlots != static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount) &&
-            config.frameCodewordSlots != pbmodulation::kUnifiedGrayFrameCodewordCount))
+        (config.slotLayout != SenderMixedSlotLayout::Unified && config.slotLayout != SenderMixedSlotLayout::ExperimentalPam4 &&
+            config.slotLayout != SenderMixedSlotLayout::ExperimentalPam4Wide) ||
+        (config.slotLayout == SenderMixedSlotLayout::ExperimentalPam4Wide ?
+            config.frameCodewordSlots != pbmodulation::kExperimentalPam4WideCodewordCount :
+            config.slotLayout == SenderMixedSlotLayout::ExperimentalPam4 ?
+            config.frameCodewordSlots != pbmodulation::kExperimentalPam4CodewordCount :
+            (config.frameCodewordSlots != 0 && config.frameCodewordSlots != static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount) &&
+                config.frameCodewordSlots != pbmodulation::kUnifiedGrayFrameCodewordCount)))
     {
         return SenderCarouselSchedulerStatus::Failure(SenderCarouselSchedulerError::InvalidConfiguration);
     }
@@ -532,7 +538,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     }
     const std::uint64_t remainingControlItems = controlBurstActive ?
         currentBurstItems - controlItemOffset : 0;
-    const std::uint32_t maximumControlSlots = pbmodulation::GetUnifiedMaximumControlSlots();
+    const bool pam4 = config_.slotLayout == SenderMixedSlotLayout::ExperimentalPam4 || config_.slotLayout == SenderMixedSlotLayout::ExperimentalPam4Wide;
+    const std::uint32_t maximumControlSlots = pam4 ? 1U : pbmodulation::GetUnifiedMaximumControlSlots();
     const std::uint32_t controlBurstSlotCount = static_cast<std::uint32_t>((std::min)(
         remainingControlItems, static_cast<std::uint64_t>(maximumControlSlots)));
     const std::uint32_t descriptorPreludeSlotCount =
@@ -552,6 +559,8 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     frame.controlBurstSlotCount = controlBurstSlotCount;
     frame.controlSlotCount = controlSlotCount;
     frame.transportSlotCount = codewordCount - controlSlotCount;
+    const bool controlPreludeOnly = pam4 && config_.systematicBlockCount != 0 && controlBurstSlotCount != 0 &&
+        GetControlPriority(controlItemOffset, controlRecordKindCount) != pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor;
     std::uint64_t nextEquationIndex = committedEquationCount_;
     std::uint64_t localPaddingDuplicateCount = 0;
     for (std::uint32_t codewordSlot = 0; codewordSlot < codewordCount; codewordSlot++)
@@ -571,6 +580,11 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
         if (config_.systematicBlockCount == 0)
         {
             slot.transportDisposition = SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession;
+            frame.inactiveTransportSlotCount++;
+        }
+        else if (controlPreludeOnly)
+        {
+            slot.transportDisposition = SenderUnifiedTransportSlotDisposition::InactiveControlPrelude;
             frame.inactiveTransportSlotCount++;
         }
         else if (nextEquationIndex < scheduledEquationCount_)
@@ -598,14 +612,16 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
             frame.paddingDuplicateSlotCount++;
         }
     }
-    std::array<pbmodulation::UnifiedSlotAssignment, senderUnifiedMaximumCodewordSlotCount> assignments{};
+    std::array<pbmodulation::UnifiedSlotAssignment, maximumMixedFrameSlotCount> assignments{};
     for (std::uint32_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
     {
         assignments[slotIndex] = frame.slots[slotIndex].assignment;
     }
     const std::span<const pbmodulation::UnifiedSlotAssignment> plannedAssignments(
         assignments.data(), frameCodewordSlots_);
-    const bool planValid = frameCodewordSlots_ == pbmodulation::kUnifiedGrayFrameCodewordCount ?
+    const bool planValid = config_.slotLayout == SenderMixedSlotLayout::ExperimentalPam4Wide ?
+        pbmodulation::ValidateExperimentalPam4WideSlotPlan(plannedAssignments) : pam4 ? pbmodulation::ValidateExperimentalPam4SlotPlan(plannedAssignments) :
+        frameCodewordSlots_ == pbmodulation::kUnifiedGrayFrameCodewordCount ?
         pbmodulation::ValidateUnifiedGrayMixedSlotPlan(plannedAssignments) :
         pbmodulation::ValidateUnifiedMixedSlotPlan(plannedAssignments);
     if (!planValid ||

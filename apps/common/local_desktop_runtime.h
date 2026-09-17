@@ -2,6 +2,7 @@
 
 #include "application_model.h"
 #include "decoder_capture_controller.h"
+#include "decoder_memory_budget.h"
 #include "monitor_catalog.h"
 
 #include "pbcompression/segment_compression.h"
@@ -67,10 +68,21 @@ struct EncoderConfig
     // Opt-in initial-visit tuning for the measured faster remote channel.
     // Later full repair visits are unchanged; not a universal loss guarantee.
     bool grayFastShortInitialAirtime = false;
+    // Explicit loss-heavy-channel experiment: extend initial and full repair
+    // visits by 50%, only for spatial graduation (>12 Segments). May be slower
+    // under lighter losses. Incompatible with shortened initial airtime.
+    bool grayFastExtendedVisitBudget = false;
     // Opt-in stage-one fullscreen composition filter. Only meaningful with
     // singleMonitorFullscreen on the Unified family; the default Point path
     // keeps the exact historical composition bytes.
     FullscreenSamplingMode fullscreenSampling = FullscreenSamplingMode::Point;
+    // Sender-only Gray-family experiment: keep the canonical raster at 1:1
+    // inside the same fullscreen window. Never changes display mode or wire.
+    // Incompatible with filtered fullscreen scaling; the default still fills.
+    bool fullscreenNativeSize = false;
+    // Explicit Gray-family point-sampled 16:9 viewport, centered without
+    // changing the fullscreen window or display. Zero keeps the existing mode.
+    std::uint32_t fullscreenRasterWidth = 0;
 };
 
 struct DecoderConfig
@@ -105,9 +117,14 @@ struct DecoderConfig
     // 1..60 applies an authoritative pre-readback time sampler. For production
     // LF4 the primary GPU demodulator remains unsampled.
     std::uint32_t replayMaximumCaptureFramesPerSecond = 0;
-    // Explicit GrayFast experiment. Never enabled by the product factory or
-    // GUI; all byte budgets and recovery checks remain unchanged.
+    // Explicit live GrayFast/PAM4 performance admission; the product factory
+    // remains fixed-eight. Custom bytes are local configuration, never wire.
     bool budgetBoundDecoders = false;
+    std::optional<DecoderMemoryBudget> memoryBudget;
+    // Explicit live PAM4 capture authority, mutually exclusive with the old
+    // protected/experiment pair. The ROI may be the entire selected monitor;
+    // no second display or space reserved for the Decoder window is required.
+    std::optional<MonitorInfo> singleMonitorCapture;
 };
 
 // Production Unified accepts every supported file size without a size prompt.
@@ -142,6 +159,9 @@ struct DecoderRuntimeServices
     // than the generic protocol default. Production Unified leaves this unset
     // and uses MakeUnifiedReceiverResourcePolicy; no Qt/CLI control exposes it.
     std::optional<std::uint64_t> outputConfirmationThresholdBytes;
+    // Only the OS identity edge is replaceable. No pixel/payload input is
+    // accepted here; production always uses the capture monitor catalog.
+    std::function<MonitorCatalogStatus(std::vector<MonitorInfo>&)> enumerateMonitors = EnumerateMonitors;
 };
 
 // One product policy, shared by Qt and CLI. Historical explicit diagnostic
@@ -262,7 +282,7 @@ public:
         EncoderCarouselProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeRemoteVisualFullscreenComposition(std::span<const std::byte> source,
         std::uint32_t destinationWidth, std::uint32_t destinationHeight,
-        std::vector<std::byte>& output, bool fillScreen = false) noexcept;
+        std::vector<std::byte>& output, bool fillScreen = false, std::uint32_t rasterWidth = 0) noexcept;
     // Same bounded composition contract as above, restricted to the Unified
     // fullscreen sizes, exposing the experimental stage-one sampling modes.
     [[nodiscard]] static RuntimeStatus ProbeUnifiedFullscreenSampledComposition(std::span<const std::byte> source,
@@ -457,6 +477,12 @@ struct UnifiedGraduationRecoveryProbeConfig
     bool collectSegmentTrace = false;
     bool budgetBoundDecoders = false;
     std::uint32_t initialAirtimePercent = 100;
+    // Test-only residual Transport loss after the whole-frame projection.
+    // Control remains observable; this is not an inferred field FEC rate.
+    std::uint32_t transportSlotErasurePercent = 0;
+    // Test-only visit budget, independent of the modeled erasure probability.
+    // No runtime option or receiver feedback selects this value.
+    std::uint32_t modeledVisitBudgetPercent = 100;
 };
 
 struct UnifiedSegmentRecoveryProbeTrace
@@ -492,6 +518,8 @@ struct UnifiedGraduationRecoveryProbeSnapshot
     std::uint64_t longestAfterJoinNoUsefulEquationFrames = 0;
     std::uint64_t activeDecodersAtLongestDrought = 0;
     std::uint64_t verifiedRawBytesAtLongestDrought = 0;
+    std::uint64_t modeledTransportSlotCandidates = 0;
+    std::uint64_t modeledTransportSlotsErased = 0;
     std::array<std::byte, pbprotocol::kDigestBytes> expectedWholeFileDigest{};
     std::filesystem::path publishedPath;
     DecoderSnapshot decoder;
@@ -581,13 +609,85 @@ public:
         std::uint32_t duplicateFrames, DecoderReplayProbeSnapshot& output) noexcept;
 };
 
+enum class ExperimentalPam4ProbeFault : std::uint8_t
+{
+    None, ForeignObservationIdentity, DuplicateControlSlot, OversizedBlockCount, ForeignSlotCount,
+    ForeignResultKind, SlotOutOfRange, OtherProfileBlocks, CorruptLastSlotTransport
+};
+
+struct ExperimentalPam4FileProbeOptions
+{
+    VisualProfile visualProfile = VisualProfile::ExperimentalPam4;
+    bool budgetBoundDecoders = false;
+    std::optional<DecoderMemoryBudget> memoryBudget;
+    bool compressionEnabled = true;
+    std::uint32_t maximumFrames = 2000;
+    std::uint32_t joinAfterFrames = 0;
+    std::uint32_t dropEveryFrames = 0;
+    std::uint32_t duplicateEveryFrames = 0;
+    ExperimentalPam4ProbeFault handoffFaultForTest = ExperimentalPam4ProbeFault::None;
+    bool nativeReadback = false;
+    std::uint32_t recreateDomainAfterFrames = 0;
+    std::uint32_t restartReceiverAfterFrames = 0;
+    // Test-only observation of a genuinely pixel-decoded result. It is not a
+    // DecoderConfig option and cannot be selected by the product GUI or CLI.
+    std::function<void(const pbdemodd3d11::CaptureDemodulatorResult&)> decodedFrameForTest;
+};
+
+struct ExperimentalPam4FileProbeSnapshot
+{
+    DecoderSnapshot decoder;
+    std::uint64_t generatedFrames = 0;
+    std::uint64_t decodedFrames = 0;
+    std::uint64_t skippedFrames = 0;
+    std::uint64_t duplicateObservations = 0;
+    std::uint64_t controlPreludeFrames = 0;
+    std::uint64_t dataFrames = 0;
+    std::uint64_t segmentCount = 0;
+    std::uint64_t wirehairSegments = 0;
+    std::uint64_t directRepeatSegments = 0;
+    std::uint32_t peakSenderSegments = 0;
+    std::uint64_t peakReceiverDecoders = 0;
+    std::uint64_t peakReceiverOrphanBytes = 0;
+    bool sourceStable = false;
+    bool independentlyReopenedEqual = false;
+    bool nativeReadbackMatchedReference = false;
+    std::uint32_t maximumDataBlocksPerFrame = 0;
+    bool lastSlotReceiverCalled = false;
+    std::uint32_t receiverRestarts = 0;
+    std::uint64_t verifiedRawBytesBeforeRestart = 0;
+    pbdemodd3d11::CaptureDemodulatorSnapshot nativeReadback;
+};
+
+struct MixedSlotTemporalOrderProbeSnapshot
+{
+    std::array<std::uint64_t, 180> segmentOrdinals{};
+    std::array<std::uint32_t, 180> scheduledEquations{};
+    std::uint32_t peakSenderSegments = 0;
+};
+
 // Narrow no-raster checkpoint seam over the same durable Sender preparation,
 // SenderFrameBuilder Transport serialization, ReceiverPipeline, ReceiverIngress,
 // resume journal, PBStorage and authoritative publish used by the application.
-// It does not encode, display, capture or demodulate pixels.
+// It does not encode, display, capture or demodulate pixels, except where an
+// explicitly documented offline pixel seam is selected.
 class ApplicationRuntimeTestAccess
 {
 public:
+    // No-raster scheduler-only seam: six one-MiB Segments, exactly 180 commits.
+    // It never delivers payload to a Receiver or starts display/capture work.
+    [[nodiscard]] static RuntimeStatus ProbeMixedSlotTemporalOrder(VisualProfile profile,
+        MixedSlotTemporalOrderProbeSnapshot& output) noexcept;
+    // Explicit offline pixels-only correctness seam (not an IPC transport or
+    // runtime input mode). <=8 MiB, one-MiB Segments, <=2000 generated rasters.
+    // Durable source/carousel -> PAM4 pixels -> CPU decoder -> ReceiverPipeline
+    // -> ordinary digest/publish/reopen. Synthetic timestamps are not goodput.
+    [[nodiscard]] static RuntimeStatus ProbeExperimentalPam4File(const std::wstring& sourcePath,
+        const std::filesystem::path& sessionStateRoot, const std::wstring& outputDirectory,
+        const ExperimentalPam4FileProbeOptions& options, ExperimentalPam4FileProbeSnapshot& output) noexcept;
+    // Returns the same validated configuration used by live Run(), without OS capture or topology substitution.
+    [[nodiscard]] static RuntimeStatus ProbeExperimentalPam4CaptureConfig(const DecoderConfig& config,
+        pbcapturenormalize::CaptureNormalizeConfig& captureConfig, pbdemodd3d11::CaptureDemodulatorConfig& demodConfig);
     [[nodiscard]] static RuntimeStatus ProbeUnifiedTemporalStriping(
         UnifiedTemporalStripingProbeSnapshot& output) noexcept;
     [[nodiscard]] static RuntimeStatus ProbeUnifiedLargeWindowRecovery(

@@ -1,5 +1,8 @@
 # PixelBridge Phase-0 Golden Vector Harness
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 本文档记录 `PBGoldenVectorCheck`、`PBVectorGen` 与相关 test-only oracle 的覆盖范围、
 证据来源、诊断约定和受控再生成流程。该 harness 是 Phase-0 工具链验证设施，不是
 协议版本协商机制，也不会把暂定 wire layout 自动提升为正式 v1。

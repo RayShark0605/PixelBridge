@@ -1,4 +1,5 @@
 #include "local_desktop_runtime.h"
+#include "operational_log_qt.h"
 #include "encoder_monitor_catalog.h"
 #include "run_report.h"
 #include "diagnostic_file.h"
@@ -58,7 +59,10 @@ struct Options
     bool segmentTargetSpecified = false;
     bool grayFastSpatialInterleave = false;
     bool grayFastShortInitialAirtime = false;
+    bool grayFastExtendedVisitBudget = false;
     bool fullscreenSamplingSpecified = false;
+    bool fullscreenNativeSize = false;
+    std::uint32_t fullscreenRasterWidth = 0;
     pbapp::FullscreenSamplingMode fullscreenSampling = pbapp::FullscreenSamplingMode::Point;
     bool manualStop = false;
     bool manualStopSpecified = false;
@@ -453,6 +457,31 @@ private:
             }
             options.grayFastShortInitialAirtime = true;
         }
+        else if (option == L"--grayfast-extended-visits")
+        {
+            if (options.grayFastExtendedVisitBudget)
+            {
+                return false;
+            }
+            options.grayFastExtendedVisitBudget = true;
+        }
+        else if (option == L"--fullscreen-native-size")
+        {
+            if (options.fullscreenNativeSize)
+            {
+                return false;
+            }
+            options.fullscreenNativeSize = true;
+        }
+        else if (option == L"--fullscreen-raster-width")
+        {
+            const wchar_t* const value = nextArgument();
+            if (value == nullptr || options.fullscreenRasterWidth != 0 || !ParseUnsigned(value, options.fullscreenRasterWidth) ||
+                options.fullscreenRasterWidth < 1920 || options.fullscreenRasterWidth > 3840 || options.fullscreenRasterWidth % 16 != 0)
+            {
+                return false;
+            }
+        }
         else if (option == L"--fullscreen-sampling")
         {
             const wchar_t* const value = nextArgument();
@@ -502,9 +531,30 @@ private:
             return false;
         }
     }
-    if ((!options.sessionStateRoot.empty() && !pbapp::IsUnifiedVisualFamily(options.profile)) ||
+    const bool pam4Wide = options.profile == pbapp::VisualProfile::ExperimentalPam4Wide;
+    const bool pam4 = pbapp::IsExperimentalPam4Family(options.profile);
+    if (pam4 && !options.channelSpecified)
+    {
+        options.remoteChannel = true;
+    }
+    if (pam4Wide && options.fullscreenRasterWidth == 0)
+    {
+        options.fullscreenRasterWidth = 2560; // Fixed presentation contract, not a desktop setting.
+    }
+    if (pam4 && (!options.singleMonitorFullscreenSpecified || !options.remoteChannel || options.fullscreenNativeSize ||
+        options.fullscreenRasterWidth != (pam4Wide ? 2560U : 0U) || options.fullscreenSamplingSpecified || options.segmentTargetMb > 8))
+    {
+        return false;
+    }
+    if ((!options.sessionStateRoot.empty() && !pbapp::UsesMixedSlotCarousel(options.profile)) ||
         (options.grayFastSpatialInterleave && options.profile != pbapp::VisualProfile::UnifiedGrayFast) ||
         (options.grayFastShortInitialAirtime && !options.grayFastSpatialInterleave) ||
+        (options.grayFastExtendedVisitBudget && (!options.grayFastSpatialInterleave || options.grayFastShortInitialAirtime)) ||
+        (options.fullscreenRasterWidth != 0 && (options.fullscreenNativeSize || !options.singleMonitorFullscreenSpecified ||
+            options.fullscreenSampling != pbapp::FullscreenSamplingMode::Point ||
+            (options.profile != pbapp::VisualProfile::UnifiedGray && options.profile != pbapp::VisualProfile::UnifiedGrayFast && !pam4Wide))) ||
+        (options.fullscreenNativeSize && (!options.singleMonitorFullscreenSpecified || options.fullscreenSampling != pbapp::FullscreenSamplingMode::Point ||
+            (options.profile != pbapp::VisualProfile::UnifiedGray && options.profile != pbapp::VisualProfile::UnifiedGrayFast))) ||
         (options.fullscreenSamplingSpecified &&
             (!options.singleMonitorFullscreenSpecified ||
                 (options.profile != pbapp::VisualProfile::UnifiedGray &&
@@ -514,7 +564,7 @@ private:
     {
         return false;
     }
-    if (pbapp::IsUnifiedVisualFamily(options.profile))
+    if (pbapp::IsUnifiedVisualFamily(options.profile) || pam4)
     {
         if (!options.logicalVisualFpsSpecified)
         {
@@ -523,7 +573,7 @@ private:
         if (options.logicalVisualFps < 1 || options.logicalVisualFps > 60 ||
             options.compressionLevel != 3 || options.controlRepetitions != 4 ||
             (options.segmentTargetSpecified && options.profile != pbapp::VisualProfile::UnifiedGray &&
-                options.profile != pbapp::VisualProfile::UnifiedGrayFast) ||
+                options.profile != pbapp::VisualProfile::UnifiedGrayFast && !pam4) ||
             (options.compressionSpecified && !options.compression))
         {
             return false;
@@ -553,7 +603,7 @@ private:
         !options.experimentMonitorDeviceName.empty();
     const bool anyMonitorArgument = !options.protectedMonitorDeviceName.empty() ||
         !options.experimentMonitorDeviceName.empty() || options.singleMonitorFullscreenSpecified;
-    const bool unifiedSingleMonitorFullscreen = pbapp::IsUnifiedVisualFamily(options.profile) &&
+    const bool unifiedSingleMonitorFullscreen = (pbapp::IsUnifiedVisualFamily(options.profile) || pam4) &&
         options.singleMonitorFullscreenSpecified && !options.protectedMonitorSpecified &&
         !options.experimentMonitorSpecified;
     if ((options.profile == pbapp::VisualProfile::RemoteVisualLowFps &&
@@ -676,6 +726,9 @@ void Usage()
                  "[--seconds 1..7200; default=30] "
                  "[--grayfast-spatial-interleave; experimental GrayFast only] "
                  "[--grayfast-short-initial-airtime; experimental spatial GrayFast only, slower under some losses] "
+                 "[--grayfast-extended-visits; experimental spatial GrayFast only, 150% visit budget, may be slower] "
+                 "[--fullscreen-native-size; experimental gray-family fullscreen, point only] "
+                 "[--fullscreen-raster-width 1920..3840; steps of 16, centered 16:9 gray-family point viewport] "
                  "[--fullscreen-sampling point|linear|area; experimental gray Unified single-monitor fullscreen "
                  "only, default point] "
                  "[--session-state-root ABSOLUTE_PATH; Unified family only, default unchanged] "
@@ -689,6 +742,13 @@ void Usage()
                  "experimental opt-in: --profile unified-gray-fast keeps the layout-12 gray raster but packs "
                  "the DVB-S2 Short Fast inner FEC (37/45) with 1629-byte Transport payloads under the "
                  "PB-Experimental-GrayFast-1 identity (layout 13); matching decoder required\n"
+                 "experimental opt-in: --profile experimental-pam4 uses independent layout 15 (Robust Control + 10 Fast Transport slots); "
+                 "requires --single-monitor-fullscreen primary|DEVICE and remote provider/metadata, 1..60 Hz (default 15), "
+                 "automatic RAW/zstd level 3 and optional --segment-target-mb 1..8; native centered raster with static margins, "
+                 "no legacy fullscreen/GrayFast flags or formal measurement; matching experimental decoder required\n"
+                 "experimental opt-in: --profile experimental-pam4-wide uses independent layout 16 (one Robust Control + 19 Fast Transport slots); "
+                 "same PAM4 safety requirements, fixed 2560x1440 point raster fitting the selected monitor, optional explicit --fullscreen-raster-width 2560 only; "
+                 "matching Wide decoder required, never auto-selected\n"
                  "gray experimental opt-in: --segment-target-mb 1..15 overrides the per-Segment raw target "
                  "(gray family default 15, product 8; certified product sessions reject the flag)\n"
                  "historical diagnostics: PixelBridgeEncoder --headless-broadcast --source PATH --profile direct|shape|remote|remote-lf4 "
@@ -727,6 +787,9 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     config.segmentTargetBytes = options.segmentTargetMb != 0 ? options.segmentTargetMb * 1024U * 1024U : 0;
     config.grayFastSpatialInterleave = options.grayFastSpatialInterleave;
     config.grayFastShortInitialAirtime = options.grayFastShortInitialAirtime;
+    config.grayFastExtendedVisitBudget = options.grayFastExtendedVisitBudget;
+    config.fullscreenNativeSize = options.fullscreenNativeSize;
+    config.fullscreenRasterWidth = options.fullscreenRasterWidth;
     config.fullscreenSampling = options.fullscreenSampling;
     config.runId = options.runId;
     if (options.remoteChannel)
@@ -770,12 +833,13 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     }
     if (options.singleMonitorFullscreenSpecified &&
         (pbapp::IsUnifiedVisualFamily(options.profile) ||
+         pbapp::IsExperimentalPam4Family(options.profile) ||
          options.profile == pbapp::VisualProfile::RemoteVisualLowFps))
     {
         pbapp::MonitorInfo fullscreenMonitor;
         std::string monitorError;
         if (!ResolveFullscreenMonitor(options.singleMonitorFullscreenDeviceName,
-            fullscreenMonitor, monitorError, pbapp::IsUnifiedVisualFamily(options.profile)))
+            fullscreenMonitor, monitorError, pbapp::IsUnifiedVisualFamily(options.profile) || pbapp::IsExperimentalPam4Family(options.profile)))
         {
             std::cerr << monitorError << '\n';
             return 2;
@@ -858,9 +922,13 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
         }
         std::cerr << "manual stop armed: after Decoder success, press Enter or Q in this Encoder console\n";
     }
+    pbgui::OperationalLog operationalLog(QStringLiteral("Encoder"));
+    operationalLog.Begin();
     const pbapp::RuntimeStatus started = runtime.Start(config);
     if (!started)
     {
+        operationalLog.StartRejected(QString::fromStdString(started.message));
+        std::cerr << operationalLog.StatusText().toStdString() << '\n';
         std::cerr << started.message << '\n';
         return 2;
     }
@@ -880,6 +948,7 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     for (;;)
     {
         const pbapp::EncoderSnapshot snapshot = runtime.GetSnapshot();
+        operationalLog.Observe(snapshot);
         const auto elapsedCount = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - commandStarted).count();
         const std::uint64_t elapsedMilliseconds = elapsedCount < 0 ? 0 : static_cast<std::uint64_t>(elapsedCount);
@@ -956,6 +1025,8 @@ int RunEncoderRuntimeCommand(const int argumentCount, const wchar_t* const argum
     {
         pbapp::ApplyJournalSnapshot(journalSnapshot, snapshot);
     }
+    operationalLog.Observe(snapshot, true);
+    std::cerr << operationalLog.StatusText().toStdString() << '\n';
     const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
     const pbapp::RunReportContext context{"PixelBridgeEncoder", buildInfo.version, PB_GIT_COMMIT, UtcNow()};
     const std::string report = pbapp::BuildEncoderRunReportJson(context, snapshot);

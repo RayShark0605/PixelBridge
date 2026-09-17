@@ -1,7 +1,10 @@
 # PixelBridge Protocol 1.0 Descriptor Schema 1
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 本文冻结 `SessionDescriptor`、`SegmentDescriptor` 和 `FinalManifest` 的正式字节合同。它是
-`docs/PixelBridge_最终技术路线与总体设计.md` 第 7..10、15、33 节的机器核对补充，不取代
+`docs/PixelBridge_最终技术路线与总体设计.md` 第 5..8 节的机器核对补充，不取代
 其中的资源、安全、不可变绑定和最终发布约束。
 
 实现与核对入口：

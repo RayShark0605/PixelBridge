@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mixed_visual_capacity.h"
+
 #include "pbmodulation/unified_visual.h"
 #include "pbreceiver/receiver_ingress.h"
 #include <array>
@@ -58,7 +60,7 @@ struct ReceiverDecisionTrace
     ReceiverFrameReason reason = ReceiverFrameReason::NotEvaluated;
     ReceiverDecisionState before;
     ReceiverDecisionState after;
-    std::array<ReceiverSlotDecision, pbmodulation::kUnifiedMaximumFrameSlotCount> slots{};
+    std::array<ReceiverSlotDecision, maximumMixedFrameSlotCount> slots{};
 };
 
 inline void SetReceiverFrameReason(ReceiverDecisionTrace* const trace, const ReceiverFrameReason reason) noexcept

@@ -4,12 +4,15 @@ add_library(PB::PBApplication ALIAS PBApplication)
 target_sources(PBApplication
     PRIVATE
         application_model.cpp
+        decoder_activity.cpp
         decoder_capture_controller.cpp
+        decoder_memory_budget.cpp
         decoder_resume_store.cpp
         encoder_session_store.cpp
         encoder_monitor_catalog.cpp
         evidence_journal.cpp
         local_desktop_runtime.cpp
+        experimental_pam4_file_probe.inc
         optional_diagnostic_fanout.cpp
         optional_diagnostic_fanout.h
         monitor_catalog.cpp
@@ -20,7 +23,11 @@ target_sources(PBApplication
         sender_carousel_scheduler.cpp
     PUBLIC
         application_model.h
+        decoder_activity.h
+        gui_visual_mode.h
+        mixed_visual_capacity.h
         decoder_capture_controller.h
+        decoder_memory_budget.h
         decoder_resume_store.h
         encoder_session_store.h
         encoder_monitor_catalog.h

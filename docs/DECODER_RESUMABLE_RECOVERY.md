@@ -1,6 +1,15 @@
 # Decoder 可恢复乱序写入、确认门与 publish commit
 
-> **2026-09-04 G16 更新：** Unified 产品 GUI 与真实接收 runtime 已复用本文的确认、journal、Stop/resume 和安全发布合同；Qt 只转交 run/request 决策和显示权威状态。定向 offscreen/controller 验证与命令见 [G22 GUI 发布与交互合同](UNIFIED_G22_GUI_RELEASE.md)。下述 G03/G05 的原始证据边界保留；不据 G16 非显示验证声称真实 capture、进程 crash 或 20 GiB 门禁通过。
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
+> **2026-09-17 Stage38接入：** 显式budget-bound性能模式采用有界大日志整理合并；completed marker仍立即flush，只延后无明显回收收益的磁盘重写。PBJH/PBJR schema与旧读取兼容、默认行为和最终校验不变。局部候选已通过旧读取器、配额/I/O与进程中断门；接入后的新构建/现场状态以项目现状为准，不把局部成本改善当整文件提速。具体见§3.2。
+
+> **2026-09-15 Stage9 checkpoint 写入实现：** accepted-block 保持原 PBJR 字节与 generation 顺序，物理写入使用 64 KiB 有界批缓冲（超过该大小的合法单条记录独立写入）；完整 pending 集合先做 quota/generation 检查。短写、seek/write/flush 失败及已写前缀后的内存失败都禁止继续追加；成功 checkpoint 仍须 flush。该改动不把大写入当作原子操作，不放宽 torn-tail/CRC/冲突/最终摘要规则，详见 §3.1 与 [本轮证据](EVIDENCE_INDEX.md)。
+
+> **2026-09-15 Stage7 显式内存配置：** GrayFast/PAM4 性能模式可设置有限的总/单实例 FEC 预算，并联动 resume 日志上限。`Open` 要求显式设置与实际 policy 完全一致；缩小预算后的拒绝不会修改原 journal。旧默认、wire、CRC/conflict、完成段重验与发布合同不变，详见 [接收内存预算](DECODER_MEMORY_BUDGET.md)；当前验收阶段见本轮非本机工作日志。
+
+> **2026-09-04 G16 更新：** Unified 产品 GUI 与真实接收 runtime 已复用本文的确认、journal、Stop/resume 和安全发布合同；Qt 只转交 run/request 决策和显示权威状态。定向 offscreen/controller 验证与命令见 [G22 GUI 发布与交互合同](EVIDENCE_INDEX.md)。下述 G03/G05 的原始证据边界保留；不据 G16 非显示验证声称真实 capture、进程 crash 或 20 GiB 门禁通过。
 
 本文记录 G03 与 G05 的当前实现合同：正式 Descriptor 绑定后的 Outer block 持久化、乱序 Segment 写入、completed Segment 重启重验、大输出确认门，以及 WholeFileDigest 后可跨进程恢复的安全发布。权威代码入口是：
 
@@ -125,13 +134,21 @@ accepted block 先进入内存 pending 列表，以下任一条件触发 checkpo
 - Segment 即将写入 completed；
 - 显式 checkpoint。
 
-checkpoint 逐条 append，最后调用 `FlushFileBuffers`，成功后才清空 pending。自本次 validated open 或上次成功
+checkpoint 先以 checked arithmetic 验证全部 pending 的总追加字节、`maxResumeBytes`、原生文件偏移和 generation 空间，确定性 quota/溢出失败不得先写入一部分。随后按原顺序生成逐条 PBJR 记录，合并完整记录为 **至多 64 KiB** 的同步物理写入；批内 generation 连续、逐记录 CRC 不变。合法最大 payload 对应的单记录可为 65591 B，单独写入，不扩展批缓冲区。空 pending 不分配批缓冲或发出追加 I/O。
+
+最后仍调用 `FlushFileBuffers`，成功后才清空 pending；metadata/completed/publish marker 的立即 flush 不变。seek/write/短写/flush 失败标记 store terminal，不重试原 pending；若分配/序列化失败发生在已写完整前缀之后，也进入 terminal，必须关闭并重新验证 journal 后恢复。未写任何字节的可恢复内存失败允许重试，quota/溢出预检失败保留原文件。成功物理批次后才更新内存 generation/fileBytes；checkpoint 最后 flush 失败也不能当成提交成功。
+
+**多扇区写入不保证原子性。** 未完整写完的最后一条记录只能按现有严格 torn-tail 门处理；完整记录 CRC 错误、中间损坏或歧义仍 fail closed，不承诺恢复任意掉电损坏。同步写操作结束前 buffer 不得重用。[Microsoft WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)、[FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+
+当前 live runtime 将周期/完成段前的 checkpoint 失败上报为接收失败；旧版总体设计的历史 ResumeDegraded 设想 的 `ResumeDegraded` 是允许的降级方向，**不是当前已经实现的继续接收行为**。Stage9 不改变这一范围，也不将失败的 checkpoint 记成可恢复进度。
+
+旧默认与小live snapshot下，自本次 validated open 或上次成功
 compact 之后新增的 journal bytes 达到 16 MiB 时执行 periodic compact；不是把完整 live snapshot 的绝对大小当作
 垃圾量。已 compact 的 W=8 快照可以大于 16 MiB，空 checkpoint 不得因此反复改写它。
 
 ### 3.2 compact snapshot
 
-Segment completed 或上述新增 journal bytes 达到 16 MiB 时，构建仅含当前 authoritative state 的 snapshot：
+默认仍在Segment completed或上述新增journal bytes达到16MiB时整理。显式预算模式允许按下面的有界策略合并整理；无论何时执行，snapshot仍仅含当前authoritative state：
 
 ```text
 PBJH
@@ -146,10 +163,26 @@ PBJH
 snapshot 写入同目录 `.resume.tmp`，完成 write、`FlushFileBuffers`、close 后，使用 `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH` 原子替换 journal；generation 不回退。旧 journal 在替换成功前仍是 authoritative state。
 
 成功 reopen 后才把 growth baseline 更新为新文件大小；重新打开已校验的 journal 建立新的进程本地 baseline，
-不新增 serialized field。torn tail 仍立即 compact；completed Segment 仍立即删 active records 并 compact。
+不新增serialized field。torn tail仍立即compact；completed Segment始终在marker耐久后立即删内存active records。默认仍立即compact，显式预算大状态允许仅保留有界磁盘历史记录。
 `maxResumeBytes` 仍在每次 append 和 snapshot 构建前强制检查，没有提高磁盘或内存上限。generation、CRC、flush
 和 atomic replace 的语义不变。G21 回归覆盖 >16 MiB live state 的空 checkpoint、少量新增、第二个 16 MiB growth、
 重启、完成后释放与重新加载；相关实屏证据见 G21 交接 0.10。
+
+### 3.3 显式预算大状态的整理合并（Stage38）
+
+只有`budgetBoundActiveSegments=true`且传入通过`Open`一致性校验的`DecoderMemoryBudget`时启用；没有新wire字段或用户配置入口。live snapshot按现有serializer字段长度逐项checked预计算，包括header、reservation、controls、manifest、completed、active blocks与publish intent。`maxResumeBytes`仍是用户有限预算导出的原配额，不得越过vector、原生offset或generation上界。
+
+- pending必须已经提交且live snapshot大于64MiB、active非空，才可延后一般整理。
+- 如果物理journal与live snapshot等长，无垃圾可回收，则不无效重写。
+- 有垃圾时，物理大小达到quota的75%，或垃圾同时达到16MiB且不少于物理大小的25%，即整理；小live或active清空仍立即整理。
+- `RecordCompletedSegment`的append+flush与内存active移除不延迟。磁盘中保留accepted→completed顺序的历史记录，旧读取器加载completed时删除相应逻辑active状态；不得在completed后再接纳该段新accepted记录。
+- 当整个pending追加无法放入quota时，先预检包含全部active+pending的完整snapshot及generation，然后直接写tmp/flush/replace/reopen。失败前不先追加部分pending；只有新primary耐久且重开成功才清空pending。若live本身装不下，原primary不变、明确失败。
+- metadata追加需要回收时，先预检snapshot+该record的完整空间和generation，再compact，之后使用新generation重建该record。不能复用compact前的序号。
+- Compact使用一次精确document预留及复用record/payload缓冲；序列化顺序/CRC不变。该调整不是后台线程，不承诺所有真实整理都小于250ms。
+
+写入/短写/flush/replace/reopen失败仍terminal。replace之前旧primary是恢复真值；replace已成功但reopen失败时，下一次Open重验新primary，不从失败调用的旧内存计数回退。`.tmp`永不自动采纳。进程中断测试不等于物理掉电保证；completed `.part`重算、whole-file digest、安全publish和final reopen仍必需。
+
+永久回归位于`tests/PBApplication/decoder_resume_coalesced_test_cases.inc`，由`PBDecoderResumeBatchTests`编译；快照I/O替身与隐藏process-crash子用例只在`PB_RESUME_BATCH_TESTS`目标内存在，产品没有环境变量选择器或故障入口。旧独立Stage37检查仍保留，构建/实屏结论以当前证据为准。
 
 ## 4. Segment 完成状态机
 
@@ -164,7 +197,7 @@ snapshot 写入同目录 `.resume.tmp`，完成 write、`FlushFileBuffers`、clo
 | ActiveCheckpointed | flush 当前 Segment 的 accepted-block pending | 后续 `.part` 写入失败时仍可从 durable equations 重试 |
 | PartWritten | `WriteVerifiedSegment(RawOffset, raw)`，拒绝越界/重叠 | pending range 不算 verified |
 | PartFlushed | `FlushFileBuffers(.part)`，PBStorage 才登记 verified range | completed journal 尚未承诺 |
-| JournalCompleted | 先 checkpoint accepted blocks，再 flush completed record，再 compact | `.part` 可由重启重验 |
+| JournalCompleted | 先checkpoint accepted blocks，再flush completed record，再按§3.2–3.3整理/合并整理 | `.part` 可由重启重验 |
 | ReceiverCommitted | `CommitStoredSegment` 标记完成并释放 decoder | 该 Segment 可进入最终计数 |
 
 PBStorage 支持 Segment 任意顺序写入，但 verified ranges 不得重叠；所有 offset/addition 使用 checked arithmetic。`FlushVerifiedSegment` 在 flush 后更新区间表时捕获 allocation/length failure，不允许异常穿越 `noexcept`。

@@ -1,5 +1,8 @@
 # 非本机周期控制相位单变量候选
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 本工具仅做已冻结 A/B 应用库的窄验证，不启动 GUI、屏幕捕获、网络或 codec；不得作为非本机吞吐证明。
 
 候选在当前活跃 Segment 窗口内分配 `phaseIndex / phaseCount`，只将首次周期控制 deadline 延后 `floor(10s * phaseIndex / phaseCount)`。启动的四份控制不变，以后仍从实际控制 burst 起点间隔 10 秒，每次一个 Session/Manifest/Segment triplet，普通数据帧仍携带当前 SegmentDescriptor。不追补错过的周期，不改变 slot/wire/FEC/Receiver/资源和发布门。单段和零字节的零相位保持旧行为。

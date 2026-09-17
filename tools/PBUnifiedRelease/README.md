@@ -1,51 +1,69 @@
-# G22 Unified 本地便携候选
+# PixelBridge 正式包工具 / Product packaging tools
 
-本目录为 SC6-V3 / layout 10 的独立发布工具。保留的 `PBRemoteVisualEvidence` schema-2 工具仍用于历史实验；
-不能用旧 LF4 Profile manifest 为新版 Unified 作身份声明。当前工具由已有 inventory/seal/SBOM 逻辑派生，
-另行冻结 `PixelBridge.UnifiedPortablePackage.1` / `UnifiedPortablePackageSeal.1`，不改旧 schema 的含义。
+`New-PBUnifiedPortablePackage.ps1` 从干净提交的 Release 构建生成独立 Encoder / Decoder 便携包，`Test-PBUnifiedPortablePackage.ps1` 独立只读验证完整性。历史候选参数仍可使用；v1.0 使用显式 `-ProductRelease`，不会更改旧候选 schema 的语义。
 
-## 生成
+The producer packages a clean committed Release build. The independent verifier never executes packaged applications. The optional product-release branch adds the MIT license, minimal runtime, role-specific bilingual instructions and corresponding Qt source; legacy candidate behavior remains available.
 
-需要 PowerShell 7、干净提交（唯一例外是既有 `docs/PHASE1_GATE_REPORT.md`）、重新配置并构建的 Release 双端、
-已部署 Qt runtime/plugins、installed vcpkg 状态，以及明确指定的本机 MSVC x64 redistributable 和 notices 目录。
+## 前置条件 / Prerequisites
+
+- Windows x64, PowerShell 7, Python 3.12+ (source bundling only), CMake/VS2022 and the pinned Qt 6.10.1 MSVC installation with its **matching Src/qtbase component**.
+- Release source committed and clean; reconfigure/rebuild **after the commit** so both `--build-identity` values equal HEAD. Do not rename an old binary as a new release.
+- Installed vcpkg baseline, resolved from `VCPKG_INSTALLED_DIR` in the build's CMake cache; Qt/VC runtime deployment present.
+- Explicit MSVC x64 redistributable and notices directories. No payload, personal logs, recovery state or private reports in the source inventory.
+- GUI offscreen / affected regressions / Golden tests passed. Native display tests are opt-in; packaging does not implicitly run them.
+
+## 对应源码 / Corresponding source
 
 ```powershell
-cmake -S . -B build-unified-release
-cmake --build build-unified-release --config Release --target PixelBridgeEncoder PixelBridgeDecoder --parallel 4
-
-pwsh -NoProfile -File tools/PBUnifiedRelease/New-PBUnifiedPortablePackage.ps1 -Role Both -Label current-head -CompactPackageName `
-  -BuildDirectory <repo>\build-unified-release `
-  -OutputRoot <repo>\artifacts\g22-package-fresh `
-  -VcRuntimeDirectory 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\14.44.35112\x64\Microsoft.VC143.CRT' `
-  -VcNoticesDirectory 'C:\Program Files\Microsoft Visual Studio\2022\Community\Licenses\1033'
+python tools/PBUnifiedRelease/New-PBQtSourceBundle.py `
+  --qt-root <qt>/6.10.1/msvc2022_64 --output-directory artifacts/release/qt-source
 ```
 
-产物包括双端 EXE 及依赖、`USER_GUIDE.md`、完整编译 Profile JSON、独立 verifier、SPDX SBOM、Qt/vcpkg/MSVC notices、
-package manifest、ZIP 和外部 seal。输入根与输出 artifact 不修改；输出 create-only，失败时保留 partial 以便检查。
-当前仓库没有选定项目自身 LICENSE，SBOM 保留 `NOASSERTION`。这是本地候选，不代表公开分发、签名或许可选择已获批准。
-installed vcpkg inventory 包括 build/test 工具，不声称这些包全都运行时动态链接。
+This read-only helper takes the complete matching Qt Base source, licenses and build scripts plus the installed SDK configuration. It produces a create-only deterministic ZIP and SHA-256 source manifest. No download, source mutation or executable launch occurs. `--output-directory` must not exist. See the bilingual [Qt source instructions](../../docs/QT_SOURCE.md).
 
-生成器实际执行双端 `--version` / `--build-identity` / `--unified-profile`，核对当前 commit 与完整 Profile digest。
-这些是只读诊断命令，不开启 Qt 窗口、捕获或传输。
+## 生成 v1.0 / Build v1.0 packages
 
-## 独立验证
+Adapt the following paths to the actual build and installed toolchain; none are universal defaults.
 
-先在新目录解压 ZIP，保留原 package 目录名。以下命令只读验证，不运行包内 EXE：
+```powershell
+$parameters = @{
+  Label = 'current-head'
+  BuildDirectory = '<repo>/build-release'
+  OutputRoot = '<repo>/dist/v1.0.0'
+  VersionedPackageName = $true
+  ProductRelease = $true
+  QtSourceBundleDirectory = '<repo>/artifacts/release/qt-source'
+  VcRuntimeDirectory = 'C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT'
+  VcNoticesDirectory = 'C:/Program Files/Microsoft Visual Studio/2022/Community/Licenses/1033'
+}
+& tools/PBUnifiedRelease/New-PBUnifiedPortablePackage.ps1 -Role Encoder @parameters
+& tools/PBUnifiedRelease/New-PBUnifiedPortablePackage.ps1 -Role Decoder @parameters
+```
+
+The two directories, ZIPs and external seals are create-only. Failed staging is retained, not silently overwritten. The producer runs only `--version`, `--build-identity` and `--unified-profile`, which do not start transmission or capture.
+
+Product runtime: role EXE; Qt Core/Gui/Widgets; BLAKE3/Zstd; Qt Base's Windows/offscreen platforms and modern Windows style; app-local VC runtime. Windows supplies ICU/D3DCompiler_47. Unrelated PDF/SVG/network plugins, DXC, debug symbols, bridge tools and user settings are not packaged. `qt.conf` uses relative plugin paths. All included files, notices, source ZIP and official Qt SBOM are sealed. The top-level vcpkg SBOM records the whole installed build baseline, including test-only entries, not just runtime DLLs.
+
+`unified-profile.json` binds the retained default SC6-V3/layout10 contract. It does **not** relabel PAM4/Wide as that protocol: their frozen independent identities remain in source and the mode documentation. Product-version changes do not change wire semantics.
+
+## 独立验证 / Independent verification
+
+Extract the archive into a new directory retaining its package name. Example:
 
 ```powershell
 pwsh -NoProfile -File Test-PBUnifiedPortablePackage.ps1 `
-  -PackageDirectory <新解压的package目录> -PackageSealPath <外部seal.json> -ArchivePath <原始zip> `
-  -ExpectedManifestSha256 <可信渠道获得的manifest-hash> -OutputPath <尚不存在的验证结果.json>
+  -PackageDirectory <fresh-unpacked-directory> `
+  -PackageSealPath <external-seal.json> -ArchivePath <original.zip> `
+  -ExpectedManifestSha256 <hash-from-a-trusted-channel> -OutputPath <new-result.json>
 ```
 
-Verifier 拒绝缺失/额外/重复/不安全路径、Windows reparse 或 ZIP symlink、错误大小/哈希、重复或大小写歧义 JSON key、
-非整数 size、错误 GUI/x64 PE、缺失 VC runtime、错误 Profile/SBOM/notices/工具链绑定和不一致的外部 seal。
-ZIP 解压校验以封印长度加单字节 sentinel 限制实际读出，不能信任 ZIP 自报长度而无限处理解压内容。
+Rejects missing/extra/duplicate/unsafe paths, reparse points/ZIP symlinks, wrong bytes/hashes, malformed or ambiguous JSON, non-integer sizes, incorrect x64 GUI PE, missing VC runtime, inconsistent profile/SBOM/notices/seal, and unexpected product runtime/license/source content. File count/total size and ZIP expansion are bounded. It does not execute the EXE or unpack the nested corresponding-source archive.
 
-无签名的哈希/seal 只用于完整性与身份一致性，不证明发布者真实性。
-包完整性通过后仍需从新解压目录执行版本检查、双端 `--gui-smoke` 和 G22 右屏最小实际像素恢复；
-本工具本身不产生 GUI/实屏、性能或完整 G22 通过声明。
+Then test **freshly unpacked** application version/identity and `--gui-smoke` with developer Qt/vcpkg paths removed. These are local/offscreen correctness checks, not physical remote-channel or performance certification. The negative suite in `tests/tools/test_unified_package.py` mutates only a create-only derived copy and verifies that original artifacts remain unchanged.
 
-## 版本化交付（v0.6起）
+## 发布边界 / Release boundaries
 
-`-VersionedPackageName`可替代`-CompactPackageName`，从双端实际runtime identity的一致版本生成`PixelBridge-v0.6.0-win64`类名称；二者不能同时指定。SBOM项目版本同样来自实际应用版本，不再硬编码0.1.0。可用`-ReleaseDocumentation docs/RELEASE_V0.6.md,docs/SESSION_HANDOFF_20260914_V0.6.md,docs/NEXT_TASK_PROMPT_V0.6.md`将最多8个、每个不超过2MiB的仓库docs Markdown纳入同一哈希清单。PowerShell命令行可用数组调用传参。源码干净提交、tag、预算、profile、SBOM/notices、封印和独立verifier等原检查不变。
+- [MIT project license](../../LICENSE), [dependency notices](../../THIRD_PARTY_NOTICES.md), [v1.0 release notes](../../docs/RELEASE_V1.0.md).
+- Hashes and unsigned seals provide integrity, not publisher authentication. The optional verifier is not an application launch gate and does not prevent compatible Qt replacement.
+- No remote push, code signing, display setting change, input automation or new throughput claim is implied by successful packaging.
+- Legacy `-CompactPackageName`, `-Role Both`, and up to eight `-ReleaseDocumentation` Markdown files remain supported outside `-ProductRelease`. They produce candidate inventories, not the v1.0 product package contract.

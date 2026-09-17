@@ -1,5 +1,8 @@
 # Step3-A：确定性离线像素／时序最小测试工具
 
+> **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](../../docs/README.md) / [English documentation](../../docs/README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
+> This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
+
 ## 范围与权威边界
 
 本工具是 **Step3-A 本地工具**，不是产品媒体输入，不注册到产品 CMake，不改变 SC6-V3/layout 10、几何门、FEC、CRC、冲突处理、资源策略或安全发布语义。

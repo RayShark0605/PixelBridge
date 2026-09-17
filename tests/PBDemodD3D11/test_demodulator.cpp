@@ -2346,6 +2346,52 @@ TEST_CASE("Capture demodulator withholds later LF4 results until an earlier stag
     consumer->DomainInvalidated(domain);
 }
 
+TEST_CASE("PAM4 capture retirement waits for cancelled staging work and resets on a new domain",
+    "[demod][d3d11][capture][pam4][capture-shutdown][epoch][warp]")
+{
+    auto environment = CreateWarpEnvironment();
+    pbdemodd3d11::CaptureDemodulatorConfig config;
+    config.visualProfileId = pbprotocol::kPam4ExperimentalProfile.visualProfileId;
+    config.slotCount = 2;
+    config.maximumFrameAgeMilliseconds = 60000;
+    std::shared_ptr<pbdemodd3d11::CaptureDemodulator> consumer;
+    REQUIRE(pbdemodd3d11::CaptureDemodulator::Create(config, consumer));
+    REQUIRE_FALSE(pbdemodd3d11::AreCaptureDemodulatorResourcesRetired(consumer->GetSnapshot()));
+    const auto captureEnvironment = MakeCaptureEnvironment(environment.adapterLuid);
+    pbcapturenormalize::ScreenCaptureDomain domain;
+    domain.sourceId[0] = std::byte{0x4D};
+    domain.captureEpoch = 1;
+    REQUIRE(consumer->DomainStarted(domain, captureEnvironment, environment.device.Get()));
+    const std::vector<std::byte> pixels(pbmodulation::kLocalDesktopFrameBgraBytes);
+    const auto texture = UploadRoiTexture(environment.device.Get(), pixels);
+    auto frame = MakeFrame(texture.Get(), environment.adapterLuid, domain, 1);
+    frame.metadata.slotIndex = 0;
+    StampCurrent(frame);
+    REQUIRE(consumer->Submit(frame, environment.context.Get()));
+    WaitForDownstreamMarker(environment.device.Get(), environment.context.Get());
+    consumer->DomainInvalidated(domain);
+    const auto pending = consumer->GetSnapshot();
+    REQUIRE_FALSE(pending.active);
+    REQUIRE(pending.pendingFrames == 1);
+    REQUIRE_FALSE(pbdemodd3d11::AreCaptureDemodulatorResourcesRetired(pending));
+    auto replacementDomain = domain;
+    replacementDomain.captureEpoch++;
+    REQUIRE_FALSE(consumer->DomainStarted(replacementDomain, captureEnvironment, environment.device.Get()));
+    const auto cancelled = consumer->CompleteStage(frame.metadata, nullptr, nullptr, true);
+    REQUIRE(cancelled.status);
+    REQUIRE_FALSE(cancelled.gpuWorkSubmitted);
+    const auto retired = consumer->GetSnapshot();
+    REQUIRE(retired.cancelledFrames == 1);
+    REQUIRE(retired.pendingFrames == 0);
+    REQUIRE(retired.queuedResults == 0);
+    REQUIRE_FALSE(retired.demodulator.shutdown);
+    REQUIRE(pbdemodd3d11::AreCaptureDemodulatorResourcesRetired(retired));
+    REQUIRE(consumer->DomainStarted(replacementDomain, captureEnvironment, environment.device.Get()));
+    REQUIRE_FALSE(pbdemodd3d11::AreCaptureDemodulatorResourcesRetired(consumer->GetSnapshot()));
+    consumer->DomainInvalidated(replacementDomain);
+    REQUIRE(pbdemodd3d11::AreCaptureDemodulatorResourcesRetired(consumer->GetSnapshot()));
+}
+
 TEST_CASE("Capture demodulator cancels staged LF4 work before epoch replacement and rejects legacy completion",
     "[demod][d3d11][capture][remote-visual][low-fps][epoch][negative][warp]")
 {
