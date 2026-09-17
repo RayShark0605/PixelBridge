@@ -102,6 +102,43 @@ function Get-FileSha256
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-GitSourcePaths
+{
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+    # Git -z emits UTF-8, independently of the inherited Windows console code
+    # page. A native PowerShell pipeline can otherwise corrupt Chinese paths.
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = 'git'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
+    $startInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new($false, $true)
+    foreach ($argument in @('-C', $RepositoryRoot, 'ls-files', '--cached', '--others', '--exclude-standard', '-z')) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw 'Unable to start Git source inventory' }
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(30000)) {
+            $process.Kill($true)
+            $process.WaitForExit()
+            throw 'Git source inventory timed out'
+        }
+        $outputText = $outputTask.GetAwaiter().GetResult()
+        $errorText = $errorTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw "Unable to enumerate source tree: $errorText" }
+        return $outputText.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Get-ApplicationBuildIdentity
 {
     param(
@@ -337,11 +374,7 @@ if ($LASTEXITCODE -ne 0 -or $tagObject -notmatch '^[0-9a-f]{40}$' -or $tagCommit
     throw 'Unable to resolve phase1-gate-pass identity'
 }
 
-$sourcePaths = @(& git -C $repositoryRoot -c core.quotepath=false ls-files --cached --others --exclude-standard)
-if ($LASTEXITCODE -ne 0)
-{
-    throw 'Unable to enumerate source tree'
-}
+$sourcePaths = @(Get-GitSourcePaths -RepositoryRoot $repositoryRoot)
 $excluded = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($path in $ExcludedSourcePath)
 {

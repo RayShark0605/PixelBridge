@@ -61,6 +61,10 @@ Rejects missing/extra/duplicate/unsafe paths, reparse points/ZIP symlinks, wrong
 
 Then test **freshly unpacked** application version/identity and `--gui-smoke` with developer Qt/vcpkg paths removed. These are local/offscreen correctness checks, not physical remote-channel or performance certification. The negative suite in `tests/tools/test_unified_package.py` mutates only a create-only derived copy and verifies that original artifacts remain unchanged.
 
+源码清单通过 NUL 分隔的 UTF-8 Git 输出读取，不依赖 Windows 控制台代码页。可用 `tests/tools/VerifyUnifiedSourceInventory.ps1 -EvidenceDirectory <new-directory>` 回归中文/日文/带空格路径、GB936/UTF-8 两种代码页、忽略文件及无效仓库拒绝；不运行打包入口或应用程序。
+
+Source enumeration reads NUL-delimited UTF-8 from Git independently of the console code page. The standalone regression above covers non-ASCII/space-containing paths, GB936/UTF-8 consoles, ignored files and invalid-repository rejection without running the packager or applications.
+
 ## 发布边界 / Release boundaries
 
 - [MIT project license](../../LICENSE), [dependency notices](../../THIRD_PARTY_NOTICES.md), [v1.0 release notes](../../docs/RELEASE_V1.0.md).
