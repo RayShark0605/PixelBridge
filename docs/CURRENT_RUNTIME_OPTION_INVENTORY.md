@@ -77,7 +77,7 @@ Source: `apps/PixelBridgeDecoder/decoder_runtime_cli.cpp`
 
 四个面向用户的模式：标准 / 灰阶高速 / PAM4 / PAM4 Wide。内部 CLI token `experimental-pam4` 与 `experimental-pam4-wide` 保留兼容，不显示为产品模式标签。不同 Profile 不在同一 Session 中切换。
 
-Product-facing mode labels have no experiment badges. Frozen CLI names retain compatibility. Standard remains the default; parameters do not weaken finite budgets or final verification.
+Product-facing mode labels have no experiment badges. Frozen CLI names retain compatibility. The GUI defaults to PAM4 (index 2) for fresh, missing, or invalid preferences; valid saved indices remain unchanged. Standard remains compatibility index 0, while CLI/core defaults stay separate; parameters do not weaken finite budgets or final verification.
 
 - Encoder: source, persistent cache, mode, 1–60 Hz, start/stop; no peer-completion inference.
 - Decoder: output, mode, target monitor/whole screen/ROI, refresh 100–2000 ms, finite memory budgets, normal stop/resume, verified output opening.

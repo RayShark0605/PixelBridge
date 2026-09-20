@@ -109,6 +109,9 @@ TEST_CASE("Gray fast report identifies budget-bound admission without optional i
     REQUIRE_FALSE(experimental.contains("measurement"));
     REQUIRE(experimental["publish"].toObject()["finalReopenVerified"].isNull());
     REQUIRE(experimental["verifiedEncodedBytesPerUniqueFrame"].isNull());
+    REQUIRE(experimental["activeReceptionTiming"].isObject());
+    REQUIRE(experimental["activeReceptionTiming"].toObject()["startedUnixMilliseconds"].isNull());
+    REQUIRE(experimental["activeReceptionTiming"].toObject()["elapsedMilliseconds"].isNull());
 }
 
 TEST_CASE("Gray fast sender reports explicit initial airtime without fabricating receiver success",

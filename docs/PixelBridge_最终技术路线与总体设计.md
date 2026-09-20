@@ -43,12 +43,14 @@ Encoder 本地只读源文件
 
 | 界面模式 | 精确身份 / layout | 默认与实现 |
 | --- | --- | --- |
-| 标准 | `PB-Unified-SC6-V3` / `0x5042554E49534333` / 10 | 现有正式目录唯一条目，默认 |
+| 标准 | `PB-Unified-SC6-V3` / `0x5042554E49534333` / 10 | CLI/core 默认及正式目录唯一条目；GUI 兼容保留索引 0 |
 | 灰阶高速 | `UnifiedGrayFast` / layout 13 | 可选模式；保持旧身份和兼容性 |
-| PAM4 | `PB-Experimental-Pam4-1` / `0x504250414D343031` / 15 | 可选模式，1080P 物理码面 |
+| PAM4 | `PB-Experimental-Pam4-1` / `0x504250414D343031` / 15 | GUI 新安装/缺失/非法偏好默认（索引 2），1080P 物理码面 |
 | PAM4 Wide | `PB-Experimental-Pam4-Wide-1` / `0x504250414D345731` / 16 | 可选模式，固定 2560×1440 物理码面 |
 
 双端必须选择匹配模式。Session 内 Data Profile 固定，切换不兼容模式必须建立新 Session。不能靠尝试多个身份/FEC、挑选过 CRC 的结果来静默回退。旧 layout 8/9、LF4 和 layout 14 研究不成为新的默认。
+
+GUI 合法已保存索引原样恢复（0 标准、1 灰阶高速、2 PAM4、3 PAM4 Wide）。GUI 默认变更不改变 CLI/core 默认、正式目录或 Profile 身份。
 
 ### 3.1 从形状/色度到四级灰阶
 
@@ -146,6 +148,8 @@ Decoder 对 `.resume` 长度、CRC、generation、descriptor 和资源边界重�
 日志每 run 至多 64 MiB / 48 小时，超限明确标记截断，仍尝试最终报告；每角色启动时保留最近 7 份旧日志加当前一份，活跃或不可删除项保留并提示。不会自动删用户数据或显式 evidence 文件。
 
 活动原因使用单调时间与实际同步恢复操作，不把残留 `Verifying` 状态误当持续写盘。正常修复/轮播/校验等待提示“不要暂停”；捕获失联、资源暂缓、持续缺乏新有效数据和错误区别显示。提示不虚构进度、不提升文件完成条件，也不保证停滞一定会自行恢复。[诊断说明](DIAGNOSTICS.md)
+
+Decoder GUI 的活动接收窗口从首次接受并通过当前 Profile 身份校验的 `SessionDescriptor` 开始，因此点击“开始接收”后、有效码面出现之前的等待不会计入 GUI“已花费时间”、平均速度或 ETA。该窗口仍包含恢复、写盘、摘要、发布和最终重开复验；完成界面的平均速度严格为文件原始字节数除以冻结活动耗时。它是 UI 口径，不改变正式 `runStarted/runEnded`、verified raw progress 或 verified goodput 的完整运行/性能证据语义。
 
 ## 10. 性能真值与证据层级
 

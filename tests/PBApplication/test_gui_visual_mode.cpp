@@ -29,6 +29,7 @@ pbapp::EncoderConfig Configuration(const RECT rectangle = {0, 0, 2560, 1600})
 
 TEST_CASE("GUI mode indices preserve old identities and reject unknown values", "[gui-mode]")
 {
+    REQUIRE(pbapp::defaultGuiVisualModeIndex == 2);
     constexpr std::array profiles{pbapp::VisualProfile::UnifiedLc4, pbapp::VisualProfile::UnifiedGrayFast,
         pbapp::VisualProfile::ExperimentalPam4, pbapp::VisualProfile::ExperimentalPam4Wide};
     for (int index = 0; index < static_cast<int>(profiles.size()); index++)

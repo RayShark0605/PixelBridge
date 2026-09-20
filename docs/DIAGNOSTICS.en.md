@@ -41,6 +41,7 @@ Segment ordinal/count, cycle count, outer block ID, frame sequence, airtime/visi
 - **Recovery:** unique equations, identical duplicates, already-completed segments, readiness, verified segments and bytes.
 - **Resources:** deferred/quota/OOM/rejections, active/peak decoder counts, reserved/total/per-instance budgets, resume bytes and generations.
 - **Final acceptance:** digest, publication, final reopen and errorDetail. Correct file recovery and warning-free cleanup are distinct.
+- **GUI active timing:** `activeReceptionTiming` starts at the first `SessionDescriptor` accepted and validated for the current Profile; it excludes the earlier wait but includes recovery, disk writes, digest, publication and final reopen. The completed GUI average is original file bytes divided by the frozen active elapsed time; it does not replace formal `runStarted/runEnded` or verified raw goodput.
 
 ## 4. Investigating a plateau
 
@@ -61,5 +62,7 @@ Existing `PixelBridge.RunJournal.1` fields remain; new counters are additive. Au
 Automatic summaries retain RunReport and append an independent `operationalLog` status. Logging does not create formal measurement eligibility. The authoritative terminal report is sealed after worker cleanup to retain post-publish warnings.
 
 Never subtract monotonic clocks across computers. Correlate Session/frame identities or compare each endpoint's own elapsed intervals. File-completion time through verified reopen remains the performance truth, not log-line count, display FPS, or estimated reception rate.
+
+Decoder `activeReceptionTiming.startedUnixMilliseconds` is a correlatable UTC start only; `elapsedMilliseconds` is accumulated from the Decoder worker's local monotonic clock and frozen on stop, failure or completion. GUI active time and formal full-run time are therefore separate conventions. Older logs without this object do not provide active timing and must not be treated as if `runStarted` had already excluded the wait.
 
 No payload/screenshots are recorded, but filenames, local paths, Session IDs, and machine/display details may appear. Review logs before sharing. These files are not a signed audit trail or sender authentication.

@@ -61,13 +61,15 @@ There is no return channel for progress or acknowledgments. **Wait for Decoder t
 4. Select the source file in the remote Encoder and start sending. Keep the complete pattern visible; avoid panels, overlapping windows, and pointer obstruction.
 5. Wait for Decoder to report completion, then stop Encoder.
 
+After Decoder is started, its GUI active elapsed time, average speed, and ETA exclude the wait before the first accepted same-profile `SessionDescriptor`. The active window includes recovery, disk writes, final publication, and final reopen verification. On completion, the GUI average is original file bytes divided by the frozen active elapsed time. Formal `runStarted/runEnded` and verified raw goodput retain their existing evidence meanings.
+
 **The received-size display may temporarily stop increasing during a large transfer.** When the UI reports segment repair, verification, writing, or carousel waiting, this is an expected wait: **keep receiving; do not pause**. An explicit capture interruption, lack-of-progress warning, or error must instead be investigated, not dismissed as normal.
 
 See the [user guide](docs/USER_GUIDE.en.md) for operation, resume, and precautions.
 
 ## Resolution and mode selection
 
-**For non-local transfer with a 1080P display, try PAM4 first, select it on both ends, and start with a sending rate of 25 Hz.** Standard remains the initial default, so select PAM4 explicitly when following this recommendation.
+**For non-local transfer with a 1080P display, try PAM4 first, select it on both ends, and start with a sending rate of 25 Hz.** On a fresh install, or when `g22/carrier` is missing or invalid, both GUI selectors default to PAM4 (index 2); valid saved indices are restored unchanged. Standard index 0 remains the compatibility mode. CLI/core defaults are separate from the GUI default.
 
 ### How do Standard, Gray Fast, and PAM4 differ?
 
@@ -75,7 +77,7 @@ They are three different ways to encode data into a picture, not three picture-q
 
 | Mode | How the picture carries data | When to use it and the trade-off |
 | --- | --- | --- |
-| **Standard** | Small patterns carry data through **shape and color** | The original default, retained for compatibility. Keep it when an existing setup works reliably; remote-video compression can damage the color channel, so it is not the first recommendation for 1080P remote transfer. |
+| **Standard** | Small patterns carry data through **shape and color** | Compatibility-preserved index 0; existing settings remain usable. Remote-video compression can damage the color channel, so it is not the first recommendation for 1080P remote transfer. |
 | **Gray Fast** | Grayscale patterns carry data through **shape and brightness**, without a color data channel | Offers a higher per-frame payload, but still depends on fine pattern detail surviving the video path. Use an already reliable setup, or compare it as an alternative when PAM4 performs poorly. |
 | **PAM4** | Regular blocks use four brightness levels: **black, dark gray, light gray, and white** | **The first recommendation for non-local 1080P transfer.** Uniform grayscale data cells reduce reliance on fine pattern and color detail, aiming to deliver more usable data after remote-video compression. |
 
@@ -113,7 +115,7 @@ Retained non-local tests achieved the following **average verified whole-file re
 | **PAM4 Wide · 2560×1600** | **About 279 KB/s** | Complete large file, approximately 1.12 GiB |
 | **PAM4 · 1920×1080** | **About 190 KB/s** | A 91 MiB small file; not a large-file speed guarantee |
 
-Both records used ToDesk Professional at HD quality and a 25 Hz sending rate, with a 2560×1440 local receiving display. **KB/s follows the Decoder UI convention: 1 KB = 1024 bytes.** Each average divides the original file size by the full receiver runtime, including startup waiting, repair, disk writes, whole-file verification, and final reopen verification. It is neither a peak rate nor theoretical bandwidth.
+Both records used ToDesk Professional at HD quality and a 25 Hz sending rate, with a 2560×1440 local receiving display. **The retained records use 1 KB = 1024 bytes.** Each average divides original file size by full receiver runtime, including startup waiting, repair, disk writes, whole-file verification, and final reopen verification. They are neither peak rates nor theoretical bandwidth, and do not share the new GUI active-reception time window.
 
 These are retained measurements from specific test environments, not fresh speed tests of this release build or a comparison using the same resolution and file for both modes. **The approximately 279 KB/s Wide result is not a speed promise for 1080P PAM4.** Neither these speeds nor continuously increasing progress are guaranteed on arbitrary remote connections. See [evidence and limitations](docs/EVIDENCE_INDEX.md#readme-speed-reference) for versions, original values, and verification details.
 

@@ -382,6 +382,12 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
     WriteEscaped(stream, GetDecoderStateName(snapshot.state));
     stream << ",\"descriptorKnown\":" << (snapshot.descriptorKnown ? "true" : "false") <<
         ",\"verifiedRawBytes\":" << snapshot.verifiedRawBytes << ",\"originalFileBytes\":" << snapshot.originalFileBytes <<
+        ",\"activeReceptionStartedUnixMilliseconds\":";
+    WriteOptionalUnsigned(stream, snapshot.activeReceptionStartedUnixMilliseconds == 0 ?
+        std::optional<std::uint64_t>{} : std::optional<std::uint64_t>(snapshot.activeReceptionStartedUnixMilliseconds));
+    stream << ",\"activeReceptionElapsedMilliseconds\":";
+    WriteOptionalUnsigned(stream, snapshot.activeReceptionElapsedMilliseconds);
+    stream <<
         ",\"verifiedEncodedBytes\":" << snapshot.verifiedEncodedBytes << ",\"captureEpoch\":" << snapshot.captureEpoch <<
         ",\"captureArrivedFrames\":" << snapshot.captureArrivedFrames <<
         ",\"captureDeliveredFrames\":" << snapshot.captureDeliveredFrames <<

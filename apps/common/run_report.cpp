@@ -259,6 +259,16 @@ void WriteUnifiedIdentity(std::ostream& stream, const VisualProfile visualProfil
     WriteOptionalNumber(stream, ended);
 }
 
+void WriteActiveReceptionTiming(std::ostream& stream, const DecoderSnapshot& snapshot)
+{
+    stream << ",\"activeReceptionTiming\":{\"startedUnixMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.activeReceptionStartedUnixMilliseconds == 0 ?
+        std::optional<std::uint64_t>{} : std::optional<std::uint64_t>(snapshot.activeReceptionStartedUnixMilliseconds));
+    stream << ",\"elapsedMilliseconds\":";
+    WriteOptionalNumber(stream, snapshot.activeReceptionElapsedMilliseconds);
+    stream << ",\"basis\":\"first accepted same-profile SessionDescriptor through the terminal receive path (final publish/reopen on success); excludes pre-descriptor waiting; includes recovery/publish/reopen tail where reached\"}";
+}
+
 void WriteUnifiedTail(std::ostream& stream, const RemoteRunMetadata& metadata,
     const std::string& status, const std::string& error)
 {
@@ -407,6 +417,7 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
     WriteUnifiedIdentity(stream, snapshot.visualProfile, snapshot.visualProfileId,
         snapshot.visualLayoutVersion, snapshot.runId, snapshot.sessionIdHex, snapshot.sessionTag,
         snapshot.runStartedUnixMilliseconds, snapshot.runEndedUnixMilliseconds);
+    WriteActiveReceptionTiming(stream, snapshot);
     stream << ",\"originalFileName\":";
     WriteEscaped(stream, snapshot.originalFileNameUtf8);
     stream << ",\"fileBytes\":";
@@ -730,6 +741,7 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     stream << ",\"runStartedUnixMilliseconds\":" << snapshot.runStartedUnixMilliseconds
            << ",\"runEndedUnixMilliseconds\":";
     WriteOptionalNumber(stream, snapshot.runEndedUnixMilliseconds);
+    WriteActiveReceptionTiming(stream, snapshot);
     stream << ",\"state\":";
     WriteEscaped(stream, GetDecoderStateName(snapshot.state));
     stream << ",\"requestedBackend\":";
@@ -1118,6 +1130,12 @@ std::string BuildDecoderDiagnostics(const DecoderSnapshot& snapshot)
     WriteOptionalNumber(stream, snapshot.captureFallbackUnixMilliseconds);
     stream << "\nCapture admission drops: " << snapshot.captureAdmissionDrops
            << "\nVerified raw bytes: " << snapshot.verifiedRawBytes << '/' << snapshot.originalFileBytes
+           << "\nActive reception start unix ms: ";
+    WriteOptionalNumber(stream, snapshot.activeReceptionStartedUnixMilliseconds == 0 ?
+        std::optional<std::uint64_t>{} : std::optional<std::uint64_t>(snapshot.activeReceptionStartedUnixMilliseconds));
+    stream << " elapsed ms: ";
+    WriteOptionalNumber(stream, snapshot.activeReceptionElapsedMilliseconds);
+    stream << " (first accepted same-profile SessionDescriptor through the terminal receive path; final publish/reopen on success; pre-descriptor waiting excluded)"
            << "\nLarge output confirmation: " << GetLargeOutputConfirmationStateName(
                snapshot.largeOutputConfirmationState)
            << " requestId=" << snapshot.largeOutputConfirmationRequestId

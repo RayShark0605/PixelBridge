@@ -19,6 +19,7 @@ struct DecoderProgressText
     QString elapsed = QStringLiteral("—");
     QString speed = QStringLiteral("0 KB/s");
     QString remaining = QStringLiteral("估算中");
+    double averageBytesPerSecond = 0.0;
 };
 
 [[nodiscard]] inline bool IsVerifiedCompletion(const pbapp::DecoderSnapshot& snapshot)
@@ -63,8 +64,8 @@ struct DecoderProgressText
     return QStringLiteral("%1 KB/s").arg(bytesPerSecond / 1024.0, 0, 'f', 1);
 }
 
-// nowUnixMilliseconds lets the elapsed clock tick between runtime snapshots;
-// pass 0 (or a past timestamp) to suppress the elapsed display.
+// Production snapshots supply worker-monotonic elapsed time. The UTC argument
+// is only a fallback for active snapshots without that measurement.
 [[nodiscard]] inline DecoderProgressText FormatDecoderProgress(const pbapp::DecoderSnapshot& snapshot,
     const std::int64_t nowUnixMilliseconds = 0)
 {
@@ -112,76 +113,61 @@ struct DecoderProgressText
         }
     }
 
-    // Elapsed wall time of this run; ticks from the GUI clock between
-    // snapshots and freezes on the terminal timestamp afterwards. Without a
-    // usable clock (or terminal timestamp) the field stays unavailable.
-    if (snapshot.runStartedUnixMilliseconds != 0)
+    // UI activity time starts at the first accepted, profile-validated
+    // SessionDescriptor. The formal runStarted/runEnded timestamps remain
+    // the full-run evidence clock and are deliberately not used here.
+    const auto GetElapsedFromUnixClock = [&](const std::uint64_t start) -> std::optional<std::uint64_t>
     {
-        std::uint64_t elapsedMilliseconds = 0;
-        bool elapsedKnown = false;
-        if (complete && snapshot.runEndedUnixMilliseconds && *snapshot.runEndedUnixMilliseconds >= snapshot.runStartedUnixMilliseconds)
+        if (start == 0 || nowUnixMilliseconds <= 0 || static_cast<std::uint64_t>(nowUnixMilliseconds) < start)
         {
-            elapsedMilliseconds = *snapshot.runEndedUnixMilliseconds - snapshot.runStartedUnixMilliseconds;
-            elapsedKnown = true;
+            return std::nullopt;
         }
-        else if (nowUnixMilliseconds > static_cast<std::int64_t>(snapshot.runStartedUnixMilliseconds))
-        {
-            elapsedMilliseconds = static_cast<std::uint64_t>(nowUnixMilliseconds) - snapshot.runStartedUnixMilliseconds;
-            elapsedKnown = true;
-        }
-        if (elapsedKnown)
-        {
-            result.elapsed = FormatDurationClock(elapsedMilliseconds / 1000);
-        }
+        return static_cast<std::uint64_t>(nowUnixMilliseconds) - start;
+    };
+    std::optional<std::uint64_t> elapsedMilliseconds;
+    if (snapshot.activeReceptionStartedUnixMilliseconds != 0 && snapshot.activeReceptionElapsedMilliseconds)
+    {
+        elapsedMilliseconds = snapshot.activeReceptionElapsedMilliseconds;
     }
-    else if (active)
+    else if (snapshot.activeReceptionStartedUnixMilliseconds != 0 && active)
     {
-        result.elapsed = QStringLiteral("00:00:00");
+        elapsedMilliseconds = GetElapsedFromUnixClock(snapshot.activeReceptionStartedUnixMilliseconds);
+    }
+    if (elapsedMilliseconds)
+    {
+        result.elapsed = FormatDurationClock(*elapsedMilliseconds / 1000);
     }
 
-    if (complete)
+    const std::uint64_t averageBytes = complete ? snapshot.originalFileBytes : received;
+    if (elapsedMilliseconds && *elapsedMilliseconds != 0 && (complete || !active || *elapsedMilliseconds >= 1000))
     {
-        result.speed = snapshot.averageVerifiedRawGoodputBytesPerSecond > 0 ?
-            FormatSpeed(snapshot.averageVerifiedRawGoodputBytesPerSecond) : QStringLiteral("0 KB/s");
-        return result;
+        result.averageBytesPerSecond = static_cast<double>(averageBytes) * 1000.0 / static_cast<double>(*elapsedMilliseconds);
     }
-
-    if (!active)
+    if (!std::isfinite(result.averageBytesPerSecond) || result.averageBytesPerSecond < 0.0)
     {
-        result.speed = snapshot.averageVerifiedRawGoodputBytesPerSecond > 0 ?
-            FormatSpeed(snapshot.averageVerifiedRawGoodputBytesPerSecond) : QStringLiteral("0 KB/s");
-        result.remaining = QStringLiteral("—");
+        result.averageBytesPerSecond = 0.0;
+    }
+    result.speed = result.averageBytesPerSecond > 0.0 ? FormatSpeed(result.averageBytesPerSecond) : QStringLiteral("0 KB/s");
+    if (complete || !active)
+    {
+        if (!complete)
+        {
+            result.remaining = QStringLiteral("—");
+        }
         return result;
     }
 
     if (stalled)
     {
         result.speed = QStringLiteral("0 KB/s");
+        result.averageBytesPerSecond = 0.0;
         result.remaining = QStringLiteral("画面停滞");
         return result;
     }
 
-    // Average speed over the elapsed window from the received estimate; the
-    // first second stays quiet so the startup burst cannot show as ∞.
-    std::uint64_t elapsedMilliseconds = 0;
-    if (nowUnixMilliseconds > static_cast<std::int64_t>(snapshot.runStartedUnixMilliseconds) &&
-        snapshot.runStartedUnixMilliseconds != 0)
+    if (sizeKnown && result.averageBytesPerSecond > 0.0 && received < snapshot.originalFileBytes)
     {
-        elapsedMilliseconds = static_cast<std::uint64_t>(nowUnixMilliseconds) - snapshot.runStartedUnixMilliseconds;
-    }
-    double averageBytesPerSecond = 0.0;
-    if (elapsedMilliseconds >= 1000 && received != 0)
-    {
-        averageBytesPerSecond = static_cast<double>(received) * 1000.0 / static_cast<double>(elapsedMilliseconds);
-        if (!(averageBytesPerSecond >= 0.0) || !std::isfinite(averageBytesPerSecond))
-        {
-            averageBytesPerSecond = 0.0;
-        }
-    }
-    result.speed = averageBytesPerSecond > 0.0 ? FormatSpeed(averageBytesPerSecond) : QStringLiteral("0 KB/s");
-    if (sizeKnown && averageBytesPerSecond > 0.0 && received < snapshot.originalFileBytes)
-    {
-        const double remainingSeconds = static_cast<double>(snapshot.originalFileBytes - received) / averageBytesPerSecond;
+        const double remainingSeconds = static_cast<double>(snapshot.originalFileBytes - received) / result.averageBytesPerSecond;
         if (std::isfinite(remainingSeconds) && remainingSeconds >= 0.0 && remainingSeconds < 1.0e12)
         {
             result.remaining = FormatDurationClock(static_cast<std::uint64_t>(std::ceil(remainingSeconds)));

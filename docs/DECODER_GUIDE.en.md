@@ -24,6 +24,8 @@
 5. Keep the full raster visible; close floating diagnostic overlays. Avoid sleep and resolution/DPI/display-mode changes. Occlusion, compression and scaling affect useful data.
 6. Wait for Decoder's explicit successful completion before stopping Encoder and using the final file. Growing `.part`/`.resume`, a recovered segment or estimated progress is not final success.
 
+After “Start receiving”, the GUI active elapsed time, average speed, and ETA remain unavailable/zero while waiting for the first `SessionDescriptor` accepted and validated for the current Profile. The active window continues through recovery, disk writes, whole-file digest, safe publication, and final reopen verification; on completion the average is original file bytes divided by the frozen active elapsed time. Formal `runStarted/runEnded` and verified raw goodput retain their full-run/performance evidence meanings.
+
 ## Modes, resolutions and one-monitor use
 
 - **For 1080P non-local use, try PAM4 first, starting Encoder at 25 Hz**. This is a starting recommendation, not a speed guarantee across remote environments.

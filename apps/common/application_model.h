@@ -410,6 +410,11 @@ struct DecoderSnapshot
     std::string runId;
     std::uint64_t runStartedUnixMilliseconds = 0;
     std::optional<std::uint64_t> runEndedUnixMilliseconds;
+    // UI-only activity timing starts at the first profile-validated
+    // SessionDescriptor. The formal run timestamps above retain full-run
+    // semantics for performance evidence and diagnostics.
+    std::uint64_t activeReceptionStartedUnixMilliseconds = 0;
+    std::optional<std::uint64_t> activeReceptionElapsedMilliseconds;
     CaptureBackend requestedBackend = CaptureBackend::Auto;
     std::optional<CaptureBackend> actualBackend;
     std::string backendReason;

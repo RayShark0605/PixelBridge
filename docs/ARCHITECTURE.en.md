@@ -43,12 +43,14 @@ The remote application is an external channel, not something PixelBridge reconfi
 
 | GUI mode | Exact identity / layout | Status |
 | --- | --- | --- |
-| Standard | `PB-Unified-SC6-V3` / `0x5042554E49534333` / 10 | Existing default and sole entry in the formal product catalog |
+| Standard | `PB-Unified-SC6-V3` / `0x5042554E49534333` / 10 | CLI/core default and sole formal catalog entry; GUI compatibility index 0 |
 | Gray Fast | `UnifiedGrayFast` / layout 13 | Selectable mode; previous identity retained |
-| PAM4 | `PB-Experimental-Pam4-1` / `0x504250414D343031` / 15 | Selectable mode, physical 1080P raster |
+| PAM4 | `PB-Experimental-Pam4-1` / `0x504250414D343031` / 15 | Fresh/missing/invalid GUI preference default (index 2), physical 1080P raster |
 | PAM4 Wide | `PB-Experimental-Pam4-Wide-1` / `0x504250414D345731` / 16 | Selectable mode, fixed physical 2560×1440 raster |
 
 Both ends must match. Data Profile is immutable within a Session; an incompatible change requires a new Session. Trying several identities/FEC modes and choosing whichever passes CRC is not a permitted fallback. Historical layouts 8/9, LF4, and layout-14 research are not new defaults.
+
+Valid saved GUI indices retain their meaning (0 Standard, 1 Gray Fast, 2 PAM4, 3 PAM4 Wide). The GUI default does not change CLI/core defaults, formal catalog membership, or any Profile identity.
 
 ### 3.1 Why four-level grayscale?
 
@@ -146,6 +148,8 @@ Normal GUI/transfer-CLI polling writes a snapshot every two seconds, extra state
 Each run has a 64 MiB / 48-hour timeline limit. Truncation is visible and the final report is still attempted. Startup retains seven recent old logs plus the current run per role; active/unremovable files are preserved with a warning. Explicit evidence/user files are not pruned.
 
 Activity derives from monotonic time and actual synchronous recovery operations, not a lingering `Verifying` state. Expected repair/carousel/verification waits advise against pausing. Capture interruption, resource backpressure, sustained lack of useful data, and errors are distinct. The UI neither invents progress nor weakens acceptance or promises that all stalls self-resolve. [Diagnostics](DIAGNOSTICS.en.md)
+
+Decoder GUI active reception timing starts at the first `SessionDescriptor` accepted and validated for the current Profile, so the wait after clicking Start and before a valid coded picture appears is excluded from GUI elapsed time, average speed, and ETA. Recovery, disk writes, digest, publication and final reopen remain inside that window; the completed GUI average is strictly original file bytes divided by the frozen active elapsed time. This is a UI convention and does not change formal `runStarted/runEnded`, verified raw progress, or verified-goodput full-run evidence.
 
 ## 10. Performance truth and evidence tiers
 

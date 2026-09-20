@@ -6,12 +6,13 @@ Updated 2026-09-17. **Stability and local v1.0 product delivery—not another th
 
 ## Implemented capabilities
 
-- Windows x64 GUI applications; Standard/Gray Fast compatibility retained; selectable PAM4/Wide modes.
+- Windows x64 GUI applications; fresh, missing or invalid mode preferences default to PAM4 (index 2); Standard/Gray Fast compatibility retained and Wide remains selectable.
 - PAM4's 1080P source raster; Wide's fixed 2560×1440 raster on a suitable 1440P/1600P source desktop.
 - Selected-monitor whole-screen/contained-ROI capture without a protected second screen or reserved UI area; startup/runtime display-identity revalidation.
 - Finite performance budgets, total/per-instance settings and host recommendation; batched resume checkpoints and bounded compaction.
 - Visual-only one-way payload, segment/whole-file digests, safe publication and final reopen.
 - Current closeout adds automatic logs, evidence-based activity text, and distinct icons. Targeted validation is recorded separately.
+- Decoder GUI active reception timing starts at the first valid same-Profile `SessionDescriptor`, excluding the earlier wait; the completed GUI average and frozen active elapsed time use the same window. Formal full-run time and verified goodput meanings are unchanged.
 
 ## Evidence boundaries
 
@@ -36,7 +37,7 @@ Authoritative local records: `artifacts/v1-closeout-20260917/build08/` and `test
 - Both original logos remain byte-identical. All seven native icon sizes match their ICO data; rebuilding the ICOs reproduces identical bytes.
 - The document inventory, pre-retirement backup, bilingual current docs and local-link check are recorded. Protected reports remain unchanged.
 
-These are local correctness/offscreen checks, **not new physical-screen remote or main.rar throughput measurements, nor qualification on a single-physical-monitor computer**. Those records describe the closeout baseline; new v1.0 build/unpacked verification records are separate in `artifacts/v1-release-20260917/`.
+These are local correctness/offscreen checks, **not new physical-screen remote or main.rar throughput measurements, nor qualification on a single-physical-monitor computer**; this task also did not use PBBridge for free non-local testing. Those records describe the closeout baseline; new v1.0 build/unpacked verification records are separate in `artifacts/v1-release-20260917/`.
 
 ## Remaining limitations
 

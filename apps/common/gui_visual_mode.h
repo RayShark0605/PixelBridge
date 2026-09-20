@@ -10,7 +10,10 @@ namespace pbapp
 {
 
 // Persisted GUI indices, not the certified protocol catalog. Keep the legacy
-// 0/1 meanings; invalid values never select an experimental identity.
+// 0/1 meanings. The GUI preference fallback is separate from strict validation
+// below and from CLI/core defaults and the formal product catalog.
+inline constexpr int defaultGuiVisualModeIndex = 2;
+
 [[nodiscard]] inline std::optional<VisualProfile> GetGuiVisualProfile(const int index) noexcept
 {
     constexpr std::array profiles{VisualProfile::UnifiedLc4, VisualProfile::UnifiedGrayFast,

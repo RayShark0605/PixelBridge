@@ -17,6 +17,12 @@
 
 整文件有效性仍以digest、safe publish和finalReopenVerified为准；不从以上权限字段推导吞吐、无停滞、双端1080P或真实单显示器现场资格。新失败分支和两模式像素文件回归见本轮日志§4.80。
 
+## Decoder GUI 活动接收计时（追加字段）
+
+Decoder 报告与运行日志可追加 `activeReceptionTiming`（或等价的活动计时字段）：`startedUnixMilliseconds` 是首次接受并通过当前 Profile 身份校验的 `SessionDescriptor` 的 UTC 关联点，`elapsedMilliseconds` 由 Decoder worker 的本机单调时钟计算，并在停止、失败或完成时冻结。该窗口排除点击“开始接收”后到有效码面出现之前的等待，但包含恢复、写盘、整文件摘要、安全发布和最终重开复验。
+
+该 UI 口径只用于活动耗时、平均速度和 ETA；完成界面的平均速度严格为原始文件总字节数除以活动耗时。正式 `runStarted/runEnded`、verified raw-byte progress、verified raw/encoded goodput 和既有性能真值字段保持原语义，不得把 UI 活动平均速度当作非本机认证吞吐。旧报告没有该对象时表示未提供活动计时，不应从 `runStarted` 反推等待已经排除。
+
 
 **状态（2026-09-04）：G17 实现与指定最小验证已完成。**
 

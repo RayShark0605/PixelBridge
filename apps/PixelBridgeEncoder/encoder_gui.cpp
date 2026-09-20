@@ -159,6 +159,9 @@ public:
         {
             return false;
         }
+        // This is the legacy Standard flow; select its preserved index
+        // explicitly so the smoke does not depend on the fresh-install default.
+        carrierCombo_->setCurrentIndex(0);
         sourceEdit_->setText(sourcePath);
         cacheEdit_->setText(sessionRoot);
         if (!startButton_->isEnabled() || !pbgui::SaveTabPreviews(*this, *tabs_, QStringLiteral("encoder-idle")))
@@ -254,7 +257,8 @@ public:
 
     [[nodiscard]] bool RunPam4ConfigurationSmoke(const QString& sourcePath, const QString& sessionRoot, bool& smallMonitor)
     {
-        if (isVisible() || carrierCombo_->count() != 4 || carrierCombo_->currentIndex() != 0)
+        if (isVisible() || carrierCombo_->count() != 4 ||
+            carrierCombo_->currentIndex() != pbapp::defaultGuiVisualModeIndex)
         {
             return false;
         }
@@ -297,7 +301,8 @@ public:
         smallMonitor = false;
         settings_->setValue(QStringLiteral("g22/carrier"), QStringLiteral("invalid"));
         LoadCarrierPreference();
-        if (carrierCombo_->currentIndex() != 0 || !modeHintLabel_->text().contains(QStringLiteral("保存的模式无效")))
+        if (carrierCombo_->currentIndex() != pbapp::defaultGuiVisualModeIndex ||
+            !modeHintLabel_->text().contains(QStringLiteral("保存的模式无效")))
         {
             return false;
         }
@@ -548,10 +553,10 @@ private:
     void LoadCarrierPreference()
     {
         bool converted = false;
-        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), 0).toString().toInt(&converted);
+        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), pbapp::defaultGuiVisualModeIndex).toString().toInt(&converted);
         const bool valid = converted && pbapp::GetGuiVisualProfile(savedCarrier).has_value();
-        carrierCombo_->setCurrentIndex(valid ? savedCarrier : 0);
-        carrierPreferencesWarning_ = valid ? QString() : QStringLiteral("保存的模式无效，已恢复标准模式；请确认后再开始。\n");
+        carrierCombo_->setCurrentIndex(valid ? savedCarrier : pbapp::defaultGuiVisualModeIndex);
+        carrierPreferencesWarning_ = valid ? QString() : QStringLiteral("保存的模式无效，已恢复 PAM4 模式；请确认后再开始。\n");
         UpdateVisualModeHint();
     }
 

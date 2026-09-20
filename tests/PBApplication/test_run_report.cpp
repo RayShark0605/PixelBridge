@@ -1,6 +1,10 @@
 #include "run_report.h"
 #include "evidence_journal.h"
 
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -144,6 +148,8 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     snapshot.codewordsPerFrame = 4;
     snapshot.descriptorKnown = true;
     snapshot.originalFileBytes = 100;
+    snapshot.activeReceptionStartedUnixMilliseconds = 4000;
+    snapshot.activeReceptionElapsedMilliseconds = 60000;
     snapshot.verifiedRawBytes = 100;
     snapshot.remainingRawBytes = 0;
     snapshot.recoveryProgress = 1.0;
@@ -283,11 +289,20 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     snapshot.monitorSafetyStatus = "PASS";
     const pbapp::RunReportContext context{"PixelBridgeDecoder", "0.1.0", "deadbeef", "2026-08-30T00:00:00Z"};
     const std::string json = pbapp::BuildDecoderRunReportJson(context, snapshot);
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+    REQUIRE(parseError.error == QJsonParseError::NoError);
+    REQUIRE(document.isObject());
+    const QJsonObject activeReceptionTiming = document.object().value(QStringLiteral("activeReceptionTiming")).toObject();
+    REQUIRE(activeReceptionTiming.value(QStringLiteral("startedUnixMilliseconds")).toDouble() == 4000.0);
+    REQUIRE(activeReceptionTiming.value(QStringLiteral("elapsedMilliseconds")).toDouble() == 60000.0);
     REQUIRE(json.find("\"state\":\"Failed\"") != std::string::npos);
     REQUIRE(json.find("\"recoveryProgress\":1") != std::string::npos);
     REQUIRE(json.find("\"wholeFileDigestVerified\":false") != std::string::npos);
     REQUIRE(json.find("\"finalPublishSucceeded\":false") != std::string::npos);
     REQUIRE(json.find("\"actualBackend\":null") != std::string::npos);
+    REQUIRE(json.find("\"activeReceptionTiming\":{\"startedUnixMilliseconds\":4000,\"elapsedMilliseconds\":60000") != std::string::npos);
+    REQUIRE(json.find("first accepted same-profile SessionDescriptor") != std::string::npos);
     REQUIRE(json.find("\"monitorSafety\":{\"preflightPassed\":true,\"revalidationCount\":23,\"status\":\"PASS\"}") != std::string::npos);
     REQUIRE(json.find("no fallback was attempted") != std::string::npos);
     REQUIRE(json.find("\"roi\":{\"left\":10,\"top\":20,\"width\":1920,\"height\":1080") != std::string::npos);
@@ -384,6 +399,8 @@ TEST_CASE("Decoder report preserves verified progress and final acceptance indep
     REQUIRE(json.find("duplicateVisualFrames") == std::string::npos);
 
     const std::string journalRecord = pbapp::BuildDecoderJournalRecord(1234, snapshot);
+    REQUIRE(journalRecord.find("\"activeReceptionStartedUnixMilliseconds\":4000") != std::string::npos);
+    REQUIRE(journalRecord.find("\"activeReceptionElapsedMilliseconds\":60000") != std::string::npos);
     REQUIRE(journalRecord.find("\"captureExpiredFrames\":5") != std::string::npos);
     REQUIRE(journalRecord.find("\"captureStaleFrames\":6") != std::string::npos);
     REQUIRE(journalRecord.find("\"captureReadbackDropEvents\":9") != std::string::npos);

@@ -20,6 +20,8 @@
 
 Both endpoints must use the same mode.
 
+On a fresh install, or when the `g22/carrier` preference is missing or invalid, the Encoder GUI defaults to PAM4 (index 2); valid saved indices are restored unchanged. Standard remains compatibility index 0, and CLI/core defaults are separate from the GUI default. The Decoder must select the same mode and Profile identity.
+
 | Mode | Characteristics | Recommendation |
 | --- | --- | --- |
 | Standard | Retained color shape/chroma route | Environments already qualified for it, or compatible workflows |

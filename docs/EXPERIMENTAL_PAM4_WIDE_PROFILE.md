@@ -14,8 +14,8 @@
 - 独立名称：`PB-Experimental-Pam4-Wide-1`。
 - `VisualProfileId = 0x504250414D345731`，`VisualLayoutVersion = 16`。
 - 独立`LocalDesktopBinding::ExperimentalPam4Wide`和`ExperimentalPam4WideCpuDecoder`，不把layout15/GrayFast重命名为新模式。
-- 正式`kProductVisualProfiles`仍只有`PB-Unified-SC6-V3`。旧11槽PAM4、旧15/18槽Unified/Gray的数组、语义、Golden与默认选择不变。
-- 双端 CLI token `experimental-pam4-wide`，GUI 显式选择 PAM4 Wide。不同身份必须建立新 Session，不自动回退。
+- 正式`kProductVisualProfiles`仍只有`PB-Unified-SC6-V3`。旧11槽PAM4、旧15/18槽Unified/Gray的数组、语义与Golden不变；正式目录和 CLI/core 的默认选择边界不变。
+- 双端 CLI token `experimental-pam4-wide`；GUI 新安装时默认是 PAM4（索引 2），PAM4 Wide 仍需选择索引 3，且已保存的合法索引继续原样恢复。GUI 默认不改变 Wide 的独立 Profile 身份、正式目录或 CLI/core 的显式 opt-in 边界。不同身份必须建立新 Session，不自动回退。
 - Bootstrap/Control/Transport/Descriptor格式、FEC矩阵、SessionId生成与文件恢复不变量不变；不同Profile必须是新Session，不支持中途改变码面。
 
 ## 2. 逻辑码面与固定呈现

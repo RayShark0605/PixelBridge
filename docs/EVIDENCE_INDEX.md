@@ -14,9 +14,9 @@ These are retained results, not fresh throughput measurements of the new logging
 
 ### README 平均速度口径 / README average-speed reference
 
-README 的 KB/s 与 Decoder 界面一致，使用 1 KB = 1024 B；不是十进制 kB/s。以源文件原始字节数除以 `receiverRuntimeMilliseconds / 1000` 再除以 1024，包含整个接收运行直到最终复验的时间，不去掉等待或尾部，不使用瞬时采样峰值。
+README 的历史 KB/s 使用 1 KB = 1024 B；不是十进制 kB/s。它们以源文件原始字节数除以 `receiverRuntimeMilliseconds / 1000` 再除以 1024，包含整个接收运行直到最终复验的时间，不去掉等待或尾部，不使用瞬时采样峰值。它们保留的是当时的完整运行口径，不声称与当前 GUI 的活动接收平均速度同一时间窗口。
 
-README uses the Decoder UI convention of 1 KB = 1024 B, not decimal kB/s. Divide original source bytes by `receiverRuntimeMilliseconds / 1000`, then by 1024. This includes the complete receiver run through final verification, without removing waits or the transfer tail or substituting a sampled peak.
+README's historical KB/s uses the 1 KB = 1024 B convention, not decimal kB/s. Divide original source bytes by `receiverRuntimeMilliseconds / 1000`, then by 1024. This includes the complete receiver run through final verification, without removing waits or the transfer tail or substituting a sampled peak. It is retained full-run evidence and is not claimed to share the current GUI active-reception window.
 
 | Source record | Source bytes | Receiver runtime | Average KB/s | README rounding and scope |
 | --- | ---: | ---: | ---: | --- |

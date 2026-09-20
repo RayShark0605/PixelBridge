@@ -7,7 +7,7 @@
 
 ## Identity and current integration
 
-`PB-Experimental-Pam4-Wide-1`, Profile ID `0x504250414D345731`, layout 16. Explicit GUI/CLI selection (`experimental-pam4-wide`), never the default or a Unified/Gray alias. Both endpoints must match; profile changes require a new Session. The formal catalog still contains only SC6 V3.
+`PB-Experimental-Pam4-Wide-1`, Profile ID `0x504250414D345731`, layout 16. The GUI defaults fresh, missing, or invalid preferences to PAM4 (index 2); PAM4 Wide remains index 3 and must be selected explicitly, while valid saved indices are restored unchanged. The GUI default does not change Wide's independent Profile identity, formal catalog, or explicit CLI/core opt-in boundary. Both endpoints must match; profile changes require a new Session. The formal catalog still contains only SC6 V3.
 
 GUI and CLI are integrated. Decoder supports selected-monitor whole-screen/ROI with finite budgets, no protected second screen and no reserved Decoder area. This is not arbitrary-scaling or physical-single-monitor certification. [Status](PROJECT_STATUS.en.md), [evidence](EVIDENCE_INDEX.md).
 

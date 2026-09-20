@@ -41,6 +41,7 @@ GUI 从高级选项打开目录；CLI 在 stderr 输出结束时日志位置/异
 - **恢复层**：`outerUniqueSymbols`、identical duplicates、already-completed、ready events、verified segments/bytes。
 - **资源层**：`outerDeferredResourceBusyCount`、quota/OOM/rejections、active/peak decoders、reserved/total/per-instance budget、resume state 大小和 generation。
 - **最终层**：整文件 digest、publish、final reopen、errorDetail。文件正确恢复与清理无警告是不同维度。
+- **GUI 活动计时**：`activeReceptionTiming` 从首次接受并通过当前 Profile 身份校验的 `SessionDescriptor` 开始；它排除此前等待，但包含恢复、写盘、摘要、发布和最终重开复验。完成界面的 GUI 平均速度使用原始文件字节数除以冻结活动耗时，不替代正式 `runStarted/runEnded` 或 verified raw goodput。
 
 ## 4. 怎样定位一次“卡住”
 
@@ -61,5 +62,7 @@ GUI 从高级选项打开目录；CLI 在 stderr 输出结束时日志位置/异
 自动 summary 使用原 RunReport，并添加独立 `operationalLog` 状态，不把自动采样冒充正式 measurement。终态报告在工作线程收尾后封存，以保留 post-publish 警告。
 
 不能跨机器直接相减 monotonic 时间；按 Session / frame identity 关联，或用各端自己的 elapsed 区间。主成绩仍是 Decoder 最终重开通过的完整文件耗时，不是 JSONL 行数、显示 FPS 或估算接收速度。
+
+Decoder 的 `activeReceptionTiming.startedUnixMilliseconds` 只是可关联的 UTC 起点，`elapsedMilliseconds` 由 Decoder worker 的本机单调时钟累计并在停止/失败/完成时冻结；因此 GUI 活动时间和正式完整运行时间是两个明确口径。旧日志没有该对象时应视为未提供，不得从 `runStarted` 推算活动等待已被排除。
 
 不记录 payload/截图，但报告可能含文件名、路径、Session 与机器/显示信息。不要公开原始日志前不检查隐私内容；日志不是签名审计轨迹，也不替代可信发送者认证。

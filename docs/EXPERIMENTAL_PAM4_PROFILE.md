@@ -13,8 +13,8 @@
 
 - 名称 `PB-Experimental-Pam4-1`，`VisualProfileId=0x504250414D343031`，`VisualLayoutVersion=15`。
 - 使用独立 `LocalDesktopBinding::ExperimentalPam4`，不是 Unified/GrayFast family 的别名。旧 15/18 槽入口继续拒绝它，`kProductVisualProfiles` 仍只有一个正式条目。
-- layout 14 的旧 StructuredMultiCell 离线研究不复用、不改写；本次也不是把那一候选偷偷设为默认。
-- 双端 CLI token `experimental-pam4`，GUI 显式选择 PAM4；不是默认模式。双方匹配同一身份，新 Session 由 OS CSPRNG 创建。
+- layout 14 的旧 StructuredMultiCell 离线研究不复用、不改写；本次也不是把那一候选设为 GUI 默认。
+- 双端 CLI token `experimental-pam4`，GUI 新安装、缺失或非法 `g22/carrier` 偏好默认选择 PAM4（索引 2）；已保存的合法 GUI 索引继续原样恢复。该 GUI 默认只改变选择器初始值，不改变 PAM4 的独立 Profile 身份、正式目录或 CLI/core 的显式 opt-in 边界。双方匹配同一身份，新 Session 由 OS CSPRNG 创建。
 - 规范参数、完整 33-region 副本、映射/Golden 摘要在 [machine-readable manifest](../tests/golden/experimental-pam4/manifest.json)。实现入口为 [experimental_pam4.h](../libs/PBModulation/include/pbmodulation/experimental_pam4.h)。
 
 ## 2. 码面、容量与固定控制槽

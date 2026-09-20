@@ -7,7 +7,7 @@
 
 ## Identity and current integration
 
-`PB-Experimental-Pam4-1`, Profile ID `0x504250414D343031`, layout 15. Explicit GUI/CLI selection (`experimental-pam4`), never the default or a Unified/Gray alias. Both endpoints must match; profile changes require a new Session. The formal catalog still contains only SC6 V3.
+`PB-Experimental-Pam4-1`, Profile ID `0x504250414D343031`, layout 15. The GUI defaults fresh, missing, or invalid `g22/carrier` preferences to PAM4 (index 2), while valid saved GUI indices are restored unchanged. That GUI default changes only the selector's initial value; it does not change the independent PAM4 Profile identity, formal catalog, or the explicit CLI/core opt-in boundary. Both endpoints must match; profile changes require a new Session. The formal catalog still contains only SC6 V3.
 
 GUI and CLI are integrated. Decoder supports selected-monitor whole-screen/ROI with finite budgets, no protected second screen and no reserved Decoder area. This is not arbitrary-scaling or physical-single-monitor certification. [Status](PROJECT_STATUS.en.md), [evidence](EVIDENCE_INDEX.md).
 

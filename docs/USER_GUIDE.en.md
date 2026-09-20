@@ -12,6 +12,8 @@ Use your existing remote connection. PixelBridge neither requires changes to rem
 
 Choose the same Standard, Gray Fast, PAM4, or PAM4 Wide mode on both ends. Mode names have no research-stage labels; choose one suitable for the physical source raster.
 
+On a fresh install, or when `g22/carrier` is missing or invalid, both GUI selectors default to PAM4 (index 2). Valid saved indices remain unchanged (0=Standard, 1=Gray Fast, 2=PAM4, 3=PAM4 Wide). This is only the GUI's initial choice; CLI/core defaults and Profile/Wire identities are unchanged.
+
 - A 1080P sender can use PAM4's fixed 1920×1080 source raster.
 - A 1440P/1600P sender can fit Wide's fixed 2560×1440 source raster.
 - Wide cannot simply be shrunk to 1080P. Fullscreen windows may retain static borders; speed/correctness takes priority over filling the display.
@@ -30,6 +32,8 @@ Sender cadence is configurable from 1–60 Hz and locked during a run. The retai
 5. On the remote computer, select the file in Encoder, verify the target display, and start sending.
 6. Keep the complete pattern visible. Close remote diagnostic panels, floating tools, and other obstructions.
 7. After Decoder explicitly reports completion, stop Encoder manually.
+
+The Decoder GUI's active elapsed time starts when it first accepts a `SessionDescriptor` validated for the current Profile. Waiting after clicking “Start receiving” but before the Encoder shows a valid coded picture is excluded. The active window includes recovery, disk writes, whole-file digest, safe publication, and final reopen verification. On completion, the GUI average is original file bytes divided by the frozen active elapsed time; formal `runStarted/runEnded` and verified raw goodput retain their full-run/performance evidence meanings.
 
 Encoder receives no completion ACK. Multiple carousel passes, CRC success, or a growing `.resume` file are not proof of a completed file.
 

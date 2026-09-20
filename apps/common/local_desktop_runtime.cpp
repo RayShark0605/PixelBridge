@@ -4071,6 +4071,13 @@ public:
 
     ~ReceiverPipeline()
     {
+        try
+        {
+            FreezeActiveReceptionElapsed();
+        }
+        catch (...)
+        {
+        }
         if (resumeStore_ && !published_)
         {
             static_cast<void>(resumeStore_->Checkpoint());
@@ -4481,6 +4488,7 @@ public:
 
     void EndCaptureTelemetry(const std::uint64_t monotonicMilliseconds)
     {
+        FreezeActiveReceptionElapsed();
         telemetry_.EndCaptureEpoch();
         channelStalls_.Finish(monotonicMilliseconds);
         ApplyChannelStalls();
@@ -4499,6 +4507,55 @@ public:
     [[nodiscard]] bool IsCompleted() const noexcept
     {
         return published_;
+    }
+
+    void BeginActiveReception()
+    {
+        if (activeReceptionStarted_)
+        {
+            return;
+        }
+        activeReceptionStarted_ = std::chrono::steady_clock::now();
+        activeReceptionStartedUnixMilliseconds_ = GetUnixTimeMilliseconds();
+        snapshot_.Update([this](DecoderSnapshot& value)
+        {
+            if (value.runGeneration == runGeneration_)
+            {
+                value.activeReceptionStartedUnixMilliseconds = activeReceptionStartedUnixMilliseconds_;
+                value.activeReceptionElapsedMilliseconds = 0;
+            }
+        });
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> GetActiveReceptionElapsedMilliseconds() const noexcept
+    {
+        if (!activeReceptionStarted_)
+        {
+            return std::nullopt;
+        }
+        if (activeReceptionElapsedMilliseconds_)
+        {
+            return activeReceptionElapsedMilliseconds_;
+        }
+        return ElapsedMilliseconds(*activeReceptionStarted_);
+    }
+
+    void FreezeActiveReceptionElapsed()
+    {
+        const auto elapsedMilliseconds = GetActiveReceptionElapsedMilliseconds();
+        if (!elapsedMilliseconds)
+        {
+            return;
+        }
+        activeReceptionElapsedMilliseconds_ = *elapsedMilliseconds;
+        snapshot_.Update([this](DecoderSnapshot& value)
+        {
+            if (value.runGeneration == runGeneration_)
+            {
+                value.activeReceptionStartedUnixMilliseconds = activeReceptionStartedUnixMilliseconds_;
+                value.activeReceptionElapsedMilliseconds = activeReceptionElapsedMilliseconds_;
+            }
+        });
     }
 
     void ApplyLargeOutputConfirmation(const std::int64_t timestamp100ns)
@@ -5111,6 +5168,7 @@ private:
         completion_.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started_);
         completion_.published = true;
         published_ = true;
+        FreezeActiveReceptionElapsed();
         snapshot_.Update([this, &storageSnapshot](DecoderSnapshot& value)
         {
             if (value.runGeneration != runGeneration_)
@@ -5267,6 +5325,7 @@ private:
                     parsed.Value().segmentCount <= policy_.maxSegmentCount,
                     "received Session exceeds the active ReceiverResourcePolicy");
                 Require(!rawControlRecord.empty(), "SessionDescriptor has no canonical ControlRecord bytes");
+                BeginActiveReception();
                 if (session_)
                 {
                     Require(*session_ == parsed.Value(), "conflicting repeated SessionDescriptor");
@@ -6001,6 +6060,7 @@ private:
         completion_.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started_);
         completion_.published = true;
         published_ = true;
+        FreezeActiveReceptionElapsed();
         const DecoderResumeStoreStatus resumeStatus = resumeStore_->RemoveAfterPublish();
         Require(static_cast<bool>(resumeStatus), "published file resume cleanup failed: " + resumeStatus.message);
         // CP-A can inject canonical Transport without fabricating a capture
@@ -6089,6 +6149,11 @@ private:
             value.smoothedVerifiedRawGoodputBytesPerSecond = progress.smoothedBytesPerSecond;
             value.averageVerifiedRawGoodputBytesPerSecond = progress.averageBytesPerSecond;
             value.etaMilliseconds = progress.etaMilliseconds;
+            if (activeReceptionStarted_)
+            {
+                value.activeReceptionStartedUnixMilliseconds = activeReceptionStartedUnixMilliseconds_;
+                value.activeReceptionElapsedMilliseconds = GetActiveReceptionElapsedMilliseconds();
+            }
         });
     }
 
@@ -6227,6 +6292,9 @@ private:
     std::uint64_t runGeneration_ = 0;
     std::chrono::steady_clock::time_point started_;
     VisualProfile visualProfile_ = VisualProfile::DirectLevels2x2;
+    std::optional<std::chrono::steady_clock::time_point> activeReceptionStarted_;
+    std::uint64_t activeReceptionStartedUnixMilliseconds_ = 0;
+    std::optional<std::uint64_t> activeReceptionElapsedMilliseconds_;
     bool deferCompletedState_ = false;
     bool captureTelemetryAvailable_ = true;
     bool collectResourceHighWater_ = false;

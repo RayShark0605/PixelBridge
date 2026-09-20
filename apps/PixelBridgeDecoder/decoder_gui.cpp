@@ -196,6 +196,10 @@ public:
 
     [[nodiscard]] bool RunCarrierPreferenceSmoke()
     {
+        if (carrierCombo_->currentIndex() != pbapp::defaultGuiVisualModeIndex)
+        {
+            return false;
+        }
         for (int index = 0; index < 4; index++)
         {
             carrierCombo_->setCurrentIndex(index);
@@ -213,7 +217,8 @@ public:
             settings_->setValue(QStringLiteral("g22/carrier"), invalid);
             LoadCarrierPreference();
             UpdateSnapshot();
-            if (carrierCombo_->currentIndex() != 0 || !modeHintLabel_->text().contains(QStringLiteral("保存的模式无效")))
+            if (carrierCombo_->currentIndex() != pbapp::defaultGuiVisualModeIndex ||
+                !modeHintLabel_->text().contains(QStringLiteral("保存的模式无效")))
             {
                 return false;
             }
@@ -264,7 +269,8 @@ public:
     {
         const auto profile = pbapp::GetGuiVisualProfile(index);
         g16test::Check(profile && pbapp::IsExperimentalPam4Family(*profile), "GUI PAM4 profile missing");
-        g16test::Check(!isVisible() && carrierCombo_->currentIndex() == 0 && !memoryMode_->isEnabled() && monitors_.size() == 1,
+        g16test::Check(!isVisible() && carrierCombo_->currentIndex() == pbapp::defaultGuiVisualModeIndex &&
+            memoryMode_->isEnabled() && monitors_.size() == 1,
             "GUI PAM4 default or single-monitor fixture mismatch");
         const auto root = std::filesystem::path(scratchDirectory.toStdWString());
         for (const auto* name : {L"output", L"probe-output", L"state"})
@@ -378,6 +384,9 @@ public:
         {
             return false;
         }
+        // The legacy smoke exercises the preserved Standard path explicitly;
+        // it must not depend on the fresh-install PAM4 default.
+        carrierCombo_->setCurrentIndex(0);
         outputEdit_->setText(outputDirectory);
         monitorCombo_->setCurrentIndex(1);
         wholeButton_->click();
@@ -1102,10 +1111,10 @@ private:
     void LoadCarrierPreference()
     {
         bool converted = false;
-        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), 0).toString().toInt(&converted);
+        const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), pbapp::defaultGuiVisualModeIndex).toString().toInt(&converted);
         const bool valid = converted && pbapp::GetGuiVisualProfile(savedCarrier).has_value();
-        carrierCombo_->setCurrentIndex(valid ? savedCarrier : 0);
-        carrierPreferencesWarning_ = valid ? QString() : QStringLiteral("保存的模式无效，已恢复标准模式；请确认后再开始。\n");
+        carrierCombo_->setCurrentIndex(valid ? savedCarrier : pbapp::defaultGuiVisualModeIndex);
+        carrierPreferencesWarning_ = valid ? QString() : QStringLiteral("保存的模式无效，已恢复 PAM4 模式；请确认后再开始。\n");
         UpdateActions();
     }
 

@@ -7,6 +7,7 @@
 - **建议 Decoder 先开始接收，再启动 Encoder 发送。** **Start Decoder before Encoder.**
 - **大文件“已接收大小”短时不涨可能正常，恢复/轮播/校验/写盘期间不要暂停。** **Brief size plateaus can be normal during repair, carousel waiting, verification or disk writes: do not pause.** Explicit errors, capture interruptions and persistent absence of useful data must still be investigated.
 - 1080P 非本机场景优先尝试 PAM4，25 Hz 起步；可容纳 2560×1440 源码面的环境可选择 Wide。两端模式一致。For 1080P non-local use, try PAM4 at 25 Hz first; use Wide only where its 2560×1440 source raster fits. Match modes at both ends.
+- 新安装、缺失或非法 `g22/carrier` 偏好时，Encoder/Decoder GUI 默认 PAM4（索引 2）；合法已保存索引继续保持，Standard 索引 0 仍是兼容模式，CLI/core 默认分开。After Decoder starts, its GUI active time begins at the first accepted same-Profile `SessionDescriptor`, excludes the pre-picture wait, and includes recovery/publish/reopen; the completed GUI average is original file bytes divided by that frozen active time.
 - 解压整个目录，阅读随包 `USER_GUIDE.md` / `USER_GUIDE.en.md`。Extract the whole directory and read the role-specific instructions; do not copy the EXE alone.
 
 ## 本版内容 / Contents
@@ -28,7 +29,7 @@ Validation covers release compilation, the non-interactive regression/Golden sui
 - **发布回归不是全绿：完整非交互 CTest 为 172/173 通过。** 唯一失败是保留的灰阶 spatial late-join 合成性能门：加入后 12,505 帧完成，未达到 `< 12,000` 帧要求。分段/整文件校验、安全发布及重开通过；2026-09-15 留存二进制与 v1.0 初次构建复现相同结果，v0.6 交接已经登记此项。测试与阈值不修改、不跳过、不标成通过。**The regression suite is not fully green: 172/173 CTest entries pass.** The retained Gray Fast spatial late-join performance gate finishes after 12,505 post-join frames, exceeding its `< 12,000` requirement. Final-file correctness passes. This is a reproduced historical limit, not a new v1.0 regression; the failing test remains intact.
 - 维护者已明确选择“如实注明已知性能限制，继续交付”。此决定仅接受本次 v1.0 的已登记限制，不意味着该性能门通过或以后可以忽略。The maintainer explicitly accepted delivery with this documented limit; this is not a passing performance result or a blanket waiver for future work.
 - 单文件准入上限 **500 GiB**；采用分段流式设计，不要求整个文件驻留内存。Current admission limit is **500 GiB**, not a tested maximum; streaming keeps RAM dependent on the active segment set.
-- 特定旧封存候选的大文件平均速度约 **279 KB/s**（1 KB = 1024 B）。这是留存环境成绩，不是本次新构建重新测速，也不是所有硬件/远控环境保证。The retained result belongs to its original candidate/environment, not a fresh benchmark of these binaries.
+- 特定旧封存候选的大文件平均速度约 **279 KB/s**（1 KB = 1024 B）。这是留存环境的完整运行口径成绩，不是本次新构建重新测速，也不与新的 GUI 活动平均速度共享同一时间窗口，更不是所有硬件/远控环境保证。The retained result belongs to its original full-run timing convention, not a fresh benchmark of these binaries or the new GUI active-reception convention.
 - 一小时与全程无停滞目标未达成。One-hour and zero-plateau objectives remain unmet; no universal maximum-throughput claim is made.
 - 单物理屏电脑没有独立实机验收；双屏机器中的指定单屏入口已验证。No independent qualification on a computer having only one physical display.
 - 没有反向 ACK，Encoder 不会自动知道接收完成。No receiver completion ACK; stop Encoder after Decoder confirms success.
