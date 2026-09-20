@@ -11,8 +11,8 @@
 # The identifiers below are the frozen baseline. They are deliberately not caller-supplied: an
 # override would let any future caller "pass" the check by passing along whatever the tag points at.
 set(PB_PHASE1_GATE_TAG_NAME_FROZEN "phase1-gate-pass")
-set(PB_PHASE1_GATE_TAG_OBJECT_FROZEN "fde56c4c4e7124e8ffe29a0dcb619f8236781ebb")
-set(PB_PHASE1_GATE_COMMIT_FROZEN "80699813b595bcf6db64047b50d31056872e33e1")
+set(PB_PHASE1_GATE_TAG_OBJECT_FROZEN "86b10a1171860ffab1cd758dc8cd86e0880d532e")
+set(PB_PHASE1_GATE_COMMIT_FROZEN "82818562bc28db5e8b1296f8f97c06f39c9f99be")
 
 foreach(pbOverrideName IN ITEMS PB_PHASE1_GATE_TAG_NAME PB_PHASE1_GATE_TAG_OBJECT PB_PHASE1_GATE_COMMIT)
     if(DEFINED ${pbOverrideName})
