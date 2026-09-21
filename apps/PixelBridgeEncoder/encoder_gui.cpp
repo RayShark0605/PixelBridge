@@ -1,6 +1,8 @@
 #include "encoder_gui.h"
 #include "encoder_application_controller.h"
 #include "encoder_monitor_catalog.h"
+#include "encoder_shell_dialog.h"
+#include "encoder_shell_integration.h"
 #include "product_gui_helpers.h"
 #include "gui_visual_mode.h"
 #include "gui_native_smoke.h"
@@ -892,6 +894,8 @@ private:
 
 int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
 {
+    std::wstring shellPath;
+    const bool shellOpen = pbencoder::ParseShellOpenArguments(argumentCount, arguments, shellPath);
     const bool measurement = argumentCount > 1 && std::wstring_view(arguments[1]) == L"--gui-measurement";
     std::unique_ptr<pbgui::Step1GuiEvidence> evidence;
     if (measurement)
@@ -939,6 +943,20 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
     {
         std::cerr << "Application branding resource unavailable\n";
         return 2;
+    }
+    if (!smoke && !nativeSmoke && !measurement && !integrationSmoke)
+    {
+        const pbencoder::ShellRegistrationStatus registrationStatus = pbencoder::EnsureShellContextMenuRegistration(
+            QCoreApplication::applicationFilePath().toStdWString());
+        if (!registrationStatus && shellOpen)
+        {
+            QMessageBox::warning(nullptr, QStringLiteral("PixelBridgeEncoder"),
+                QStringLiteral("未能检查或注册永久右键菜单：%1").arg(QString::fromStdWString(registrationStatus.message)));
+        }
+    }
+    if (shellOpen)
+    {
+        return RunEncoderShellDialog(QString::fromWCharArray(shellPath.c_str()), QString());
     }
     if (smoke)
     {
@@ -1019,12 +1037,13 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
             return 1;
         }
         EncoderWindow measuredWindow(presentationFactory, smokeEvidence->SettingsPath(), configureTarget, {}, smokeEvidence.get());
+        const bool shellDialogPassed = RunEncoderShellDialogSmoke();
         const bool passed = measuredWindow.RunMeasurementStartSmoke(sourcePath, [&]()
         {
             return created.load();
-        }) && legacyPassed && pam4Passed;
+        }) && legacyPassed && pam4Passed && shellDialogPassed;
         std::cout << "G22 Encoder GUI smoke: " << (passed ? "PASS" : "FAIL")
-            << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete/measurement-Start-RunId/PAM4-config-fit-preferences-measurement-reject; no desktop pixels\n";
+            << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete/measurement-Start-RunId/PAM4-config-fit-preferences-measurement-reject/shell-context-dialog; no desktop pixels\n";
         return passed ? 0 : 1;
     }
     if (nativeSmoke)

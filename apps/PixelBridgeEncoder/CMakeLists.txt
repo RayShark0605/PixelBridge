@@ -15,6 +15,9 @@ if(WIN32)
     target_sources(PixelBridgeEncoder PRIVATE presentation_cli.cpp encoder_runtime_cli.cpp encoder_application_controller.cpp
         "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp"
         encoder_application_controller.h encoder_gui.cpp encoder_gui.h
+        encoder_shell_integration.cpp encoder_shell_integration.h
+        folder_archive.cpp folder_archive.h
+        encoder_shell_dialog.cpp encoder_shell_dialog.h
         "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.cpp"
         "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.h"
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")

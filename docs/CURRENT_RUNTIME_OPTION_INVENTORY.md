@@ -79,7 +79,7 @@ Source: `apps/PixelBridgeDecoder/decoder_runtime_cli.cpp`
 
 Product-facing mode labels have no experiment badges. Frozen CLI names retain compatibility. The GUI defaults to PAM4 (index 2) for fresh, missing, or invalid preferences; valid saved indices remain unchanged. Standard remains compatibility index 0, while CLI/core defaults stay separate; parameters do not weaken finite budgets or final verification.
 
-- Encoder: source, persistent cache, mode, 1–60 Hz, non-negative `Maximum run duration (seconds)` (`0` = no automatic stop), start/stop; no peer-completion inference. This is GUI/Runtime-local policy; the existing CLI `--seconds 1..7200` contract is unchanged.
+- Encoder: source, persistent cache, mode, 1–60 Hz, non-negative `Maximum run duration (seconds)` (`0` = no automatic stop), start/stop; no peer-completion inference. A normal GUI start idempotently registers the per-user `PixelBridgeEncoder` static shell verb for `*` and `Directory`; the verb opens a small rate/mode/timeout dialog, and folder inputs are archived as ZIP ordinary-file sources before the existing runtime starts. This is GUI/Runtime-local policy; the existing CLI `--seconds 1..7200` contract is unchanged.
 - Decoder: output, mode, target monitor/whole screen/ROI, refresh 100–2000 ms, finite memory budgets, normal stop/resume, verified output opening.
 - Automatic logs: no enabling flag needed for normal application runs. Explicit `--journal`/`--report` remain independent create-only evidence. [Diagnostics](DIAGNOSTICS.en.md)
 - `--single-monitor-capture` is distinct from legacy protected/experiment dual-monitor safety authority; no forged second display.

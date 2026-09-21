@@ -14,6 +14,7 @@
 - Requires Windows 10 1903 or newer / Windows 11, a working D3D11 graphics environment and desktop session. The Qt platform baseline is not a claim that every OS/driver combination was qualified by this project.
 - Qt and MSVC runtimes are included. Developer tools, Python and PBBridge are not required. ICU, D3DCompiler_47 and Windows APIs come from Windows; stripped systems missing these components are unsupported. Do not obtain replacement DLLs from unofficial download sites.
 - Use your existing remote video connection. No network or remote-control settings need to change; file content does not travel through clipboard, shared directories, or hidden network channels.
+- When Encoder starts normally it idempotently checks and registers a `PixelBridgeEncoder` context-menu verb for files and folders in the current user's Windows Shell. This is a per-user persistent registration and does not require administrator rights. Windows 11 may place a legacy static verb under “Show more options.”
 - Current single-file admission limit: **500 GiB**. Segmented streaming does not require whole-file RAM residency, but sufficient cache/output storage is necessary. This limit is not a measured maximum-file claim.
 
 ## Choosing a mode
@@ -36,10 +37,12 @@ Wide cannot simply be shrunk to 1080P and treated as the same mode. PAM4-family 
 ## Steps
 
 1. Fully extract Decoder on the computer needing the file; select its output folder, receiving screen/region and mode, then **start receiving first**.
-2. Open Encoder, select the source file, matching mode and target monitor, and set sending frequency. If desired, enter a non-negative integer in **Maximum run duration (seconds)** for an automatic safe stop.
-3. Ensure the remote view contains the complete raster, then start sending. Initial source preparation/verification precedes stable transmission.
-4. Keep the source immutable, the application running and the computer awake. Preserve the session cache. Do not change resolution/DPI/display mode or cover the raster.
-5. Stop Encoder only after Decoder reports success. Carousel passes, display FPS and network traffic do not prove file completion.
+2. Open Encoder. You can select a file in the normal Encoder window, or right-click any file or folder in File Explorer and choose **PixelBridgeEncoder**; the shell entry opens a small dialog for sender rate, mode, and timeout.
+3. When a folder is selected, Encoder first creates a standard ZIP archive locally and then sends that ZIP as an ordinary file. After Decoder completes its digest, safe publication and reopen verification, extract the ZIP yourself. The original folder is never sent through a side channel or shared directory.
+4. Choose the matching Decoder mode and target monitor, and set sending frequency. If desired, enter a non-negative integer in **Maximum run duration (seconds)** for an automatic safe stop.
+5. Ensure the remote view contains the complete raster, then start sending. Initial source preparation/verification precedes stable transmission.
+6. Keep the source immutable, the application running and the computer awake. Preserve the session cache. Do not change resolution/DPI/display mode or cover the raster.
+7. Stop Encoder only after Decoder reports success. Carousel passes, display FPS and network traffic do not prove file completion.
 
 ### Automatic stop timeout
 

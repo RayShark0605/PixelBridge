@@ -79,6 +79,15 @@ PbInstrumentPresentationTest(PBApplicationTests)
 # bound prevents sanitizer overhead from terminating a still-progressing gate.
 set_tests_properties(PBApplicationTests PROPERTIES LABELS "application;controller;gui-model" TIMEOUT 600)
 
+PbAddUnitTest(PBEncoderShellTests
+    test_encoder_shell.cpp
+    "${PROJECT_SOURCE_DIR}/apps/PixelBridgeEncoder/encoder_shell_integration.cpp"
+    "${PROJECT_SOURCE_DIR}/apps/PixelBridgeEncoder/folder_archive.cpp")
+target_link_libraries(PBEncoderShellTests PRIVATE PB::PBApplication Qt${QT_VERSION_MAJOR}::Core)
+target_include_directories(PBEncoderShellTests PRIVATE "${PROJECT_SOURCE_DIR}/apps/PixelBridgeEncoder")
+target_compile_definitions(PBEncoderShellTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+set_tests_properties(PBEncoderShellTests PROPERTIES LABELS "application;encoder;shell;folder" TIMEOUT 60)
+
 add_executable(PBHeadlessMultiSegmentCheckpoint headless_multi_segment_checkpoint.cpp)
 target_link_libraries(PBHeadlessMultiSegmentCheckpoint PRIVATE PB::CompilerSettings PB::PBApplication
     PB::PBProtocol bcrypt)

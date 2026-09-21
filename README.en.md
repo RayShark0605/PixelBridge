@@ -41,6 +41,7 @@ These advantages target remote-desktop and large-file reception needs. The proje
 - Your remote-desktop or virtual-desktop (VDI) workflow needs a way to bring a file back through the existing visible desktop.
 - You need resumable reception and a verified final file, with diagnostics for larger transfers.
 - Your receiving computer has one monitor: start reception, then make the remote data pattern visible over the selected screen. No reserved area for the Decoder window is required.
+- When Encoder starts it keeps a per-user `PixelBridgeEncoder` context-menu verb; a selected folder is first archived as a standard ZIP and then follows the same visual transfer and final-verification chain as an ordinary file.
 
 PixelBridge is not a remote-control application. It neither establishes the remote connection nor changes remote-control or network settings. It does not use a camera. If direct file copying is available, ordinary file transfer is usually faster and easier.
 
@@ -58,8 +59,9 @@ There is no return channel for progress or acknowledgments. **Wait for Decoder t
 1. Start the appropriate application on each computer and choose **the same mode** on both ends.
 2. In Decoder, select an output directory, monitor, and whole-screen or region capture.
 3. **Start Decoder receiving first.**
-4. Select the source file in the remote Encoder and start sending. Keep the complete pattern visible; avoid panels, overlapping windows, and pointer obstruction.
-5. Wait for Decoder to report completion, then stop Encoder.
+4. Select the source file in the remote Encoder, or right-click a file/folder in File Explorer and choose `PixelBridgeEncoder`; confirm the sender rate, mode, and timeout in the small dialog. Keep the complete pattern visible; avoid panels, overlapping windows, and pointer obstruction.
+5. For a folder selection, Decoder receives the verified ZIP file; extract it yourself after final reopen succeeds.
+6. Wait for Decoder to report completion, then stop Encoder.
 
 After Decoder is started, its GUI active elapsed time, average speed, and ETA exclude the wait before the first accepted same-profile `SessionDescriptor`. The active window includes recovery, disk writes, final publication, and final reopen verification. On completion, the GUI average is original file bytes divided by the frozen active elapsed time. Formal `runStarted/runEnded` and verified raw goodput retain their existing evidence meanings.
 

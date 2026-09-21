@@ -6,7 +6,7 @@
 
 Run Encoder on the remote Windows x64 computer containing the file and Decoder on the Windows x64 computer that needs it. Extract the **entire application directory** from the delivery package; do not copy only the EXE, mix old Qt DLLs, or overlay incompatible versions. v1.0 delivers Encoder and Decoder separately, each with standalone Chinese and English instructions.
 
-Use your existing remote connection. PixelBridge neither requires changes to remote/network/driver settings nor creates a hidden file channel. Prepare a writable output directory and enough disk space. Do not change the source or delete Encoder's session cache or Decoder's `.part` / `.resume` files during a transfer.
+Use your existing remote connection. PixelBridge neither requires changes to remote/network/driver settings nor creates a hidden file channel. When Encoder starts normally it checks and keeps a per-user `PixelBridgeEncoder` context-menu verb for files and folders; Windows 11 may expose the legacy static verb under “Show more options.” The verb passes only the selected path to Encoder as a launch argument. Prepare a writable output directory and enough disk space. Do not change the source or delete Encoder's session cache or Decoder's `.part` / `.resume` files during a transfer.
 
 ## 2. Mode selection
 
@@ -34,6 +34,8 @@ Encoder's **Maximum run duration (seconds)** is local sender control: `0` means 
 5. On the remote computer, select the file in Encoder, verify the target display, and start sending.
 6. Keep the complete pattern visible. Close remote diagnostic panels, floating tools, and other obstructions.
 7. After Decoder explicitly reports completion, stop Encoder manually.
+
+You can also right-click a file or folder in File Explorer and choose **PixelBridgeEncoder**. The small dialog asks only for sender rate, mode, and timeout. A selected folder is first archived locally as a standard ZIP and then follows the existing visual transfer, digest, safe-publication, and final-reopen flow as an ordinary file. Decoder does not extract it automatically; extract the verified ZIP yourself.
 
 The Decoder GUI's active elapsed time starts when it first accepts a `SessionDescriptor` validated for the current Profile. Waiting after clicking “Start receiving” but before the Encoder shows a valid coded picture is excluded. The active window includes recovery, disk writes, whole-file digest, safe publication, and final reopen verification. On completion, the GUI average is original file bytes divided by the frozen active elapsed time; formal `runStarted/runEnded` and verified raw goodput retain their full-run/performance evidence meanings.
 

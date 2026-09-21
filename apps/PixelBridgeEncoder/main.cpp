@@ -4,6 +4,7 @@
 #ifdef _WIN32
 #include "application_build_identity.h"
 #include "application_console.h"
+#include "encoder_shell_integration.h"
 #include "unified_profile_identity.h"
 #include "run_measurement.h"
 #endif
@@ -62,7 +63,8 @@ int main()
         }
         if (std::wstring_view(arguments[1]) == L"--gui-measurement" || std::wstring_view(arguments[1]) == L"--gui-native-smoke" ||
             (std::wstring_view(arguments[1]) == L"--gui-smoke" && argumentCount == 2) ||
-            (std::wstring_view(arguments[1]) == L"--gui-integration-smoke" && argumentCount == 3))
+            (std::wstring_view(arguments[1]) == L"--gui-integration-smoke" && argumentCount == 3) ||
+            (std::wstring_view(arguments[1]) == L"--shell-open" && argumentCount == 3))
         {
             return RunEncoderGui(argumentCount, arguments);
         }

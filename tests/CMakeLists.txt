@@ -233,6 +233,8 @@ if(TARGET PixelBridgeEncoder)
         set(pbEncoderInvalidArguments
             "--unknown"
             "--build-identity|extra"
+            "--shell-open"
+            "--shell-open|one|extra"
             "--frames|1"
             "--data-window|--frames"
             "--data-window|--frames|0"
