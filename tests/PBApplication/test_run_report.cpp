@@ -63,6 +63,8 @@ TEST_CASE("Encoder report explicitly omits receiver progress goodput and ETA", "
     snapshot.visualProfile = pbapp::VisualProfile::RemoteVisualLowFps;
     snapshot.generatedVisualFramesPerSecond = (std::numeric_limits<double>::infinity)();
     snapshot.configuredLogicalVisualFps = 5;
+    snapshot.configuredMaximumRunDurationSeconds = (std::numeric_limits<std::uint64_t>::max)();
+    snapshot.stoppedByTimeout = true;
     snapshot.configuredLogicalDwellMilliseconds = 200.0;
     snapshot.minimumObservedLogicalDwellMilliseconds = 200.25;
     snapshot.visualProfileId = 0x504252564C463431ULL;
@@ -99,6 +101,8 @@ TEST_CASE("Encoder report explicitly omits receiver progress goodput and ETA", "
     REQUIRE(json.find("\"generatedVisualFramesPerSecond\":null") != std::string::npos);
     REQUIRE(json.find("\"generatedVisualFramesPerSecondBasis\":\"logical source replacements") != std::string::npos);
     REQUIRE(json.find("\"configuredLogicalVisualFps\":5") != std::string::npos);
+    REQUIRE(json.find("\"configuredMaximumRunDurationSeconds\":18446744073709551615") != std::string::npos);
+    REQUIRE(json.find("\"stoppedByTimeout\":true") != std::string::npos);
     REQUIRE(json.find("\"configuredLogicalDwellMilliseconds\":200") != std::string::npos);
     REQUIRE(json.find("\"minimumObservedLogicalDwellMilliseconds\":200.25") != std::string::npos);
     REQUIRE(json.find("\"logicalDwellViolationCount\":0") != std::string::npos);
@@ -132,6 +136,8 @@ TEST_CASE("Encoder report explicitly omits receiver progress goodput and ETA", "
     REQUIRE(journalRecord.find("\"generatedVisualFps\":null") != std::string::npos);
     REQUIRE(journalRecord.find("\"generatedPayloadBytesPerSecond\":null") != std::string::npos);
     REQUIRE(journalRecord.find("\"configuredTransportPayloadCeilingBytesPerSecond\":26280") != std::string::npos);
+    REQUIRE(journalRecord.find("\"configuredMaximumRunDurationSeconds\":18446744073709551615") != std::string::npos);
+    REQUIRE(journalRecord.find("\"stoppedByTimeout\":true") != std::string::npos);
     REQUIRE(journalRecord.find("\"singleMonitorFullscreen\":false") != std::string::npos);
     REQUIRE(journalRecord.find("\"monitorSafetyPreflightPassed\":true") != std::string::npos);
     REQUIRE(journalRecord.find("\"monitorSafetyRevalidationCount\":17") != std::string::npos);

@@ -28,6 +28,8 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QRegularExpressionValidator>
 #include <QSettings>
 #include <QShortcut>
 #include <QSizePolicy>
@@ -38,9 +40,11 @@
 #include <QVBoxLayout>
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string_view>
 
@@ -92,6 +96,29 @@ using TargetConfigurator = std::function<QString(pbapp::EncoderConfig&, QWidget&
     return QStringLiteral("等待状态");
 }
 
+[[nodiscard]] bool ParseMaximumRunDurationSeconds(const QString& text, std::uint64_t& value) noexcept
+{
+    if (text.isEmpty())
+    {
+        return false;
+    }
+    for (const QChar character : text)
+    {
+        if (character < QLatin1Char('0') || character > QLatin1Char('9'))
+        {
+            return false;
+        }
+    }
+    bool converted = false;
+    const qulonglong parsed = text.toULongLong(&converted, 10);
+    if (!converted || parsed > (std::numeric_limits<std::uint64_t>::max)())
+    {
+        return false;
+    }
+    value = static_cast<std::uint64_t>(parsed);
+    return true;
+}
+
 class EncoderWindow final : public QMainWindow
 {
 public:
@@ -105,13 +132,19 @@ public:
             std::make_unique<QSettings>(settingsFile, QSettings::IniFormat);
         setWindowTitle(QStringLiteral("PixelBridge Encoder v%1").arg(QString::fromStdString(pbcore::GetBuildInfo().version)));
         setMinimumSize(640, 460);
-        resize(740, 520);
+        resize(740, 560);
         BuildUi();
         // Do not import the legacy geometry, profiles, active state or 240 Hz preference.
         sourceEdit_->setText(settings_->value(QStringLiteral("g22/sourcePath")).toString());
         cacheEdit_->setText(settings_->value(QStringLiteral("g22/sessionRoot")).toString());
         const int savedFps = settings_->value(QStringLiteral("g22/logicalFps"), 15).toInt();
         fpsSpin_->setValue(savedFps >= 1 && savedFps <= 60 ? savedFps : 15);
+        std::uint64_t savedMaximumRunDurationSeconds = 0;
+        const QString savedMaximumRunDuration = settings_->value(
+            QStringLiteral("g22/maximumRunDurationSeconds"), QStringLiteral("0")).toString();
+        maximumDurationEdit_->setText(ParseMaximumRunDurationSeconds(savedMaximumRunDuration,
+            savedMaximumRunDurationSeconds) ? QString::number(static_cast<qulonglong>(savedMaximumRunDurationSeconds)) :
+            QStringLiteral("0"));
         LoadCarrierPreference();
         connect(&controller_, &EncoderApplicationController::SnapshotChanged, this, &EncoderWindow::UpdateSnapshot);
         connect(&controller_, &EncoderApplicationController::TerminalStateReached, this, [this]()
@@ -154,7 +187,8 @@ public:
             return false;
         }
         if (isVisible() || tabs_->count() != 2 || fpsSpin_->minimum() != 1 || fpsSpin_->maximum() != 60 ||
-            fpsSpin_->value() != 15 || startButton_->isEnabled() || escapeShortcut_->context() != Qt::WindowShortcut ||
+            fpsSpin_->value() != 15 || maximumDurationEdit_->text() != QStringLiteral("0") || startButton_->isEnabled() ||
+            escapeShortcut_->context() != Qt::WindowShortcut ||
             escapeShortcut_->autoRepeat() || !details_->isReadOnly() || deleteButton_->isEnabled())
         {
             return false;
@@ -164,19 +198,39 @@ public:
         carrierCombo_->setCurrentIndex(0);
         sourceEdit_->setText(sourcePath);
         cacheEdit_->setText(sessionRoot);
+        for (const QString& invalidTimeout : {QString(), QStringLiteral("-1"), QStringLiteral("+1"), QStringLiteral("1.5"),
+            QStringLiteral("1e3"), QStringLiteral(" 1"), QStringLiteral("1 "), QStringLiteral("invalid"), QStringLiteral("18446744073709551616")})
+        {
+            maximumDurationEdit_->setText(invalidTimeout);
+            startButton_->click();
+            if (controller_.GetSnapshot().runGeneration != 0 ||
+                !messageLabel_->text().contains(QStringLiteral("非负")))
+            {
+                return false;
+            }
+        }
+        maximumDurationEdit_->setText(QStringLiteral("18446744073709551615"));
+        pbapp::EncoderConfig maximumDurationConfig;
+        if (!BuildTransmissionConfig(maximumDurationConfig).isEmpty() ||
+            maximumDurationConfig.maximumRunDurationSeconds != (std::numeric_limits<std::uint64_t>::max)())
+        {
+            return false;
+        }
+        maximumDurationEdit_->setText(QStringLiteral("0"));
         if (!startButton_->isEnabled() || !pbgui::SaveTabPreviews(*this, *tabs_, QStringLiteral("encoder-idle")))
         {
             return false;
         }
         startButton_->click();
         // Lock controls immediately, including the entire prescan phase.
-        if (sourceEdit_->isEnabled() || fpsSpin_->isEnabled() || cacheEdit_->isEnabled() ||
+        if (sourceEdit_->isEnabled() || fpsSpin_->isEnabled() || cacheEdit_->isEnabled() || maximumDurationEdit_->isEnabled() ||
             !escapeShortcut_->isEnabled() || controller_.SetLogicalVisualFps(60).isEmpty())
         {
             return false;
         }
         // Even a programmatic change of the disabled widget cannot reconfigure this run.
         fpsSpin_->setValue(60);
+        maximumDurationEdit_->setText(QStringLiteral("1"));
         if (!WaitFor(presentationCreated))
         {
             return false;
@@ -184,7 +238,7 @@ public:
         UpdateSnapshot();
         const pbapp::EncoderSnapshot prepared = controller_.GetSnapshot();
         const std::filesystem::path directory(std::u8string(prepared.sessionStateDirectory.begin(), prepared.sessionStateDirectory.end()));
-        if (!prepared.preparationComplete || prepared.configuredLogicalVisualFps != 15 ||
+        if (!prepared.preparationComplete || prepared.configuredLogicalVisualFps != 15 || prepared.configuredMaximumRunDurationSeconds != 0 ||
             prepared.visualProfile != pbapp::VisualProfile::UnifiedLc4 || prepared.sessionIdHex.empty() ||
             directory.parent_path() != std::filesystem::path(sessionRoot.toStdWString()) || !std::filesystem::exists(directory))
         {
@@ -201,7 +255,7 @@ public:
         }
         UpdateSnapshot();
         if (!fpsSpin_->isEnabled() || !cacheEdit_->isEnabled() || !startButton_->isEnabled() ||
-            !deleteButton_->isEnabled() || !std::filesystem::exists(directory))
+            !maximumDurationEdit_->isEnabled() || !deleteButton_->isEnabled() || !std::filesystem::exists(directory))
         {
             return false;
         }
@@ -217,9 +271,32 @@ public:
         {
             return false;
         }
+        maximumDurationEdit_->setText(QStringLiteral("1"));
+        startButton_->click();
+        if (!WaitFor([this]()
+        {
+            return controller_.GetSnapshot().state == pbapp::EncoderState::Stopped && maximumDurationEdit_->isEnabled();
+        }))
+        {
+            return false;
+        }
+        const auto timeoutStopped = controller_.GetSnapshot();
+        if (!timeoutStopped.stoppedByTimeout || timeoutStopped.configuredMaximumRunDurationSeconds != 1 ||
+            !messageLabel_->text().contains(QStringLiteral("超时")) || !startButton_->isEnabled())
+        {
+            return false;
+        }
+        const QString timeoutDeleteError = timeoutStopped.sessionIdHex.empty() ? QString() :
+            controller_.EndAndDeleteSession(timeoutStopped.runGeneration);
+        if (!timeoutDeleteError.isEmpty() || (!timeoutStopped.sessionIdHex.empty() && !controller_.GetSnapshot().sessionDeleted))
+        {
+            return false;
+        }
+        maximumDurationEdit_->setText(QStringLiteral("0"));
         fpsSpin_->setValue(1);
         SavePreferences();
         return !deleteButton_->isEnabled() && settings_->value(QStringLiteral("g22/logicalFps")).toInt() == 1 &&
+            settings_->value(QStringLiteral("g22/maximumRunDurationSeconds")).toString() == QStringLiteral("0") &&
             settings_->value(QStringLiteral("g22/sessionRoot")).toString() == sessionRoot &&
             pbgui::SaveTabPreviews(*this, *tabs_, QStringLiteral("encoder-stopped"));
     }
@@ -469,6 +546,19 @@ private:
         startButton_->setMinimumSize(136, 38);
         rateRow->addWidget(startButton_);
         mainLayout->addLayout(rateRow);
+        QHBoxLayout* const timeoutRow = new QHBoxLayout();
+        timeoutRow->addWidget(pbgui::TextLabel(QStringLiteral("超时关闭")));
+        maximumDurationEdit_ = new QLineEdit();
+        maximumDurationEdit_->setObjectName(QStringLiteral("maximumRunDurationSeconds"));
+        maximumDurationEdit_->setText(QStringLiteral("0"));
+        maximumDurationEdit_->setValidator(new QRegularExpressionValidator(
+            QRegularExpression(QStringLiteral("[0-9]*")), maximumDurationEdit_));
+        maximumDurationEdit_->setPlaceholderText(QStringLiteral("0"));
+        maximumDurationEdit_->setToolTip(QStringLiteral("非负整数秒；0 表示无超时关闭，开始后从本次 Start 接受时刻计时。"));
+        timeoutRow->addWidget(maximumDurationEdit_);
+        timeoutRow->addWidget(pbgui::TextLabel(QStringLiteral("秒（0 = 手动停止）")));
+        timeoutRow->addStretch();
+        mainLayout->addLayout(timeoutRow);
         stateLabel_ = pbgui::TextLabel();
         stateLabel_->setStyleSheet(QStringLiteral("font-size:16px;font-weight:600;"));
         mainLayout->addWidget(stateLabel_);
@@ -520,6 +610,7 @@ private:
         escapeShortcut_->setAutoRepeat(false);
         connect(escapeShortcut_, &QShortcut::activated, &controller_, &EncoderApplicationController::RequestStop);
         connect(sourceEdit_, &QLineEdit::textChanged, this, &EncoderWindow::UpdateActions);
+        connect(maximumDurationEdit_, &QLineEdit::textChanged, this, &EncoderWindow::UpdateActions);
         connect(startButton_, &QPushButton::clicked, this, &EncoderWindow::StartTransmission);
         connect(browseButton_, &QPushButton::clicked, this, [this]()
         {
@@ -546,6 +637,10 @@ private:
         settings_->setValue(QStringLiteral("g22/sourcePath"), sourceEdit_->text());
         settings_->setValue(QStringLiteral("g22/sessionRoot"), cacheEdit_->text());
         settings_->setValue(QStringLiteral("g22/logicalFps"), fpsSpin_->value());
+        std::uint64_t maximumRunDurationSeconds = 0;
+        settings_->setValue(QStringLiteral("g22/maximumRunDurationSeconds"),
+            ParseMaximumRunDurationSeconds(maximumDurationEdit_->text(), maximumRunDurationSeconds) ?
+                QString::number(static_cast<qulonglong>(maximumRunDurationSeconds)) : QStringLiteral("0"));
         settings_->setValue(QStringLiteral("g22/carrier"), carrierCombo_->currentIndex());
         settings_->sync();
     }
@@ -578,6 +673,7 @@ private:
         sourceEdit_->setEnabled(editable);
         browseButton_->setEnabled(editable);
         fpsSpin_->setEnabled(editable);
+        maximumDurationEdit_->setEnabled(editable);
         carrierCombo_->setEnabled(editable);
         cacheEdit_->setEnabled(editable);
         cacheBrowse_->setEnabled(editable);
@@ -602,9 +698,15 @@ private:
         {
             return QStringLiteral("PAM4 模式不支持正式测量入口，请使用普通启动方式或明确选择标准模式。");
         }
+        std::uint64_t maximumRunDurationSeconds = 0;
+        if (!ParseMaximumRunDurationSeconds(maximumDurationEdit_->text(), maximumRunDurationSeconds))
+        {
+            return QStringLiteral("超时关闭必须是 uint64 范围内的非负整数秒；0 表示无超时关闭。");
+        }
         config = pbapp::MakeUnifiedEncoderConfig(sourceEdit_->text().toStdWString(), static_cast<std::uint32_t>(fpsSpin_->value()));
         config.visualProfile = *profile;
         config.sessionStateRoot = cacheEdit_->text().toStdWString();
+        config.maximumRunDurationSeconds = maximumRunDurationSeconds;
         const QString targetError = configureTarget_(config, *this);
         if (!targetError.isEmpty())
         {
@@ -708,7 +810,10 @@ private:
         }
         else if (snapshot.state == pbapp::EncoderState::Broadcasting)
         {
-            message = QStringLiteral("持续循环发送，不等待对端确认。当前设置 %1 Hz。").arg(snapshot.configuredLogicalVisualFps);
+            const QString timeout = snapshot.configuredMaximumRunDurationSeconds == 0 ?
+                QStringLiteral("无超时关闭") : QStringLiteral("超时 %1 秒").arg(snapshot.configuredMaximumRunDurationSeconds);
+            message = QStringLiteral("持续循环发送，不等待对端确认。当前设置 %1 Hz，%2。").arg(
+                snapshot.configuredLogicalVisualFps).arg(timeout);
         }
         else if (snapshot.state == pbapp::EncoderState::Failed)
         {
@@ -716,7 +821,10 @@ private:
         }
         else if (snapshot.state == pbapp::EncoderState::Stopped)
         {
-            message = snapshot.sessionDeleted ? QStringLiteral("会话索引已删除，源文件未改动。") : QStringLiteral("恢复状态已保留，可以重新开始。");
+            message = snapshot.stoppedByTimeout ?
+                QStringLiteral("已按超时设置安全停止；这不表示 Decoder 已完成接收。") :
+                snapshot.sessionDeleted ? QStringLiteral("会话索引已删除，源文件未改动。") :
+                QStringLiteral("恢复状态已保留，可以重新开始。");
         }
         messageLabel_->setText(message);
         const auto selectedProfile = pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex());
@@ -724,7 +832,8 @@ private:
         details_->setPlainText(controller_.LogStatusText() + QStringLiteral("\n\n") + QStringLiteral("%1\n").arg(QString::fromUtf8(pbapp::GetVisualProfileName(shownProfile))) + QStringLiteral(
             "呈现尺寸、分段与纠错参数以所选模式及本次运行记录为准；不同模式不是同一会话\n"
             "自动 RAW-zstd(level 3) / DirectRepeat-Wirehair V2；持续单向发送，无接收反馈\n"
-            "文件上限：500 GB（1024 进位）；传输期间源文件保持只读锁定\n\n") + (snapshot.runGeneration == 0 ?
+             "超时关闭：0 表示无超时；非零值从本次 Start 接受时刻起计时，自动停止不等于 Decoder 完成\n"
+             "文件上限：500 GB（1024 进位）；传输期间源文件保持只读锁定\n\n") + (snapshot.runGeneration == 0 ?
                 QStringLiteral("尚未开始传输。运行详情将在建立会话后显示。") : pbgui::FromUtf8(pbapp::BuildEncoderDiagnostics(snapshot))));
         UpdateActions();
     }
@@ -738,6 +847,7 @@ private:
     QTabWidget* tabs_ = nullptr;
     QLineEdit* sourceEdit_ = nullptr;
     QLineEdit* cacheEdit_ = nullptr;
+    QLineEdit* maximumDurationEdit_ = nullptr;
     QSpinBox* fpsSpin_ = nullptr;
     QComboBox* carrierCombo_ = nullptr;
     QLabel* modeHintLabel_ = nullptr;

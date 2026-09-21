@@ -270,6 +270,8 @@ struct EncoderSnapshot
     std::string runId;
     std::uint64_t runStartedUnixMilliseconds = 0;
     std::optional<std::uint64_t> runEndedUnixMilliseconds;
+    std::uint64_t configuredMaximumRunDurationSeconds = 0;
+    bool stoppedByTimeout = false;
     std::string sourcePath;
     std::uint64_t sourceBytes = 0;
     std::uint64_t preparedSourceBytes = 0;

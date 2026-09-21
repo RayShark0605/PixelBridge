@@ -23,6 +23,8 @@ On a fresh install, or when `g22/carrier` is missing or invalid, both GUI select
 
 Sender cadence is configurable from 1–60 Hz and locked during a run. The retained ToDesk large-file result used Wide at 25 Hz; that is not a universal optimum. 60 Hz is not necessarily faster. Incompatible identity changes require a new Session.
 
+Encoder's **Maximum run duration (seconds)** is local sender control: `0` means no timeout and the sender continues until a human stops it; a non-zero non-negative integer starts when this Start is accepted, covers preparation and broadcasting, and ends through the normal safe-stop path. The only limit is the `uint64_t` representation range; there is no 7200-second ceiling. It is not part of the visual raster or Session and does not mean Decoder completed.
+
 ## 3. Start Decoder first
 
 1. Select Decoder's output directory.

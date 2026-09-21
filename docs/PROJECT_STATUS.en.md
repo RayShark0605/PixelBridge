@@ -2,7 +2,7 @@
 
 [简体中文](PROJECT_STATUS.md) | **English**
 
-Updated 2026-09-17. **Stability and local v1.0 product delivery—not another throughput campaign.**
+Updated 2026-09-21. **Stability and local v1.0 product delivery—not another throughput campaign.**
 
 ## Implemented capabilities
 
@@ -13,6 +13,7 @@ Updated 2026-09-17. **Stability and local v1.0 product delivery—not another th
 - Visual-only one-way payload, segment/whole-file digests, safe publication and final reopen.
 - Current closeout adds automatic logs, evidence-based activity text, and distinct icons. Targeted validation is recorded separately.
 - Decoder GUI active reception timing starts at the first valid same-Profile `SessionDescriptor`, excluding the earlier wait; the completed GUI average and frozen active elapsed time use the same window. Formal full-run time and verified goodput meanings are unchanged.
+- Encoder GUI/Runtime now support local **Maximum run duration (seconds)**: `0` means manual stop, while a non-zero `uint64_t` value starts when Start is accepted and follows the safe-stop path; it is not a protocol field or receiver-completion signal.
 
 ## Evidence boundaries
 

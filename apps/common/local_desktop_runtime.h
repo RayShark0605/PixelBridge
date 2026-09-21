@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -52,6 +53,9 @@ struct EncoderConfig
     // least 200 ms stable dwell; it never changes the encoded bytes.
     std::uint32_t logicalVisualFps = 0;
     std::uint32_t controlRepetitions = 4;
+    // Zero disables the sender-side automatic stop. This is local runtime
+    // policy only and never enters the SessionDescriptor or visual payload.
+    std::uint64_t maximumRunDurationSeconds = 0;
     // Zero keeps the profile default (8 MiB product / 15 MiB gray family).
     // A positive value overrides the per-Segment raw target (bounded by the
     // receiver policy's 16 MiB raw-segment cap); the SessionDescriptor
@@ -746,12 +750,17 @@ public:
     [[nodiscard]] EncoderSnapshot GetSnapshot() const;
 
 private:
-    void Run(EncoderConfig config, std::uint64_t runGeneration) noexcept;
+    friend class EncoderRuntimeClockTestAccess;
+    void Run(EncoderConfig config, std::uint64_t runGeneration,
+        std::chrono::steady_clock::time_point runStartedAt) noexcept;
+    // Clock-only test seam: no product config, GUI or CLI can replace time.
+    std::function<std::chrono::steady_clock::time_point()> runClock_ = std::chrono::steady_clock::now;
     mutable std::mutex lifecycleMutex_;
     SnapshotStore<EncoderSnapshot> snapshot_;
     std::atomic<std::shared_ptr<RunMeasurementRecorder>> measurement_;
     std::thread worker_;
     std::atomic<bool> stopRequested_ = false;
+    std::atomic<bool> timeoutRequested_ = false;
     std::atomic<bool> workerRunning_ = false;
     std::atomic<std::uint32_t> requestedLogicalVisualFps_ = 0;
     std::uint64_t nextRunGeneration_ = 1;

@@ -124,6 +124,8 @@ TEST_CASE("Encoder validation accepts empty files and rejects missing or over-li
     config.sourcePath = empty.wstring();
     config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{};
     REQUIRE(pbapp::ValidateEncoderConfig(config));
+    config.maximumRunDurationSeconds = (std::numeric_limits<std::uint64_t>::max)();
+    REQUIRE(pbapp::ValidateEncoderConfig(config));
     const auto tooLarge = scratch.Path() / L"large.bin";
     const HANDLE file = CreateFileW(tooLarge.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, nullptr);

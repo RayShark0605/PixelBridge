@@ -105,6 +105,10 @@ inline constexpr std::uint32_t maximumReplayCaptureFramesPerSecond = 60;
 inline constexpr std::string_view encoderWindowTooSmallStatus = "窗口过小，广播已暂停";
 inline constexpr std::string_view encoderBroadcastingStatus =
     "Broadcasting continuously; receiver completion is visible only on Decoder";
+inline constexpr std::string_view encoderTimeoutPreparingStatus =
+    "Encoder stopped by configured timeout before broadcast; no sender-side receiver completion was inferred";
+inline constexpr std::string_view encoderTimeoutBroadcastStatus =
+    "Encoder stopped by configured timeout; no sender-side receiver completion was inferred";
 inline constexpr std::uint64_t timeUnitsPerSecond100ns = 10000000ULL;
 inline constexpr std::uint32_t captureQueuedFrameLimit = 4;
 inline constexpr std::uint32_t grayFastShortInitialAirtimePercent = 65;
@@ -172,6 +176,12 @@ public:
     explicit RuntimeFailure(const std::string& message) : std::runtime_error(message)
     {
     }
+};
+
+// Cancellation is not an I/O, digest or resource failure. Keep it typed so a
+// concurrent stop never hides a real failure based on exception message text.
+struct EncoderPreparationStopped
+{
 };
 
 class WorkerRunningGuard
@@ -1513,7 +1523,10 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
     pbprotocol::Blake3Hasher wholeFileHasher;
     for (std::uint64_t segmentOrdinal = 0; segmentOrdinal < segmentCount; segmentOrdinal++)
     {
-        Require(!stopRequested, "Stopped during source preparation");
+        if (stopRequested)
+        {
+            throw EncoderPreparationStopped{};
+        }
         const std::uint64_t segmentTargetBytes = GetSegmentTargetBytes(visualProfileId, segmentTargetOverride);
         const std::uint64_t rawOffset = segmentOrdinal * segmentTargetBytes;
         const std::uint64_t rawSize = (std::min)(source.fileBytes - rawOffset, segmentTargetBytes);
@@ -1539,7 +1552,10 @@ using PreparationProgressCallback = std::function<void(std::uint64_t, std::uint6
     description.manifest = {description.session.sessionId, source.fileBytes, segmentCount,
         pbprotocol::WholeFileDigest{wholeFileHasher.Finalize()}, pbprotocol::DigestAlgorithm::Blake3_256};
     FinalizeTransferControls(description);
-    Require(!stopRequested, "Stopped during source preparation");
+    if (stopRequested)
+    {
+        throw EncoderPreparationStopped{};
+    }
     if (progress)
     {
         progress(source.fileBytes, segmentCount, true);
@@ -6858,7 +6874,10 @@ struct DurableSenderPreparation
     }
     if (!foundPersistedSession)
     {
-        Require(!stopRequested, "Stopped before durable Session creation");
+        if (stopRequested)
+        {
+            throw EncoderPreparationStopped{};
+        }
         EncoderSessionStoreCreateConfig stateConfig;
         stateConfig.rootDirectory = sessionStateRoot;
         stateConfig.sourceIdentity = preparation.sourceIdentity;
@@ -10283,7 +10302,9 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
         return RuntimeStatus::Failure("run generation exhausted");
     }
     const std::uint64_t runGeneration = nextRunGeneration_++;
+    const auto runStartedAt = runClock_();
     stopRequested_ = false;
+    timeoutRequested_ = false;
     requestedLogicalVisualFps_.store(config.logicalVisualFps, std::memory_order_release);
     EncoderSnapshot initial;
     initial.diagnostics = config.diagnostics;
@@ -10291,6 +10312,7 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     initial.runGeneration = runGeneration;
     initial.runId = config.runId.empty() ? "pending" : config.runId;
     initial.runStartedUnixMilliseconds = GetUnixTimeMilliseconds();
+    initial.configuredMaximumRunDurationSeconds = config.maximumRunDurationSeconds;
     initial.sourcePath = std::move(sourcePathUtf8);
     initial.visualProfile = config.visualProfile;
     initial.dataWindowLeft = config.monitorClientOrigin ? config.monitorClientOrigin->x : 0;
@@ -10338,7 +10360,7 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     workerRunning_ = true;
     try
     {
-        worker_ = std::thread(&EncoderRuntime::Run, this, config, runGeneration);
+        worker_ = std::thread(&EncoderRuntime::Run, this, config, runGeneration, runStartedAt);
     }
     catch (const std::exception& exception)
     {
@@ -10505,7 +10527,8 @@ RuntimeStatus EncoderRuntime::EndAndDeleteSession(const std::uint64_t expectedRu
     }
 }
 
-void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration) noexcept
+void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration,
+    const std::chrono::steady_clock::time_point runStartedAt) noexcept
 {
     WorkerRunningGuard runningGuard(workerRunning_);
     MeasurementRunGuard measurementGuard(config.measurement);
@@ -10513,6 +10536,43 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
     try
     {
         const auto workerStarted = std::chrono::steady_clock::now();
+        const auto hasTimedOut = [&]() -> bool
+        {
+            if (config.maximumRunDurationSeconds == 0 || timeoutRequested_.load(std::memory_order_acquire))
+            {
+                return timeoutRequested_.load(std::memory_order_acquire);
+            }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                runClock_() - runStartedAt);
+            if (elapsed.count() < 0 || static_cast<std::uint64_t>(elapsed.count()) < config.maximumRunDurationSeconds)
+            {
+                return false;
+            }
+            bool expectedStop = false;
+            // First stop request owns the cause. Do not take lifecycleMutex_
+            // here: Stop() may already hold it while joining this worker.
+            if (!stopRequested_.compare_exchange_strong(expectedStop, true))
+            {
+                return false;
+            }
+            timeoutRequested_ = true;
+            snapshot_.Update([runGeneration](EncoderSnapshot& value)
+            {
+                if (value.runGeneration != runGeneration)
+                {
+                    return;
+                }
+                const bool wasBroadcasting = value.state == EncoderState::Broadcasting;
+                value.stoppedByTimeout = true;
+                if (value.state == EncoderState::Preparing || value.state == EncoderState::Broadcasting)
+                {
+                    value.state = EncoderState::Stopping;
+                }
+                value.statusMessage = wasBroadcasting ?
+                    std::string(encoderTimeoutBroadcastStatus) : std::string(encoderTimeoutPreparingStatus);
+            });
+            return true;
+        };
         ProcessResourceSampler resourceSampler;
         if (config.singleMonitorFullscreen)
         {
@@ -10549,15 +10609,18 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             });
         }
         SourceFile source = ReadSourceFile(config.sourcePath);
+        static_cast<void>(hasTimedOut());
         if (stopRequested_)
         {
-            snapshot_.Update([runGeneration](EncoderSnapshot& value)
+            snapshot_.Update([runGeneration, this](EncoderSnapshot& value)
             {
                 if (value.runGeneration == runGeneration)
                 {
                     value.state = EncoderState::Stopped;
                     value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
-                    value.statusMessage = "Stopped during source preparation";
+                    value.stoppedByTimeout = timeoutRequested_.load(std::memory_order_acquire);
+                    value.statusMessage = value.stoppedByTimeout ? std::string(encoderTimeoutPreparingStatus) :
+                        "Stopped during source preparation";
                 }
             });
             return;
@@ -10576,6 +10639,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             config.compressionLevel, profile.visualProfileId, config.sessionStateRoot, stopRequested_,
             [&](const std::uint64_t preparedBytes, const std::uint64_t preparedSegments, const bool complete)
             {
+                static_cast<void>(hasTimedOut());
                 const double elapsedSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - preparationStarted).count();
                 snapshot_.Update([&](EncoderSnapshot& value)
                 {
@@ -10586,10 +10650,14 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                         std::optional<double>{static_cast<double>(preparedBytes) / elapsedSeconds} : std::nullopt;
                     value.preparationComplete = complete;
                     value.sourceStabilityVerified = complete;
-                    value.statusMessage = complete ? "预扫描及源文件一致性校验通过，正在准备持久 Session" : "正在预扫描源文件，尚未打开编码窗口";
+                    if (!value.stoppedByTimeout)
+                    {
+                        value.statusMessage = complete ? "预扫描及源文件一致性校验通过，正在准备持久 Session" : "正在预扫描源文件，尚未打开编码窗口";
+                    }
                 });
             }, config.segmentTargetBytes);
         TransferDescription description = std::move(preparation.description);
+        static_cast<void>(hasTimedOut());
         if (config.measurement)
         {
             for (const auto &segment : description.segments)
@@ -10615,13 +10683,15 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         });
         if (stopRequested_)
         {
-            snapshot_.Update([runGeneration](EncoderSnapshot& value)
+            snapshot_.Update([runGeneration, this](EncoderSnapshot& value)
             {
                 if (value.runGeneration == runGeneration)
                 {
                     value.state = EncoderState::Stopped;
                     value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
-                    value.statusMessage = "Stopped during descriptor/FEC preparation";
+                    value.stoppedByTimeout = timeoutRequested_.load(std::memory_order_acquire);
+                    value.statusMessage = value.stoppedByTimeout ? std::string(encoderTimeoutPreparingStatus) :
+                        "Stopped during descriptor/FEC preparation";
                 }
             });
             return;
@@ -10713,15 +10783,18 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             }
             value.statusMessage = "Creating the production D3D11 Data Window";
         });
+        static_cast<void>(hasTimedOut());
         if (stopRequested_)
         {
-            snapshot_.Update([runGeneration](EncoderSnapshot& value)
+            snapshot_.Update([runGeneration, this](EncoderSnapshot& value)
             {
                 if (value.runGeneration == runGeneration)
                 {
                     value.state = EncoderState::Stopped;
                     value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
-                    value.statusMessage = "Stopped during preparation";
+                    value.stoppedByTimeout = timeoutRequested_.load(std::memory_order_acquire);
+                    value.statusMessage = value.stoppedByTimeout ? std::string(encoderTimeoutPreparingStatus) :
+                        "Stopped during preparation";
                 }
             });
             return;
@@ -10755,6 +10828,11 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             (IsUnifiedVisualFamily(config.visualProfile) && config.visualProfile != VisualProfile::UnifiedGrayFast);
         windowConfig.topmost = config.singleMonitorFullscreen.has_value();
         windowConfig.allowUnmappedHardwareAdapter = (IsUnifiedVisualFamily(config.visualProfile) || IsExperimentalPam4Family(config.visualProfile)) && config.singleMonitorFullscreen.has_value();
+        static_cast<void>(hasTimedOut());
+        if (stopRequested_)
+        {
+            throw EncoderPreparationStopped{};
+        }
         std::unique_ptr<EncoderPresentation> window = presentationFactory_(windowConfig);
         Require(window != nullptr, "Encoder presentation factory returned no window owner");
         std::uint64_t frameSequence = sessionStore->GetFrameSequenceStart();
@@ -10808,6 +10886,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         for (;;)
         {
             const auto now = std::chrono::steady_clock::now();
+            static_cast<void>(hasTimedOut());
             if (useUnifiedLogicalClock)
             {
                 const std::uint32_t requestedLogicalVisualFps =
@@ -10855,6 +10934,11 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             if (windowSnapshot.state == pbrenderd3d::WindowState::Stopped)
             {
                 break;
+            }
+            if (stopRequested_)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
             if (now >= nextStabilityCheck)
             {
@@ -10977,8 +11061,9 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             {
                 logicalFrameReady = true;
             }
+            const bool timedOutBeforeSubmit = hasTimedOut();
             if (presentationStable && windowSnapshot.state == pbrenderd3d::WindowState::Running && frameBuilt && logicalFrameReady &&
-                !windowSnapshot.pendingFrame && !stopRequested_)
+                !windowSnapshot.pendingFrame && !stopRequested_ && !timedOutBeforeSubmit)
             {
                 const std::uint32_t outerBlockId = builder.GetCurrentOuterBlockId();
                 const std::span<const std::byte> pixels = config.singleMonitorFullscreen ?
@@ -11166,9 +11251,31 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             ApplyEncoderPresentationSnapshot(stopped, value);
             value.minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds;
             value.logicalDwellViolationCount = logicalDwellViolationCount;
-            value.statusMessage = "Broadcast stopped by user; no sender-side receiver completion was inferred";
+            value.stoppedByTimeout = timeoutRequested_.load(std::memory_order_acquire);
+            value.statusMessage = value.stoppedByTimeout ? std::string(encoderTimeoutBroadcastStatus) :
+                "Broadcast stopped by user; no sender-side receiver completion was inferred";
         });
         measurementGuard.succeeded = true;
+    }
+    catch (const EncoderPreparationStopped&)
+    {
+        try
+        {
+            snapshot_.Update([&](EncoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration)
+                {
+                    value.state = EncoderState::Stopped;
+                    value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                    value.stoppedByTimeout = timeoutRequested_.load();
+                    value.statusMessage = value.stoppedByTimeout ? std::string(encoderTimeoutPreparingStatus) :
+                        "预扫描已停止，未打开编码窗口";
+                }
+            });
+        }
+        catch (...)
+        {
+        }
     }
     catch (const std::exception& exception)
     {
@@ -11180,9 +11287,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 {
                     return;
                 }
-                value.state = stopRequested_ && value.sessionIdHex.empty() ? EncoderState::Stopped : EncoderState::Failed;
+                value.stoppedByTimeout = false;
+                value.state = EncoderState::Failed;
                 value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
-                value.statusMessage = value.state == EncoderState::Stopped ? "预扫描已停止，未建立新 Session 或编码窗口" : "Encoder failed";
+                value.statusMessage = "Encoder failed";
                 value.errorDetail = exception.what();
                 value.sourceStable = sourceStable;
                 if (config.visualProfile == VisualProfile::RemoteVisualLowFps)
@@ -11206,6 +11314,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 {
                     value.state = EncoderState::Failed;
                     value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                    value.stoppedByTimeout = false;
                     value.statusMessage = "Encoder failed";
                     value.errorDetail = "unknown non-standard exception";
                     if (config.visualProfile == VisualProfile::RemoteVisualLowFps)

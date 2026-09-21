@@ -28,6 +28,20 @@
 #include <tuple>
 #include <utility>
 
+namespace pbapp
+{
+
+class EncoderRuntimeClockTestAccess
+{
+public:
+    static void SetClock(EncoderRuntime& runtime, std::function<std::chrono::steady_clock::time_point()> clock)
+    {
+        runtime.runClock_ = std::move(clock);
+    }
+};
+
+} // namespace pbapp
+
 namespace
 {
 
@@ -86,6 +100,8 @@ struct PresentationState
 {
     std::mutex mutex;
     bool stopped = false;
+    bool failOnStop = false;
+    std::function<void()> beforeSnapshot;
     bool paused = false;
     bool rejectFirst = false;
     bool retryIdentical = false;
@@ -105,9 +121,17 @@ public:
     }
     [[nodiscard]] pbrenderd3d::DataWindowSnapshot GetSnapshot() const override
     {
+        if (state_->beforeSnapshot)
+        {
+            state_->beforeSnapshot();
+        }
         const std::scoped_lock lock(state_->mutex);
         pbrenderd3d::DataWindowSnapshot snapshot;
         snapshot.state = state_->stopped ? pbrenderd3d::WindowState::Stopped : pbrenderd3d::WindowState::Running;
+        if (state_->stopped && state_->failOnStop)
+        {
+            snapshot.state = pbrenderd3d::WindowState::Failed;
+        }
         snapshot.environment.clientWidth = 1920;
         snapshot.environment.clientHeight = 1080;
         snapshot.contract = {1920, 1080, 2, 1, pbrenderd3d::FlipEffect::Discard,
@@ -856,6 +880,237 @@ TEST_CASE("Unified runtime retains and resumes Session leases then explicit dele
         }
         previous = stopped;
     }
+}
+
+TEST_CASE("Encoder runtime stops at the configured maximum duration and records the timeout reason",
+    "[application][encoder][runtime][timeout]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"timeout-source.bin";
+    WriteBytes(source, std::vector<std::byte>(1024, std::byte{0x42}));
+    const auto state = std::make_shared<PresentationState>();
+    state->maximumFrames = 1;
+    pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+    {
+        return std::make_unique<MockPresentation>(state);
+    });
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    config.maximumRunDurationSeconds = 1;
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]()
+    {
+        return runtime.GetSnapshot().state == pbapp::EncoderState::Stopped;
+    }));
+    runtime.Stop();
+    const auto stopped = runtime.GetSnapshot();
+    REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+    REQUIRE(stopped.configuredMaximumRunDurationSeconds == 1);
+    REQUIRE(stopped.stoppedByTimeout);
+    REQUIRE(stopped.errorDetail.empty());
+}
+
+TEST_CASE("Encoder runtime zero maximum duration remains manual until explicitly stopped",
+    "[application][encoder][runtime][timeout]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"manual-source.bin";
+    WriteBytes(source, {});
+    const auto state = std::make_shared<PresentationState>();
+    state->maximumFrames = 1;
+    pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+    {
+        return std::make_unique<MockPresentation>(state);
+    });
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    config.maximumRunDurationSeconds = 0;
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]()
+    {
+        return runtime.GetSnapshot().submittedFrames == 1;
+    }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    REQUIRE(pbapp::IsEncoderStateActive(runtime.GetSnapshot().state));
+    runtime.RequestStop();
+    REQUIRE(WaitFor([&]()
+    {
+        return runtime.GetSnapshot().state == pbapp::EncoderState::Stopped;
+    }));
+    runtime.Stop();
+    const auto stopped = runtime.GetSnapshot();
+    REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+    REQUIRE(stopped.configuredMaximumRunDurationSeconds == 0);
+    REQUIRE_FALSE(stopped.stoppedByTimeout);
+}
+
+TEST_CASE("Encoder timeout never suppresses a presentation shutdown failure", "[application][encoder][timeout]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"shutdown-failure.bin";
+    WriteBytes(source, {});
+    const auto state = std::make_shared<PresentationState>();
+    state->failOnStop = true;
+    state->maximumFrames = 1;
+    pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+    {
+        return std::make_unique<MockPresentation>(state);
+    });
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring());
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    config.maximumRunDurationSeconds = 1;
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]() { return runtime.GetSnapshot().state == pbapp::EncoderState::Failed; }));
+    runtime.Stop();
+    const auto failed = runtime.GetSnapshot();
+    REQUIRE(failed.state == pbapp::EncoderState::Failed);
+    REQUIRE(failed.errorDetail.find("DataWindow failed") != std::string::npos);
+    REQUIRE_FALSE(failed.stoppedByTimeout);
+}
+
+TEST_CASE("Encoder timeout cancels the real prescan before creating a persistent Session", "[application][encoder][timeout]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"prescan.bin";
+    WriteBytes(source, std::vector<std::byte>(16U * 1024U * 1024U, std::byte{0x5A}));
+    std::atomic<bool> presentationCreated = false;
+    pbapp::EncoderRuntime runtime([&](const pbrenderd3d::DataWindowConfig&)
+    {
+        presentationCreated = true;
+        return std::make_unique<MockPresentation>(std::make_shared<PresentationState>());
+    });
+    const auto clockOrigin = std::chrono::steady_clock::now();
+    pbapp::EncoderRuntimeClockTestAccess::SetClock(runtime, [&]()
+    {
+        return clockOrigin + std::chrono::seconds(runtime.GetSnapshot().preparedSourceBytes >= 8U * 1024U * 1024U ? 1 : 0);
+    });
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring());
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    config.maximumRunDurationSeconds = 1;
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]() { return !pbapp::IsEncoderStateActive(runtime.GetSnapshot().state); }));
+    runtime.Stop();
+    const auto stopped = runtime.GetSnapshot();
+    REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+    REQUIRE(stopped.stoppedByTimeout);
+    REQUIRE(stopped.errorDetail.empty());
+    REQUIRE(stopped.preparedSourceBytes > 0);
+    REQUIRE_FALSE(stopped.preparationComplete);
+    REQUIRE(stopped.sessionIdHex.empty());
+    REQUIRE(stopped.submittedFrames == 0);
+    REQUIRE_FALSE(presentationCreated);
+    REQUIRE_FALSE(std::filesystem::exists(config.sessionStateRoot));
+}
+
+TEST_CASE("Encoder deadline resets on a resumed run and accepts the full uint64 range", "[application][encoder][timeout]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"restart.bin";
+    WriteBytes(source, {});
+    std::atomic<std::int64_t> elapsedMilliseconds = 0;
+    const auto clockOrigin = std::chrono::steady_clock::now();
+    pbapp::EncoderRuntime runtime([](const pbrenderd3d::DataWindowConfig&)
+    {
+        return std::make_unique<MockPresentation>(std::make_shared<PresentationState>());
+    });
+    pbapp::EncoderRuntimeClockTestAccess::SetClock(runtime, [&]()
+    {
+        return clockOrigin + std::chrono::milliseconds(elapsedMilliseconds.load());
+    });
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    pbapp::EncoderSnapshot previous;
+    for (const std::uint64_t seconds : {1ULL, 1ULL, 0ULL, UINT64_MAX})
+    {
+        config.maximumRunDurationSeconds = seconds;
+        const std::int64_t startedAt = elapsedMilliseconds;
+        REQUIRE(runtime.Start(config));
+        REQUIRE(WaitFor([&]() { return runtime.GetSnapshot().submittedFrames == 2; }));
+        REQUIRE_FALSE(runtime.GetSnapshot().stoppedByTimeout);
+        REQUIRE(runtime.GetSnapshot().configuredMaximumRunDurationSeconds == seconds);
+        elapsedMilliseconds = startedAt + 999;
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        REQUIRE(runtime.GetSnapshot().state == pbapp::EncoderState::Broadcasting);
+        elapsedMilliseconds = startedAt + (seconds == 1 ? 1000 : 8000000);
+        if (seconds != 1)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+            REQUIRE(runtime.GetSnapshot().state == pbapp::EncoderState::Broadcasting);
+            runtime.RequestStop();
+        }
+        REQUIRE(WaitFor([&]() { return runtime.GetSnapshot().state == pbapp::EncoderState::Stopped; }));
+        runtime.Stop();
+        const auto stopped = runtime.GetSnapshot();
+        REQUIRE(stopped.stoppedByTimeout == (seconds == 1));
+        REQUIRE(stopped.errorDetail.empty());
+        REQUIRE(std::filesystem::exists(SessionPath(stopped)));
+        if (previous.runGeneration != 0)
+        {
+            REQUIRE(stopped.runGeneration > previous.runGeneration);
+            REQUIRE(stopped.resumedSession);
+            REQUIRE(stopped.sessionIdHex == previous.sessionIdHex);
+            REQUIRE(stopped.frameSequence >= previous.durableFrameSequenceLeaseEnd);
+        }
+        previous = stopped;
+    }
+}
+
+TEST_CASE("Encoder checks its deadline before opening a prepared presentation", "[application][encoder][timeout]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"pre-window.bin";
+    WriteBytes(source, {});
+    std::atomic<bool> presentationCreated = false;
+    pbapp::EncoderRuntime runtime([&](const pbrenderd3d::DataWindowConfig&)
+    {
+        presentationCreated = true;
+        return std::make_unique<MockPresentation>(std::make_shared<PresentationState>());
+    });
+    const auto clockOrigin = std::chrono::steady_clock::now();
+    pbapp::EncoderRuntimeClockTestAccess::SetClock(runtime, [&]()
+    {
+        return clockOrigin + std::chrono::seconds(runtime.GetSnapshot().statusMessage == "Creating the production D3D11 Data Window" ? 1 : 0);
+    });
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring());
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    config.maximumRunDurationSeconds = 1;
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]() { return !pbapp::IsEncoderStateActive(runtime.GetSnapshot().state); }));
+    runtime.Stop();
+    const auto stopped = runtime.GetSnapshot();
+    REQUIRE(stopped.state == pbapp::EncoderState::Stopped);
+    REQUIRE(stopped.stoppedByTimeout);
+    REQUIRE(stopped.errorDetail.empty());
+    REQUIRE(std::filesystem::exists(SessionPath(stopped)));
+    REQUIRE_FALSE(presentationCreated);
+}
+
+TEST_CASE("Encoder never submits a frame after a slow presentation observation crosses the deadline", "[application][encoder][timeout]")
+{
+    Scratch scratch;
+    const auto source = scratch.Path() / L"submit-deadline.bin";
+    WriteBytes(source, {});
+    std::atomic<bool> deadlineReached = false;
+    const auto state = std::make_shared<PresentationState>();
+    state->beforeSnapshot = [&]() { deadlineReached = true; };
+    pbapp::EncoderRuntime runtime([state](const pbrenderd3d::DataWindowConfig&)
+    {
+        return std::make_unique<MockPresentation>(state);
+    });
+    const auto clockOrigin = std::chrono::steady_clock::now();
+    pbapp::EncoderRuntimeClockTestAccess::SetClock(runtime, [&]()
+    {
+        return clockOrigin + std::chrono::seconds(deadlineReached ? 1 : 0);
+    });
+    auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring());
+    config.sessionStateRoot = scratch.Path() / L"sessions";
+    config.maximumRunDurationSeconds = 1;
+    REQUIRE(runtime.Start(config));
+    REQUIRE(WaitFor([&]() { return runtime.GetSnapshot().state == pbapp::EncoderState::Stopped; }));
+    runtime.Stop();
+    REQUIRE(runtime.GetSnapshot().stoppedByTimeout);
+    REQUIRE(runtime.GetSnapshot().submittedFrames == 0);
+    REQUIRE(state->attempts == 0);
 }
 
 TEST_CASE("Explicit Encoder state roots isolate fresh Sessions without deleting either resume history",

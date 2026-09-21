@@ -51,7 +51,7 @@ PixelBridge is not a remote-control application. It neither establishes the remo
 | **PixelBridgeEncoder** | Remote computer containing the file | Select the file and display a repeating visual stream |
 | **PixelBridgeDecoder** | Computer that needs the file | Capture a selected screen/region and save the reconstructed file |
 
-There is no return channel for progress or acknowledgments. **Wait for Decoder to report completion, then stop Encoder manually.** Time spent sending or the number of passes is not proof of successful reception.
+There is no return channel for progress or acknowledgments. **Wait for Decoder to report completion, then stop Encoder.** The Encoder GUI optionally accepts a maximum run duration in seconds: `0` runs until a human stops it, while a non-zero value starts when Start is accepted and safely stops at the limit. A timeout stop is not proof of successful reception.
 
 ## Quick start
 

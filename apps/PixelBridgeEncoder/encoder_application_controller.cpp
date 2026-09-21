@@ -114,6 +114,8 @@ void EncoderApplicationController::PollSnapshot()
         current.sessionStateGeneration != lastSnapshot_.sessionStateGeneration ||
         current.frameSequence != lastSnapshot_.frameSequence || current.presentationEpoch != lastSnapshot_.presentationEpoch ||
         current.configuredLogicalVisualFps != lastSnapshot_.configuredLogicalVisualFps ||
+        current.configuredMaximumRunDurationSeconds != lastSnapshot_.configuredMaximumRunDurationSeconds ||
+        current.stoppedByTimeout != lastSnapshot_.stoppedByTimeout ||
         current.statusMessage != lastSnapshot_.statusMessage || current.errorDetail != lastSnapshot_.errorDetail;
     const bool becameTerminal = IsTerminal(current.state) && !IsTerminal(lastSnapshot_.state);
     lastSnapshot_ = current;

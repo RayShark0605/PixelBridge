@@ -350,6 +350,8 @@ std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
     stream << ",\"errorDetail\":";
     WriteEscaped(stream, snapshot.errorDetail);
     stream << ",\"configuredLogicalVisualFps\":" << snapshot.configuredLogicalVisualFps;
+    stream << ",\"configuredMaximumRunDurationSeconds\":" << snapshot.configuredMaximumRunDurationSeconds;
+    stream << ",\"stoppedByTimeout\":" << (snapshot.stoppedByTimeout ? "true" : "false");
     stream << ",\"preparedSourceBytes\":" << snapshot.preparedSourceBytes;
     stream << ",\"sourceBytes\":" << snapshot.sourceBytes;
     stream << ",\"preparedSegmentCount\":" << snapshot.preparedSegmentCount;

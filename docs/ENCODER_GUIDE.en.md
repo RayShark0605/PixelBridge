@@ -36,10 +36,18 @@ Wide cannot simply be shrunk to 1080P and treated as the same mode. PAM4-family 
 ## Steps
 
 1. Fully extract Decoder on the computer needing the file; select its output folder, receiving screen/region and mode, then **start receiving first**.
-2. Open Encoder, select the source file, matching mode and target monitor, and set sending frequency.
+2. Open Encoder, select the source file, matching mode and target monitor, and set sending frequency. If desired, enter a non-negative integer in **Maximum run duration (seconds)** for an automatic safe stop.
 3. Ensure the remote view contains the complete raster, then start sending. Initial source preparation/verification precedes stable transmission.
 4. Keep the source immutable, the application running and the computer awake. Preserve the session cache. Do not change resolution/DPI/display mode or cover the raster.
 5. Stop Encoder only after Decoder reports success. Carousel passes, display FPS and network traffic do not prove file completion.
+
+### Automatic stop timeout
+
+- **Maximum run duration (seconds)** is local Encoder policy for this run. It is not written into the visual raster, SessionDescriptor, FEC, or any other protocol field.
+- `0` disables the timeout and keeps the sender running until a human stops it or an existing error occurs. A non-zero value starts when this Start request is accepted and includes source preparation as well as broadcasting.
+- The GUI accepts non-negative integer seconds in the `uint64_t` range; there is no 7200-second or other product-specific ceiling. Empty, negative, non-numeric, and overflowing values reject Start.
+- When the limit is reached, Encoder follows the normal safe-stop path and keeps the resumable Session. **This does not mean Decoder completed**; wait for Decoder's whole-file digest, safe publication, and final reopen verification.
+- To continue, use the original unchanged source and Session cache. Do not treat a timeout stop as receiver completion.
 
 ## Interruptions and diagnostics
 

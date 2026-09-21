@@ -331,7 +331,10 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
             snapshot.fullscreenSampling == pbapp::FullscreenSamplingMode::Area ? "area" : "point") << "\""
         << ",\"configuredInitialAirtimePercent\":" << snapshot.configuredInitialAirtimePercent
         << ",\"configuredVisitBudgetPercent\":" << snapshot.configuredVisitBudgetPercent
-        << ",\"configuredLogicalFps\":" << snapshot.configuredLogicalVisualFps << ",\"observedSubmittedLogicalFps\":";
+        << ",\"configuredLogicalFps\":" << snapshot.configuredLogicalVisualFps
+         << ",\"configuredMaximumRunDurationSeconds\":" << snapshot.configuredMaximumRunDurationSeconds
+         << ",\"stoppedByTimeout\":" << snapshot.stoppedByTimeout
+         << ",\"observedSubmittedLogicalFps\":";
     WriteOptionalNumber(stream, snapshot.generatedVisualFramesPerSecond);
     stream << ",\"sourceWholeFileDigest\":";
     WriteEscaped(stream, snapshot.wholeFileDigestHex);
@@ -615,6 +618,8 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     WriteOptionalNumber(stream, snapshot.runEndedUnixMilliseconds);
     stream << ",\"state\":";
     WriteEscaped(stream, GetEncoderStateName(snapshot.state));
+    stream << ",\"configuredMaximumRunDurationSeconds\":" << snapshot.configuredMaximumRunDurationSeconds
+           << ",\"stoppedByTimeout\":" << snapshot.stoppedByTimeout;
     stream << ",\"sessionId\":";
     WriteEscaped(stream, snapshot.sessionIdHex);
     stream << ",\"sessionTag\":" << snapshot.sessionTag
@@ -1102,6 +1107,8 @@ std::string BuildEncoderDiagnostics(const EncoderSnapshot& snapshot)
            << "\nProfile: " << GetVisualProfileName(snapshot.visualProfile)
            << "\nCompression: " << GetCompressionCodecName(snapshot.compressionCodec)
            << "\nOuter FEC: " << GetOuterFecModeName(snapshot.outerFecMode)
+           << "\nMaximum run duration seconds: " << snapshot.configuredMaximumRunDurationSeconds
+           << "\nStopped by timeout: " << (snapshot.stoppedByTimeout ? "true" : "false")
            << "\nBroadcast runtime ms: " << snapshot.broadcastRuntimeMilliseconds
            << "\nCarousel cycle/position: " << snapshot.cycleCount << '/' << snapshot.cyclePosition
            << " of " << snapshot.cycleFrameCount << "\nFrameSequence: " << snapshot.frameSequence
