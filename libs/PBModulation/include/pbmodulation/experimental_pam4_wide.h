@@ -53,7 +53,7 @@ struct ExperimentalPam4WideObservation
     LocalDesktopObservation bootstrap;
     pbprotocol::BootstrapRecord bootstrapRecord;
     std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount> freshness{};
-    std::array<UnifiedSlotObservation, kExperimentalPam4WideCodewordCount> slots{};
+    std::array<UnifiedSlotObservation, kExperimentalPam4WideCodewordCount> slotObservations{};
     UnifiedLaneMetricObservation lumaMetrics;
     std::uint32_t frameSlotCount = kExperimentalPam4WideCodewordCount;
     std::uint32_t acceptedBlocks = 0;

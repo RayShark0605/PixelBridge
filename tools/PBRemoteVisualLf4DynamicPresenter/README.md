@@ -59,6 +59,6 @@ The first formal 120-second Windows Remote Desktop receiver-only pilot has now
 passed with a bounded 10 Hz pre-readback Replay sampler and byte-identical
 double offline inspection. Its exact environment, identities, commands,
 counters, hashes, and non-certification boundary are recorded in
-`docs/REMOTE_VISUAL_STEP09_DYNAMIC_RDP_PILOT.md`. That sealed pilot used the
+`../../docs/EVIDENCE_INDEX.md`. That sealed pilot used the
 then-current hidden-profile binary and remains historical evidence; it is not
 silently reinterpreted as a Step 17 public-profile run.

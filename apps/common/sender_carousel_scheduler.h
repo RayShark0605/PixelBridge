@@ -273,11 +273,11 @@ struct SenderUnifiedScheduledFrame
     // frame carries 18. The slots array is sized for the largest carrier, so
     // including the independent twenty-slot carrier; only GetActiveSlots() (or slotCount-bounded loops) may iterate it.
     std::uint32_t slotCount = static_cast<std::uint32_t>(senderUnifiedCodewordSlotCount);
-    std::array<SenderUnifiedScheduledSlot, maximumMixedFrameSlotCount> slots;
+    std::array<SenderUnifiedScheduledSlot, maximumMixedFrameSlotCount> slotAssignments;
 
     [[nodiscard]] std::span<const SenderUnifiedScheduledSlot> GetActiveSlots() const noexcept
     {
-        return std::span<const SenderUnifiedScheduledSlot>(slots.data(), slotCount);
+        return std::span<const SenderUnifiedScheduledSlot>(slotAssignments.data(), slotCount);
     }
 
     bool operator==(const SenderUnifiedScheduledFrame&) const = default;

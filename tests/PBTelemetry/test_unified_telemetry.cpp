@@ -22,13 +22,13 @@ pbmodulation::UnifiedVisualObservation Observation(const std::uint64_t sequence)
     // populated or evaluated for this identity.
     for (std::uint32_t index = 0; index < pbmodulation::kUnifiedCodewordCount; index++)
     {
-        auto& slot = observation.slots[index];
+        auto& slot = observation.slotObservations[index];
         slot.lane = pbmodulation::FindUnifiedLaneForCodewordSlot(index)->lane;
         slot.rejection = pbmodulation::UnifiedSlotRejection::None;
         slot.fecValid = slot.paddingValid = slot.crcValid = slot.identityValid = slot.accepted = true;
         slot.acceptedBytes = 100;
     }
-    observation.slots[0].kind = pbmodulation::UnifiedSlotKind::Control;
+    observation.slotObservations[0].kind = pbmodulation::UnifiedSlotKind::Control;
     observation.acceptedBlocks = pbmodulation::kUnifiedCodewordCount;
     observation.acceptedTransportBlocks = observation.acceptedBlocks - 1;
     observation.acceptedControlRecords = 1;
@@ -85,7 +85,7 @@ TEST_CASE("G17 malformed observations cannot partially mutate lane counters", "[
     }
     SECTION("accepted FEC conflict")
     {
-        invalid.slots[pbmodulation::kUnifiedCodewordCount - 1].fecValid = false;
+        invalid.slotObservations[pbmodulation::kUnifiedCodewordCount - 1].fecValid = false;
     }
     SECTION("accepted total conflict")
     {
@@ -93,12 +93,12 @@ TEST_CASE("G17 malformed observations cannot partially mutate lane counters", "[
     }
     SECTION("unknown slot kind")
     {
-        invalid.slots[pbmodulation::kUnifiedCodewordCount - 1].kind =
+        invalid.slotObservations[pbmodulation::kUnifiedCodewordCount - 1].kind =
             static_cast<pbmodulation::UnifiedSlotKind>(255);
     }
     SECTION("unknown rejection")
     {
-        invalid.slots[pbmodulation::kUnifiedCodewordCount - 1].rejection =
+        invalid.slotObservations[pbmodulation::kUnifiedCodewordCount - 1].rejection =
             static_cast<pbmodulation::UnifiedSlotRejection>(255);
     }
     SECTION("erased frame cannot report accepted bytes")
@@ -122,19 +122,19 @@ TEST_CASE("G17 lane failures and Bootstrap-only erasures keep separate measured 
     constexpr std::array<std::uint32_t, 5> failedSlots{1, 9, 10, 11, 12};
     for (const auto slot : failedSlots)
     {
-        observation.slots[slot].accepted = false;
-        observation.slots[slot].acceptedBytes = 0;
+        observation.slotObservations[slot].accepted = false;
+        observation.slotObservations[slot].acceptedBytes = 0;
     }
-    observation.slots[1].rejection = pbmodulation::UnifiedSlotRejection::InnerFecFailure;
-    observation.slots[1].fecValid = false;
-    observation.slots[1].iterationsUsed = 12;
-    observation.slots[9].rejection = pbmodulation::UnifiedSlotRejection::TransportCrcFailure;
-    observation.slots[9].crcValid = false;
-    observation.slots[10].rejection = pbmodulation::UnifiedSlotRejection::LaneErasure;
-    observation.slots[10].fecValid = false;
-    observation.slots[11].rejection = pbmodulation::UnifiedSlotRejection::IdentityFailure;
-    observation.slots[11].identityValid = false;
-    observation.slots[12].rejection = pbmodulation::UnifiedSlotRejection::InvalidInformation;
+    observation.slotObservations[1].rejection = pbmodulation::UnifiedSlotRejection::InnerFecFailure;
+    observation.slotObservations[1].fecValid = false;
+    observation.slotObservations[1].iterationsUsed = 12;
+    observation.slotObservations[9].rejection = pbmodulation::UnifiedSlotRejection::TransportCrcFailure;
+    observation.slotObservations[9].crcValid = false;
+    observation.slotObservations[10].rejection = pbmodulation::UnifiedSlotRejection::LaneErasure;
+    observation.slotObservations[10].fecValid = false;
+    observation.slotObservations[11].rejection = pbmodulation::UnifiedSlotRejection::IdentityFailure;
+    observation.slotObservations[11].identityValid = false;
+    observation.slotObservations[12].rejection = pbmodulation::UnifiedSlotRejection::InvalidInformation;
     observation.acceptedBlocks -= static_cast<std::uint32_t>(failedSlots.size());
     observation.acceptedTransportBlocks -= static_cast<std::uint32_t>(failedSlots.size());
     REQUIRE(telemetry.Record(observation, 1, 0));

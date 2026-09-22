@@ -129,6 +129,11 @@ public:
         });
     }
 
+    void reject() override
+    {
+        HandleCancel();
+    }
+
 protected:
     void closeEvent(QCloseEvent* event) override
     {
@@ -188,12 +193,13 @@ private:
         buttons_->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
         outer->addWidget(buttons_);
         connect(buttons_, &QDialogButtonBox::accepted, this, &ShellTransferDialog::StartTransmission);
-        connect(buttons_, &QDialogButtonBox::rejected, this, &ShellTransferDialog::reject);
+        connect(buttons_, &QDialogButtonBox::rejected, this, &ShellTransferDialog::HandleCancel);
 
         escapeShortcut_ = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+        escapeShortcut_->setObjectName(QStringLiteral("shellEscape"));
         escapeShortcut_->setContext(Qt::WindowShortcut);
         escapeShortcut_->setAutoRepeat(false);
-        connect(escapeShortcut_, &QShortcut::activated, &controller_, &EncoderApplicationController::RequestStop);
+        connect(escapeShortcut_, &QShortcut::activated, this, &ShellTransferDialog::HandleCancel);
     }
 
     void LoadPreferences()
@@ -304,6 +310,18 @@ private:
             QStringLiteral("普通文件正在发送；Decoder 完成后再按 Esc 停止。"));
     }
 
+    void HandleCancel()
+    {
+        if (pbencoder::GetShellDialogCancelAction(controller_.IsActive()) == pbencoder::ShellDialogCancelAction::RequestStop)
+        {
+            closePending_ = true;
+            buttons_->button(QDialogButtonBox::Cancel)->setEnabled(false);
+            controller_.RequestStop();
+            return;
+        }
+        QDialog::reject();
+    }
+
     void UpdateSnapshot()
     {
         const pbapp::EncoderSnapshot snapshot = controller_.GetSnapshot();
@@ -366,7 +384,13 @@ bool RunEncoderShellDialogSmoke()
     const auto* const modeCombo = dialog.findChild<QComboBox*>(QStringLiteral("shellCarrierMode"));
     const auto* const timeoutEdit = dialog.findChild<QLineEdit*>(QStringLiteral("shellMaximumRunDurationSeconds"));
     const auto* const sourceLabel = dialog.findChild<QLabel*>(QStringLiteral("shellSource"));
-    return dialog.size() == QSize(460, 286) && fpsSpin != nullptr && fpsSpin->minimum() == 1 && fpsSpin->maximum() == 60 &&
+    QShortcut* const escapeShortcut = dialog.findChild<QShortcut*>(QStringLiteral("shellEscape"));
+    dialog.show();
+    QApplication::processEvents();
+    const bool escapeInvoked = escapeShortcut != nullptr && QMetaObject::invokeMethod(escapeShortcut, "activated", Qt::DirectConnection);
+    QApplication::processEvents();
+    return escapeInvoked && !dialog.isVisible() && dialog.result() == QDialog::Rejected && dialog.size() == QSize(460, 286) &&
+        fpsSpin != nullptr && fpsSpin->minimum() == 1 && fpsSpin->maximum() == 60 &&
         modeCombo != nullptr && modeCombo->count() == 4 && modeCombo->currentIndex() == pbapp::defaultGuiVisualModeIndex &&
         timeoutEdit != nullptr && timeoutEdit->text() == QStringLiteral("0") && sourceLabel != nullptr &&
         sourceLabel->text().contains(QStringLiteral("文件夹"));

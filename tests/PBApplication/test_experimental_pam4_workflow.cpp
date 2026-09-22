@@ -159,14 +159,14 @@ TEST_CASE("PAM4 one-control scheduler keeps every data equation behind its same-
         REQUIRE(frame.slotCount == 11);
         REQUIRE(frame.controlSlotCount == 1);
         REQUIRE(frame.transportSlotCount == 10);
-        REQUIRE(frame.slots[0].assignment.kind == pbmodulation::UnifiedSlotKind::Control);
-        const auto priority = frame.slots[0].assignment.controlPriority;
+        REQUIRE(frame.slotAssignments[0].assignment.kind == pbmodulation::UnifiedSlotKind::Control);
+        const auto priority = frame.slotAssignments[0].assignment.controlPriority;
         controls.insert(priority);
         std::array<pbmodulation::UnifiedSlotAssignment, 11> assignments{};
         for (std::uint32_t slotIndex = 0; slotIndex < 11; slotIndex++)
         {
-            assignments[slotIndex] = frame.slots[slotIndex].assignment;
-            const auto& slot = frame.slots[slotIndex];
+            assignments[slotIndex] = frame.slotAssignments[slotIndex].assignment;
+            const auto& slot = frame.slotAssignments[slotIndex];
             if (slot.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::ScheduledEquation)
             {
                 REQUIRE(priority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);

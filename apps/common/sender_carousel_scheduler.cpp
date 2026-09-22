@@ -565,7 +565,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     std::uint64_t localPaddingDuplicateCount = 0;
     for (std::uint32_t codewordSlot = 0; codewordSlot < codewordCount; codewordSlot++)
     {
-        SenderUnifiedScheduledSlot& slot = frame.slots[codewordSlot];
+        SenderUnifiedScheduledSlot& slot = frame.slotAssignments[codewordSlot];
         if (codewordSlot < controlSlotCount)
         {
             slot.assignment = {codewordSlot, pbmodulation::UnifiedSlotKind::Control,
@@ -615,7 +615,7 @@ SenderCarouselSchedulerStatus SenderUnifiedCarouselScheduler::BuildFrame(
     std::array<pbmodulation::UnifiedSlotAssignment, maximumMixedFrameSlotCount> assignments{};
     for (std::uint32_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
     {
-        assignments[slotIndex] = frame.slots[slotIndex].assignment;
+        assignments[slotIndex] = frame.slotAssignments[slotIndex].assignment;
     }
     const std::span<const pbmodulation::UnifiedSlotAssignment> plannedAssignments(
         assignments.data(), frameCodewordSlots_);

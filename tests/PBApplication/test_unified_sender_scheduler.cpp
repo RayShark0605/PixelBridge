@@ -43,7 +43,7 @@ void RequireExactSlotAccounting(const pbapp::SenderUnifiedScheduledFrame& frame)
     std::uint32_t inactiveTransportSlots = 0;
     for (std::size_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
     {
-        const pbapp::SenderUnifiedScheduledSlot& slot = frame.slots[slotIndex];
+        const pbapp::SenderUnifiedScheduledSlot& slot = frame.slotAssignments[slotIndex];
         assignments[slotIndex] = slot.assignment;
         REQUIRE(slot.assignment.codewordSlot == slotIndex);
         if (slot.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
@@ -382,7 +382,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
                     pbmodulation::UnifiedControlPriority::FinalManifest};
                 for (std::size_t slot = 0; slot < expectedPriorities.size(); slot++)
                 {
-                    REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
+                    REQUIRE(frame.slotAssignments[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
             }
             else if (logicalTickOrdinal == 1)
@@ -397,7 +397,7 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
                     pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor};
                 for (std::size_t slot = 0; slot < expectedPriorities.size(); slot++)
                 {
-                    REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
+                    REQUIRE(frame.slotAssignments[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
             }
             else if (cadenceOffset == 0)
@@ -411,14 +411,14 @@ TEST_CASE("Unified logical clock and mixed scheduler drop missed ticks without a
                     pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor};
                 for (std::size_t slot = 0; slot < expectedPriorities.size(); slot++)
                 {
-                    REQUIRE(frame.slots[slot].assignment.controlPriority == expectedPriorities[slot]);
+                    REQUIRE(frame.slotAssignments[slot].assignment.controlPriority == expectedPriorities[slot]);
                 }
             }
             else
             {
                 REQUIRE(frame.controlBurstSlotCount == 0);
                 REQUIRE(frame.controlSlotCount == 1);
-                REQUIRE(frame.slots.front().assignment.controlPriority ==
+                REQUIRE(frame.slotAssignments.front().assignment.controlPriority ==
                     pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
                 REQUIRE(frame.transportSlotCount == pbapp::senderUnifiedCodewordSlotCount - 1);
             }
@@ -508,7 +508,7 @@ TEST_CASE("Unified control repetitions survive either two-frame burst sample und
         {
             const auto priority = requiredPriorities[priorityIndex];
             const auto priorityCount = static_cast<std::uint32_t>(std::ranges::count_if(
-                frame.slots.begin(), frame.slots.begin() + frame.controlSlotCount,
+                frame.slotAssignments.begin(), frame.slotAssignments.begin() + frame.controlSlotCount,
                 [priority](const pbapp::SenderUnifiedScheduledSlot& slot)
                 {
                     return slot.assignment.controlPriority == priority;
@@ -777,9 +777,9 @@ TEST_CASE("Unified periodic refresh is one atomic descriptor triplet after start
         RequireExactSlotAccounting(refresh);
         REQUIRE(refresh.controlBurstSlotCount == 3);
         REQUIRE(refresh.transportSlotCount == 12);
-        REQUIRE(refresh.slots[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::SessionDescriptor);
-        REQUIRE(refresh.slots[1].assignment.controlPriority == pbmodulation::UnifiedControlPriority::FinalManifest);
-        REQUIRE(refresh.slots[2].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
+        REQUIRE(refresh.slotAssignments[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::SessionDescriptor);
+        REQUIRE(refresh.slotAssignments[1].assignment.controlPriority == pbmodulation::UnifiedControlPriority::FinalManifest);
+        REQUIRE(refresh.slotAssignments[2].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
         pbapp::SenderUnifiedScheduledFrame retry;
         REQUIRE(scheduler.PrepareFrameAt(2, afterLongStall + 1, retry));
         REQUIRE(retry == refresh);
@@ -788,7 +788,7 @@ TEST_CASE("Unified periodic refresh is one atomic descriptor triplet after start
         REQUIRE(scheduler.PrepareFrameAt(3, afterLongStall + 66666667ULL, next));
         REQUIRE(next.controlBurstSlotCount == 0);
         REQUIRE(next.controlSlotCount == 1);
-        REQUIRE(next.slots[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
+        REQUIRE(next.slotAssignments[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
         REQUIRE(next.firstEquationIndex == refresh.firstEquationIndex + refresh.scheduledEquationCount);
         REQUIRE(scheduler.CommitPreparedFrame());
         REQUIRE(scheduler.GetSnapshot().controlBurstCount == 2);
@@ -907,7 +907,7 @@ TEST_CASE("Zero-byte Unified Session recovers Session and Manifest from one mixe
     std::array<pbmodulation::UnifiedFrameSlotInput, pbapp::senderUnifiedCodewordSlotCount> inputs{};
     for (std::size_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
     {
-        const pbapp::SenderUnifiedScheduledSlot& scheduledSlot = frame.slots[slotIndex];
+        const pbapp::SenderUnifiedScheduledSlot& scheduledSlot = frame.slotAssignments[slotIndex];
         if (scheduledSlot.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
         {
             const std::span<const std::byte> record = scheduledSlot.assignment.controlPriority ==

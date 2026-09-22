@@ -300,7 +300,7 @@ CorpusRecord RunCase(UnifiedVisualCpuOracle& oracle, const std::string& name, co
     // storage tail keeps default FrameErasure entries of the larger carrier.
     for (std::uint32_t slotIndex = 0; slotIndex < observation.frameSlotCount; slotIndex++)
     {
-        const UnifiedSlotObservation& slot = observation.slots[slotIndex];
+        const UnifiedSlotObservation& slot = observation.slotObservations[slotIndex];
         const std::size_t lane = LaneIndex(slot.lane);
         const std::size_t rejection = static_cast<std::size_t>(slot.rejection);
         REQUIRE(lane < kLaneCount);

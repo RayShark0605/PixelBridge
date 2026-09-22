@@ -271,7 +271,7 @@ void RequireFullRecovery(UnifiedVisualCpuOracle& oracle, const UnifiedVisualObse
     REQUIRE(accepted.size() == frameCount * kUnifiedGrayFrameCodewordCount);
     for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
     {
-        REQUIRE(observation.slots[slot].accepted);
+        REQUIRE(observation.slotObservations[slot].accepted);
         REQUIRE(accepted[frameCount - 1 + slot].size == fixture.expected[slot].size());
         REQUIRE(std::equal(fixture.expected[slot].begin(), fixture.expected[slot].end(),
             accepted[frameCount - 1 + slot].bytes.begin()));
@@ -364,7 +364,7 @@ void RequireGrayFastRecovery(UnifiedVisualCpuOracle& oracle, const UnifiedVisual
     REQUIRE(accepted.size() == kUnifiedGrayFrameCodewordCount);
     for (std::uint32_t slot = 0; slot < kUnifiedGrayFrameCodewordCount; slot++)
     {
-        REQUIRE(observation.slots[slot].accepted);
+        REQUIRE(observation.slotObservations[slot].accepted);
         REQUIRE(accepted[slot].size == fixture.expected[slot].size());
         REQUIRE(std::equal(fixture.expected[slot].begin(), fixture.expected[slot].end(),
             accepted[slot].bytes.begin()));

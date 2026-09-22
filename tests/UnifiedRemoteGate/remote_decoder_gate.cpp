@@ -457,7 +457,7 @@ void InspectRemotePixels(const std::filesystem::path& inputPath, const std::file
         erasuresByLane[laneIndex][reason]++;
     }
     std::uint64_t fecIterations = 0;
-    for (const auto& slot : observation.slots)
+    for (const auto& slot : observation.slotObservations)
     {
         fecIterations = pbprotocol::SaturatingAddUnsigned(fecIterations, static_cast<std::uint64_t>(slot.iterationsUsed));
     }
@@ -498,10 +498,10 @@ void InspectRemotePixels(const std::filesystem::path& inputPath, const std::file
     stream << "],\"fecIterations\":" << fecIterations << ",\"acceptedBlocks\":" << observation.acceptedBlocks
         << ",\"acceptedTransportBlocks\":" << observation.acceptedTransportBlocks
         << ",\"acceptedControlRecords\":" << observation.acceptedControlRecords << ",\"slots\":[";
-    for (std::size_t slot = 0; slot < observation.slots.size(); slot++)
+    for (std::size_t slot = 0; slot < observation.slotObservations.size(); slot++)
     {
         stream << (slot == 0 ? "" : ",");
-        WriteSlotReport(stream, observation.slots[slot]);
+        WriteSlotReport(stream, observation.slotObservations[slot]);
     }
     stream << "]}";
     WriteNew(reportPath, stream.str());

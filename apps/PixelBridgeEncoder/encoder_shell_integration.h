@@ -31,6 +31,12 @@ struct ShellRegistrationStatus
     }
 };
 
+[[nodiscard]] constexpr bool ShouldPublishShellRegistrationDisplayName(
+    const bool commandIsOwned, const bool displayNameIsPresent) noexcept
+{
+    return commandIsOwned && !displayNameIsPresent;
+}
+
 [[nodiscard]] std::wstring QuoteWindowsCommandLineArgument(std::wstring_view value);
 
 [[nodiscard]] std::vector<ShellCommandRegistration> BuildShellCommandRegistrations(

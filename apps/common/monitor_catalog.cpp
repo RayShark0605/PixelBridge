@@ -13,6 +13,8 @@ namespace
 {
 
 inline constexpr std::size_t maximumMonitors = 64;
+inline constexpr std::int64_t phase1CanvasWidth = 1920;
+inline constexpr std::int64_t phase1CanvasHeight = 1080;
 
 struct EnumerationContext
 {

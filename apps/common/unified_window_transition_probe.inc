@@ -115,7 +115,7 @@ void RunUnifiedWindowTransitionProbe(const std::wstring& sourcePath,
             // Match live Session -> other Control -> Transport processing order.
             for (std::uint32_t pass = 0; pass < 2; pass++)
             {
-                for (const auto& slot : frame.slots)
+                for (const auto& slot : frame.slotAssignments)
                 {
                     if (slot.assignment.kind != pbmodulation::UnifiedSlotKind::Control)
                     {
@@ -133,9 +133,9 @@ void RunUnifiedWindowTransitionProbe(const std::wstring& sourcePath,
                     Require(pipeline.ProcessHeadlessControlRecord(bytes, timestamp100ns), "Pass-0 scheduled Control rejected");
                 }
             }
-            for (std::uint32_t slot = 0; slot < frame.slots.size() && !pipeline.IsCompleted(); slot++)
+            for (std::uint32_t slot = 0; slot < frame.slotAssignments.size() && !pipeline.IsCompleted(); slot++)
             {
-                if (frame.slots[slot].assignment.kind != pbmodulation::UnifiedSlotKind::Transport)
+                if (frame.slotAssignments[slot].assignment.kind != pbmodulation::UnifiedSlotKind::Transport)
                 {
                     continue;
                 }

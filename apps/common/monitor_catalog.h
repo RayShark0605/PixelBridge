@@ -1,7 +1,5 @@
 #pragma once
 
-#include "application_model.h"
-
 #include <Windows.h>
 #include <dxgi.h>
 

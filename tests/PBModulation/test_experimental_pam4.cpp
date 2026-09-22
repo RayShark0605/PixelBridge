@@ -398,8 +398,8 @@ TEST_CASE("PAM4 uses fixed Robust Control and Fast Data dimensions with zero fil
     CHECK(observation.acceptedTransportBlocks == 0);
     for (std::uint32_t slot = 1; slot < 11; slot++)
     {
-        CHECK(observation.slots[slot].fecValid);
-        CHECK_FALSE(observation.slots[slot].accepted);
+        CHECK(observation.slotObservations[slot].fecValid);
+        CHECK_FALSE(observation.slotObservations[slot].accepted);
     }
 }
 
@@ -454,8 +454,8 @@ TEST_CASE("PAM4 CRC padding and SessionTag remain mandatory after valid FEC", "[
         REQUIRE(EncodeExperimentalPam4Frame(fixture.bootstrap, coded, raster));
         const auto observation = decoder.Decode(View(raster));
         REQUIRE(observation.IsFrameAvailable());
-        CHECK(observation.slots[slot].fecValid);
-        CHECK_FALSE(observation.slots[slot].accepted);
+        CHECK(observation.slotObservations[slot].fecValid);
+        CHECK_FALSE(observation.slotObservations[slot].accepted);
         CHECK(observation.acceptedBlocks == 10);
     }
     const auto parsed = pbprotocol::ParseTransportBlock(fixture.blocks[1]);
@@ -472,10 +472,10 @@ TEST_CASE("PAM4 CRC padding and SessionTag remain mandatory after valid FEC", "[
     REQUIRE(EncodeExperimentalPam4Frame(fixture.bootstrap, coded, raster));
     const auto observation = decoder.Decode(View(raster));
     REQUIRE(observation.IsFrameAvailable());
-    CHECK(observation.slots[1].fecValid);
-    CHECK(observation.slots[1].crcValid);
-    CHECK_FALSE(observation.slots[1].accepted);
-    CHECK(observation.slots[1].rejection == UnifiedSlotRejection::IdentityFailure);
+    CHECK(observation.slotObservations[1].fecValid);
+    CHECK(observation.slotObservations[1].crcValid);
+    CHECK_FALSE(observation.slotObservations[1].accepted);
+    CHECK(observation.slotObservations[1].rejection == UnifiedSlotRejection::IdentityFailure);
     auto wrongFixture = fixture;
     wrongFixture.blocks[1] = wrongBlock;
     const auto wrongSlots = Slots(wrongFixture);

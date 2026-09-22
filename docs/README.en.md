@@ -9,6 +9,7 @@
 3. [Memory budgets](DECODER_MEMORY_BUDGET.en.md): configuration, recommendations and bounds.
 4. [Diagnostics](DIAGNOSTICS.en.md): activity reasons, endpoint counters, errors and log files.
 5. [Current status](PROJECT_STATUS.en.md): validated/unvalidated scope and v1.0 release boundaries.
+6. [2026-09-22 full audit record](AUDIT_2026-09-22.md): reviewed code/docs, fixes, verification, and retained limits.
 
 ## Developers
 

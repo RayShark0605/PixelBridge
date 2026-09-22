@@ -7,7 +7,7 @@
 > 性质：Encoder 本地实现/持久状态及 Unified scheduler 规范；G15 产品接线与安全删除见 [G22 GUI 发布与交互合同](EVIDENCE_INDEX.md)，不是实屏或吞吐认证。
 > 主要代码：`apps/common/local_desktop_runtime.cpp`、`apps/common/sender_carousel_scheduler.*`、`apps/common/encoder_session_store.*`、`libs/PBModulation/src/unified_visual.cpp`、`libs/PBProtocol/src/bootstrap_control_codec.cpp`
 > G21 更新（2026-09-05）：下节当前调度合同已随唯一产品 manifest 改为 SC6 V3/layout 10；后文 G02/G09 的旧 LC4 测试计数保留为历史证据。
-> 非本机吞吐更新（2026-09-11）：Unified Wirehair later pass 由"整段 K+20% repair"改为**增量喷泉 repair pass**（每 pass 只调度 `max(16, ceil(K*20%))` 个全新 repair equation，systematic 永不重播），见 §1.1 第 7 条。依据与实测：`docs/REMOTE_NONLOCAL_THROUGHPUT_SESSION_FINDINGS_20260911.md`（100 MB 档 41–61% 接受符号为已完成 Segment 的重复）。
+> 非本机吞吐更新（2026-09-11）：Unified Wirehair later pass 由"整段 K+20% repair"改为**增量喷泉 repair pass**（每 pass 只调度 `max(16, ceil(K*20%))` 个全新 repair equation，systematic 永不重播），见 §1.1 第 7 条。依据与实测：`docs/DOC_HISTORY.md`（100 MB 档 41–61% 接受符号为已完成 Segment 的重复）。
 > 同日：发送端活跃 Segment 窗口 8 → 6（`senderUnifiedActiveSegmentWindowSize`），接收端解码器配额解耦保持 8（`senderUnifiedReceiverActiveDecoderLimit`）——窗口严格小于配额，使早窗口饥饿段保留解码器而不是被 deferred（当日实测 100 MB 档 quota deferred 30,532–31,645 次）。仅调度/资源调优，不改 wire 语义。
 
 ## 1. 已关闭的发送端合同

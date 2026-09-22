@@ -378,11 +378,11 @@ TEST_CASE("Unified CPU oracle recovers every clean mixed Control and Transport s
     REQUIRE(accepted.size() == kUnifiedCodewordCount);
     for (std::size_t slot = 0; slot < accepted.size(); slot++)
     {
-        REQUIRE(observation.slots[slot].fecValid);
-        REQUIRE(observation.slots[slot].paddingValid);
-        REQUIRE(observation.slots[slot].crcValid);
-        REQUIRE(observation.slots[slot].identityValid);
-        REQUIRE(observation.slots[slot].accepted);
+        REQUIRE(observation.slotObservations[slot].fecValid);
+        REQUIRE(observation.slotObservations[slot].paddingValid);
+        REQUIRE(observation.slotObservations[slot].crcValid);
+        REQUIRE(observation.slotObservations[slot].identityValid);
+        REQUIRE(observation.slotObservations[slot].accepted);
         REQUIRE(accepted[slot].codewordSlot == slot);
         REQUIRE(accepted[slot].size == fixture.expected[slot].size());
         REQUIRE(std::equal(fixture.expected[slot].begin(), fixture.expected[slot].end(), accepted[slot].bytes.begin()));
@@ -680,7 +680,7 @@ TEST_CASE("Unified frame input packs explicit slot kinds into the frozen referen
     REQUIRE(mixedObservation.acceptedTransportBlocks == kUnifiedCodewordCount - 1);
     for (std::size_t slotIndex = 0; slotIndex < fixture.plan.size(); slotIndex++)
     {
-        REQUIRE(mixedObservation.slots[slotIndex].kind == fixture.plan[slotIndex].kind);
+        REQUIRE(mixedObservation.slotObservations[slotIndex].kind == fixture.plan[slotIndex].kind);
     }
 
     std::swap(inputs[0], inputs[14]);
@@ -795,9 +795,9 @@ TEST_CASE("Unified CPU oracle corrects a raster bit before truth admission", "[u
     const UnifiedVisualObservation observation = oracle.Decode(View(pixels), fixture.plan);
     REQUIRE(observation.IsFrameAvailable());
     REQUIRE(observation.acceptedBlocks == kUnifiedCodewordCount);
-    REQUIRE(observation.slots[0].fecValid);
-    REQUIRE(observation.slots[0].iterationsUsed > 0);
-    REQUIRE(observation.slots[0].accepted);
+    REQUIRE(observation.slotObservations[0].fecValid);
+    REQUIRE(observation.slotObservations[0].iterationsUsed > 0);
+    REQUIRE(observation.slotObservations[0].accepted);
     const std::span<const UnifiedAcceptedBlock> accepted = oracle.GetAcceptedBlocks();
     REQUIRE(accepted.size() == kUnifiedCodewordCount);
     REQUIRE(accepted[0].size == fixture.expected[0].size());
@@ -1021,10 +1021,10 @@ TEST_CASE("Unified frame conflicts and post-FEC truth gates reject decisive fail
         EncodeInformation(wrongIdentityInformation, 3, damaged.coded);
         const std::vector<std::byte> pixels = Render(damaged);
         const UnifiedVisualObservation observation = oracle.Decode(View(pixels), damaged.plan);
-        REQUIRE(observation.slots[0].rejection == UnifiedSlotRejection::ControlCrcFailure);
-        REQUIRE(observation.slots[1].rejection == UnifiedSlotRejection::NonCanonicalPadding);
-        REQUIRE(observation.slots[2].rejection == UnifiedSlotRejection::TransportCrcFailure);
-        REQUIRE(observation.slots[3].rejection == UnifiedSlotRejection::IdentityFailure);
+        REQUIRE(observation.slotObservations[0].rejection == UnifiedSlotRejection::ControlCrcFailure);
+        REQUIRE(observation.slotObservations[1].rejection == UnifiedSlotRejection::NonCanonicalPadding);
+        REQUIRE(observation.slotObservations[2].rejection == UnifiedSlotRejection::TransportCrcFailure);
+        REQUIRE(observation.slotObservations[3].rejection == UnifiedSlotRejection::IdentityFailure);
         REQUIRE(observation.acceptedBlocks == kUnifiedCodewordCount - 4);
         REQUIRE(oracle.GetAcceptedBlocks().size() == kUnifiedCodewordCount - 4);
     }
@@ -1161,10 +1161,10 @@ TEST_CASE("Unified parallel codeword FEC sweep matches the serial diagnostics pa
     REQUIRE(parallelObservation.acceptedTransportBlocks == serialObservation.acceptedTransportBlocks);
     for (std::uint32_t slot = 0; slot < kUnifiedCodewordCount; slot++)
     {
-        REQUIRE(parallelObservation.slots[slot].fecValid == serialObservation.slots[slot].fecValid);
-        REQUIRE(parallelObservation.slots[slot].rejection == serialObservation.slots[slot].rejection);
-        REQUIRE(parallelObservation.slots[slot].iterationsUsed == serialObservation.slots[slot].iterationsUsed);
-        REQUIRE(parallelObservation.slots[slot].accepted == serialObservation.slots[slot].accepted);
+        REQUIRE(parallelObservation.slotObservations[slot].fecValid == serialObservation.slotObservations[slot].fecValid);
+        REQUIRE(parallelObservation.slotObservations[slot].rejection == serialObservation.slotObservations[slot].rejection);
+        REQUIRE(parallelObservation.slotObservations[slot].iterationsUsed == serialObservation.slotObservations[slot].iterationsUsed);
+        REQUIRE(parallelObservation.slotObservations[slot].accepted == serialObservation.slotObservations[slot].accepted);
     }
     const std::span<const UnifiedAcceptedBlock> parallelBlocks = parallel.GetAcceptedBlocks();
     const std::span<const UnifiedAcceptedBlock> serialBlocks = serial.GetAcceptedBlocks();

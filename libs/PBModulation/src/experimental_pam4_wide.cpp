@@ -316,7 +316,7 @@ bool ValidateExperimentalPam4WideSlotPlan(const std::span<const UnifiedSlotAssig
 ModulationStatus PackExperimentalPam4WideFrame(const UnifiedVisualFrameInput& input, const std::span<std::byte> output) noexcept
 {
     if (input.bootstrapRecord.data() == nullptr || input.bootstrapRecord.size() != pbprotocol::kBootstrapRecordBytes ||
-        input.slots.data() == nullptr || input.slots.size() != kExperimentalPam4WideCodewordCount || output.data() == nullptr || output.size() != kExperimentalPam4WideCodedFrameBytes)
+        input.slotInputs.data() == nullptr || input.slotInputs.size() != kExperimentalPam4WideCodewordCount || output.data() == nullptr || output.size() != kExperimentalPam4WideCodedFrameBytes)
     {
         return Invalid();
     }
@@ -328,7 +328,7 @@ ModulationStatus PackExperimentalPam4WideFrame(const UnifiedVisualFrameInput& in
     std::array<UnifiedSlotAssignment, kExperimentalPam4WideCodewordCount> assignments{};
     for (std::size_t index = 0; index < assignments.size(); index++)
     {
-        assignments[index] = input.slots[index].assignment;
+        assignments[index] = input.slotInputs[index].assignment;
     }
     if (!ValidateExperimentalPam4WideSlotPlan(assignments))
     {
@@ -336,7 +336,7 @@ ModulationStatus PackExperimentalPam4WideFrame(const UnifiedVisualFrameInput& in
     }
     std::array<std::byte, kExperimentalPam4WideCodedFrameBytes> staged{};
     std::array<std::byte, kExperimentalPam4WideDataInformationBytes> information{};
-    for (const auto& slotInput : input.slots)
+    for (const auto& slotInput : input.slotInputs)
     {
         const auto slot = slotInput.assignment.codewordSlot;
         const bool control = slot == 0;
@@ -600,7 +600,7 @@ ExperimentalPam4WideObservation ExperimentalPam4WideCpuDecoder::Decode(const Lum
     for (std::uint32_t slot = 0; slot < kExperimentalPam4WideCodewordCount; slot++)
     {
         const bool control = slot == 0;
-        auto& slotObservation = observation.slots[slot];
+        auto& slotObservation = observation.slotObservations[slot];
         slotObservation.lane = UnifiedLane::BaseLuma;
         slotObservation.kind = control ? UnifiedSlotKind::Control : UnifiedSlotKind::Transport;
         auto& decoder = control ? state.controlDecoder : state.dataDecoder;

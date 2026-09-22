@@ -56,7 +56,10 @@ constexpr std::uint64_t maximumArchiveBytes = 500ULL * 1024ULL * 1024ULL * 1024U
 
     std::uint64_t totalFileBytes = 0;
     std::uint64_t entryCount = 0;
-    QDirIterator iterator(folderPath, QDir::AllEntries | QDir::NoDotAndDotDot,
+    // Include hidden/system entries in the preflight. The archive command
+    // receives the directory root and will include them; omitting them here
+    // would make the entry/size/reparse safety checks incomplete.
+    QDirIterator iterator(folderPath, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
         QDirIterator::Subdirectories);
     while (iterator.hasNext())
     {
@@ -142,7 +145,8 @@ FolderArchiveResult CreateFolderArchive(const QString& folderPath)
 
     QProcess process;
     process.setProgram(ResolveTarExecutable());
-    process.setArguments({QStringLiteral("-caf"), archivePath, QStringLiteral("--directory"), parentPath, leafName});
+    process.setArguments({QStringLiteral("-caf"), archivePath, QStringLiteral("--directory"), parentPath,
+        QStringLiteral("--"), leafName});
     process.setProcessChannelMode(QProcess::MergedChannels);
     process.start();
     if (!process.waitForStarted(5000) || !process.waitForFinished(-1) || process.exitStatus() != QProcess::NormalExit ||

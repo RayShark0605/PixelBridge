@@ -294,7 +294,7 @@ TEST_CASE("PBProtocolDump field rows and CRC gates match the formal descriptor o
     RequireField(sessionReport, "ProtocolMajor", 8, 2, "0001");
     RequireField(sessionReport, "ProtocolMinor", 10, 2, "0000");
     RequireField(sessionReport, "SessionId", 12, 16, "000102030405060708090a0b0c0d0e0f");
-    RequireField(sessionReport, "SessionVisualProfileId", 28, 8, "5042554e494c4331");
+    RequireField(sessionReport, "SessionVisualProfileId", 28, 8, "5042554e49534333");
     RequireField(sessionReport, "FileSize", 36, 8, "0000000000000075");
     RequireField(sessionReport, "SourceSegmentTargetBytes", 44, 4, "00800000");
     RequireField(sessionReport, "SegmentCount", 48, 8, "0000000000000001");

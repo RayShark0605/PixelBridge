@@ -139,9 +139,9 @@ void TestMissingSession(const std::filesystem::path& root, const DecisionFixture
     if (enabled)
     {
         Require(!harness.trace.before.sessionReady && !harness.trace.after.sessionReady, "invented session binding");
-        Require(harness.trace.slots[0].reason == ReceiverSlotReason::ControlUnknownSession && harness.trace.slots[0].receiverCalled, "missing Control UnknownSession reason");
-        Require(harness.trace.slots[3].reason == ReceiverSlotReason::WaitingForSession && !harness.trace.slots[3].receiverCalled &&
-            !harness.trace.slots[3].dataDisposition, "uncalled data must not have a disposition");
+        Require(harness.trace.slotDecisions[0].reason == ReceiverSlotReason::ControlUnknownSession && harness.trace.slotDecisions[0].receiverCalled, "missing Control UnknownSession reason");
+        Require(harness.trace.slotDecisions[3].reason == ReceiverSlotReason::WaitingForSession && !harness.trace.slotDecisions[3].receiverCalled &&
+            !harness.trace.slotDecisions[3].dataDisposition, "uncalled data must not have a disposition");
     }
 }
 
@@ -156,8 +156,8 @@ void TestBindAndDuplicates(const std::filesystem::path& root, const DecisionFixt
     if (enabled)
     {
         Require(!harness.trace.before.sessionReady && harness.trace.after.sessionReady, "binding transition missing");
-        Require(harness.trace.slots[3].dataDisposition == pbreceiver::ReceiverDataDisposition::AcceptedNeedMore &&
-            harness.trace.slots[3].outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::Unique, "actual admission not recorded");
+        Require(harness.trace.slotDecisions[3].dataDisposition == pbreceiver::ReceiverDataDisposition::AcceptedNeedMore &&
+            harness.trace.slotDecisions[3].outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::Unique, "actual admission not recorded");
     }
     frame->metadata.captureObservation = 2;
     frame->metadata.timestamp.monotonic100ns += 1000000;
@@ -166,8 +166,8 @@ void TestBindAndDuplicates(const std::filesystem::path& root, const DecisionFixt
     Require(!duplicate.carrierAccepted && !duplicate.uniqueAdmission, "same-frame duplicate was readmitted");
     if (enabled)
     {
-        Require(harness.trace.slots[3].reason == ReceiverSlotReason::AlreadyAdmitted && !harness.trace.slots[3].receiverCalled &&
-            !harness.trace.slots[3].dataDisposition, "cache skip reported as a fresh Receiver return");
+        Require(harness.trace.slotDecisions[3].reason == ReceiverSlotReason::AlreadyAdmitted && !harness.trace.slotDecisions[3].receiverCalled &&
+            !harness.trace.slotDecisions[3].dataDisposition, "cache skip reported as a fresh Receiver return");
     }
     frame = fixture.Frame(3);
     AddDecisionBlock(*frame, 3, pbmodulation::UnifiedSlotKind::Transport, fixture.transport);
@@ -175,7 +175,7 @@ void TestBindAndDuplicates(const std::filesystem::path& root, const DecisionFixt
     Require(repeated.carrierAccepted && !repeated.uniqueAdmission, "identical equation classified as unique");
     if (enabled)
     {
-        Require(harness.trace.slots[3].receiverCalled && harness.trace.slots[3].outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::IdenticalDuplicate,
+        Require(harness.trace.slotDecisions[3].receiverCalled && harness.trace.slotDecisions[3].outerSymbolAdmission == pbreceiver::ReceiverOuterSymbolAdmission::IdenticalDuplicate,
             "Receiver duplicate must differ from cached slot skip");
     }
 }
@@ -194,7 +194,7 @@ void TestConflict(const std::filesystem::path& root, const DecisionFixture& fixt
     harness.MustFail(*frame);
     if (enabled)
     {
-        Require(harness.trace.slots[0].reason == ReceiverSlotReason::ControlRejected && harness.trace.slots[0].protocolError.has_value(), "conflict reason missing");
+        Require(harness.trace.slotDecisions[0].reason == ReceiverSlotReason::ControlRejected && harness.trace.slotDecisions[0].protocolError.has_value(), "conflict reason missing");
     }
 }
 
@@ -209,7 +209,7 @@ void TestResource(const std::filesystem::path& root, const DecisionFixture& fixt
     Require(harness.Run(*frame).uniqueAdmission, "bounded first orphan not admitted");
     if (enabled)
     {
-        Require(harness.trace.slots[3].dataDisposition == pbreceiver::ReceiverDataDisposition::CachedOrphan, "orphan mislabeled as bound useful equation");
+        Require(harness.trace.slotDecisions[3].dataDisposition == pbreceiver::ReceiverDataDisposition::CachedOrphan, "orphan mislabeled as bound useful equation");
     }
     auto payload = fixture.transport;
     const auto parsed = pbprotocol::ParseTransportBlock(payload);
@@ -223,8 +223,8 @@ void TestResource(const std::filesystem::path& root, const DecisionFixture& fixt
     Require(!harness.Run(*frame).carrierAccepted, "orphan quota was bypassed");
     if (enabled)
     {
-        Require(harness.trace.slots[3].reason == ReceiverSlotReason::TransportResourceRejected && harness.trace.slots[3].resourceRejected &&
-            harness.trace.slots[3].receiverReturned && !harness.trace.slots[3].dataDisposition, "resource rejection fabricated a data result");
+        Require(harness.trace.slotDecisions[3].reason == ReceiverSlotReason::TransportResourceRejected && harness.trace.slotDecisions[3].resourceRejected &&
+            harness.trace.slotDecisions[3].receiverReturned && !harness.trace.slotDecisions[3].dataDisposition, "resource rejection fabricated a data result");
     }
 }
 
@@ -236,7 +236,7 @@ void TestErasureAndBounds(const std::filesystem::path& root, const DecisionFixtu
     Require(!harness.Run(*frame).carrierAccepted, "erasure accepted");
     if (enabled)
     {
-        Require(harness.trace.reason == ReceiverFrameReason::BootstrapRejected && !harness.trace.slots[0].present, "erasure invented a slot call");
+        Require(harness.trace.reason == ReceiverFrameReason::BootstrapRejected && !harness.trace.slotDecisions[0].present, "erasure invented a slot call");
     }
     frame = fixture.Frame(2);
     AddDecisionBlock(*frame, 255, pbmodulation::UnifiedSlotKind::Transport, fixture.transport);
@@ -252,7 +252,7 @@ void TestTraceBounds()
     Require(CanAppendRecordedTrace(maximum - 1, 1) && !CanAppendRecordedTrace(maximum, 1) &&
         !CanAppendRecordedTrace(UINT64_MAX, 1) && !CanAppendRecordedTrace(1, UINT64_MAX), "trace cap overflow");
     ReceiverDecisionTrace trace;
-    for (auto& slot : trace.slots)
+    for (auto& slot : trace.slotDecisions)
     {
         slot.present = true;
         slot.segmentOrdinal = UINT64_MAX;

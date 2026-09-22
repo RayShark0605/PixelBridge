@@ -84,4 +84,4 @@ if ($LASTEXITCODE -ne 0) { throw 'Seal verification failed' }
 
 再次像素运行**需要另一份明确批准的 60 观察预算**。程序入口为 `--off <original-source.bgra> <new-root>` 和 `--on <original-source.bgra> <another-new-root>`；须用 `run.py` 的同一 Job supervisor 或等价有界监管，先保存输入/runtime 哈希及 create-only reservation。不能直接重跑本轮 `parity`；现有 `NORMAL_OBSERVATION_RESERVATION.json` 会拒绝重复执行。迁移证据包时只核验相对成员；原绝对路径复验命令要求原输入仍在原位置。
 
-完整结果和后续候选见 `docs/REMOTE_RECEIVER_DECISION_DIAGNOSTICS_2026-09-08.md`。
+完整结果和后续候选见 `../../docs/DOC_HISTORY.md`。

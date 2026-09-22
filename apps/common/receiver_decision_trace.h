@@ -60,7 +60,7 @@ struct ReceiverDecisionTrace
     ReceiverFrameReason reason = ReceiverFrameReason::NotEvaluated;
     ReceiverDecisionState before;
     ReceiverDecisionState after;
-    std::array<ReceiverSlotDecision, maximumMixedFrameSlotCount> slots{};
+    std::array<ReceiverSlotDecision, maximumMixedFrameSlotCount> slotDecisions{};
 };
 
 inline void SetReceiverFrameReason(ReceiverDecisionTrace* const trace, const ReceiverFrameReason reason) noexcept
@@ -129,9 +129,9 @@ inline void WriteReceiverDecisionTrace(std::ostream& output, const ReceiverDecis
     WriteState(trace.after);
     output << ",\"slots\":[";
     bool first = true;
-    for (std::size_t index = 0; index < trace.slots.size(); index++)
+    for (std::size_t index = 0; index < trace.slotDecisions.size(); index++)
     {
-        const auto& slot = trace.slots[index];
+        const auto& slot = trace.slotDecisions[index];
         if (!slot.present)
         {
             continue;

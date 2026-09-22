@@ -532,19 +532,19 @@ void RequireSameObservation(const pbmodulation::UnifiedVisualObservation& cpu,
         REQUIRE(gpu.freshness[region].bitErrors == cpu.freshness[region].bitErrors);
         REQUIRE(gpu.freshness[region].residual == Catch::Approx(cpu.freshness[region].residual).margin(1e-5));
     }
-    for (std::size_t slot = 0; slot < cpu.slots.size(); slot++)
+    for (std::size_t slot = 0; slot < cpu.slotObservations.size(); slot++)
     {
-        CAPTURE(slot, cpu.slots[slot].rejection, gpu.slots[slot].rejection,
-            cpu.slots[slot].iterationsUsed, gpu.slots[slot].iterationsUsed);
-        REQUIRE(gpu.slots[slot].lane == cpu.slots[slot].lane);
-        REQUIRE(gpu.slots[slot].kind == cpu.slots[slot].kind);
-        REQUIRE(gpu.slots[slot].rejection == cpu.slots[slot].rejection);
-        REQUIRE(gpu.slots[slot].acceptedBytes == cpu.slots[slot].acceptedBytes);
-        REQUIRE(gpu.slots[slot].fecValid == cpu.slots[slot].fecValid);
-        REQUIRE(gpu.slots[slot].paddingValid == cpu.slots[slot].paddingValid);
-        REQUIRE(gpu.slots[slot].crcValid == cpu.slots[slot].crcValid);
-        REQUIRE(gpu.slots[slot].identityValid == cpu.slots[slot].identityValid);
-        REQUIRE(gpu.slots[slot].accepted == cpu.slots[slot].accepted);
+        CAPTURE(slot, cpu.slotObservations[slot].rejection, gpu.slotObservations[slot].rejection,
+            cpu.slotObservations[slot].iterationsUsed, gpu.slotObservations[slot].iterationsUsed);
+        REQUIRE(gpu.slotObservations[slot].lane == cpu.slotObservations[slot].lane);
+        REQUIRE(gpu.slotObservations[slot].kind == cpu.slotObservations[slot].kind);
+        REQUIRE(gpu.slotObservations[slot].rejection == cpu.slotObservations[slot].rejection);
+        REQUIRE(gpu.slotObservations[slot].acceptedBytes == cpu.slotObservations[slot].acceptedBytes);
+        REQUIRE(gpu.slotObservations[slot].fecValid == cpu.slotObservations[slot].fecValid);
+        REQUIRE(gpu.slotObservations[slot].paddingValid == cpu.slotObservations[slot].paddingValid);
+        REQUIRE(gpu.slotObservations[slot].crcValid == cpu.slotObservations[slot].crcValid);
+        REQUIRE(gpu.slotObservations[slot].identityValid == cpu.slotObservations[slot].identityValid);
+        REQUIRE(gpu.slotObservations[slot].accepted == cpu.slotObservations[slot].accepted);
     }
     REQUIRE(gpu.acceptedBlocks == cpu.acceptedBlocks);
     REQUIRE(gpu.acceptedTransportBlocks == cpu.acceptedTransportBlocks);
@@ -1012,11 +1012,11 @@ void RunMixedSemanticParity(D3DEnvironment& environment, const AdapterFingerprin
         REQUIRE(CountMixedTruthMismatches(cpuAccepted, clean) == 0);
         if (semanticCase.damaged)
         {
-            REQUIRE(cpuObservation.slots[0].rejection == pbmodulation::UnifiedSlotRejection::ControlCrcFailure);
-            REQUIRE(cpuObservation.slots[1].rejection == pbmodulation::UnifiedSlotRejection::NonCanonicalPadding);
-            REQUIRE(cpuObservation.slots[2].rejection == pbmodulation::UnifiedSlotRejection::TransportCrcFailure);
-            REQUIRE(cpuObservation.slots[3].rejection == pbmodulation::UnifiedSlotRejection::IdentityFailure);
-            REQUIRE(cpuObservation.slots[4].rejection == pbmodulation::UnifiedSlotRejection::InnerFecFailure);
+            REQUIRE(cpuObservation.slotObservations[0].rejection == pbmodulation::UnifiedSlotRejection::ControlCrcFailure);
+            REQUIRE(cpuObservation.slotObservations[1].rejection == pbmodulation::UnifiedSlotRejection::NonCanonicalPadding);
+            REQUIRE(cpuObservation.slotObservations[2].rejection == pbmodulation::UnifiedSlotRejection::TransportCrcFailure);
+            REQUIRE(cpuObservation.slotObservations[3].rejection == pbmodulation::UnifiedSlotRejection::IdentityFailure);
+            REQUIRE(cpuObservation.slotObservations[4].rejection == pbmodulation::UnifiedSlotRejection::InnerFecFailure);
         }
         const ComPtr<ID3D11Texture2D> texture = UploadBgraTexture(environment.device.Get(), semanticCase.pixels,
             pbmodulation::kUnifiedVisualProfile.canvasWidth, pbmodulation::kUnifiedVisualProfile.canvasHeight,

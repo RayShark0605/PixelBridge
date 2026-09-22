@@ -42,4 +42,4 @@ Its two top-level results deliberately have different meanings:
 - `verifiedFileRecoveryChain=true` means the captured-pixel Receiver and the same sealed Replay's production offline path both recovered and safely published the exact source file;
 - `formalStep20PilotAccepted=false` preserves the missing dual-monitor sender Gate, frozen PilotPlan/endpoint process/UI provenance and independently measured cross-computer clock calibration.
 
-The successful verification record therefore remains valid evidence for the user-authorized file pilot without claiming provider coverage, arbitrary geometry support, zero false accepted codewords, Step 21 matrix coverage or profile certification. See `docs/REMOTE_VISUAL_STEP20_SINGLE_MONITOR_FILE_PILOT.md` for the exact FINAL4 evidence and failure history.
+The successful verification record therefore remains valid evidence for the user-authorized file pilot without claiming provider coverage, arbitrary geometry support, zero false accepted codewords, Step 21 matrix coverage or profile certification. See `../../docs/EVIDENCE_INDEX.md` for the exact FINAL4 evidence and failure history.

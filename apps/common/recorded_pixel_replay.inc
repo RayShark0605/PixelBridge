@@ -163,7 +163,7 @@ RecordedPixelReplayResult RunRecordedPixelReplay(RecordedPixelSource& source, co
                 << ",\"receiverUniqueAdmission\":" << (processing.uniqueAdmission ? "true" : "false")
                 << ",\"receiverDataDisposition\":" << static_cast<unsigned>(processing.dataDisposition) << ",\"slots\":[";
             bool first = true;
-            for (const auto& slot : result.demodulation.unifiedObservation.slots)
+            for (const auto& slot : result.demodulation.unifiedObservation.slotObservations)
             {
                 if (!first)
                 {

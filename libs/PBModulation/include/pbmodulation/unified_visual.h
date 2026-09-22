@@ -223,7 +223,7 @@ struct UnifiedVisualObservation
     UnifiedFineLumaObservation fineLuma;
     UnifiedChromaObservation chroma;
     std::array<UnifiedFreshnessObservation, kUnifiedFreshnessRegionCount> freshness;
-    std::array<UnifiedSlotObservation, kUnifiedMaximumFrameSlotCount> slots;
+    std::array<UnifiedSlotObservation, kUnifiedMaximumFrameSlotCount> slotObservations;
     std::array<UnifiedLaneMetricObservation, 3> laneMetrics{};
     // Active frame slot count for this observation (15 SC6 / 18 gray).
     std::uint32_t frameSlotCount = kUnifiedCodewordCount;
@@ -290,7 +290,7 @@ struct UnifiedFrameSlotInput
 struct UnifiedVisualFrameInput
 {
     std::span<const std::byte> bootstrapRecord;
-    std::span<const UnifiedFrameSlotInput> slots;
+    std::span<const UnifiedFrameSlotInput> slotInputs;
 };
 
 // Validates Bootstrap/profile identity, every explicit slot type, canonical

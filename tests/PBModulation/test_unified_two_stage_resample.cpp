@@ -60,7 +60,7 @@ void RequireExactRecovery(const UnifiedVisualObservation& observation, const Uni
     REQUIRE(accepted.size() == frame.slotCount);
     for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
     {
-        REQUIRE(observation.slots[slot].accepted);
+        REQUIRE(observation.slotObservations[slot].accepted);
         REQUIRE(accepted[slot].size == frame.blocks[slot].size());
         REQUIRE(std::equal(frame.blocks[slot].begin(), frame.blocks[slot].end(), accepted[slot].bytes.begin()));
     }

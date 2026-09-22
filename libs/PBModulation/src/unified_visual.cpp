@@ -1887,7 +1887,7 @@ ModulationStatus PackUnifiedVisualFrame(
     const UnifiedCarrierFecDims fecDims = GetUnifiedCarrierFecDims(
         bootstrap.Value().visualProfileId, bootstrap.Value().visualLayoutVersion);
     if (input.bootstrapRecord.data() == nullptr || input.bootstrapRecord.size() != pbprotocol::kBootstrapRecordBytes ||
-        input.slots.data() == nullptr || input.slots.size() != frameSlotCount ||
+        input.slotInputs.data() == nullptr || input.slotInputs.size() != frameSlotCount ||
         outCodedFrame.data() == nullptr)
     {
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
@@ -1899,9 +1899,9 @@ ModulationStatus PackUnifiedVisualFrame(
     }
 
     std::array<UnifiedSlotAssignment, kUnifiedMaximumFrameSlotCount> assignments{};
-    for (std::size_t inputIndex = 0; inputIndex < input.slots.size(); inputIndex++)
+    for (std::size_t inputIndex = 0; inputIndex < input.slotInputs.size(); inputIndex++)
     {
-        assignments[inputIndex] = input.slots[inputIndex].assignment;
+        assignments[inputIndex] = input.slotInputs[inputIndex].assignment;
     }
     const bool planValid = grayFrame ?
         ValidateUnifiedGrayMixedSlotPlan(std::span<const UnifiedSlotAssignment>(assignments.data(), frameSlotCount)) :
@@ -1911,7 +1911,7 @@ ModulationStatus PackUnifiedVisualFrame(
         return ModulationStatus::Failure(ModulationErrorCode::InvalidInput, 0);
     }
 
-    for (const UnifiedFrameSlotInput& slotInput : input.slots)
+    for (const UnifiedFrameSlotInput& slotInput : input.slotInputs)
     {
         const UnifiedSlotAssignment& assignment = slotInput.assignment;
         if (!slotInput.active)
@@ -1956,7 +1956,7 @@ ModulationStatus PackUnifiedVisualFrame(
     std::array<std::byte, kUnifiedMaximumCodedFrameBytes> codedFrame{};
     std::array<std::byte, kUnifiedMaximumInformationBytes> informationStorage{};
     const std::span<std::byte> information(informationStorage.data(), fecDims.informationBytes);
-    for (const UnifiedFrameSlotInput& slotInput : input.slots)
+    for (const UnifiedFrameSlotInput& slotInput : input.slotInputs)
     {
         const UnifiedSlotAssignment& assignment = slotInput.assignment;
         if (!slotInput.active)
@@ -2398,7 +2398,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
     for (std::uint32_t slot = 0; slot < decodeSlotCount; slot++)
     {
         assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
-        UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        UnifiedSlotObservation& slotObservation = observation.slotObservations[slot];
         const UnifiedLaneContract* const lane = grayDecode ? nullptr : FindUnifiedLaneForCodewordSlot(slot);
         slotObservation.lane = lane == nullptr ? UnifiedLane::BaseLuma : lane->lane;
     }
@@ -2407,7 +2407,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::DecodeInternal(const LumaView& 
         for (const UnifiedSlotAssignment& assignment : slotPlan)
         {
             assignmentsBySlot[assignment.codewordSlot] = assignment;
-            observation.slots[assignment.codewordSlot].kind = assignment.kind;
+            observation.slotObservations[assignment.codewordSlot].kind = assignment.kind;
         }
     }
 
@@ -2545,7 +2545,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
     {
         assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Transport, UnifiedControlPriority::NotApplicable};
-        UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        UnifiedSlotObservation& slotObservation = observation.slotObservations[slot];
         const UnifiedLaneContract* const lane = finalizeGray ? nullptr : FindUnifiedLaneForCodewordSlot(slot);
         slotObservation.lane = lane == nullptr ? UnifiedLane::BaseLuma : lane->lane;
     }
@@ -2554,7 +2554,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
         for (const UnifiedSlotAssignment& assignment : slotPlan)
         {
             assignmentsBySlot[assignment.codewordSlot] = assignment;
-            observation.slots[assignment.codewordSlot].kind = assignment.kind;
+            observation.slotObservations[assignment.codewordSlot].kind = assignment.kind;
         }
     }
 
@@ -2568,7 +2568,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
     std::array<bool, kUnifiedMaximumFrameSlotCount> slotLaneErased{};
     for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
     {
-        const UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        const UnifiedSlotObservation& slotObservation = observation.slotObservations[slot];
         slotLaneErased[slot] = !LaneAvailable(slotObservation.lane, observation.baseLuma,
             observation.fineLuma, observation.chroma);
     }
@@ -2596,7 +2596,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
         }
         for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
         {
-            UnifiedSlotObservation& slotObservation = observation.slots[slot];
+            UnifiedSlotObservation& slotObservation = observation.slotObservations[slot];
             if (slotLaneErased[slot])
             {
                 slotObservation.rejection = UnifiedSlotRejection::LaneErasure;
@@ -2623,7 +2623,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
             serialLane.fastDecoder.get() : serialLane.decoder.get();
         for (std::uint32_t slot = 0; slot < finalizeSlotCount; slot++)
         {
-            UnifiedSlotObservation& slotObservation = observation.slots[slot];
+            UnifiedSlotObservation& slotObservation = observation.slotObservations[slot];
             if (slotLaneErased[slot])
             {
                 slotObservation.rejection = UnifiedSlotRejection::LaneErasure;
@@ -2669,7 +2669,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
             {
                 assignmentsBySlot[slot] = {slot, UnifiedSlotKind::Control,
                     GetControlPriorityFromInformation(information)};
-                observation.slots[slot].kind = UnifiedSlotKind::Control;
+                observation.slotObservations[slot].kind = UnifiedSlotKind::Control;
             }
         }
         const std::span<const UnifiedSlotAssignment> inferredPlan(assignmentsBySlot.data(), finalizeSlotCount);
@@ -2683,7 +2683,7 @@ UnifiedVisualObservation UnifiedVisualCpuOracle::FinalizeDecodedMetrics(UnifiedV
         {
             continue;
         }
-        UnifiedSlotObservation& slotObservation = observation.slots[slot];
+        UnifiedSlotObservation& slotObservation = observation.slotObservations[slot];
         if (inferSlotKinds && !inferredPlanValid && assignmentsBySlot[slot].kind == UnifiedSlotKind::Control)
         {
             slotObservation.rejection = UnifiedSlotRejection::InvalidInformation;

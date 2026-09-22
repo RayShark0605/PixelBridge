@@ -159,7 +159,7 @@ TelemetryStatus UnifiedTelemetryAccumulator::RecordSample(const pbprotocol::Boot
         }
         for (std::uint32_t slot = 0; slot < frameSlotCount; slot++)
         {
-            const auto& sample = observation->slots[slot];
+            const auto& sample = observation->slotObservations[slot];
             // Gray slots all ride Base Luma; the manifest lane table only
             // covers the fifteen product slots.
             const auto* const contract = grayFrame ? nullptr :

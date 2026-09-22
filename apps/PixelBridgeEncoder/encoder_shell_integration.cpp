@@ -155,17 +155,8 @@ private:
         return ShellRegistrationStatus::Failure(NativeRegistryError(L"读取右键菜单注册表", status));
     }
 
-    if (!HasNonEmptyDefaultValue(shellKey.Get()))
-    {
-        const ShellRegistrationStatus displayStatus = SetStringValue(shellKey.Get(), nullptr, L"PixelBridgeEncoder");
-        if (!displayStatus)
-        {
-            return displayStatus;
-        }
-        changed = true;
-    }
-
     const bool ownedRegistration = HasRegistrationOwner(shellKey.Get());
+    bool commandIsOwned = false;
 
     RegistryKey commandKey;
     HKEY rawCommandKey = nullptr;
@@ -195,6 +186,7 @@ private:
         {
             return ownerStatus;
         }
+        commandIsOwned = true;
         changed = true;
     }
     else if (status != ERROR_SUCCESS)
@@ -224,8 +216,18 @@ private:
             {
                 return ownerStatus;
             }
+            commandIsOwned = true;
             changed = true;
         }
+    }
+    if (ShouldPublishShellRegistrationDisplayName(commandIsOwned, HasNonEmptyDefaultValue(shellKey.Get())))
+    {
+        const ShellRegistrationStatus displayStatus = SetStringValue(shellKey.Get(), nullptr, L"PixelBridgeEncoder");
+        if (!displayStatus)
+        {
+            return displayStatus;
+        }
+        changed = true;
     }
     return {};
 }

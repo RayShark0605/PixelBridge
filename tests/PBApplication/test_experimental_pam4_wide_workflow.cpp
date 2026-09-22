@@ -186,11 +186,11 @@ TEST_CASE("Wide schedules nineteen distinct equations only after the same-frame 
         std::array<pbmodulation::UnifiedSlotAssignment, 20> assignments{};
         for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
         {
-            assignments[slot] = frame.slots[slot].assignment;
-            const auto& scheduled = frame.slots[slot];
+            assignments[slot] = frame.slotAssignments[slot].assignment;
+            const auto& scheduled = frame.slotAssignments[slot];
             if (scheduled.transportDisposition == pbapp::SenderUnifiedTransportSlotDisposition::ScheduledEquation)
             {
-                REQUIRE(frame.slots[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
+                REQUIRE(frame.slotAssignments[0].assignment.controlPriority == pbmodulation::UnifiedControlPriority::CurrentSegmentDescriptor);
                 REQUIRE(equations.insert(scheduled.equationIndex).second);
                 REQUIRE(scheduled.repairEquation == (scheduled.equationIndex >= snapshot.systematicEquationCount));
             }

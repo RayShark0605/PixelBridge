@@ -382,9 +382,9 @@ if ($LASTEXITCODE -ne 0 -or $operatorSourcePaths.Count -eq 0 -or $operatorSource
 $operatorSourcePaths = @($operatorSourcePaths | Sort-Object -CaseSensitive -Unique)
 $documentationPaths = @(
     'docs/CURRENT_RUNTIME_OPTION_INVENTORY.md',
-    'docs/REMOTE_VISUAL_LOW_FPS_TECHNICAL_ROUTE.md',
-    'docs/REMOTE_VISUAL_STEP20_REAL_REMOTE_PILOT.md',
-    'docs/REMOTE_VISUAL_STEP21_PROVIDER_GENERIC_MATRIX.md')
+    'docs/PROJECT_STATUS.md',
+    'docs/EVIDENCE_INDEX.md',
+    'docs/ENCODER_GUIDE.md')
 
 $packageFingerprintPrefix = ([string]$packageManifest.packagePayloadFingerprintSha256).Substring(0, 8)
 $sourceFingerprintPrefix = ([string]$sourceManifest.sourceSetFingerprintSha256).Substring(0, 8)

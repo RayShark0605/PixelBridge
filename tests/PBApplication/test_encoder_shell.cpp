@@ -1,7 +1,10 @@
 #include "encoder_shell_integration.h"
+#include "encoder_shell_dialog.h"
 #include "folder_archive.h"
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <Windows.h>
 
 #include <QDir>
 #include <QFile>
@@ -54,6 +57,19 @@ TEST_CASE("Encoder shell invocation accepts exactly one existing path argument",
     REQUIRE_FALSE(pbencoder::ParseShellOpenArguments(4, extraArguments, parsedPath));
 }
 
+TEST_CASE("Active shell dialog cancellation requests a safe stop instead of rejecting", "[encoder][shell][lifecycle]")
+{
+    REQUIRE(pbencoder::GetShellDialogCancelAction(true) == pbencoder::ShellDialogCancelAction::RequestStop);
+    REQUIRE(pbencoder::GetShellDialogCancelAction(false) == pbencoder::ShellDialogCancelAction::Reject);
+}
+
+TEST_CASE("Shell registration does not label an unowned conflicting command", "[encoder][shell][registry]")
+{
+    REQUIRE_FALSE(pbencoder::ShouldPublishShellRegistrationDisplayName(false, false));
+    REQUIRE(pbencoder::ShouldPublishShellRegistrationDisplayName(true, false));
+    REQUIRE_FALSE(pbencoder::ShouldPublishShellRegistrationDisplayName(true, true));
+}
+
 TEST_CASE("Folder archive creates a standard compressed archive without changing the source", "[encoder][folder]")
 {
     QTemporaryDir scratch;
@@ -63,6 +79,9 @@ TEST_CASE("Folder archive creates a standard compressed archive without changing
     const QString sourcePath = root.filePath(QStringLiteral("source"));
     WriteFile(root.filePath(QStringLiteral("source/alpha.txt")), QByteArray("alpha"));
     WriteFile(root.filePath(QStringLiteral("source/sub/beta.txt")), QByteArray("beta"));
+    const QString hiddenPath = root.filePath(QStringLiteral("source/.hidden.txt"));
+    WriteFile(hiddenPath, QByteArray("hidden"));
+    REQUIRE(SetFileAttributesW(reinterpret_cast<const wchar_t*>(hiddenPath.utf16()), FILE_ATTRIBUTE_HIDDEN) != FALSE);
 
     const auto result = pbencoder::CreateFolderArchive(sourcePath);
     INFO(result.errorMessage.toStdString());
@@ -82,7 +101,9 @@ TEST_CASE("Folder archive creates a standard compressed archive without changing
     const QString listingText = QString::fromLocal8Bit(listing.readAllStandardOutput());
     REQUIRE(listingText.contains(QStringLiteral("source/alpha.txt")));
     REQUIRE(listingText.contains(QStringLiteral("source/sub/beta.txt")));
+    REQUIRE(listingText.contains(QStringLiteral("source/.hidden.txt")));
 
+    static_cast<void>(SetFileAttributesW(reinterpret_cast<const wchar_t*>(hiddenPath.utf16()), FILE_ATTRIBUTE_NORMAL));
     REQUIRE(QFile::remove(result.archivePath));
 }
 
@@ -97,4 +118,28 @@ TEST_CASE("Folder archive rejects a regular file input", "[encoder][folder][nega
     REQUIRE_FALSE(result.success);
     REQUIRE(result.archivePath.isEmpty());
     REQUIRE_FALSE(result.errorMessage.isEmpty());
+}
+
+TEST_CASE("Folder archive treats a leading-dash directory name as data", "[encoder][folder][arguments]")
+{
+    QTemporaryDir scratch;
+    REQUIRE(scratch.isValid());
+    QDir root(scratch.path());
+    const QString folderName = QStringLiteral("-source");
+    REQUIRE(root.mkpath(folderName));
+    const QString sourcePath = root.filePath(folderName);
+    WriteFile(root.filePath(folderName + QStringLiteral("/payload.txt")), QByteArray("payload"));
+
+    const auto result = pbencoder::CreateFolderArchive(sourcePath);
+    INFO(result.errorMessage.toStdString());
+    REQUIRE(result.success);
+
+    QProcess listing;
+    listing.start(QStringLiteral("tar"), {QStringLiteral("-tf"), result.archivePath});
+    REQUIRE(listing.waitForFinished(30000));
+    REQUIRE(listing.exitStatus() == QProcess::NormalExit);
+    REQUIRE(listing.exitCode() == 0);
+    const QString listingText = QString::fromLocal8Bit(listing.readAllStandardOutput());
+    REQUIRE(listingText.contains(QStringLiteral("-source/payload.txt")));
+    REQUIRE(QFile::remove(result.archivePath));
 }

@@ -2,7 +2,7 @@
 
 [简体中文](PROJECT_STATUS.md) | **English**
 
-Updated 2026-09-21. **Stability, local v1.0 product delivery, and Encoder Shell entry closeout—not another throughput campaign.**
+Updated 2026-09-22. **Stability, local v1.0 product delivery, and Encoder Shell entry closeout—not another throughput campaign.**
 
 ## Implemented capabilities
 
@@ -28,6 +28,7 @@ Updated 2026-09-21. **Stability, local v1.0 product delivery, and Encoder Shell 
 | New logging/UI source | Separate build/targeted/offscreen checks; older throughput identities do not transfer to it |
 | Formal v1.0 version/commit/packages | Version 1.0.0, MIT, separate endpoint packages; exact identity/results are recorded in release manifests/evidence |
 | Full non-interactive release regression | 172/173 CTest entries pass; the historical Gray Fast spatial late-join `< 12,000` frame gate remains unmet at 12,505 frames. Final file is correct; test and threshold are unchanged |
+| Current HEAD full Release CTest | 233 of 234 CTest entries pass; the only failure is the same Gray Fast spatial late-join (12,505 post-join frames). `PBApplicationTests` also contains one skipped case because the real Replay root is unset; no additional failures were observed |
 | Encoder Shell entry | Local unit/offscreen GUI checks, shell-argument parsing, HKCU registration readback, and Windows `tar -caf` ZIP archive checks are targeted-verified; this is not claimed as real non-local throughput qualification |
 
 ## Targeted closeout checks

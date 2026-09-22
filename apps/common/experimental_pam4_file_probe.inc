@@ -387,7 +387,7 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeExperimentalPam4File(const std:
                 }
                 ReceiverDecisionTrace trace;
                 static_cast<void>(pipeline->Process(*handoff, &trace));
-                result.lastSlotReceiverCalled = result.lastSlotReceiverCalled || trace.slots[profile.codewords - 1].receiverCalled;
+                result.lastSlotReceiverCalled = result.lastSlotReceiverCalled || trace.slotDecisions[profile.codewords - 1].receiverCalled;
                 if (!pipeline->IsCompleted() && options.duplicateEveryFrames != 0 && frameIndex % options.duplicateEveryFrames == 0)
                 {
                     observationOrdinal++;

@@ -1622,7 +1622,7 @@ class SenderFrameBuilder
     {
         std::size_t stateIndex = 0;
         SenderUnifiedScheduledFrame frame{};
-        std::array<UnifiedSpatialSlot, senderUnifiedMaximumCodewordSlotCount> slots{};
+        std::array<UnifiedSpatialSlot, senderUnifiedMaximumCodewordSlotCount> slotData{};
     };
 
     struct UnifiedSpatialBank
@@ -1731,21 +1731,21 @@ public:
         if (UsesMixedSlotCarousel(profile_.profile))
         {
             PrepareUnifiedFrame(logicalTickOrdinal, nowNanoseconds);
-            std::array<pbmodulation::UnifiedFrameSlotInput, maximumMixedFrameSlotCount> slots{};
+            std::array<pbmodulation::UnifiedFrameSlotInput, maximumMixedFrameSlotCount> slotInputs{};
             generatedPayloadBytesInFrame_ = 0;
             std::span<const std::byte> supplementalControlRecord{};
             for (std::size_t slotIndex = 0; slotIndex < unifiedFrame_.slotCount; slotIndex++)
             {
-                const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slotIndex];
-                pbmodulation::UnifiedFrameSlotInput& slot = slots[slotIndex];
-                slot.assignment = scheduled.assignment;
+                const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slotAssignments[slotIndex];
+                pbmodulation::UnifiedFrameSlotInput& slotInput = slotInputs[slotIndex];
+                slotInput.assignment = scheduled.assignment;
                 if (scheduled.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
                 {
-                    slot.active = true;
-                    slot.block = GetControlBlockForSlot(static_cast<std::uint32_t>(slotIndex));
+                    slotInput.active = true;
+                    slotInput.block = GetControlBlockForSlot(static_cast<std::uint32_t>(slotIndex));
                     if (supplementalControlRecord.empty())
                     {
-                        supplementalControlRecord = slot.block;
+                        supplementalControlRecord = slotInput.block;
                     }
                 }
                 else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession &&
@@ -1754,8 +1754,8 @@ public:
                     std::uint32_t payloadBytes = 0;
                     const std::size_t serializedBytes = BuildTransportBlockForSlot(
                         static_cast<std::uint32_t>(slotIndex), unifiedTransport_[slotIndex], payloadBytes);
-                    slot.active = true;
-                    slot.block = std::span(unifiedTransport_[slotIndex]).first(serializedBytes);
+                    slotInput.active = true;
+                    slotInput.block = std::span(unifiedTransport_[slotIndex]).first(serializedBytes);
                     generatedPayloadBytesInFrame_ += payloadBytes;
                 }
             }
@@ -1765,7 +1765,7 @@ public:
             const std::size_t codedFrameBytes =
                 static_cast<std::size_t>(unifiedFrame_.slotCount) * pbmodulation::kUnifiedCodewordBytes;
             const std::span<const pbmodulation::UnifiedFrameSlotInput> plannedSlots(
-                slots.data(), unifiedFrame_.slotCount);
+                slotInputs.data(), unifiedFrame_.slotCount);
             if (diagnostics == nullptr)
             {
                 RequireResult(profile_.profile == VisualProfile::ExperimentalPam4Wide ?
@@ -2129,14 +2129,14 @@ public:
     }
     [[nodiscard]] std::span<const std::byte> GetControlBlockForSlot(const std::uint32_t slot) const
     {
-        Require(slot < unifiedFrame_.slotCount && unifiedFrame_.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control,
+        Require(slot < unifiedFrame_.slotCount && unifiedFrame_.slotAssignments[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control,
             "Unified Control slot is invalid");
         if (unifiedSpatialBank_ && unifiedSpatialBank_->framePrepared)
         {
             const auto& stored = GetSpatialSlot(slot);
             return std::span(stored.bytes).first(stored.serializedBytes);
         }
-        const auto priority = unifiedFrame_.slots[slot].assignment.controlPriority;
+        const auto priority = unifiedFrame_.slotAssignments[slot].assignment.controlPriority;
         return priority == pbmodulation::UnifiedControlPriority::SessionDescriptor ?
             std::span<const std::byte>(description_.sessionControl) : priority == pbmodulation::UnifiedControlPriority::FinalManifest ?
             std::span<const std::byte>(description_.manifestControl) : std::span<const std::byte>(description_.segments.at(currentSegmentOrdinal_).control);
@@ -2167,7 +2167,7 @@ private:
         std::uint32_t sourceRow = 0;
         Require(SelectUnifiedSpatialSourceRow(bank.rowCount, bank.phase, bank.bankPhase, slot, sourceRow),
             "Spatial source slot is out of bounds");
-        return bank.rows[sourceRow].slots[slot];
+        return bank.rows[sourceRow].slotData[slot];
     }
 
     void PrepareUnifiedFrame(const std::uint64_t tick, const std::uint64_t nowNanoseconds)
@@ -2203,10 +2203,10 @@ private:
                 Require(row.frame.slotCount == senderUnifiedMaximumCodewordSlotCount, "Spatial row has an incompatible carrier");
                 for (std::uint32_t slot = 0; slot < row.frame.slotCount; slot++)
                 {
-                    auto& stored = row.slots[slot];
+                    auto& stored = row.slotData[slot];
                     stored.payloadBytes = 0;
                     stored.outerBlockId = 0;
-                    if (row.frame.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                    if (row.frame.slotAssignments[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
                     {
                         const auto control = GetControlBlockForSlot(slot);
                         Require(control.size() <= stored.bytes.size(), "Spatial Control exceeds its fixed storage");
@@ -2235,8 +2235,8 @@ private:
             Require(SelectUnifiedSpatialSourceRow(bank.rowCount, bank.phase, bank.bankPhase, slot, sourceRow),
                 "Spatial permutation is out of bounds");
             const auto& row = bank.rows[sourceRow];
-            const auto& scheduled = row.frame.slots[slot];
-            composite.slots[slot] = scheduled;
+            const auto& scheduled = row.frame.slotAssignments[slot];
+            composite.slotAssignments[slot] = scheduled;
             if (scheduled.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
             {
                 composite.controlSlotCount++;
@@ -2958,7 +2958,7 @@ private:
         if (UsesMixedSlotCarousel(profile_.profile))
         {
             const UnifiedSegmentState& state = GetCurrentUnifiedSegmentState();
-            const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slots[slot];
+            const SenderUnifiedScheduledSlot& scheduled = unifiedFrame_.slotAssignments[slot];
             Require(scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation ||
                 scheduled.transportDisposition == SenderUnifiedTransportSlotDisposition::PaddingDuplicate,
                 "Control/inactive slot cannot allocate an OuterBlockId");
@@ -4788,7 +4788,7 @@ private:
                 Require(control.Value().sessionTag == bootstrap.sessionTag, "Unified Control identity mismatch");
                 if (decisions)
                 {
-                    decisions->slots[block.codewordSlot].controlType = control.Value().recordType;
+                    decisions->slotDecisions[block.codewordSlot].controlType = control.Value().recordType;
                 }
                 if (control.Value().recordType == pbprotocol::ControlRecordType::SessionDescriptor)
                 {
@@ -4807,8 +4807,8 @@ private:
                 Require(transport.Value().header.sessionTag == bootstrap.sessionTag, "Unified Transport identity mismatch");
                 if (decisions)
                 {
-                    decisions->slots[block.codewordSlot].segmentOrdinal = transport.Value().header.segmentOrdinal;
-                    decisions->slots[block.codewordSlot].outerBlockId = transport.Value().header.outerBlockId;
+                    decisions->slotDecisions[block.codewordSlot].segmentOrdinal = transport.Value().header.segmentOrdinal;
+                    decisions->slotDecisions[block.codewordSlot].outerBlockId = transport.Value().header.outerBlockId;
                 }
             }
             auto& previous = unifiedFrameBlocks_[block.codewordSlot];
@@ -4838,7 +4838,7 @@ private:
             {
                 if (unifiedFrameBlocks_[slot])
                 {
-                    auto& decision = decisions->slots[slot];
+                    auto& decision = decisions->slotDecisions[slot];
                     decision.present = true;
                     decision.observedThisCall = seenSlots[slot];
                     decision.kind = unifiedFrameBlocks_[slot]->kind;
@@ -4874,7 +4874,7 @@ private:
             }
             for (std::uint32_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
             {
-                auto* const decision = decisions ? &decisions->slots[slot] : nullptr;
+                auto* const decision = decisions ? &decisions->slotDecisions[slot] : nullptr;
                 if (!unifiedFrameBlocks_[slot] || unifiedFrameAdmitted_[slot] || published_)
                 {
                     // Preserve an actual call's result across the three passes.
@@ -7367,7 +7367,7 @@ void RunUnifiedGraduationProbe(const std::uint32_t segmentCount, const std::uint
         const auto& frame = builder.PrepareHeadlessFrame(result.senderLogicalFrames);
         for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
         {
-            if (frame.slots[slot].transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+            if (frame.slotAssignments[slot].transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
             {
                 continue;
             }
@@ -7452,7 +7452,7 @@ void VerifyUnifiedSpatialCommitAndLease(const ProfileBinding profile, const Tran
             std::array<std::size_t, senderUnifiedMaximumCodewordSlotCount> firstLengths{};
             for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
             {
-                if (frame.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                if (frame.slotAssignments[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
                 {
                     const auto control = builder.GetControlBlockForSlot(slot);
                     firstLengths[slot] = control.size();
@@ -7474,7 +7474,7 @@ void VerifyUnifiedSpatialCommitAndLease(const ProfileBinding profile, const Tran
             {
                 std::array<std::byte, pbmodulation::kUnifiedMaximumInformationBytes> retryBytes{};
                 std::uint32_t payloadBytes = 0;
-                if (frame.slots[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
+                if (frame.slotAssignments[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control)
                 {
                     const auto control = builder.GetControlBlockForSlot(slot);
                     Require(control.size() == firstLengths[slot] && std::equal(control.begin(), control.end(), firstBytes[slot].begin()),
@@ -7596,7 +7596,7 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
             const auto timestamp100ns = static_cast<std::int64_t>(result.senderLogicalFrames * 10000000ULL / logicalVisualFps + 1U);
             for (std::uint32_t slot = 0; slot < frame.slotCount && !pipeline.IsCompleted(); slot++)
             {
-                const auto& scheduled = frame.slots[slot];
+                const auto& scheduled = frame.slotAssignments[slot];
                 if (scheduled.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
                 {
                     const auto bytes = builder.GetControlBlockForSlot(slot);
@@ -7787,7 +7787,7 @@ void RunUnifiedTemporalStripingProbe(UnifiedTemporalStripingProbeSnapshot& resul
         std::optional<std::uint32_t> firstOuterBlockId;
         for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
         {
-            if (frame.slots[slot].transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
+            if (frame.slotAssignments[slot].transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
             {
                 continue;
             }
@@ -7939,7 +7939,7 @@ void RunUnifiedLargeWindowRecoveryProbe(UnifiedLargeWindowRecoveryProbeSnapshot&
             {
                 for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
                 {
-                    if (frame.slots[slot].transportDisposition !=
+                    if (frame.slotAssignments[slot].transportDisposition !=
                         SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                     {
                         continue;
@@ -8067,7 +8067,7 @@ void RunUnifiedFountainMidJoinProbe(UnifiedFountainMidJoinProbeSnapshot& result)
         {
             for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
             {
-                if (frame.slots[slot].transportDisposition !=
+                if (frame.slotAssignments[slot].transportDisposition !=
                     SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                 {
                     continue;
@@ -8201,7 +8201,7 @@ void RunUnifiedDescriptorPreludeProbe(UnifiedDescriptorPreludeProbeSnapshot& res
 
             for (std::uint32_t slotIndex = 0; slotIndex < frame.slotCount; slotIndex++)
             {
-                const SenderUnifiedScheduledSlot& slot = frame.slots[slotIndex];
+                const SenderUnifiedScheduledSlot& slot = frame.slotAssignments[slotIndex];
                 if (slot.transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation &&
                     slot.transportDisposition != SenderUnifiedTransportSlotDisposition::PaddingDuplicate)
                 {
@@ -8380,7 +8380,7 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeMixedSlotTemporalOrder(const Vi
             for (std::uint32_t slot = 0; slot < frame.slotCount; slot++)
             {
                 result.scheduledEquations[frameIndex] += static_cast<std::uint32_t>(
-                    frame.slots[slot].transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation);
+                    frame.slotAssignments[slot].transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation);
             }
             builder.Advance();
         }

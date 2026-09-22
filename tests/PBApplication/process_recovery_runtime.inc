@@ -237,7 +237,7 @@ int test::RunProcessRecoveryWorker(const std::filesystem::path& sourcePath,
                 << ",\"frameLeaseEnd\":" << sessionStore.GetFrameSequenceLeaseEnd()
                 << ",\"repairLeaseEnd\":" << sessionStore.GetRepairIdLeaseEnd(ordinal) << ",\"repairIds\":[";
             bool firstRepair = true;
-            for (const auto& slot : scheduled.slots)
+            for (const auto& slot : scheduled.slotAssignments)
             {
                 if (slot.transportDisposition == SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                 {
@@ -255,7 +255,7 @@ int test::RunProcessRecoveryWorker(const std::filesystem::path& sourcePath,
 
             // The scheduler's canonical Control bytes are processed before
             // Transport, as in the existing Unified receiver admission path.
-            for (const auto& slot : scheduled.slots)
+            for (const auto& slot : scheduled.slotAssignments)
             {
                 if (pipeline && slot.assignment.kind == pbmodulation::UnifiedSlotKind::Control)
                 {
@@ -266,7 +266,7 @@ int test::RunProcessRecoveryWorker(const std::filesystem::path& sourcePath,
                     Require(pipeline->ProcessHeadlessControlRecord(control, timestamp100ns), "G18 scheduled Control admission failed");
                 }
             }
-            for (const auto& slot : scheduled.slots)
+            for (const auto& slot : scheduled.slotAssignments)
             {
                 if (slot.transportDisposition != SenderUnifiedTransportSlotDisposition::ScheduledEquation)
                 {
