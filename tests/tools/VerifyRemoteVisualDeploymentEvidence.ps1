@@ -23,7 +23,8 @@ function Invoke-Tool
     $exitCode = $LASTEXITCODE
     return [ordered]@{
         exitCode = $exitCode
-        output = ($output | Out-String)
+        # Preserve nested diagnostics without console-width wrapping.
+        output = ($output | Out-String -Width 4096)
     }
 }
 
@@ -46,7 +47,13 @@ function Require-Failure
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Pattern
     )
-    if ($Result.exitCode -eq 0 -or $Result.output -notmatch $Pattern)
+    # Nested PowerShell ErrorRecord formatting can insert a pipe separator and
+    # line breaks at the host width; match the semantic diagnostic, not layout.
+    $normalizedOutput = [regex]::Replace([string]$Result.output, '\s*\|\s*', ' ')
+    $normalizedOutput = [regex]::Replace($normalizedOutput, '\s+', ' ')
+    $normalizedPattern = [regex]::Replace($Pattern, '\s+', ' ')
+    $hasDiagnostic = $Result.output -match $Pattern -or $normalizedOutput -match $normalizedPattern
+    if ($Result.exitCode -eq 0 -or -not $hasDiagnostic)
     {
         throw "$Name did not fail with the expected diagnostic '$Pattern': $($Result.output)"
     }
