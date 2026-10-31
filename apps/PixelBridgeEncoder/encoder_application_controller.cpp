@@ -12,9 +12,16 @@ namespace
 
 } // namespace
 
-EncoderApplicationController::EncoderApplicationController(QObject* parent, pbapp::EncoderPresentationFactory presentationFactory) :
-    QObject(parent), runtime_(std::move(presentationFactory))
+EncoderApplicationController::EncoderApplicationController(QObject* parent, pbapp::EncoderPresentationFactory presentationFactory,
+    const QString& logRoot) :
+    QObject(parent), useApplicationPresentation_(!presentationFactory), qtPresentationHost_(this),
+    runtime_(useApplicationPresentation_ ? pbapp::EncoderPresentationFactory([this](const pbrenderd3d::DataWindowConfig& config)
+    {
+        return config.presentationModel == pbrenderd3d::PresentationModel::QtRaster ?
+            qtPresentationHost_.CreatePresentation(config) : pbapp::CreateNativeEncoderPresentation(config);
+    }) : std::move(presentationFactory)), log_(QStringLiteral("Encoder"), logRoot)
 {
+    connect(&qtPresentationHost_, &pbencoder::QtRasterPresentationHost::StopRequested, this, &EncoderApplicationController::RequestStop);
     pollTimer_.setInterval(100);
     pollTimer_.setTimerType(Qt::CoarseTimer);
     connect(&pollTimer_, &QTimer::timeout, this, &EncoderApplicationController::PollSnapshot);
@@ -24,19 +31,38 @@ EncoderApplicationController::EncoderApplicationController(QObject* parent, pbap
 EncoderApplicationController::~EncoderApplicationController()
 {
     pollTimer_.stop();
+    runtime_.RequestStop();
+    qtPresentationHost_.RequestStop();
     runtime_.Stop();
+    qtPresentationHost_.FinalizeStop();
     log_.Observe(runtime_.GetSnapshot(), true);
 }
 
 QString EncoderApplicationController::Start(const pbapp::EncoderConfig& config)
 {
-    if (!IsActive())
+    if (IsActive())
     {
-        log_.Begin();
+        return QStringLiteral("传输仍在进行或显示窗口正在清理；请等待完全停止后再开始。");
+    }
+    log_.Begin();
+    try
+    {
+        if (useApplicationPresentation_ && config.presentationModel == pbrenderd3d::PresentationModel::QtRaster)
+        {
+            qtPresentationHost_.BeginRun();
+        }
+    }
+    catch (const std::exception& exception)
+    {
+        const auto error = QStringLiteral("Qt 显示初始化失败：%1").arg(QString::fromUtf8(exception.what()));
+        log_.StartRejected(error);
+        return error;
     }
     const pbapp::RuntimeStatus status = runtime_.Start(config);
-    if (!status && !IsActive())
+    if (!status)
     {
+        qtPresentationHost_.RequestStop();
+        qtPresentationHost_.FinalizeStop();
         log_.StartRejected(QString::fromStdString(status.message));
     }
     PollSnapshot();
@@ -64,6 +90,7 @@ QString EncoderApplicationController::SetLogicalVisualFps(const std::uint32_t lo
 void EncoderApplicationController::RequestStop() noexcept
 {
     runtime_.RequestStop();
+    qtPresentationHost_.RequestStop();
     try
     {
         PollSnapshot();
@@ -75,6 +102,10 @@ void EncoderApplicationController::RequestStop() noexcept
 
 QString EncoderApplicationController::EndAndDeleteSession(const std::uint64_t expectedRunGeneration)
 {
+    if (IsActive())
+    {
+        return QStringLiteral("请等待传输及显示窗口完全停止后再删除会话。");
+    }
     const pbapp::RuntimeStatus status = runtime_.EndAndDeleteSession(expectedRunGeneration);
     PollSnapshot();
     return status ? QString() : QString::fromUtf8(status.message.data(), static_cast<int>(status.message.size()));
@@ -87,24 +118,30 @@ pbapp::EncoderSnapshot EncoderApplicationController::GetSnapshot() const
 
 pbapp::EncoderSnapshot EncoderApplicationController::StopAndGetSnapshot()
 {
+    runtime_.RequestStop();
+    qtPresentationHost_.RequestStop();
     runtime_.Stop();
+    qtPresentationHost_.FinalizeStop();
     log_.Observe(runtime_.GetSnapshot(), true);
     return runtime_.GetSnapshot();
 }
 
 bool EncoderApplicationController::IsActive() const
 {
-    return pbapp::IsEncoderStateActive(runtime_.GetSnapshot().state);
+    return pbapp::IsEncoderStateActive(runtime_.GetSnapshot().state) || qtPresentationHost_.HasPendingWork();
 }
 
 void EncoderApplicationController::PollSnapshot()
 {
     pbapp::EncoderSnapshot current = runtime_.GetSnapshot();
-    if (IsTerminal(current.state) && (current.runGeneration != lastSnapshot_.runGeneration || !IsTerminal(lastSnapshot_.state)))
+    if (IsTerminal(current.state) && (current.runGeneration != lastSnapshot_.runGeneration || !IsTerminal(lastSnapshot_.state) ||
+        qtPresentationHost_.HasPendingWork()))
     {
-        // A published snapshot can precede capture cleanup. Seal diagnostics
-        // only after the worker is joined, preserving post-publish warnings.
+        // Terminal runtime state can precede GUI cleanup. Cancel creation
+        // waits before joining, then retire Qt objects before UI notification.
+        qtPresentationHost_.RequestStop();
         runtime_.Stop();
+        qtPresentationHost_.FinalizeStop();
         current = runtime_.GetSnapshot();
     }
     log_.Observe(current, IsTerminal(current.state));
@@ -113,6 +150,7 @@ void EncoderApplicationController::PollSnapshot()
         current.preparationComplete != lastSnapshot_.preparationComplete || current.sessionDeleted != lastSnapshot_.sessionDeleted ||
         current.sessionStateGeneration != lastSnapshot_.sessionStateGeneration ||
         current.frameSequence != lastSnapshot_.frameSequence || current.presentationEpoch != lastSnapshot_.presentationEpoch ||
+        current.softwarePaintCalls != lastSnapshot_.softwarePaintCalls || current.softwareFramesPainted != lastSnapshot_.softwareFramesPainted ||
         current.configuredLogicalVisualFps != lastSnapshot_.configuredLogicalVisualFps ||
         current.configuredMaximumRunDurationSeconds != lastSnapshot_.configuredMaximumRunDurationSeconds ||
         current.stoppedByTimeout != lastSnapshot_.stoppedByTimeout ||

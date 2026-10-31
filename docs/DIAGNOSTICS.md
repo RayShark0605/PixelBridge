@@ -4,6 +4,8 @@
 
 ## 1. 三类文件不可混淆
 
+2026-10-21：Encoder 日志/运行报告新增 `senderRatePrior`，记录可选 PAM4 接收速度先验、实际生效状态、模型时间、预测原始字节带和按预测关系分类的实际提交方程计数。它不是接收 ACK，不能证明预测位置之前已经恢复；`effective=false` 可能表示关闭、准备未完成或不超过 12 段。字段解释和回退方式见[PAM4 先验说明](SENDER_RATE_PRIOR.md)。这不改变 Decoder 的真实接收/摘要/发布结果字段。
+
 | 文件 | 用途 | 是否参与文件恢复 |
 | --- | --- | --- |
 | `run-<id>.events.jsonl` | 默认应用诊断，逐行 JSON 时间序列 | 否 |
@@ -66,3 +68,7 @@ GUI 从高级选项打开目录；CLI 在 stderr 输出结束时日志位置/异
 Decoder 的 `activeReceptionTiming.startedUnixMilliseconds` 只是可关联的 UTC 起点，`elapsedMilliseconds` 由 Decoder worker 的本机单调时钟累计并在停止/失败/完成时冻结；因此 GUI 活动时间和正式完整运行时间是两个明确口径。旧日志没有该对象时应视为未提供，不得从 `runStarted` 推算活动等待已被排除。
 
 不记录 payload/截图，但报告可能含文件名、路径、Session 与机器/显示信息。不要公开原始日志前不检查隐私内容；日志不是签名审计轨迹，也不替代可信发送者认证。
+
+## 文件反馈诊断增量（2026-10-21）
+
+辅助反馈的 requested/effective、等待/过期/拒绝/不可用、terminalPublished/terminalAccepted、停止原因和独立监听时间由[feedback 对象](FEEDBACK_ASSISTED_TRANSFER.md)记录。设置错误或 helper 超时只影响辅助连接，不把已验证输出降为失败。反馈对象不包含路径或任意状态文本，但普通报告原有的源/输出字段仍可能包含隐私，应按用途审阅后分享。

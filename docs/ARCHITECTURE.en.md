@@ -1,6 +1,10 @@
 # PixelBridge architecture and technical route
 
+> Optional control-plane addition, 2026-10-21: [file-feedback assistance](FEEDBACK_ASSISTED_TRANSFER.en.md) is integrated and defaults off. All forward payload still comes from actual captured pixels; reverse metadata reports bounded durable receiver facts. Whole-file digest, safe publication and final reopen remain mandatory. This addition governs enabled behavior/reporting; the original no-feedback scheduling/cleanup/stopping descriptions below remain unchanged when disabled. No real mapping/remote speedup is certified.
+
 [简体中文](PixelBridge_最终技术路线与总体设计.md) | **English**
+
+> Sender-tuning addendum, 2026-10-21: the [PAM4 expected reception-rate prior](SENDER_RATE_PRIOR.en.md) is an opt-in sender budget policy effective only with more than 12 segments. Bounded active sets, actual committed-service credit, deterministic all-file repair and all existing wire/FEC/digest/publication invariants remain intact. It neither skips a predicted prefix nor conveys receiver feedback. Disabled scheduling retains the original contracts below. Local implementation/regression evidence is not a field speedup result.
 
 
 > Product labels are Standard / Gray Fast / PAM4 / PAM4 Wide, without experiment badges. Frozen `Experimental` / `experimental-*` identifiers below remain for internal/CLI compatibility, not as product-version labels. Validation scope still follows actual evidence.
@@ -29,7 +33,7 @@ Encoder read-only source
  → Immutable Session / Segment / FinalManifest
  → DirectRepeat or Wirehair V2 segment erasure coding
  → Transport + CRC32C → QC-LDPC codeword error correction
- → Independently identified raster → D3D11 data window
+ → Independently identified raster → Default D3D11 / explicit Qt raster data window
  → Existing remote video encoding, network, decoding, scaling, desktop composition
  → Decoder WGC / DXGI capture of the selected screen
  → PB-owned textures, epoch/frame-age checks → geometry, visible calibration, soft demodulation
@@ -38,6 +42,8 @@ Encoder read-only source
 ```
 
 The remote application is an external channel, not something PixelBridge reconfigures. Provider names are operator metadata, never inputs to decoder thresholds, profiles, resource admission, or integrity decisions.
+
+The main Encoder and Shell sender windows can explicitly select Qt software painting only after stopping completely. Each new window defaults to D3D11; Qt selection is not persisted and neither backend automatically falls back to the other. The application-layer `QWidget` / raster `QPainter` backend receives the same complete BGRA through the existing pure-C++ presentation factory, leaving the runtime core Qt-free. All four GUI profiles retain their physical raster, FEC, identity, and file-acceptance rules. Paint counters are not DXGI Present statistics or remote received frames. Qt remains subject to Windows/remote composition and capture, so it does not prove a GPU bypass or a Citrix fix. The fixed ComposedBlt diagnostic and formal-measurement boundaries remain separate; see the [presentation contract](PRESENTATION.md).
 
 ## 3. Visual modes and identity isolation
 
@@ -90,7 +96,7 @@ Mappings are frozen read-only tables, not regenerated at runtime. Independent Go
 
 ## 4. Feedback-free scheduling and large-file tails
 
-Encoder prescans an immutable Session and compresses segments. The ordinary default segment is 8 MiB; the current PAM4 GUI chooses 7 MiB. RAW fallback avoids expansion; small/highly compressible segments use DirectRepeat, suitable dimensions use Wirehair V2.
+Encoder prescans an immutable Session and compresses segments. Standard and PAM4 CLI without an override use 8 MiB; Gray/GrayFast default to 15 MiB; the current PAM4/Wide GUI chooses 7 MiB. RAW fallback avoids expansion; small/highly compressible segments use DirectRepeat, suitable dimensions use Wirehair V2.
 
 Carousel pass zero sends systematic blocks and repair budget; later passes generate fresh repair IDs. Existing paths differ by segment count and cadence, including windows, barriers/graduation, and repair visits. A small test on a different scheduling branch cannot establish large-file behavior. Constants, leases, windows, and budgets are defined by the [sender persistence reference](ENCODER_STREAMING_CAROUSEL.md) and scheduler tests.
 
@@ -117,7 +123,7 @@ An active decoder retains FEC state for a segment; it is not a CPU thread. The d
 
 Users can configure total/per-instance budgets; resume capacity is derived from the total. Startup checks available physical/commit headroom including recovery copies and capture overhead. Configuration does not allocate the whole budget immediately. Insufficient resources cause deferral, not unbounded creation. Memory remains `O(active segment set)`, not `O(file bytes)`.
 
-Queues, staging, orphan/control reassembly, caches, repair attempts, and logs are bounded. Supported files retain a 500 GiB product cap. More RAM helps only when admission is actually limiting useful reception. [Complete budget rules](DECODER_MEMORY_BUDGET.en.md)
+Queues, staging, orphan/control reassembly, caches, repair attempts, and logs are bounded. The common file-byte cap is 500 GiB with at most 65,536 segments; the current PAM4/Wide GUI's 7 MiB segments jointly cap that configuration at 448 GiB. Larger FEC budgets do not relax these limits. These are source-derived admission bounds, not capacity measurements. More RAM helps only when admission is actually limiting useful reception. [Complete budget rules](DECODER_MEMORY_BUDGET.en.md)
 
 ## 7. Persistence, crash recovery, and publication
 

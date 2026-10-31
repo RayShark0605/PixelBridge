@@ -12,6 +12,9 @@ add_library(PB::CompilerSettings ALIAS PBCompilerSettings)
 target_compile_features(PBCompilerSettings INTERFACE cxx_std_20)
 
 if(MSVC)
+    # Release diagnostics retain error codes but must not embed the build
+    # machine's source paths through C++/WinRT slim_source_location defaults.
+    target_compile_definitions(PBCompilerSettings INTERFACE $<$<CONFIG:Release>:WINRT_NO_SOURCE_LOCATION>)
     target_compile_options(PBCompilerSettings INTERFACE
         /utf-8
         /W4

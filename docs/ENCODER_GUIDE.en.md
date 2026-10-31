@@ -1,4 +1,4 @@
-# PixelBridge v1.0 — Encoder instructions
+# PixelBridge v1.1 — Encoder instructions
 
 [简体中文](ENCODER_GUIDE.md) | **English**
 
@@ -6,7 +6,7 @@
 
 1. **Start Decoder receiving before starting Encoder.**
 2. **During a large-file transfer, Decoder's received-size display can temporarily stop increasing. Repair symbols, carousel waiting, disk writes, and verification can cause normal waits: do not pause.** Explicit errors, capture interruptions, or persistent absence of useful data require investigation; not every stall is normal.
-3. Encoder receives no completion ACK. Stop it manually after Decoder confirms successful completion.
+3. Without optional feedback, stop Encoder manually after Decoder confirms completion. With feedback, A stops only after accepting a final receipt bound to its current Start; keep B listening until A stops.
 
 ## Installation and environment
 
@@ -15,7 +15,7 @@
 - Qt and MSVC runtimes are included. Developer tools, Python and PBBridge are not required. ICU, D3DCompiler_47 and Windows APIs come from Windows; stripped systems missing these components are unsupported. Do not obtain replacement DLLs from unofficial download sites.
 - Use your existing remote video connection. No network or remote-control settings need to change; file content does not travel through clipboard, shared directories, or hidden network channels.
 - When Encoder starts normally it idempotently checks and registers a `PixelBridgeEncoder` context-menu verb for files and folders in the current user's Windows Shell. This is a per-user persistent registration and does not require administrator rights. Windows 11 may place a legacy static verb under “Show more options.”
-- Current single-file admission limit: **500 GiB**. Segmented streaming does not require whole-file RAM residency, but sufficient cache/output storage is necessary. This limit is not a measured maximum-file claim.
+- The common file-byte cap is **500 GiB**; the current PAM4/Wide GUI's 7 MiB segments and 65,536-segment limit jointly cap that configuration at **448 GiB**. Streaming avoids whole-file RAM residency, but disk and receiver budgets still apply. These are not measured maximum-file claims.
 
 ## Choosing a mode
 
@@ -44,6 +44,10 @@ Wide cannot simply be shrunk to 1080P and treated as the same mode. PAM4-family 
 6. Keep the source immutable, the application running and the computer awake. Preserve the session cache. Do not change resolution/DPI/display mode or cover the raster.
 7. Stop Encoder only after Decoder reports success. Carousel passes, display FPS and network traffic do not prove file completion.
 
+### Expected reception-rate prior (optional, PAM4 only)
+
+Disabled by default and shared by the main and Shell dialogs. Enter the historical Decoder raw-file average, e.g. `200–280 KB/s` (1024 bytes). It applies only with more than 12 segments, is not a rate limiter/ACK/received prefix, and may help or hurt performance. Old segments retain deterministic repair service. Stop and uncheck to restore the original scheduler; Wide/Standard/Gray Fast do not apply it. See [configuration and algorithm boundaries](SENDER_RATE_PRIOR.en.md). It is independent of timeout below.
+
 ### Automatic stop timeout
 
 - **Maximum run duration (seconds)** is local Encoder policy for this run. It is not written into the visual raster, SessionDescriptor, FEC, or any other protocol field.
@@ -65,3 +69,7 @@ Wide cannot simply be shrunk to 1080P and treated as the same mode. PAM4-family 
 PixelBridge-owned code is MIT-licensed; see the package's `LICENSE`. Dependencies retain their own terms: `THIRD_PARTY_NOTICES.md`, `licenses/`, `SBOM.spdx.json` and `QT_SOURCE.md`. You need not extract `sources/` again to run the application, but retain corresponding Qt source when redistributing.
 
 The release is not publisher-code-signed. SHA-256 manifests and the external seal establish integrity and version consistency, not publisher authentication. `Test-PBUnifiedPortablePackage.ps1` is an optional read-only PowerShell 7 verifier, not a launch requirement. Do not execute binaries from untrusted sources.
+
+## Optional file feedback (2026-10-21 addition)
+
+When a B-to-A read-only mapping is available, enable feedback in Encoder main/Shell and select the corresponding Decoder status folder/file; both entries share preferences. Standard, Gray Fast, PAM4 and Wide are supported, without the speed prior's PAM4-only/>12-segment restriction. Disabled behavior is unchanged. Failure restores all-file service; automatic stop requires a complete final receipt bound to actual current-Start submitted pixels. See [setup and trust/failure contract](FEEDBACK_ASSISTED_TRANSFER.en.md).

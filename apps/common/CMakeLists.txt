@@ -11,8 +11,15 @@ target_sources(PBApplication
         encoder_session_store.cpp
         encoder_monitor_catalog.cpp
         evidence_journal.cpp
+        feedback_protocol.cpp
+        feedback_policy.cpp
+        feedback_file_store.cpp
+        feedback_io_channel.cpp
+        feedback_io_process.cpp
+        feedback_io_worker.cpp
         local_desktop_runtime.cpp
         experimental_pam4_file_probe.inc
+        feedback_transfer_probe.inc
         optional_diagnostic_fanout.cpp
         optional_diagnostic_fanout.h
         monitor_catalog.cpp
@@ -21,8 +28,15 @@ target_sources(PBApplication
         run_measurement.cpp
         recorded_pixel_replay.cpp
         sender_carousel_scheduler.cpp
+        sender_rate_prior.cpp
     PUBLIC
         application_model.h
+        feedback_protocol.h
+        feedback_policy.h
+        feedback_file_store.h
+        feedback_win32.h
+        feedback_io_channel.h
+        feedback_io_process.h
         decoder_activity.h
         gui_visual_mode.h
         mixed_visual_capacity.h
@@ -37,7 +51,8 @@ target_sources(PBApplication
         remote_visual_replay_recorder.h
         run_report.h
         run_measurement.h
-        sender_carousel_scheduler.h)
+        sender_carousel_scheduler.h
+        sender_rate_prior.h)
 
 target_include_directories(PBApplication PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(PBApplication

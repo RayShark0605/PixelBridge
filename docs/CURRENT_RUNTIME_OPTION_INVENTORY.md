@@ -75,6 +75,8 @@ Source: `apps/PixelBridgeDecoder/decoder_runtime_cli.cpp`
 
 ## GUI 与自动诊断 / GUI and automatic diagnostics
 
+2026-10-21：Encoder 主/Shell GUI 新增默认关闭的 PAM4 预期接收速度先验，`EncoderConfig::expectedReceptionRate`；整数区间单位为 1024 B/s，首版仅 PAM4 且超过 12 段生效，不新增 CLI 开关。其它模式不应用，core 的非法组合明确拒绝。参数、模型时钟、确定性修复及 `senderRatePrior` 日志见 [中文](SENDER_RATE_PRIOR.md) / [English](SENDER_RATE_PRIOR.en.md)。本地实现/回归不等于真实链路提速验收。
+
 四个面向用户的模式：标准 / 灰阶高速 / PAM4 / PAM4 Wide。内部 CLI token `experimental-pam4` 与 `experimental-pam4-wide` 保留兼容，不显示为产品模式标签。不同 Profile 不在同一 Session 中切换。
 
 Product-facing mode labels have no experiment badges. Frozen CLI names retain compatibility. The GUI defaults to PAM4 (index 2) for fresh, missing, or invalid preferences; valid saved indices remain unchanged. Standard remains compatibility index 0, while CLI/core defaults stay separate; parameters do not weaken finite budgets or final verification.
@@ -84,3 +86,7 @@ Product-facing mode labels have no experiment badges. Frozen CLI names retain co
 - Automatic logs: no enabling flag needed for normal application runs. Explicit `--journal`/`--report` remain independent create-only evidence. [Diagnostics](DIAGNOSTICS.en.md)
 - `--single-monitor-capture` is distinct from legacy protected/experiment dual-monitor safety authority; no forged second display.
 - Current PAM4 GUI chooses 7 MiB segments; CLI defaults/overrides must be read separately. Wide's physical 2560×1440 presentation is not optional.
+
+## 可选文件反馈（2026-10-21 GUI/应用配置增量）
+
+Encoder 主/Shell 和 Decoder 高级选项新增默认关闭的 FeedbackOptions，应用层为 optional FeedbackConfig（Directory/File + 绝对/UNC 路径）；未新增自动启用或通用文件执行命令。PBFeedbackIo 只支持带版本、nonce/run token 的元数据读/写启动和 --build-identity。后台约 1 秒轮询、5 秒 I/O watchdog、15 秒合格观察 TTL；不在 UI 配置阶段探测网络。精确行为见[文件反馈合同](FEEDBACK_ASSISTED_TRANSFER.md)，不能把 helper 当另一条 payload 通道。

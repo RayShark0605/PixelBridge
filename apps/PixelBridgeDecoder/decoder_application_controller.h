@@ -35,6 +35,7 @@ private slots:
     void PollSnapshot();
 
 private:
+    friend class DecoderApplicationControllerTestAccess;
     pbapp::DecoderRuntime runtime_;
     pbgui::OperationalLog log_{QStringLiteral("Decoder")};
     QTimer pollTimer_;

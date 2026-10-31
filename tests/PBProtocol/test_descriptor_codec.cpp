@@ -11,6 +11,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -194,6 +195,35 @@ TEST_CASE("Session filename validation enforces strict UTF-8 Windows basename ru
     const auto excessiveStatus = pbprotocol::ValidateSessionDescriptor(maximumNameDescriptor);
     REQUIRE_FALSE(excessiveStatus);
     REQUIRE(excessiveStatus.Error().code == pbprotocol::ProtocolErrorCode::InvalidFileName);
+}
+
+TEST_CASE("Session filename admission rejects Windows superscript device aliases",
+          "[pbprotocol][descriptor][filename][security]")
+{
+    const std::array<std::string_view, 12> reservedNames{
+        "COM\xC2\xB9", "COM\xC2\xB2", "COM\xC2\xB3", "LPT\xC2\xB9", "LPT\xC2\xB2", "LPT\xC2\xB3",
+        "com\xC2\xB9.txt", "Com\xC2\xB2.tar.gz", "cOM\xC2\xB3.bin", "lpt\xC2\xB9.txt", "Lpt\xC2\xB2.bin", "lpT\xC2\xB3.tar.gz"};
+    for (const std::string_view reservedName : reservedNames)
+    {
+        CAPTURE(reservedName);
+        const auto status = pbprotocol::ValidateFileNameUtf8(reservedName, 17);
+        REQUIRE_FALSE(status);
+        REQUIRE(status.Error().code == pbprotocol::ProtocolErrorCode::InvalidFileName);
+        REQUIRE(status.Error().offset == 17);
+    }
+    REQUIRE(pbprotocol::ValidateFileNameUtf8("COM\xC2\xB9" "0.txt"));
+    REQUIRE(pbprotocol::ValidateFileNameUtf8("XCOM\xC2\xB9.txt"));
+    REQUIRE(pbprotocol::ValidateFileNameUtf8("LPT\xE2\x81\xB4.txt"));
+
+    const pbprotocol::ReceiverResourcePolicy resourcePolicy = pbprotocol::test::MakeResourcePolicy();
+    auto descriptor = pbprotocol::test::MakeSessionDescriptor(1, 1);
+    descriptor.fileNameUtf8 = "XOM\xC2\xB9.txt";
+    auto bytes = SerializeSession(descriptor, resourcePolicy);
+    bytes[pbprotocol::kFormalWireSessionDescriptorFileNameUtf8Offset] = Byte('C');
+    RewriteDescriptorCrc(bytes);
+    const auto parsed = pbprotocol::ParseSessionDescriptor(bytes, resourcePolicy);
+    REQUIRE_FALSE(parsed);
+    REQUIRE(parsed.Error().code == pbprotocol::ProtocolErrorCode::InvalidFileName);
 }
 
 TEST_CASE("Session optional TLVs are canonical bounded and mandatory-aware",

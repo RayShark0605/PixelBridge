@@ -306,7 +306,7 @@ function Copy-ApplicationDirectory
     if ($ProductRelease) {
         # Windows 10/11 provides ICU and D3DCompiler_47. Do not redistribute OS
         # shims or Qt's unrelated PDF/SVG/network plugins and shader toolchain.
-        foreach ($relative in @("$ApplicationName.exe", 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+        foreach ($relative in @("$ApplicationName.exe", 'PBFeedbackIo.exe', 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
             'blake3.dll', 'zstd.dll', 'platforms/qwindows.dll', 'platforms/qoffscreen.dll', 'styles/qmodernwindowsstyle.dll')) {
             $inputPath = Join-Path $Source $relative
             if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { throw "Required product runtime missing: $relative" }
@@ -426,7 +426,7 @@ $compiler = [ordered]@{
     id = Get-CmakeSetValue -Path $compilerFiles[0].FullName -Name 'CMAKE_CXX_COMPILER_ID'
     version = Get-CmakeSetValue -Path $compilerFiles[0].FullName -Name 'CMAKE_CXX_COMPILER_VERSION'
     architecture = Get-CmakeSetValue -Path $compilerFiles[0].FullName -Name 'CMAKE_CXX_COMPILER_ARCHITECTURE_ID'
-    path = $compilerPath
+    path = '<compiler>/cl.exe'
     size = [UInt64](Get-Item -LiteralPath $compilerPath).Length
     sha256 = Get-FileSha256 -Path $compilerPath
 }
@@ -604,7 +604,7 @@ $buildIdentity = [ordered]@{
     qt = [ordered]@{
         version = $qtVersions[0]
         deployedQt6CoreSha256 = $qtCoreHashes[0]
-        configuredRoot = $qtRoot
+        configuredRoot = '<qt>'
         licenseInfoSha256 = Get-FileSha256 -Path $qtLicenseInfoPath
     }
     vcpkg = [ordered]@{
@@ -685,6 +685,18 @@ try
             "$applicationName.exe"
         }
         $copiedExecutable = Join-Path $stagingDirectory ($relativeExecutablePath.Replace('/', '\'))
+        $helperRelativePath = if ($Role -eq 'Both') { "$applicationRole/PBFeedbackIo.exe" } else { 'PBFeedbackIo.exe' }
+        $helperPath = Join-Path $stagingDirectory $helperRelativePath
+        $helperOutput = (& $helperPath --build-identity | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or [Text.Encoding]::UTF8.GetByteCount($helperOutput) -gt 4096) {
+            throw 'Feedback helper identity command failed or exceeded its bound'
+        }
+        $helperIdentity = $helperOutput | ConvertFrom-Json -AsHashtable
+        if ($helperIdentity.Count -ne 4 -or $helperIdentity.application -cne 'PBFeedbackIo' -or
+            $helperIdentity.feedbackProtocol -cne 1 -or $helperIdentity.ipcProtocol -cne 1 -or
+            $helperIdentity.metadataOnly -isnot [bool] -or -not $helperIdentity.metadataOnly) {
+            throw 'Feedback helper protocol/metadata identity mismatch'
+        }
         $versionOutput = @(& $copiedExecutable --version | Out-String -Stream)
         if ($LASTEXITCODE -ne 0)
         {
@@ -705,6 +717,12 @@ try
             sha256 = Get-FileSha256 -Path $copiedExecutable
             versionOutput = [string]$versionOutput[0]
             runtimeIdentity = $runtimeIdentity
+            feedbackHelper = [ordered]@{
+                relativeExecutablePath = $helperRelativePath
+                size = [UInt64](Get-Item -LiteralPath $helperPath).Length
+                sha256 = Get-FileSha256 -Path $helperPath
+                runtimeIdentity = $helperIdentity
+            }
         }
     }
 
@@ -719,7 +737,9 @@ try
             Copy-Item -LiteralPath (Join-Path $repositoryRoot $name) -Destination $stagingDirectory
         }
         Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs/QT_SOURCE.md') -Destination $stagingDirectory
-        Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs/RELEASE_V1.0.md') -Destination $stagingDirectory
+        $releaseVersion = [version]$applicationVersion
+        $releaseNotesName = "RELEASE_V$($releaseVersion.Major).$($releaseVersion.Minor).md"
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs/$releaseNotesName") -Destination $stagingDirectory
         Write-NewUtf8File -Path (Join-Path $stagingDirectory 'README.md') -Content @"
 # PixelBridge $applicationVersion $Role
 
@@ -731,7 +751,9 @@ try
 
 解压完整目录并运行 PixelBridge$Role.exe。Extract the entire folder, then run PixelBridge$Role.exe.
 
-[Release notes](RELEASE_V1.0.md) · [MIT License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Acknowledgements](ACKNOWLEDGEMENTS.md) · [Qt corresponding source](QT_SOURCE.md)
+[Release notes]($releaseNotesName) · [MIT License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Acknowledgements](ACKNOWLEDGEMENTS.md) · [Qt corresponding source](QT_SOURCE.md)
+
+Optional feedback: read [中文说明](FEEDBACK_ASSISTED_TRANSFER.md) / [English](FEEDBACK_ASSISTED_TRANSFER.en.md). Keep sibling PBFeedbackIo.exe. All forward payload still comes from captured pixels; only receiver metadata uses the optional read-only mapped-file return path. Without feedback, stop Encoder manually after Decoder verifies completion.
 
 This is an unsigned local release. SHA-256 manifests establish integrity, not publisher authentication. No network activation or payload side channel is used. Sources and licenses need not be extracted again to run the application; retain them when redistributing.
 "@
@@ -882,7 +904,7 @@ This is an unsigned local release. SHA-256 manifests establish integrity, not pu
         excludedUnrelatedSourcePaths = @($ExcludedSourcePath)
         sourceFileCount = $sourceInventory.Count
         sourceFiles = $sourceInventory
-        buildDirectory = $resolvedBuild
+        buildDirectory = '<build>'
         packageFileCount = $packageFiles.Count
         packagePayloadBytes = $packageBytes
         packagePayloadFingerprintSha256 = $packagePayloadFingerprint

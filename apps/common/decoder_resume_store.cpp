@@ -196,8 +196,23 @@ template <typename Integer>
     return test::snapshot::ReopenSnapshot(path);
 #else
     return CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
 #endif
+}
+
+[[nodiscard]] DecoderResumeStoreStatus ValidateJournalHandle(const HANDLE file) noexcept
+{
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (GetFileInformationByHandle(file, &information) == FALSE)
+    {
+        return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal attributes", GetLastError()));
+    }
+    if ((information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        information.nNumberOfLinks != 1)
+    {
+        return DecoderResumeStoreStatus::Failure("resume journal must be an ordinary single-link file");
+    }
+    return {};
 }
 
 [[nodiscard]] std::wstring SessionTagText(const pbprotocol::SessionTag sessionTag)
@@ -207,31 +222,22 @@ template <typename Integer>
     return count == 16 ? std::wstring(text, 16) : std::wstring{};
 }
 
-[[nodiscard]] DecoderResumeStoreStatus ReadFileBounded(const std::filesystem::path& path,
+[[nodiscard]] DecoderResumeStoreStatus ReadFileBounded(const HANDLE file,
     const std::uint64_t maximumBytes, std::vector<std::byte>& output) noexcept
 {
     output.clear();
-    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
-    {
-        return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal open", GetLastError()));
-    }
     LARGE_INTEGER size{};
     if (GetFileSizeEx(file, &size) == FALSE)
     {
         const DWORD error = GetLastError();
-        CloseHandle(file);
         return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal size", error));
     }
     if (size.QuadPart < 0)
     {
-        CloseHandle(file);
         return DecoderResumeStoreStatus::Failure("resume journal size is invalid");
     }
     if (static_cast<std::uint64_t>(size.QuadPart) > maximumBytes)
     {
-        CloseHandle(file);
         return DecoderResumeStoreStatus::Failure("resume journal exceeds maxResumeBytes");
     }
     try
@@ -240,7 +246,6 @@ template <typename Integer>
     }
     catch (const std::bad_alloc&)
     {
-        CloseHandle(file);
         return DecoderResumeStoreStatus::Failure("resume journal allocation failed");
     }
     std::size_t offset = 0;
@@ -252,22 +257,27 @@ template <typename Integer>
         if (ReadFile(file, output.data() + offset, requested, &readBytes, nullptr) == FALSE || readBytes == 0)
         {
             const DWORD error = GetLastError();
-            CloseHandle(file);
             return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal read", error));
         }
         offset += readBytes;
     }
-    const bool closed = CloseHandle(file) != FALSE;
-    return closed ? DecoderResumeStoreStatus{} :
-        DecoderResumeStoreStatus::Failure(NativeFailure("resume journal close", GetLastError()));
+    return {};
 }
 
 [[nodiscard]] DecoderResumeStoreStatus AtomicWriteFile(const std::filesystem::path& path,
-    const std::span<const std::byte> bytes) noexcept
+    const std::span<const std::byte> bytes, const bool replaceExisting = true) noexcept
 {
     const std::filesystem::path temporaryPath = path.wstring() + L".tmp";
-    const HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    const DWORD temporaryAttributes = GetFileAttributesW(temporaryPath.c_str());
+    if (temporaryAttributes != INVALID_FILE_ATTRIBUTES &&
+        ((temporaryAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 || !DeleteFileW(temporaryPath.c_str())))
+    {
+        return DecoderResumeStoreStatus::Failure("resume temporary state is unsafe or busy");
+    }
+    // Removing only the stale name preserves any other hard link. CREATE_NEW
+    // then rejects a replacement race instead of truncating an existing file.
+    const HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (file == INVALID_HANDLE_VALUE)
     {
         return DecoderResumeStoreStatus::Failure(NativeFailure("resume compact create", GetLastError()));
@@ -306,7 +316,8 @@ template <typename Integer>
     // rebuild the document, delete the durable target, or advance generation.
     const auto replacement = detail::RetryAtomicReplace([&]() noexcept
     {
-        return ReplaceJournalSnapshot(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ?
+        const DWORD flags = MOVEFILE_WRITE_THROUGH | (replaceExisting ? MOVEFILE_REPLACE_EXISTING : 0U);
+        return ReplaceJournalSnapshot(temporaryPath.c_str(), path.c_str(), flags) ?
             ERROR_SUCCESS : GetLastError();
     }, []() noexcept { return GetTickCount64(); }, [](const DWORD milliseconds) noexcept { Sleep(milliseconds); });
     if (replacement.error != ERROR_SUCCESS)
@@ -607,6 +618,10 @@ template <typename Integer>
 
 struct DecoderResumeStore::Implementation
 {
+    Implementation() = default;
+    Implementation(const Implementation&) = delete;
+    Implementation& operator=(const Implementation&) = delete;
+
     HANDLE file = INVALID_HANDLE_VALUE;
     std::filesystem::path path;
     pbprotocol::ReceiverResourcePolicy policy;
@@ -632,6 +647,14 @@ struct DecoderResumeStore::Implementation
     bool hadTruncatedTail = false;
     bool terminalFailure = false;
     bool coalesceLargeSnapshots = false;
+
+    ~Implementation()
+    {
+        if (file != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(file);
+        }
+    }
 
     [[nodiscard]] bool PlanCompactDocument(std::uint64_t& documentBytes, std::uint64_t& recordCount) const noexcept
     {
@@ -903,14 +926,7 @@ DecoderResumeStore::DecoderResumeStore(std::unique_ptr<Implementation> implement
 {
 }
 
-DecoderResumeStore::~DecoderResumeStore()
-{
-    if (implementation_ && implementation_->file != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(implementation_->file);
-        implementation_->file = INVALID_HANDLE_VALUE;
-    }
-}
+DecoderResumeStore::~DecoderResumeStore() = default;
 
 DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& outputDirectory,
     const pbprotocol::SessionTag sessionTag, const std::span<const std::byte> sessionControlRecord,
@@ -968,7 +984,13 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
         }
         implementation->activeSegmentBitmap.assign(segmentCountSize.Value(), false);
 
-        if (!std::filesystem::exists(implementation->path))
+        const DWORD attributes = GetFileAttributesW(implementation->path.c_str());
+        const bool journalExists = attributes != INVALID_FILE_ATTRIBUTES;
+        if (!journalExists && GetLastError() != ERROR_FILE_NOT_FOUND)
+        {
+            return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal lookup", GetLastError()));
+        }
+        if (!journalExists)
         {
             std::vector<std::byte> header;
             DecoderResumeStoreStatus status = BuildJournalHeader(sessionTag, sessionControlRecord, header);
@@ -976,7 +998,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
             {
                 return status ? DecoderResumeStoreStatus::Failure("resume header exceeds maxResumeBytes") : status;
             }
-            status = AtomicWriteFile(implementation->path, header);
+            status = AtomicWriteFile(implementation->path, header, false);
             if (!status)
             {
                 return status;
@@ -986,11 +1008,23 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
             test::ObserveJournalFileBytes(implementation->fileBytes);
 #endif
         }
-        else
+        implementation->file = CreateFileW(implementation->path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (implementation->file == INVALID_HANDLE_VALUE)
         {
-            implementation->resumed = true;
+            return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal append open", GetLastError()));
+        }
+        const auto handleStatus = ValidateJournalHandle(implementation->file);
+        if (!handleStatus)
+        {
+            return handleStatus;
+        }
+        // Keep one exclusive handle through parsing, tail repair and later
+        // appends: validation must never authorize a different reopened path.
+        {
+            implementation->resumed = journalExists;
             std::vector<std::byte> document;
-            DecoderResumeStoreStatus status = ReadFileBounded(implementation->path,
+            DecoderResumeStoreStatus status = ReadFileBounded(implementation->file,
                 resourcePolicy.maxResumeBytes, document);
             if (!status)
             {
@@ -1229,12 +1263,6 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
         // Opening a validated journal establishes a local growth baseline. Its
         // live snapshot may already exceed 16 MiB; size alone is not garbage.
         implementation->compactionBaseBytes = implementation->fileBytes;
-        implementation->file = CreateFileW(implementation->path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
-        if (implementation->file == INVALID_HANDLE_VALUE)
-        {
-            return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal append open", GetLastError()));
-        }
         LARGE_INTEGER end{};
         end.QuadPart = static_cast<LONGLONG>(implementation->fileBytes);
         if (SetFilePointerEx(implementation->file, end, nullptr, FILE_BEGIN) == FALSE ||
@@ -1242,6 +1270,7 @@ DecoderResumeStoreStatus DecoderResumeStore::Open(const std::filesystem::path& o
         {
             const DWORD error = GetLastError();
             CloseHandle(implementation->file);
+            implementation->file = INVALID_HANDLE_VALUE;
             return DecoderResumeStoreStatus::Failure(NativeFailure("resume journal tail repair", error));
         }
         auto store = std::unique_ptr<DecoderResumeStore>(new DecoderResumeStore(std::move(implementation)));
@@ -1779,6 +1808,13 @@ DecoderResumeStoreStatus DecoderResumeStore::Compact() noexcept
     {
         implementation_->terminalFailure = true;
         return DecoderResumeStoreStatus::Failure(NativeFailure("resume compact reopen", GetLastError()));
+    }
+    status = ValidateJournalHandle(implementation_->file);
+    if (!status)
+    {
+        CloseHandle(std::exchange(implementation_->file, INVALID_HANDLE_VALUE));
+        implementation_->terminalFailure = true;
+        return status;
     }
     implementation_->generation = generation;
     implementation_->fileBytes = document.size();

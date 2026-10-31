@@ -3,6 +3,8 @@
 #include "dvbs2_short_matrix.h"
 #include "pbprotocol/blake3_digest.h"
 
+#include <new>
+
 namespace pbinnerfec {
 
 namespace {
@@ -281,15 +283,21 @@ std::span<const std::byte> SerializeInnerFecMatrixInto(
 std::vector<std::byte> SerializeInnerFecMatrix(
     const InnerFecProfile& profile) noexcept
 {
-    std::vector<std::byte> buffer(kMaxInnerFecMatrixSerializationBytes);
-    const std::span<const std::byte> serialized =
-        SerializeInnerFecMatrixInto(profile, buffer);
-    if (serialized.empty())
+    try
+    {
+        std::vector<std::byte> buffer(kMaxInnerFecMatrixSerializationBytes);
+        const std::span<const std::byte> serialized = SerializeInnerFecMatrixInto(profile, buffer);
+        if (serialized.empty())
+        {
+            return {};
+        }
+        buffer.resize(serialized.size());
+        return buffer;
+    }
+    catch (const std::bad_alloc&)
     {
         return {};
     }
-    buffer.resize(serialized.size());
-    return buffer;
 }
 
 std::array<std::byte, 32> ComputeInnerFecMatrixDigest(

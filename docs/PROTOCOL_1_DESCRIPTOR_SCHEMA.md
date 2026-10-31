@@ -46,7 +46,7 @@
 70 + FileNameUtf8Bytes + OptionalExtensionsBytes + 4
 ```
 
-最小值为 74，最大值 `kMaximumDescriptorPayloadBytes=1300`。当前正式 Golden 使用
+envelope 的尺寸预检下界为 74；文件名必须至少 1 byte，因此可接受的完整 SessionDescriptor 最小为 75 bytes，最大值为 `kMaximumDescriptorPayloadBytes=1300`。当前正式 Golden 使用
 `payload.bin`，因此为 85 bytes；85 不是固定 wire record 长度。
 
 | Offset | Bytes | Encoding | Field | Schema 1 rule |
@@ -59,7 +59,7 @@
 | 12 | 16 | bytes | `SessionId` | OS CSPRNG 生成；wire parser 不接受另一长度 |
 | 28 | 8 | LE `uint64` | `SessionVisualProfileId` | PBProtocol 只要求非零 |
 | 36 | 8 | LE `uint64` | `OriginalFileSize` | 受本地 `ReceiverResourcePolicy` 限制 |
-| 44 | 4 | LE `uint32` | `SourceSegmentTargetBytes` | PBProtocol 要求非零；产品 admission 冻结为 8 MiB |
+| 44 | 4 | LE `uint32` | `SourceSegmentTargetBytes` | PBProtocol 要求非零；不是固定 8 MiB 的 wire 常量，应用按 Profile/显式配置选择 |
 | 48 | 8 | LE `uint64` | `SegmentCount` | 空文件必须为 0；非空必须为 `1..OriginalFileSize`，并受本地 policy 限制 |
 | 56 | 1 | `uint8` | `CompressionPolicy` | `1=AutomaticZstandardLevel3RawFallback` |
 | 57 | 1 | `uint8` | `DigestAlgorithm` | `1=BLAKE3-256` |
@@ -75,8 +75,7 @@
 Schema 1 字节的解释。
 
 PBProtocol 故意不把 `SessionVisualProfileId` 限死为 Unified ID。协议层只验证它非零；
-`PB-Unified-SC6-V3`/layout 10 是产品 application admission 规则，历史内部 A/B 工具仍可生成正式 schema，
-但不能因此成为最终产品可选项。
+application admission 必须匹配本次实际选择的 Profile。正式 catalog 的唯一条目仍是 `PB-Unified-SC6-V3`/layout 10；GUI 的 Gray Fast、PAM4 与 Wide 使用各自独立身份。历史内部 A/B 工具可生成正式 schema，但不能仅凭 schema 有效就取得产品模式准入。
 
 ## 3. Session optional TLV
 
@@ -154,6 +153,7 @@ profile 后仍返回成功。
 - `.`、`..`、尾随 dot 或 space；
 - 不区分 ASCII 大小写的 `CON`、`PRN`、`AUX`、`NUL`、`CONIN$`、`CONOUT$`，包括带扩展名形式；
 - `COM1..COM9`、`LPT1..LPT9`，包括带扩展名形式；
+- Windows 同样保留的 `COM¹/²/³`、`LPT¹/²/³`，包括大小写与扩展名形式；依据 [Windows 文件命名规则](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file)；
 - 空名称或超过 1020 UTF-8 bytes 的名称。
 
 最终输出仍只能位于 Decoder 用户选择的本地目录；通过 wire basename 校验不等于允许覆盖已有文件。
@@ -177,7 +177,7 @@ Control envelope 的 `RecordBytes` 必须等于完整 Control input；Descriptor
 
 ## 8. 大小与 checked-arithmetic 基线
 
-以产品固定 8 MiB source segment target 计算的 canonical 边界如下。这里的 SegmentCount 用
+以 8 MiB source segment target 计算的 G01 边界如下；这不是所有当前模式的固定目标。这里的 SegmentCount 用
 `size == 0 ? 0 : 1 + (size - 1) / 8 MiB`，避免 `size + target - 1` 溢出。
 
 | OriginalFileSize | Canonical SegmentCount | G01 expectation |
@@ -195,6 +195,8 @@ Control envelope 的 `RecordBytes` 必须等于完整 Control input；Descriptor
 PBProtocol 的 Session shape validation 不替代后续 Segment Map：每个 Segment 的
 `RawOffset+RawSize` 独立 checked，完整 map 必须无 overlap、无 gap 并精确覆盖
 `[0, OriginalFileSize)`。未经验证的 count/size 不得直接驱动同规模分配。
+
+当前 GUI PAM4/Wide 使用 7 MiB，Gray Fast 默认 15 MiB；65,536 段和 500 GiB 文件字节限制同时有效。各配置的组合边界见 [文件大小与预算](DECODER_MEMORY_BUDGET.md)，不能将上述 8 MiB 表直接套用到 7 MiB 配置。
 
 ## 9. Golden 与历史 fixture 边界
 

@@ -295,7 +295,7 @@ TEST_CASE("Encoder session store leases IDs durably and resumes only exact sourc
     config.rootDirectory = scratch.GetPath();
     config.sourceIdentity = MakeSourceIdentity(0x0123456789ABCDEFULL, 0x30, 17,
         0x0102030405060708ULL);
-    config.sourcePathUtf8 = "D:/fixtures/source.bin";
+    config.sourcePathUtf8 = "fixtures/source.bin";
     config.buildIdentity = "PixelBridge-0.1.0";
     config.compressionIdentity = "zstd-1.5.7";
     config.outerFecIdentity = "wirehair-v2-profile-1;outer-block-1314";
@@ -660,6 +660,76 @@ TEST_CASE("Encoder persistent replacement denial rolls back memory and retains e
     REQUIRE(store->GetRepairIdStart(1, 32) == 8192);
     REQUIRE(store->GetCarouselPass() == 0);
     REQUIRE(store->GetSegmentOrdinal() == 0);
+}
+
+TEST_CASE("Decoder snapshot replacement never truncates a hard-linked temporary target",
+    "[application][decoder][resume][journal][filesystem-safety]")
+{
+    ScratchDirectory scratch(L"decoder-temporary-hardlink");
+    ResumeFixture fixture;
+    const auto outputDirectory = scratch.GetPath() / L"output";
+    REQUIRE(std::filesystem::create_directory(outputDirectory));
+    const auto externalPath = scratch.GetPath() / L"unrelated.bin";
+    const auto externalBytes = MakeBytes(4097);
+    {
+        std::ofstream externalFile(externalPath, std::ios::binary);
+        REQUIRE(externalFile);
+        externalFile.write(reinterpret_cast<const char*>(externalBytes.data()), static_cast<std::streamsize>(externalBytes.size()));
+        externalFile.close();
+        REQUIRE(externalFile.good());
+    }
+
+    const auto sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    wchar_t journalName[64]{};
+    REQUIRE(swprintf_s(journalName, L"PixelBridge-%016llx.resume", static_cast<unsigned long long>(sessionTag.value)) > 0);
+    const auto journalPath = outputDirectory / journalName;
+    const std::filesystem::path temporaryPath = journalPath.wstring() + L".tmp";
+    pbapp::DecoderResumeLoadedState loaded;
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+
+    SECTION("initial journal creation")
+    {
+        REQUIRE(CreateHardLinkW(temporaryPath.c_str(), externalPath.c_str(), nullptr));
+        REQUIRE(pbapp::DecoderResumeStore::Open(outputDirectory, sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+        REQUIRE_FALSE(loaded.resumed);
+    }
+    SECTION("completed segment compaction")
+    {
+        REQUIRE(pbapp::DecoderResumeStore::Open(outputDirectory, sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+        REQUIRE(store->RecordSegmentControl(fixture.segmentControl));
+        REQUIRE(CreateHardLinkW(temporaryPath.c_str(), externalPath.c_str(), nullptr));
+        const pbprotocol::ResumeCompletedSegmentRecord completed{fixture.session.sessionId, 0, 0,
+            fixture.segment.rawSize, fixture.segment.rawDigest};
+        REQUIRE(store->RecordCompletedSegment(completed));
+    }
+    REQUIRE(ReadAllBytes(externalPath) == externalBytes);
+    REQUIRE_FALSE(std::filesystem::exists(temporaryPath));
+    store.reset();
+    REQUIRE(pbapp::DecoderResumeStore::Open(outputDirectory, sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+    REQUIRE(loaded.resumed);
+    REQUIRE(ReadAllBytes(externalPath) == externalBytes);
+}
+
+TEST_CASE("Decoder snapshot replacement preserves a conflicting temporary directory",
+    "[application][decoder][resume][journal][filesystem-safety]")
+{
+    ScratchDirectory scratch(L"decoder-temporary-directory");
+    ResumeFixture fixture;
+    const auto sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    pbapp::DecoderResumeLoadedState loaded;
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+    REQUIRE(store->RecordSegmentControl(fixture.segmentControl));
+    const std::filesystem::path temporaryPath = store->GetPath().wstring() + L".tmp";
+    REQUIRE(std::filesystem::create_directory(temporaryPath));
+    const pbprotocol::ResumeCompletedSegmentRecord completed{fixture.session.sessionId, 0, 0,
+        fixture.segment.rawSize, fixture.segment.rawDigest};
+    REQUIRE_FALSE(store->RecordCompletedSegment(completed));
+    REQUIRE(std::filesystem::is_directory(temporaryPath));
+    store.reset();
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl, fixture.policy, store, loaded));
+    REQUIRE(loaded.completedSegments.size() == 1);
+    REQUIRE(std::filesystem::is_directory(temporaryPath));
 }
 
 TEST_CASE("Decoder resume journal repairs only a torn tail and compacts completed Segment state",
@@ -1379,6 +1449,46 @@ TEST_CASE("Decoder restart revalidates completed part bytes before storage adopt
             pbprotocol::ProtocolErrorCode::DigestMismatch);
         REQUIRE(storage->GetSnapshot().verifiedBytes == 0);
     }
+}
+
+TEST_CASE("Decoder refuses a hard-linked journal before repairing its torn tail",
+    "[application][decoder][resume][alias]")
+{
+    ScratchDirectory scratch(L"decoder-journal-hard-link-rejected");
+    ResumeFixture fixture;
+    const auto sessionTag = pbprotocol::DeriveSessionTag(fixture.session.sessionId);
+    pbapp::DecoderResumeLoadedState loaded;
+    std::unique_ptr<pbapp::DecoderResumeStore> store;
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl,
+        fixture.policy, store, loaded));
+    REQUIRE(store->RecordSegmentControl(fixture.segmentControl));
+    const auto journalPath = store->GetPath();
+    store.reset();
+    const auto targetPath = scratch.GetPath() / L"unrelated-journal-copy.bin";
+    std::filesystem::rename(journalPath, targetPath);
+    REQUIRE(CreateHardLinkW(journalPath.c_str(), targetPath.c_str(), nullptr));
+    {
+        std::ofstream target(targetPath, std::ios::binary | std::ios::app);
+        REQUIRE(target);
+        target.put('P');
+        target.close();
+        REQUIRE(target);
+    }
+    const auto originalBytes = ReadAllBytes(targetPath);
+    REQUIRE_FALSE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl,
+        fixture.policy, store, loaded));
+    REQUIRE_FALSE(store);
+    REQUIRE(ReadAllBytes(targetPath) == originalBytes);
+    REQUIRE(ReadAllBytes(journalPath) == originalBytes);
+
+    REQUIRE(DeleteFileW(journalPath.c_str()));
+    REQUIRE(std::filesystem::copy_file(targetPath, journalPath));
+    REQUIRE(pbapp::DecoderResumeStore::Open(scratch.GetPath(), sessionTag, fixture.sessionControl,
+        fixture.policy, store, loaded));
+    REQUIRE(loaded.resumed);
+    REQUIRE(loaded.hadTruncatedTail);
+    REQUIRE(loaded.segmentControlRecords.size() == 1);
+    REQUIRE(ReadAllBytes(targetPath) == originalBytes);
 }
 
 TEST_CASE("Decoder durable publish intent recovers the rename-before-journal-delete crash window",

@@ -3,6 +3,10 @@
 #include "encoder_monitor_catalog.h"
 #include "encoder_shell_dialog.h"
 #include "encoder_shell_integration.h"
+#include "encoder_presentation_options.h"
+#include "encoder_display_options.h"
+#include "encoder_rate_prior_options.h"
+#include "feedback_options_qt.h"
 #include "product_gui_helpers.h"
 #include "gui_visual_mode.h"
 #include "gui_native_smoke.h"
@@ -14,6 +18,7 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QIcon>
+#include <QImage>
 #include <QStandardPaths>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -30,6 +35,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QSettings>
@@ -48,12 +54,76 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string_view>
 
 namespace
 {
 
 using TargetConfigurator = std::function<QString(pbapp::EncoderConfig&, QWidget&)>;
+
+[[nodiscard]] QString PrepareDiagnosticSettings(const QString& packageDirectory, QString& settingsPath, const bool displaySelection = false)
+{
+    const QString directory = QDir(packageDirectory).filePath(displaySelection ? QStringLiteral("display-diagnostic") : QStringLiteral("presentation-diagnostic"));
+    if (!QDir().mkpath(directory))
+    {
+        return QStringLiteral("无法创建候选专用配置目录；请将整个候选包解压到可写目录。");
+    }
+    const QString candidate = QDir(directory).filePath(QStringLiteral("settings.ini"));
+    QSettings settings(candidate, QSettings::IniFormat);
+    settings.setFallbacksEnabled(false);
+    // Force lazy INI parsing before adding a key: even a rejected launch must
+    // preserve corrupt preferences byte-for-byte for diagnosis and recovery.
+    static_cast<void>(settings.allKeys());
+    if (settings.status() != QSettings::NoError)
+    {
+        return QStringLiteral("候选专用 INI 格式无效；已保留原文件，不写入或改用注册表偏好。");
+    }
+    settings.setValue(QStringLiteral("diagnostic/schema"), 1);
+    settings.sync();
+    if (settings.status() != QSettings::NoError)
+    {
+        return QStringLiteral("候选专用 INI 不可写或格式无效；不会改用原包或注册表偏好。");
+    }
+    settingsPath = candidate;
+    return {};
+}
+
+[[nodiscard]] bool RunDiagnosticSettingsFailureSmoke(const QString& scratch, const bool displaySelection = false)
+{
+    const QString corruptRoot = QDir(scratch).filePath(QStringLiteral("corrupt-candidate"));
+    const QString directory = QDir(corruptRoot).filePath(displaySelection ? QStringLiteral("display-diagnostic") : QStringLiteral("presentation-diagnostic"));
+    if (!QDir().mkpath(directory))
+    {
+        return false;
+    }
+    const QString corruptPath = QDir(directory).filePath(QStringLiteral("settings.ini"));
+    const QByteArray original("[broken\nsourcePath=keep-me\n");
+    QFile file(corruptPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly) || file.write(original) != original.size())
+    {
+        return false;
+    }
+    file.close();
+    QString settingsPath = QStringLiteral("unchanged");
+    const QString error = PrepareDiagnosticSettings(corruptRoot, settingsPath, displaySelection);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        return false;
+    }
+    const bool preserved = !error.isEmpty() && settingsPath == QStringLiteral("unchanged") && file.readAll() == original;
+    file.close();
+    const QString blockedRoot = QDir(scratch).filePath(QStringLiteral("file-not-directory"));
+    QFile blocker(blockedRoot);
+    if (!blocker.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+    {
+        return false;
+    }
+    blocker.close();
+    const bool blocked = !PrepareDiagnosticSettings(blockedRoot, settingsPath, displaySelection).isEmpty() && settingsPath == QStringLiteral("unchanged");
+    std::cout << "Diagnostic settings failure smoke: corrupt INI preserved=" << preserved << "; blocked directory rejected=" << blocked << '\n';
+    return preserved && blocked;
+}
 
 [[nodiscard]] QString ConfigureCurrentMonitor(pbapp::EncoderConfig& config, QWidget& window)
 {
@@ -126,15 +196,43 @@ class EncoderWindow final : public QMainWindow
 public:
     explicit EncoderWindow(pbapp::EncoderPresentationFactory presentationFactory = {}, const QString& settingsFile = {},
         TargetConfigurator configureTarget = ConfigureCurrentMonitor, std::function<bool()> confirmDeletion = {},
-        pbgui::Step1GuiEvidence* evidence = nullptr) :
-        controller_(nullptr, std::move(presentationFactory)), configureTarget_(std::move(configureTarget)),
-        confirmDeletion_(std::move(confirmDeletion)), evidence_(evidence)
+        pbgui::Step1GuiEvidence* evidence = nullptr,
+        const std::optional<pbrenderd3d::PresentationModel> diagnosticModel = std::nullopt, const bool displayDiagnostic = false) :
+        controller_(nullptr, std::move(presentationFactory), diagnosticModel || displayDiagnostic ?
+            QFileInfo(settingsFile).dir().filePath(QStringLiteral("logs")) : QString()), configureTarget_(std::move(configureTarget)),
+        confirmDeletion_(std::move(confirmDeletion)), evidence_(evidence), diagnosticModel_(diagnosticModel), displayDiagnostic_(displayDiagnostic)
     {
+        if ((diagnosticModel_ || displayDiagnostic_) && settingsFile.isEmpty())
+        {
+            throw std::invalid_argument("Diagnostic presentation requires an explicit isolated INI");
+        }
         settings_ = settingsFile.isEmpty() ? std::make_unique<QSettings>() :
             std::make_unique<QSettings>(settingsFile, QSettings::IniFormat);
+        if (diagnosticModel_ || displayDiagnostic_)
+        {
+            settings_->setFallbacksEnabled(false);
+            if (diagnosticModel_ && !settings_->contains(QStringLiteral("g22/logicalFps")))
+            {
+                settings_->setValue(QStringLiteral("g22/logicalFps"), 30);
+            }
+            if (settings_->value(QStringLiteral("g22/sessionRoot")).toString().isEmpty())
+            {
+                settings_->setValue(QStringLiteral("g22/sessionRoot"), QFileInfo(settingsFile).dir().filePath(
+                    displayDiagnostic_ ? QStringLiteral("display-sessions") : QStringLiteral("presentation-sessions")));
+            }
+        }
         setWindowTitle(QStringLiteral("PixelBridge Encoder v%1").arg(QString::fromStdString(pbcore::GetBuildInfo().version)));
-        setMinimumSize(640, 460);
-        resize(740, 560);
+        if (diagnosticModel_ || displayDiagnostic_)
+        {
+            const std::string_view fingerprint = pbencoder::GetDiagnosticSourceFingerprint();
+            const QString sourceIdentity = fingerprint.empty() ? QStringLiteral("unsealed") :
+                QString::fromLatin1(fingerprint.data(), static_cast<qsizetype>(fingerprint.size())).left(12);
+            setWindowTitle(windowTitle() + QStringLiteral(" · 未提交源码诊断候选 · %1 · %2")
+                .arg(diagnosticModel_ ? QString::fromUtf8(pbrenderd3d::GetPresentationModelName(*diagnosticModel_)) :
+                    QStringLiteral("显示方式兼容性测试")).arg(sourceIdentity));
+        }
+        setMinimumSize(640, 500);
+        resize(740, 600);
         BuildUi();
         // Do not import the legacy geometry, profiles, active state or 240 Hz preference.
         sourceEdit_->setText(settings_->value(QStringLiteral("g22/sourcePath")).toString());
@@ -148,6 +246,8 @@ public:
             savedMaximumRunDurationSeconds) ? QString::number(static_cast<qulonglong>(savedMaximumRunDurationSeconds)) :
             QStringLiteral("0"));
         LoadCarrierPreference();
+        ratePriorOptions_->Load(*settings_);
+        feedbackOptions_->Load(*settings_);
         connect(&controller_, &EncoderApplicationController::SnapshotChanged, this, &EncoderWindow::UpdateSnapshot);
         connect(&controller_, &EncoderApplicationController::TerminalStateReached, this, [this]()
         {
@@ -360,6 +460,8 @@ public:
                 !pbgui::SaveTabPreviews(*this, *tabs_, index == 3 ? QStringLiteral("encoder-pam4-wide") : QStringLiteral("encoder-pam4")) ||
                 modeHintLabel_->height() < modeHintLabel_->heightForWidth(modeHintLabel_->width()))
             {
+                std::cout << "PAM4 configuration/layout smoke failed at mode " << index << "; hint height=" << modeHintLabel_->height()
+                    << "; required=" << modeHintLabel_->heightForWidth(modeHintLabel_->width()) << '\n';
                 return false;
             }
             SavePreferences();
@@ -371,6 +473,13 @@ public:
             }
         }
         smallMonitor = true;
+        resize(minimumSize());
+        QCoreApplication::processEvents();
+        static_cast<void>(grab());
+        if (modeHintLabel_->height() < modeHintLabel_->heightForWidth(modeHintLabel_->width()))
+        {
+            return false;
+        }
         startButton_->click();
         if (controller_.GetSnapshot().runGeneration != 0 || !messageLabel_->text().contains(QStringLiteral("2560×1440")) ||
             QFileInfo::exists(sessionRoot))
@@ -389,6 +498,157 @@ public:
         SavePreferences();
         LoadCarrierPreference();
         return carrierCombo_->currentIndex() == 3 && !isVisible() && !QApplication::activeModalWidget();
+    }
+
+    [[nodiscard]] bool RunDiagnosticPresentationSmoke(const QString& sourcePath, const pbrenderd3d::PresentationModel expectedModel,
+        const int expectedFps)
+    {
+        sourceEdit_->setText(sourcePath);
+        pbapp::EncoderConfig config;
+        const QString error = BuildTransmissionConfig(config);
+        const bool isolatedLogs = controller_.LogDirectory() == QFileInfo(settings_->fileName()).dir().filePath(QStringLiteral("logs"));
+        const bool passed = error.isEmpty() && config.presentationModel == expectedModel &&
+            config.visualProfile == pbapp::VisualProfile::ExperimentalPam4 && config.singleMonitorFullscreen &&
+            config.logicalVisualFps == static_cast<std::uint32_t>(expectedFps) && !config.sessionStateRoot.empty() &&
+            settings_->format() == QSettings::IniFormat && !carrierCombo_->isEnabled() &&
+            windowTitle().contains(QString::fromUtf8(pbrenderd3d::GetPresentationModelName(expectedModel))) && !isVisible() && isolatedLogs;
+        fpsSpin_->setValue(31);
+        SavePreferences();
+        std::cout << "Diagnostic presentation GUI smoke " << pbrenderd3d::GetPresentationModelName(expectedModel)
+            << ": " << (passed ? "PASS" : "FAIL") << "; isolated logs=" << isolatedLogs << '\n';
+        return passed;
+    }
+
+    [[nodiscard]] bool RunDisplaySelectionSmoke(const QString& sourcePath, const QString& previewPrefix = {})
+    {
+        auto* const button = findChild<QPushButton*>(QStringLiteral("displayMode"));
+        auto* const priorEnabled = findChild<QCheckBox*>(QStringLiteral("expectedReceptionRateEnabled"));
+        auto* const priorMinimum = findChild<QSpinBox*>(QStringLiteral("expectedReceptionRateMinimum"));
+        if (button == nullptr || priorEnabled == nullptr || priorMinimum == nullptr || isVisible())
+        {
+            std::cout << "Qt display main-window smoke: display button missing or window visible\n";
+            return false;
+        }
+        sourceEdit_->setText(sourcePath);
+        if (!diagnosticModel_)
+        {
+            carrierCombo_->setCurrentIndex(0);
+        }
+        pbapp::EncoderConfig config;
+        const auto initialModel = diagnosticModel_.value_or(pbrenderd3d::PresentationModel::Flip);
+        if (!BuildTransmissionConfig(config).isEmpty() || config.presentationModel != initialModel)
+        {
+            return false;
+        }
+        if (displayDiagnostic_ && (settings_->format() != QSettings::IniFormat ||
+            controller_.LogDirectory() != QFileInfo(settings_->fileName()).dir().filePath(QStringLiteral("logs")) ||
+            config.sessionStateRoot != std::filesystem::path(QFileInfo(settings_->fileName()).dir().filePath(QStringLiteral("display-sessions")).toStdWString())))
+        {
+            return false;
+        }
+        if (diagnosticModel_ || evidence_)
+        {
+            return !button->isEnabled() && QMetaObject::invokeMethod(button, "clicked", Qt::DirectConnection, Q_ARG(bool, false)) &&
+                BuildTransmissionConfig(config).isEmpty() && config.presentationModel == initialModel;
+        }
+        priorEnabled->setChecked(true);
+        const auto layoutFits = [&]()
+        {
+            QImage image(size() * devicePixelRatioF(), QImage::Format_ARGB32);
+            image.setDevicePixelRatio(devicePixelRatioF());
+            image.fill(Qt::transparent);
+            render(&image);
+            return !image.isNull() && rect().contains(QRect(button->mapTo(this, QPoint(0, 0)), button->size())) &&
+                rect().contains(QRect(ratePriorOptions_->mapTo(this, QPoint(0, 0)), ratePriorOptions_->size())) &&
+                button->width() >= button->fontMetrics().horizontalAdvance(button->text()) + 16 &&
+                button->height() >= button->fontMetrics().height() + 4;
+        };
+        for (int index = 0; index < 4; index++)
+        {
+            carrierCombo_->setCurrentIndex(index);
+            pbapp::EncoderConfig nativeConfig;
+            if (!BuildTransmissionConfig(nativeConfig).isEmpty() || nativeConfig.presentationModel != pbrenderd3d::PresentationModel::Flip ||
+                !button->isEnabled() || !button->text().contains(QStringLiteral("D3D11")) || !layoutFits())
+            {
+                return false;
+            }
+            if (nativeConfig.expectedReceptionRate.has_value() != (index == 2) || priorEnabled->isEnabled() != (index == 2) ||
+                priorMinimum->isEnabled() != (index == 2))
+            {
+                return false;
+            }
+            if (index == 2)
+            {
+                closePending_ = true;
+                UpdateActions();
+                const bool locked = !priorEnabled->isEnabled() && !priorMinimum->isEnabled();
+                closePending_ = false;
+                UpdateActions();
+                if (!locked)
+                {
+                    return false;
+                }
+            }
+            if (index == 2 && !previewPrefix.isEmpty() && !pbgui::SaveTabPreviews(*this, *tabs_, previewPrefix + QStringLiteral("-native")))
+            {
+                return false;
+            }
+            button->click();
+            if (!BuildTransmissionConfig(config).isEmpty() || config.presentationModel != pbrenderd3d::PresentationModel::QtRaster ||
+                config.visualProfile != nativeConfig.visualProfile || config.logicalVisualFps != nativeConfig.logicalVisualFps ||
+                config.fullscreenRasterWidth != nativeConfig.fullscreenRasterWidth || config.segmentTargetBytes != nativeConfig.segmentTargetBytes ||
+                config.expectedReceptionRate != nativeConfig.expectedReceptionRate ||
+                !button->text().contains(QStringLiteral("Qt")) || !layoutFits())
+            {
+                return false;
+            }
+            if (index == 2 && !previewPrefix.isEmpty() && !pbgui::SaveTabPreviews(*this, *tabs_, previewPrefix + QStringLiteral("-qt")))
+            {
+                return false;
+            }
+            button->click();
+        }
+        closePending_ = true;
+        UpdateActions();
+        const bool closeLocked = !button->isEnabled() && QMetaObject::invokeMethod(button, "clicked", Qt::DirectConnection, Q_ARG(bool, false)) &&
+            BuildTransmissionConfig(config).isEmpty() && config.presentationModel == pbrenderd3d::PresentationModel::Flip;
+        closePending_ = false;
+        UpdateActions();
+        button->click();
+        SavePreferences();
+        std::cout << "Qt display main-window configuration/layout smoke: " << (closeLocked ? "PASS" : "FAIL") << '\n';
+        return closeLocked && controller_.GetSnapshot().runGeneration == 0;
+    }
+
+    [[nodiscard]] bool RunDisplayLifecycleSmoke(const QString& sourcePath, const QString& sessionRoot, const std::function<bool()>& presentationCreated)
+    {
+        auto* const button = findChild<QPushButton*>(QStringLiteral("displayMode"));
+        if (button == nullptr)
+        {
+            return false;
+        }
+        sourceEdit_->setText(sourcePath);
+        cacheEdit_->setText(sessionRoot);
+        carrierCombo_->setCurrentIndex(0);
+        fpsSpin_->setValue(30);
+        button->click();
+        startButton_->click();
+        const bool created = WaitFor(presentationCreated);
+        const auto generation = controller_.GetSnapshot().runGeneration;
+        pbapp::EncoderConfig config;
+        const bool locked = created && controller_.IsActive() && !button->isEnabled() &&
+            QMetaObject::invokeMethod(button, "clicked", Qt::DirectConnection, Q_ARG(bool, false)) &&
+            BuildTransmissionConfig(config).isEmpty() && config.presentationModel == pbrenderd3d::PresentationModel::QtRaster &&
+            QMetaObject::invokeMethod(startButton_, "clicked", Qt::DirectConnection, Q_ARG(bool, false)) &&
+            controller_.GetSnapshot().runGeneration == generation;
+        controller_.RequestStop();
+        const bool stopped = WaitFor([this] { return !controller_.IsActive(); });
+        UpdateActions();
+        button->click();
+        const bool passed = locked && stopped && button->isEnabled() && BuildTransmissionConfig(config).isEmpty() &&
+            config.presentationModel == pbrenderd3d::PresentationModel::Flip;
+        std::cout << "Qt display main-window active-handler smoke: " << (passed ? "PASS" : "FAIL") << '\n';
+        return passed;
     }
 
     [[nodiscard]] int RunNativeSmoke(const pbgui::NativeSmokeOptions& options)
@@ -494,6 +754,7 @@ private:
         tabs_->setObjectName(QStringLiteral("encoderTabs"));
         QWidget* const mainPage = new QWidget();
         QVBoxLayout* const mainLayout = new QVBoxLayout(mainPage);
+        mainLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
         mainLayout->setContentsMargins(20, 22, 20, 20);
         mainLayout->setSpacing(12);
         mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("源文件")));
@@ -533,6 +794,12 @@ private:
         modeHintLabel_->setObjectName(QStringLiteral("visualModeHint"));
         modeHintLabel_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
         mainLayout->addWidget(modeHintLabel_);
+        displayButton_ = new QPushButton();
+        displayButton_->setObjectName(QStringLiteral("displayMode"));
+        displayButton_->setMinimumHeight(32);
+        displayButton_->setToolTip(QStringLiteral("停止后可切换。只改变发送端画面绘制；Decoder 仍须选择相同传输模式。新开窗口默认 D3D11，不自动回退。"));
+        connect(displayButton_, &QPushButton::clicked, this, &EncoderWindow::ToggleDisplayMode);
+        mainLayout->addWidget(displayButton_);
         QHBoxLayout* const rateRow = new QHBoxLayout();
         rateRow->addWidget(pbgui::TextLabel(QStringLiteral("刷新帧率")));
         fpsSpin_ = new QSpinBox();
@@ -561,6 +828,10 @@ private:
         timeoutRow->addWidget(pbgui::TextLabel(QStringLiteral("秒（0 = 手动停止）")));
         timeoutRow->addStretch();
         mainLayout->addLayout(timeoutRow);
+        ratePriorOptions_ = new pbencoder::EncoderRatePriorOptions();
+        mainLayout->addWidget(ratePriorOptions_);
+        feedbackOptions_ = new pbgui::FeedbackOptions(pbgui::FeedbackRole::EncoderReader);
+        mainLayout->addWidget(feedbackOptions_);
         stateLabel_ = pbgui::TextLabel();
         stateLabel_->setStyleSheet(QStringLiteral("font-size:16px;font-weight:600;"));
         mainLayout->addWidget(stateLabel_);
@@ -568,7 +839,13 @@ private:
         mainLayout->addWidget(messageLabel_);
         mainLayout->addStretch();
         mainLayout->addWidget(pbgui::TextLabel(QStringLiteral("准备完成后全屏显示 · 按 Esc 停止传输\nEsc 仅在 Encoder 持有键盘焦点时生效，停止后保留恢复状态。")));
-        tabs_->addTab(mainPage, QStringLiteral("传输"));
+        // Keep every control and wrapped message reachable at the retained
+        // minimum window size instead of squeezing text after adding options.
+        auto* const mainScroll = new QScrollArea();
+        mainScroll->setFrameShape(QFrame::NoFrame);
+        mainScroll->setWidgetResizable(true);
+        mainScroll->setWidget(mainPage);
+        tabs_->addTab(mainScroll, QStringLiteral("传输"));
 
         QWidget* const advancedPage = new QWidget();
         QVBoxLayout* const advancedLayout = new QVBoxLayout(advancedPage);
@@ -644,11 +921,20 @@ private:
             ParseMaximumRunDurationSeconds(maximumDurationEdit_->text(), maximumRunDurationSeconds) ?
                 QString::number(static_cast<qulonglong>(maximumRunDurationSeconds)) : QStringLiteral("0"));
         settings_->setValue(QStringLiteral("g22/carrier"), carrierCombo_->currentIndex());
+        ratePriorOptions_->Save(*settings_);
+        feedbackOptions_->Save(*settings_);
         settings_->sync();
     }
 
     void LoadCarrierPreference()
     {
+        if (diagnosticModel_)
+        {
+            carrierCombo_->setCurrentIndex(pbapp::defaultGuiVisualModeIndex);
+            carrierPreferencesWarning_.clear();
+            UpdateVisualModeHint();
+            return;
+        }
         bool converted = false;
         const int savedCarrier = settings_->value(QStringLiteral("g22/carrier"), pbapp::defaultGuiVisualModeIndex).toString().toInt(&converted);
         const bool valid = converted && pbapp::GetGuiVisualProfile(savedCarrier).has_value();
@@ -659,6 +945,12 @@ private:
 
     void UpdateVisualModeHint()
     {
+        if (diagnosticModel_)
+        {
+            modeHintLabel_->setText(QStringLiteral("诊断 A/B：固定 PAM4；本次呈现策略 %1，不自动回退。\n两个入口共用候选专用 INI；仅本地合同已验证，Citrix 效果待现场验证。")
+                .arg(QString::fromUtf8(pbrenderd3d::GetPresentationModelName(*diagnosticModel_))));
+            return;
+        }
         const auto profile = pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex());
         const bool pam4 = profile && pbapp::IsExperimentalPam4Family(*profile);
         modeHintLabel_->setText(carrierPreferencesWarning_ + (pam4 ?
@@ -667,16 +959,36 @@ private:
             (pam4 && evidence_ ? QStringLiteral("\n此模式不支持正式测量入口。") : QString()));
     }
 
+    void ToggleDisplayMode()
+    {
+        if (!displayButton_->isEnabled() || controller_.IsActive() ||
+            !pbencoder::CanChangeEncoderDisplayMode(controller_.GetSnapshot().state, closePending_, diagnosticModel_.has_value(), evidence_ != nullptr))
+        {
+            return;
+        }
+        const auto next = pbencoder::GetNextEncoderDisplayMode(displayMode_);
+        if (next)
+        {
+            displayMode_ = *next;
+            UpdateSnapshot();
+        }
+    }
+
     void UpdateActions()
     {
         const auto snapshot = controller_.GetSnapshot();
-        const bool active = pbapp::IsEncoderStateActive(snapshot.state);
+        const bool active = controller_.IsActive();
         const bool editable = !active && !closePending_;
         sourceEdit_->setEnabled(editable);
         browseButton_->setEnabled(editable);
         fpsSpin_->setEnabled(editable);
         maximumDurationEdit_->setEnabled(editable);
-        carrierCombo_->setEnabled(editable);
+        carrierCombo_->setEnabled(editable && !diagnosticModel_);
+        ratePriorOptions_->SetContext(pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex()).value_or(pbapp::VisualProfile::UnifiedLc4), editable);
+        feedbackOptions_->SetEditable(editable);
+        feedbackOptions_->SetTelemetry(snapshot.feedback);
+        displayButton_->setText(QString::fromUtf8(pbencoder::GetEncoderDisplayModeLabel(diagnosticModel_.value_or(displayMode_))));
+        displayButton_->setEnabled(!active && pbencoder::CanChangeEncoderDisplayMode(snapshot.state, closePending_, diagnosticModel_.has_value(), evidence_ != nullptr));
         cacheEdit_->setEnabled(editable);
         cacheBrowse_->setEnabled(editable);
         const QFileInfo source(sourceEdit_->text());
@@ -691,10 +1003,19 @@ private:
 
     [[nodiscard]] QString BuildTransmissionConfig(pbapp::EncoderConfig& config)
     {
+        const auto displayMode = diagnosticModel_.value_or(displayMode_);
+        if (evidence_ && displayMode == pbrenderd3d::PresentationModel::QtRaster)
+        {
+            return QStringLiteral("Qt 软件绘制不支持正式测量入口，请使用默认 D3D11 显示方式。");
+        }
         const auto profile = pbapp::GetGuiVisualProfile(carrierCombo_->currentIndex());
         if (!profile)
         {
             return QStringLiteral("传输模式无效，请重新选择。");
+        }
+        if (diagnosticModel_ && *profile != pbapp::VisualProfile::ExperimentalPam4)
+        {
+            return QStringLiteral("本次呈现诊断仅允许单屏全屏 PAM4，不支持 Wide 或其它模式。");
         }
         if (evidence_ && pbapp::IsExperimentalPam4Family(*profile))
         {
@@ -706,9 +1027,20 @@ private:
             return QStringLiteral("超时关闭必须是 uint64 范围内的非负整数秒；0 表示无超时关闭。");
         }
         config = pbapp::MakeUnifiedEncoderConfig(sourceEdit_->text().toStdWString(), static_cast<std::uint32_t>(fpsSpin_->value()));
+        config.presentationModel = displayMode;
         config.visualProfile = *profile;
         config.sessionStateRoot = cacheEdit_->text().toStdWString();
         config.maximumRunDurationSeconds = maximumRunDurationSeconds;
+        const QString priorError = ratePriorOptions_->Apply(config);
+        if (!priorError.isEmpty())
+        {
+            return priorError;
+        }
+        const QString feedbackError = feedbackOptions_->Apply(config);
+        if (!feedbackError.isEmpty())
+        {
+            return feedbackError;
+        }
         const QString targetError = configureTarget_(config, *this);
         if (!targetError.isEmpty())
         {
@@ -724,10 +1056,16 @@ private:
         {
             return;
         }
+        displayButton_->setEnabled(false);
         pbapp::EncoderConfig config;
+        ratePriorOptions_->setEnabled(false);
+        feedbackOptions_->setEnabled(false);
         const QString configurationError = BuildTransmissionConfig(config);
+        ratePriorOptions_->setEnabled(true);
+        feedbackOptions_->setEnabled(true);
         if (!configurationError.isEmpty())
         {
+            UpdateActions();
             messageLabel_->setText(configurationError);
             return;
         }
@@ -737,6 +1075,7 @@ private:
             config.measurement = evidence_->BeginRun(evidenceError);
             if (!config.measurement)
             {
+                UpdateActions();
                 messageLabel_->setText(evidenceError);
                 return;
             }
@@ -814,7 +1153,8 @@ private:
         {
             const QString timeout = snapshot.configuredMaximumRunDurationSeconds == 0 ?
                 QStringLiteral("无超时关闭") : QStringLiteral("超时 %1 秒").arg(snapshot.configuredMaximumRunDurationSeconds);
-            message = QStringLiteral("持续循环发送，不等待对端确认。当前设置 %1 Hz，%2。").arg(
+            message = (snapshot.feedback.requested ? QStringLiteral("视觉传输中；反馈有效时优先服务未完成段，验证完成后自动停止。当前 %1 Hz，%2。") :
+                QStringLiteral("持续循环发送，不等待对端确认。当前设置 %1 Hz，%2。")).arg(
                 snapshot.configuredLogicalVisualFps).arg(timeout);
         }
         else if (snapshot.state == pbapp::EncoderState::Failed)
@@ -826,6 +1166,7 @@ private:
             message = snapshot.stoppedByTimeout ?
                 QStringLiteral("已按超时设置安全停止；这不表示 Decoder 已完成接收。") :
                 snapshot.sessionDeleted ? QStringLiteral("会话索引已删除，源文件未改动。") :
+                snapshot.stopReason == pbapp::EncoderStopReason::ReceiverVerified ? QStringLiteral("接收方报告整文件验证、安全发布和最终重开均通过；已自动安全停止广播。") :
                 QStringLiteral("恢复状态已保留，可以重新开始。");
         }
         messageLabel_->setText(message);
@@ -845,11 +1186,16 @@ private:
     TargetConfigurator configureTarget_;
     std::function<bool()> confirmDeletion_;
     pbgui::Step1GuiEvidence* evidence_ = nullptr;
+    const std::optional<pbrenderd3d::PresentationModel> diagnosticModel_;
+    const bool displayDiagnostic_;
+    pbrenderd3d::PresentationModel displayMode_ = pbrenderd3d::PresentationModel::Flip;
     bool closePending_ = false;
     QTabWidget* tabs_ = nullptr;
     QLineEdit* sourceEdit_ = nullptr;
     QLineEdit* cacheEdit_ = nullptr;
     QLineEdit* maximumDurationEdit_ = nullptr;
+    pbencoder::EncoderRatePriorOptions* ratePriorOptions_ = nullptr;
+    pbgui::FeedbackOptions* feedbackOptions_ = nullptr;
     QSpinBox* fpsSpin_ = nullptr;
     QComboBox* carrierCombo_ = nullptr;
     QLabel* modeHintLabel_ = nullptr;
@@ -857,6 +1203,7 @@ private:
     QPushButton* browseButton_ = nullptr;
     QPushButton* cacheBrowse_ = nullptr;
     QPushButton* startButton_ = nullptr;
+    QPushButton* displayButton_ = nullptr;
     QPushButton* deleteButton_ = nullptr;
     QPushButton* exportButton_ = nullptr;
     QLabel* stateLabel_ = nullptr;
@@ -894,6 +1241,24 @@ private:
 
 int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
 {
+    const bool displayTest = argumentCount > 1 && std::wstring_view(arguments[1]) == L"--gui-display-test";
+    if (displayTest && !pbencoder::ParseGuiDisplayTestArguments(argumentCount, arguments))
+    {
+        std::cerr << "Usage: PixelBridgeEncoder --gui-display-test (no other arguments)\n";
+        return 2;
+    }
+    const bool qtDisplaySmoke = argumentCount > 1 && std::wstring_view(arguments[1]) == L"--gui-qt-display-smoke";
+    if (qtDisplaySmoke && argumentCount != 2)
+    {
+        return 2;
+    }
+    const bool diagnosticPresentation = argumentCount > 1 && std::wstring_view(arguments[1]) == L"--gui-presentation-mode";
+    pbrenderd3d::PresentationModel presentationModel = pbrenderd3d::PresentationModel::Flip;
+    if (diagnosticPresentation && !pbencoder::ParseGuiPresentationModeArguments(argumentCount, arguments, presentationModel))
+    {
+        std::cerr << "Usage: PixelBridgeEncoder --gui-presentation-mode flip|composed-blt (no other arguments)\n";
+        return 2;
+    }
     std::wstring shellPath;
     const bool shellOpen = pbencoder::ParseShellOpenArguments(argumentCount, arguments, shellPath);
     const bool measurement = argumentCount > 1 && std::wstring_view(arguments[1]) == L"--gui-measurement";
@@ -913,6 +1278,7 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         }
     }
     const bool smoke = argumentCount == 2 && std::wstring_view(arguments[1]) == L"--gui-smoke";
+    const bool offscreenSmoke = smoke || qtDisplaySmoke;
     const bool nativeSmoke = pbgui::IsNativeSmoke(argumentCount, arguments);
     pbgui::NativeSmokeOptions nativeOptions;
     if (nativeSmoke && !pbgui::ParseNativeSmoke(argumentCount, arguments, nativeOptions))
@@ -920,31 +1286,32 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         return 2;
     }
     const bool integrationSmoke = argumentCount == 3 && std::wstring_view(arguments[1]) == L"--gui-integration-smoke";
-    if (smoke && !pbgui::PrepareOffscreenPlatform())
+    if (offscreenSmoke && !pbgui::PrepareOffscreenPlatform())
     {
         std::cerr << "G22 Encoder GUI smoke: missing offscreen platform; no window started\n";
         return 2;
     }
-    QStandardPaths::setTestModeEnabled(smoke);
+    QStandardPaths::setTestModeEnabled(offscreenSmoke);
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     int guiArgumentCount = 1;
     char applicationName[] = "PixelBridgeEncoder";
     char* guiArguments[] = {applicationName, nullptr};
     QApplication application(guiArgumentCount, guiArguments);
-    if (!pbgui::ConfigureFont(smoke))
+    if (!pbgui::ConfigureFont(offscreenSmoke))
     {
         std::cerr << "G22 Encoder GUI smoke: CJK font unavailable\n";
         return 2;
     }
     QCoreApplication::setOrganizationName(QStringLiteral("PixelBridge"));
-    QCoreApplication::setApplicationName(QStringLiteral("PixelBridgeEncoder"));
+    QCoreApplication::setApplicationName(diagnosticPresentation ? QStringLiteral("PixelBridgeEncoderPresentationDiagnostic") :
+        displayTest ? QStringLiteral("PixelBridgeEncoderDisplayDiagnostic") : QStringLiteral("PixelBridgeEncoder"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/branding/logo.png")));
     if (QApplication::windowIcon().isNull())
     {
         std::cerr << "Application branding resource unavailable\n";
         return 2;
     }
-    if (!smoke && !nativeSmoke && !measurement && !integrationSmoke)
+    if (pbencoder::ShouldRegisterEncoderShell(diagnosticPresentation || displayTest, offscreenSmoke, nativeSmoke, measurement, integrationSmoke))
     {
         const pbencoder::ShellRegistrationStatus registrationStatus = pbencoder::EnsureShellContextMenuRegistration(
             QCoreApplication::applicationFilePath().toStdWString());
@@ -957,6 +1324,86 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
     if (shellOpen)
     {
         return RunEncoderShellDialog(QString::fromWCharArray(shellPath.c_str()), QString());
+    }
+    if (qtDisplaySmoke)
+    {
+        QTemporaryDir scratch;
+        if (!scratch.isValid())
+        {
+            return 2;
+        }
+        const auto sourcePath = scratch.filePath(QStringLiteral("display.bin"));
+        QFile source(sourcePath);
+        if (!source.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+        {
+            return 2;
+        }
+        source.close();
+        QString settingsPath;
+        if (!PrepareDiagnosticSettings(scratch.path(), settingsPath, true).isEmpty())
+        {
+            return 2;
+        }
+        {
+            QSettings injected(settingsPath, QSettings::IniFormat);
+            injected.setValue(QStringLiteral("g22/displayMode"), QStringLiteral("qt-raster"));
+            injected.setValue(QStringLiteral("g22/presentationModel"), QStringLiteral("qt-raster"));
+        }
+        const TargetConfigurator configureProfiles = [](pbapp::EncoderConfig& config, QWidget&)
+        {
+            pbapp::MonitorInfo monitor;
+            monitor.monitor = reinterpret_cast<HMONITOR>(std::uintptr_t{1});
+            monitor.deviceName = L"Offscreen display-selection fixture";
+            monitor.physicalRect = config.visualProfile == pbapp::VisualProfile::ExperimentalPam4 ? RECT{0, 0, 1920, 1080} : RECT{0, 0, 2560, 1600};
+            monitor.workRect = monitor.physicalRect;
+            monitor.dpiX = 96;
+            monitor.dpiY = 96;
+            monitor.refreshRate = 60;
+            monitor.rotation = DXGI_MODE_ROTATION_IDENTITY;
+            config.singleMonitorFullscreen = monitor;
+            config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
+            config.remoteMetadata.experimentMonitorIdentity = "Offscreen display-selection fixture";
+            return QString();
+        };
+        bool selected = true;
+        for (int windowIndex = 0; windowIndex < 2; windowIndex++)
+        {
+            EncoderWindow window({}, settingsPath, configureProfiles, {}, nullptr, std::nullopt, true);
+            selected = window.RunDisplaySelectionSmoke(sourcePath, windowIndex == 0 ? QStringLiteral("qt-display-main") : QString()) && selected;
+        }
+        bool fixed = true;
+        for (const auto model : {pbrenderd3d::PresentationModel::Flip, pbrenderd3d::PresentationModel::ComposedBlt})
+        {
+            EncoderWindow window({}, settingsPath, configureProfiles, {}, nullptr, model);
+            fixed = window.RunDisplaySelectionSmoke(sourcePath) && fixed;
+        }
+        QString evidenceError;
+        const auto smokeEvidence = pbgui::Step1GuiEvidence::Create(scratch.filePath(QStringLiteral("measurement")), QStringLiteral("Encoder"), evidenceError);
+        if (!smokeEvidence)
+        {
+            return 2;
+        }
+        EncoderWindow measured({}, smokeEvidence->SettingsPath(), configureProfiles, {}, smokeEvidence.get());
+        const bool measurementLocked = measured.RunDisplaySelectionSmoke(sourcePath);
+        std::atomic<bool> created = false;
+        const pbapp::EncoderPresentationFactory factory = [&](const pbrenderd3d::DataWindowConfig& config)
+        {
+            created = config.presentationModel == pbrenderd3d::PresentationModel::QtRaster;
+            return std::make_unique<SmokeWaitingPresentation>();
+        };
+        const TargetConfigurator configureWindowed = [](pbapp::EncoderConfig& config, QWidget&)
+        {
+            config.monitorClientOrigin = pbrenderd3d::PhysicalPoint{0, 0};
+            return QString();
+        };
+        EncoderWindow activeWindow(factory, scratch.filePath(QStringLiteral("active.ini")), configureWindowed);
+        const bool activeLocked = activeWindow.RunDisplayLifecycleSmoke(sourcePath, scratch.filePath(QStringLiteral("sessions")), [&] { return created.load(); });
+        const bool shell = RunEncoderShellDisplaySmoke();
+        const bool isolatedSettings = RunDiagnosticSettingsFailureSmoke(scratch.filePath(QStringLiteral("display-errors")), true);
+        const bool passed = selected && fixed && measurementLocked && activeLocked && shell && isolatedSettings;
+        std::cout << "Qt display GUI smoke: " << (passed ? "PASS" : "FAIL") << "; selected=" << selected << "; fixed=" << fixed
+            << "; measurement=" << measurementLocked << "; active=" << activeLocked << "; shell=" << shell << "; offscreen only\n";
+        return passed ? 0 : 1;
     }
     if (smoke)
     {
@@ -1028,6 +1475,22 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         };
         EncoderWindow pam4Window(presentationFactory, scratch.filePath(QStringLiteral("pam4-settings.ini")), configurePam4);
         const bool pam4Passed = pam4Window.RunPam4ConfigurationSmoke(sourcePath, scratch.filePath(QStringLiteral("pam4-sessions")), smallMonitor);
+        bool diagnosticPassed = true;
+        QString diagnosticSettings;
+        const QString diagnosticError = PrepareDiagnosticSettings(scratch.filePath(QStringLiteral("candidate")), diagnosticSettings);
+        if (!diagnosticError.isEmpty())
+        {
+            std::cerr << diagnosticError.toStdString() << '\n';
+            return 1;
+        }
+        int expectedFps = 30;
+        for (const auto model : {pbrenderd3d::PresentationModel::Flip, pbrenderd3d::PresentationModel::ComposedBlt, pbrenderd3d::PresentationModel::Flip})
+        {
+            EncoderWindow diagnosticWindow(presentationFactory, diagnosticSettings, configurePam4, {}, nullptr, model);
+            diagnosticPassed = diagnosticWindow.RunDiagnosticPresentationSmoke(sourcePath, model, expectedFps) && diagnosticPassed;
+            expectedFps = 31;
+        }
+        diagnosticPassed = RunDiagnosticSettingsFailureSmoke(scratch.path()) && diagnosticPassed;
         created = false;
         QString evidenceError;
         const auto smokeEvidence = pbgui::Step1GuiEvidence::Create(scratch.filePath(QStringLiteral("measurement")), QStringLiteral("Encoder"), evidenceError);
@@ -1038,11 +1501,14 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         }
         EncoderWindow measuredWindow(presentationFactory, smokeEvidence->SettingsPath(), configureTarget, {}, smokeEvidence.get());
         const bool shellDialogPassed = RunEncoderShellDialogSmoke();
-        const bool passed = measuredWindow.RunMeasurementStartSmoke(sourcePath, [&]()
+        const bool measurementPassed = measuredWindow.RunMeasurementStartSmoke(sourcePath, [&]()
         {
             return created.load();
-        }) && legacyPassed && pam4Passed && shellDialogPassed;
+        });
+        const bool passed = measurementPassed && legacyPassed && pam4Passed && shellDialogPassed && diagnosticPassed;
         std::cout << "G22 Encoder GUI smoke: " << (passed ? "PASS" : "FAIL")
+            << "; legacy=" << legacyPassed << "; PAM4=" << pam4Passed << "; Shell=" << shellDialogPassed
+            << "; measurement=" << measurementPassed << "; diagnostic=" << diagnosticPassed
             << "; offscreen; tabs/real-cache-setting/fixed-run-FPS/local-Esc/retain/delete/measurement-Start-RunId/PAM4-config-fit-preferences-measurement-reject/shell-context-dialog; no desktop pixels\n";
         return passed ? 0 : 1;
     }
@@ -1051,7 +1517,18 @@ int RunEncoderGui(const int argumentCount, wchar_t* arguments[])
         EncoderWindow window({}, QDir(nativeOptions.evidenceDirectory).filePath(QStringLiteral("settings.ini")));
         return window.RunNativeSmoke(nativeOptions);
     }
-    EncoderWindow window({}, evidence ? evidence->SettingsPath() : QString(), ConfigureCurrentMonitor, {}, evidence.get());
+    QString settingsPath = evidence ? evidence->SettingsPath() : QString();
+    if (diagnosticPresentation || displayTest)
+    {
+        const QString error = PrepareDiagnosticSettings(QCoreApplication::applicationDirPath(), settingsPath, displayTest);
+        if (!error.isEmpty())
+        {
+            std::cerr << error.toStdString() << '\n';
+            return 2;
+        }
+    }
+    EncoderWindow window({}, settingsPath, ConfigureCurrentMonitor, {}, evidence.get(),
+        diagnosticPresentation ? std::optional{presentationModel} : std::nullopt, displayTest);
     if (evidence)
     {
         window.setAttribute(Qt::WA_ShowWithoutActivating);

@@ -58,6 +58,7 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
     output.imbue(std::locale::classic());
     output << std::boolalpha << std::setprecision(17);
     const auto& timing = snapshot.timing;
+    const bool qtRaster = snapshot.contract.presentationModel == PresentationModel::QtRaster;
     output << "{\"schema_version\":1,\"scope\":\"presentation-candidate-not-capture-certification\",\"windowState\":"
            << static_cast<unsigned int>(snapshot.state) << ",\"error\":\"" << GetPresentationErrorName(snapshot.error.code) << "\",\"errorStage\":\""
            << GetPresentationStageName(snapshot.error.stage) << "\",\"nativeError\":" << snapshot.error.nativeError
@@ -89,15 +90,30 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
            << ",\"candidateContractSatisfied\":" << snapshot.candidateContractSatisfied << ",\"softwareRasterizer\":" << snapshot.softwareRasterizer
            << ",\"swapChainGeneration\":" << snapshot.swapChainGeneration << ",\"bufferGeneration\":" << snapshot.bufferGeneration
            << ",\"bufferCount\":" << snapshot.contract.bufferCount << ",\"maximumFrameLatency\":" << snapshot.contract.maximumFrameLatency
-           << ",\"flipEffect\":\"" << (snapshot.contract.flipEffect == FlipEffect::Discard ? "flip-discard" : "flip-sequential")
-           << "\",\"bgraUnorm\":" << snapshot.contract.bgraUnorm << ",\"noMsaa\":" << snapshot.contract.noMsaa
+           << ",\"presentationModel\":\"" << GetPresentationModelName(snapshot.contract.presentationModel)
+           << "\",\"swapEffect\":\"" << GetPresentationSwapEffectName(snapshot.contract.swapEffect)
+           << "\",\"pacing\":\"" << GetPresentationPacingName(snapshot.contract.pacing) << "\",\"flipEffect\":";
+    if (snapshot.contract.presentationModel == PresentationModel::Flip)
+    {
+        output << '"' << GetPresentationSwapEffectName(snapshot.contract.swapEffect) << '"';
+    }
+    else
+    {
+        output << "null";
+    }
+    output << ",\"statisticsUnavailableReason\":\"" << (qtRaster ? "QtRasterHasNoDxgiStatistics" : snapshot.contract.presentationModel == PresentationModel::ComposedBlt ?
+        "WindowedBltStatisticsUnsupported" : pbpresenttiming::GetTimingIssueName(timing.issue)) << '"'
+           << ",\"bgraUnorm\":" << snapshot.contract.bgraUnorm << ",\"noMsaa\":" << snapshot.contract.noMsaa
            << ",\"alphaIgnored\":" << snapshot.contract.alphaIgnored << ",\"scalingNone\":" << snapshot.contract.scalingNone
+           << ",\"scalingStretch\":" << snapshot.contract.scalingStretch
+           << ",\"rasterPaintEngine\":" << snapshot.contract.rasterPaintEngine
            << ",\"tearingDisabled\":" << snapshot.contract.tearingDisabled << ",\"latencyWaitable\":" << snapshot.contract.latencyWaitable
            << ",\"perMonitorV2\":" << snapshot.contract.perMonitorV2 << ",\"resizableChrome\":" << snapshot.contract.resizableChrome
            << ",\"immutableCanonicalSource\":" << snapshot.contract.immutableCanonicalSource
            << ",\"pointSampled\":" << snapshot.contract.pointSampled << ",\"centeredLetterbox\":" << snapshot.contract.centeredLetterbox
            << ",\"neutralMatteBelowMinimum\":" << snapshot.contract.neutralMatteBelowMinimum
            << ",\"submittedFrames\":" << snapshot.submittedFrames
+           << ",\"softwarePaintCalls\":" << snapshot.softwarePaintCalls << ",\"softwareFramesPainted\":" << snapshot.softwareFramesPainted
            << ",\"replacedPendingFrames\":" << snapshot.replacedPendingFrames << ",\"discardedEpochFrames\":" << snapshot.discardedEpochFrames
            << ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements << ",\"repeatedPresentCalls\":" << snapshot.repeatedPresentCalls
            << ",\"invalidatedActiveFrames\":" << snapshot.invalidatedActiveFrames << ",\"activeFrame\":" << snapshot.activeFrame
@@ -114,16 +130,25 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
            << ",\"historyOverflows\":" << timing.historyOverflows << ",\"PresentGlitchCount\":" << timing.presentGlitchCount
            << ",\"glitchScope\":\"observed-present-ids-in-continuous-producer-cadence\",\"PresentRefreshCountExtended\":" << timing.presentRefreshCountExtended
            << ",\"pendingHistory\":" << timing.pendingHistory << ",\"counterSaturated\":" << timing.counterSaturated << ",\"PresentCallFPS\":";
-    WriteMetric(output, timing.presentCallFps);
+    WriteMetric(output, qtRaster ? std::nullopt : timing.presentCallFps);
     output << ",\"PresentedVisualFPS\":";
-    WriteMetric(output, timing.presentedVisualFps);
+    WriteMetric(output, qtRaster ? std::nullopt : timing.presentedVisualFps);
     output << ",\"ObservedVisualFPSLowerBound\":";
-    WriteMetric(output, timing.observedVisualFpsLowerBound);
+    WriteMetric(output, qtRaster ? std::nullopt : timing.observedVisualFpsLowerBound);
     output << ",\"PresentQueueLatency\":";
-    WriteMetric(output, timing.presentQueueLatencyMs);
-    output << ",\"latencyUnit\":\"ms\",\"latencySource\":\"estimated-from-dxgi-not-Present-duration\",\"statisticsNativeStatus\":"
-           << timing.lastStatisticsNativeStatus << ",\"rawStatistics\":";
-    if (timing.lastRawStatistics)
+    WriteMetric(output, qtRaster ? std::nullopt : timing.presentQueueLatencyMs);
+    output << ",\"latencyUnit\":\"ms\",\"latencySource\":\"" << (qtRaster ? "not-applicable" : "estimated-from-dxgi-not-Present-duration")
+           << "\",\"statisticsNativeStatus\":";
+    if (qtRaster)
+    {
+        output << "null";
+    }
+    else
+    {
+        output << timing.lastStatisticsNativeStatus;
+    }
+    output << ",\"rawStatistics\":";
+    if (!qtRaster && timing.lastRawStatistics)
     {
         const auto& statistics = *timing.lastRawStatistics;
         output << "{\"PresentCount\":" << statistics.presentId << ",\"PresentRefreshCount\":" << statistics.presentRefreshCount
@@ -134,8 +159,17 @@ void WriteDataWindowSnapshotJson(std::ostream& destination, const DataWindowSnap
     {
         output << "null";
     }
-    output << ",\"presentIdNativeStatus\":" << snapshot.lastPresentIdNativeStatus << ",\"lastPresent\":";
-    if (timing.lastPresent)
+    output << ",\"presentIdNativeStatus\":";
+    if (qtRaster)
+    {
+        output << "null";
+    }
+    else
+    {
+        output << snapshot.lastPresentIdNativeStatus;
+    }
+    output << ",\"lastPresent\":";
+    if (!qtRaster && timing.lastPresent)
     {
         const auto& sample = *timing.lastPresent;
         output << "{\"FrameSequence\":" << sample.frameSequence << ",\"beginQpc\":" << sample.beginQpc << ",\"endQpc\":" << sample.endQpc

@@ -105,11 +105,13 @@ private:
 inline std::vector<pbdemodd3d11::CaptureDemodulatorResult> MakeFrames(const std::filesystem::path& root,
     const std::span<const std::byte> sourceBytes, const std::uint32_t frameCount = 1,
     pbapp::EncoderSnapshot* const encoderSnapshot = nullptr,
-    std::shared_ptr<pbapp::RunMeasurementRecorder> measurement = {})
+    std::shared_ptr<pbapp::RunMeasurementRecorder> measurement = {},
+    const std::uint32_t segmentTargetBytes = 0, const bool reuseExistingSource = false)
 {
     Check(frameCount > 0 && frameCount <= 8, "fixture frame budget is outside 1..8");
     std::filesystem::create_directories(root);
     const auto source = root / L"g16-source.bin";
+    if (!reuseExistingSource)
     {
         std::ofstream file(source, std::ios::binary);
         file.write(reinterpret_cast<const char*>(sourceBytes.data()), static_cast<std::streamsize>(sourceBytes.size()));
@@ -123,6 +125,7 @@ inline std::vector<pbdemodd3d11::CaptureDemodulatorResult> MakeFrames(const std:
     });
     auto config = pbapp::MakeUnifiedEncoderConfig(source.wstring(), 60);
     config.measurement = std::move(measurement);
+    config.segmentTargetBytes = segmentTargetBytes;
     config.sessionStateRoot = root / L"encoder-state";
     const auto start = encoder.Start(config);
     Check(static_cast<bool>(start), start.message.c_str());

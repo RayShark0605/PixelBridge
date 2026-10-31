@@ -23,7 +23,7 @@ if(pbTopLevelBeforeProject AND BUILD_TESTING AND PB_BUILD_TESTS)
 endif()
 
 project(PixelBridge
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "High-performance one-way file transfer through visible desktop and video pixels"
     LANGUAGES CXX)
 

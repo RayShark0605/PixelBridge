@@ -2,6 +2,7 @@
 #include "presentation_backend.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -35,6 +36,8 @@ struct FakeControl
     bool failQpcOnWake = false;
     std::atomic<bool> failQpc = false;
     bool corruptContract = false;
+    bool forceFlipContract = false;
+    std::function<void(PresentationContract&)> mutateContract;
     bool mismatchedBuffer = false;
     unsigned int permits = 0;
     unsigned int shutdowns = 0;
@@ -98,18 +101,30 @@ public:
         control_->contract.bufferCount = config.bufferCount;
         control_->contract.maximumFrameLatency = config.maximumFrameLatency;
         control_->contract.flipEffect = config.flipEffect;
+        control_->contract.swapEffect = config.flipEffect == FlipEffect::Discard ? PresentationSwapEffect::FlipDiscard : PresentationSwapEffect::FlipSequential;
+        if (config.presentationModel == PresentationModel::ComposedBlt && !control_->forceFlipContract)
+        {
+            control_->contract.presentationModel = PresentationModel::ComposedBlt;
+            control_->contract.swapEffect = PresentationSwapEffect::BltDiscard;
+            control_->contract.pacing = PresentationPacing::GpuCompletionAndVsync;
+            control_->contract.scalingStretch = true;
+        }
         control_->contract.bgraUnorm = true;
         control_->contract.noMsaa = true;
         control_->contract.alphaIgnored = true;
-        control_->contract.scalingNone = true;
+        control_->contract.scalingNone = !control_->contract.scalingStretch;
         control_->contract.tearingDisabled = true;
-        control_->contract.latencyWaitable = true;
+        control_->contract.latencyWaitable = !control_->contract.scalingStretch;
         control_->contract.perMonitorV2 = !control_->corruptContract;
         control_->contract.resizableChrome = !config.topmost;
         control_->contract.immutableCanonicalSource = true;
         control_->contract.pointSampled = true;
         control_->contract.centeredLetterbox = true;
         control_->contract.neutralMatteBelowMinimum = true;
+        if (control_->mutateContract)
+        {
+            control_->mutateContract(control_->contract);
+        }
         if (control_->mismatchedBuffer)
         {
             control_->contract.bufferWidth++;
@@ -315,6 +330,15 @@ struct Fixture
         config.height = 4;
         pixels.resize(128, std::byte{0x71});
     }
+    void SetModel(const PresentationModel model)
+    {
+        config.presentationModel = model;
+        if (model == PresentationModel::ComposedBlt)
+        {
+            config.topmost = true;
+            config.clientOrigin = PhysicalPoint{0, 0};
+        }
+    }
     void Start()
     {
         auto result = DataWindowTestAccess::Create(config, std::make_unique<FakeBackend>(control));
@@ -424,9 +448,106 @@ TEST_CASE("Viewport geometry preserves aspect ratio, centers letterbox and enfor
     REQUIRE(CanPresentData(PresentationViewportDisposition::ActiveClampedToMaximumScale));
 }
 
+TEST_CASE("Composed blt requires an explicit bounded fullscreen presentation contract", "[presentation][composed-blt]")
+{
+    DataWindowConfig config;
+    config.presentationModel = PresentationModel::ComposedBlt;
+    CHECK_FALSE(static_cast<bool>(ValidateDataWindowConfig(config)));
+    config.topmost = true;
+    CHECK_FALSE(static_cast<bool>(ValidateDataWindowConfig(config)));
+    config.clientOrigin = PhysicalPoint{0, 0};
+    REQUIRE(static_cast<bool>(ValidateDataWindowConfig(config)));
+    for (const auto mutate : std::array<std::function<void(DataWindowConfig&)>, 4>{
+        [](DataWindowConfig& value)
+        {
+            value.maximumFrameLatency = 2;
+        },
+        [](DataWindowConfig& value)
+        {
+            value.bufferCount = 3;
+        },
+        [](DataWindowConfig& value)
+        {
+            value.repeatActiveFrame = true;
+        },
+        [](DataWindowConfig& value)
+        {
+            value.flipEffect = FlipEffect::Sequential;
+        }})
+    {
+        auto invalid = config;
+        mutate(invalid);
+        CHECK_FALSE(static_cast<bool>(ValidateDataWindowConfig(invalid)));
+    }
+    config.presentationModel = static_cast<PresentationModel>(255);
+    CHECK_FALSE(static_cast<bool>(ValidateDataWindowConfig(config)));
+}
+
+TEST_CASE("A flip backend cannot silently satisfy a requested blt contract", "[presentation][composed-blt]")
+{
+    Fixture fixture;
+    fixture.control->forceFlipContract = true;
+    fixture.config.presentationModel = PresentationModel::ComposedBlt;
+    fixture.config.topmost = true;
+    fixture.config.clientOrigin = PhysicalPoint{0, 0};
+    const auto result = DataWindowTestAccess::Create(fixture.config, std::make_unique<FakeBackend>(fixture.control));
+    REQUIRE_FALSE(static_cast<bool>(result));
+    CHECK(result.Error().code == PresentationErrorCode::ContractViolation);
+    CHECK(fixture.control->shutdowns == 1);
+}
+
+TEST_CASE("Blt admission checks each actual contract field before publishing a running owner", "[presentation][composed-blt]")
+{
+    for (unsigned int mutation = 0; mutation < 8; mutation++)
+    {
+        Fixture fixture;
+        fixture.SetModel(PresentationModel::ComposedBlt);
+        fixture.control->mutateContract = [mutation](PresentationContract& contract)
+        {
+            switch (mutation)
+            {
+            case 0: contract.swapEffect = PresentationSwapEffect::FlipDiscard; break;
+            case 1: contract.pacing = PresentationPacing::FrameLatencyWaitable; break;
+            case 2: contract.latencyWaitable = true; break;
+            case 3: contract.bufferCount = 3; break;
+            case 4: contract.scalingNone = true; break;
+            case 5: contract.bufferWidth++; break;
+            case 6: contract.resizableChrome = true; break;
+            case 7: contract.noMsaa = false; break;
+            }
+        };
+        const auto result = DataWindowTestAccess::Create(fixture.config, std::make_unique<FakeBackend>(fixture.control));
+        REQUIRE_FALSE(static_cast<bool>(result));
+        CHECK(result.Error().code == PresentationErrorCode::ContractViolation);
+        CHECK(fixture.control->shutdowns == 1);
+        CHECK(fixture.control->uploads == 0);
+        CHECK(fixture.control->presents == 0);
+    }
+}
+
+TEST_CASE("Blt rejects a changed physical client size rather than scaling the raster", "[presentation][composed-blt]")
+{
+    Fixture fixture;
+    fixture.SetModel(PresentationModel::ComposedBlt);
+    fixture.Start();
+    REQUIRE(static_cast<bool>(fixture.Submit()));
+    fixture.Change([](FakeControl& state)
+    {
+        state.environment.clientWidth++;
+    });
+    REQUIRE(WaitUntil([&]()
+    {
+        return fixture.window->GetSnapshot().state == WindowState::Failed;
+    }));
+    CHECK(fixture.window->GetSnapshot().error.code == PresentationErrorCode::ContractViolation);
+    fixture.window->Stop();
+    CHECK(fixture.control->presents == 0);
+}
+
 TEST_CASE("The first render needs a frame permit and ordinary wakeups cannot forge one")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.Start();
     REQUIRE(static_cast<bool>(fixture.Submit()));
     for (int index = 0; index < 20; index++)
@@ -549,6 +670,7 @@ TEST_CASE("Repeat mode invalidates the active source at an epoch boundary")
 TEST_CASE("The latest pending frame is owned, bounded, row-pitch aware and failure immutable")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.Start();
     REQUIRE(static_cast<bool>(fixture.Submit(1)));
     const auto epoch = fixture.window->GetSnapshot().timing.presentationEpoch;
@@ -583,6 +705,7 @@ TEST_CASE("The latest pending frame is owned, bounded, row-pitch aware and failu
 TEST_CASE("Only the last row's actual pixels are required, never its trailing padding")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.Start();
     const std::vector<std::byte> minimal(152, std::byte{0x48});
     const auto epoch = fixture.window->GetSnapshot().timing.presentationEpoch;
@@ -733,6 +856,7 @@ TEST_CASE("Monitor, DPI and mode serial transitions start distinct epochs")
 TEST_CASE("Environment changes during upload discard the old raster and invalidate the epoch-bound permit")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.control->holdUpload = true;
     fixture.Start();
     REQUIRE(static_cast<bool>(fixture.Submit()));
@@ -771,6 +895,7 @@ TEST_CASE("Environment changes during upload discard the old raster and invalida
 TEST_CASE("Changing output binding invalidates old frames even when the hardware LUID is unchanged", "[presentation][adapter-compat]")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.config.allowUnmappedHardwareAdapter = true;
     fixture.config.topmost = true;
     fixture.config.clientOrigin = PhysicalPoint{1920, -1};
@@ -839,6 +964,7 @@ TEST_CASE("Statistics disjoint resets timing but never recreates the graphics ba
 TEST_CASE("An acquired permit belongs to one swap chain and cannot cross an adapter rebuild")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.control->holdUpload = true;
     fixture.Start();
     REQUIRE(static_cast<bool>(fixture.Submit()));
@@ -927,6 +1053,7 @@ TEST_CASE("Create and reconfigure failures clean up through the owner without pu
     SECTION("Initialize failure")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.control->initializeStatus = PresentationStatus::Failure(PresentationErrorCode::NativeFailure, PresentationStage::Device, -55);
         auto result = DataWindowTestAccess::Create(fixture.config, std::make_unique<FakeBackend>(fixture.control));
         REQUIRE_FALSE(static_cast<bool>(result));
@@ -937,6 +1064,7 @@ TEST_CASE("Create and reconfigure failures clean up through the owner without pu
     SECTION("Contract readback failure")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.control->corruptContract = true;
         auto result = DataWindowTestAccess::Create(fixture.config, std::make_unique<FakeBackend>(fixture.control));
         REQUIRE_FALSE(static_cast<bool>(result));
@@ -946,6 +1074,7 @@ TEST_CASE("Create and reconfigure failures clean up through the owner without pu
     SECTION("Canonical client with a mismatched back buffer cannot publish a successful Create")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.control->mismatchedBuffer = true;
         auto result = DataWindowTestAccess::Create(fixture.config, std::make_unique<FakeBackend>(fixture.control));
         REQUIRE_FALSE(static_cast<bool>(result));
@@ -956,6 +1085,7 @@ TEST_CASE("Create and reconfigure failures clean up through the owner without pu
     SECTION("Resize failure")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.Start();
         fixture.Change(
             [](FakeControl& state)
@@ -979,6 +1109,7 @@ TEST_CASE("WAIT_FAILED, timeout, device loss and upload failures are terminal an
     SECTION("Wait failure")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.Start();
         REQUIRE(static_cast<bool>(fixture.Submit()));
         fixture.Change(
@@ -998,6 +1129,7 @@ TEST_CASE("WAIT_FAILED, timeout, device loss and upload failures are terminal an
     SECTION("Timeout")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.config.waitTimeoutMilliseconds = 20;
         fixture.Start();
         REQUIRE(static_cast<bool>(fixture.Submit()));
@@ -1011,6 +1143,7 @@ TEST_CASE("WAIT_FAILED, timeout, device loss and upload failures are terminal an
     SECTION("A failed QPC cannot turn the frame-wait deadline into an infinite loop")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.config.waitTimeoutMilliseconds = 20;
         fixture.control->failQpcOnWake = true;
         fixture.Start();
@@ -1031,6 +1164,7 @@ TEST_CASE("WAIT_FAILED, timeout, device loss and upload failures are terminal an
     SECTION("Device removed")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.control->presentStatus = PresentationStatus::Failure(PresentationErrorCode::DeviceLost, PresentationStage::Present, -99);
         fixture.control->presentOutcome = pbpresenttiming::PresentOutcome::Failure;
         fixture.Start();
@@ -1047,6 +1181,7 @@ TEST_CASE("WAIT_FAILED, timeout, device loss and upload failures are terminal an
     SECTION("Device removed detected by idle statistics query")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.control->statistics.push_back({pbpresenttiming::StatisticsStatus::Error,
                                                {},
                                                -97,
@@ -1068,6 +1203,7 @@ TEST_CASE("WAIT_FAILED, timeout, device loss and upload failures are terminal an
     SECTION("Upload failure")
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.control->uploadStatus = PresentationStatus::Failure(PresentationErrorCode::OutOfMemory, PresentationStage::Upload, -44);
         fixture.Start();
         REQUIRE(static_cast<bool>(fixture.Submit()));
@@ -1085,6 +1221,7 @@ TEST_CASE("WAIT_FAILED, timeout, device loss and upload failures are terminal an
 TEST_CASE("Stop cancels a resize GPU drain without turning cancellation into a device failure")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.control->holdReconfigure = true;
     fixture.Start();
     REQUIRE(static_cast<bool>(fixture.Submit()));
@@ -1113,6 +1250,7 @@ TEST_CASE("Stop wakes waits, cancels in-flight work and is safe under concurrent
     for (const bool duringUpload : {false, true})
     {
         Fixture fixture;
+        fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
         fixture.control->holdUpload = duringUpload;
         fixture.Start();
         REQUIRE(static_cast<bool>(fixture.Submit()));
@@ -1149,6 +1287,7 @@ TEST_CASE("Stop wakes waits, cancels in-flight work and is safe under concurrent
 TEST_CASE("Concurrent producers and snapshots do not race the bounded mailbox or shutdown")
 {
     Fixture fixture;
+    fixture.SetModel(GENERATE(PresentationModel::Flip, PresentationModel::ComposedBlt));
     fixture.Start();
     std::atomic<unsigned int> unexpectedErrors = 0;
     std::vector<std::thread> producers;
@@ -1198,6 +1337,73 @@ TEST_CASE("Telemetry uses explicit unavailable values and escapes bounded native
     REQUIRE(text.find("UniqueVisualFPS") == std::string::npos);
     REQUIRE(text.find("not-capture-certification") != std::string::npos);
     REQUIRE(text.size() < 8192);
+}
+
+TEST_CASE("Blt renderer telemetry cannot label its contract as flip", "[presentation][composed-blt]")
+{
+    DataWindowSnapshot snapshot;
+    snapshot.contract.presentationModel = PresentationModel::ComposedBlt;
+    snapshot.contract.swapEffect = PresentationSwapEffect::BltDiscard;
+    snapshot.contract.pacing = PresentationPacing::GpuCompletionAndVsync;
+    snapshot.contract.scalingStretch = true;
+    std::ostringstream stream;
+    WriteDataWindowSnapshotJson(stream, snapshot);
+    const std::string json = stream.str();
+    CHECK(json.find("\"flipEffect\":null") != std::string::npos);
+    CHECK(json.find("\"presentationModel\":\"composed-blt\"") != std::string::npos);
+    CHECK(json.find("\"swapEffect\":\"blt-discard\"") != std::string::npos);
+    CHECK(json.find("\"pacing\":\"gpu-completion-and-vsync\"") != std::string::npos);
+    CHECK(json.find("\"statisticsUnavailableReason\":\"WindowedBltStatisticsUnsupported\"") != std::string::npos);
+    CHECK(json.find("\"PresentedVisualFPS\":null") != std::string::npos);
+}
+
+TEST_CASE("Canonical pixel validation is backend independent and bounds every padded row", "[qt-contract]")
+{
+    const std::array<std::byte, 20> pixels{};
+    CanonicalBgraFrameView frame{pixels, 2, 2, 12, 1, 1};
+    REQUIRE(ValidateCanonicalBgraPixels(2, 2, 20, frame));
+    CHECK_FALSE(ValidateCanonicalBgraPixels(0, 2, 20, frame));
+    CHECK_FALSE(ValidateCanonicalBgraPixels(2, 0, 20, frame));
+    CHECK_FALSE(ValidateCanonicalBgraPixels(16385, 2, 20, frame));
+    CHECK_FALSE(ValidateCanonicalBgraPixels(2, 2, 19, frame));
+    CHECK_FALSE(ValidateCanonicalBgraPixels(2, 2, 0, frame));
+    frame.rowPitch = 7;
+    CHECK_FALSE(ValidateCanonicalBgraPixels(2, 2, 20, frame));
+    frame.rowPitch = (std::numeric_limits<std::size_t>::max)();
+    CHECK_FALSE(ValidateCanonicalBgraPixels(2, 2, (std::numeric_limits<std::uint64_t>::max)(), frame));
+    frame.rowPitch = 12;
+    frame.pixels = std::span(pixels).first(19);
+    CHECK_FALSE(ValidateCanonicalBgraPixels(2, 2, 20, frame));
+    frame.pixels = pixels;
+    frame.height = 1;
+    CHECK_FALSE(ValidateCanonicalBgraPixels(2, 2, 20, frame));
+}
+
+TEST_CASE("Qt presentation JSON never exposes stale DXGI timing", "[qt-contract]")
+{
+    DataWindowSnapshot snapshot;
+    snapshot.contract.presentationModel = PresentationModel::QtRaster;
+    snapshot.contract.swapEffect = PresentationSwapEffect::NotApplicable;
+    snapshot.contract.pacing = PresentationPacing::QtEventLoop;
+    snapshot.contract.rasterPaintEngine = true;
+    snapshot.softwarePaintCalls = 9;
+    snapshot.softwareFramesPainted = 3;
+    snapshot.timing.presentCallFps = 99.0;
+    snapshot.timing.presentedVisualFps = 98.0;
+    snapshot.timing.observedVisualFpsLowerBound = 97.0;
+    snapshot.timing.presentQueueLatencyMs = 96.0;
+    snapshot.timing.lastPresent = pbpresenttiming::PresentSample{17, 100, 120, pbpresenttiming::PresentOutcome::Success, 21};
+    std::ostringstream stream;
+    WriteDataWindowSnapshotJson(stream, snapshot);
+    const auto text = stream.str();
+    CHECK(text.find("\"statisticsUnavailableReason\":\"QtRasterHasNoDxgiStatistics\"") != std::string::npos);
+    CHECK(text.find("\"rasterPaintEngine\":true") != std::string::npos);
+    CHECK(text.find("\"softwarePaintCalls\":9") != std::string::npos);
+    CHECK(text.find("\"softwareFramesPainted\":3") != std::string::npos);
+    for (const auto* const key : {"PresentCallFPS", "PresentedVisualFPS", "ObservedVisualFPSLowerBound", "PresentQueueLatency", "rawStatistics", "lastPresent", "presentIdNativeStatus", "statisticsNativeStatus"})
+    {
+        CHECK(text.find(std::string("\"") + key + "\":null") != std::string::npos);
+    }
 }
 
 TEST_CASE("JSON diagnostics are independent of and do not modify the caller's numeric formatting")

@@ -10,6 +10,8 @@ Use your existing remote connection. PixelBridge neither requires changes to rem
 
 ## 2. Mode selection
 
+The common file-byte cap is 500 GiB, but the current PAM4/Wide GUI defaults to 7 MiB segments and is also limited to 65,536 segments, giving a combined cap of **448 GiB**. This is an admission limit, not a maximum-size field measurement. See [file size and budgets](DECODER_MEMORY_BUDGET.en.md) for mode/CLI differences.
+
 Choose the same Standard, Gray Fast, PAM4, or PAM4 Wide mode on both ends. Mode names have no research-stage labels; choose one suitable for the physical source raster.
 
 On a fresh install, or when `g22/carrier` is missing or invalid, both GUI selectors default to PAM4 (index 2). Valid saved indices remain unchanged (0=Standard, 1=Gray Fast, 2=PAM4, 3=PAM4 Wide). This is only the GUI's initial choice; CLI/core defaults and Profile/Wire identities are unchanged.
@@ -95,3 +97,7 @@ For investigation, collect both roles' logs, matching Session ID, size, mode, ca
 - Screen FPS and remote-network traffic are not file goodput.
 - Small files may not exercise large-file scheduling/tails; speed claims require full-file results in the relevant environment.
 - This delivery does not promise arbitrary providers, resolutions, scaling, HDR, or the historical offline-MP4 design.
+
+## Optional file feedback (2026-10-21 addition)
+
+When a B-to-A read-only mapping is available, enable feedback in Encoder main/Shell and select the corresponding Decoder status folder/file; both entries share preferences. Standard, Gray Fast, PAM4 and Wide are supported, without the speed prior's PAM4-only/>12-segment restriction. Disabled behavior is unchanged. Failure restores all-file service; automatic stop requires a complete final receipt bound to actual current-Start submitted pixels. See [setup and trust/failure contract](FEEDBACK_ASSISTED_TRANSFER.en.md).

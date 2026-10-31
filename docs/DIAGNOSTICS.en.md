@@ -4,6 +4,8 @@
 
 ## 1. Different files, different responsibilities
 
+2026-10-21: Encoder logs/reports add `senderRatePrior`, recording an optional PAM4 reception-rate prior, effective state, model time, predicted raw-byte band and actually submitted equation counts classified by predicted region. It is not an ACK or proof of a recovered prefix. `effective=false` can mean disabled, preparation incomplete or at most 12 segments. See the [PAM4 prior guide](SENDER_RATE_PRIOR.en.md) for fields and rollback. Decoder reception/digest/publication result fields remain unchanged.
+
 | File | Purpose | Recovery input? |
 | --- | --- | --- |
 | `run-<id>.events.jsonl` | Default application diagnostic timeline | No |
@@ -66,3 +68,7 @@ Never subtract monotonic clocks across computers. Correlate Session/frame identi
 Decoder `activeReceptionTiming.startedUnixMilliseconds` is a correlatable UTC start only; `elapsedMilliseconds` is accumulated from the Decoder worker's local monotonic clock and frozen on stop, failure or completion. GUI active time and formal full-run time are therefore separate conventions. Older logs without this object do not provide active timing and must not be treated as if `runStarted` had already excluded the wait.
 
 No payload/screenshots are recorded, but filenames, local paths, Session IDs, and machine/display details may appear. Review logs before sharing. These files are not a signed audit trail or sender authentication.
+
+## File-feedback diagnostics addition (2026-10-21)
+
+The dedicated [feedback object](FEEDBACK_ASSISTED_TRANSFER.en.md) distinguishes requested/effective, waiting/stale/rejected/unavailable, terminalPublished/terminalAccepted, stop reason and separate listener timing. Setup/helper failure affects assistance, not verified output. This object omits paths/arbitrary status text; existing source/output diagnostics elsewhere can still be private and require review before sharing.

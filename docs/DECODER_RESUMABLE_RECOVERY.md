@@ -11,18 +11,18 @@
 
 > **2026-09-04 G16 更新：** Unified 产品 GUI 与真实接收 runtime 已复用本文的确认、journal、Stop/resume 和安全发布合同；Qt 只转交 run/request 决策和显示权威状态。定向 offscreen/controller 验证与命令见 [G22 GUI 发布与交互合同](EVIDENCE_INDEX.md)。下述 G03/G05 的原始证据边界保留；不据 G16 非显示验证声称真实 capture、进程 crash 或 20 GiB 门禁通过。
 
-本文记录 G03 与 G05 的当前实现合同：正式 Descriptor 绑定后的 Outer block 持久化、乱序 Segment 写入、completed Segment 重启重验、大输出确认门，以及 WholeFileDigest 后可跨进程恢复的安全发布。权威代码入口是：
+本文保留 G03/G05 的恢复格式与故障顺序，并注明后续产品策略覆盖：正式 Descriptor 绑定后的 Outer block 持久化、乱序 Segment 写入、completed Segment 重启重验、大输出确认机制，以及经过 WholeFileDigest 的安全发布与跨进程恢复。权威代码入口是：
 
 - `apps/common/decoder_resume_store.h/.cpp`；
 - `apps/common/local_desktop_runtime.cpp`；
 - `libs/PBReceiver/include/pbreceiver/receiver_ingress.h`；
 - `libs/PBStorage/include/pbstorage/output_file.h`。
 
-本文不改变 Protocol 1.0 wire，不把 journal 当作 Sender 数据，也不宣称完成 Qt 对话框、真实 capture、20 GiB 或真实进程终止注入。G05 使用小 fixture 对同一 durable marker 状态进行确定性析构/重启模拟；Qt 具体交互属于 G16。
+本文不改变 Protocol 1.0 wire，不把 journal 当作 Sender 数据。原 G03/G05 的证据不包含 Qt 对话框、真实 capture、20 GiB 或真实进程终止注入；G05 使用小 fixture 对同一 durable marker 状态进行确定性析构/重启模拟。后续产品接线与验证以当前现状和相应日期的证据为准，不能把这段历史验证边界理解为当前没有 GUI。
 
 ## 1. 文件身份与本地命名
 
-收到并通过 `ReceiverResourcePolicy` 校验的正式 `SessionDescriptor` 后，Decoder 才考虑建立本地输出状态。若 `OriginalFileSize > MaxOutputPreallocationBytesWithoutPrompt`（产品默认 4 GiB），Qt-free controller 先公开 `AwaitingLargeOutputConfirmation`、`RunGeneration` 与 `RequestId`。确认前不创建/扩展 `.part`、不创建 `.resume`，也不把 Segment Control 或 Outer payload 送入 Receiver；同一 Session 的重复 descriptor 只对应同一个请求。拒绝后进入带原因的 `Stopped`，接受后才继续以下流程：
+收到并通过 `ReceiverResourcePolicy` 校验的正式 `SessionDescriptor` 后，Decoder 才考虑建立本地输出状态。若 `OriginalFileSize > MaxOutputPreallocationBytesWithoutPrompt`，Qt-free controller 先公开 `AwaitingLargeOutputConfirmation`、`RunGeneration` 与 `RequestId`。PBProtocol 的基础策略阈值是 4 GiB；**当前产品 mixed-slot 路径（含四个 GUI 模式）由 `MakeUnifiedReceiverResourcePolicy` 将阈值设为 `maxAcceptedFileBytes`，因此不会仅因大小超过 4 GiB 弹出确认**，文件/分段数和存储资源检查仍不放宽。在仍启用较小阈值的诊断/显式策略中，确认前不创建/扩展 `.part`、不创建 `.resume`，也不把 Segment Control 或 Outer payload 送入 Receiver；同一 Session 的重复 descriptor 只对应同一个请求。拒绝后进入带原因的 `Stopped`，接受后才继续以下流程：
 
 ```text
 <selected-output-directory>/PixelBridge-<SessionTag-16-lower-hex>.part
@@ -37,6 +37,8 @@
 2. `<stem> (PixelBridge-<SessionTag>).<extension>`。
 
 首个候选已存在时选择第二个；第二个也存在时返回 `TargetExists/Reservation`，不覆盖、不删除，也不创建 `.part`。选中的 UTF-8 basename 先作为 `OutputReservation` flush 到 journal，随后 PBStorage 才创建 `.part`；重启必须重新验证它确实是该 Session 唯一合法的 primary/collision 候选，因此目录状态变化不会偷偷改名。publish 前再次执行存在性检查，随后使用不带 replace 的同卷 `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)`，因此检查与 rename 之间的竞态也只能失败，不能覆盖。
+
+原始 basename 若与本 Session 的内部 `.part` 名称按 Windows 不区分大小写比较相同，即使该路径尚不存在，也直接选择第二个候选。已持久化的 reservation 若指向内部 `.part` 则拒绝恢复，不把尚未校验的内部文件当成最终目标，也不偷偷改写既有 reservation。
 
 创建/恢复输出时同时查询目标卷可用空间、`FILE_STANDARD_INFO.AllocationSize`、文件 sparse/compressed 属性以及卷的 sparse/compression capability。快照分别记录 logical/requested bytes 与 actual allocation bytes，`PreallocationFullyAllocated` 只由实际 allocation 比较得出，不从逻辑长度推断。
 
@@ -160,7 +162,7 @@ PBJH
 + publish intent（存在时，必须为最后的 authoritative 状态）
 ```
 
-snapshot 写入同目录 `.resume.tmp`，完成 write、`FlushFileBuffers`、close 后，使用 `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH` 原子替换 journal；generation 不回退。旧 journal 在替换成功前仍是 authoritative state。
+snapshot 写入同目录 `.resume.tmp`：已有 directory/reparse 临时项拒绝；普通遗留项只移除其临时名称，再以 `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT` 独占创建，禁止 `CREATE_ALWAYS` 沿旧链接截断其它文件。完成 write、`FlushFileBuffers`、close 后，使用 `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH` 原子替换 journal；generation 不回退。旧 journal 在替换成功前仍是 authoritative state。
 
 成功 reopen 后才把 growth baseline 更新为新文件大小；重新打开已校验的 journal 建立新的进程本地 baseline，
 不新增serialized field。torn tail仍立即compact；completed Segment始终在marker耐久后立即删内存active records。默认仍立即compact，显式预算大状态允许仅保留有界磁盘历史记录。
@@ -233,13 +235,13 @@ validate SessionDescriptor
      AdoptVerifiedSegment
      CommitStoredSegment
 → replay accepted blocks in journal order
-→ create at most MaxActiveOuterFecDecoders (product default 4)
+→ create at most MaxActiveOuterFecDecoders (base policy 4; product default 8; explicit budget mode remains finite)
 → continue from later Carousel
 ```
 
 completed record 从不让 Decoder 盲信 `.part`。长度、offset、descriptor identity 或 RawDigest 任一不符都在 adopt/commit 前拒绝，`verifiedBytes` 保持不增长。
 
-第 5 个同时活跃的有效 Segment 返回 `DeferredResourceBusy`：不为它创建 codec、不驱逐既有 decoder、不使 Session 终止。其 block 可保留在有界 orphan cache，等已完成 Segment 在 durable commit 后释放资源，再由重复 descriptor 或后续 Carousel Data 重试。
+超过当前活动名额或字节预算的新有效 Segment 返回 `DeferredResourceBusy`：不为它创建 codec、不驱逐既有 decoder、不使 Session 终止。基础策略的第五个、当前产品默认的第九个活动 Segment 分别触达各自名额上限；显式预算模式仍受有限字节与分段数限制。其 block 可保留在有界 orphan cache，等已完成 Segment 在 durable commit 后释放资源，再由重复 descriptor 或后续 Carousel Data 重试。
 
 ## 6. WholeFileDigest 与 publish
 
@@ -254,13 +256,15 @@ completed record 从不让 Decoder 盲信 `.part`。长度、offset、descriptor
 7. 重新打开最终文件，再次验证长度与 WholeFileDigest；
 8. 此时先把内存 completion 设为 published，再删除 `.resume`；删除失败只形成 post-publish cleanup warning，不把已经验证的 final 降格或覆盖。
 
+`PublishIntent` 在第 2 步记录的是预期摘要与可恢复的发布意图，**不是整文件磁盘摘要已经通过的证明**。实际整文件校验仍在 rename 前执行；重启遇到 intent 时也必须重新验证相应 `.part` 或 final，不能用 marker 跳过摘要。
+
 当前进程中 final reopen 失败或摘要不一致时尝试把最终文件移回内部 `.part`；任何 cleanup 失败以独立错误返回。跨进程重启若发现 durable intent、`.part` 已消失且绑定 final 的长度/摘要一致，则把它视为 rename 已成功并安全清理 journal。重复 `Publish` 只有摘要完全相同时幂等成功；不同摘要、错误候选、双文件并存和 final 摘要不一致均保留现场并 fail closed。
 
 ## 7. 故障分类
 
 | 分类 | 例子 | 行为 |
 | --- | --- | --- |
-| 可由 Carousel 重试 | `DeferredResourceBusy`、orphan quota 对新块的 drop | 不分配第五个 decoder、不终止 Session；等待重复 descriptor/Data |
+| 可由 Carousel 重试 | `DeferredResourceBusy`、orphan quota 对新块的 drop | 不越过当前活动名额/字节预算创建 decoder，不终止 Session；等待重复 descriptor/Data |
 | 可由重启恢复 | 合法 PBJR 截断尾、`.part` 已 flush 且 completed record durable、intent 后仅存在匹配 final | 修复尾部并逐 Segment 重算，或复验 final 后完成 publish commit |
 | 当前进程停止、持久数据保留 | disk/flush/compact/publish native failure、WholeFileDigest mismatch | 不提前 commit、不覆盖最终文件；保留可诊断状态 |
 | Session fail closed | descriptor conflict、同 OuterBlockId 不同 payload、encoded/raw digest mismatch | 不 latest-wins，不发布 |
@@ -281,3 +285,7 @@ build-unified-release/tests/PBApplication/Release/PBApplicationTests.exe '[resum
 ```
 
 覆盖点包括 DirectRepeat/Wirehair orphan replay、decoder 资源满后 Carousel Data 重试、same-ID conflict、乱序 verified ranges、确定性第二名称冲突、合法 torn tail、随机尾/length/CRC 损坏、restart active cache 上限，以及 completed `.part` 的成功/损坏 RawDigest 重验。最终执行结果与本地日志摘要记录在统一路线 G03 状态中。
+
+## 可选反馈的耐久导出与完成凭据（2026-10-21）
+
+反馈位在现有 completed journal + stored commit 后导出；恢复位仍须通过现有重新哈希。仅[启用反馈](FEEDBACK_ASSISTED_TRANSFER.md)时保留成功发布的原 .resume；最终文件重启由既有 PublishIntent/reservation/Manifest 和 fresh final length/digest/reopen 证明，不伪造本次 rename 观察。关闭时仍 RemoveAfterPublish；任何反馈文件都不作为恢复账本或最终文件验证的替代。

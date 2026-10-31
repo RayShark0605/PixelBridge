@@ -78,7 +78,8 @@ pbapp::DecoderSnapshot DecoderApplicationController::StopAndGetSnapshot()
 
 bool DecoderApplicationController::IsActive() const
 {
-    return pbapp::IsDecoderStateActive(runtime_.GetSnapshot().state);
+    const auto snapshot = runtime_.GetSnapshot();
+    return pbapp::IsDecoderStateActive(snapshot.state) || snapshot.feedback.listening;
 }
 
 bool DecoderApplicationController::SetStatusRefreshMilliseconds(const int milliseconds)
@@ -99,14 +100,16 @@ int DecoderApplicationController::GetStatusRefreshMilliseconds() const
 void DecoderApplicationController::PollSnapshot()
 {
     pbapp::DecoderSnapshot current = runtime_.GetSnapshot();
-    if (IsTerminal(current.state) && (current.runGeneration != lastSnapshot_.runGeneration || !IsTerminal(lastSnapshot_.state)))
+    const bool terminal = IsTerminal(current.state) && !current.feedback.listening;
+    const bool wasTerminal = IsTerminal(lastSnapshot_.state) && !lastSnapshot_.feedback.listening;
+    if (terminal && (current.runGeneration != lastSnapshot_.runGeneration || !wasTerminal))
     {
         // A published snapshot can precede capture cleanup. Seal diagnostics
         // only after the worker is joined, preserving post-publish warnings.
         runtime_.Stop();
         current = runtime_.GetSnapshot();
     }
-    log_.Observe(current, IsTerminal(current.state));
+    log_.Observe(current, terminal);
     const bool changed = current.runGeneration != lastSnapshot_.runGeneration || current.state != lastSnapshot_.state ||
         current.largeOutputConfirmationRequestId != lastSnapshot_.largeOutputConfirmationRequestId ||
         current.largeOutputConfirmationState != lastSnapshot_.largeOutputConfirmationState ||
@@ -116,9 +119,9 @@ void DecoderApplicationController::PollSnapshot()
         current.actualBackend != lastSnapshot_.actualBackend || current.backendReason != lastSnapshot_.backendReason ||
         current.verifiedRawBytes != lastSnapshot_.verifiedRawBytes || current.captureEpoch != lastSnapshot_.captureEpoch ||
         current.statusMessage != lastSnapshot_.statusMessage || current.errorDetail != lastSnapshot_.errorDetail;
-    const bool becameTerminal = IsTerminal(current.state) && !IsTerminal(lastSnapshot_.state);
+    const bool becameTerminal = terminal && !wasTerminal;
     lastSnapshot_ = current;
-    if (changed || pbapp::IsDecoderStateActive(current.state))
+    if (changed || pbapp::IsDecoderStateActive(current.state) || current.feedback.listening)
     {
         emit SnapshotChanged();
     }

@@ -88,6 +88,7 @@ struct NativeBackendTestOptions
     bool verifyUploads = false;
     PresentationStage failAfterStage = PresentationStage::None;
     BackendDiagnostics* shutdownDiagnostics = nullptr;
+    bool hiddenWindow = false;
 };
 
 [[nodiscard]] std::unique_ptr<PresentationBackend> MakeNativeBackend(const NativeBackendTestOptions& options = {});

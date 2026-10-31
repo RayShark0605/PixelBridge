@@ -135,6 +135,7 @@ struct InnerFecProfile
     const std::span<std::byte> out) noexcept;
 
 // Convenience wrapper around SerializeInnerFecMatrixInto (allocates).
+// Returns an empty vector for an unavailable table or allocation failure.
 [[nodiscard]] std::vector<std::byte> SerializeInnerFecMatrix(
     const InnerFecProfile& profile) noexcept;
 

@@ -81,6 +81,12 @@ def main():
             run(role + "-version", [executable, "--version"], environment)
             identity = json.loads(run(role + "-identity", [executable, "--build-identity"], environment))
             require(identity["gitCommit"] == commit and identity["applicationName"] == "PixelBridge" + role, "Packaged identity mismatch")
+            if "feedbackHelper" in application:
+                helper = application["feedbackHelper"]
+                helper_executable = package / helper["relativeExecutablePath"]
+                require(sha256(helper_executable) == helper["sha256"], "Packaged helper hash mismatch")
+                helper_identity = json.loads(run(role + "-helper-identity", [helper_executable, "--build-identity"], environment))
+                require(helper_identity == helper["runtimeIdentity"], "Packaged helper protocol/metadata identity mismatch")
             profile = run(role + "-profile", [executable, "--unified-profile"], environment).strip()
             require(hashlib.sha256(profile).hexdigest() == expected["buildIdentity"]["unifiedProfile"]["manifestSha256"], "Packaged profile mismatch")
             smoke = run(role + "-gui-smoke", [executable, "--gui-smoke"], environment)

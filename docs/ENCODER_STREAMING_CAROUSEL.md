@@ -1,5 +1,7 @@
 # Encoder 流式预扫描、Carousel 与持久状态
 
+> 2026-10-21 可选增量：[PAM4 接收速度先验](SENDER_RATE_PRIOR.md)。默认关闭；仅 PAM4、超过 12 段时按预测原始字节带软调访问预算，保留每轮非零服务和确定性全文件修复，不跳段或推定接收完成。关闭时本文件原调度合同不变；下方旧阶段/实验预算不自动覆盖此显式分支。无新 wire、FEC、恢复格式或现场提速结论。
+
 > **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
 > This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
 
@@ -36,7 +38,7 @@ DirectRepeat 仍由 `ChooseOuterFecMode` 决定。它只调度固定 `[0,K)`，�
     - **fps > 15**：增量喷泉翻倍预算，pass k 调度 `max(16, ceil(K×20%×2^min(k-1,3)))` 个全新 repair equation（20%→40%→80%，封顶 160%）。首 pass 小批使已恢复段的重扫成本最低；翻倍预算使高缺口段在少数几个 wrap 内收敛。
     物理尾帧的空余 slot 复用本 pass 已调度范围内的最低 ID（pass 0 为 systematic 区间、repair pass 为本 pass 的 repair 区间），不分配新 repair ID、不推进 high-water。晚加入者从未见到 pass 0 时，仍可跨多个 pass 累积 ≥K 个互不相同的 repair equation 完整恢复（喷泉性质；专项测试 `Unified fountain mid-join recovers every Segment from pure incremental repair passes`，30Hz 口径）。该预算同时是"重扫一个已恢复 Segment"的单 pass 空口成本上界。
 
-G09 关闭 scheduler、protocol packing 与 CPU reference-raster 合同；G15 已把它接入 Encoder 生命周期/GUI/默认 CLI。生产路径使用 `PrepareFrameAt(logicalTick, monotonicNanoseconds)`：长 round 的 Control cadence 按 burst 起点约 10 秒调度，不因动态 FPS/丢弃 tick 改变。slot plan 在 pending retry 时保持冻结，只有完整 raster 成功 Submit 后才 commit。历史 tick API 保留用于原 fixture，不能在同一 round 混用两种时间基准。Decoder 产品自动接线和实屏/capture 仍由后续目标完成。
+G09 关闭 scheduler、protocol packing 与 CPU reference-raster 合同；G15 已把它接入 Encoder 生命周期/GUI/默认 CLI。生产路径使用 `PrepareFrameAt(logicalTick, monotonicNanoseconds)`：长 round 的 Control cadence 按 burst 起点约 10 秒调度，不因动态 FPS/丢弃 tick 改变。slot plan 在 pending retry 时保持冻结，只有完整 raster 成功 Submit 后才 commit。历史 tick API 保留用于原 fixture，不能在同一 round 混用两种时间基准。G09 的原验证不覆盖 Decoder 产品接线或实屏/capture；后续产品实现与现场证据见当前现状，不再把这些历史范围表述为当前尚未实现。
 
 ## 2. 恢复身份
 
@@ -181,3 +183,7 @@ cmake --build build-unified-release --config Release --target PBUnifiedSenderSch
 30 秒模拟在 1、15、60 Hz 均观察到 tick 0、10 秒、20 秒的三轮 Control burst；默认 cadence 帧为 12 Control + 19 Transport，其他帧为 31 Transport。60 Hz 的 5 秒停顿只生成 tick 300 的一帧并丢弃 299 ticks。零字节 raster 在不传 sender slot plan 的条件下接受 8 个 Control、0 个 Transport，ControlPlaneReceiver 插入 Session/Manifest 各一份并将另外六份判为相同重复，完成空 Segment map 与 FinalManifest；资源重组计数与字节保持 0。
 
 本地可再生日志为 `build-unified-release/tests/PBApplication/g09-unified-scheduler-tests.txt`、`build-unified-release/tests/PBModulation/g09-unified-frame-input-tests.txt`、`build-unified-release/tests/PBModulation/g09-unified-admission-regression.txt` 与 `build-unified-release/tests/PBProtocol/g09-control-framing-tests.txt`，均不提交。此验证不包含完整 CTest、产品 GUI、GPU、capture、实屏、长文件吞吐或后续产品生命周期接线。
+
+## 可选反馈调度增量（2026-10-21）
+
+[文件反馈](FEEDBACK_ASSISTED_TRANSFER.md)仅在完整帧/空间 bank 提交边界调整后续段服务，最多六个 resident 编码段。已确认段提前退休只记实际 committed equations，完整退休已租未用 repair-ID 尾部，不更改 encoded bytes/descriptor 或回退 high-water。未完成段保留当前 scheduler 并确定性补位；过期重新覆盖全文件。全段确认但无最终凭据仍维持真实单段 Control/服务，不伪造空 Session；关闭分支和 Golden 不变。

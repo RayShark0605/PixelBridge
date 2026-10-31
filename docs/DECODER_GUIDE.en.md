@@ -1,4 +1,4 @@
-# PixelBridge v1.0 — Decoder instructions
+# PixelBridge v1.1 — Decoder instructions
 
 [简体中文](DECODER_GUIDE.md) | **English**
 
@@ -12,7 +12,7 @@
 - Fully extract into a new folder on the Windows x64 computer needing the file, then run `PixelBridgeDecoder.exe`. Do not copy only the EXE, mix DLL versions or overlay an older installation.
 - Requires Windows 10 1903 or newer / Windows 11, working D3D11 graphics/desktop capture, and your existing remote view. Not every OS, driver, scale factor or remote provider has been separately qualified.
 - Qt and MSVC runtimes are included; Python, developer tools and PBBridge are unnecessary. Windows supplies ICU, D3DCompiler_47 and OS APIs. Stripped systems missing these components are unsupported.
-- Choose a writable output folder with enough free storage. A large-file-capable NTFS volume is recommended. The current **500 GiB** single-file admission limit is not a measured maximum; allow extra space for temporary/resume state.
+- Choose a writable output folder with enough free storage, preferably on a large-file-capable NTFS volume. The common **500 GiB** file-byte cap also has a 65,536-segment limit; the current PAM4/Wide GUI's 7 MiB segments therefore cap it at **448 GiB**. These are not measured maxima; allow extra space for temporary/resume state.
 - Payload is recovered only from actual pixels in the selected region: no hidden network, clipboard or shared-file transport. No network/remote-control setting changes are needed.
 
 ## Receiving steps
@@ -22,7 +22,7 @@
 3. To use more RAM, enable memory-budget receiving in Advanced options; apply the host recommendation or set total/per-instance budgets. Settings lock while receiving.
 4. **Click Start receiving first, then start the remote Encoder.**
 5. Keep the full raster visible; close floating diagnostic overlays. Avoid sleep and resolution/DPI/display-mode changes. Occlusion, compression and scaling affect useful data.
-6. Wait for Decoder's explicit successful completion before stopping Encoder and using the final file. Growing `.part`/`.resume`, a recovered segment or estimated progress is not final success.
+6. Wait for Decoder's explicit completion. Without feedback, stop Encoder manually; with feedback, keep B listening until A stops, then stop B's listener. Reading/viewing is allowed during listening, but stop it before editing/moving/deleting the final file. Growing `.part`/`.resume`, a segment or estimated progress is not final success.
 
 After “Start receiving”, the GUI active elapsed time, average speed, and ETA remain unavailable/zero while waiting for the first `SessionDescriptor` accepted and validated for the current Profile. The active window continues through recovery, disk writes, whole-file digest, safe publication, and final reopen verification; on completion the average is original file bytes divided by the frozen active elapsed time. Formal `runStarted/runEnded` and verified raw goodput retain their full-run/performance evidence meanings.
 
@@ -62,3 +62,7 @@ Received size combines verified bytes with in-progress estimates; it need not in
 `LICENSE` contains MIT terms. Dependency terms are in `THIRD_PARTY_NOTICES.md`, `licenses/` and `SBOM.spdx.json`. Qt source/replacement instructions are in `QT_SOURCE.md` and `sources/`. Running does not require extracting source; retain it for redistribution.
 
 The package is not publisher-code-signed. SHA-256/external seals establish integrity and consistency only. The optional PowerShell 7 `Test-PBUnifiedPortablePackage.ps1` is read-only and does not run packaged EXEs. Ordinary use requires neither PowerShell 7 nor running this verifier first.
+
+## Optional feedback and completed listening (2026-10-21 addition)
+
+Enable feedback in Advanced and select a writable folder or dedicated status file; folder mode uses PixelBridgeFeedback.pbfb. It carries no payload. Completed, feedback listening preserves open-output access and frozen file timing; explicitly stop listening/close before the next run. Only enabled feedback retains the existing .resume; restart revalidates final output and never imports old feedback bits as file recovery. See [full setup and safety boundaries](FEEDBACK_ASSISTED_TRANSFER.en.md).

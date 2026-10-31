@@ -42,6 +42,7 @@ def main():
     seal_hash = digest(args.seal)
     results = []
     product_release = manifest["buildIdentity"]["releaseScope"] == "LocalProductRelease"
+    has_feedback_helper = "feedbackHelper" in manifest["applications"][0]
 
     def run(name, expected_error=None, archive=None, seal=None):
         command = [args.powershell, "-NoProfile", "-File", str(verifier), "-PackageDirectory", str(package)]
@@ -204,11 +205,23 @@ def main():
                                  "Qt corresponding source binding is invalid")
             changed_product_file("product-runtime-required", "Qt6Gui.dll", lambda data: None,
                                  "Required product runtime missing")
+            if has_feedback_helper:
+                helper = manifest["applications"][0]["feedbackHelper"]["relativeExecutablePath"]
+                changed_product_file("product-feedback-helper-required", helper, lambda data: None,
+                                     "Required feedback helper is absent")
+                changed_manifest("product-feedback-binding-required", lambda value: value["applications"][0].pop("feedbackHelper"),
+                                 "Required feedback helper binding is absent")
+                changed_manifest("product-feedback-protocol", lambda value: value["applications"][0]["feedbackHelper"]["runtimeIdentity"].__setitem__("feedbackProtocol", 2),
+                                 "Feedback helper protocol/metadata identity mismatch")
+                changed_manifest("product-feedback-payload-boundary", lambda value: value["applications"][0]["feedbackHelper"]["runtimeIdentity"].__setitem__("metadataOnly", False),
+                                 "Feedback helper protocol/metadata identity mismatch")
+                changed_manifest("product-feedback-binary-binding", lambda value: value["applications"][0]["feedbackHelper"].__setitem__("sha256", "0" * 64),
+                                 "Feedback helper binary binding does not match inventory")
     finally:
         unchanged = original_inventory == {str(path.relative_to(original)): digest(path) for path in original.rglob("*") if path.is_file()}
         unchanged = unchanged and digest(args.archive) == archive_hash and digest(args.seal) == seal_hash
         summary = {"schema": "PixelBridge.UnifiedPackageNegativeTests.1", "tests": results,
-                   "passed": len(results) == (25 if product_release else 20) and all(item["passed"] for item in results), "originalArtifactsUnchanged": unchanged,
+                   "passed": len(results) == (25 + (5 if has_feedback_helper else 0) if product_release else 20) and all(item["passed"] for item in results), "originalArtifactsUnchanged": unchanged,
                    "packagedExecutablesRun": False, "packageDirectory": str(original), "derivedDirectory": str(package)}
         (root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         if not unchanged:

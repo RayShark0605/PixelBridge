@@ -231,3 +231,7 @@ All 60 original project Markdown documents were backed up byte-for-byte locally.
 原 `docs/PixelBridge_最终技术路线与总体设计.md` 工作副本为 187,102 B，SHA-256 `b80e690a110985366138d07ac5b77ce45a14f1fea85e80b3a103e95e17fbba38`，保存在上述 ZIP；HEAD blob 为 `c1cb9639ddf0801cc382c4f0ef971201cf3b2955`。旧模块参考中的“设计 §16/§21/§39”等指向该历史版，不能当作新 12 节架构的编号。文件名保持不变，AGENTS 的规范入口仍然有效。
 
 The previous architecture is preserved in the byte-exact working-copy backup and its committed blob above. Legacy design section numbers refer to that historical edition, not the current 12-section architecture. The canonical filename remains unchanged, preserving the AGENTS entry point.
+
+## 2026-10-21 可选文件反馈实施文档增量
+
+在保留研究原文与历史失败事实的前提下，增加中英文功能合同和设置说明，更新现状、入口、架构、四模式指南、调度/恢复和反馈报告语义。实现与本地定向回归已推进；最终复核和独立候选包仍在进行。没有重开旧全量静态审计，不改动受保护报告。当前状态以 PROJECT_STATUS.md 为准。

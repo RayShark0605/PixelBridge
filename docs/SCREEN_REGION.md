@@ -76,7 +76,7 @@ PixelBridgeDecoder --select-region
 PixelBridgeDecoder --help
 ```
 
-无参数 banner 保持不变。选区成功后 stdout 为一条 JSON，包含 `coordinateSpace="physical-desktop"`、
+这里描述显式 `--select-region` 诊断入口；当前产品无参数入口为 GUI。选区成功后 stdout 为一条 JSON，包含 `coordinateSpace="physical-desktop"`、
 十六进制字符串 HMONITOR、两个 RECT、DPI、原始 DXGI rotation。
 rotation 数值为 identity=1、90=2、180=3、270=4；0/unknown 不能作为成功结果。
 提示／错误走 stderr。退出码：0 成功或帮助，1 运行失败，2 参数错误，3 取消。
@@ -99,4 +99,4 @@ worker 异常退出或超时时仍回收 worker 并恢复物理光标，异常�
 
 开启 sanitizer 时，库、Decoder、单元及实机 Gate 均随现有 fuzz 配置插桩；MSVC ASan 不等于 UBSan／TSan 或 libFuzzer。
 实机当前布局的通过记录，不能替代真实 125/150/175%、混合 DPI、负坐标或旋转显示器的覆盖。
-本轮精确命令、结果与剩余限制见 `SCREEN_REGION_VALIDATION.md`。
+原验证批次的精确命令、结果与剩余限制见已退役的 `SCREEN_REGION_VALIDATION.md`，按 [文档历史](DOC_HISTORY.md) 中的 blob 取回；它不是当前源码重新运行的结果。

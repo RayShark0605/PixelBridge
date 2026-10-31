@@ -9,9 +9,13 @@ target_link_libraries(PixelBridgeDecoder
         PB::PBReceiver)
 
 if(WIN32)
+    add_dependencies(PixelBridgeDecoder PBFeedbackIo)
+    add_custom_command(TARGET PixelBridgeDecoder POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "$<TARGET_FILE:PBFeedbackIo>" "$<TARGET_FILE_DIR:PixelBridgeDecoder>/PBFeedbackIo.exe" VERBATIM)
     configure_file(resources/application.rc.in "${CMAKE_CURRENT_BINARY_DIR}/application.rc" @ONLY)
     set_target_properties(PixelBridgeDecoder PROPERTIES AUTORCC ON)
     target_sources(PixelBridgeDecoder PRIVATE resources/branding.qrc "${CMAKE_CURRENT_BINARY_DIR}/application.rc"
+        "${PROJECT_SOURCE_DIR}/apps/common/feedback_options_qt.cpp"
         "${PROJECT_SOURCE_DIR}/apps/common/operational_log_qt.cpp")
     target_sources(PixelBridgeDecoder PRIVATE screen_region_cli.cpp
         "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp"

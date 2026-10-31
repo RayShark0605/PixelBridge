@@ -136,6 +136,32 @@ enum class FlipEffect : std::uint8_t
     Sequential
 };
 
+enum class PresentationModel : std::uint8_t
+{
+    Flip,
+    ComposedBlt,
+    QtRaster
+};
+
+enum class PresentationSwapEffect : std::uint8_t
+{
+    FlipDiscard,
+    FlipSequential,
+    BltDiscard,
+    NotApplicable
+};
+
+enum class PresentationPacing : std::uint8_t
+{
+    FrameLatencyWaitable,
+    GpuCompletionAndVsync,
+    QtEventLoop
+};
+
+[[nodiscard]] const char* GetPresentationModelName(PresentationModel model) noexcept;
+[[nodiscard]] const char* GetPresentationSwapEffectName(PresentationSwapEffect effect) noexcept;
+[[nodiscard]] const char* GetPresentationPacingName(PresentationPacing pacing) noexcept;
+
 struct PhysicalPoint
 {
     std::int32_t x = 0;
@@ -168,6 +194,7 @@ struct DataWindowConfig
     // Unspecified: center the client on the primary monitor.
     std::optional<PhysicalPoint> clientOrigin;
     std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
+    PresentationModel presentationModel = PresentationModel::Flip;
 };
 
 inline constexpr std::uint32_t dataWindowMinimumScaleNumerator = 1;
@@ -254,6 +281,11 @@ struct PresentationContract
     bool pointSampled = false;
     bool centeredLetterbox = false;
     bool neutralMatteBelowMinimum = false;
+    PresentationModel presentationModel = PresentationModel::Flip;
+    PresentationSwapEffect swapEffect = PresentationSwapEffect::FlipDiscard;
+    PresentationPacing pacing = PresentationPacing::FrameLatencyWaitable;
+    bool scalingStretch = false;
+    bool rasterPaintEngine = false;
 };
 
 enum class WindowState : std::uint8_t
@@ -295,9 +327,14 @@ struct DataWindowSnapshot
     // True only for the explicitly injected software GPU correctness backend;
     // the production Create path never silently selects WARP.
     bool softwareRasterizer = false;
+    // Application software paints are not DXGI Presents or captured visuals.
+    std::uint64_t softwarePaintCalls = 0;
+    std::uint64_t softwareFramesPainted = 0;
 };
 
 [[nodiscard]] PresentationStatus ValidateDataWindowConfig(const DataWindowConfig& config) noexcept;
+[[nodiscard]] PresentationStatus ValidateCanonicalBgraPixels(std::uint32_t width, std::uint32_t height,
+    std::uint64_t maximumFrameBytes, const CanonicalBgraFrameView& frame) noexcept;
 [[nodiscard]] PresentationStatus ValidateCanonicalBgraFrame(const DataWindowConfig& config, const CanonicalBgraFrameView& frame) noexcept;
 [[nodiscard]] PresentationViewportGeometry ResolvePresentationViewport(
     const DataWindowConfig& config, std::uint32_t clientWidth, std::uint32_t clientHeight) noexcept;

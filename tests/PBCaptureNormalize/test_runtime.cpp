@@ -76,6 +76,94 @@ private:
     std::vector<std::uint64_t> ordinals_;
 };
 
+struct CompletionPassGate
+{
+    std::atomic<bool> entered = false;
+    std::atomic<bool> released = false;
+};
+
+struct ReleaseCompletionPassOnExit
+{
+    std::shared_ptr<CompletionPassGate> gate;
+    ~ReleaseCompletionPassOnExit()
+    {
+        gate->released = true;
+    }
+};
+
+class CompletionPassBackend final : public capturetest::Backend
+{
+public:
+    CompletionPassBackend(std::shared_ptr<capturetest::Control> control, std::shared_ptr<CompletionPassGate> gate)
+        : capturetest::Backend(control), control_(std::move(control)), gate_(std::move(gate))
+    {
+    }
+    CompletionResult Poll(const std::size_t slot) noexcept override
+    {
+        if (armed_ && slot == 0 && control_->consumes == 2)
+        {
+            armed_ = false;
+            gate_->entered = true;
+            while (!gate_->released)
+            {
+                std::this_thread::yield();
+            }
+        }
+        return capturetest::Backend::Poll(slot);
+    }
+private:
+    const std::shared_ptr<capturetest::Control> control_;
+    const std::shared_ptr<CompletionPassGate> gate_;
+    bool armed_ = true;
+};
+
+struct PartialCompletionControl
+{
+    std::array<std::atomic<bool>, maximumRoiTextures> reusable{};
+};
+
+struct ReleasePartialCompletionOnExit
+{
+    std::shared_ptr<PartialCompletionControl> control;
+    ~ReleasePartialCompletionOnExit()
+    {
+        for (auto& reusable : control->reusable)
+        {
+            reusable = true;
+        }
+    }
+};
+
+class PartialCompletionBackend final : public capturetest::Backend
+{
+public:
+    PartialCompletionBackend(std::shared_ptr<capturetest::Control> control, std::shared_ptr<PartialCompletionControl> completion)
+        : capturetest::Backend(std::move(control)), completion_(std::move(completion))
+    {
+    }
+    CaptureStatus Consume(RawRoiConsumer& consumer, const RawRoiFrameMetadata& metadata, const std::size_t slot) noexcept override
+    {
+        consuming_[slot] = true;
+        return capturetest::Backend::Consume(consumer, metadata, slot);
+    }
+    CompletionResult Poll(const std::size_t slot) noexcept override
+    {
+        if (consuming_[slot] && !completion_->reusable[slot])
+        {
+            return {{}, false};
+        }
+        const auto result = capturetest::Backend::Poll(slot);
+        if (result.complete)
+        {
+            consuming_[slot] = false;
+        }
+        return result;
+    }
+private:
+    const std::shared_ptr<PartialCompletionControl> completion_;
+    std::array<bool, maximumRoiTextures> consuming_{};
+};
+
 struct OrderingObservations
 {
     std::atomic<std::size_t> secondSlot{maximumRoiTextures};
@@ -572,7 +660,9 @@ TEST_CASE("Two-slot capture backpressure retires held work before taking the new
     config.maximumFrameAgeMilliseconds = 60000;
     std::unique_ptr<CaptureRuntime> capture;
     const ReleaseFakeGpuOnExit releaseOnExit{control};
-    REQUIRE(CaptureRuntime::Create(config, consumer, std::make_unique<capturetest::Backend>(control), capture));
+    const auto completionGate = std::make_shared<CompletionPassGate>();
+    const ReleaseCompletionPassOnExit releaseCompletionOnExit{completionGate};
+    REQUIRE(CaptureRuntime::Create(config, consumer, std::make_unique<CompletionPassBackend>(control, completionGate), capture));
     std::array<std::int64_t, 7> timestamps{};
     for (std::int64_t id = 1; id <= 7; id++)
     {
@@ -598,7 +688,12 @@ TEST_CASE("Two-slot capture backpressure retires held work before taking the new
     REQUIRE(control->copies == 2);
     REQUIRE(capture->GetSnapshot().busyRoiTextures == 2);
     REQUIRE(consumer->Ordinals() == std::vector<std::uint64_t>{1, 2});
+    // Release completion before the owner begins the next whole-slot pass.
+    // Flipping a global fake-GPU flag halfway through PollSlots legitimately
+    // frees one slot before the other; that is not an all-ready fixture.
+    REQUIRE(capturetest::WaitFor([&] { return completionGate->entered.load(); }));
     control->consumeComplete = true;
+    completionGate->released = true;
     REQUIRE(capturetest::WaitFor([&]
     {
         const auto snapshot = capture->GetSnapshot();
@@ -632,6 +727,50 @@ TEST_CASE("Two-slot capture backpressure retires held work before taking the new
             REQUIRE(event.thread == ownerThread);
         }
     }
+}
+
+TEST_CASE("Capture reuses only the completed slot while another consumer still owns its texture", "[capture][runtime][backpressure]")
+{
+    const auto control = std::make_shared<capturetest::Control>();
+    control->copyComplete = true;
+    const auto completion = std::make_shared<PartialCompletionControl>();
+    const auto consumer = std::make_shared<SequenceConsumer>();
+    auto config = capturetest::MakeConfig();
+    config.roiTextureCount = 2;
+    config.maximumFrameAgeMilliseconds = 60000;
+    std::unique_ptr<CaptureRuntime> capture;
+    const ReleaseFakeGpuOnExit releaseOnExit{control};
+    const ReleasePartialCompletionOnExit releaseCompletionOnExit{completion};
+    REQUIRE(CaptureRuntime::Create(config, consumer, std::make_unique<PartialCompletionBackend>(control, completion), capture));
+    std::array<std::int64_t, 3> timestamps{};
+    for (std::int64_t id = 1; id <= 2; id++)
+    {
+        auto frame = capturetest::MakeFrame(control, id);
+        REQUIRE(ReadNow100ns(frame.timestamp100ns));
+        timestamps[static_cast<std::size_t>(id - 1)] = frame.timestamp100ns;
+        control->inbox.load()->Push(std::move(frame));
+        REQUIRE(capturetest::WaitFor([&] { return control->consumes == id; }));
+    }
+    REQUIRE(capturetest::WaitFor([&] { return capture->GetSnapshot().busyRoiTextures == 2; }));
+    auto newest = capturetest::MakeFrame(control, 3);
+    REQUIRE(ReadNow100ns(newest.timestamp100ns));
+    timestamps[2] = newest.timestamp100ns;
+    control->inbox.load()->Push(std::move(newest));
+    REQUIRE(capturetest::WaitFor([&] { return capture->GetSnapshot().queuedFrames == 1; }));
+    REQUIRE(control->copies == 2);
+    completion->reusable[0] = true;
+    REQUIRE(capturetest::WaitFor([&] { return control->copies == 3 && control->consumes == 3; }));
+    const auto overlappingEvents = control->Events();
+    const auto newestCopy = capturetest::FindEvent(overlappingEvents, "copy", timestamps[2]);
+    REQUIRE(newestCopy < overlappingEvents.size());
+    REQUIRE(capturetest::FindEvent(overlappingEvents, "consume-done", timestamps[0]) < newestCopy);
+    REQUIRE(capturetest::FindEvent(overlappingEvents, "consume-done", timestamps[1]) == overlappingEvents.size());
+    completion->reusable[1] = true;
+    REQUIRE(capturetest::WaitFor([&] { return capture->GetSnapshot().busyRoiTextures == 0; }));
+    REQUIRE(capture->Stop());
+    REQUIRE(consumer->Ordinals() == std::vector<std::uint64_t>{1, 2, 3});
+    REQUIRE(capture->GetSnapshot().liveFrameLeases == 0);
+    RequireOneClosePerFrame(control, 3);
 }
 
 TEST_CASE("Capture in-flight limit is bounded by physical slots without discounting reservations", "[capture][runtime][backpressure]")

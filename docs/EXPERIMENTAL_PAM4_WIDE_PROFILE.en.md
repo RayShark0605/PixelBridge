@@ -56,3 +56,7 @@ One owner, preallocated metrics/scratch/accepted blocks, two reused FEC workspac
 Live capture uses PB-owned GPU staging plus explicit CPU readback/reference decoding; report its cost separately. Accepted local slots are only intermediate FEC/CRC results. Typed Control/schema/resource/conflict admission, Outer FEC, segment digests, whole-file digest, safe publication and final reopen are still mandatory.
 
 GUI chooses 7 MiB segments. Finite memory tuning affects admission only. The selected-monitor live RemoteVisual/Auto entry does not grant Replay/capture-only/formal-measurement eligibility. [Architecture](ARCHITECTURE.en.md), [budgets](DECODER_MEMORY_BUDGET.en.md).
+
+## Optional file-feedback relationship (2026-10-21)
+
+[File-feedback assistance](FEEDBACK_ASSISTED_TRANSFER.en.md) supports all four modes and defaults off, without changing this contract's wire/Profile/FEC/sampling/digest/publication rules. Real durable confirmations govern subsequent selection; the rate prior remains optional Sender-side budgeting for unconfirmed service, restored with all-file coverage on failure. Neither is independent Sender-side receiver verification or field speedup certification.

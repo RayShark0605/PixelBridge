@@ -82,6 +82,9 @@ InterleaveStatus ApplyInterleave(
             kInterleaveRegionBytes);
     }
 
+    // Nibble writes preserve the other half-byte, so output-only storage must
+    // have defined byte values before the first read-modify-write.
+    std::fill(physical.begin(), physical.end(), std::byte{0});
     for (std::uint64_t logicalTile = 0; logicalTile < kInterleaveTileCount;
          logicalTile++)
     {
@@ -118,6 +121,7 @@ InterleaveStatus ReverseInterleave(
             kInterleaveRegionBytes);
     }
 
+    std::fill(logical.begin(), logical.end(), std::byte{0});
     for (std::uint64_t physicalTile = 0; physicalTile < kInterleaveTileCount;
          physicalTile++)
     {

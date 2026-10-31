@@ -6,6 +6,8 @@
 #include "decoder_capture_controller.h"
 #include "encoder_session_store.h"
 #include "encoder_monitor_catalog.h"
+#include "feedback_file_store.h"
+#include "feedback_policy.h"
 #include "optional_diagnostic_fanout.h"
 #include "measurement_capture_consumer.h"
 #include "remote_visual_replay_recorder.h"
@@ -1607,6 +1609,7 @@ class SenderFrameBuilder
         std::uint64_t segmentPassCount = 0;
         std::uint32_t completedPassesThisAdmission = 0;
         std::uint64_t graduationTarget = 0;
+        std::uint64_t admissionEquationBase = 0;
         bool graduated = false;
     };
 
@@ -1649,13 +1652,15 @@ public:
         RepairIdStartProvider repairIdStartProvider = {}, RepairLeaseCallback repairLeaseCallback = {},
         const std::uint64_t initialCarouselPass = 0, const std::uint64_t initialSegmentOrdinal = 0,
         const std::uint32_t logicalVisualFps = 0, const bool grayFastSpatialInterleave = false,
-        const std::uint32_t initialAirtimePercent = 100, const std::uint32_t visitBudgetPercent = 100)
+        const std::uint32_t initialAirtimePercent = 100, const std::uint32_t visitBudgetPercent = 100,
+        const std::optional<SenderRatePrior> expectedReceptionRate = std::nullopt)
         : profile_(profile), description_(description), data_(profile.dataBytes),
           pixels_(pbmodulation::kLocalDesktopFrameBgraBytes), segmentLoader_(std::move(segmentLoader)),
           repairIdStartProvider_(std::move(repairIdStartProvider)), repairLeaseCallback_(std::move(repairLeaseCallback)),
           nextRepairIds_(description.segments.size(), 0), currentSegmentOrdinal_(initialSegmentOrdinal),
           carouselPass_(initialCarouselPass), initialCarouselPass_(initialCarouselPass),
-          controlRepetitions_(controlRepetitions), logicalVisualFps_(logicalVisualFps), initialAirtimePercent_(initialAirtimePercent), visitBudgetPercent_(visitBudgetPercent)
+          controlRepetitions_(controlRepetitions), logicalVisualFps_(logicalVisualFps), initialAirtimePercent_(initialAirtimePercent), visitBudgetPercent_(visitBudgetPercent),
+          expectedReceptionRate_(expectedReceptionRate)
     {
         Require(profile_.codewords != 0 && controlRepetitions_ != 0,
             "Profile or Control repetition count is empty");
@@ -1668,6 +1673,11 @@ public:
         Require(visitBudgetPercent_ >= 100 && visitBudgetPercent_ <= 200 &&
             (visitBudgetPercent_ == 100 || (grayFastSpatialInterleave && initialAirtimePercent_ == 100)),
             "Visit budget requires bounded spatial GrayFast tuning without a shortened initial visit");
+        Require(!expectedReceptionRate_ || (profile_.profile == VisualProfile::ExperimentalPam4 &&
+            ValidateSenderRatePrior(*expectedReceptionRate_) && !grayFastSpatialInterleave && initialAirtimePercent_ == 100 && visitBudgetPercent_ == 100),
+            "Expected reception rate requires a valid PAM4-only sender prior");
+        ratePriorSnapshot_.configured = expectedReceptionRate_;
+        ratePriorSnapshot_.effective = expectedReceptionRate_.has_value() && UnifiedGraduationEnabled();
         if (grayFastSpatialInterleave && !description_.segments.empty())
         {
             unifiedSpatialBank_ = std::make_unique<UnifiedSpatialBank>();
@@ -1870,7 +1880,7 @@ public:
         return pixels_;
     }
 
-    void Advance()
+    void Advance(const std::optional<std::uint64_t> committedAtNanoseconds = std::nullopt)
     {
         if (unifiedSpatialBank_)
         {
@@ -1881,6 +1891,7 @@ public:
         {
             SenderUnifiedCarouselScheduler& unifiedScheduler = GetCurrentUnifiedScheduler();
             Require(static_cast<bool>(unifiedScheduler.CommitPreparedFrame()), "Unified frame commit failed");
+            RecordRatePriorCommittedFrame(committedAtNanoseconds.value_or(ratePriorPreparedAtNanoseconds_));
             if (description_.segments.empty())
             {
                 Require(unifiedScheduler.GetSnapshot().committedFrameCount <=
@@ -1899,6 +1910,15 @@ public:
                 "Unified Segment-window frame count exceeds telemetry bounds");
             cyclePosition_++;
             UnifiedSegmentState& currentState = GetCurrentUnifiedSegmentState();
+            if (feedbackMode_)
+            {
+                if (unifiedScheduler.IsComplete())
+                {
+                    CompleteUnifiedSegmentPass(currentState);
+                }
+                ReconcileFeedbackWindow();
+                return;
+            }
             if (unifiedScheduler.IsComplete())
             {
                 CompleteUnifiedSegmentPass(currentState);
@@ -1974,6 +1994,10 @@ public:
         const std::uint32_t position = UsesMixedSlotCarousel(profile_.profile) || description_.segments.empty() ? cyclePosition_ :
             static_cast<std::uint32_t>(roundScheduler_.GetSnapshot().frameIndex);
         return {carouselPass_, position, cycleFrameCount_};
+    }
+    [[nodiscard]] SenderRatePriorSnapshot GetRatePriorSnapshot() const noexcept
+    {
+        return ratePriorSnapshot_;
     }
     [[nodiscard]] const std::vector<std::byte>& GetBuiltPixels() const noexcept
     {
@@ -2127,6 +2151,41 @@ public:
         PrepareUnifiedFrame(tick, tick * 1000000000ULL / logicalVisualFps_);
         return unifiedFrame_;
     }
+
+    void ApplyFeedbackPolicy(const FeedbackSenderPolicy& policy)
+    {
+        if (description_.segments.empty() || (unifiedSpatialBank_ && unifiedSpatialBank_->rowCount != 0))
+        {
+            return;
+        }
+        const bool effective = policy.GetTelemetry().effective && policy.GetTelemetry().confirmedSegments != 0;
+        if (!effective)
+        {
+            if (feedbackMode_)
+            {
+                for (auto& state : unifiedSegmentStates_)
+                {
+                    RetireFeedbackState(state);
+                }
+                unifiedSegmentStates_.clear();
+                feedbackMode_ = false;
+                feedbackPolicy_ = nullptr;
+                Require(carouselPass_ != UINT64_MAX, "Feedback fallback Carousel pass exhausted");
+                carouselPass_++;
+                currentSegmentOrdinal_ = 0;
+                InitializeUnifiedSegmentWindow();
+            }
+            return;
+        }
+        feedbackPolicy_ = &policy;
+        feedbackMode_ = true;
+        ReconcileFeedbackWindow();
+    }
+
+    [[nodiscard]] std::uint64_t GetFeedbackSkippedService() const noexcept
+    {
+        return feedbackSkippedService_;
+    }
     [[nodiscard]] std::span<const std::byte> GetControlBlockForSlot(const std::uint32_t slot) const
     {
         Require(slot < unifiedFrame_.slotCount && unifiedFrame_.slotAssignments[slot].assignment.kind == pbmodulation::UnifiedSlotKind::Control,
@@ -2174,6 +2233,7 @@ private:
     {
         if (!unifiedSpatialBank_)
         {
+            ratePriorPreparedAtNanoseconds_ = nowNanoseconds;
             Require(static_cast<bool>(GetCurrentUnifiedScheduler().PrepareFrameAt(tick, nowNanoseconds, unifiedFrame_)),
                 "Unified mixed-slot frame preparation failed");
             return;
@@ -2293,6 +2353,11 @@ private:
         unifiedSpatialBankOrdinal_++;
         bank.rowCount = 0;
         bank.phase = 0;
+        if (feedbackMode_)
+        {
+            ReconcileFeedbackWindow();
+            return;
+        }
         SlideUnifiedSegmentWindow();
         if (!unifiedSegmentStates_.empty() && SelectNextUnifiedSegment())
         {
@@ -2410,6 +2475,49 @@ private:
         // (they enter late) and the whole-window barrier wins instead.
         return description_.segments.size() >
             2 * static_cast<std::uint64_t>(senderUnifiedActiveSegmentWindowSize);
+    }
+
+    [[nodiscard]] SenderRatePriorDecision GetRatePriorDecision(const UnifiedSegmentState& state) const
+    {
+        const auto& descriptor = description_.segments[state.segmentOrdinal].descriptor;
+        const auto decision = CalculateSenderRatePriorDecision(*expectedReceptionRate_, ratePriorClock_.GetActiveNanoseconds(),
+            descriptor.rawOffset, descriptor.rawSize, description_.session.originalFileSize, state.blockCount,
+            state.admissionEquationBase == 0, carouselPass_ - initialCarouselPass_);
+        Require(decision.has_value(), "PAM4 rate prior input exceeds its bounded scheduling contract");
+        return *decision;
+    }
+
+    [[nodiscard]] std::uint64_t GetRatePriorGraduationTarget(const UnifiedSegmentState& state) const
+    {
+        const auto target = pbprotocol::CheckedAddUint64(state.admissionEquationBase, GetRatePriorDecision(state).visitEquationBudget);
+        RequireResult(target, "PAM4 prior visit target overflow");
+        return target.Value();
+    }
+
+    void RecordRatePriorCommittedFrame(const std::uint64_t nowNanoseconds)
+    {
+        if (!ratePriorSnapshot_.effective)
+        {
+            return;
+        }
+        Require(ratePriorClock_.CommitFrame(nowNanoseconds), "PAM4 rate prior commit clock is invalid or exhausted");
+        const auto decision = GetRatePriorDecision(GetCurrentUnifiedSegmentState());
+        std::uint64_t* counter = nullptr;
+        switch (decision.region)
+        {
+        case SenderRatePriorRegion::BeforeFrontier: counter = &ratePriorSnapshot_.beforeFrontierEquations; break;
+        case SenderRatePriorRegion::NearFrontier: counter = &ratePriorSnapshot_.nearFrontierEquations; break;
+        case SenderRatePriorRegion::AheadOfFrontier: counter = &ratePriorSnapshot_.aheadOfFrontierEquations; break;
+        case SenderRatePriorRegion::SafetyRepair: counter = &ratePriorSnapshot_.safetyRepairEquations; break;
+        }
+        Require(counter != nullptr, "PAM4 prior service classification is invalid");
+        const auto committed = pbprotocol::CheckedAddUint64(*counter, unifiedFrame_.scheduledEquationCount);
+        RequireResult(committed, "PAM4 prior equation accounting overflow");
+        *counter = committed.Value();
+        ratePriorSnapshot_.activeNanoseconds = ratePriorClock_.GetActiveNanoseconds();
+        ratePriorSnapshot_.clampedSenderGaps = ratePriorClock_.GetClampedGapCount();
+        ratePriorSnapshot_.predictedLowerRawBytes = decision.lowerRawBytes;
+        ratePriorSnapshot_.predictedUpperRawBytes = decision.upperRawBytes;
     }
 
     [[nodiscard]] std::uint64_t CalculateUnifiedGraduationTarget(const std::uint32_t blockCount) const
@@ -2572,13 +2680,14 @@ private:
         // Resume retains the repair-ID high-water independently of this ledger.
         state.committedEquationsTotal = unifiedCommittedLedger_.empty() ? 0 :
             unifiedCommittedLedger_[segmentOrdinal];
-        if (!UnifiedGraduationEnabled() && !unifiedPassLedger_.empty())
+        state.admissionEquationBase = state.committedEquationsTotal;
+        if (!UnifiedGraduationEnabled() && !feedbackMode_ && !unifiedPassLedger_.empty())
         {
             unifiedPassLedger_[segmentOrdinal] = carouselPass_;
         }
         state.segmentPassCount = unifiedPassLedger_.empty() ? carouselPass_ :
             unifiedPassLedger_[segmentOrdinal];
-        state.graduationTarget = CalculateUnifiedGraduationTarget(state.blockCount);
+        state.graduationTarget = ratePriorSnapshot_.effective ? GetRatePriorGraduationTarget(state) : CalculateUnifiedGraduationTarget(state.blockCount);
         state.graduated = false;
         Require(static_cast<bool>(CreateUnifiedSegmentScheduler(state, periodicControlPhaseIndex,
             periodicControlPhaseCount)), "Unified Segment-window scheduler creation failed");
@@ -2680,12 +2789,20 @@ private:
         {
             unifiedPassLedger_[state.segmentOrdinal] = state.segmentPassCount;
         }
-        if (!UnifiedGraduationEnabled())
+        if (feedbackMode_ || !UnifiedGraduationEnabled())
         {
             // Small-file path: the round completes like the pre-graduation
             // contract; the whole-window barrier advances when every
             // in-window scheduler reaches this state.
             return;
+        }
+        if (ratePriorSnapshot_.effective)
+        {
+            // Re-evaluate only at a completed pass, never mutate a prepared
+            // frame or an ID lease. A moving frontier can shorten this visit,
+            // but cannot extend it indefinitely. Every admission still runs
+            // at least one complete systematic/repair scheduler pass.
+            state.graduationTarget = (std::min)(state.graduationTarget, GetRatePriorGraduationTarget(state));
         }
         if (state.committedEquationsTotal >= state.graduationTarget ||
             state.completedPassesThisAdmission >= senderUnifiedMaximumSegmentPasses)
@@ -2714,6 +2831,101 @@ private:
                 "Unified Wirehair repair ID space exhausted");
             repairLeaseCallback_(state.segmentOrdinal, required.Value());
         }
+    }
+
+    void RetireFeedbackState(UnifiedSegmentState& state)
+    {
+        if (state.repairIdsFinalized)
+        {
+            return;
+        }
+        const auto scheduler = state.scheduler.GetSnapshot();
+        const auto committed = pbprotocol::CheckedAddUint64(state.committedEquationsTotal, scheduler.committedEquationCount);
+        RequireResult(committed, "Feedback committed-equation accounting overflow");
+        unifiedCommittedLedger_[state.segmentOrdinal] = committed.Value();
+        if (scheduler.committedEquationCount != 0)
+        {
+            Require(state.segmentPassCount != UINT64_MAX, "Feedback partial pass exhausted");
+            unifiedPassLedger_[state.segmentOrdinal] = state.segmentPassCount + 1;
+        }
+        if (state.wirehair)
+        {
+            // The complete repair range was durably leased before preparing
+            // any slot. Retire its unused tail; never turn a lease into credit.
+            const auto next = pbprotocol::CheckedAddUint64(nextRepairIds_[state.segmentOrdinal], scheduler.repairEquationCount);
+            RequireResult(next, "Feedback repair retirement overflow");
+            Require(next.Value() <= UINT32_MAX, "Feedback repair ID space exhausted");
+            nextRepairIds_[state.segmentOrdinal] = static_cast<std::uint32_t>(next.Value());
+        }
+        state.repairIdsFinalized = true;
+    }
+
+    void ReconcileFeedbackWindow()
+    {
+        Require(feedbackMode_ && feedbackPolicy_ && !description_.segments.empty(), "Feedback window has no policy");
+        std::array<std::uint64_t, maximumFeedbackSelectedSegments> desired{};
+        std::size_t desiredCount = 0;
+        const bool keepalive = feedbackPolicy_->GetTelemetry().confirmedSegments == description_.segments.size();
+        if (keepalive)
+        {
+            // A real one-Segment service visit keeps periodic Session/Manifest
+            // refresh alive. This is not a fabricated zero-Segment Session and
+            // is not authority to stop before the final publication receipt.
+            desired[desiredCount++] = currentSegmentOrdinal_;
+        }
+        else
+        {
+            for (const auto& state : unifiedSegmentStates_)
+            {
+                if (!feedbackPolicy_->IsSegmentConfirmed(state.segmentOrdinal) && !state.scheduler.IsComplete())
+                {
+                    desired[desiredCount++] = state.segmentOrdinal;
+                }
+            }
+            for (std::size_t inspected = 0; inspected < description_.segments.size() && desiredCount < desired.size(); inspected++)
+            {
+                const auto ordinal = feedbackCursor_;
+                feedbackCursor_ = feedbackCursor_ + 1 == description_.segments.size() ? 0 : feedbackCursor_ + 1;
+                if (!feedbackPolicy_->IsSegmentConfirmed(ordinal) && std::find(desired.begin(), desired.begin() + desiredCount, ordinal) == desired.begin() + desiredCount)
+                {
+                    desired[desiredCount++] = ordinal;
+                }
+            }
+        }
+        Require(desiredCount != 0, "Feedback complement unexpectedly empty");
+        for (std::size_t index = 0; index < unifiedSegmentStates_.size();)
+        {
+            auto& state = unifiedSegmentStates_[index];
+            const bool retained = std::find(desired.begin(), desired.begin() + desiredCount, state.segmentOrdinal) != desired.begin() + desiredCount;
+            if (!retained || state.scheduler.IsComplete())
+            {
+                if (!keepalive && feedbackPolicy_->IsSegmentConfirmed(state.segmentOrdinal))
+                {
+                    pbprotocol::SaturatingIncrementUnsigned(feedbackSkippedService_);
+                }
+                RetireFeedbackState(state);
+                unifiedSegmentStates_.erase(unifiedSegmentStates_.begin() + index);
+            }
+            else
+            {
+                index++;
+            }
+        }
+        unifiedWindowStartSegmentOrdinal_ = 0;
+        for (std::size_t index = 0; index < desiredCount; index++)
+        {
+            const auto ordinal = desired[index];
+            const bool retained = std::ranges::any_of(unifiedSegmentStates_, [ordinal](const auto& state) { return state.segmentOrdinal == ordinal; });
+            if (!retained)
+            {
+                unifiedSegmentStates_.push_back(BuildUnifiedSegmentState(ordinal, static_cast<std::uint32_t>(ordinal % senderUnifiedActiveSegmentWindowSize),
+                    static_cast<std::uint32_t>(senderUnifiedActiveSegmentWindowSize)));
+            }
+        }
+        unifiedCurrentStateIndex_ = 0;
+        Require(unifiedSegmentStates_.size() <= maximumFeedbackSelectedSegments, "Feedback active set exceeded six Segments");
+        Require(SelectNextUnifiedSegment(), "Feedback window has no live scheduler");
+        UpdateResidentSegmentHighWater();
     }
 
     [[nodiscard]] bool SelectNextUnifiedSegment()
@@ -3056,6 +3268,10 @@ private:
     std::uint64_t unifiedSpatialBankOrdinal_ = 0;
     std::vector<std::uint64_t> unifiedCommittedLedger_;
     std::vector<std::uint64_t> unifiedPassLedger_;
+    const FeedbackSenderPolicy* feedbackPolicy_ = nullptr;
+    std::uint64_t feedbackCursor_ = 0;
+    std::uint64_t feedbackSkippedService_ = 0;
+    bool feedbackMode_ = false;
     std::size_t unifiedCurrentStateIndex_ = 0;
     std::uint64_t unifiedWindowStartSegmentOrdinal_ = 0;
     std::uint64_t currentSegmentOrdinal_ = 0;
@@ -3080,18 +3296,43 @@ private:
     const std::uint32_t logicalVisualFps_;
     const std::uint32_t initialAirtimePercent_;
     const std::uint32_t visitBudgetPercent_;
+    const std::optional<SenderRatePrior> expectedReceptionRate_;
+    SenderRatePriorClock ratePriorClock_;
+    SenderRatePriorSnapshot ratePriorSnapshot_;
+    std::uint64_t ratePriorPreparedAtNanoseconds_ = 0;
 };
 
 [[nodiscard]] bool HasStablePresentationContract(const pbrenderd3d::DataWindowSnapshot& snapshot,
-    const bool expectedResizableChrome) noexcept
+    const bool expectedResizableChrome, const pbrenderd3d::PresentationModel expectedModel) noexcept
 {
-    return snapshot.state == pbrenderd3d::WindowState::Running && snapshot.candidateContractSatisfied &&
+    const auto& contract = snapshot.contract;
+    if (expectedModel == pbrenderd3d::PresentationModel::QtRaster)
+    {
+        return contract.presentationModel == expectedModel && snapshot.state == pbrenderd3d::WindowState::Running &&
+            snapshot.candidateContractSatisfied && contract.rasterPaintEngine && !snapshot.softwareRasterizer &&
+            !snapshot.environment.adapterAvailable && contract.bufferWidth != 0 && contract.bufferHeight != 0 &&
+            contract.bufferWidth == snapshot.environment.clientWidth && contract.bufferHeight == snapshot.environment.clientHeight &&
+            contract.bufferCount == 0 && contract.maximumFrameLatency == 0 && !contract.latencyWaitable &&
+            contract.swapEffect == pbrenderd3d::PresentationSwapEffect::NotApplicable &&
+            contract.pacing == pbrenderd3d::PresentationPacing::QtEventLoop && contract.bgraUnorm && contract.noMsaa &&
+            contract.alphaIgnored && contract.perMonitorV2 && contract.resizableChrome == expectedResizableChrome &&
+            contract.immutableCanonicalSource && contract.pointSampled && contract.centeredLetterbox &&
+            contract.neutralMatteBelowMinimum && pbrenderd3d::CanPresentData(snapshot.viewport.disposition);
+    }
+    const bool modelMatches = contract.presentationModel == expectedModel &&
+        (expectedModel == pbrenderd3d::PresentationModel::Flip ?
+            (contract.flipEffect == pbrenderd3d::FlipEffect::Discard && contract.swapEffect == pbrenderd3d::PresentationSwapEffect::FlipDiscard &&
+             contract.scalingNone && !contract.scalingStretch && contract.latencyWaitable &&
+             contract.pacing == pbrenderd3d::PresentationPacing::FrameLatencyWaitable) :
+            (contract.swapEffect == pbrenderd3d::PresentationSwapEffect::BltDiscard && !contract.scalingNone && contract.scalingStretch &&
+             !contract.latencyWaitable && contract.pacing == pbrenderd3d::PresentationPacing::GpuCompletionAndVsync &&
+             snapshot.viewport.scale == 1.0));
+    return modelMatches && snapshot.state == pbrenderd3d::WindowState::Running && snapshot.candidateContractSatisfied &&
         snapshot.contract.bufferWidth == snapshot.environment.clientWidth &&
         snapshot.contract.bufferHeight == snapshot.environment.clientHeight &&
         snapshot.contract.bufferCount == 2 && snapshot.contract.maximumFrameLatency == 1 &&
-        snapshot.contract.flipEffect == pbrenderd3d::FlipEffect::Discard && snapshot.contract.bgraUnorm &&
-        snapshot.contract.noMsaa && snapshot.contract.alphaIgnored && snapshot.contract.scalingNone &&
-        snapshot.contract.tearingDisabled && snapshot.contract.latencyWaitable && snapshot.contract.perMonitorV2 &&
+        snapshot.contract.bgraUnorm && snapshot.contract.noMsaa && snapshot.contract.alphaIgnored &&
+        snapshot.contract.tearingDisabled && snapshot.contract.perMonitorV2 &&
         snapshot.contract.resizableChrome == expectedResizableChrome && snapshot.contract.immutableCanonicalSource &&
         snapshot.contract.pointSampled && snapshot.contract.centeredLetterbox &&
         snapshot.contract.neutralMatteBelowMinimum && pbrenderd3d::CanPresentData(snapshot.viewport.disposition) &&
@@ -3101,12 +3342,23 @@ private:
 void ApplyEncoderPresentationSnapshot(const pbrenderd3d::DataWindowSnapshot& source, EncoderSnapshot& destination) noexcept
 {
     destination.presentationEpoch = source.timing.presentationEpoch;
-    destination.presentationAdapter = source.environment.adapterAvailable ?
+    const bool qtRaster = source.contract.presentationModel == pbrenderd3d::PresentationModel::QtRaster;
+    if (source.contract.bufferCount != 0 || (qtRaster && source.contract.rasterPaintEngine &&
+        source.contract.bufferWidth != 0 && source.contract.bufferHeight != 0))
+    {
+        destination.presentationContract = source.contract;
+        destination.presentationWindowState = source.state;
+        destination.presentationTimingIssue = source.timing.issue;
+    }
+    destination.presentationAdapter = !qtRaster && source.environment.adapterAvailable ?
         std::optional{EncoderPresentationAdapter{source.environment.adapterLuidLow, source.environment.adapterLuidHigh,
             source.environment.adapterBoundToMonitorOutput, source.softwareRasterizer}} : std::nullopt;
-    destination.successfulPresentCalls = source.totalSuccessfulPresents;
-    destination.presentedVisualFps = source.timing.presentedVisualFps;
-    destination.presentCallFps = source.timing.presentCallFps;
+    destination.successfulPresentCalls = qtRaster ? 0 : source.totalSuccessfulPresents;
+    destination.softwarePaintCalls = source.softwarePaintCalls;
+    destination.softwareFramesPainted = source.softwareFramesPainted;
+    destination.presentedVisualFps = qtRaster || source.contract.presentationModel == pbrenderd3d::PresentationModel::ComposedBlt ?
+        std::nullopt : source.timing.presentedVisualFps;
+    destination.presentCallFps = qtRaster ? std::nullopt : source.timing.presentCallFps;
     destination.submittedFrames = source.submittedFrames;
     destination.replacedPendingFrames = source.replacedPendingFrames;
     destination.sourceTextureReplacements = source.sourceTextureReplacements;
@@ -4062,12 +4314,12 @@ public:
         const bool collectResourceHighWater = false,
         LargeOutputConfirmationController* const largeOutputConfirmation = nullptr,
         std::shared_ptr<RunMeasurementRecorder> measurement = {}, const bool budgetBoundActiveSegments = false,
-        const std::optional<DecoderMemoryBudget> memoryBudget = std::nullopt)
+        const std::optional<DecoderMemoryBudget> memoryBudget = std::nullopt, const bool feedbackEnabled = false)
         : receiver_(receiver), outputDirectory_(std::move(outputDirectory)), policy_(policy), snapshot_(snapshot),
           completion_(completion), runGeneration_(runGeneration), started_(started), visualProfile_(visualProfile),
           deferCompletedState_(deferCompletedState), captureTelemetryAvailable_(captureTelemetryAvailable),
           collectResourceHighWater_(collectResourceHighWater), largeOutputConfirmation_(largeOutputConfirmation), measurement_(std::move(measurement)),
-          budgetBoundActiveSegments_(budgetBoundActiveSegments), memoryBudget_(memoryBudget)
+          budgetBoundActiveSegments_(budgetBoundActiveSegments), memoryBudget_(memoryBudget), feedbackEnabled_(feedbackEnabled)
     {
         snapshot_.Update([this](DecoderSnapshot& value)
         {
@@ -4130,7 +4382,7 @@ public:
     {
         const pbcore::DiagnosticScope timing(diagnostics, pbcore::DiagnosticStage::ReceiverProcess);
         ApplyLargeOutputConfirmation(result.metadata.timestamp.monotonic100ns);
-        if (largeOutputRejected_ || published_)
+        if (largeOutputRejected_ || (published_ && !feedbackEnabled_))
         {
             SetReceiverFrameReason(decisions, published_ ? ReceiverFrameReason::AlreadyPublished : ReceiverFrameReason::LargeOutputRejected);
             return {};
@@ -4334,6 +4586,93 @@ public:
         return segmentOrdinal < storedSegments_.size() && storedSegments_[segmentOrdinal];
     }
 
+    [[nodiscard]] std::uint64_t GetFeedbackStoredSegmentCount() const noexcept
+    {
+        return completedSegmentCount_;
+    }
+
+    [[nodiscard]] std::uint64_t GetFeedbackListeningMilliseconds() const noexcept
+    {
+        const auto elapsed = ElapsedMilliseconds(started_);
+        return published_ && elapsed >= completion_.recoveryRuntimeMilliseconds ? elapsed - completion_.recoveryRuntimeMilliseconds : 0;
+    }
+
+    [[nodiscard]] FeedbackStatus ValidateFeedbackLocation(const FeedbackConfig& config, bool& ready) const
+    {
+        ready = false;
+        if (!session_ || !storage_ || !resumeStore_)
+        {
+            return {};
+        }
+        ready = true;
+        std::filesystem::path feedbackPath;
+        const auto resolved = ResolveFeedbackFilePath(config, feedbackPath);
+        if (!resolved)
+        {
+            return resolved;
+        }
+        const auto storage = storage_->GetSnapshot();
+        const std::array<std::filesystem::path, 4> protectedPaths{storage.finalPath, storage.partPath,
+            resumeStore_->GetPath(), resumeStore_->GetPath().wstring() + L".tmp"};
+        const std::array<std::filesystem::path, 4> auxiliaryPaths{feedbackPath, feedbackPath.wstring() + L".tmp",
+            feedbackPath.wstring() + L".previous", feedbackPath.wstring() + L".lock"};
+        for (const auto& protectedPath : protectedPaths)
+        {
+            const auto protectedName = protectedPath.lexically_normal().make_preferred().wstring();
+            for (const auto& auxiliaryPath : auxiliaryPaths)
+            {
+                const auto auxiliaryName = auxiliaryPath.lexically_normal().make_preferred().wstring();
+                if (CompareStringOrdinal(protectedName.c_str(), -1, auxiliaryName.c_str(), -1, TRUE) == CSTR_EQUAL)
+                {
+                    return {FeedbackError::Conflict, "Feedback overlaps output or recovery state; choose a dedicated location"};
+                }
+            }
+        }
+        return {};
+    }
+
+    [[nodiscard]] FeedbackStatus ExportFeedbackSnapshot(FeedbackSnapshot& output) const
+    {
+        if (!session_ || !manifest_)
+        {
+            output.phase = FeedbackPhase::Waiting;
+            return {};
+        }
+        const auto identityStatus = BuildFeedbackIdentity(*session_, *manifest_, GetProfileBinding(visualProfile_).layoutVersion, policy_, output.identity);
+        if (!identityStatus)
+        {
+            return identityStatus;
+        }
+        output.identityBound = true;
+        output.durableCompleted.assign((output.identity.segmentCount + 7U) / 8U, std::byte{0});
+        for (std::size_t ordinal = 0; ordinal < storedSegments_.size(); ordinal++)
+        {
+            if (storedSegments_[ordinal])
+            {
+                output.durableCompleted[ordinal / 8U] |= static_cast<std::byte>(1U << (ordinal % 8U));
+            }
+        }
+        output.observedFrameAvailable = feedbackObservedFrame_ && feedbackObservedFrame_->sessionTag == pbprotocol::DeriveSessionTag(session_->sessionId);
+        output.observedFrameSequence = output.observedFrameAvailable ? feedbackObservedFrame_->frameSequence : 0;
+        output.phase = published_ ? FeedbackPhase::Completed : FeedbackPhase::Receiving;
+        if (published_)
+        {
+            const auto storage = storage_->GetSnapshot();
+            if (!storage.publishedReadLeaseHeld)
+            {
+                return {FeedbackError::Unavailable, "Final-file read protection is unavailable; no new completion receipt is authorized"};
+            }
+            output.wholeDigestVerified = storage.wholeFileDigestVerified == true;
+            // Recovered publication is proved by the retained publish intent,
+            // bound reservation and a fresh final-file length/digest/reopen.
+            // It does not invent a new rename observation in this process.
+            output.finalPublishSucceeded = storage.published && (storage.finalRenameSucceeded == true || storage.recoveredPublished);
+            output.finalReopenVerified = storage.finalReopenVerified == true;
+            output.reportedCompletionMilliseconds = completion_.recoveryRuntimeMilliseconds;
+        }
+        return ValidateFeedbackSnapshot(output);
+    }
+
     [[nodiscard]] std::uint64_t GetPeakReservedOuterFecDecoderBytes() const noexcept
     {
         return peakReservedOuterFecDecoderBytes_;
@@ -4389,7 +4728,7 @@ public:
                 return;
             }
             pbprotocol::SaturatingIncrementUnsigned(value.captureEpochResets);
-            if (value.state != DecoderState::Stopping)
+            if (value.state != DecoderState::Stopping && !published_)
             {
                 value.state = session_ ? DecoderState::Receiving : pendingSession_ ?
                     DecoderState::AwaitingLargeOutputConfirmation : DecoderState::WaitingForBootstrap;
@@ -4650,7 +4989,7 @@ private:
                 }
             }
         });
-        if (identityDisposition == VisualIdentityDisposition::Reordered)
+        if (identityDisposition == VisualIdentityDisposition::Reordered && !(published_ && feedbackEnabled_))
         {
             SetReceiverFrameReason(decisions, ReceiverFrameReason::Reordered);
             if (!pam4)
@@ -4750,7 +5089,7 @@ private:
         // before the first usable result. Promote only a newer retained-frame
         // identity; an ordinary same-frame duplicate must keep conflict state.
         const bool firstAvailableNewerFrame = unifiedFrameIdentity_ &&
-            identityDisposition == VisualIdentityDisposition::Duplicate &&
+            (identityDisposition == VisualIdentityDisposition::Duplicate || (published_ && feedbackEnabled_)) &&
             unifiedFrameIdentity_->sessionTag == bootstrap.sessionTag &&
             bootstrap.frameSequence > unifiedFrameIdentity_->frameSequence;
         if (!unifiedFrameIdentity_ || identityDisposition == VisualIdentityDisposition::Unique || firstAvailableNewerFrame)
@@ -4832,6 +5171,20 @@ private:
             }
         }
         Require(controlSlots <= (pam4 ? 1U : pbmodulation::GetUnifiedMaximumControlSlots()), "Unified control-slot budget exceeded");
+        if (feedbackEnabled_)
+        {
+            // This witness is after the complete selected-profile/same-frame
+            // validation. Erased/Bootstrap-only cadence counters never enter it.
+            if (!feedbackObservedFrame_ || feedbackObservedFrame_->sessionTag != bootstrap.sessionTag || bootstrap.frameSequence > feedbackObservedFrame_->frameSequence)
+            {
+                feedbackObservedFrame_ = bootstrap;
+            }
+            if (published_)
+            {
+                SetReceiverFrameReason(decisions, ReceiverFrameReason::AlreadyPublished);
+                return {};
+            }
+        }
         if (decisions)
         {
             for (std::size_t slot = 0; slot < unifiedFrameBlocks_.size(); slot++)
@@ -5172,6 +5525,7 @@ private:
         Require(parsedManifest.Value().wholeFileDigest == *loadedResume.publishIntent,
             "post-rename publish intent conflicts with FinalManifest");
         manifest_ = parsedManifest.Value();
+        std::fill(storedSegments_.begin(), storedSegments_.end(), true);
         completedSegmentCount_ = session_->segmentCount;
         totalVerifiedRawBytes_ = session_->originalFileSize;
         Require(progress_.ObserveVerifiedRawBytes(totalVerifiedRawBytes_, ElapsedMilliseconds(started_)),
@@ -5192,7 +5546,10 @@ private:
                 return;
             }
             value.state = deferCompletedState_ ? DecoderState::Publishing : DecoderState::Completed;
+            value.feedback.listening = feedbackEnabled_;
             value.runEndedUnixMilliseconds = deferCompletedState_ ? 0 : GetUnixTimeMilliseconds();
+            value.feedback.listenerStartedUnixMilliseconds = feedbackEnabled_ ? value.runEndedUnixMilliseconds : std::nullopt;
+            value.feedback.listenerElapsedMilliseconds = feedbackEnabled_ ? std::optional<std::uint64_t>{0} : std::nullopt;
             value.verifiedRawBytes = session_->originalFileSize;
             value.estimatedReceivedRawBytes = session_->originalFileSize;
             value.remainingRawBytes = 0;
@@ -5210,9 +5567,11 @@ private:
                 "已验证 rename 后最终文件；正在消费 Replay 尾部" :
                 "检测到 rename 后崩溃窗口；最终文件摘要匹配并已安全完成恢复";
         });
-        const DecoderResumeStoreStatus cleanupStatus = resumeStore_->RemoveAfterPublish();
-        Require(static_cast<bool>(cleanupStatus),
-            "post-rename published resume cleanup failed: " + cleanupStatus.message);
+        if (!feedbackEnabled_)
+        {
+            const DecoderResumeStoreStatus cleanupStatus = resumeStore_->RemoveAfterPublish();
+            Require(static_cast<bool>(cleanupStatus), "post-rename published resume cleanup failed: " + cleanupStatus.message);
+        }
     }
 
     void InitializeSession(const pbprotocol::SessionDescriptor& session,
@@ -5234,6 +5593,7 @@ private:
 
         pbstorage::OutputFileConfig storageConfig;
         storageConfig.observePublishTiming = measurement_ != nullptr;
+        storageConfig.retainPublishedReadLease = feedbackEnabled_;
         storageConfig.outputDirectory = outputDirectory_;
         storageConfig.sessionTag = sessionTag;
         storageConfig.fileBytes = session_->originalFileSize;
@@ -6077,8 +6437,11 @@ private:
         completion_.published = true;
         published_ = true;
         FreezeActiveReceptionElapsed();
-        const DecoderResumeStoreStatus resumeStatus = resumeStore_->RemoveAfterPublish();
-        Require(static_cast<bool>(resumeStatus), "published file resume cleanup failed: " + resumeStatus.message);
+        if (!feedbackEnabled_)
+        {
+            const DecoderResumeStoreStatus resumeStatus = resumeStore_->RemoveAfterPublish();
+            Require(static_cast<bool>(resumeStatus), "published file resume cleanup failed: " + resumeStatus.message);
+        }
         // CP-A can inject canonical Transport without fabricating a capture
         // epoch. Digest, storage and publish gates above remain authoritative;
         // only capture-time goodput telemetry is unavailable in that mode.
@@ -6095,7 +6458,10 @@ private:
                 return;
             }
             value.state = deferCompletedState_ ? DecoderState::Publishing : DecoderState::Completed;
+            value.feedback.listening = feedbackEnabled_;
             value.runEndedUnixMilliseconds = deferCompletedState_ ? 0 : GetUnixTimeMilliseconds();
+            value.feedback.listenerStartedUnixMilliseconds = feedbackEnabled_ ? value.runEndedUnixMilliseconds : std::nullopt;
+            value.feedback.listenerElapsedMilliseconds = feedbackEnabled_ ? std::optional<std::uint64_t>{0} : std::nullopt;
             value.wholeFileDigestVerified = true;
             value.finalPublishSucceeded = true;
             value.wholeFileDigestHex = completion_.wholeFileDigestHex;
@@ -6373,7 +6739,268 @@ private:
     bool restoringResume_ = false;
     bool receiverSessionBound_ = false;
     bool published_ = false;
+    bool feedbackEnabled_ = false;
+    std::optional<pbprotocol::BootstrapRecord> feedbackObservedFrame_;
     bool largeOutputRejected_ = false;
+};
+
+class DecoderFeedbackPublisher
+{
+public:
+    DecoderFeedbackPublisher(FeedbackIoProcess& process, const FeedbackConfig& config, ReceiverPipeline& pipeline,
+        SnapshotStore<DecoderSnapshot>& snapshot, const std::uint64_t runGeneration)
+        : process_(process), config_(config), pipeline_(pipeline), snapshot_(snapshot), runGeneration_(runGeneration)
+    {
+        try
+        {
+            const auto random = pbprotocol::GenerateRandomSessionId();
+            if (!random)
+            {
+                status_ = {FeedbackError::Unavailable, "Cannot create feedback receiver epoch"};
+                startAttempted_ = true;
+                return;
+            }
+            epoch_ = random.Value().bytes;
+        }
+        catch (...)
+        {
+            status_ = {FeedbackError::AllocationFailure, "Cannot initialize optional feedback writer"};
+            startAttempted_ = true;
+        }
+    }
+
+    ~DecoderFeedbackPublisher()
+    {
+        process_.Stop();
+        try
+        {
+            snapshot_.Update([this](DecoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration_)
+                {
+                    value.feedback.listening = false;
+                    if (value.feedback.listenerStartedUnixMilliseconds)
+                    {
+                        value.feedback.listenerStoppedUnixMilliseconds = GetUnixTimeMilliseconds();
+                        value.feedback.listenerElapsedMilliseconds = pipeline_.GetFeedbackListeningMilliseconds();
+                    }
+                    if (value.state == DecoderState::Completed)
+                    {
+                        value.statusMessage = "文件已完成；反馈监听已停止";
+                    }
+                }
+            });
+        }
+        catch (...)
+        {
+        }
+    }
+
+    void Pump(const std::uint64_t nowNanoseconds) noexcept
+    {
+        try
+        {
+            FeedbackIoResult result;
+            if (!startAttempted_ && status_)
+            {
+                bool pathsReady = false;
+                status_ = pipeline_.ValidateFeedbackLocation(config_, pathsReady);
+                if (pathsReady || !status_)
+                {
+                    startAttempted_ = true;
+                    if (status_)
+                    {
+                        status_ = process_.Start(FeedbackIoRole::Writer, config_, runGeneration_);
+                        started_ = static_cast<bool>(status_);
+                    }
+                }
+            }
+            if (started_)
+            {
+                result = process_.Poll(nowNanoseconds);
+                status_ = result.status;
+                if (!result.running && !result.ready)
+                {
+                    started_ = false;
+                }
+                const auto stored = pipeline_.GetFeedbackStoredSegmentCount();
+                const bool completed = pipeline_.IsCompleted();
+                if (started_ && (!sent_ || stored != lastStored_ || completed != lastCompleted_ ||
+                    (nowNanoseconds >= lastSent_ && nowNanoseconds - lastSent_ >= 1'000'000'000ULL)))
+                {
+                    FeedbackSnapshot feedback;
+                    feedback.receiverId = epoch_; // Replaced by stable writer ID at the ready handshake.
+                    feedback.receiverEpoch = epoch_;
+                    feedback.snapshotSequence = sequence_ + 1;
+                    status_ = pipeline_.ExportFeedbackSnapshot(feedback);
+                    if (status_)
+                    {
+                        status_ = process_.QueueSnapshot(feedback, runGeneration_);
+                        if (status_)
+                        {
+                            sequence_++;
+                            lastSent_ = nowNanoseconds;
+                            lastStored_ = stored;
+                            lastCompleted_ = completed;
+                            sent_ = true;
+                            if (completed && terminalSequence_ == 0)
+                            {
+                                terminalSequence_ = sequence_;
+                            }
+                        }
+                    }
+                }
+            }
+            snapshot_.Update([&](DecoderSnapshot& value)
+            {
+                if (value.runGeneration != runGeneration_)
+                {
+                    return;
+                }
+                auto& telemetry = value.feedback;
+                telemetry.requested = true;
+                telemetry.effective = started_ && result.ready && static_cast<bool>(status_);
+                telemetry.state = !status_ || (startAttempted_ && !started_) ? FeedbackConnectionState::Unavailable :
+                    result.ready ? FeedbackConnectionState::Active : FeedbackConnectionState::Waiting;
+                telemetry.lastError = status_.error;
+                telemetry.confirmedSegments = pipeline_.GetFeedbackStoredSegmentCount();
+                telemetry.listening = pipeline_.IsCompleted();
+                telemetry.terminalPublished = telemetry.terminalPublished || (terminalSequence_ != 0 && result.publishedSequence >= terminalSequence_);
+                telemetry.ioTimeouts = result.timedOut ? 1 : telemetry.ioTimeouts;
+                telemetry.statusMessage = telemetry.effective ? "反馈状态发布中" : !startAttempted_ ? "等待视觉身份与输出路径检查" :
+                    status_ ? "正在等待反馈 helper" : "反馈不可用；视觉接收不受影响";
+                if (telemetry.listening)
+                {
+                    telemetry.listenerElapsedMilliseconds = pipeline_.GetFeedbackListeningMilliseconds();
+                    value.statusMessage = "已完成，反馈监听中";
+                }
+            });
+        }
+        catch (...)
+        {
+            started_ = false;
+            startAttempted_ = true;
+            status_ = {FeedbackError::AllocationFailure, "Optional feedback writer failed"};
+            process_.Stop();
+        }
+    }
+
+private:
+    FeedbackIoProcess& process_;
+    const FeedbackConfig& config_; // The Run owner outlives the publisher.
+    ReceiverPipeline& pipeline_;
+    SnapshotStore<DecoderSnapshot>& snapshot_;
+    const std::uint64_t runGeneration_;
+    std::array<std::byte, 16> epoch_{};
+    FeedbackStatus status_;
+    std::uint64_t sequence_ = 0;
+    std::uint64_t lastSent_ = 0;
+    std::uint64_t lastStored_ = 0;
+    std::uint64_t terminalSequence_ = 0;
+    bool started_ = false;
+    bool startAttempted_ = false;
+    bool sent_ = false;
+    bool lastCompleted_ = false;
+};
+
+class EncoderFeedbackReader
+{
+public:
+    EncoderFeedbackReader(FeedbackIoProcess& process, const FeedbackConfig& config, const TransferDescription& description,
+        const ProfileBinding profile, SnapshotStore<EncoderSnapshot>& snapshot, const std::uint64_t runGeneration)
+        : process_(process), snapshot_(snapshot), runGeneration_(runGeneration)
+    {
+        try
+        {
+            FeedbackIdentity identity;
+            const auto identityStatus = BuildFeedbackIdentity(description.session, description.manifest, profile.layoutVersion,
+                MakeReceiverResourcePolicyForVisualProfile(profile.profile), identity);
+            const auto reset = identityStatus ? policy_.Reset(identity, runGeneration_) : identityStatus;
+            const auto started = reset ? process_.Start(FeedbackIoRole::Reader, config, runGeneration_) : reset;
+            started_ = static_cast<bool>(started);
+            if (!started)
+            {
+                policy_.MarkUnavailable(started.error);
+            }
+        }
+        catch (...)
+        {
+            policy_.MarkUnavailable(FeedbackError::AllocationFailure);
+        }
+    }
+
+    ~EncoderFeedbackReader()
+    {
+        process_.Stop();
+    }
+
+    void RecordSubmitted(const std::uint64_t frameSequence) noexcept
+    {
+        static_cast<void>(policy_.RecordSubmittedFrame(frameSequence));
+    }
+
+    void Apply(SenderFrameBuilder& builder)
+    {
+        builder.ApplyFeedbackPolicy(policy_);
+    }
+
+    void Pump(const std::uint64_t nowNanoseconds, const SenderFrameBuilder& builder) noexcept
+    {
+        try
+        {
+            FeedbackIoResult result;
+            if (started_)
+            {
+                result = process_.Poll(nowNanoseconds);
+                timedOut_ = timedOut_ || result.timedOut;
+                if (!result.status)
+                {
+                    policy_.MarkUnavailable(result.status.error);
+                }
+                else if (result.snapshot && result.runToken == runGeneration_)
+                {
+                    static_cast<void>(policy_.Accept(*result.snapshot, nowNanoseconds));
+                }
+                if (!result.running)
+                {
+                    started_ = false;
+                    policy_.MarkUnavailable(FeedbackError::Unavailable);
+                }
+            }
+            static_cast<void>(policy_.Expire(nowNanoseconds));
+            snapshot_.Update([&](EncoderSnapshot& value)
+            {
+                if (value.runGeneration == runGeneration_)
+                {
+                    value.feedback = policy_.GetTelemetry();
+                    value.feedback.requested = true;
+                    value.feedback.skippedService = builder.GetFeedbackSkippedService();
+                    value.feedback.ioTimeouts = timedOut_ ? 1 : 0;
+                    value.feedback.statusMessage = value.feedback.terminalAccepted ? "接收方已验证完成" :
+                        value.feedback.effective ? "正在优先服务未完成段" : "反馈等待、无效或已过期；保持原视觉轮播";
+                }
+            });
+        }
+        catch (...)
+        {
+            policy_.MarkUnavailable(FeedbackError::AllocationFailure);
+            started_ = false;
+            process_.Stop();
+        }
+    }
+
+    bool CanStop(const std::uint64_t currentRunToken) const noexcept
+    {
+        return policy_.CanStop(currentRunToken);
+    }
+
+private:
+    FeedbackIoProcess& process_;
+    SnapshotStore<EncoderSnapshot>& snapshot_;
+    const std::uint64_t runGeneration_;
+    FeedbackSenderPolicy policy_;
+    bool started_ = false;
+    bool timedOut_ = false;
 };
 
 [[nodiscard]] pbcapturenormalize::CaptureEnvironment MakeReplayCaptureEnvironment(
@@ -7506,6 +8133,9 @@ void VerifyUnifiedSpatialCommitAndLease(const ProfileBinding profile, const Tran
 void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, const UnifiedGraduationRecoveryProbeConfig& config,
     UnifiedGraduationRecoveryProbeSnapshot& result)
 {
+    Require((config.visualProfile == VisualProfile::UnifiedGrayFast || config.visualProfile == VisualProfile::ExperimentalPam4) &&
+        (!config.expectedReceptionRate || (config.visualProfile == VisualProfile::ExperimentalPam4 && ValidateSenderRatePrior(*config.expectedReceptionRate))),
+        "Recovery probe prior/profile combination is outside the test contract");
     Require(config.maximumSenderLogicalFrames > 0 && config.maximumSenderLogicalFrames <= 200000 &&
         config.firstObservedLogicalFrame < config.maximumSenderLogicalFrames,
         "Unified recovery frame budget or late-join point is outside the test contract");
@@ -7522,7 +8152,7 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
         config.erasureModel == UnifiedRecoveryErasureModel::SparseBursty || config.erasureModel == UnifiedRecoveryErasureModel::PeriodicFifth ||
         config.erasureModel == UnifiedRecoveryErasureModel::PeriodicTwoFifths || config.erasureModel == UnifiedRecoveryErasureModel::PeriodicHalf,
         "Unified graduation recovery erasure model is invalid");
-    const ProfileBinding profile = GetProfileBinding(VisualProfile::UnifiedGrayFast);
+    const ProfileBinding profile = GetProfileBinding(config.visualProfile);
     UnifiedStripingFixture fixture = BuildUnifiedStripingFixture(config.segmentBytes, profile.profile, config.segmentCount);
     const auto& description = fixture.description;
     const auto policy = config.budgetBoundDecoders ? MakeBudgetBoundUnifiedReceiverResourcePolicy() :
@@ -7545,7 +8175,7 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
     ReceiverPipeline pipeline(receiver, outputDirectory, policy, snapshot, completion, 1,
         std::chrono::steady_clock::now(), profile.profile, false, false, true, nullptr, {}, config.budgetBoundDecoders);
     SenderFrameBuilder builder(profile, description, 4, {}, {}, {}, 0, 0, logicalVisualFps, config.grayFastSpatialInterleave, config.initialAirtimePercent,
-        config.modeledVisitBudgetPercent);
+        config.modeledVisitBudgetPercent, config.expectedReceptionRate);
     result = {};
     result.spatialBankStorageBytes = builder.GetSpatialBankStorageBytes();
     if (config.collectSegmentTrace)
@@ -7602,7 +8232,8 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
                     const auto bytes = builder.GetControlBlockForSlot(slot);
                     static_cast<void>(pipeline.ProcessHeadlessControlRecord(bytes, timestamp100ns));
                 }
-                else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession)
+                else if (scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveZeroByteSession &&
+                    scheduled.transportDisposition != SenderUnifiedTransportSlotDisposition::InactiveControlPrelude)
                 {
                     // At most 200000 frames * 18 slots. The mask depends only
                     // on the logical frame and physical slot, not receiver
@@ -7716,6 +8347,7 @@ void RunUnifiedGraduationRecoveryProbe(const std::wstring& outputDirectory, cons
     result.decoder = snapshot.Get();
     result.publishedPath = completion.outputPathWide;
     result.expectedWholeFileDigest = description.manifest.wholeFileDigest.bytes;
+    result.ratePrior = builder.GetRatePriorSnapshot();
     result.completedCarouselPasses = builder.GetCarouselSnapshot().cycleCount;
     result.peakActiveDecoders = pipeline.GetPeakActiveOuterFecDecoderCount();
     result.peakReservedDecoderBytes = pipeline.GetPeakReservedOuterFecDecoderBytes();
@@ -8358,6 +8990,8 @@ RuntimeStatus ApplicationRuntimeTestAccess::ProbeUnifiedGraduation(const std::ui
         return RuntimeStatus::Failure("Unified graduation probe failed with an unknown error");
     }
 }
+
+#include "feedback_transfer_probe.inc"
 
 RuntimeStatus ApplicationRuntimeTestAccess::ProbeMixedSlotTemporalOrder(const VisualProfile visualProfile,
     MixedSlotTemporalOrderProbeSnapshot& output) noexcept
@@ -9569,6 +10203,33 @@ RuntimeStatus DecoderRuntimeTestAccess::ProbeRemoteVisualLowFpsReplay(const std:
 
 RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
 {
+    if (config.feedback)
+    {
+        std::filesystem::path path;
+        if (!ResolveFeedbackFilePath(*config.feedback, path) || (config.visualProfile != VisualProfile::UnifiedLc4 &&
+            config.visualProfile != VisualProfile::UnifiedGrayFast && !IsExperimentalPam4Family(config.visualProfile)))
+        {
+            return RuntimeStatus::Failure("辅助反馈仅支持四种现有模式及有效的专用只读路径");
+        }
+    }
+    if (config.expectedReceptionRate && (config.visualProfile != VisualProfile::ExperimentalPam4 ||
+        !ValidateSenderRatePrior(*config.expectedReceptionRate)))
+    {
+        return RuntimeStatus::Failure("预期接收速度先验仅支持 PAM4；必须为 1..1048576 KB/s，且下限不大于上限");
+    }
+    if ((config.presentationModel != pbrenderd3d::PresentationModel::Flip && config.presentationModel != pbrenderd3d::PresentationModel::ComposedBlt &&
+         config.presentationModel != pbrenderd3d::PresentationModel::QtRaster) ||
+        (config.presentationModel == pbrenderd3d::PresentationModel::ComposedBlt &&
+         (config.visualProfile != VisualProfile::ExperimentalPam4 || !config.singleMonitorFullscreen || config.measurement)))
+    {
+        return RuntimeStatus::Failure("Composed blt requires explicit single-monitor fullscreen PAM4 and is not a formal measurement path");
+    }
+    if (config.presentationModel == pbrenderd3d::PresentationModel::QtRaster &&
+        (config.measurement || (config.visualProfile != VisualProfile::UnifiedLc4 && config.visualProfile != VisualProfile::UnifiedGrayFast &&
+            config.visualProfile != VisualProfile::ExperimentalPam4 && config.visualProfile != VisualProfile::ExperimentalPam4Wide)))
+    {
+        return RuntimeStatus::Failure("Qt raster requires an explicit supported GUI profile and is not a formal measurement path");
+    }
     const bool pam4 = IsExperimentalPam4Family(config.visualProfile);
     if (pam4 && (!config.singleMonitorFullscreen || config.remoteMetadata.channelType != ChannelType::RemoteVisual ||
         config.measurement || config.fullscreenNativeSize || config.fullscreenSampling != FullscreenSamplingMode::Point ||
@@ -9772,6 +10433,16 @@ RuntimeStatus ValidateEncoderConfig(const EncoderConfig& config)
 
 RuntimeStatus ValidateDecoderConfigInternal(const DecoderConfig& config, const bool testOnlyUnifiedReplay)
 {
+    if (config.feedback)
+    {
+        std::filesystem::path path;
+        const auto pathStatus = ResolveFeedbackFilePath(*config.feedback, path);
+        if (!pathStatus || (config.visualProfile != VisualProfile::UnifiedLc4 && config.visualProfile != VisualProfile::UnifiedGrayFast &&
+            !IsExperimentalPam4Family(config.visualProfile)) || config.diagnosticCaptureOnly || !config.replayInputPath.empty() || !config.replayOutputPath.empty())
+        {
+            return RuntimeStatus::Failure("辅助反馈仅支持四种现有实时模式、有效专用路径，且不能与 Replay/诊断同时启用");
+        }
+    }
     if (config.memoryBudget)
     {
         const auto memoryStatus = ValidateDecoderMemoryBudget(*config.memoryBudget);
@@ -10258,12 +10929,12 @@ private:
 
 } // namespace
 
-EncoderRuntime::EncoderRuntime(EncoderPresentationFactory presentationFactory) :
-    presentationFactory_(presentationFactory ? std::move(presentationFactory) :
-        EncoderPresentationFactory{[](const pbrenderd3d::DataWindowConfig& config)
-        {
-            return std::make_unique<NativeEncoderPresentation>(config);
-        }})
+std::unique_ptr<EncoderPresentation> CreateNativeEncoderPresentation(const pbrenderd3d::DataWindowConfig& config)
+{
+    return std::make_unique<NativeEncoderPresentation>(config);
+}
+
+EncoderRuntime::EncoderRuntime(EncoderPresentationFactory presentationFactory) : presentationFactory_(std::move(presentationFactory))
 {
 }
 
@@ -10274,6 +10945,10 @@ EncoderRuntime::~EncoderRuntime()
 
 RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
 {
+    if (config.presentationModel == pbrenderd3d::PresentationModel::QtRaster && !presentationFactory_)
+    {
+        return RuntimeStatus::Failure("Qt raster requires the Encoder GUI presentation host; native runtime cannot select it");
+    }
     const RuntimeStatus validation = ValidateEncoderConfig(config);
     if (!validation)
     {
@@ -10307,6 +10982,8 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     timeoutRequested_ = false;
     requestedLogicalVisualFps_.store(config.logicalVisualFps, std::memory_order_release);
     EncoderSnapshot initial;
+    initial.feedback.requested = config.feedback.has_value();
+    initial.feedback.state = config.feedback ? FeedbackConnectionState::Waiting : FeedbackConnectionState::Disabled;
     initial.diagnostics = config.diagnostics;
     initial.state = EncoderState::Preparing;
     initial.runGeneration = runGeneration;
@@ -10329,12 +11006,14 @@ RuntimeStatus EncoderRuntime::Start(const EncoderConfig& config)
     initial.statusMessage = "Preparing source, descriptors, compression, and outer FEC";
     initial.remoteMetadata = config.remoteMetadata;
     initial.configuredLogicalVisualFps = config.logicalVisualFps;
+    initial.requestedPresentationModel = config.presentationModel;
     initial.grayFastSpatialInterleave = config.grayFastSpatialInterleave;
     initial.fullscreenSampling = config.fullscreenSampling;
     initial.fullscreenNativeSize = config.fullscreenNativeSize;
     initial.fullscreenRasterWidth = config.fullscreenRasterWidth;
     initial.configuredInitialAirtimePercent = config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U;
     initial.configuredVisitBudgetPercent = config.grayFastExtendedVisitBudget ? grayFastExtendedVisitBudgetPercent : 100U;
+    initial.ratePrior.configured = config.expectedReceptionRate;
     if (config.logicalVisualFps != 0)
     {
         initial.configuredLogicalDwellMilliseconds = 1000.0 / config.logicalVisualFps;
@@ -10715,8 +11394,13 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 Require(static_cast<bool>(leaseStatus), "Encoder repair ID durable lease failed: " + leaseStatus.message);
             }, sessionStore->GetCarouselPass(), sessionStore->GetSegmentOrdinal(), config.logicalVisualFps, config.grayFastSpatialInterleave,
             config.grayFastShortInitialAirtime ? grayFastShortInitialAirtimePercent : 100U,
-            config.grayFastExtendedVisitBudget ? grayFastExtendedVisitBudgetPercent : 100U);
+            config.grayFastExtendedVisitBudget ? grayFastExtendedVisitBudgetPercent : 100U, config.expectedReceptionRate);
         builder.diagnostics = config.diagnostics.get();
+        std::optional<EncoderFeedbackReader> feedbackReader;
+        if (config.feedback)
+        {
+            feedbackReader.emplace(feedbackIo_, *config.feedback, description, profile, snapshot_, runGeneration);
+        }
         const std::string runId = config.runId.empty() ? GenerateRunId() : config.runId;
         const CarouselSnapshot initialCarousel = builder.GetCarouselSnapshot();
         const auto rawVisualBits = pbprotocol::CheckedMultiplyUint64(profile.dataBytes, 8);
@@ -10747,6 +11431,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.runId = runId;
             value.remoteMetadata.runId = runId;
             value.sourceBytes = source.fileBytes;
+            value.ratePrior = builder.GetRatePriorSnapshot();
             value.visualProfileId = profile.visualProfileId;
             value.visualLayoutVersion = profile.layoutVersion;
             value.codedDataBytesPerFrame = profile.dataBytes;
@@ -10781,7 +11466,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     value.rawSegmentCount++;
                 }
             }
-            value.statusMessage = "Creating the production D3D11 Data Window";
+            value.statusMessage = config.presentationModel == pbrenderd3d::PresentationModel::QtRaster ?
+                "Creating the Qt raster Data Window" : "Creating the production D3D11 Data Window";
         });
         static_cast<void>(hasTimedOut());
         if (stopRequested_)
@@ -10817,6 +11503,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             fullscreenPixels.resize(presentationBytes.Value());
         }
         pbrenderd3d::DataWindowConfig windowConfig;
+        windowConfig.presentationModel = config.presentationModel;
         windowConfig.diagnostics = config.diagnostics;
         windowConfig.width = presentationWidth;
         windowConfig.height = presentationHeight;
@@ -10833,7 +11520,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
         {
             throw EncoderPreparationStopped{};
         }
-        std::unique_ptr<EncoderPresentation> window = presentationFactory_(windowConfig);
+        std::unique_ptr<EncoderPresentation> window = presentationFactory_ ? presentationFactory_(windowConfig) : CreateNativeEncoderPresentation(windowConfig);
         Require(window != nullptr, "Encoder presentation factory returned no window owner");
         std::uint64_t frameSequence = sessionStore->GetFrameSequenceStart();
         std::uint64_t generatedLogicalFrameCount = 0;
@@ -10915,6 +11602,23 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                     ApplyProcessResourceSample(resourceSampler.GetSnapshot(), value);
                 }
             });
+            if (feedbackReader)
+            {
+                feedbackReader->Pump(MeasurementNowNanoseconds(), builder);
+                // This worker owns both the actual Submit ledger and this
+                // Start token. No I/O callback calls generation-free Stop.
+                if (!stopRequested_ && feedbackReader->CanStop(runGeneration) && snapshot_.Get().runGeneration == runGeneration)
+                {
+                    snapshot_.Update([runGeneration](EncoderSnapshot& value)
+                    {
+                        if (value.runGeneration == runGeneration)
+                        {
+                            value.stopReason = EncoderStopReason::ReceiverVerified;
+                        }
+                    });
+                    stopRequested_ = true;
+                }
+            }
             const pbrenderd3d::DataWindowSnapshot windowSnapshot = window->GetSnapshot();
             if (windowSnapshot.state == pbrenderd3d::WindowState::Failed)
             {
@@ -10925,7 +11629,8 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                         ApplyEncoderPresentationSnapshot(windowSnapshot, value);
                     }
                 });
-                throw RuntimeFailure("DataWindow failed: " + DescribePresentationStatus(windowSnapshot.error));
+                throw RuntimeFailure(std::string(config.presentationModel == pbrenderd3d::PresentationModel::QtRaster ?
+                    "Qt raster Data Window failed: " : "DataWindow failed: ") + DescribePresentationStatus(windowSnapshot.error));
             }
             if (stopRequested_)
             {
@@ -11000,7 +11705,11 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 nextMonitorSafetyCheck = now + std::chrono::seconds(1);
             }
             const bool presentationStable = HasStablePresentationContract(windowSnapshot,
-                !config.singleMonitorFullscreen.has_value());
+                !config.singleMonitorFullscreen.has_value(), config.presentationModel);
+            if (config.presentationModel == pbrenderd3d::PresentationModel::QtRaster && windowSnapshot.state == pbrenderd3d::WindowState::Running)
+            {
+                Require(presentationStable, "Qt raster presenter returned an incompatible running contract");
+            }
             if (!broadcastStarted && presentationStable)
             {
                 broadcastStarted = true;
@@ -11076,6 +11785,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                 }();
                 if (submit)
                 {
+                    if (feedbackReader)
+                    {
+                        feedbackReader->RecordSubmitted(frameSequence);
+                    }
                     const auto logicalFrameCompletedAt = std::chrono::steady_clock::now();
                     if (previousLogicalFrameAt)
                     {
@@ -11123,7 +11836,11 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                             publishLogicalFps(appliedLogicalVisualFps);
                         }
                     }
-                    builder.Advance();
+                    builder.Advance(GetSteadyNanoseconds(logicalFrameCompletedAt));
+                    if (feedbackReader)
+                    {
+                        feedbackReader->Apply(builder);
+                    }
                     frameSequence++;
                     generatedLogicalFrameCount++;
                     frameBuilt = false;
@@ -11171,6 +11888,7 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
                             }
                         }
                         value.cycleCount = carouselAfter.cycleCount;
+                        value.ratePrior = builder.GetRatePriorSnapshot();
                         value.cyclePosition = carouselAfter.cyclePosition;
                         value.cycleFrameCount = carouselAfter.cycleFrameCount;
                         value.currentOuterBlockId = outerBlockId;
@@ -11252,7 +11970,10 @@ void EncoderRuntime::Run(EncoderConfig config, const std::uint64_t runGeneration
             value.minimumObservedLogicalDwellMilliseconds = minimumObservedLogicalDwellMilliseconds;
             value.logicalDwellViolationCount = logicalDwellViolationCount;
             value.stoppedByTimeout = timeoutRequested_.load(std::memory_order_acquire);
+            value.stopReason = value.stoppedByTimeout ? EncoderStopReason::Timeout :
+                value.stopReason == EncoderStopReason::ReceiverVerified ? EncoderStopReason::ReceiverVerified : EncoderStopReason::User;
             value.statusMessage = value.stoppedByTimeout ? std::string(encoderTimeoutBroadcastStatus) :
+                value.stopReason == EncoderStopReason::ReceiverVerified ? "接收方整文件摘要、安全发布及最终重开复验均通过，已安全停止广播" :
                 "Broadcast stopped by user; no sender-side receiver completion was inferred";
         });
         measurementGuard.succeeded = true;
@@ -11401,7 +12122,7 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
         return validation;
     }
     std::unique_lock lock(lifecycleMutex_);
-    if (workerRunning_ && IsDecoderStateActive(snapshot_.Get().state))
+    if (workerRunning_ && (IsDecoderStateActive(snapshot_.Get().state) || snapshot_.Get().feedback.requested))
     {
         return RuntimeStatus::Failure("Decoder 已处于接收/停止流程，拒绝重复 Start");
     }
@@ -11432,6 +12153,8 @@ RuntimeStatus DecoderRuntime::StartInternal(const DecoderConfig& config,
     }
     stopRequested_ = false;
     DecoderSnapshot initial;
+    initial.feedback.requested = config.feedback.has_value();
+    initial.feedback.state = config.feedback ? FeedbackConnectionState::Waiting : FeedbackConnectionState::Disabled;
     initial.diagnostics = config.diagnostics;
     initial.state = DecoderState::WaitingForBootstrap;
     initial.runGeneration = runGeneration;
@@ -11780,9 +12503,15 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
         RequireResult(receiverResult, "ReceiverIngress creation failed");
         pbreceiver::ReceiverIngress receiver = std::move(receiverResult).Value();
         const auto pipelineOwner = std::make_unique<ReceiverPipeline>(receiver, config.outputDirectory, policy, snapshot_, completion, runGeneration,
-            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_, config.measurement, config.budgetBoundDecoders, config.memoryBudget);
+            started, config.visualProfile, replayReader != nullptr, true, true, &largeOutputConfirmation_, config.measurement, config.budgetBoundDecoders, config.memoryBudget, config.feedback.has_value());
         auto& pipeline = *pipelineOwner;
         pipeline.diagnostics = config.diagnostics.get();
+        std::optional<DecoderFeedbackPublisher> feedbackPublisher;
+        if (config.feedback)
+        {
+            feedbackPublisher.emplace(feedbackIo_, *config.feedback, pipeline, snapshot_, runGeneration);
+            feedbackPublisher->Pump(MeasurementNowNanoseconds());
+        }
 
         const pbdemodd3d11::CaptureDemodulatorConfig demodConfig = MakeCaptureDemodulatorConfig(
             config, profile, replayReader != nullptr);
@@ -11994,7 +12723,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                     pipeline.CaptureEpochReset(ElapsedMilliseconds(started));
                 }
                 ReceiverProcessResult processResult;
-                if (!pipeline.IsCompleted())
+                if (!pipeline.IsCompleted() || feedbackPublisher)
                 {
                     processResult = pipeline.Process(result);
                 }
@@ -12004,7 +12733,7 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                     replayRecorder->RecordDemodObservation(
                         MakeReplayDemodObservation(result, profile.visualProfileId, processResult));
                 }
-                if (pipeline.IsCompleted())
+                if (pipeline.IsCompleted() && !feedbackPublisher)
                 {
                     if (!replayRecorder)
                     {
@@ -12050,7 +12779,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 value.postGpuFecCpuTimeTotal100ns = demodSnapshot.demodulationCpuTimeTotal100ns;
                 value.bootstrapWindowedFastPathFrames = demodSnapshot.bootstrapWindowedFastPathFrames;
                 value.bootstrapWindowedFallbackFrames = demodSnapshot.bootstrapWindowedFallbackFrames;
-                value.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started);
+                if (!completion.published)
+                {
+                    value.recoveryRuntimeMilliseconds = ElapsedMilliseconds(started);
+                }
                 if (replayRecorder)
                 {
                     ApplyReplaySnapshot(replayRecorder->GetSnapshot(), value);
@@ -12071,7 +12803,11 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 }
             });
             pipeline.ObserveStall(ElapsedMilliseconds(started), captureSnapshot.arrivedFrames);
-            if (pipeline.IsCompleted())
+            if (feedbackPublisher)
+            {
+                feedbackPublisher->Pump(MeasurementNowNanoseconds());
+            }
+            if (pipeline.IsCompleted() && !feedbackPublisher)
             {
                 if (!replayRecorder)
                 {
@@ -12198,7 +12934,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 {
                     return;
                 }
-                value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                if (!completion.published || !config.feedback)
+                {
+                    value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                }
                 if (completion.published)
                 {
                     value.state = DecoderState::Completed;
@@ -12256,7 +12995,10 @@ void DecoderRuntime::Run(const DecoderConfig& config, const std::uint64_t runGen
                 {
                     return;
                 }
-                value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                if (!completion.published || !config.feedback)
+                {
+                    value.runEndedUnixMilliseconds = GetUnixTimeMilliseconds();
+                }
                 if (completion.published)
                 {
                     value.state = DecoderState::Completed;

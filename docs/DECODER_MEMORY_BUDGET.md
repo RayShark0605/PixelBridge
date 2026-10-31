@@ -8,6 +8,21 @@
 
 ## 界面设置
 
+### 文件大小也受分段数限制
+
+共通策略同时限制文件字节数不超过 **500 GiB**、分段数不超过 **65,536**。固定分段目标为 `segmentTargetBytes` 时，大小准入上界为 `min(500 GiB, 65,536 × segmentTargetBytes)`，还需满足磁盘和其它资源检查。
+
+| 当前发送配置 | 默认分段目标 | 由上述两个条件计算的上界 |
+| --- | ---: | ---: |
+| 标准 GUI / 未覆盖分段目标的标准 CLI | 8 MiB | 500 GiB |
+| 灰阶高速 GUI / 未覆盖分段目标的 Gray Fast CLI | 15 MiB | 500 GiB |
+| PAM4 / PAM4 Wide GUI | 7 MiB | 448 GiB |
+| PAM4 / PAM4 Wide CLI，未指定分段目标 | 8 MiB | 500 GiB |
+
+这是对 `gui_visual_mode.h`、`GetSegmentTargetBytes` 与 `ReceiverResourcePolicy` 的静态核对，不代表这些大小已完成传输验收。显式更小分段会进一步降低上界；增加 FEC 内存预算不会放宽文件字节或分段数限制。
+
+### 活动解码器预算
+
 灰阶高速、PAM4、PAM4 Wide 的“高级选项”可开启“按内存预算接收”。不勾选保持原 8 名额；设置在开始前生效，运行中冻结。可点“按本机可用内存建议”，也可手动填写总预算和单实例上限。
 
 | 参数 | 默认 | 规则 |

@@ -598,10 +598,18 @@ if(BUILD_TESTING)
             TIMEOUT 30)
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        include("${CMAKE_CURRENT_SOURCE_DIR}/prepare_mutation_corpus.cmake")
+        set(pbFuzzMutationCorpusRoot "${CMAKE_CURRENT_BINARY_DIR}/mutation-corpus")
+        foreach(pbCorpusCategory IN ITEMS descriptor-resource bootstrap-control orphan-resource compression-zstd
+                direct-repeat reference-raster transport interleave ldpc resume-state)
+            PbPrepareMutationCorpus("${CMAKE_CURRENT_SOURCE_DIR}/corpus/${pbCorpusCategory}"
+                "${pbFuzzMutationCorpusRoot}/${pbCorpusCategory}")
+        endforeach()
+        unset(pbCorpusCategory)
         add_test(
             NAME PBProtocolDescriptorResourceFuzzSmoke
             COMMAND PBProtocolDescriptorResourceFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/descriptor-resource"
+                "${pbFuzzMutationCorpusRoot}/descriptor-resource"
                 -runs=2000)
         set_tests_properties(PBProtocolDescriptorResourceFuzzSmoke PROPERTIES
             LABELS "fuzz;pbprotocol;libfuzzer"
@@ -609,7 +617,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBProtocolBootstrapControlFuzzSmoke
             COMMAND PBProtocolBootstrapControlFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/bootstrap-control"
+                "${pbFuzzMutationCorpusRoot}/bootstrap-control"
                 -runs=2000)
         set_tests_properties(PBProtocolBootstrapControlFuzzSmoke PROPERTIES
             LABELS "fuzz;pbprotocol;bootstrap;control;libfuzzer"
@@ -617,7 +625,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBProtocolOrphanResourceFuzzSmoke
             COMMAND PBProtocolOrphanResourceFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/orphan-resource"
+                "${pbFuzzMutationCorpusRoot}/orphan-resource"
                 -runs=2000)
         set_tests_properties(PBProtocolOrphanResourceFuzzSmoke PROPERTIES
             LABELS "fuzz;pbprotocol;libfuzzer"
@@ -625,7 +633,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBCompressionZstdBoundaryFuzzSmoke
             COMMAND PBCompressionZstdBoundaryFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/compression-zstd"
+                "${pbFuzzMutationCorpusRoot}/compression-zstd"
                 -runs=2000)
         set_tests_properties(PBCompressionZstdBoundaryFuzzSmoke PROPERTIES
             LABELS "fuzz;pbcompression;libfuzzer"
@@ -640,7 +648,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBOuterFecDirectRepeatFuzzSmoke
             COMMAND PBOuterFecDirectRepeatFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/direct-repeat"
+                "${pbFuzzMutationCorpusRoot}/direct-repeat"
                 -runs=2000)
         set_tests_properties(PBOuterFecDirectRepeatFuzzSmoke PROPERTIES
             LABELS "fuzz;pbouterfec;direct-repeat;libfuzzer"
@@ -648,7 +656,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBModulationReferenceRasterFuzzSmoke
             COMMAND PBModulationReferenceRasterFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/reference-raster"
+                "${pbFuzzMutationCorpusRoot}/reference-raster"
                 -runs=2000)
         set_tests_properties(PBModulationReferenceRasterFuzzSmoke PROPERTIES
             LABELS "fuzz;pbmodulation;reference-raster;libfuzzer"
@@ -656,7 +664,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBProtocolTransportFuzzSmoke
             COMMAND PBProtocolTransportFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/transport"
+                "${pbFuzzMutationCorpusRoot}/transport"
                 -runs=2000)
         set_tests_properties(PBProtocolTransportFuzzSmoke PROPERTIES
             LABELS "fuzz;pbprotocol;transport;libfuzzer"
@@ -664,7 +672,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBInterleaveReferenceFuzzSmoke
             COMMAND PBInterleaveReferenceFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/interleave"
+                "${pbFuzzMutationCorpusRoot}/interleave"
                 -runs=2000)
         set_tests_properties(PBInterleaveReferenceFuzzSmoke PROPERTIES
             LABELS "fuzz;pbinterleave;libfuzzer"
@@ -672,7 +680,7 @@ if(BUILD_TESTING)
         add_test(
             NAME PBInnerFecCodewordFuzzSmoke
             COMMAND PBInnerFecCodewordFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/ldpc"
+                "${pbFuzzMutationCorpusRoot}/ldpc"
                 -runs=2000)
         set_tests_properties(PBInnerFecCodewordFuzzSmoke PROPERTIES
             LABELS "fuzz;pbinnerfec;ldpc;libfuzzer"
@@ -680,11 +688,12 @@ if(BUILD_TESTING)
         add_test(
             NAME PBProtocolResumeStateFuzzSmoke
             COMMAND PBProtocolResumeStateFuzz
-                "${CMAKE_CURRENT_SOURCE_DIR}/corpus/resume-state"
+                "${pbFuzzMutationCorpusRoot}/resume-state"
                 -runs=2000)
         set_tests_properties(PBProtocolResumeStateFuzzSmoke PROPERTIES
             LABELS "fuzz;pbprotocol;resume-state;libfuzzer"
             TIMEOUT 60)
+        unset(pbFuzzMutationCorpusRoot)
     else()
         add_test(
             NAME PBProtocolDescriptorResourceFuzzSmoke

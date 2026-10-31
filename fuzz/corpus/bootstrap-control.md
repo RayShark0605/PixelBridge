@@ -8,8 +8,10 @@ PixelBridge serializer at test runtime. The explicitly named structured files
 are fuzz-harness operation sequences rather than wire records.
 
 - `valid-bootstrap.bin`: the fixed 44-byte PB-Bootstrap-1 Golden Vector;
-- `valid-control-session.bin`: a 67-byte PB-Control-1 envelope containing the
-  current 37-byte Phase-0 SessionDescriptor regression payload;
+- `valid-control-session.bin`: a 115-byte PB-Control-1 envelope containing the
+  accepted 85-byte formal Protocol 1.0 / Schema 1 SessionDescriptor;
+- `legacy-phase0-control-session.bin`: the preserved 67-byte envelope with its
+  37-byte Phase-0 payload, rejected by the formal descriptor parser;
 - `bad-bootstrap-crc.bin`: the Bootstrap Golden Vector with bit 0 of the final
   CRC byte inverted;
 - `bad-control-crc.bin`: the Control Golden Vector with bit 0 of the final CRC
@@ -34,6 +36,7 @@ are fuzz-harness operation sequences rather than wire records.
   ceiling, exact 65,536-byte record limit, `UINT32_MAX`, and sparse maximum
   index through the bounded receiver.
 
-The Control envelope is canonical v1. Its embedded descriptor remains the
-explicitly provisional Phase-0 payload and is not promoted to a formal v1
-descriptor schema by this corpus.
+The Control envelope is canonical v1. Formal and historical descriptor payloads
+remain separate; accepting an envelope never promotes its legacy payload to
+formal Schema 1. Sizes/digests and accepted-versus-rejected dispositions are
+pinned in `tests/PBProtocol/formal_descriptor_golden_manifest.txt`.

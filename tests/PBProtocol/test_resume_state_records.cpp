@@ -1613,6 +1613,34 @@ TEST_CASE("Single-record envelope pins capacity and truncation at every boundary
     }
 }
 
+TEST_CASE("Resume envelope serialization preserves overlapping payload bytes", "[pbprotocol][resume-state][overlap]")
+{
+    const auto policy = MakeTestPolicy(1024);
+    constexpr std::size_t payloadBytes = 32;
+    std::array<std::byte, payloadBytes> payload{};
+    for (std::size_t index = 0; index < payload.size(); index++)
+    {
+        payload[index] = Byte(static_cast<std::uint8_t>(index + 1));
+    }
+    std::array<std::byte, kResumeRecordEnvelopeBytes + payloadBytes> expected{};
+    REQUIRE(SerializeResumeRecord(payload, expected));
+    for (std::size_t sourceOffset = 0; sourceOffset <= 96; sourceOffset += 8)
+    {
+        for (std::size_t outputOffset = 0; outputOffset <= 78; outputOffset += 6)
+        {
+            std::array<std::byte, 128> buffer{};
+            std::copy(payload.begin(), payload.end(), buffer.begin() + sourceOffset);
+            const auto input = std::span<const std::byte>(buffer).subspan(sourceOffset, payload.size());
+            const auto output = std::span<std::byte>(buffer).subspan(outputOffset, expected.size());
+            REQUIRE(SerializeResumeRecord(input, output));
+            REQUIRE(std::ranges::equal(output, expected));
+            const auto parsed = ParseResumeRecord(output, policy);
+            REQUIRE(parsed);
+            REQUIRE(std::ranges::equal(parsed.Value(), payload));
+        }
+    }
+}
+
 // Large-N identical duplicate entry sets exercise the dedup helpers
 // auxiliary allocation paths (order index vector + drop mask). Dedup is
 // best-effort under allocation failure, but on the happy path a record

@@ -15,3 +15,15 @@ target_link_libraries(PBOuterFecTests
         PB::PBCompression
         PB::PBOuterFec
         wirehair::wirehair)
+
+PbAddUnitTest(PBOuterFecLifetimeTests
+    test_decoder_reservation_lifetime.cpp)
+target_include_directories(PBOuterFecLifetimeTests
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/PBOuterFec/src")
+target_link_libraries(PBOuterFecLifetimeTests
+    PRIVATE
+        PB::PBOuterFec)
+set_tests_properties(PBOuterFecLifetimeTests PROPERTIES
+    LABELS "pbouterfec;resource;lifetime"
+    TIMEOUT 10)

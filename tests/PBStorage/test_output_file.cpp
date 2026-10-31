@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <span>
 #include <string>
@@ -114,6 +115,108 @@ TEST_CASE("PBStorage preserves protocol-valid zero SessionTag identity", "[stora
     const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
     REQUIRE(output->Publish(digest));
     REQUIRE(output->GetSnapshot().published);
+}
+
+TEST_CASE("PBStorage feedback read lease continuously protects verified publication and recovery", "[storage][publish][feedback]")
+{
+    ScratchDirectory scratch(L"feedback-published-read-lease");
+    const auto bytes = MakeBytes(2053);
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0xFEE0};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    config.retainPublishedReadLease = true;
+    pbstorage::OutputFileReservation reservation;
+    REQUIRE(pbstorage::OutputFile::PlanReservation(config, reservation));
+    std::unique_ptr<pbstorage::OutputFile> output;
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, {}, output));
+    REQUIRE(output->Write(0, bytes));
+    const pbprotocol::WholeFileDigest digest{pbprotocol::ComputeBlake3Digest(bytes)};
+    REQUIRE(output->Publish(digest));
+    const auto path = output->GetSnapshot().finalPath;
+    REQUIRE(output->GetSnapshot().publishedReadLeaseHeld);
+    const HANDLE reader = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(reader != INVALID_HANDLE_VALUE);
+    CloseHandle(reader);
+    REQUIRE_FALSE(DeleteFileW(path.c_str()));
+    REQUIRE_FALSE(MoveFileExW(path.c_str(), (scratch.GetPath() / L"moved.bin").c_str(), 0));
+    output.reset();
+    const HANDLE writer = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(writer != INVALID_HANDLE_VALUE);
+    HANDLE mapping = nullptr;
+    void* mappedBytes = nullptr;
+    SECTION("Existing writable handle blocks a recovery lease")
+    {
+        REQUIRE_FALSE(pbstorage::OutputFile::CreateOrResume(config, reservation, digest, output));
+    }
+    SECTION("Existing writable mapping blocks a recovery lease")
+    {
+        mapping = CreateFileMappingW(writer, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+        REQUIRE(mapping != nullptr);
+        mappedBytes = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, 0);
+        REQUIRE(mappedBytes != nullptr);
+        CloseHandle(writer);
+        const auto resumed = pbstorage::OutputFile::CreateOrResume(config, reservation, digest, output);
+        UnmapViewOfFile(mappedBytes);
+        CloseHandle(mapping);
+        REQUIRE_FALSE(resumed);
+    }
+    if (!mapping)
+    {
+        CloseHandle(writer);
+    }
+    REQUIRE_FALSE(output);
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, digest, output));
+    REQUIRE(output->GetSnapshot().recoveredPublished);
+    REQUIRE(output->GetSnapshot().publishedReadLeaseHeld);
+    REQUIRE_FALSE(DeleteFileW(path.c_str()));
+    output.reset();
+    REQUIRE(DeleteFileW(path.c_str()));
+}
+
+TEST_CASE("PBStorage refuses to resume a hard-linked part without altering either name", "[storage][resume][alias]")
+{
+    ScratchDirectory scratch(L"part-hard-link-rejected");
+    const auto bytes = MakeBytes(64);
+    const auto targetPath = scratch.GetPath() / L"unrelated.bin";
+    const auto partPath = scratch.GetPath() / L"PixelBridge-000000000000f002.part";
+    {
+        std::ofstream target(targetPath, std::ios::binary);
+        REQUIRE(target);
+        target.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        target.close();
+        REQUIRE(target);
+    }
+    REQUIRE(CreateHardLinkW(partPath.c_str(), targetPath.c_str(), nullptr));
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0xF002};
+    config.fileBytes = bytes.size();
+    config.maximumFileBytes = bytes.size();
+    std::unique_ptr<pbstorage::OutputFile> output;
+    const auto status = pbstorage::OutputFile::CreateOrResume(config, output);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::ResumeMismatch);
+    REQUIRE_FALSE(output);
+    REQUIRE(std::filesystem::exists(partPath));
+    REQUIRE(std::filesystem::file_size(targetPath) == bytes.size());
+    std::vector<std::byte> retainedBytes(bytes.size());
+    {
+        std::ifstream target(targetPath, std::ios::binary);
+        target.read(reinterpret_cast<char*>(retainedBytes.data()), static_cast<std::streamsize>(retainedBytes.size()));
+        REQUIRE(target);
+    }
+    REQUIRE(retainedBytes == bytes);
+
+    REQUIRE(DeleteFileW(partPath.c_str()));
+    REQUIRE(pbstorage::OutputFile::CreateOrResume(config, output));
+    REQUIRE_FALSE(output->GetSnapshot().resumed);
+    REQUIRE(output->Discard());
+    REQUIRE(std::filesystem::exists(targetPath));
+    REQUIRE(std::filesystem::file_size(targetPath) == bytes.size());
 }
 
 TEST_CASE("PBStorage digest failure never publishes and destruction preserves its resumable part", "[storage][errors][resume]")
@@ -315,6 +418,56 @@ TEST_CASE("PBStorage publishes a verified zero-byte file and uses deterministic 
     REQUIRE(output->Publish(pbprotocol::GetEmptyBlake3WholeFileDigest()));
     REQUIRE(std::filesystem::file_size(output->GetSnapshot().finalPath) == 0);
     REQUIRE(std::filesystem::exists(existingPath));
+}
+
+TEST_CASE("PBStorage keeps final reservations distinct from its internal part name",
+    "[storage][filename][collision][resume]")
+{
+    const std::array<std::string, 3> sourceNames{
+        "PixelBridge-000000000000001f.part", "pixelbridge-000000000000001f.part", "PIXELBRIDGE-000000000000001F.PART"};
+    for (const std::string& sourceName : sourceNames)
+    {
+        CAPTURE(sourceName);
+        ScratchDirectory scratch(L"internal-part-name-collision");
+        pbstorage::OutputFileConfig config;
+        config.outputDirectory = scratch.GetPath().wstring();
+        config.sessionTag = {0x1F};
+        config.maximumFileBytes = 64;
+        config.originalFileNameUtf8 = sourceName;
+        pbstorage::OutputFileReservation reservation;
+        REQUIRE(pbstorage::OutputFile::PlanReservation(config, reservation));
+        REQUIRE(reservation.finalFileNameUtf8 != sourceName);
+        REQUIRE(reservation.finalFileNameUtf8.find(" (PixelBridge-000000000000001f)") != std::string::npos);
+
+        std::unique_ptr<pbstorage::OutputFile> output;
+        REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, std::nullopt, output));
+        const auto snapshot = output->GetSnapshot();
+        REQUIRE(snapshot.finalPath != snapshot.partPath);
+        REQUIRE_FALSE(std::filesystem::exists(snapshot.finalPath));
+        REQUIRE(output->Publish(pbprotocol::GetEmptyBlake3WholeFileDigest()));
+        REQUIRE(output->GetSnapshot().finalReopenVerified == true);
+        output.reset();
+        REQUIRE(pbstorage::OutputFile::CreateOrResume(config, reservation, pbprotocol::GetEmptyBlake3WholeFileDigest(), output));
+        REQUIRE(output->GetSnapshot().recoveredPublished);
+    }
+}
+
+TEST_CASE("PBStorage rejects a persisted reservation aliasing the internal part",
+    "[storage][filename][reservation][conflict]")
+{
+    ScratchDirectory scratch(L"internal-part-reservation-rejection");
+    pbstorage::OutputFileConfig config;
+    config.outputDirectory = scratch.GetPath().wstring();
+    config.sessionTag = {0x1F};
+    config.maximumFileBytes = 64;
+    config.originalFileNameUtf8 = "PIXELBRIDGE-000000000000001F.PART";
+    const pbstorage::OutputFileReservation reservation{config.originalFileNameUtf8};
+    std::unique_ptr<pbstorage::OutputFile> output;
+    const auto status = pbstorage::OutputFile::CreateOrResume(config, reservation, std::nullopt, output);
+    REQUIRE_FALSE(status);
+    REQUIRE(status.code == pbstorage::StorageErrorCode::ResumeMismatch);
+    REQUIRE_FALSE(output);
+    REQUIRE(std::filesystem::is_empty(scratch.GetPath()));
 }
 
 TEST_CASE("PBStorage stops when both deterministic final-name candidates already exist",

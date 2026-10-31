@@ -136,9 +136,11 @@ than files emitted at runtime by the serializer under test:
 `fuzz/corpus/bootstrap-control` likewise contains independent canonical
 Bootstrap/Control/Fragment bytes, CRC-corrupted variants, CRC-valid semantic
 failures, empty/max Control boundaries, and small fuzz-harness sequence seeds.
-The 67-byte Control seed contains the current provisional SessionDescriptor
-regression payload; it freezes the envelope only, not the incomplete descriptor
-schema. The three Fragment Golden files use payload sizes `24/24/19` and CRCs
+`valid-control-session.bin` is the 115-byte Control envelope containing the
+85-byte formal Schema 1 SessionDescriptor. The separate 67-byte
+`legacy-phase0-control-session.bin` retains the old 37-byte payload: its envelope
+can parse, but formal descriptor admission must reject that payload. The three
+historical Fragment Golden files use payload sizes `24/24/19` and CRCs
 `0x9DCD5402`, `0xF3FF94D8`, and `0x40106F66`.
 
 `fuzz/corpus/orphan-resource` contains deterministic semantic sequences for
@@ -182,21 +184,27 @@ registers every pinned corpus file on non-Clang fuzz builds.
 When CMake identifies Clang, the same target uses `LLVMFuzzerTestOneInput` with
 `-fsanitize=fuzzer,address,undefined`:
 
+The ten seeded protocol/FEC/raster smoke targets copy their `.bin` seeds into
+`<build>/fuzz/mutation-corpus/<category>` during configuration. libFuzzer writes
+discoveries to its first corpus directory, so never pass the committed source
+corpus as that writable argument. Existing single-file `--input` replays remain
+read-only. See [the upstream corpus contract](https://llvm.org/docs/LibFuzzer.html#options).
+
 ```powershell
 .\build-fuzz-clang\fuzz\PBProtocolDescriptorResourceFuzz.exe `
-  .\fuzz\corpus\descriptor-resource `
+  .\build-fuzz-clang\fuzz\mutation-corpus\descriptor-resource `
   -max_total_time=300 `
   -rss_limit_mb=1024 `
   -artifact_prefix=.\build-fuzz-clang\fuzz-artifacts\
 
 .\build-fuzz-clang\fuzz\PBProtocolBootstrapControlFuzz.exe `
-  .\fuzz\corpus\bootstrap-control `
+  .\build-fuzz-clang\fuzz\mutation-corpus\bootstrap-control `
   -max_total_time=300 `
   -rss_limit_mb=1024 `
   -artifact_prefix=.\build-fuzz-clang\bootstrap-control-artifacts\
 
 .\build-fuzz-clang\fuzz\PBProtocolOrphanResourceFuzz.exe `
-  .\fuzz\corpus\orphan-resource `
+  .\build-fuzz-clang\fuzz\mutation-corpus\orphan-resource `
   -max_total_time=300 `
   -rss_limit_mb=1024 `
   -artifact_prefix=.\build-fuzz-clang\orphan-resource-artifacts\

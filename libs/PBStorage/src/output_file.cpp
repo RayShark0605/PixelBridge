@@ -18,6 +18,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -96,6 +97,13 @@ struct AllocationFacts
 [[nodiscard]] std::wstring MakePartName(const pbprotocol::SessionTag sessionTag)
 {
     return L"PixelBridge-" + MakeSessionTagText(sessionTag) + L".part";
+}
+
+[[nodiscard]] bool IsInternalPartName(const std::wstring_view fileName, const pbprotocol::SessionTag sessionTag)
+{
+    const std::wstring partName = MakePartName(sessionTag);
+    return fileName.size() == partName.size() &&
+        CompareStringOrdinal(fileName.data(), static_cast<int>(fileName.size()), partName.data(), static_cast<int>(partName.size()), TRUE) == CSTR_EQUAL;
 }
 
 [[nodiscard]] StorageStatus Utf8FileNameToWide(const std::string_view fileNameUtf8,
@@ -195,7 +203,7 @@ struct AllocationFacts
         }
         const std::wstring primaryPath = (directory / originalName).wstring();
         DWORD primaryError = ERROR_SUCCESS;
-        if (!PathExists(primaryPath, primaryError))
+        if (!IsInternalPartName(originalName, config.sessionTag) && !PathExists(primaryPath, primaryError))
         {
             if (primaryError != ERROR_FILE_NOT_FOUND && primaryError != ERROR_PATH_NOT_FOUND)
             {
@@ -231,6 +239,10 @@ struct AllocationFacts
         if (!status)
         {
             return status;
+        }
+        if (IsInternalPartName(reservedName, config.sessionTag))
+        {
+            return StorageStatus::Failure(StorageErrorCode::ResumeMismatch, StorageStage::Resume);
         }
         if (config.originalFileNameUtf8.empty())
         {
@@ -281,17 +293,36 @@ struct AllocationFacts
     return StorageStatus::Success();
 }
 
+[[nodiscard]] StorageStatus ValidateOwnedPartHandle(const HANDLE handle, const StorageStage stage) noexcept
+{
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (GetFileInformationByHandle(handle, &information) == FALSE)
+    {
+        return LastError(stage);
+    }
+    if ((information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        information.nNumberOfLinks != 1)
+    {
+        return StorageStatus::Failure(StorageErrorCode::ResumeMismatch, stage);
+    }
+    return StorageStatus::Success();
+}
+
 [[nodiscard]] StorageStatus HashFile(const std::wstring& path,
     std::array<std::byte, pbprotocol::kDigestBytes>& output,
-    std::uint64_t& fileBytes) noexcept
+    std::uint64_t& fileBytes, HANDLE* const retainedReadLease = nullptr) noexcept
 {
     const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN | (retainedReadLease ? FILE_FLAG_OPEN_REPARSE_POINT : 0U), nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
         return LastError(StorageStage::Digest);
     }
-    StorageStatus status = GetFileLength(handle, fileBytes, StorageStage::Digest);
+    StorageStatus status = retainedReadLease ? ValidateOwnedPartHandle(handle, StorageStage::Digest) : StorageStatus::Success();
+    if (status)
+    {
+        status = GetFileLength(handle, fileBytes, StorageStage::Digest);
+    }
     if (!status)
     {
         CloseHandle(handle);
@@ -334,11 +365,33 @@ struct AllocationFacts
         }
 #endif
     }
-    if (CloseHandle(handle) == FALSE && status)
+    if (status && retainedReadLease)
+    {
+        *retainedReadLease = handle;
+    }
+    else if (CloseHandle(handle) == FALSE && status)
     {
         status = LastError(StorageStage::Digest);
     }
     return status;
+}
+
+[[nodiscard]] StorageStatus HashPublishedFile(const std::wstring& path,
+    std::array<std::byte, pbprotocol::kDigestBytes>& output, std::uint64_t& fileBytes,
+    const bool retainReadLease, HANDLE& readLease) noexcept
+{
+    if (retainReadLease)
+    {
+        const auto protectedStatus = HashFile(path, output, fileBytes, &readLease);
+        if (protectedStatus)
+        {
+            return protectedStatus;
+        }
+        // Optional protection may be unavailable on a provider/alias. Preserve
+        // the original verified publication path, but never authorize feedback
+        // completion without a continuously held, same-object digest lease.
+    }
+    return HashFile(path, output, fileBytes);
 }
 
 [[nodiscard]] StorageStatus InspectAllocation(const HANDLE handle, const std::wstring& outputDirectory,
@@ -421,7 +474,12 @@ struct AllocationFacts
 
 struct OutputFile::Implementation
 {
+    Implementation() = default;
+    Implementation(const Implementation&) = delete;
+    Implementation& operator=(const Implementation&) = delete;
+
     HANDLE handle = INVALID_HANDLE_VALUE;
+    HANDLE publishedReadLease = INVALID_HANDLE_VALUE;
     std::wstring finalPath;
     std::wstring partPath;
     std::uint64_t fileBytes = 0;
@@ -438,9 +496,22 @@ struct OutputFile::Implementation
     std::optional<bool> finalRenameSucceeded;
     std::optional<bool> finalReopenVerified;
     bool observePublishTiming = false;
+    bool retainPublishedReadLease = false;
     std::optional<std::chrono::steady_clock::time_point> wholeDigestVerifiedAt;
     std::optional<std::chrono::steady_clock::time_point> finalRenameSucceededAt;
     std::optional<std::chrono::steady_clock::time_point> finalReopenVerifiedAt;
+
+    ~Implementation()
+    {
+        if (handle != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(handle);
+        }
+        if (publishedReadLease != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(publishedReadLease);
+        }
+    }
 };
 
 StorageStatus StorageStatus::Failure(const StorageErrorCode code, const StorageStage stage,
@@ -561,6 +632,7 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config, const b
     {
         auto implementation = std::make_unique<OutputFile::Implementation>();
         implementation->observePublishTiming = config.observePublishTiming;
+        implementation->retainPublishedReadLease = config.retainPublishedReadLease;
         const std::filesystem::path directory(config.outputDirectory);
         StorageStatus status = reservation == nullptr ? SelectFinalPath(config, directory, implementation->finalPath) :
             ResolveReservedFinalPath(config, directory, *reservation, implementation->finalPath);
@@ -604,7 +676,8 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config, const b
             }
             std::array<std::byte, pbprotocol::kDigestBytes> finalDigest{};
             std::uint64_t finalBytes = 0;
-            status = HashFile(implementation->finalPath, finalDigest, finalBytes);
+            status = HashPublishedFile(implementation->finalPath, finalDigest, finalBytes,
+                config.retainPublishedReadLease, implementation->publishedReadLease);
             if (!status || finalBytes != config.fileBytes || finalDigest != publishIntent->bytes)
             {
                 CloseHandle(finalHandle);
@@ -638,7 +711,7 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config, const b
 
         implementation->handle = CreateFileW(implementation->partPath.c_str(), GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ, nullptr, partExists ? OPEN_EXISTING : CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (implementation->handle == INVALID_HANDLE_VALUE)
         {
             const DWORD error = GetLastError();
@@ -646,6 +719,11 @@ StorageStatus OutputFile::CreateInternal(const OutputFileConfig& config, const b
                 StorageErrorCode::TargetExists : StorageErrorCode::NativeFailure,
                 partExists ? StorageStage::Resume : StorageStage::Reservation,
                 static_cast<std::int32_t>(error));
+        }
+        status = ValidateOwnedPartHandle(implementation->handle, partExists ? StorageStage::Resume : StorageStage::Reservation);
+        if (!status)
+        {
+            return status;
         }
         implementation->ownsPart = true;
         implementation->resumed = partExists;
@@ -721,14 +799,7 @@ OutputFile::OutputFile(std::unique_ptr<Implementation> implementation) noexcept
 {
 }
 
-OutputFile::~OutputFile()
-{
-    if (implementation_ && implementation_->handle != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(implementation_->handle);
-        implementation_->handle = INVALID_HANDLE_VALUE;
-    }
-}
+OutputFile::~OutputFile() = default;
 
 StorageStatus OutputFile::WriteVerifiedSegment(const std::uint64_t rawOffset,
     const std::span<const std::byte> rawBytes) noexcept
@@ -1036,9 +1107,15 @@ StorageStatus OutputFile::Publish(const pbprotocol::WholeFileDigest& expectedDig
         implementation_->finalRenameSucceededAt = std::chrono::steady_clock::now();
     }
     implementation_->finalReopenVerified = false;
-    status = HashFile(implementation_->finalPath, finalDigest, finalBytes);
+    status = HashPublishedFile(implementation_->finalPath, finalDigest, finalBytes,
+        implementation_->retainPublishedReadLease, implementation_->publishedReadLease);
     if (!status || finalBytes != implementation_->fileBytes || finalDigest != expectedDigest.bytes)
     {
+        if (implementation_->publishedReadLease != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(implementation_->publishedReadLease);
+            implementation_->publishedReadLease = INVALID_HANDLE_VALUE;
+        }
         const StorageStatus verificationStatus = !status ? status :
             StorageStatus::Failure(StorageErrorCode::DigestMismatch, StorageStage::Publish);
         if (MoveFileExW(implementation_->finalPath.c_str(), implementation_->partPath.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
@@ -1106,6 +1183,7 @@ OutputFileSnapshot OutputFile::GetSnapshot() const
     snapshot.hasPendingWrite = implementation_->pendingRange.has_value();
     snapshot.published = implementation_->published;
     snapshot.recoveredPublished = implementation_->recoveredPublished;
+    snapshot.publishedReadLeaseHeld = implementation_->publishedReadLease != INVALID_HANDLE_VALUE;
     snapshot.wholeFileDigestVerified = implementation_->wholeFileDigestVerified;
     snapshot.finalRenameSucceeded = implementation_->finalRenameSucceeded;
     snapshot.finalReopenVerified = implementation_->finalReopenVerified;

@@ -6,9 +6,9 @@ ProtocolVersion GetProtocolVersion()
 {
     // Protocol baseline constant: the fixed bootstrap and control planes are
     // named PB-Bootstrap-1 and PB-Control-1, so the first protocol major is
-    // 1 and no minor revision exists yet. The current descriptor payload slice
-    // is explicitly Phase-0 provisional; its implementation vectors do not
-    // freeze the incomplete descriptor schema as the formal v1 wire contract.
+    // 1 and no minor revision exists yet. Descriptor payloads use the separate
+    // formal Protocol-1 Schema-1 envelope; historical provisional descriptor
+    // vectors do not change the current protocol version.
     const ProtocolVersion protocolVersion{1, 0};
     return protocolVersion;
 }

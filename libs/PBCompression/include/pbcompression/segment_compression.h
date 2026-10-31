@@ -61,8 +61,9 @@ struct EncodedSegment
 };
 
 // Streams one Source Segment into one self-contained zstd frame. Single
-// owner, no internal synchronization. After the first error or after
-// Finish() succeeds the object is terminal and repeats the latched result.
+// owner, no internal synchronization. The first error is latched and repeated.
+// After Finish() succeeds, later Update()/Finish() calls return InvalidState;
+// ownership of the frame bytes has already transferred to the caller.
 class SegmentCompressor
 {
 public:

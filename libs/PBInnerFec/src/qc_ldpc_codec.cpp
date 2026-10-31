@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <new>
 #include <span>
@@ -19,7 +20,7 @@ namespace {
     const std::uint32_t bitIndex) noexcept
 {
     return (bits[bitIndex / 8] &
-        std::byte{std::uint8_t{1u << (bitIndex % 8u)}}) != std::byte{0};
+        std::byte{static_cast<std::uint8_t>(1u << (bitIndex % 8u))}) != std::byte{0};
 }
 
 void SetBit(
@@ -28,7 +29,7 @@ void SetBit(
     const bool value) noexcept
 {
     const std::byte mask =
-        std::byte{std::uint8_t{1u << (bitIndex % 8u)}};
+        std::byte{static_cast<std::uint8_t>(1u << (bitIndex % 8u))};
     if (value)
     {
         bits[bitIndex / 8] |= mask;
@@ -247,7 +248,8 @@ InnerFecStatus EncodeQcLdpcCodeword(
     const auto infoEnd = infoBits.data() + infoBits.size();
     const auto codewordBegin = codeword.data();
     const auto codewordEnd = codeword.data() + codeword.size();
-    if (infoBegin < codewordEnd && codewordBegin < infoEnd)
+    const std::less<const std::byte*> addressLess;
+    if (addressLess(infoBegin, codewordEnd) && addressLess(codewordBegin, infoEnd))
     {
         return InnerFecStatus::Failure(
             InnerFecErrorCode::InvalidInput, 0);
@@ -658,7 +660,7 @@ InnerFecResult<InnerFecDecodeOutcome> QcLdpcDecoder::Decode(
             if (impl.variableTotals[variableIndex] < 0)
             {
                 outCodeword[variableIndex / 8] |=
-                    std::byte{std::uint8_t{1u << (variableIndex % 8u)}};
+                    std::byte{static_cast<std::uint8_t>(1u << (variableIndex % 8u))};
             }
         }
         return InnerFecResult<InnerFecDecodeOutcome>::Success(

@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <span>
 #include <stdexcept>
@@ -99,6 +100,12 @@ ProtocolStatus SerializeResumeRecord(
             0);
     }
 
+    // Preserve an aliased payload before the envelope header can overwrite it.
+    // memmove also covers a payload that starts before the output span.
+    if (!payload.empty())
+    {
+        std::memmove(output.data() + kResumeRecordHeaderBytes, payload.data(), payload.size());
+    }
     ByteWriter writer(output);
     ProtocolStatus status = writer.WriteFixedBytes(kResumeRecordMagic);
     if (status)
@@ -115,7 +122,7 @@ ProtocolStatus SerializeResumeRecord(
     }
     if (status)
     {
-        status = writer.WriteBytes(payload);
+        status = writer.WriteBytes(output.subspan(kResumeRecordHeaderBytes, payload.size()));
     }
     if (!status)
     {
@@ -1428,7 +1435,7 @@ ProtocolResult<LoadedResumeState> LoadResumeState(
                 recordStart + parseResult.Error().offset);
         }
 
-        const std::vector<std::byte> payload = std::move(parseResult).Value();
+        const std::vector<std::byte>& payload = parseResult.Value();
         offset += recordSizeInBytes;
 
         // Document offset of the body tag byte (envelope header is 14 bytes).
@@ -1519,7 +1526,7 @@ ProtocolResult<LoadedResumeState> LoadResumeState(
         }
         case static_cast<std::uint8_t>(ResumeRecordType::ActiveWirehairCache):
         {
-            const auto bodyResult = ParseResumeActiveWirehairBody(
+            auto bodyResult = ParseResumeActiveWirehairBody(
                 std::span<const std::byte>(payload), resourcePolicy);
             if (!bodyResult)
             {
@@ -1582,7 +1589,7 @@ ProtocolResult<LoadedResumeState> LoadResumeState(
                 }
                 try
                 {
-                    state.activeWirehairCaches.push_back(newRecord);
+                    state.activeWirehairCaches.push_back(std::move(bodyResult).Value());
                 }
                 catch (const std::bad_alloc&)
                 {
@@ -1593,7 +1600,7 @@ ProtocolResult<LoadedResumeState> LoadResumeState(
         }
         case static_cast<std::uint8_t>(ResumeRecordType::DirectRepeatReceivedBlocks):
         {
-            const auto bodyResult = ParseResumeActiveDirectRepeatBody(
+            auto bodyResult = ParseResumeActiveDirectRepeatBody(
                 std::span<const std::byte>(payload), resourcePolicy);
             if (!bodyResult)
             {
@@ -1656,7 +1663,7 @@ ProtocolResult<LoadedResumeState> LoadResumeState(
                 }
                 try
                 {
-                    state.activeDirectRepeatRecords.push_back(newRecord);
+                    state.activeDirectRepeatRecords.push_back(std::move(bodyResult).Value());
                 }
                 catch (const std::bad_alloc&)
                 {
@@ -1745,41 +1752,45 @@ bool ResumeStateBuilder::IsOrdinalClaimedByOtherCategory(
     return false;
 }
 
-ProtocolStatus ResumeStateBuilder::AppendRecordBytes(
-    const std::span<const std::byte> bodyBytes)
+ProtocolResult<std::size_t> ResumeStateBuilder::GetAppendedDocumentSize(
+    const std::uint64_t bodyBytes) const noexcept
 {
-    // Budget gate with checked arithmetic before any allocation or growth.
-    const auto bodySizeResult = CheckedNarrowUnsigned<std::uint64_t>(bodyBytes.size());
-    if (!bodySizeResult)
-    {
-        return ProtocolStatus::Failure(bodySizeResult.Error().code, 0);
-    }
-    std::uint64_t recordTotalBytes = static_cast<std::uint64_t>(kResumeRecordEnvelopeBytes);
-    const auto recordTotalAdditionResult = CheckedAddUint64(recordTotalBytes, bodySizeResult.Value());
+    const auto recordTotalAdditionResult = CheckedAddUint64(kResumeRecordEnvelopeBytes, bodyBytes);
     if (!recordTotalAdditionResult)
     {
-        return ProtocolStatus::Failure(recordTotalAdditionResult.Error().code, 0);
+        return ProtocolResult<std::size_t>::Failure(recordTotalAdditionResult.Error().code, 0);
     }
     const std::uint64_t recordSizeWithEnvelope = recordTotalAdditionResult.Value();
 
     const auto currentDocumentSizeResult = CheckedNarrowUnsigned<std::uint64_t>(document_.size());
     if (!currentDocumentSizeResult)
     {
-        return ProtocolStatus::Failure(currentDocumentSizeResult.Error().code, 0);
+        return ProtocolResult<std::size_t>::Failure(currentDocumentSizeResult.Error().code, 0);
     }
     const auto newDocumentTotalResult = CheckedAddUint64(
         currentDocumentSizeResult.Value(), recordSizeWithEnvelope);
     if (!newDocumentTotalResult)
     {
-        return ProtocolStatus::Failure(newDocumentTotalResult.Error().code, 0);
+        return ProtocolResult<std::size_t>::Failure(newDocumentTotalResult.Error().code, 0);
     }
     if (newDocumentTotalResult.Value() > resourcePolicy_.maxResumeBytes)
     {
         // Over-budget append is rejected before any byte or key changes.
-        return ProtocolStatus::Failure(ProtocolErrorCode::ResourceLimitExceeded, 0);
+        return ProtocolResult<std::size_t>::Failure(ProtocolErrorCode::ResourceLimitExceeded, 0);
     }
 
-    const auto newDocumentSizeResult = CheckedUint64ToSize(newDocumentTotalResult.Value());
+    return CheckedUint64ToSize(newDocumentTotalResult.Value());
+}
+
+ProtocolStatus ResumeStateBuilder::AppendRecordBytes(
+    const std::span<const std::byte> bodyBytes)
+{
+    const auto bodySizeResult = CheckedNarrowUnsigned<std::uint64_t>(bodyBytes.size());
+    if (!bodySizeResult)
+    {
+        return ProtocolStatus::Failure(bodySizeResult.Error().code, 0);
+    }
+    const auto newDocumentSizeResult = GetAppendedDocumentSize(bodySizeResult.Value());
     if (!newDocumentSizeResult)
     {
         return ProtocolStatus::Failure(newDocumentSizeResult.Error().code, 0);
@@ -1852,6 +1863,11 @@ ProtocolStatus ResumeStateBuilder::AppendCompletedSegment(
     {
         return ProtocolStatus::Failure(quotaStatus.Error().code, 0);
     }
+    const auto documentSizeResult = GetAppendedDocumentSize(kCompletedSegmentBodyBytes);
+    if (!documentSizeResult)
+    {
+        return ProtocolStatus::Failure(documentSizeResult.Error().code, 0);
+    }
 
     std::array<std::byte, kCompletedSegmentBodyBytes> body{};
     const auto bodyStatus = SerializeResumeCompletedSegmentBody(record, std::span<std::byte>(body));
@@ -1859,14 +1875,27 @@ ProtocolStatus ResumeStateBuilder::AppendCompletedSegment(
     {
         return bodyStatus;
     }
+    // Claim the key before committing bytes; a failed append rolls it back.
+    // No fallible allocation may remain after the document grows successfully.
+    try
+    {
+        completedKeys_.emplace_back(record.sessionId.bytes, record.segmentOrdinal);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
+    }
+    catch (const std::length_error&)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
+    }
+
     const auto appendStatus = AppendRecordBytes(std::span<const std::byte>(body));
     if (!appendStatus)
     {
-        return appendStatus;
+        completedKeys_.pop_back();
     }
-
-    completedKeys_.emplace_back(record.sessionId.bytes, record.segmentOrdinal);
-    return ProtocolStatus::Success();
+    return appendStatus;
 }
 
 ProtocolStatus ResumeStateBuilder::AppendActiveWirehairCache(
@@ -1918,6 +1947,11 @@ ProtocolStatus ResumeStateBuilder::AppendActiveWirehairCache(
     {
         return ProtocolStatus::Failure(bodySizeResult.Error().code, 0);
     }
+    const auto documentSizeResult = GetAppendedDocumentSize(bodySizeResult.Value());
+    if (!documentSizeResult)
+    {
+        return ProtocolStatus::Failure(documentSizeResult.Error().code, 0);
+    }
 
     std::vector<std::byte> body;
     try
@@ -1938,14 +1972,25 @@ ProtocolStatus ResumeStateBuilder::AppendActiveWirehairCache(
     {
         return bodyStatus;
     }
+    try
+    {
+        wirehairCacheOrdinals_.push_back(record.segmentOrdinal);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
+    }
+    catch (const std::length_error&)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
+    }
+
     const auto appendStatus = AppendRecordBytes(std::span<const std::byte>(body));
     if (!appendStatus)
     {
-        return appendStatus;
+        wirehairCacheOrdinals_.pop_back();
     }
-
-    wirehairCacheOrdinals_.push_back(record.segmentOrdinal);
-    return ProtocolStatus::Success();
+    return appendStatus;
 }
 
 ProtocolStatus ResumeStateBuilder::AppendDirectRepeatReceivedBlocks(
@@ -2004,6 +2049,11 @@ ProtocolStatus ResumeStateBuilder::AppendDirectRepeatReceivedBlocks(
     {
         return ProtocolStatus::Failure(bodySizeResult.Error().code, 0);
     }
+    const auto documentSizeResult = GetAppendedDocumentSize(bodySizeResult.Value());
+    if (!documentSizeResult)
+    {
+        return ProtocolStatus::Failure(documentSizeResult.Error().code, 0);
+    }
 
     std::vector<std::byte> body;
     try
@@ -2024,14 +2074,25 @@ ProtocolStatus ResumeStateBuilder::AppendDirectRepeatReceivedBlocks(
     {
         return bodyStatus;
     }
+    try
+    {
+        directRepeatOrdinals_.push_back(record.segmentOrdinal);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
+    }
+    catch (const std::length_error&)
+    {
+        return ProtocolStatus::Failure(ProtocolErrorCode::ResourceExhausted, 0);
+    }
+
     const auto appendStatus = AppendRecordBytes(std::span<const std::byte>(body));
     if (!appendStatus)
     {
-        return appendStatus;
+        directRepeatOrdinals_.pop_back();
     }
-
-    directRepeatOrdinals_.push_back(record.segmentOrdinal);
-    return ProtocolStatus::Success();
+    return appendStatus;
 }
 
 } // namespace pbprotocol

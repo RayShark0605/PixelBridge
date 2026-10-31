@@ -64,3 +64,7 @@ Control envelope/schema/CRC、强纠错和描述符资源准入不交给 Data �
 - 单屏入口是 live RemoteVisual/Auto；不借此开放 Replay、capture-only 或正式 measurement。
 - 资源预算、descriptor/conflict、摘要/安全发布/最终重开不变。参数详见 [预算](DECODER_MEMORY_BUDGET.md) 与 [当前路线](PixelBridge_最终技术路线与总体设计.md)。
 - 最新日志/UI变更不产生新的 Profile/Golden。原始源表与 machine-readable manifest 为逐字节权威，不用历史阶段文字覆盖它们。
+
+## 可选文件反馈关系（2026-10-21）
+
+[文件反馈辅助传输](FEEDBACK_ASSISTED_TRANSFER.md)支持全部四模式，默认关闭，不改变本合同的 wire/Profile/FEC/采样/摘要与发布规则。真实完成集合优先用于后续服务选择，速度先验仍只是未完成段的可选本端预算；失效后恢复原覆盖/先验。不要把反馈或先验字段混成 Sender 独立验证的接收进度，也不要把本地回归当真实远控提速成绩。

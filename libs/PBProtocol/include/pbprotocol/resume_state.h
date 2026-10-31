@@ -123,7 +123,8 @@ struct LoadedResumeState
 // Serializes one resume record into output. Requires at least
 // kResumeRecordEnvelopeBytes + payload.size() bytes of capacity; extra
 // trailing capacity is left untouched. The CRC covers the header and payload,
-// never itself. An empty payload produces a structurally complete 18-byte
+// never itself. The input payload may overlap output; its bytes are preserved
+// before writing the envelope header. An empty payload produces a structurally complete 18-byte
 // envelope; a document record still needs its record-type tag byte, so
 // LoadResumeState rejects such a record with InvalidRecordSize.
 [[nodiscard]] ProtocolStatus SerializeResumeRecord(
@@ -170,8 +171,10 @@ struct LoadedResumeState
 // key (SessionId + SegmentOrdinal for completed records, SegmentOrdinal per
 // active cache type) was already appended is rejected, even when the content
 // is identical. Every append that fails validation or budget leaves the
-// accumulated document untouched; appends are bounded by maxResumeBytes with
-// checked arithmetic before any allocation. The accumulated per-segment records are
+// accumulated document untouched; maxResumeBytes is checked before allocating
+// a serialized record body or growing the document and key index. Entry-id
+// validation may use temporary storage proportional to the caller's input.
+// The accumulated per-segment records are
 // additionally bounded by maxSegmentCount across all categories, mirroring
 // LoadResumeState (design doc section 31.4). Per-block incremental persistence
 // and crash-safe flush ordering are out of scope for this class (design doc
@@ -207,6 +210,9 @@ private:
 
     [[nodiscard]] ProtocolStatus AppendRecordBytes(
         std::span<const std::byte> bodyBytes);
+
+    [[nodiscard]] ProtocolResult<std::size_t> GetAppendedDocumentSize(
+        std::uint64_t bodyBytes) const noexcept;
 
     // True when the ordinal is claimed by any already-appended record of a
     // different category (completed vs either active cache type).

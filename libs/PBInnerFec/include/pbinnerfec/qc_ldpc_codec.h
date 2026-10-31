@@ -62,7 +62,8 @@ struct InnerFecDecodeOptions
     std::uint32_t maxIterations = 48;
     // In [1, maxIterations]. After every syndromeCheckInterval-th full layer
     // pass the hard decisions are syndrome-checked; a zero syndrome stops
-    // decoding early. The first check happens after the first full pass.
+    // decoding early. The first check happens after syndromeCheckInterval
+    // full passes (after the first pass with the default interval of one).
     std::uint32_t syndromeCheckInterval = 1;
     // Offset min-sum magnitude offset, in LLR units, in [0, 32767].
     std::uint32_t offset = 2048;

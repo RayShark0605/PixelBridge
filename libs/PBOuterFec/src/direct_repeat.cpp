@@ -217,6 +217,9 @@ namespace detail
 
 struct DirectRepeatDecoderImplementation
 {
+    // Members are destroyed in reverse order: keep admission credit charged
+    // until both payload and bitmap allocations have actually been released.
+    OuterFecDecoderReservation resourceReservation;
     std::vector<std::byte> encodedBytes;
     std::vector<std::uint64_t> receivedBitmap;
     pbprotocol::EncodedDigest expectedDigest{};
@@ -226,7 +229,6 @@ struct DirectRepeatDecoderImplementation
     std::uint32_t outerBlockBytes = 0;
     bool ready = false;
     std::optional<OuterFecError> terminalError;
-    OuterFecDecoderReservation resourceReservation;
 };
 
 } // namespace detail

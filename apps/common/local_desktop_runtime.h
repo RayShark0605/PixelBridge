@@ -4,6 +4,7 @@
 #include "decoder_capture_controller.h"
 #include "decoder_memory_budget.h"
 #include "monitor_catalog.h"
+#include "feedback_io_process.h"
 
 #include "pbcompression/segment_compression.h"
 #include "pbrenderd3d/data_window.h"
@@ -34,6 +35,7 @@ class DecoderRuntime;
 
 struct EncoderConfig
 {
+    std::optional<FeedbackConfig> feedback;
     std::shared_ptr<RunMeasurementRecorder> measurement;
     std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
     std::wstring sourcePath;
@@ -87,10 +89,15 @@ struct EncoderConfig
     // Explicit Gray-family point-sampled 16:9 viewport, centered without
     // changing the fullscreen window or display. Zero keeps the existing mode.
     std::uint32_t fullscreenRasterWidth = 0;
+    pbrenderd3d::PresentationModel presentationModel = pbrenderd3d::PresentationModel::Flip;
+    // Optional PAM4-only raw reception-rate prior. No wire/resume identity or
+    // receiver truth is implied; absent preserves the original scheduler.
+    std::optional<SenderRatePrior> expectedReceptionRate;
 };
 
 struct DecoderConfig
 {
+    std::optional<FeedbackConfig> feedback;
     std::shared_ptr<RunMeasurementRecorder> measurement;
     std::shared_ptr<pbcore::StageDiagnostics> diagnostics;
     std::wstring outputDirectory;
@@ -174,8 +181,9 @@ struct DecoderRuntimeServices
     std::uint32_t logicalVisualFps = 15,
     std::optional<pbrenderd3d::PhysicalPoint> clientOrigin = {});
 
-// Injectable presentation boundary for controller tests. Production always
-// uses the DataWindow adapter; no product configuration can select a mock.
+// Pure-C++ presentation boundary. The core defaults to native DataWindow;
+// the GUI supplies its explicit Qt adapter without linking Qt into the core.
+// No product configuration can select a mock.
 class EncoderPresentation
 {
 public:
@@ -189,6 +197,8 @@ public:
 
 using EncoderPresentationFactory = std::function<std::unique_ptr<EncoderPresentation>(
     const pbrenderd3d::DataWindowConfig&)>;
+
+[[nodiscard]] std::unique_ptr<EncoderPresentation> CreateNativeEncoderPresentation(const pbrenderd3d::DataWindowConfig& config);
 
 struct RuntimeStatus
 {
@@ -487,6 +497,8 @@ struct UnifiedGraduationRecoveryProbeConfig
     // Test-only visit budget, independent of the modeled erasure probability.
     // No runtime option or receiver feedback selects this value.
     std::uint32_t modeledVisitBudgetPercent = 100;
+    VisualProfile visualProfile = VisualProfile::UnifiedGrayFast;
+    std::optional<SenderRatePrior> expectedReceptionRate;
 };
 
 struct UnifiedSegmentRecoveryProbeTrace
@@ -509,6 +521,7 @@ struct UnifiedSegmentRecoveryProbeTrace
 
 struct UnifiedGraduationRecoveryProbeSnapshot
 {
+    SenderRatePriorSnapshot ratePrior;
     std::uint64_t senderLogicalFrames = 0;
     std::uint64_t observedLogicalFrames = 0;
     std::uint64_t completedCarouselPasses = 0;
@@ -675,9 +688,42 @@ struct MixedSlotTemporalOrderProbeSnapshot
 // resume journal, PBStorage and authoritative publish used by the application.
 // It does not encode, display, capture or demodulate pixels, except where an
 // explicitly documented offline pixel seam is selected.
+struct FeedbackTransferProbeOptions
+{
+    VisualProfile visualProfile = VisualProfile::UnifiedLc4;
+    std::uint32_t segmentCount = 6;
+    bool mixedCompression = true;
+    bool spatialInterleave = false;
+    bool expireFeedback = false;
+    bool withholdTail = false;
+    bool durableRepairRestart = false;
+};
+
+struct FeedbackTransferProbeSnapshot
+{
+    DecoderSnapshot decoder;
+    std::uint64_t senderFrames = 0;
+    std::uint64_t acknowledgedRetirements = 0;
+    std::uint64_t acknowledgedServiceAfterSettling = 0;
+    std::uint32_t peakEncodedSegments = 0;
+    bool repairIdentitiesUnique = true;
+    bool preparedRetriesFrozen = true;
+    bool disabledTraceEquivalent = true;
+    bool allConfirmedWithoutTerminalContinued = false;
+    bool terminalAccepted = false;
+    bool staleTokenCanStop = false;
+    bool feedbackExpired = false;
+    bool expiredCoveredAllSegments = false;
+    bool durableRestartVerified = false;
+};
+
 class ApplicationRuntimeTestAccess
 {
 public:
+    [[nodiscard]] static RuntimeStatus ProbeFeedbackReaderTimeout(const std::filesystem::path& trustedHelperPath,
+        const std::filesystem::path& feedbackFile, FeedbackTelemetry& output) noexcept;
+    [[nodiscard]] static RuntimeStatus ProbeFeedbackTransfer(const std::wstring& outputDirectory,
+        const FeedbackTransferProbeOptions& options, FeedbackTransferProbeSnapshot& output) noexcept;
     // No-raster scheduler-only seam: six one-MiB Segments, exactly 180 commits.
     // It never delivers payload to a Receiver or starts display/capture work.
     [[nodiscard]] static RuntimeStatus ProbeMixedSlotTemporalOrder(VisualProfile profile,
@@ -765,6 +811,7 @@ private:
     std::atomic<std::uint32_t> requestedLogicalVisualFps_ = 0;
     std::uint64_t nextRunGeneration_ = 1;
     EncoderPresentationFactory presentationFactory_;
+    FeedbackIoProcess feedbackIo_;
 };
 
 class DecoderRuntime
@@ -797,6 +844,7 @@ private:
     LargeOutputConfirmationController largeOutputConfirmation_;
     std::uint64_t nextRunGeneration_ = 1;
     DecoderRuntimeServices services_;
+    FeedbackIoProcess feedbackIo_;
 };
 
 } // namespace pbapp

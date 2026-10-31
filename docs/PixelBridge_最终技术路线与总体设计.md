@@ -1,6 +1,10 @@
 # PixelBridge 技术路线与总体设计
 
+> 2026-10-21 可选控制面增量：[文件反馈辅助传输](FEEDBACK_ASSISTED_TRANSFER.md)已接入当前实现，默认关闭。全部正向文件载荷仍来自实际捕获像素；反向只传有界耐久接收状态，最终仍须 WholeFileDigest、安全发布与重开复验。启用分支及新报告合同以该增量为准；以下原无反馈调度/清理/停止叙述在关闭时保持不变。尚无真实映射/远控提速认证。
+
 **简体中文** | [English](ARCHITECTURE.en.md)
+
+> 2026-10-21 发送调优增量：[PAM4 预期接收速度先验](SENDER_RATE_PRIOR.md)是默认关闭、仅超过 12 段时生效的本端预算策略。它保留有界活跃集合、实际提交服务账本、确定性全文件修复，以及全部原协议/FEC/摘要/发布不变量；不跳过预测前缀，不传递接收反馈。未启用时以下原调度合同不变。当前只有本地实现/回归证据边界，没有真实链路提速结论。
 
 
 > 产品界面统一显示“标准 / 灰阶高速 / PAM4 / PAM4 Wide”，不带“实验”字样。下文 `Experimental`、`experimental-*` 等标识是已冻结的内部/CLI兼容名称，保留它们不代表界面或产品版本仍为实验版；验证范围仍按真实证据说明。
@@ -29,7 +33,7 @@ Encoder 本地只读源文件
   → 不可变 Session / Segment / FinalManifest
   → DirectRepeat 或 Wirehair V2（分段纠删恢复）
   → Transport + CRC32C → QC-LDPC（码字纠错）
-  → 独立 Profile 光栅 → D3D11 数据窗口
+  → 独立 Profile 光栅 → 默认 D3D11 / 显式 Qt 软件数据窗口
   → 远控软件的视频编码、网络传送、解码、缩放与桌面合成
   → Decoder 所选屏幕的 WGC / DXGI 捕获
   → PB 自有纹理、epoch/帧龄检查 → 定位、可见校准、软解调
@@ -38,6 +42,8 @@ Encoder 本地只读源文件
 ```
 
 远控软件是既有外部信道，不由 PixelBridge 调参。provider 名称只能进入操作员元数据，不能影响解码阈值、Profile、资源准入或校验分支。
+
+Encoder 主窗口和 Shell 发送窗口可在完全停止后选择 Qt 软件绘制；每次新开窗口仍默认 D3D11，不记忆 Qt 选择，也不自动回退。Qt `QWidget` / raster `QPainter` 后端仅位于应用层，通过既有纯 C++ 呈现工厂接收相同完整 BGRA，核心 Runtime 保持 Qt-free。两种方式不改变四个 GUI Profile 的身份、物理码面、FEC 或文件恢复规则；本地 paint 不冒充 DXGI Present/远端有效帧。Qt 软件绘制仍受 Windows/远控合成与采集影响，不是整条链路的 GPU 绕过证明。固定 ComposedBlt 诊断与正式测量的旧边界保留；生命周期、隔离入口和验证范围见 [呈现合同](PRESENTATION.md)。
 
 ## 3. 当前视觉模式与身份隔离
 
@@ -90,7 +96,7 @@ Wide 用固定 pixel-center point 采样将 1920×1080 映射到 2560×1440，�
 
 ## 4. 无反馈调度与大文件尾部
 
-发送端按固定 Session 预扫描文件，并逐段压缩；普通默认 8 MiB，当前 PAM4 GUI 使用 7 MiB。RAW fallback 避免压缩膨胀，微小/高压缩段走 DirectRepeat，适用尺寸走 Wirehair V2。
+发送端按固定 Session 预扫描文件，并逐段压缩；标准及未覆盖目标的 PAM4 CLI 默认 8 MiB，Gray/GrayFast 默认 15 MiB，当前 PAM4/Wide GUI 使用 7 MiB。RAW fallback 避免压缩膨胀，微小/高压缩段走 DirectRepeat，适用尺寸走 Wirehair V2。
 
 Carousel 初始轮发送系统块与修复预算，随后生成新的修复 ID。对不同文件段数及刷新率，既有实现有窗口、barrier / graduation 与 repair visit 等不同路径。不得用落在另一调度分支的小文件替代大文件结论。具体常量、lease、窗口与预算以 [发送持久状态合同](ENCODER_STREAMING_CAROUSEL.md) 和当前 scheduler 的测试为准。
 
@@ -117,7 +123,7 @@ PAM4 每个数据帧固定带当前 SegmentDescriptor；Session/Manifest 刷新�
 
 用户可设置总预算、单实例上限，断点预算与总预算联动。启动时根据可用物理/commit 检查整体规划，保留捕获、断点副本和系统余量。配置后不立即分配全部预算；不足时暂缓，不允许无限创建。内存复杂度保持 `O(active segment set)` 而非 `O(file bytes)`。
 
-所有队列、capture/demod staging、orphan、Control 重组、active cache、repair retry 和日志有上限。所有支持文件仍有 500 GiB 产品上限。更大可用内存只有在资源准入确实成为瓶颈时才可能提速。[完整预算规则](DECODER_MEMORY_BUDGET.md)
+所有队列、capture/demod staging、orphan、Control 重组、active cache、repair retry 和日志有上限。共通文件字节上限为 500 GiB，且最多 65,536 段；当前 PAM4/Wide GUI 的 7 MiB 分段对应 448 GiB 组合上限，不因增加 FEC 预算而放宽。这些是源码准入边界，不是容量实测。更大可用内存只有在资源准入确实成为瓶颈时才可能提速。[完整预算规则](DECODER_MEMORY_BUDGET.md)
 
 ## 7. 持久化、崩溃恢复与最终发布
 

@@ -1,4 +1,5 @@
 #include "evidence_journal.h"
+#include "run_report.h"
 
 #include <algorithm>
 #include <cmath>
@@ -303,6 +304,7 @@ RunJournalSnapshot RunEvidenceJournal::GetSnapshot() const noexcept
 std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
     const EncoderSnapshot& snapshot)
 {
+    const bool qtRaster = snapshot.presentationContract && snapshot.presentationContract->presentationModel == pbrenderd3d::PresentationModel::QtRaster;
     std::ostringstream stream;
     stream.imbue(std::locale::classic());
     stream << std::setprecision(17) << "{\"schema\":\"PixelBridge.RunJournal.1\",\"role\":\"Encoder\",\"unixMs\":" <<
@@ -314,9 +316,9 @@ std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
         ",\"cycleCount\":" << snapshot.cycleCount << ",\"cyclePosition\":" << snapshot.cyclePosition <<
         ",\"cycleFrameCount\":" << snapshot.cycleFrameCount << ",\"frameSequence\":" << snapshot.frameSequence <<
         ",\"presentationEpoch\":" << snapshot.presentationEpoch << ",\"presentedVisualFps\":";
-    WriteOptionalFinite(stream, snapshot.presentedVisualFps);
+    WriteOptionalFinite(stream, qtRaster ? std::nullopt : snapshot.presentedVisualFps);
     stream << ",\"presentCallFps\":";
-    WriteOptionalFinite(stream, snapshot.presentCallFps);
+    WriteOptionalFinite(stream, qtRaster ? std::nullopt : snapshot.presentCallFps);
     stream << ",\"generatedVisualFps\":";
     WriteOptionalFinite(stream, snapshot.generatedVisualFramesPerSecond);
     stream << ",\"generatedPayloadBytesPerSecond\":";
@@ -368,6 +370,15 @@ std::string BuildEncoderJournalRecord(const std::uint64_t unixMilliseconds,
     stream << ",\"fullscreenRasterWidth\":" << snapshot.fullscreenRasterWidth;
     stream << ",\"configuredInitialAirtimePercent\":" << snapshot.configuredInitialAirtimePercent;
     stream << ",\"configuredVisitBudgetPercent\":" << snapshot.configuredVisitBudgetPercent;
+    stream << ",\"senderRatePrior\":";
+    WriteEncoderRatePriorJson(stream, snapshot.ratePrior);
+    stream << ",\"feedback\":";
+    WriteFeedbackTelemetryJson(stream, snapshot.feedback);
+    stream << ",\"stopReason\":";
+    WriteEncoderStopReasonJson(stream, snapshot);
+    stream << ",\"successfulPresentCalls\":" << snapshot.successfulPresentCalls << ",\"presentation\":{";
+    WriteEncoderPresentationPolicyJson(stream, snapshot);
+    stream << '}';
     stream << '}';
     return stream.str();
 }
@@ -382,6 +393,8 @@ std::string BuildDecoderJournalRecord(const std::uint64_t unixMilliseconds,
     WriteEscaped(stream, snapshot.runId);
     stream << ",\"state\":";
     WriteEscaped(stream, GetDecoderStateName(snapshot.state));
+    stream << ",\"feedback\":";
+    WriteFeedbackTelemetryJson(stream, snapshot.feedback);
     stream << ",\"descriptorKnown\":" << (snapshot.descriptorKnown ? "true" : "false") <<
         ",\"verifiedRawBytes\":" << snapshot.verifiedRawBytes << ",\"originalFileBytes\":" << snapshot.originalFileBytes <<
         ",\"activeReceptionStartedUnixMilliseconds\":";

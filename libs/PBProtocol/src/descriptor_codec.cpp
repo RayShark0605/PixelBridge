@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdint>
 #include <limits>
 #include <new>
@@ -600,51 +599,38 @@ ProtocolStatus ValidateFileNameUtf8(
 
     const std::size_t dotOffset = fileNameUtf8.find('.');
     const std::string_view deviceStem = fileNameUtf8.substr(0, dotOffset);
-    const auto equalsAsciiIgnoreCase = [deviceStem](const std::string_view candidate) noexcept
+    const auto equalsAsciiIgnoreCase = [](const std::string_view value, const std::string_view candidate) noexcept
     {
-        if (deviceStem.size() != candidate.size())
+        if (value.size() != candidate.size())
         {
             return false;
         }
-        for (std::size_t characterIndex = 0; characterIndex < deviceStem.size(); characterIndex++)
+        for (std::size_t characterIndex = 0; characterIndex < value.size(); characterIndex++)
         {
-            const unsigned char left = static_cast<unsigned char>(deviceStem[characterIndex]);
-            const unsigned char right = static_cast<unsigned char>(candidate[characterIndex]);
-            if (std::toupper(left) != std::toupper(right))
+            const char character = value[characterIndex];
+            const char upperCharacter = character >= 'a' && character <= 'z' ? static_cast<char>(character - 'a' + 'A') : character;
+            if (upperCharacter != candidate[characterIndex])
             {
                 return false;
             }
         }
         return true;
     };
-    if (equalsAsciiIgnoreCase("CON") || equalsAsciiIgnoreCase("PRN") || equalsAsciiIgnoreCase("AUX") ||
-        equalsAsciiIgnoreCase("NUL") || equalsAsciiIgnoreCase("CONIN$") || equalsAsciiIgnoreCase("CONOUT$"))
+    if (equalsAsciiIgnoreCase(deviceStem, "CON") || equalsAsciiIgnoreCase(deviceStem, "PRN") || equalsAsciiIgnoreCase(deviceStem, "AUX") ||
+        equalsAsciiIgnoreCase(deviceStem, "NUL") || equalsAsciiIgnoreCase(deviceStem, "CONIN$") || equalsAsciiIgnoreCase(deviceStem, "CONOUT$"))
     {
         return ProtocolStatus::Failure(ProtocolErrorCode::InvalidFileName, fieldOffset);
     }
-    if (deviceStem.size() == 4)
+    if (deviceStem.size() >= 4)
     {
-        const char digit = deviceStem[3];
-        const bool hasReservedDigit = digit >= '1' && digit <= '9';
+        const std::string_view suffix = deviceStem.substr(3);
+        const bool hasReservedDigit = suffix.size() == 1 && suffix.front() >= '1' && suffix.front() <= '9';
+        // Win32 also treats the ISO-8859-1 superscript digits as DOS device
+        // suffixes. Compare their UTF-8 bytes without locale-dependent folding.
+        const bool hasReservedSuperscript = suffix == "\xC2\xB9" || suffix == "\xC2\xB2" || suffix == "\xC2\xB3";
         const std::string_view prefix = deviceStem.substr(0, 3);
-        const auto prefixEquals = [prefix](const std::string_view candidate) noexcept
-        {
-            if (prefix.size() != candidate.size())
-            {
-                return false;
-            }
-            for (std::size_t characterIndex = 0; characterIndex < prefix.size(); characterIndex++)
-            {
-                const unsigned char left = static_cast<unsigned char>(prefix[characterIndex]);
-                const unsigned char right = static_cast<unsigned char>(candidate[characterIndex]);
-                if (std::toupper(left) != std::toupper(right))
-                {
-                    return false;
-                }
-            }
-            return true;
-        };
-        if (hasReservedDigit && (prefixEquals("COM") || prefixEquals("LPT")))
+        if ((hasReservedDigit || hasReservedSuperscript) &&
+            (equalsAsciiIgnoreCase(prefix, "COM") || equalsAsciiIgnoreCase(prefix, "LPT")))
         {
             return ProtocolStatus::Failure(ProtocolErrorCode::InvalidFileName, fieldOffset);
         }

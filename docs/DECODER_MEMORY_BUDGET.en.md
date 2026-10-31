@@ -8,6 +8,21 @@ Optimize correctly completed non-local file time, not RAM utilization. Budgets a
 
 Gray Fast, PAM4, and Wide expose memory-budget reception in advanced options. Disabled: the original eight slots. Enabled: finite byte-budget admission. Settings freeze during reception; use the available-memory recommendation or explicit total/per-instance values.
 
+## File size and segment-count limits
+
+The common policy simultaneously limits file size to **500 GiB** and segment count to **65,536**. With fixed `segmentTargetBytes`, the combined admission ceiling is `min(500 GiB, 65,536 × segmentTargetBytes)`, before disk and other resource checks.
+
+| Current sender configuration | Default segment target | Combined ceiling |
+| --- | ---: | ---: |
+| Standard GUI / Standard CLI without an override | 8 MiB | 500 GiB |
+| Gray Fast GUI / Gray Fast CLI without an override | 15 MiB | 500 GiB |
+| PAM4 / PAM4 Wide GUI | 7 MiB | 448 GiB |
+| PAM4 / PAM4 Wide CLI without an override | 8 MiB | 500 GiB |
+
+These are static findings from `gui_visual_mode.h`, `GetSegmentTargetBytes`, and `ReceiverResourcePolicy`, not completed-transfer measurements at those sizes. Smaller explicit segments lower the ceiling further. Raising the FEC memory budget does not raise either file-byte or segment-count limits.
+
+## Active decoder budgets
+
 | Setting | Default | Validity |
 | --- | ---: | --- |
 | Total FEC budget | 1024 MiB | Integer MiB, 4 MiB–1 TiB, plus host-headroom admission |

@@ -158,3 +158,7 @@ cmake --build build-unified-release --config Release --target PBTelemetryTests P
 未执行 full CTest、G12 GPU/WARP parity 重跑、GUI smoke、真实 ROI/capture、native/双屏/远控 Gate、进程故障注入、256 MiB / 20 GiB、安装包或提交后嵌入身份复验。此处的像素证据没有经过显示器、视频链路或 GPU capture，不构成实屏或性能认证。
 
 G17 的实现、已批准缓存修复与上述最小验证已完成。`docs/PHASE1_GATE_REPORT.md` 保持未动、未暂存；不 broad-stage，不 amend/rebase/reset/push。最终审查后以显式路径创建一次独立提交，然后结束本次任务；G18 未开始。测试与构建是提交前证据，不声称已完成提交后嵌入身份或安装包复验。
+
+## 可选反馈对象（2026-10-21）
+
+报告/journal 增加 feedback: PixelBridge.FileFeedbackTelemetry.1，保留原外层 schema 和不可得 receiverProgress/receiverEta/verifiedGoodput 的 null。requested 不等于 effective；confirmedDurableSegments 只在可用事实下有值，否则 null。terminalPublished 为 B 的发布 ACK，terminalAccepted 为 A 的匹配接受，二者不能互换；receiverReportedCompletionMilliseconds 只标记接收方报告。stopReason 区分 User/Timeout/ReceiverVerified/None。listenerStartedUnixMilliseconds/listenerStoppedUnixMilliseconds/listenerElapsedMilliseconds 独立于冻结的文件完成时间；未启用/未知为 null。skippedSegmentServiceVisits 是退休访问计数，不是节省字节或实测提速。不记录反馈路径/任意状态文本/payload。见[完整合同与边界](FEEDBACK_ASSISTED_TRANSFER.md)。

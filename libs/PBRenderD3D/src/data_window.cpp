@@ -15,6 +15,40 @@
 namespace pbrenderd3d
 {
 
+const char* GetPresentationModelName(const PresentationModel model) noexcept
+{
+    switch (model)
+    {
+    case PresentationModel::Flip: return "flip";
+    case PresentationModel::ComposedBlt: return "composed-blt";
+    case PresentationModel::QtRaster: return "qt-raster";
+    }
+    return "invalid";
+}
+
+const char* GetPresentationSwapEffectName(const PresentationSwapEffect effect) noexcept
+{
+    switch (effect)
+    {
+    case PresentationSwapEffect::FlipDiscard: return "flip-discard";
+    case PresentationSwapEffect::FlipSequential: return "flip-sequential";
+    case PresentationSwapEffect::BltDiscard: return "blt-discard";
+    case PresentationSwapEffect::NotApplicable: return "not-applicable";
+    }
+    return "invalid";
+}
+
+const char* GetPresentationPacingName(const PresentationPacing pacing) noexcept
+{
+    switch (pacing)
+    {
+    case PresentationPacing::FrameLatencyWaitable: return "frame-latency-waitable";
+    case PresentationPacing::GpuCompletionAndVsync: return "gpu-completion-and-vsync";
+    case PresentationPacing::QtEventLoop: return "qt-event-loop";
+    }
+    return "invalid";
+}
+
 PresentationViewportGeometry ResolvePresentationViewport(const DataWindowConfig& config,
     const std::uint32_t clientWidth, const std::uint32_t clientHeight) noexcept
 {
@@ -80,9 +114,16 @@ namespace
 
 [[nodiscard]] bool CheckContract(const DataWindowConfig& config, const PresentationContract& contract) noexcept
 {
-    return contract.bufferCount == config.bufferCount && contract.maximumFrameLatency == config.maximumFrameLatency &&
-           contract.flipEffect == config.flipEffect && contract.bgraUnorm && contract.noMsaa && contract.alphaIgnored && contract.scalingNone &&
-           contract.tearingDisabled && contract.latencyWaitable && contract.perMonitorV2 &&
+    const bool modelMatches = config.presentationModel == contract.presentationModel &&
+        (config.presentationModel == PresentationModel::Flip ?
+            (contract.flipEffect == config.flipEffect && contract.swapEffect == (config.flipEffect == FlipEffect::Discard ?
+                PresentationSwapEffect::FlipDiscard : PresentationSwapEffect::FlipSequential) &&
+             contract.scalingNone && !contract.scalingStretch && contract.latencyWaitable &&
+             contract.pacing == PresentationPacing::FrameLatencyWaitable) :
+            (contract.swapEffect == PresentationSwapEffect::BltDiscard && !contract.scalingNone && contract.scalingStretch &&
+             !contract.latencyWaitable && contract.pacing == PresentationPacing::GpuCompletionAndVsync));
+    return modelMatches && contract.bufferCount == config.bufferCount && contract.maximumFrameLatency == config.maximumFrameLatency &&
+           contract.bgraUnorm && contract.noMsaa && contract.alphaIgnored && contract.tearingDisabled && contract.perMonitorV2 &&
            contract.resizableChrome == !config.topmost && contract.immutableCanonicalSource && contract.pointSampled &&
            contract.centeredLetterbox && contract.neutralMatteBelowMinimum;
 }
@@ -90,7 +131,9 @@ namespace
 [[nodiscard]] bool CheckEnvironmentContract(const DataWindowConfig& config, const PresentationContract& contract, const WindowEnvironment& environment) noexcept
 {
     return CheckContract(config, contract) && (!CanOwnClientBackBuffer(config, environment) ||
-        (contract.bufferWidth == environment.clientWidth && contract.bufferHeight == environment.clientHeight));
+        (contract.bufferWidth == environment.clientWidth && contract.bufferHeight == environment.clientHeight &&
+         (config.presentationModel != PresentationModel::ComposedBlt ||
+          (environment.clientWidth == config.width && environment.clientHeight == config.height))));
 }
 
 [[nodiscard]] std::optional<pbpresenttiming::EpochReason> FindEnvironmentChange(const WindowEnvironment& previous, const WindowEnvironment& current) noexcept
@@ -130,6 +173,13 @@ namespace
 
 PresentationStatus ValidateDataWindowConfig(const DataWindowConfig& config) noexcept
 {
+    if ((config.presentationModel != PresentationModel::Flip && config.presentationModel != PresentationModel::ComposedBlt) ||
+        (config.presentationModel == PresentationModel::ComposedBlt &&
+         (!config.topmost || !config.clientOrigin || config.bufferCount != 2 || config.maximumFrameLatency != 1 ||
+          config.flipEffect != FlipEffect::Discard || config.repeatActiveFrame)))
+    {
+        return PresentationStatus::Failure(PresentationErrorCode::InvalidConfiguration, PresentationStage::Configuration);
+    }
     if (config.allowUnmappedHardwareAdapter && (!config.topmost || !config.clientOrigin))
     {
         return PresentationStatus::Failure(PresentationErrorCode::InvalidConfiguration, PresentationStage::Configuration);
@@ -159,29 +209,32 @@ PresentationStatus ValidateDataWindowConfig(const DataWindowConfig& config) noex
     return PresentationStatus::Success();
 }
 
-PresentationStatus ValidateCanonicalBgraFrame(const DataWindowConfig& config, const CanonicalBgraFrameView& frame) noexcept
+PresentationStatus ValidateCanonicalBgraPixels(const std::uint32_t width, const std::uint32_t height,
+    const std::uint64_t maximumFrameBytes, const CanonicalBgraFrameView& frame) noexcept
 {
-    const auto configurationStatus = ValidateDataWindowConfig(config);
-    if (!configurationStatus)
-    {
-        return configurationStatus;
-    }
-    if (frame.width != config.width || frame.height != config.height)
+    if (width == 0 || height == 0 || width > 16384 || height > 16384 || maximumFrameBytes == 0 ||
+        maximumFrameBytes == (std::numeric_limits<std::uint64_t>::max)() || frame.width != width || frame.height != height)
     {
         return PresentationStatus::Failure(PresentationErrorCode::InvalidFrame, PresentationStage::FrameValidation);
     }
-    const std::size_t rowBytes = static_cast<std::size_t>(config.width) * 4;
-    if (frame.rowPitch < rowBytes || frame.rowPitch > config.maximumFrameBytes)
+    const std::size_t rowBytes = static_cast<std::size_t>(width) * 4;
+    if (frame.rowPitch < rowBytes || frame.rowPitch > maximumFrameBytes)
     {
         return PresentationStatus::Failure(PresentationErrorCode::InvalidFrame, PresentationStage::FrameValidation);
     }
     const auto precedingBytes = pbprotocol::CheckedMultiplyUnsigned(frame.rowPitch, static_cast<std::size_t>(frame.height - 1));
     const auto neededBytes = precedingBytes ? pbprotocol::CheckedAddSize(precedingBytes.Value(), rowBytes) : precedingBytes;
-    if (!neededBytes || neededBytes.Value() > config.maximumFrameBytes || neededBytes.Value() > frame.pixels.size())
+    if (!neededBytes || neededBytes.Value() > maximumFrameBytes || neededBytes.Value() > frame.pixels.size())
     {
         return PresentationStatus::Failure(PresentationErrorCode::InvalidFrame, PresentationStage::FrameValidation);
     }
     return PresentationStatus::Success();
+}
+
+PresentationStatus ValidateCanonicalBgraFrame(const DataWindowConfig& config, const CanonicalBgraFrameView& frame) noexcept
+{
+    const auto configurationStatus = ValidateDataWindowConfig(config);
+    return configurationStatus ? ValidateCanonicalBgraPixels(config.width, config.height, config.maximumFrameBytes, frame) : configurationStatus;
 }
 
 struct DataWindow::Implementation

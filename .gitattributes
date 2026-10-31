@@ -8,6 +8,7 @@
 *.h text eol=lf
 *.hlsl text eol=lf
 *.py text eol=lf
+*.ps1 text eol=lf
 CMakeLists.txt text eol=lf
 
 # These are protocol/corpus bytes, even when a tiny seed contains no NUL.

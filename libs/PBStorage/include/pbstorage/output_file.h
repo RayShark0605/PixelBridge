@@ -80,6 +80,9 @@ struct OutputFileConfig
     std::string originalFileNameUtf8;
     // Optional process-local observation only; no persistent/wire field.
     bool observePublishTiming = false;
+    // Optional local protection for completed feedback listening. Read/view
+    // remains possible; closing the OutputFile releases write/delete denial.
+    bool retainPublishedReadLease = false;
 };
 
 struct OutputFileReservation
@@ -106,6 +109,7 @@ struct OutputFileSnapshot
     bool hasPendingWrite = false;
     bool published = false;
     bool recoveredPublished = false;
+    bool publishedReadLeaseHeld = false;
     // null = not observed in this object; false = attempted phase failed.
     // Recovered publication observes the final digest, not the prior rename.
     std::optional<bool> wholeFileDigestVerified;

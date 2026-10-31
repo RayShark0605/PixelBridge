@@ -1,5 +1,7 @@
 #include "pbrenderd3d/data_window.h"
 #include "presentation_backend.h"
+#include "pbmodulation/experimental_pam4.h"
+#include "pbprotocol/bootstrap_control_codec.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,6 +30,43 @@ using namespace pbrenderd3d;
         }
     }
     return pixels;
+}
+
+TEST_CASE("Explicit blt and default flip render identical complete BGRA and PAM4 rasters", "[presentation][composed-blt][warp][offscreen]")
+{
+    DataWindowConfig config;
+    config.topmost = true;
+    config.clientOrigin = PhysicalPoint{0, 0};
+    for (const bool pam4 : {false, true})
+    {
+        auto pixels = MakeCanonicalPixels(config);
+        if (pam4)
+        {
+            pbprotocol::BootstrapRecord bootstrap;
+            bootstrap.protocolVersion = pbprotocol::GetProtocolVersion();
+            bootstrap.visualProfileId = pbprotocol::kPam4ExperimentalProfile.visualProfileId;
+            bootstrap.visualLayoutVersion = pbprotocol::kPam4ExperimentalProfile.visualLayoutVersion;
+            bootstrap.frameSequence = 17;
+            std::array<std::byte, pbprotocol::kBootstrapRecordBytes> serialized{};
+            REQUIRE(pbprotocol::SerializeBootstrapRecord(bootstrap, serialized));
+            std::vector<std::byte> coded(pbmodulation::kExperimentalPam4CodedFrameBytes);
+            for (std::size_t index = 0; index < coded.size(); index++)
+            {
+                coded[index] = static_cast<std::byte>((index * 29 + 11) & 255);
+            }
+            REQUIRE(pbmodulation::EncodeExperimentalPam4Frame(serialized, coded, pixels));
+        }
+        config.presentationModel = PresentationModel::Flip;
+        const auto flip = RenderWarpOffscreenForTest(config, pixels, config.width, config.height, false);
+        REQUIRE(flip);
+        config.presentationModel = PresentationModel::ComposedBlt;
+        const auto blt = RenderWarpOffscreenForTest(config, pixels, config.width, config.height, false);
+        REQUIRE(blt);
+        CHECK(flip.Value().pixels == pixels);
+        CHECK(blt.Value().pixels == pixels);
+        CHECK(flip.Value().pixels == blt.Value().pixels);
+        CHECK(blt.Value().viewport.scale == 1.0);
+    }
 }
 
 [[nodiscard]] std::vector<std::byte> MakeExpectedPointSampledPixels(const DataWindowConfig& config,

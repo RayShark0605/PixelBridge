@@ -1,4 +1,4 @@
-# D3D11 Data Window / PBPresentTiming
+# Encoder Data Window / PBPresentTiming
 
 > **维护范围 / Scope (2026-09-17):** 本文保留该模块的协议/工具/测试参考，不再作为项目当前路线或发布状态入口。当前模式、单屏接收、预算、日志与完整文件证据见 [中文文档](./README.md) / [English documentation](./README.en.md)。历史日期、Gate、现场坐标与阶段参数仅适用于当时记录；不应直接复制到新环境。
 > This is a module/tool/test reference, not the current release roadmap. Use the bilingual index for current behavior and validation boundaries; historical gates/settings are not universal defaults.
@@ -8,6 +8,41 @@
 以速度与稳定性优先，全屏窗口内允许静态边缘：PAM4 采用 native 1920×1080 居中码面；PAM4 Wide 固定 point 映射到 2560×1440 后居中。不得悄悄拉伸到任意尺寸，也不改写旧 Unified/GrayFast 的呈现路径。Decoder 从捕获像素自行定位，PBBridge 不传几何真值或 payload。静态边缘减少变化面积的收益仍需按实际远控环境测量，不是无条件更快的结论。见 [PAM4 合同](EXPERIMENTAL_PAM4_PROFILE.md)、[Wide 合同](EXPERIMENTAL_PAM4_WIDE_PROFILE.md) 与 [现场证据](EVIDENCE_INDEX.md)。
 
 The current PAM4 raster is native 1920×1080; Wide uses its fixed point-mapped 2560×1440 representation. Both may be centered within a fullscreen window with static borders. Neither changes the legacy presentation contract or provides geometry/payload through PBBridge. Throughput remains environment-dependent.
+
+## 显式 Qt 软件绘制（默认仍是 D3D11）
+
+主 Encoder 窗口和 Shell 发送窗口都有“显示方式”按钮，在 **D3D11（默认）** 与 **Qt 软件绘制（兼容）** 之间切换。每次新开窗口都从 D3D11 开始，不恢复、不保存上次的 Qt 选择。只能完全停止后切换；准备、广播、停止和关闭清理期间，按钮及其处理函数都拒绝改动。标准、灰阶高速、PAM4 和 PAM4 Wide 沿用各自原有的显示尺寸、Profile、FEC、Raster 和接收端验收规则。
+
+Qt 路径是 Encoder 应用层的 `QWidget` / `QImage` / raster `QPainter`，不是 QOpenGLWidget、Qt Quick，也不是把旧 D3D11 HWND 嵌入 Qt。纯 C++ Runtime 仍通过 `EncoderPresentation` 工厂提交完整 BGRA；核心模块不包含 Qt 对象或链接。选择 Qt 后初始化/绘制失败会明确报错，不回退 D3D11；默认 D3D11 也不会自动改用 Qt。
+
+- GUI 线程持有、绘制和销毁 QWidget；worker 只访问拥有数据的有界状态。产品最多持有两个 canonical 槽位（当前/待帧），另有单个受预算约束的物理画布；Qt 通知不携带图片，也不按帧排队。
+- 以 Win32 物理 client/monitor 与 PMv2 校验几何；CPU 按既有像素中心 point 规则构造物理输出，最终 Qt 拷贝不再次插值。输入 alpha 被视为不透明，不做平滑、透明混合或额外色彩转换。DPR/尺寸/monitor/模式变化失效旧 epoch；不满足合同就暂停或失败。
+- 创建握手遵守 `waitTimeoutMilliseconds`（默认 5000 ms）并可取消；停止顺序是先取消等待、再 join worker、最后 GUI 销毁窗口。该期限不表示可以强行中断 Windows/Qt 内部同步调用。
+- `actualModel=qt-raster`、`swapEffect=not-applicable`、`pacing=qt-event-loop`、`rasterPaintEngine=true` 表示实际 Qt 合同。没有 DXGI swap chain 或 adapter；`bufferCount=0`，不是伪造两个缓冲来通过旧门槛。
+- `softwarePaintCalls` 是本地 paint 调用数；`softwareFramesPainted` 是首次成功绘制逻辑帧的计数。重绘同一当前帧不会推进 FrameSequence 或生成新方程。两者都不代表接收端已看到、恢复或校验了文件。
+- DXGI FPS/latency/Present ID 不适用，相关值为 `null`，原因 `QtRasterHasNoDxgiStatistics`；adapter 原因为 `QtRasterDoesNotUseDxgiAdapter`。Qt 不复用只用于 WARP 正确性测试的 `softwareRasterizer` 字段。
+
+隔离试用请使用严格入口 `--gui-display-test`（不接受其它参数）。该入口每次仍默认 D3D11，按钮可选 Qt；首次逻辑刷新率为 15 Hz，模式和刷新率偏好使用包内 `display-diagnostic/settings.ini`，默认会话缓存为 `display-diagnostic/display-sessions`，日志为 `display-diagnostic/logs`。它不读取正常 GUI 的注册表偏好，也不注册 Shell。损坏 INI 在写入前拒绝并保留原内容。正常无参数/Shell 入口保留既有偏好与注册行为；旧固定 flip/blt 入口保持各自合同，不进入新按钮循环。正式 measurement 不开放 Qt。
+
+本地验证覆盖完整像素、真实 worker 到 Qt、合成 DPR 1/1.25/1.5/2、隐藏 HWND、取消/重启/超时和实际后端日志；这些不等于真实桌面捕获、Citrix 修复或吞吐认证。Qt 软件绘制仍会经过 Windows/远控软件的窗口合成和采集，不能据此声称绕过了整个 GPU/视频链。可先在正常状态比较同文件、同 Profile、同尺寸和同帧率的启停/接收；原冻结问题尚未复现时，不要求先制造冻结，但不得据正常态通过宣布根因已解决。最终文件仍须 digest → safe publish → reopen 及独立长度/SHA-256 验证。
+
+The Qt path is an explicitly selected application-layer software painter. Native D3D11 remains the per-window default; selection is stopped-only and never persisted. Local paint counters are neither DXGI presentation timing nor receiver success. No protocol, decoder or certified-profile semantics change.
+
+## 显式 ComposedBlt 呈现诊断候选（非默认、非旧 Flip Gate）
+
+`PresentationModel::Flip` 仍是默认；下文的 flip-discard、waitable object 与旧 Gate 合同不变。另设 `ComposedBlt`，只允许显式单屏全屏 **PAM4**，拒绝 Wide、其它 Profile 和正式 measurement。它不是按 Citrix 名称自动检测的修复，也不是创建失败时的 fallback。
+
+- 同一原生 HWND、硬件 adapter 选择、单 owner、完整 immutable BGRA、point sampler 和两个 CPU 帧槽；不改 Raster、协议、FEC 或 Decoder。
+- Windowed `DXGI_SWAP_EFFECT_DISCARD`、双缓冲、`Present(1, 0)`、无 tearing；禁止独占全屏和显示模式切换。Blt 使用 `DXGI_SCALING_STRETCH`，但输入纹理、back buffer 和物理 client 必须同尺寸，viewport 为 1:1，故不发生额外缩放。
+- 不请求 flip 的 latency handle。通过 `IDXGIDevice1::SetMaximumFrameLatency(1)` 及回读、固定一个 GPU event query 控制许可；首帧有一个许可，随后等待前次 GPU 完成。query marker 显式提交到 GPU，等待可取消、不忙等，沿用有界 deadline。GPU 完成不是远端已显示的证明。
+- 环境变化先使旧 epoch/帧/许可失效，成功 drain 后才能重建或重新发许可；非法实际合同失败关闭。无自动 WARP/GDI/Qt 退路。
+- Windowed blt 不提供 DXGI frame statistics；显示时序为 `null`，原因是 `WindowedBltStatisticsUnsupported`。上传、提交和成功 Present 计数仍为本地生产者证据，不代表远程可见帧数。
+
+诊断 GUI 的严格入口为 `--gui-presentation-mode flip` 或 `--gui-presentation-mode composed-blt`，不接受其它参数。两者固定 PAM4、初始 30 Hz，共用包目录下的 `presentation-diagnostic/settings.ini`、专用会话缓存和 `presentation-diagnostic/logs`，不读取正常 GUI 的注册表偏好、不注册 HKCU Shell 命令、不清理原日志目录；策略在本次进程中固定。损坏的候选 INI 必须在任何写入前拒绝并保留原字节。正常无参数 GUI 与 Shell 入口不变。候选须携带精确源码指纹，`--build-identity` 的 base commit 不能单独代表未提交改动。
+
+本地 hidden-window 的真实交换链回读、WARP 字节一致性、状态机和 offscreen GUI 测试不构成 Citrix 现场通过。仍须同包、同文件、同设置做 A/B/A；仅在原路径复现停滞、兼容路径持续更新且回到原路径重新停滞后，继续 60 秒前台/焦点/启停与完整文件摘要、安全发布、最终重开和独立 SHA-256 验收。失败则保留证据，不叠加覆盖窗口、`DwmFlush` 或降低校验。
+
+The explicit windowed blt candidate has its own contract and unavailable display-timing semantics. It neither weakens the original flip gates nor certifies a Citrix or end-to-end file-transfer fix without field evidence.
 
 ## 2026-09-14 用户确认的全屏铺满更新（Q 候选，尚非发布认证）
 
@@ -43,7 +78,7 @@ presentation。**Headless/WARP 通过不等于完整 LocalDesktop 物理链路�
 
 创建与重建后检查实际 descriptor、latency、physical client、窗口 chrome 和 DPI awareness。
 viewport scale 为 `min(clientWidth/1920, clientHeight/1080, 2.0)`，居中并保留宽高比；
-任一方向不足 canonical 的 0.75 倍时只呈现 neutral matte，并显示“窗口过小，广播已暂停”。
+任一方向不足 canonical 的 1.0 倍时只呈现 neutral matte，并显示“窗口过小，广播已暂停”。
 不满足契约就报错或暂停，不通过 blt、非 waitable swap chain、非等比拉伸/裁剪或 tearing 掩盖问题。
 首次上传/Present 也必须获得 frame-latency permit。
 [waitable-object 契约](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject)
@@ -105,9 +140,9 @@ device/swap-chain 变化均使未消费 permit 失效，即使同一 swap chain 
 
 | 事件 | 行为 |
 | --- | --- |
-| scale 0.75..2.0 的 resize | drain 旧 GPU work，创建新 epoch/back buffer；等待新的完整 canonical raster，然后 point-sampled aspect-fit |
+| scale 1.0..2.0 的 resize | drain 旧 GPU work，创建新 epoch/back buffer；等待新的完整 canonical raster，然后 point-sampled aspect-fit |
 | 超过 2.0 的 resize | viewport clamp 到 2.0 并保持居中，窗口其余区域为 neutral matte |
-| 小于 0.75 的 resize | 清除 pending/active 与旧 permit；暂停 admission，只提交一次 neutral matte；不生成 Bootstrap、不推进 FrameSequence/Carousel |
+| 小于 1.0 的 resize | 清除 pending/active 与旧 permit；暂停 admission，只提交一次 neutral matte；不生成 Bootstrap、不推进 FrameSequence/Carousel |
 | minimize / zero client | 暂停；不对零尺寸调用 `ResizeBuffers` |
 | 有效尺寸恢复 | 新 epoch；重验契约；等待新的完整 raster；Session 不变且 FrameSequence 不回退 |
 | 跨屏过渡 | `singleMonitor=false` 时暂停 admission，不抢先做跨 adapter 分配 |
@@ -176,7 +211,7 @@ DXGI statistics 本身有多显示器等可靠性限制；`valid-dxgi-observatio
 
 复用 `GenerateRandomSessionId`、现有 reference profile binding、`SerializeBootstrapRecord`
 和 `EncodeReferenceFrame`；逐帧递增 Bootstrap FrameSequence。Data/Control 为诊断内容，
-不是完整 Session 控制平面或可恢复文件发送流程。无参数的原精确横幅不变；`--help` 给用法。
+不是完整 Session 控制平面或可恢复文件发送流程。此处只描述显式 `--data-window` 诊断入口；当前产品无参数入口是 GUI，`--help` 给用法。
 
 `--frames N` 是成功 **CPU SubmitFrame** 上限，范围 1..1,000,000，不等于 Present 成功数，
 更不等于视觉显示帧数。epoch 变化或 latest-pending 替换可能使计数不同。
@@ -249,4 +284,4 @@ Evidence 每次创建独立目录，位于 `build-presentation-*/tests/Presentat
 - 库内 wait/drain 可取消且有超时，但操作系统/显示驱动内部阻塞的创建、Present 或销毁调用
   无法由 C++ 超时强行抢占。实际 driver hang 的容错需要上层进程监督。
 - 模式恢复保证覆盖监督子进程的失败、崩溃和超时，不声称能在整机断电或监督进程本身被强杀后执行恢复代码。
-- 现阶段 Encoder 是诊断入口，不是 Qt 控制 UI、文件发送器或通过接收端验证的 Certified profile。
+- 本节历史 `--data-window` 证据仅覆盖诊断呈现，不等于产品 Qt UI/文件发送流程或 Certified profile 验收；当前 Encoder 已有产品 GUI 与文件发送入口，不能把历史诊断范围解释为当前缺少这些功能。

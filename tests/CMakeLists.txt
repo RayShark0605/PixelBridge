@@ -223,15 +223,32 @@ if(TARGET PixelBridgeEncoder)
         "PixelBridgeEncoder ${PROJECT_VERSION} (protocol 1.0)"
         "-DPB_TEST_ARGS_ENCODED=--version")
     if(WIN32)
+        set(pbEncoderDiagnosticIdentityFields "")
+        if(PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT)
+            set(pbEncoderDiagnosticIdentityFields ",\"sourceState\":\"UncommittedDiagnosticCandidate\",\"sourceFingerprintSha256\":\"${PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT}\"")
+        endif()
         PbAddExactProcessTest(
             PixelBridgeEncoderBuildIdentity
             PixelBridgeEncoder
-            "{\"schema\":\"PixelBridge.ApplicationBuildIdentity.1\",\"applicationName\":\"PixelBridgeEncoder\",\"applicationVersion\":\"${PROJECT_VERSION}\",\"protocolMajor\":1,\"protocolMinor\":0,\"gitCommit\":\"${pbApplicationGitCommit}\"}"
+            "{\"schema\":\"PixelBridge.ApplicationBuildIdentity.1\",\"applicationName\":\"PixelBridgeEncoder\",\"applicationVersion\":\"${PROJECT_VERSION}\",\"protocolMajor\":1,\"protocolMinor\":0,\"gitCommit\":\"${pbApplicationGitCommit}\"${pbEncoderDiagnosticIdentityFields}}"
             "-DPB_TEST_ARGS_ENCODED=--build-identity")
         add_test(NAME PixelBridgeEncoderGuiSmoke COMMAND PixelBridgeEncoder --gui-smoke)
         set_tests_properties(PixelBridgeEncoderGuiSmoke PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE LABELS "application;gui;encoder")
+        add_test(NAME PixelBridgeEncoderQtDisplaySmoke COMMAND PixelBridgeEncoder --gui-qt-display-smoke)
+        set_tests_properties(PixelBridgeEncoderQtDisplaySmoke PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE LABELS "application;gui;encoder;qt-display")
+        foreach(scale IN ITEMS 1.25 1.5 2)
+            add_test(NAME PixelBridgeEncoderQtDisplayDpr${scale}Smoke COMMAND PixelBridgeEncoder --gui-qt-display-smoke)
+            set_tests_properties(PixelBridgeEncoderQtDisplayDpr${scale}Smoke PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE
+                LABELS "application;gui;encoder;qt-display;dpi-simulation" ENVIRONMENT "QT_SCALE_FACTOR=${scale}")
+        endforeach()
         set(pbEncoderInvalidArguments
             "--unknown"
+            "--gui-display-test|extra"
+            "--gui-display-test|--gui-display-test"
+            "--gui-display-test|--gui-presentation-mode|flip"
+            "--gui-qt-display-smoke|extra"
+            "--gui-presentation-mode|qt-raster"
+            "--gui-presentation-mode|flip|--gui-display-test"
             "--build-identity|extra"
             "--shell-open"
             "--shell-open|one|extra"

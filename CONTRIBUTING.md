@@ -59,5 +59,15 @@ The maintainer-provided original PNGs remain separate from derived multi-size IC
 - Preserve tests; if diagnostics add fields, update positive fixtures and retain strict small-cap/invalid-input rejection tests.
 - Never commit user payloads, recordings, `.part`/`.resume`, installed dependencies, logs, build trees or release ZIPs.
 - Keep Chinese/English current docs consistent; retained historical references must say so.
-- v1.0 uses separate Encoder/Decoder packages from a clean committed source tree. Source/build/package manifests, dependency notices, isolated unpack/load checks, instructions and explicit validation limits belong in the release checklist.
+- 根目录 `README.md` / `README.en.md` 始终呈现当前产品的完整状态，不放修订日志、日期更新条目或“本次新增”等过程记录；功能变化直接整合进现有介绍/使用流程，并同步两种语言。历史变更与验证放发布说明或证据文档。Root READMEs are evergreen product documentation, never a changelog; integrate changes directly and keep both languages aligned.
+- v1.1 uses separate Encoder/Decoder packages from a clean committed source tree. Source/build/package manifests, dependency notices, isolated unpack/load checks, instructions and explicit validation limits belong in the release checklist.
 - The project uses MIT; retain third-party licensing and corresponding-source obligations. Local release approval does not authorize a remote push.
+
+
+## 6. v1.1 发布复现 / Reproducing a v1.1 release
+
+使用准确的版本提交、干净工作树和相同固定依赖重新配置独立 build tree；不要复用旧 dirty-candidate 的 `PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT`。Release 编译默认省略 C++/WinRT 诊断源码路径，保留错误码和原错误传播语义。
+
+Build both endpoints and `PBFeedbackIo`, then run the complete non-interactive CTest suite. The known GrayFast gate stays visible. Use `New-PBUnifiedPortablePackage.ps1 -ProductRelease -VersionedPackageName` separately per role, with local build/output, verified Qt source bundle, VC runtime and notices paths. These paths are command inputs, not repository configuration or public manifest values. Include `docs/FEEDBACK_ASSISTED_TRANSFER.md` and its English guide through `-ReleaseDocumentation`. The producer still requires a clean committed tree; do not bypass that gate.
+
+`Test-PBUnifiedPortablePackage.ps1` is read-only. For v1.1+ it requires the sibling metadata-only helper and binds its hash/protocol in each application record. `VerifyUnifiedFeedbackBinding.ps1`, `test_unified_package.py`, and `verify_unified_package_startup.py` cover helper/negative/fresh-extraction checks; legacy v1.0 verification remains supported. A commit/push does not create a GitHub Release. Keep ZIPs/seals/checksums outside Git and upload them through the maintainer's release workflow.

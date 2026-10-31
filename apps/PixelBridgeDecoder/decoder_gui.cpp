@@ -1,6 +1,7 @@
 #include "decoder_gui.h"
 #include "decoder_application_controller.h"
 #include "decoder_progress_text.h"
+#include "feedback_options_qt.h"
 #include "product_gui_helpers.h"
 #include "gui_native_smoke.h"
 #include "gui_visual_mode.h"
@@ -76,7 +77,8 @@ namespace
         }
         return snapshot.captureStallActive || snapshot.visualStallActive ? QStringLiteral("等待画面恢复 · 已保留进度") : QStringLiteral("正在恢复文件");
     case pbapp::DecoderState::Publishing: return QStringLiteral("正在安全保存文件…");
-    case pbapp::DecoderState::Completed: return pbgui::IsVerifiedCompletion(snapshot) ? QStringLiteral("已完成") : QStringLiteral("完成状态尚未通过复验");
+    case pbapp::DecoderState::Completed: return pbgui::IsVerifiedCompletion(snapshot) ?
+        snapshot.feedback.listening ? QStringLiteral("已完成，反馈监听中") : QStringLiteral("已完成") : QStringLiteral("完成状态尚未通过复验");
     case pbapp::DecoderState::Failed: return QStringLiteral("接收未能继续");
     case pbapp::DecoderState::Stopping: return QStringLiteral("正在安全停止…");
     case pbapp::DecoderState::Stopped: return QStringLiteral("已停止 · 断点已保留");
@@ -121,6 +123,7 @@ public:
         const int interval = settings_->value(QStringLiteral("g22/statusRefreshMilliseconds"), 250).toInt();
         refreshSpin_->setValue(interval >= 100 && interval <= 2000 ? interval : 250);
         LoadMemoryPreferences();
+        feedbackOptions_->Load(*settings_);
         static_cast<void>(controller_.SetStatusRefreshMilliseconds(refreshSpin_->value()));
         connect(&controller_, &DecoderApplicationController::SnapshotChanged, this, &DecoderWindow::UpdateSnapshot);
         connect(&controller_, &DecoderApplicationController::TerminalStateReached, this, [this]()
@@ -748,6 +751,7 @@ private:
         mainLayout->addLayout(monitorRow);
         roiLabel_ = pbgui::TextLabel();
         mainLayout->addWidget(roiLabel_);
+        feedbackOptions_ = new pbgui::FeedbackOptions(pbgui::FeedbackRole::DecoderWriter);
         QHBoxLayout* const actionRow = new QHBoxLayout();
         stateLabel_ = pbgui::TextLabel();
         stateLabel_->setStyleSheet(QStringLiteral("font-size:16px;font-weight:600;"));
@@ -805,6 +809,8 @@ private:
         QVBoxLayout* const advancedLayout = new QVBoxLayout(advancedPage);
         advancedLayout->setContentsMargins(20, 20, 20, 20);
         advancedLayout->setSpacing(12);
+        advancedLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
+        advancedLayout->addWidget(feedbackOptions_);
         QHBoxLayout* const refreshRow = new QHBoxLayout();
         refreshRow->addWidget(pbgui::TextLabel(QStringLiteral("界面状态刷新间隔")));
         refreshSpin_ = new QSpinBox();
@@ -880,7 +886,11 @@ private:
         details_->setObjectName(QStringLiteral("decoderDiagnostics"));
         details_->setReadOnly(true);
         advancedLayout->addWidget(details_, 1);
-        tabs_->addTab(advancedPage, QStringLiteral("高级选项"));
+        auto* const advancedScroll = new QScrollArea();
+        advancedScroll->setFrameShape(QFrame::NoFrame);
+        advancedScroll->setWidgetResizable(true);
+        advancedScroll->setWidget(advancedPage);
+        tabs_->addTab(advancedScroll, QStringLiteral("高级选项"));
         outer->addWidget(tabs_, 1);
         setCentralWidget(central);
 
@@ -1105,6 +1115,7 @@ private:
         settings_->setValue(QStringLiteral("receiverMemory/enabled"), memoryMode_->isChecked());
         settings_->setValue(QStringLiteral("receiverMemory/totalMiB"), totalMemorySpin_->value());
         settings_->setValue(QStringLiteral("receiverMemory/instanceMiB"), instanceMemorySpin_->value());
+        feedbackOptions_->Save(*settings_);
         settings_->sync();
     }
 
@@ -1154,6 +1165,12 @@ private:
         region_ = region;
         auto config = pbapp::MakeUnifiedDecoderConfig(outputEdit_->text().toStdWString(), region_);
         config.visualProfile = *profile;
+        const QString feedbackError = feedbackOptions_->Apply(config);
+        if (!feedbackError.isEmpty())
+        {
+            SetMessage(feedbackError);
+            return;
+        }
         if (pbapp::IsExperimentalPam4Family(*profile))
         {
             config.singleMonitorCapture = *current;
@@ -1245,6 +1262,8 @@ private:
                 .arg(pbapp::CalculateDecoderResumeBudgetBytes(GetMemoryBudget()) / pbapp::decoderMemoryMebibyte)
                 .arg(pbapp::CalculateDecoderMemoryPlanningBytes(GetMemoryBudget()) / pbapp::decoderMemoryMebibyte)));
         outputEdit_->setEnabled(idle);
+        feedbackOptions_->SetEditable(idle);
+        feedbackOptions_->SetTelemetry(snapshot.feedback);
         carrierCombo_->setEnabled(idle);
         browseButton_->setEnabled(idle);
         monitorCombo_->setEnabled(idle);
@@ -1256,7 +1275,7 @@ private:
         {
             field->setEnabled(idle && selected);
         }
-        startButton_->setText(active ? QStringLiteral("停止接收") : QStringLiteral("开始接收"));
+        startButton_->setText(active ? snapshot.feedback.listening ? QStringLiteral("停止反馈监听") : QStringLiteral("停止接收") : QStringLiteral("开始接收"));
         startButton_->setEnabled(!closePending_ && !selectingRoi_ && snapshot.state != pbapp::DecoderState::Stopping &&
             (active || (profile && (!evidence_ || !pam4) && hasRegion_ && QFileInfo(outputEdit_->text()).isDir() &&
                 (!memoryModeSelected || memoryStatus == pbapp::DecoderMemoryBudgetError::None))));
@@ -1322,6 +1341,7 @@ private:
     bool closePending_ = false;
     QTabWidget* tabs_ = nullptr;
     QLineEdit* outputEdit_ = nullptr;
+    pbgui::FeedbackOptions* feedbackOptions_ = nullptr;
     QComboBox* carrierCombo_ = nullptr;
     QLabel* modeHintLabel_ = nullptr;
     QString carrierPreferencesWarning_;

@@ -18,3 +18,7 @@ target_link_libraries(PBInnerFecTests
 PbAddUnitTest(PBInnerFecUnifiedTests test_inner_fec_unified.cpp)
 target_link_libraries(PBInnerFecUnifiedTests PRIVATE PB::PBInnerFec PB::PBProtocol)
 set_tests_properties(PBInnerFecUnifiedTests PROPERTIES LABELS "inner-fec;unified" TIMEOUT 30)
+
+PbAddUnitTest(PBInnerFecMatrixAllocationTests test_matrix_allocation_failure.cpp)
+target_link_libraries(PBInnerFecMatrixAllocationTests PRIVATE PB::PBInnerFec)
+set_tests_properties(PBInnerFecMatrixAllocationTests PROPERTIES LABELS "inner-fec;matrix;allocation" TIMEOUT 10)

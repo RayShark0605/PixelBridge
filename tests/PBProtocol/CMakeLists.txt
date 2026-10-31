@@ -78,3 +78,14 @@ target_link_libraries(PBProductVisualProfileTests
 set_tests_properties(PBProductVisualProfileTests PROPERTIES
     LABELS "pbprotocol;product-profile;unified"
     TIMEOUT 10)
+
+# The allocation overrides must not affect unrelated protocol tests or Catch2
+# assertions, so fault injection lives in its own executable.
+PbAddUnitTest(PBResumeAllocationFailureTests
+    test_resume_allocation_failure.cpp)
+target_link_libraries(PBResumeAllocationFailureTests
+    PRIVATE
+        PB::PBProtocol)
+set_tests_properties(PBResumeAllocationFailureTests PROPERTIES
+    LABELS "pbprotocol;resume;allocation"
+    TIMEOUT 30)

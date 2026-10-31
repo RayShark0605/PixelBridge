@@ -26,7 +26,7 @@ PBProtocolDump [--type <auto|bootstrap|control|fragment|session-descriptor|segme
   Transport，不猜测 Session/Segment/Manifest payload 类型。
 - 输出稳定字段表，包含 byte offset、size、raw/interpreted value、stored 与
   recomputed CRC 以及 authoritative parser 状态。
-- Segment/Manifest 语义检查需要精确 37-byte SessionDescriptor context。缺少
+- Segment/Manifest 语义检查需要变长的正式 Schema 1 SessionDescriptor context（至多 1300 bytes），不是历史 37-byte fixture。缺少
   context 是 `skipped/missing-context`（exit 1）；context I/O/size 错误为 exit 2。
 - exit code：0 有效，1 已评估但无效/缺上下文，2 参数、I/O 或输入上限错误。
 

@@ -12,15 +12,16 @@ namespace pbprotocol {
 // ---------------------------------------------------------------------------
 // Phase-0 provisional Transport Block wire codec (design document 9.4).
 //
-// Maturity: this is the same Phase-0 provisional implementation slice as the
-// descriptor payloads (kDescriptorWireMaturity). The field layout follows the
+// The field layout follows the
 // design 9.4 hot-path header (fixed 32-byte header, little-endian, uint16
 // PayloadBytes), but it is deliberately NOT a v1 wire freeze: the design
 // defers exact field-size freezing until after the POC, and the receiver
 // local API (pbreceiver::ReceivedTransportBlock) intentionally does not bind
-// to this serialized shape. No receiver-side admission path consumes this
-// codec yet; it exists for tooling, golden vectors, and the deterministic
-// end-to-end decoded-Transport reference chain.
+// to this serialized shape. Current visual/runtime ingress parses this codec
+// before descriptor-bound receiver admission. Codec success validates only
+// transport framing and CRC, not Session/Segment admission or file integrity.
+// Descriptor payloads separately use the formal Protocol-1 Schema-1 envelope;
+// the historical Phase-0 tooling classification here does not describe them.
 //
 // Wire layout (explicit little-endian, no ABI padding):
 //

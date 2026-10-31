@@ -1,0 +1,5 @@
+add_executable(PBFeedbackIo main.cpp)
+set_target_properties(PBFeedbackIo PROPERTIES AUTOMOC OFF)
+target_link_libraries(PBFeedbackIo PRIVATE PB::CompilerSettings PB::PBApplication)
+target_compile_definitions(PBFeedbackIo PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_features(PBFeedbackIo PRIVATE cxx_std_20)

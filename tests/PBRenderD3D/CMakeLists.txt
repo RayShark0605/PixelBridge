@@ -1,14 +1,21 @@
-PbAddUnitTest(PBRenderD3DTests test_data_window.cpp test_hardware_adapter_selection.cpp)
+PbAddUnitTest(PBRenderD3DTests test_data_window.cpp test_hardware_adapter_selection.cpp test_gpu_submission_permit.cpp)
 target_link_libraries(PBRenderD3DTests PRIVATE PB::PBRenderD3D)
 PbInstrumentPresentationTest(PBRenderD3DTests)
 target_include_directories(PBRenderD3DTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBRenderD3D/src")
 set_tests_properties(PBRenderD3DTests PROPERTIES LABELS "presentation;presentation-unit" TIMEOUT 60)
 
 PbAddUnitTest(PBRenderD3DWarpOffscreenTests test_warp_offscreen.cpp)
-target_link_libraries(PBRenderD3DWarpOffscreenTests PRIVATE PB::PBRenderD3D)
+target_link_libraries(PBRenderD3DWarpOffscreenTests PRIVATE PB::PBRenderD3D PB::PBModulation)
 PbInstrumentPresentationTest(PBRenderD3DWarpOffscreenTests)
 target_include_directories(PBRenderD3DWarpOffscreenTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBRenderD3D/src")
 set_tests_properties(PBRenderD3DWarpOffscreenTests PROPERTIES LABELS "presentation;presentation-warp;g13" TIMEOUT 60)
+
+PbAddUnitTest(PBRenderD3DHiddenBltTests test_hidden_blt.cpp)
+target_link_libraries(PBRenderD3DHiddenBltTests PRIVATE PB::PBRenderD3D)
+target_include_directories(PBRenderD3DHiddenBltTests PRIVATE "${PROJECT_SOURCE_DIR}/libs/PBRenderD3D/src")
+target_sources(PBRenderD3DHiddenBltTests PRIVATE "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
+PbInstrumentPresentationTest(PBRenderD3DHiddenBltTests)
+set_tests_properties(PBRenderD3DHiddenBltTests PROPERTIES LABELS "presentation;presentation-hidden;composed-blt" TIMEOUT 60)
 
 add_executable(PBPresentationDpiProbe dpi_awareness_probe.cpp)
 target_link_libraries(PBPresentationDpiProbe PRIVATE PB::CompilerSettings PB::PBRenderD3D)

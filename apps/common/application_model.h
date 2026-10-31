@@ -4,7 +4,10 @@
 #include "pbmodulation/visual_temporal.h"
 #include "pbtelemetry/unified_telemetry.h"
 #include "run_measurement.h"
+#include "sender_rate_prior.h"
+#include "feedback_protocol.h"
 #include "pbcore/stage_diagnostics.h"
+#include "pbrenderd3d/data_window.h"
 
 #include <cstdint>
 #include <limits>
@@ -261,8 +264,18 @@ struct EncoderPresentationAdapter
     bool softwareRasterizer = false;
 };
 
+enum class EncoderStopReason : std::uint8_t
+{
+    None,
+    User,
+    Timeout,
+    ReceiverVerified
+};
+
 struct EncoderSnapshot
 {
+    FeedbackTelemetry feedback;
+    EncoderStopReason stopReason = EncoderStopReason::None;
     std::optional<RunMeasurementSnapshot> measurement;
     std::shared_ptr<const pbcore::StageDiagnostics> diagnostics;
     EncoderState state = EncoderState::Idle;
@@ -320,7 +333,13 @@ struct EncoderSnapshot
     // Last renderer environment observation, not Win32 monitor identity or
     // proof of receiver recovery. Absent before successful initialization.
     std::optional<EncoderPresentationAdapter> presentationAdapter;
+    pbrenderd3d::PresentationModel requestedPresentationModel = pbrenderd3d::PresentationModel::Flip;
+    std::optional<pbrenderd3d::PresentationContract> presentationContract;
+    std::optional<pbrenderd3d::WindowState> presentationWindowState;
+    std::optional<pbpresenttiming::TimingIssue> presentationTimingIssue;
     std::uint64_t successfulPresentCalls = 0;
+    std::uint64_t softwarePaintCalls = 0;
+    std::uint64_t softwareFramesPainted = 0;
     std::optional<double> presentedVisualFps;
     std::optional<double> presentCallFps;
     // Interval-authoritative logical cadence: (N - 1) / (last - first).
@@ -340,6 +359,7 @@ struct EncoderSnapshot
     std::uint32_t fullscreenRasterWidth = 0;
     std::uint32_t configuredInitialAirtimePercent = 100;
     std::uint32_t configuredVisitBudgetPercent = 100;
+    SenderRatePriorSnapshot ratePrior;
     std::optional<double> configuredLogicalDwellMilliseconds;
     std::optional<double> minimumObservedLogicalDwellMilliseconds;
     std::uint64_t logicalDwellViolationCount = 0;
@@ -405,6 +425,7 @@ struct ObservedLocatorGeometrySnapshot
 
 struct DecoderSnapshot
 {
+    FeedbackTelemetry feedback;
     std::optional<RunMeasurementSnapshot> measurement;
     std::shared_ptr<const pbcore::StageDiagnostics> diagnostics;
     DecoderState state = DecoderState::Idle;

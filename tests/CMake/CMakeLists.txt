@@ -102,6 +102,13 @@ add_test(NAME PBBuildOptionValidation
         -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyBuildOptionMatrix.cmake")
 set_tests_properties(PBBuildOptionValidation PROPERTIES TIMEOUT 30)
 
+add_test(NAME PBFuzzCorpusIsolation
+    COMMAND "${CMAKE_COMMAND}"
+        "-DPB_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DPB_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/VerifyFuzzCorpusIsolation.cmake")
+set_tests_properties(PBFuzzCorpusIsolation PROPERTIES LABELS "fuzz;source-safety;cmake" TIMEOUT 30)
+
 function(PbAddForbiddenQtConfigureTest testName fixtureName expectedErrorRegex)
     add_test(NAME ${testName}
         COMMAND "${CMAKE_COMMAND}"
@@ -187,3 +194,12 @@ unset(pbSubprojectBinaryDirectory)
 unset(pbSubprojectConfigureCommand)
 unset(pbSubprojectSourceDirectory)
 unset(pbVcpkgInstallRoot)
+
+find_program(pbReleasePowerShell NAMES pwsh)
+if(pbReleasePowerShell)
+    add_test(NAME PBReleaseFeedbackHelperBinding
+        COMMAND "${pbReleasePowerShell}" -NoProfile -File "${PROJECT_SOURCE_DIR}/tests/tools/VerifyUnifiedFeedbackBinding.ps1"
+            -VerifierPath "${PROJECT_SOURCE_DIR}/tools/PBUnifiedRelease/Test-PBUnifiedPortablePackage.ps1")
+    set_tests_properties(PBReleaseFeedbackHelperBinding PROPERTIES TIMEOUT 30 LABELS "release;feedback;package")
+endif()
+unset(pbReleasePowerShell)

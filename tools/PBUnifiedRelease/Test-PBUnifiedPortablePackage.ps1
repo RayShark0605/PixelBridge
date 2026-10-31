@@ -224,6 +224,41 @@ function Get-ActualInventory
     return @($entries | Sort-Object -Property { [string]$_.path } -CaseSensitive -Stable)
 }
 
+function Assert-FeedbackHelperBinding
+{
+    param([System.Collections.IDictionary]$Application, [System.Collections.IDictionary]$FileMap)
+    $version = [version]$Application.runtimeIdentity.applicationVersion
+    if (-not $Application.Contains('feedbackHelper')) {
+        if ($version -ge [version]'1.1.0') { throw 'Required feedback helper binding is absent' }
+        return
+    }
+    $helper = $Application.feedbackHelper
+    $directory = [IO.Path]::GetDirectoryName([string]$Application.relativeExecutablePath).Replace('\', '/')
+    $expectedPath = if ($directory) { "$directory/PBFeedbackIo.exe" } else { 'PBFeedbackIo.exe' }
+    if ($helper -isnot [System.Collections.IDictionary] -or $helper.Count -ne 4 -or
+        -not $helper.Contains('relativeExecutablePath') -or -not $helper.Contains('size') -or
+        -not $helper.Contains('sha256') -or -not $helper.Contains('runtimeIdentity') -or
+        $helper.relativeExecutablePath -cne $expectedPath -or -not $FileMap.ContainsKey($expectedPath)) {
+        throw 'Required feedback helper is absent or not the bound sibling'
+    }
+    $file = $FileMap[$expectedPath]
+    if ($helper.size -isnot [Int64] -and $helper.size -isnot [UInt64] -and $helper.size -isnot [Int32]) {
+        throw 'Feedback helper size must be an unsigned integer'
+    }
+    if ($helper.size -lt 1 -or $helper.size -gt 64MB -or $helper.size -ne $file.size -or
+        $helper.sha256 -isnot [string] -or $helper.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $helper.sha256 -cne $file.sha256) {
+        throw 'Feedback helper binary binding does not match inventory'
+    }
+    $identity = $helper.runtimeIdentity
+    if ($identity -isnot [System.Collections.IDictionary] -or $identity.Count -ne 4 -or
+        -not $identity.Contains('application') -or -not $identity.Contains('feedbackProtocol') -or
+        -not $identity.Contains('ipcProtocol') -or -not $identity.Contains('metadataOnly') -or
+        $identity.application -cne 'PBFeedbackIo' -or $identity.feedbackProtocol -cne 1 -or
+        $identity.ipcProtocol -cne 1 -or $identity.metadataOnly -isnot [bool] -or -not $identity.metadataOnly) {
+        throw 'Feedback helper protocol/metadata identity mismatch'
+    }
+}
+
 $resolvedPackage = [System.IO.Path]::GetFullPath($PackageDirectory)
 if (-not (Test-Path -LiteralPath $resolvedPackage -PathType Container))
 {
@@ -466,6 +501,7 @@ foreach ($application in $applications)
         $application.versionOutput -cne "$($application.application) $($identity.applicationVersion) (protocol 1.0)") {
         throw 'Recorded application runtime identity/version does not match the sealed build'
     }
+    Assert-FeedbackHelperBinding -Application $application -FileMap $manifestFileMap
     $stream = [IO.File]::OpenRead($executablePath)
     $reader = [IO.BinaryReader]::new($stream)
     try {
@@ -582,8 +618,10 @@ if ($isProductRelease) {
     if ($endpointRoles.Count -ne 1 -or $buildIdentity.qt.version -cne '6.10.1.0' -or
         $sbomPackageMap['PixelBridge'].licenseConcluded -cne 'MIT' -or
         $sbomPackageMap['Qt'].licenseDeclared -cne 'LGPL-3.0-only') { throw 'Invalid product role or licensing baseline' }
+    $productVersion = [version]$applications[0].runtimeIdentity.applicationVersion
+    $releaseNotesName = "RELEASE_V$($productVersion.Major).$($productVersion.Minor).md"
     foreach ($path in @('LICENSE', 'README.md', 'USER_GUIDE.en.md', 'ACKNOWLEDGEMENTS.md', 'THIRD_PARTY_NOTICES.md',
-        'RELEASE_V1.0.md', 'QT_SOURCE.md', 'qt.conf', 'sources/qt-source-manifest.json', 'sources/qtbase-6.10.1-source.zip',
+        $releaseNotesName, 'QT_SOURCE.md', 'qt.conf', 'sources/qt-source-manifest.json', 'sources/qtbase-6.10.1-source.zip',
         'licenses/qt/LICENSES/LGPL-3.0-only.txt', 'licenses/qt/LICENSES/GPL-3.0-only.txt', 'licenses/qt/qtbase-6.10.1.spdx.json')) {
         if (-not $manifestFileMap.ContainsKey($path)) { throw "Required product release file missing: $path" }
     }
@@ -594,6 +632,7 @@ if ($isProductRelease) {
     $runtimePaths = @("PixelBridge$($endpointRoles[0]).exe", 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
         'blake3.dll', 'zstd.dll', 'platforms/qwindows.dll', 'platforms/qoffscreen.dll', 'styles/qmodernwindowsstyle.dll') +
         @($buildIdentity.vcRuntime.files.path)
+    if ($applications[0].Contains('feedbackHelper')) { $runtimePaths += 'PBFeedbackIo.exe' }
     foreach ($path in $runtimePaths) {
         if (-not $manifestFileMap.ContainsKey($path)) { throw "Required product runtime missing: $path" }
     }

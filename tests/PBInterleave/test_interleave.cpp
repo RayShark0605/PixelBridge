@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -39,6 +40,25 @@ using pbinterleave::kInterleaveTileCount;
 using pbinterleave::MapLogicalTileToPhysical;
 using pbinterleave::MapPhysicalTileToLogical;
 using pbinterleave::ReverseInterleave;
+
+TEST_CASE("Reference interleave accepts uninitialized output-only storage", "[interleave][output-lifetime]")
+{
+    std::vector<std::byte> logical(kInterleaveRegionBytes);
+    for (std::size_t index = 0; index < logical.size(); index++)
+    {
+        logical[index] = static_cast<std::byte>(index % 251U);
+    }
+    for (std::uint64_t phase = 0; phase < kInterleavePhaseCount; phase++)
+    {
+        // Deliberately uninitialized, so MemorySanitizer can detect any
+        // read-modify-write of a destination byte before its first assignment.
+        const auto physical = std::make_unique_for_overwrite<std::byte[]>(kInterleaveRegionBytes);
+        const auto restored = std::make_unique_for_overwrite<std::byte[]>(kInterleaveRegionBytes);
+        REQUIRE(ApplyInterleave(logical, {physical.get(), kInterleaveRegionBytes}, phase));
+        REQUIRE(ReverseInterleave({physical.get(), kInterleaveRegionBytes}, {restored.get(), kInterleaveRegionBytes}, phase));
+        REQUIRE(std::equal(logical.begin(), logical.end(), restored.get()));
+    }
+}
 
 // Deterministic PRNG (splitmix64); identical formula to the PBInnerFec and
 // PBModulation test helpers so shared patterns stay byte-compatible.

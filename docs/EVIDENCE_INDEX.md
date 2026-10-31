@@ -8,6 +8,12 @@
 
 These are retained results, not fresh throughput measurements of the new logging/UI source. Private payloads, runtime logs and packages are not part of the source repository. Artifact paths are local audit pointers, not public download promises.
 
+### 2026-10-09 呈现候选与本轮静态审核 / Presentation candidate and current static audit
+
+`artifacts/encoder-qt-raster-display-20261009-run01/final/HANDOFF.md` 是显式 Qt 软件呈现候选的留存交付入口。它记录 source fingerprint `bf0015ed42068184147fb98f6e46eb1f78681b2ac2cb86da5c5de4a5c3fcb48e`、75/75 定向 CTest 与 40 cases / 1026 assertions，且明确真实 Citrix 冻结改善和原始远控链路最终文件验收尚未验证。该候选不是下方较早的无 DXGI-output 候选，也不是本轮新源码的执行结果。
+
+The dated handoff above records the explicit Qt raster candidate's source identity and local checks, with Citrix/final remote-chain acceptance still unverified. It is distinct from the older no-DXGI-output candidate below. The 2026-10-15 audit is static-only and does not reuse those results as validation of its source edits; its ongoing coverage and findings are retained under `artifacts/static-audit-20261015/`.
+
 本地证据根 / local evidence root: `artifacts/nonlocal-optimization-20260915-audit01/`.
 
 <a id="readme-speed-reference"></a>
@@ -350,3 +356,61 @@ git show 7e88a69:docs/<FILE>.md
 ```
 
 被删文档的路径、原状态与 blob SHA-1 全表见 [`DOC_HISTORY.md`](DOC_HISTORY.md)。
+
+## 12. 2026-10-21 预期接收速度先验评估 / Expected-rate-prior assessment
+
+新增[中文评估](SENDER_RATE_PRIOR_RESEARCH.md) / [English assessment](SENDER_RATE_PRIOR_RESEARCH.en.md)，性质为用户新请求的窄研究，不是功能实现、调度默认变更或新的实屏成绩。
+
+- 本轮证据：用户确认先接收后发送的新接收、Encoder 30 Hz；截图只提供舍入进度/速度/等待提示。双端同 Session 日志和精确运行构建身份暂缺，不能据源码锁定该次缺段或唯一根因。
+- 源码交叉核对：提示合并 identical/already-completed 两类观测；GUI 总量不是连续前缀；PAM4 `>12` 段分支使用约 `2K` 初访毕业目标、常规 6 段窗口与后续 repair 回访。当前源码不自动代表截图二进制。
+- 定向重读旧证据：`artifacts/nonlocal-stall-20260913-2111/WORK_LOG.md` §21.29 与 `candidate-o-original-gpu-100-comparison.json`。旧 spatial GrayFast 单次真实100 MB首访缩减对照为464746→327833 ms（约−29.46%）；同类原生quarter模型为12349→20173帧（约+63.36%）。这是正反机制证据，不是本次 PAM4/速度区间功能的成绩；旧 late-join 失败不变。
+- 本地台账：`artifacts/speed-prior-evaluation-20261021/` 含起点哈希/差异、73份说明的阅读覆盖、截图选定字段转录、算术检查及固定上游资料清单；不公开原始用户日志、截图或本机环境。
+- 没有构建、运行产品、执行单元/Golden/性能/实屏测试；没有重跑或晋级旧实验，没有完成上次全量静态审计。研究建议仍需另行设计审阅及真实恢复/像素验证。
+
+This is a research-only addendum. The receiver-first 30 Hz incident lacks paired logs/build identity, so its exact cause is unproven. Source and historical positive/negative scheduling evidence motivate a soft prior with bounded repair service, not prefix skipping. The old spatial GrayFast field comparison and synthetic regression do not establish a current PAM4 speedup. Product defaults, prior failures, static-audit incompleteness and field boundaries remain unchanged; no product build or test was executed.
+## 13. 2026-10-21 PAM4 预期接收速度先验：可选实现与本地验证
+
+本节是用户在前述研究后批准的独立实现任务，不将研究阶段“不实现/不测试”的边界沿用到新任务；也不将本地通过写成现场提速。
+
+- 范围：首版仅 PAM4、超过 12 段生效，默认关闭。主/Shell 共用区间设置；原始字节预测带软调访问预算，不跳段；每轮非零回访、每第 4 轮及预测 EOF 后全文件保底修复。详见 [中文说明](SENDER_RATE_PRIOR.md) / [English guide](SENDER_RATE_PRIOR.en.md)。
+- 不变量：原最多 6 个活跃发送段；prepared frame/成功 Submit 提交边界、精确 descriptor/encoded bytes、repair-ID 租约防重用、DirectRepeat、资源准入、WholeFileDigest/安全发布/最终重开不变。关闭保持原调度，未新增协议/Profile、CLI 开关或反馈通道。
+- 构建：在新的独立 Release 构建目录构建双端应用、三个新测试目标及相关现有回归目标；无依赖更新/下载、没有正式版本提升、提交或 push。
+- 最终定向 CTest：18/18 通过。含先验策略/配置/实际调度作用/错误先验/晚加入/小文件保留/报告，既有 PAM4/Wide 恢复，协议、Outer FEC 与 PAM4/Wide raster Golden 相关检查，双端 GUI，Encoder 显示切换及 1.25/1.5/2 DPI 模拟。
+- 新增三个套件单独复跑：策略 5 cases / 58 assertions；runtime/report 5 cases / 116 assertions；离屏选项 2 cases / 23 assertions；合计 12 cases / 197 assertions。恢复经过真实 FEC、Receiver 与存储，独立重读文件验证 BLAKE3；它是无窗口正确性检查，不是实时像素链路速度实验。
+- 另完整执行 PBApplicationTests：197 cases，195 通过、1 失败、1 跳过；304902 assertions 中 304901 通过。失败仍是 Gray Fast spatial late-join 的 12505 < 12000 门，跳过因 PB_REMOTE_VISUAL_REAL_REPLAY_ROOT 未提供。未放宽、删除或特殊处理旧失败。
+- UI 回归过程中发现新控件挤压主窗口提示文字，已沿用 Decoder 的可滚动页面模式保留主窗口最小尺寸；Shell 扩大初始高度并允许调整，离屏测量在 polish/布局刷新后校验文字高度。最初失败及后续通过日志分别保留，未把截图肉眼审阅替代断言。
+- 本地材料：artifacts/pam4-rate-prior-implementation-20261021/。baseline 为任务起点 1291 个受版本控制/未忽略文件的哈希和准确文件备份；task-only.diff 仅本次修改；scope-verification.json 核对保护文档、无关文件、链接和新增内容隐私。构建目录及原始测试日志不纳入提交。
+- 当前候选也含起点已有的未提交 Qt/静态审计修改。后续比较应在同一候选开关之间进行；不把旧包对比的全部差异归因先验。不改变旧现场限制、静态审计未完成状态，也未确定截图 Session 的根因。
+
+Local implementation and targeted verification passed, not field-performance acceptance. The prior remains optional, PAM4-only and bounded, without ACKs or prefix skipping. All 18 targeted CTest entries passed; the separately executed complete PBApplicationTests retained the known Gray Fast late-join failure and missing-real-Replay skip. This is not an all-green repository, a formal release, completion of the previous static audit, or proof of faster/stall-free real transfers.
+
+## 14. 2026-10-21 双端独立候选打包范围 / Standalone candidate packaging
+
+- 用户明确要求本次 Encoder 候选与当前 Decoder 各自独立 ZIP、含依赖、不覆盖原正式包。
+- 运行身份、标准文件哈希、既有 DiagnosticSourceInventory 内容封存、已封存依赖的复核及全新解压/受限 PATH 离屏检查须分别记录，不混同 ProductRelease、干净虚拟机或实际传输证明。
+- 交付和验证记录保存于 artifacts/pam4-rate-prior-packages-20261021-run01/；包内不能携带原始用户日志、恢复状态和本机配置。新包使用方法见[候选包说明](PAM4_RATE_PRIOR_CANDIDATE_PACKAGES.md)。
+- 本次保留现有 clean-commit producer 门禁，不为打包自行提交或把 dirty 源码标成正式发布；原 dist 文件以任务起点哈希为保护基线。
+
+## 15. 2026-10-21 延迟只读反馈辅助路线评估 / Delayed read-only feedback assessment
+
+新增[中文研究](FEEDBACK_ASSISTED_TRANSFER_RESEARCH.md) / [English research](FEEDBACK_ASSISTED_TRANSFER_RESEARCH.en.md)。这是当前无 ACK 架构之外、用户新提出的显式可选状态控制面评估，不是已实现功能或旧先验的提速成绩。
+
+- 用户确认：一个 Encoder 服务一个指定 Decoder；Decoder 完整验证后希望 Encoder 自动安全停止。只读限制在 Encoder 侧，反馈由 Decoder 本地写出，经延迟映射读取；正向文件内容仍必须只由实际捕获像素恢复。
+- 阅读范围：起点 78 份第一方维护文档、2 份只读受保护历史报告，以及静态审计停止交接/今日候选交付说明；未逐份复审构建副本、依赖或全部原始 artifacts。当前源码窄复核覆盖发送账本/窗口、耐久段提交、final publish、实际 Submit/FrameSequence lease 和停止生命周期。
+- 结论边界：精确耐久段集合比百分比或速度先验更适合补洞；建议流水发送而非停等。现有存储提交链提供候选观察点，但没有已经验证的反馈快照、活动段 API、映射 I/O 或自动停止实现。
+- 自动停止专项风险：同 Session 旧终态不能仅靠 SessionId 排除；current-Start 实际视觉帧号锚点有条件可研究，但依赖未克隆/回滚的唯一 Sender 状态。现有 RequestStop 无 expected generation，Decoder 完成后停止捕获；跨 Start 回调、B 完成后 A 重启、同快照/epoch一致性、终态保留和写者认证均需后续设计，不能用一个 completed 布尔值代替。
+- 在线一手研究：NORM/FLUTE/RaptorQ 标准、稀疏反馈论文、视觉 ACK 开源示例、固定 Wirehair/libcimbar 源码、Citrix 与 Win32 文件通知/共享/取消文档。未读到的延迟反馈论文全文已明确标注，不用于推导具体算法或收益。
+- 本地台账：artifacts/feedback-assisted-evaluation-20261021/，含起点状态/文档哈希、阅读覆盖、源码定位、引用清单及本次文档专属差异。原有修改与保护文件保留；没有产品构建、单元/Golden/性能/实屏测试、实际映射访问、打包或 Git 提交。
+
+Research only: no feature, mapping guarantee, performance result or completion of prior audits is claimed. The proposed auxiliary control plane is explicit and optional; captured pixels remain the sole forward payload source. Single-receiver scope and post-verification automatic stop are user requirements, not approval of a finished implementation specification.
+
+## 2026-10-21 可选文件反馈实现（收尾中）
+
+[功能与证据边界](FEEDBACK_ASSISTED_TRANSFER.md)、[英文](FEEDBACK_ASSISTED_TRANSFER.en.md)、[批准设计](superpowers/specs/2026-10-21-feedback-assisted-transfer-design.md)、[实施计划](superpowers/plans/2026-10-21-feedback-assisted-transfer.md)。本地材料在 artifacts/feedback-assisted-implementation-20261021-run01/：task-start 字节基线、RED/GREEN 日志、helper/文件/运行时/GUI/报告用例及后续复核。完整应用历史 late-join 失败和缺 Replay 跳过继续保留。新 ZIP/全量最终复核尚未封口，不替代现场映射、缓存/断线、长稳与提速验收。
+
+
+## 2026-10-31 v1.1.0 发布与维护者实机反馈
+
+维护者明确报告前一反馈候选实机亲测通过，并批准 v1.1.0、主分支与版本标签推送。此事实来自维护者，不伪称代理执行了现场实验；未附带的模式矩阵、定量提速、提供商和长稳仍不作通用承诺。旧研究/候选条目保留原日期边界；当前用户入口是[发布说明](RELEASE_V1.1.md)和[现状](PROJECT_STATUS.md)。
+
+本次正式发布从准确提交树重新构建并核验 helper、许可、依赖闭包、完整回归、独立解压启动和负向拒绝；实际结果与包哈希在本地 `artifacts/release-v1.1.0-20261031-run01/` 交付记录中，不把原始环境日志加入 Git。仅保留已登记 GrayFast 性能门与 Replay 夹具限制，不据此扩展到无关性能研究。

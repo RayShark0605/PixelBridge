@@ -1,5 +1,10 @@
 # PixelBridge documentation
 
+> 当前版本 / Current release: [v1.1.0](RELEASE_V1.1.md)。反馈候选由维护者报告实机通过；以新提交、正式包身份及其验包记录为准。
+
+
+> New: [optional file-feedback setup, control contract and evidence limits](FEEDBACK_ASSISTED_TRANSFER.en.md) / [简体中文](FEEDBACK_ASSISTED_TRANSFER.md). Decoder setup is in Advanced; Encoder main/Shell share read-only settings. All four modes are supported, default off.
+
 [简体中文](README.md) | **English**
 
 ## Users
@@ -10,6 +15,8 @@
 4. [Diagnostics](DIAGNOSTICS.en.md): activity reasons, endpoint counters, errors and log files.
 5. [Current status](PROJECT_STATUS.en.md): validated/unvalidated scope and v1.0 release boundaries.
 6. [2026-09-22 full audit record](AUDIT_2026-09-22.md): reviewed code/docs, fixes, verification, and retained limits.
+7. [PAM4 expected reception-rate prior](SENDER_RATE_PRIOR.en.md): optional configuration, budget rules, rollback and local/field evidence boundaries.
+8. [Standalone candidate ZIPs](PAM4_RATE_PRIOR_CANDIDATE_PACKAGES.md): separate endpoints, isolated Encoder entry, dependencies and integrity checks (with English summary).
 
 ## Developers
 
@@ -28,6 +35,8 @@ These retain exact module/field tables and historical evidence. They are not com
 | [Descriptor Schema](PROTOCOL_1_DESCRIPTOR_SCHEMA.md) | Byte fields, lengths, reserved values, CRC and conflict rules |
 | [Raster](REFERENCE_RASTER.md) | Pixel-reference definitions |
 | [Sender persistence](ENCODER_STREAMING_CAROUSEL.md) | Persistent state/leases and historical scheduler evidence |
+| [Expected reception-rate prior assessment](SENDER_RATE_PRIOR_RESEARCH.en.md) | Narrow scheduling research, 2026-10-21: benefit conditions, counterexamples and proposed validation; not implemented or performance-qualified |
+| [Delayed read-only feedback assessment](FEEDBACK_ASSISTED_TRANSFER_RESEARCH.en.md) | Optional segment feedback from one designated Decoder, pipelined scheduling and safe stop after verified completion; research only, not implemented or measured |
 | [Receiver persistence](DECODER_RESUMABLE_RECOVERY.md) | PBJH/PBJR, checkpoints, compaction and publish crash windows |
 | [Presentation](PRESENTATION.md) | Data windows, sampling and Present lifecycle |
 | [Regions](SCREEN_REGION.md), [WGC](PBScreenCaptureWgc.md) | Physical pixels, DPI, textures and frame leases |
@@ -47,3 +56,6 @@ Local historical/tool documents are not all translated line by line. **The maint
 - No payloads, recordings, private credentials/addresses, logs or build trees in Git.
 - Protected local reports, AGENTS and `.zcode` are outside this cleanup.
 - v1.0 uses MIT; see the bilingual [release notes](RELEASE_V1.0.md) for package contents and validation boundaries.
+
+
+根目录 README 为常青产品文档：保持当前状态、直接更新正文，禁止修订记录/日期更新段；同步中英文。历史和版本变更只放专门文档。Root READMEs must stay evergreen and bilingual; keep change history outside them.

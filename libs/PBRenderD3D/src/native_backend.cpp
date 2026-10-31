@@ -1,5 +1,6 @@
 #include "presentation_backend.h"
 #include "hardware_adapter_selection.h"
+#include "gpu_submission_permit.h"
 #include "pbprotocol/blake3_digest.h"
 #include "pbprotocol/checked_integer.h"
 
@@ -397,7 +398,10 @@ public:
         {
             return status;
         }
-        ShowWindow(window, SW_SHOWNOACTIVATE);
+        if (!options_.hiddenWindow)
+        {
+            ShowWindow(window, SW_SHOWNOACTIVATE);
+        }
         return PresentationStatus::Success();
     }
 
@@ -535,6 +539,7 @@ public:
         {
             return drained;
         }
+        gpuPermit_.Reset();
         if (environment.minimized || environment.clientWidth == 0 || environment.clientHeight == 0 || !environment.adapterAvailable ||
             !environment.singleMonitor)
         {
@@ -566,7 +571,7 @@ public:
         backBuffer_.Reset();
         context_->Flush();
         const HRESULT resized = swapChain_->ResizeBuffers(config_.bufferCount, environment.clientWidth, environment.clientHeight, DXGI_FORMAT_B8G8R8A8_UNORM,
-                                                          DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+                                                          SwapChainFlags());
         if (FAILED(resized))
         {
             return DeviceError(resized, PresentationStage::Resize);
@@ -598,6 +603,10 @@ public:
 
     [[nodiscard]] BackendWaitResult Wait(const bool requestFramePermit, const std::uint32_t timeoutMilliseconds) noexcept override
     {
+        if (requestFramePermit && IsComposedBlt())
+        {
+            return WaitForGpuPermit(timeoutMilliseconds);
+        }
         const std::array<HANDLE, 2> handles{wake_.Get(), frameLatency_.Get()};
         if (requestFramePermit && frameLatency_.Get() == nullptr)
         {
@@ -704,6 +713,11 @@ public:
             return {PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present),
                 pbpresenttiming::PresentOutcome::Failure, std::nullopt};
         }
+        if (IsComposedBlt() && !gpuPermit_.Submit())
+        {
+            return {PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present),
+                pbpresenttiming::PresentOutcome::Failure, std::nullopt};
+        }
         const PresentationViewportGeometry viewport = ResolvePresentationViewport(
             config_, contract_.bufferWidth, contract_.bufferHeight);
         const PresentationStatus rendered = RenderCanonicalRaster(context_.Get(), backBufferView_.Get(),
@@ -715,6 +729,7 @@ public:
         pbprotocol::SaturatingIncrementUnsigned(diagnostics_.sourceRendersToBackBuffer);
         pbprotocol::SaturatingIncrementUnsigned(diagnostics_.presentCalls);
         const HRESULT result = swapChain_->Present(1, 0);
+        MarkGpuSubmission();
         if (result == DXGI_STATUS_OCCLUDED)
         {
             occluded_ = true;
@@ -743,9 +758,15 @@ public:
             return {PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present),
                 pbpresenttiming::PresentOutcome::Failure, std::nullopt};
         }
+        if (IsComposedBlt() && !gpuPermit_.Submit())
+        {
+            return {PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Present),
+                pbpresenttiming::PresentOutcome::Failure, std::nullopt};
+        }
         BindNeutralMatte(context_.Get(), backBufferView_.Get());
         pbprotocol::SaturatingIncrementUnsigned(diagnostics_.neutralMattePresentCalls);
         const HRESULT result = swapChain_->Present(1, 0);
+        MarkGpuSubmission();
         if (result == DXGI_STATUS_OCCLUDED)
         {
             occluded_ = true;
@@ -764,6 +785,16 @@ public:
         if (!swapChain_)
         {
             return {};
+        }
+        if (IsComposedBlt())
+        {
+            const HRESULT reason = device_->GetDeviceRemovedReason();
+            if (FAILED(reason))
+            {
+                return {pbpresenttiming::StatisticsStatus::Error, {}, static_cast<std::int32_t>(reason), DeviceError(reason, PresentationStage::Statistics)};
+            }
+            // Windowed blt chains have no DXGI display-timing statistics.
+            return {pbpresenttiming::StatisticsStatus::Unavailable, {}, static_cast<std::int32_t>(DXGI_ERROR_UNSUPPORTED)};
         }
         DXGI_FRAME_STATISTICS statistics{};
         const HRESULT result = swapChain_->GetFrameStatistics(&statistics);
@@ -830,6 +861,82 @@ public:
     }
 
 private:
+    [[nodiscard]] bool IsComposedBlt() const noexcept
+    {
+        return config_.presentationModel == PresentationModel::ComposedBlt;
+    }
+
+    [[nodiscard]] UINT SwapChainFlags() const noexcept
+    {
+        return IsComposedBlt() ? 0u : DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    }
+
+    void MarkGpuSubmission() noexcept
+    {
+        if (IsComposedBlt())
+        {
+            // Present flushes earlier drawing, but not this later marker.
+            // Flush the query so a quiet sender never waits on unsubmitted work.
+            context_->End(completion_.Get());
+            context_->Flush();
+        }
+    }
+
+    [[nodiscard]] BackendWaitResult WaitForGpuPermit(const std::uint32_t timeoutMilliseconds) noexcept
+    {
+        if (!context_ || !completion_ || !swapChain_ || frameLatency_.Get() != nullptr)
+        {
+            return {BackendWake::Failed, PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::Wait)};
+        }
+        const std::int64_t start = NowQpc();
+        for (;;)
+        {
+            if (cancelled_.load() || closeRequested_)
+            {
+                return {BackendWake::Message, {}};
+            }
+            bool completed = false;
+            if (gpuPermit_.NeedsCompletion())
+            {
+                BOOL completion = FALSE;
+                const HRESULT result = context_->GetData(completion_.Get(), &completion, sizeof(completion), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if (FAILED(result))
+                {
+                    return {BackendWake::Failed, DeviceError(result, PresentationStage::Wait)};
+                }
+                completed = result == S_OK && completion != FALSE;
+            }
+            if (gpuPermit_.TryAcquire(completed))
+            {
+                pbprotocol::SaturatingIncrementUnsigned(diagnostics_.framePermits);
+                return {BackendWake::FramePermit, {}};
+            }
+            const std::int64_t now = NowQpc();
+            if (start < 0 || now < start)
+            {
+                return {BackendWake::Failed, PresentationStatus::Failure(PresentationErrorCode::Timeout, PresentationStage::Wait)};
+            }
+            const double elapsed = static_cast<double>(now - start) * 1000.0 / static_cast<double>(frequency_);
+            if (elapsed >= timeoutMilliseconds)
+            {
+                return {BackendWake::Timeout, {}};
+            }
+            const HANDLE wake = wake_.Get();
+            const DWORD milliseconds = (std::min)(2u, timeoutMilliseconds - static_cast<std::uint32_t>(elapsed));
+            const DWORD result = MsgWaitForMultipleObjectsEx(1, &wake, milliseconds, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (result == WAIT_FAILED)
+            {
+                return {BackendWake::Failed, PresentationStatus::Failure(PresentationErrorCode::WaitFailed, PresentationStage::Wait,
+                    static_cast<std::int32_t>(GetLastError()))};
+            }
+            PumpMessages();
+            if (result != WAIT_TIMEOUT)
+            {
+                return {BackendWake::Message, {}};
+            }
+        }
+    }
+
     [[nodiscard]] static LRESULT CALLBACK WindowProcedure(const HWND window, const UINT message, const WPARAM word, const LPARAM longWord) noexcept
     {
         auto* backend = reinterpret_cast<NativeBackend*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -1098,10 +1205,11 @@ private:
         swapDescription.SampleDesc.Count = 1;
         swapDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         swapDescription.BufferCount = config_.bufferCount;
-        swapDescription.Scaling = DXGI_SCALING_NONE;
-        swapDescription.SwapEffect = config_.flipEffect == FlipEffect::Discard ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        swapDescription.Scaling = IsComposedBlt() ? DXGI_SCALING_STRETCH : DXGI_SCALING_NONE;
+        swapDescription.SwapEffect = IsComposedBlt() ? DXGI_SWAP_EFFECT_DISCARD :
+            (config_.flipEffect == FlipEffect::Discard ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
         swapDescription.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-        swapDescription.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        swapDescription.Flags = SwapChainFlags();
         ComPtr<IDXGISwapChain1> baseSwapChain;
         result = factory_->CreateSwapChainForHwnd(device_.Get(), window_.load(), &swapDescription, nullptr, nullptr, baseSwapChain.GetAddressOf());
         if (FAILED(result))
@@ -1128,15 +1236,30 @@ private:
         {
             return InjectedFailure(PresentationStage::SwapChain);
         }
-        result = swapChain_->SetMaximumFrameLatency(config_.maximumFrameLatency);
+        if (IsComposedBlt())
+        {
+            ComPtr<IDXGIDevice1> dxgiDevice;
+            result = device_.As(&dxgiDevice);
+            if (SUCCEEDED(result))
+            {
+                result = dxgiDevice->SetMaximumFrameLatency(config_.maximumFrameLatency);
+            }
+        }
+        else
+        {
+            result = swapChain_->SetMaximumFrameLatency(config_.maximumFrameLatency);
+        }
         if (FAILED(result))
         {
             return NativeError(result, PresentationStage::FrameLatency);
         }
-        frameLatency_.Reset(swapChain_->GetFrameLatencyWaitableObject());
-        if (frameLatency_.Get() == nullptr)
+        if (!IsComposedBlt())
         {
-            return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::FrameLatency);
+            frameLatency_.Reset(swapChain_->GetFrameLatencyWaitableObject());
+            if (frameLatency_.Get() == nullptr)
+            {
+                return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::FrameLatency);
+            }
         }
         if (ShouldFail(PresentationStage::FrameLatency))
         {
@@ -1176,7 +1299,19 @@ private:
         {
             return NativeError(result, PresentationStage::SwapChain);
         }
-        result = swapChain_->GetMaximumFrameLatency(&latency);
+        if (IsComposedBlt())
+        {
+            ComPtr<IDXGIDevice1> dxgiDevice;
+            result = device_.As(&dxgiDevice);
+            if (SUCCEEDED(result))
+            {
+                result = dxgiDevice->GetMaximumFrameLatency(&latency);
+            }
+        }
+        else
+        {
+            result = swapChain_->GetMaximumFrameLatency(&latency);
+        }
         if (FAILED(result))
         {
             return NativeError(result, PresentationStage::FrameLatency);
@@ -1185,11 +1320,16 @@ private:
         contract_.bufferHeight = description.Height;
         contract_.bufferCount = description.BufferCount;
         contract_.maximumFrameLatency = latency;
-        contract_.flipEffect = description.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ? FlipEffect::Discard : FlipEffect::Sequential;
+        contract_.presentationModel = description.SwapEffect == DXGI_SWAP_EFFECT_DISCARD ? PresentationModel::ComposedBlt : PresentationModel::Flip;
+        contract_.swapEffect = description.SwapEffect == DXGI_SWAP_EFFECT_DISCARD ? PresentationSwapEffect::BltDiscard :
+            (description.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ? PresentationSwapEffect::FlipDiscard : PresentationSwapEffect::FlipSequential);
+        contract_.pacing = IsComposedBlt() ? PresentationPacing::GpuCompletionAndVsync : PresentationPacing::FrameLatencyWaitable;
+        contract_.flipEffect = description.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ? FlipEffect::Sequential : FlipEffect::Discard;
         contract_.bgraUnorm = description.Format == DXGI_FORMAT_B8G8R8A8_UNORM;
         contract_.noMsaa = description.SampleDesc.Count == 1 && description.SampleDesc.Quality == 0;
         contract_.alphaIgnored = description.AlphaMode == DXGI_ALPHA_MODE_IGNORE;
         contract_.scalingNone = description.Scaling == DXGI_SCALING_NONE;
+        contract_.scalingStretch = description.Scaling == DXGI_SCALING_STRETCH;
         contract_.tearingDisabled = (description.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) == 0;
         contract_.latencyWaitable = (description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0 && frameLatency_.Get() != nullptr;
         contract_.perMonitorV2 =
@@ -1202,7 +1342,14 @@ private:
         contract_.pointSampled = rasterPipeline_.pointSampler != nullptr;
         contract_.centeredLetterbox = true;
         contract_.neutralMatteBelowMinimum = true;
-        if (description.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD && description.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)
+        BOOL fullscreen = TRUE;
+        result = swapChain_->GetFullscreenState(&fullscreen, nullptr);
+        if (FAILED(result))
+        {
+            return NativeError(result, PresentationStage::SwapChain);
+        }
+        if (fullscreen || (description.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD &&
+            description.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL && description.SwapEffect != DXGI_SWAP_EFFECT_DISCARD))
         {
             return PresentationStatus::Failure(PresentationErrorCode::ContractViolation, PresentationStage::SwapChain);
         }
@@ -1299,6 +1446,7 @@ private:
         backBuffer_.Reset();
         rasterPipeline_ = {};
         completion_.Reset();
+        gpuPermit_.Reset();
         // No wait is active here: all waits and teardown share the owner.
         frameLatency_.Reset();
         swapChain_.Reset();
@@ -1345,6 +1493,7 @@ private:
     ComPtr<ID3D11Texture2D> sourceStaging_;
     RasterPipeline rasterPipeline_;
     ComPtr<ID3D11Query> completion_;
+    GpuSubmissionPermit gpuPermit_;
     ComPtr<ID3D11InfoQueue> infoQueue_;
     PresentationContract contract_;
     BackendDiagnostics diagnostics_;

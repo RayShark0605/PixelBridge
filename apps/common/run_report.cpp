@@ -364,11 +364,23 @@ std::string BuildUnifiedEncoderReport(const RunReportContext& context, const Enc
         stream << "null";
     }
     stream << ",\"adapterUnavailableReason\":";
-    WriteEscaped(stream, snapshot.presentationAdapter ? "" : "RendererEnvironmentUnavailable");
+    const bool qtRaster = snapshot.presentationContract && snapshot.presentationContract->presentationModel == pbrenderd3d::PresentationModel::QtRaster;
+    WriteEscaped(stream, snapshot.presentationAdapter ? "" : qtRaster ? "QtRasterDoesNotUseDxgiAdapter" : "RendererEnvironmentUnavailable");
+    stream << ',';
+    WriteEncoderPresentationPolicyJson(stream, snapshot);
     stream << ",\"successfulPresentCalls\":" << snapshot.successfulPresentCalls
         << ",\"sourceTextureReplacements\":" << snapshot.sourceTextureReplacements
-        << ",\"basis\":\"last observed renderer environment and producer Present calls; not receiver recovery or Citrix certification\"}";
+        << ",\"basis\":";
+    WriteEscaped(stream, qtRaster ? "Qt raster software paints; not receiver recovery or Citrix certification" :
+        "last observed renderer environment and producer Present calls; not receiver recovery or Citrix certification");
+    stream << '}';
     stream << ",\"receiverProgress\":null,\"receiverEta\":null,\"verifiedGoodput\":null";
+    stream << ",\"feedback\":";
+    WriteFeedbackTelemetryJson(stream, snapshot.feedback);
+    stream << ",\"stopReason\":";
+    WriteEncoderStopReasonJson(stream, snapshot);
+    stream << ",\"senderRatePrior\":";
+    WriteEncoderRatePriorJson(stream, snapshot.ratePrior);
     if (snapshot.diagnostics)
     {
         stream << ",\"diagnostics\":" << pbcore::BuildStageDiagnosticsJson(snapshot.diagnostics->GetSnapshot());
@@ -581,11 +593,157 @@ std::string BuildUnifiedDecoderReport(const RunReportContext& context, const Dec
             snapshot.wholeFileDigestCheck == true && snapshot.finalRenameSucceeded == true &&
             snapshot.finalReopenVerified == true && snapshot.finalPublishSucceeded, resumed);
     }
+    stream << ",\"feedback\":";
+    WriteFeedbackTelemetryJson(stream, snapshot.feedback);
     WriteUnifiedTail(stream, snapshot.remoteMetadata, snapshot.statusMessage, snapshot.errorDetail);
     return stream.str();
 }
 
 } // namespace
+
+void WriteFeedbackTelemetryJson(std::ostream& stream, const FeedbackTelemetry& feedback)
+{
+    const char* state = "Disabled";
+    if (feedback.requested)
+    {
+        switch (feedback.state)
+        {
+        case FeedbackConnectionState::Disabled: state = "Disabled"; break;
+        case FeedbackConnectionState::Waiting: state = "Waiting"; break;
+        case FeedbackConnectionState::Active: state = "Active"; break;
+        case FeedbackConnectionState::Stale: state = "Stale"; break;
+        case FeedbackConnectionState::Unavailable: state = "Unavailable"; break;
+        case FeedbackConnectionState::Rejected: state = "Rejected"; break;
+        case FeedbackConnectionState::ReceiverReportedComplete: state = "ReceiverReportedComplete"; break;
+        }
+    }
+    const auto ErrorName = [](const FeedbackError error) -> const char*
+    {
+        switch (error)
+        {
+        case FeedbackError::None: return "None";
+        case FeedbackError::InvalidFormat: return "InvalidFormat";
+        case FeedbackError::UnsupportedVersion: return "UnsupportedVersion";
+        case FeedbackError::LimitExceeded: return "LimitExceeded";
+        case FeedbackError::IntegrityMismatch: return "IntegrityMismatch";
+        case FeedbackError::InconsistentState: return "InconsistentState";
+        case FeedbackError::AllocationFailure: return "AllocationFailure";
+        case FeedbackError::InvalidPath: return "InvalidPath";
+        case FeedbackError::IoFailure: return "IoFailure";
+        case FeedbackError::Unavailable: return "Unavailable";
+        case FeedbackError::Conflict: return "Conflict";
+        case FeedbackError::Stale: return "Stale";
+        case FeedbackError::Superseded: return "Superseded";
+        }
+        return "Unknown";
+    };
+    const bool effective = feedback.requested && feedback.effective;
+    const bool terminalAccepted = feedback.requested && feedback.terminalAccepted;
+    const bool terminalPublished = feedback.requested && feedback.terminalPublished;
+    stream << std::boolalpha << "{\"schema\":\"PixelBridge.FileFeedbackTelemetry.1\",\"metadataOnly\":true,\"authenticated\":false"
+        << ",\"requested\":" << feedback.requested << ",\"effective\":" << effective << ",\"state\":";
+    WriteEscaped(stream, state);
+    stream << ",\"lastError\":";
+    WriteEscaped(stream, ErrorName(feedback.lastError));
+    stream << ",\"acceptedSnapshots\":" << feedback.acceptedSnapshots << ",\"rejectedSnapshots\":" << feedback.rejectedSnapshots
+        << ",\"duplicateSnapshots\":" << feedback.duplicateSnapshots << ",\"staleEvents\":" << feedback.staleEvents
+        << ",\"ioTimeouts\":" << feedback.ioTimeouts << ",\"skippedSegmentServiceVisits\":" << feedback.skippedService
+        << ",\"confirmedDurableSegments\":";
+    WriteOptionalNumber(stream, effective || terminalAccepted || terminalPublished ? std::optional<std::uint64_t>{feedback.confirmedSegments} : std::nullopt);
+    stream << ",\"observedFrameSequence\":";
+    WriteOptionalNumber(stream, feedback.requested && feedback.observedFrameAvailable ? std::optional<std::uint64_t>{feedback.observedFrameSequence} : std::nullopt);
+    stream << ",\"terminalPublished\":" << terminalPublished << ",\"terminalAccepted\":" << terminalAccepted
+        << ",\"receiverReportedCompletionMilliseconds\":";
+    WriteOptionalNumber(stream, terminalAccepted ? feedback.receiverReportedCompletionMilliseconds : std::nullopt);
+    stream << ",\"listening\":" << (feedback.requested && feedback.listening) << ",\"listenerStartedUnixMilliseconds\":";
+    WriteOptionalNumber(stream, feedback.requested ? feedback.listenerStartedUnixMilliseconds : std::nullopt);
+    stream << ",\"listenerStoppedUnixMilliseconds\":";
+    WriteOptionalNumber(stream, feedback.requested ? feedback.listenerStoppedUnixMilliseconds : std::nullopt);
+    stream << ",\"listenerElapsedMilliseconds\":";
+    WriteOptionalNumber(stream, feedback.requested ? feedback.listenerElapsedMilliseconds : std::nullopt);
+    stream << '}';
+}
+
+void WriteEncoderStopReasonJson(std::ostream& stream, const EncoderSnapshot& snapshot)
+{
+    if (snapshot.stoppedByTimeout || snapshot.stopReason == EncoderStopReason::Timeout)
+    {
+        stream << "\"Timeout\"";
+    }
+    else if (snapshot.stopReason == EncoderStopReason::ReceiverVerified)
+    {
+        stream << "\"ReceiverVerified\"";
+    }
+    else if (snapshot.stopReason == EncoderStopReason::User || snapshot.state == EncoderState::Stopped)
+    {
+        stream << "\"User\"";
+    }
+    else
+    {
+        stream << "\"None\"";
+    }
+}
+
+void WriteEncoderRatePriorJson(std::ostream& stream, const SenderRatePriorSnapshot& prior)
+{
+    stream << "{\"requested\":";
+    if (prior.configured)
+    {
+        stream << "{\"minimumKibPerSecond\":" << prior.configured->minimumKibPerSecond
+            << ",\"maximumKibPerSecond\":" << prior.configured->maximumKibPerSecond << '}';
+    }
+    else
+    {
+        stream << "null";
+    }
+    stream << ",\"effective\":" << std::boolalpha << prior.effective
+        << ",\"policy\":\"" << (prior.effective ? "pam4-raw-frontier-v1" : "original") << '"'
+        << ",\"receiverAcknowledged\":false,\"rateUnit\":\"1024 B/s\""
+        << ",\"activeNanoseconds\":" << prior.activeNanoseconds
+        << ",\"clampedSenderGaps\":" << prior.clampedSenderGaps
+        << ",\"predictedLowerRawBytes\":" << prior.predictedLowerRawBytes
+        << ",\"predictedUpperRawBytes\":" << prior.predictedUpperRawBytes
+        << ",\"beforeFrontierEquations\":" << prior.beforeFrontierEquations
+        << ",\"nearFrontierEquations\":" << prior.nearFrontierEquations
+        << ",\"aheadOfFrontierEquations\":" << prior.aheadOfFrontierEquations
+        << ",\"safetyRepairEquations\":" << prior.safetyRepairEquations << '}';
+}
+
+void WriteEncoderPresentationPolicyJson(std::ostream& stream, const EncoderSnapshot& snapshot)
+{
+    stream << "\"requestedModel\":";
+    WriteEscaped(stream, pbrenderd3d::GetPresentationModelName(snapshot.requestedPresentationModel));
+    stream << ",\"actualModel\":";
+    if (snapshot.presentationContract)
+    {
+        const auto& contract = *snapshot.presentationContract;
+        WriteEscaped(stream, pbrenderd3d::GetPresentationModelName(contract.presentationModel));
+        stream << ",\"swapEffect\":";
+        WriteEscaped(stream, pbrenderd3d::GetPresentationSwapEffectName(contract.swapEffect));
+        stream << ",\"pacing\":";
+        WriteEscaped(stream, pbrenderd3d::GetPresentationPacingName(contract.pacing));
+        stream << ",\"latencyWaitable\":" << (contract.latencyWaitable ? "true" : "false")
+            << ",\"bufferCount\":" << contract.bufferCount << ",\"maximumFrameLatency\":" << contract.maximumFrameLatency
+            << ",\"rasterPaintEngine\":" << (contract.rasterPaintEngine ? "true" : "false");
+    }
+    else
+    {
+        stream << "null,\"swapEffect\":null,\"pacing\":null,\"latencyWaitable\":null,\"bufferCount\":null,\"maximumFrameLatency\":null";
+    }
+    stream << ",\"windowState\":";
+    WriteOptionalNumber(stream, snapshot.presentationWindowState ?
+        std::optional<unsigned int>{static_cast<unsigned int>(*snapshot.presentationWindowState)} : std::nullopt);
+    stream << ",\"statisticsUnavailableReason\":";
+    const bool blt = snapshot.presentationContract && snapshot.presentationContract->presentationModel == pbrenderd3d::PresentationModel::ComposedBlt;
+    const bool qtRaster = snapshot.presentationContract && snapshot.presentationContract->presentationModel == pbrenderd3d::PresentationModel::QtRaster;
+    WriteEscaped(stream, qtRaster ? "QtRasterHasNoDxgiStatistics" : blt ? "WindowedBltStatisticsUnsupported" : snapshot.presentationTimingIssue ?
+        pbpresenttiming::GetTimingIssueName(*snapshot.presentationTimingIssue) : "RendererEnvironmentUnavailable");
+    stream << ",\"presentedVisualFps\":";
+    WriteOptionalNumber(stream, qtRaster || blt ? std::nullopt : snapshot.presentedVisualFps);
+    stream << ",\"presentCallFps\":";
+    WriteOptionalNumber(stream, qtRaster ? std::nullopt : snapshot.presentCallFps);
+    stream << ",\"softwarePaintCalls\":" << snapshot.softwarePaintCalls << ",\"softwareFramesPainted\":" << snapshot.softwareFramesPainted;
+}
 
 std::string BuildRemoteVisualRunMetadataJson(const RemoteRunMetadata& metadata)
 {
@@ -719,6 +877,12 @@ std::string BuildEncoderRunReportJson(const RunReportContext& context,
     stream << ",\"receiverProgress\":null,\"receiverEta\":null,\"verifiedGoodput\":null"
            << ",\"remoteMetadata\":";
     WriteRemoteMetadata(stream, snapshot.remoteMetadata);
+    stream << ",\"senderRatePrior\":";
+    WriteEncoderRatePriorJson(stream, snapshot.ratePrior);
+    stream << ",\"feedback\":";
+    WriteFeedbackTelemetryJson(stream, snapshot.feedback);
+    stream << ",\"stopReason\":";
+    WriteEncoderStopReasonJson(stream, snapshot);
     stream << ",\"statusMessage\":";
     WriteEscaped(stream, snapshot.statusMessage);
     stream << ",\"errorDetail\":";
@@ -1090,6 +1254,8 @@ std::string BuildDecoderRunReportJson(const RunReportContext& context,
     stream << ",\"recoveryRuntimeMilliseconds\":" << snapshot.recoveryRuntimeMilliseconds
            << ",\"remoteMetadata\":";
     WriteRemoteMetadata(stream, snapshot.remoteMetadata);
+    stream << ",\"feedback\":";
+    WriteFeedbackTelemetryJson(stream, snapshot.feedback);
     stream << ",\"statusMessage\":";
     WriteEscaped(stream, snapshot.statusMessage);
     stream << ",\"errorDetail\":";
@@ -1114,6 +1280,18 @@ std::string BuildEncoderDiagnostics(const EncoderSnapshot& snapshot)
            << " of " << snapshot.cycleFrameCount << "\nFrameSequence: " << snapshot.frameSequence
            << "\nStatus: " << snapshot.statusMessage << "\nError: " << snapshot.errorDetail
            << "\nReceiver progress/ETA: unavailable by architecture\n";
+    stream << "Presentation: ";
+    WriteEncoderPresentationPolicyJson(stream, snapshot);
+    if (snapshot.presentationContract && snapshot.presentationContract->presentationModel == pbrenderd3d::PresentationModel::QtRaster)
+    {
+        stream << "\nDXGI Presents: not applicable; software paint calls: " << snapshot.softwarePaintCalls
+            << "; software logical frames painted: " << snapshot.softwareFramesPainted << "; epoch: " << snapshot.presentationEpoch << '\n';
+    }
+    else
+    {
+        stream << "\nSuccessful Presents: " << snapshot.successfulPresentCalls << "; texture replacements: "
+            << snapshot.sourceTextureReplacements << "; epoch: " << snapshot.presentationEpoch << '\n';
+    }
     return stream.str();
 }
 

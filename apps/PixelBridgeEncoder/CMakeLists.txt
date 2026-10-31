@@ -8,16 +8,23 @@ target_link_libraries(PixelBridgeEncoder
         PB::PBProtocol)
 
 if(WIN32)
+    add_dependencies(PixelBridgeEncoder PBFeedbackIo)
+    add_custom_command(TARGET PixelBridgeEncoder POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "$<TARGET_FILE:PBFeedbackIo>" "$<TARGET_FILE_DIR:PixelBridgeEncoder>/PBFeedbackIo.exe" VERBATIM)
     configure_file(resources/application.rc.in "${CMAKE_CURRENT_BINARY_DIR}/application.rc" @ONLY)
     set_target_properties(PixelBridgeEncoder PROPERTIES AUTORCC ON)
     target_sources(PixelBridgeEncoder PRIVATE resources/branding.qrc "${CMAKE_CURRENT_BINARY_DIR}/application.rc"
+        "${PROJECT_SOURCE_DIR}/apps/common/feedback_options_qt.cpp"
         "${PROJECT_SOURCE_DIR}/apps/common/operational_log_qt.cpp")
     target_sources(PixelBridgeEncoder PRIVATE presentation_cli.cpp encoder_runtime_cli.cpp encoder_application_controller.cpp
         "${PROJECT_SOURCE_DIR}/apps/common/step1_gui_evidence_qt.cpp"
         encoder_application_controller.h encoder_gui.cpp encoder_gui.h
+        qt_raster_paint.cpp qt_raster_paint.h
+        qt_raster_presentation.cpp qt_raster_presentation.h
         encoder_shell_integration.cpp encoder_shell_integration.h
         folder_archive.cpp folder_archive.h
         encoder_shell_dialog.cpp encoder_shell_dialog.h
+        encoder_rate_prior_options.h
         "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.cpp"
         "${PROJECT_SOURCE_DIR}/apps/common/remote_visual_metadata_preset_qt.h"
         "${PROJECT_SOURCE_DIR}/cmake/PixelBridge.PerMonitorV2.manifest")
@@ -30,6 +37,15 @@ if(WIN32)
     endif()
     target_compile_definitions(PixelBridgeEncoder PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
         PB_ENABLE_QT_GUI=1 PB_ENABLE_APPLICATION_RUNTIME=1 "PB_GIT_COMMIT=\"${pbEncoderGitCommit}\"")
+    set(PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT "" CACHE STRING "Exact SHA-256 source inventory for an uncommitted Encoder diagnostic candidate")
+    if(PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT)
+        string(LENGTH "${PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT}" pbDiagnosticFingerprintLength)
+        if(NOT pbDiagnosticFingerprintLength EQUAL 64 OR NOT PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT MATCHES "^[0-9a-f]+$")
+            message(FATAL_ERROR "PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT must be a lowercase SHA-256 hex digest")
+        endif()
+        target_compile_definitions(PixelBridgeEncoder PRIVATE
+            "PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT=\"${PB_ENCODER_DIAGNOSTIC_SOURCE_FINGERPRINT}\"")
+    endif()
     if(MSVC)
         # Keep the normal Unicode CRT initialization/argument parsing while
         # suppressing Windows' automatic console for ordinary GUI launch.

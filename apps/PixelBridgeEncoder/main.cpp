@@ -5,6 +5,7 @@
 #include "application_build_identity.h"
 #include "application_console.h"
 #include "encoder_shell_integration.h"
+#include "encoder_presentation_options.h"
 #include "unified_profile_identity.h"
 #include "run_measurement.h"
 #endif
@@ -48,7 +49,8 @@ int main()
         {
             const pbcore::BuildInfo buildInfo = pbcore::GetBuildInfo();
             const pbprotocol::ProtocolVersion protocolVersion = pbprotocol::GetProtocolVersion();
-            pbapp::WriteApplicationBuildIdentity(std::cout, "PixelBridgeEncoder", buildInfo, protocolVersion, PB_GIT_COMMIT);
+            pbapp::WriteApplicationBuildIdentity(std::cout, "PixelBridgeEncoder", buildInfo, protocolVersion, PB_GIT_COMMIT,
+                pbencoder::GetDiagnosticSourceFingerprint());
             return 0;
         }
         if (std::wstring_view(arguments[1]) == L"--unified-profile" && argumentCount == 2)
@@ -62,6 +64,9 @@ int main()
             return 0;
         }
         if (std::wstring_view(arguments[1]) == L"--gui-measurement" || std::wstring_view(arguments[1]) == L"--gui-native-smoke" ||
+            std::wstring_view(arguments[1]) == L"--gui-presentation-mode" ||
+            std::wstring_view(arguments[1]) == L"--gui-qt-display-smoke" ||
+            std::wstring_view(arguments[1]) == L"--gui-display-test" ||
             (std::wstring_view(arguments[1]) == L"--gui-smoke" && argumentCount == 2) ||
             (std::wstring_view(arguments[1]) == L"--gui-integration-smoke" && argumentCount == 3) ||
             (std::wstring_view(arguments[1]) == L"--shell-open" && argumentCount == 3))
